@@ -50,6 +50,7 @@ pub struct ChildProcess {
     pgid: Option<sys::process::ProcessId>,
     /// The terminal status, once known.
     status: Option<std::process::ExitStatus>,
+    command_observation: Option<crate::pipeline::CommandObservation>,
 }
 
 #[allow(clippy::missing_const_for_fn)]
@@ -65,6 +66,7 @@ impl ChildProcess {
             pid,
             pgid,
             status: None,
+            command_observation: None,
         }
     }
 
@@ -80,6 +82,7 @@ impl ChildProcess {
                 group: Some(group),
             },
             status: None,
+            command_observation: None,
         }
     }
 
@@ -117,7 +120,29 @@ impl ChildProcess {
     }
 
     /// Waits for the process to exit.
+    pub(crate) fn set_command_observation(
+        &mut self,
+        observation: crate::pipeline::CommandObservation,
+    ) {
+        self.command_observation = Some(observation);
+    }
+
+    /// 等待真实子进程终态，并完成其命令观察。
     pub async fn wait(&mut self) -> Result<ProcessWaitResult, error::Error> {
+        let result = self.wait_inner().await;
+        if let Ok(ProcessWaitResult::Completed(output)) = &result {
+            self.complete_observation(output.status);
+        }
+        result
+    }
+
+    fn complete_observation(&mut self, status: std::process::ExitStatus) {
+        if let Some(mut observation) = self.command_observation.take() {
+            observation.finish(&crate::ExecutionResult::from(completed_output(status)));
+        }
+    }
+
+    async fn wait_inner(&mut self) -> Result<ProcessWaitResult, error::Error> {
         if let Some(status) = self.status {
             return Ok(ProcessWaitResult::Completed(completed_output(status)));
         }
@@ -166,6 +191,14 @@ impl ChildProcess {
     }
 
     pub(crate) fn poll(&mut self) -> Option<Result<std::process::Output, error::Error>> {
+        let result = self.poll_inner();
+        if let Some(Ok(output)) = &result {
+            self.complete_observation(output.status);
+        }
+        result
+    }
+
+    fn poll_inner(&mut self) -> Option<Result<std::process::Output, error::Error>> {
         if let Some(status) = self.status {
             return Some(Ok(completed_output(status)));
         }

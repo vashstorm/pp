@@ -289,7 +289,7 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
         let markers = [
             "resume-history U1 ask",
             "resume-history think",
-            "$ printf",
+            "print(\"resume-history evidence",
             "Read · long.txt",
             "resume-history A1",
             "resume-history U2 ask",
@@ -304,14 +304,14 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
         // 工具输出恢复为折叠状态；Ctrl+O 全局展开和折叠，保留输入。
         for _ in 0..80 {
             pty.drain();
-            if pty.parser.screen().contents().contains("$ printf") {
+            if pty.parser.screen().contents().contains("print(\"resume-history evidence") {
                 break;
             }
             if !resume_history_page(&mut pty, "\x1b[5~") {
                 break;
             }
         }
-        pty.text("$ printf");
+        pty.text("print(\"resume-history evidence");
         assert!(
             !pty.parser
                 .screen()
@@ -422,7 +422,7 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
         for marker in [
             "resume-history U1 ask",
             "resume-history think",
-            "$ printf",
+            "print(\"resume-history evidence",
             "Read · long.txt",
             "resume-history A1",
             "resume-history U2 ask",

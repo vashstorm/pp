@@ -10,6 +10,7 @@
 use std::io;
 
 use crate::openfiles::OpenFile;
+use crate::parser::{SourceSpan, ast};
 
 /// Receives pipeline structure and stage lifecycle information.
 ///
@@ -18,6 +19,38 @@ use crate::openfiles::OpenFile;
 /// from job bookkeeping for background pipelines), so they must be cheap and
 /// must not block indefinitely.
 pub trait PipelineObserver: Send + Sync {
+    /// 登记一个真实解析单元；返回的身份只属于本次观察器。
+    fn parsed(
+        &self,
+        _program: &ast::Program,
+        _source: Option<&str>,
+        _parent: Option<u64>,
+    ) -> Option<u64> {
+        None
+    }
+
+    /// 开始一次命令执行；同一语法节点的重复执行得到独立身份。
+    fn command_begin(
+        &self,
+        _unit: Option<u64>,
+        _command: &ast::Command,
+        _parent: Option<u64>,
+    ) -> Option<u64> {
+        None
+    }
+
+    /// 未观察到真实终态时 status 为 None，不能据此补造退出码。
+    fn command_end(&self, _execution: u64, _status: Option<u8>, _signal: Option<i32>) {}
+
+    /// 名称查找完成后的实际命令类型。
+    fn command_resolved(&self, _execution: u64, _kind: &str) {}
+
+    /// 由解释器确认的短路或未选择分支。
+    fn skipped(&self, _unit: Option<u64>, _span: Option<SourceSpan>) {}
+
+    /// 每次实际进入循环体时调用。
+    fn iteration(&self, _unit: Option<u64>, _span: Option<SourceSpan>) {}
+
     /// Starts observing a pipeline occurrence.
     ///
     /// `parent` is the nearest enclosing multi-stage pipeline occurrence, if
@@ -65,4 +98,48 @@ pub trait PipelineObserver: Send + Sync {
     ///
     /// This is called after `pipefail` and `!` handling, before the `ERR` trap.
     fn finish(&self, id: u64, status: u8) -> io::Result<()>;
+}
+
+/// 把命令终态跟随到实际等待者；丢弃句柄只表示观测中断。
+pub(crate) struct CommandObservation {
+    observer: std::sync::Arc<dyn PipelineObserver>,
+    execution: u64,
+    cancellation: Option<tokio_util::sync::CancellationToken>,
+    finished: bool,
+}
+
+impl CommandObservation {
+    pub(crate) fn new(
+        observer: std::sync::Arc<dyn PipelineObserver>,
+        execution: u64,
+        cancellation: Option<tokio_util::sync::CancellationToken>,
+    ) -> Self {
+        Self {
+            observer,
+            execution,
+            cancellation,
+            finished: false,
+        }
+    }
+
+    pub(crate) fn finish(&mut self, result: &crate::ExecutionResult) {
+        if !self.finished {
+            let status = (!self
+                .cancellation
+                .as_ref()
+                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled))
+            .then(|| u8::from(&result.exit_code));
+            self.observer
+                .command_end(self.execution, status, result.signal);
+            self.finished = true;
+        }
+    }
+}
+
+impl Drop for CommandObservation {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.observer.command_end(self.execution, None, None);
+        }
+    }
 }

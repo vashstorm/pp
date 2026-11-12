@@ -890,6 +890,7 @@ impl PipeStore {
         drop(registry);
 
         let observer = Arc::new(RunObserver {
+            shell: super::display::Trace::new(),
             store: self.clone(),
             state: state.clone(),
         });
@@ -1143,11 +1144,46 @@ fn evict_closed_globally(registry: &mut Registry) -> bool {
 }
 
 struct RunObserver {
+    shell: super::display::Trace,
     store: PipeStore,
     state: Arc<RunState>,
 }
 
 impl PipelineObserver for RunObserver {
+    fn parsed(
+        &self,
+        program: &brush_core::parser::ast::Program,
+        source: Option<&str>,
+        parent: Option<u64>,
+    ) -> Option<u64> {
+        self.shell.parsed(program, source, parent)
+    }
+
+    fn command_begin(
+        &self,
+        unit: Option<u64>,
+        command: &brush_core::parser::ast::Command,
+        _parent: Option<u64>,
+    ) -> Option<u64> {
+        self.shell.begin(unit, command)
+    }
+
+    fn command_end(&self, execution: u64, status: Option<u8>, _signal: Option<i32>) {
+        self.shell.end(execution, status);
+    }
+
+    fn command_resolved(&self, execution: u64, kind: &str) {
+        self.shell.resolved(execution, kind);
+    }
+
+    fn skipped(&self, unit: Option<u64>, span: Option<brush_core::SourceSpan>) {
+        self.shell.skipped(unit, span);
+    }
+
+    fn iteration(&self, unit: Option<u64>, span: Option<brush_core::SourceSpan>) {
+        self.shell.iteration(unit, span);
+    }
+
     fn begin(
         &self,
         parent: Option<u64>,
@@ -1202,6 +1238,18 @@ impl PipeRun {
     /// 交给 `ExecutionParameters::set_pipeline_observer` 的进程内观察者。
     pub(crate) fn observer(&self) -> Arc<dyn PipelineObserver> {
         self.observer.clone()
+    }
+
+    pub(crate) fn prepare_shell(&self, source: &str) {
+        self.observer.shell.prepare(source);
+    }
+
+    pub(crate) fn shell_revision(&self) -> u64 {
+        self.observer.shell.revision()
+    }
+
+    pub(crate) fn shell_snapshot(&self) -> Option<pp_core::shell_display::ShellPresentation> {
+        self.observer.shell.snapshot()
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -1267,6 +1315,7 @@ impl PipeRun {
     /// 重复调用无副作用；返回最终快照。正常收尾先给中继一个观察 EOF 的宽限，
     /// 超时或已中断则协作停止（`Interrupted`），绝不完结仍在运行的流。
     pub(crate) fn finish(&self, end: RunEnd) -> RunInfo {
+        self.observer.shell.finish();
         if !self.state.begin_finish(&end) {
             return self.state.snapshot();
         }

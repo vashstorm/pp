@@ -161,7 +161,7 @@ pub(crate) fn run_host(
 fn run_host_inner(
     config: HostConfig<'_>,
     sink: Arc<Mutex<OutputSink>>,
-    emit: Option<&mut dyn FnMut(AgentEvent)>,
+    mut emit: Option<&mut dyn FnMut(AgentEvent)>,
 ) -> Result<HostOutcome> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -203,7 +203,7 @@ fn run_host_inner(
         stdout_writer,
         stderr_writer,
         &shared,
-        emit,
+        &mut emit,
     ));
     // 解释器结束后，逻辑后台任务只能靠 runtime 丢弃；先取消它们再排空写端。
     runtime.shutdown_timeout(Duration::ZERO);
@@ -258,6 +258,14 @@ fn run_host_inner(
         Termination::Stopped => RunEnd::interrupted("stopped"),
     };
     config.pipes.finish(run_end);
+    if let Some(snapshot) = config.pipes.shell_snapshot()
+        && let Some(callback) = emit.as_mut()
+    {
+        (*callback)(AgentEvent::ToolShellSnapshot {
+            id: config.call_id.to_owned(),
+            snapshot,
+        });
+    }
     if let Some(error) = failure {
         return Err(error);
     }
@@ -331,7 +339,7 @@ async fn run_interpreter(
     stdout_writer: PipeWriter,
     stderr_writer: PipeWriter,
     shared: &Arc<SinkShared>,
-    mut emit: Option<&mut dyn FnMut(AgentEvent)>,
+    emit: &mut Option<&mut dyn FnMut(AgentEvent)>,
 ) -> Result<RunReport> {
     let stdin = openfiles::null().context("opening embedded shell stdin")?;
     let fds: HashMap<ShellFd, OpenFile> = HashMap::from([
@@ -380,10 +388,23 @@ async fn run_interpreter(
         // tokio 的 select!/pin! 需要 macros feature；这里只用 time + std::pin。
         let mut run = std::pin::pin!(shell.run_string(config.command, &source, &params));
         let mut last_pipe_revision = config.pipes.revision();
+        let mut last_shell_revision = 0;
         loop {
             match tokio::time::timeout(PREVIEW_INTERVAL, run.as_mut()).await {
                 Ok(outcome) => break outcome,
                 Err(_) => {
+                    let shell_revision = config.pipes.shell_revision();
+                    if shell_revision != last_shell_revision {
+                        if let Some(snapshot) = config.pipes.shell_snapshot()
+                            && let Some(callback) = emit.as_mut()
+                        {
+                            (*callback)(AgentEvent::ToolShellSnapshot {
+                                id: config.call_id.to_owned(),
+                                snapshot,
+                            });
+                        }
+                        last_shell_revision = shell_revision;
+                    }
                     let pipe_revision = config.pipes.revision();
                     if pipe_revision != last_pipe_revision {
                         if let Some(callback) = emit.as_mut() {

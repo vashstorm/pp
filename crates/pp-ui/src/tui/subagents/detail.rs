@@ -93,7 +93,10 @@ impl Detail {
                 .run_id
                 .as_ref()
                 .is_none_or(|id| !self.terminal.contains_key(id))
-            && let Some(event @ AgentEvent::ToolPipelineSnapshot { .. }) = &record.event
+            && let Some(
+                event @ (AgentEvent::ToolPipelineSnapshot { .. }
+                | AgentEvent::ToolShellSnapshot { .. }),
+            ) = &record.event
         {
             self.transcript.progress(event.clone());
         }

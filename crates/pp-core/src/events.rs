@@ -215,6 +215,11 @@ pub enum AgentEvent {
         id: String,
         output: String,
     },
+    /// 瞬时命令展示；最终快照由工具结果的 shell 字段冻结。
+    ToolShellSnapshot {
+        id: String,
+        snapshot: crate::shell_display::ShellPresentation,
+    },
     /// 运行中的管道阶段预览。瞬时正文只用于卡片，不写 journal 或工具结果；
     /// 调用完成后的 `result.pipes` 才是恢复权威。
     ToolPipelineSnapshot {

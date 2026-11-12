@@ -11,6 +11,8 @@ use serde_json::Value;
 use std::collections::VecDeque;
 
 mod mcp_preview;
+mod shell;
+pub(super) use shell::command as shell_command;
 mod wait;
 pub(super) use wait::render as wait_body;
 

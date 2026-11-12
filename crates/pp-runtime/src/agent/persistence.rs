@@ -828,6 +828,7 @@ impl SessionJournal {
                 | AgentEvent::ToolArgumentsDelta { .. }
                 | AgentEvent::ToolOutputSnapshot { .. }
                 | AgentEvent::ToolPipelineSnapshot { .. }
+                | AgentEvent::ToolShellSnapshot { .. }
                 | AgentEvent::TodoStateUpdated { .. }
                 | AgentEvent::PlanProgressUpdated { .. }
                 | AgentEvent::CompactionStarted { .. }
@@ -1243,11 +1244,10 @@ pub fn load(
             if let Payload::Custom {
                 custom: Custom::State(state),
             } = &entry.payload
+                && state.tree.is_some()
             {
-                if state.tree.is_some() {
-                    has_tree = true;
-                    projector = replay::Projector::default();
-                }
+                has_tree = true;
+                projector = replay::Projector::default();
             }
             apply_native(
                 &mut checkpoint,

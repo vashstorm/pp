@@ -105,6 +105,11 @@ fn streaming_bash_reports_both_pipes_before_exit_without_newlines() {
                 assert_eq!(result["exit_code"], 0);
                 finished = true;
             }
+            AgentEvent::ToolShellSnapshot { id, snapshot } => {
+                assert!(started && !finished);
+                assert_eq!(id, "live-call");
+                assert_eq!(snapshot.version, pp_core::shell_display::VERSION);
+            }
             _ => panic!("unexpected assistant event"),
         },
     );

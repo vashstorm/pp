@@ -254,6 +254,7 @@ impl TranscriptEntry {
             footer_warning: String::new(),
             pipes_badge: None,
             pipeline_preview: None,
+            shell: None,
             started: Some(Instant::now()),
             bash_timeout_seconds: None,
             read_clock: palette::waiting_clock(0),
@@ -802,46 +803,57 @@ impl TranscriptEntry {
                     }),
             );
         } else if bash {
-            let style = Style::default()
-                .fg(palette::TOOL_COMMAND)
-                .bg(BASH_BACKGROUND);
-            let mut command = tool_display::command(&self.title, self.expanded, self.display);
-            if self.tool.as_deref() != Some("bash")
-                && !self.expanded
-                && !self.display.full
-                && self.title.lines().count() > self.display.window()
-                && let Some(marker) = command.first_mut()
-            {
-                *marker = format!(
-                    "{} {marker}",
-                    palette::tool_icon(self.tool.as_deref().unwrap_or("bash"))
+            if let Some(snapshot) = &self.shell {
+                lines.extend(
+                    tool_display::shell_command(snapshot, self.expanded, self.display, width)
+                        .into_iter()
+                        .map(|line| LayoutLine {
+                            content: LayoutContent::Styled(line),
+                            height: 1,
+                        }),
+                );
+            } else {
+                let style = Style::default()
+                    .fg(palette::TOOL_COMMAND)
+                    .bg(BASH_BACKGROUND);
+                let mut command = tool_display::command(&self.title, self.expanded, self.display);
+                if self.tool.as_deref() != Some("bash")
+                    && !self.expanded
+                    && !self.display.full
+                    && self.title.lines().count() > self.display.window()
+                    && let Some(marker) = command.first_mut()
+                {
+                    *marker = format!(
+                        "{} {marker}",
+                        palette::tool_icon(self.tool.as_deref().unwrap_or("bash"))
+                    );
+                }
+                lines.extend(
+                    command
+                        .into_iter()
+                        .flat_map(|command| {
+                            let line = if let Some(text) = command.strip_prefix("$ ") {
+                                Line::from(vec![
+                                    Span::styled("$ ", style.fg(self.tool_accent())),
+                                    Span::styled(text.to_owned(), style),
+                                ])
+                                .style(style)
+                            } else {
+                                let color = if command.starts_with('…') {
+                                    palette::MUTED
+                                } else {
+                                    palette::TOOL_COMMAND
+                                };
+                                Line::styled(command, style.fg(color))
+                            };
+                            wrap_block(line, width, "")
+                        })
+                        .map(|line| LayoutLine {
+                            content: LayoutContent::Styled(line),
+                            height: 1,
+                        }),
                 );
             }
-            lines.extend(
-                command
-                    .into_iter()
-                    .flat_map(|command| {
-                        let line = if let Some(text) = command.strip_prefix("$ ") {
-                            Line::from(vec![
-                                Span::styled("$ ", style.fg(self.tool_accent())),
-                                Span::styled(text.to_owned(), style),
-                            ])
-                            .style(style)
-                        } else {
-                            let color = if command.starts_with('…') {
-                                palette::MUTED
-                            } else {
-                                palette::TOOL_COMMAND
-                            };
-                            Line::styled(command, style.fg(color))
-                        };
-                        wrap_block(line, width, "")
-                    })
-                    .map(|line| LayoutLine {
-                        content: LayoutContent::Styled(line),
-                        height: 1,
-                    }),
-            );
         } else if search {
             let view = tool_display::View {
                 name: self.tool.as_deref().unwrap_or_default(),

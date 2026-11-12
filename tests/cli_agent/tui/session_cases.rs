@@ -18,7 +18,7 @@ fn tui_session_resume_replays_history_without_request() {
         // 无欢迎页；工具卡片重放保存的退出状态，不伪造 wall duration。
         let text = pty.parser.screen().contents();
         assert!(!text.contains("▄▄▄██▀▀██"));
-        assert!(text.contains("$ printf"));
+        assert!(text.contains("print(\"tool-out\")"));
         assert!(text.contains("Read · tui-read.txt"));
         assert!(text.contains("tool-out"));
         assert!(text.contains("Timeout: 300s"));

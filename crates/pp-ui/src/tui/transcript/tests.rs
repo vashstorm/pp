@@ -154,6 +154,7 @@ mod layout_cases;
 mod lsp_cases;
 mod native_cases;
 mod scroll_cases;
+mod shell_cases;
 mod streaming_cases;
 mod todo_cases;
 mod tree_cases;

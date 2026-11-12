@@ -341,7 +341,7 @@ fn agent_hub_streams_and_anchors_activity() {
         // Enter 定位到失败工具卡片。
         pty.input("\r");
         pty.text("Agent Hub");
-        pty.text("printf hub-tool-fail");
+        pty.text("print(\"hub-tool-fail\")");
         // 从磁盘历史恢复工具，使用共享配置，不把回放耗时当作 Wall。
         pty.text("Timeout: 37s");
         assert!(!pty.contents().contains("Wall:"));

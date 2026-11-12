@@ -530,7 +530,7 @@ fn tree_tui_tool_batch_stays_paired_and_never_reexecutes_both_protocols() {
         tree_tui_select(&mut pty, &[TREE_TUI_HOME, TREE_TUI_DOWN], "tree-counter");
         pty.wait_for("工具批次整体框选", |screen| {
             let selected = tree_tui_selected_text(screen);
-            selected.contains("$ printf x >> tree-counter")
+            selected.contains("print(\"x\") >>tree-counter")
                 && selected.contains("Read · tree-counter")
         });
         pty.input("\r");

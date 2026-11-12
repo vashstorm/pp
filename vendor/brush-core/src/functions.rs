@@ -69,6 +69,9 @@ pub struct Registration {
     source_info: crate::SourceInfo,
     /// Whether or not this function definition should be exported to children.
     exported: bool,
+    /// 定义所属的观察单元，不导出到 shell 环境或序列化格式。
+    #[cfg_attr(feature = "serde", serde(skip))]
+    observation_unit: Option<u64>,
 }
 
 impl From<brush_parser::ast::FunctionDefinition> for Registration {
@@ -77,6 +80,7 @@ impl From<brush_parser::ast::FunctionDefinition> for Registration {
             definition: Arc::new(definition),
             source_info: crate::SourceInfo::default(),
             exported: false,
+            observation_unit: None,
         }
     }
 }
@@ -96,6 +100,7 @@ impl Registration {
             definition: Arc::new(definition),
             source_info: source_info.clone(),
             exported: false,
+            observation_unit: None,
         }
     }
 
@@ -107,6 +112,14 @@ impl Registration {
     /// Returns a reference to the source info for the function definition.
     pub const fn source(&self) -> &crate::SourceInfo {
         &self.source_info
+    }
+
+    pub(crate) fn set_observation_unit(&mut self, unit: Option<u64>) {
+        self.observation_unit = unit;
+    }
+
+    pub(crate) fn observation_unit(&self) -> Option<u64> {
+        self.observation_unit
     }
 
     /// Marks the function for export.

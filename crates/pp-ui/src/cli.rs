@@ -345,7 +345,7 @@ pub(crate) fn run_cli_shell(
             AgentEvent::ToolStarted { .. } => {
                 cli_write(stderr, "shell: running\n", &mut broken, &mut first_error)
             }
-            AgentEvent::ToolPipelineSnapshot { .. } => {}
+            AgentEvent::ToolPipelineSnapshot { .. } | AgentEvent::ToolShellSnapshot { .. } => {}
             AgentEvent::ToolOutputSnapshot { output, .. } => {
                 let delta = cli_output_text(&output, &mut streamed_output, false, "shell");
                 cli_write(stderr, &delta, &mut broken, &mut first_error);
@@ -904,6 +904,7 @@ fn run_cli_execution(
             | AgentEvent::ProjectInstructionsLoaded { .. }
             | AgentEvent::PlanProgressUpdated { .. }
             | AgentEvent::ToolPipelineSnapshot { .. }
+            | AgentEvent::ToolShellSnapshot { .. }
             | AgentEvent::TodoStateUpdated { .. } => {}
         }
     };

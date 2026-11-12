@@ -23,6 +23,15 @@ impl Transcript {
                 EntryStatus::Complete
             };
             entry.text = tool_result(EntryKind::Bash, "bash", snapshot);
+            entry.shell = snapshot
+                .get("shell")
+                .and_then(|value| {
+                    serde_json::from_value::<pp_core::shell_display::ShellPresentation>(
+                        value.clone(),
+                    )
+                    .ok()
+                })
+                .filter(|shell| shell.version == pp_core::shell_display::VERSION);
             entry.result = Some(snapshot.clone());
             entry.stdout.clear();
             entry.stderr.clear();

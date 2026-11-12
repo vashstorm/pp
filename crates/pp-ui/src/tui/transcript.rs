@@ -163,6 +163,7 @@ struct TranscriptEntry {
     pipes_badge: Option<PipesBadge>,
     /// 运行中的阶段正文；与命令真实输出独立，完成时丢弃。
     pipeline_preview: Option<String>,
+    shell: Option<pp_core::shell_display::ShellPresentation>,
     started: Option<Instant>,
     bash_timeout_seconds: Option<u64>,
     read_clock: &'static str,
@@ -611,6 +612,7 @@ impl Transcript {
                 AgentEvent::ToolOutput { .. }
                 | AgentEvent::ToolOutputSnapshot { .. }
                 | AgentEvent::ToolPipelineSnapshot { .. }
+                | AgentEvent::ToolShellSnapshot { .. }
                 | AgentEvent::FileChanged { .. }
                 | AgentEvent::LspDiagnostics { .. } => {}
                 // 后台自动加载不改变活动阶段，不伪装成模型工具执行。
@@ -1005,6 +1007,17 @@ impl Transcript {
                     self.entries.push(entry);
                 }
             }
+            AgentEvent::ToolShellSnapshot { id, snapshot } => {
+                if snapshot.version == pp_core::shell_display::VERSION
+                    && let Some(index) = self.tool_index(&id)
+                {
+                    let entry = &mut self.entries[index];
+                    if entry.kind == EntryKind::Bash && entry.shell.as_ref() != Some(&snapshot) {
+                        entry.shell = Some(snapshot);
+                        entry.layout = None;
+                    }
+                }
+            }
             AgentEvent::ToolPipelineSnapshot { id, pipes, preview } => {
                 if let Some(index) = self.tool_index(&id) {
                     let replaying = self.replaying;
@@ -1190,6 +1203,18 @@ impl Transcript {
                         for report in crate::tui::lsp::reports_from_result(&result) {
                             entry.set_diagnostic(report);
                         }
+                    }
+                    if let Some(shell) = result
+                        .get("shell")
+                        .and_then(|value| {
+                            serde_json::from_value::<pp_core::shell_display::ShellPresentation>(
+                                value.clone(),
+                            )
+                            .ok()
+                        })
+                        .filter(|shell| shell.version == pp_core::shell_display::VERSION)
+                    {
+                        entry.shell = Some(shell);
                     }
                     entry.result = Some(result);
                     if entry.kind == EntryKind::Bash {

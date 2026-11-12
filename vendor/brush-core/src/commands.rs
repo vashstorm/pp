@@ -386,6 +386,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
         {
             #[allow(clippy::unwrap_used, reason = "we just checked that builtin is Some")]
             let builtin = builtin.unwrap();
+            self.params.observe_resolved("builtin");
             return self.execute_via_builtin(builtin).await;
         }
 
@@ -395,6 +396,7 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
             if let Some(func_registration) =
                 self.shell.funcs().get(self.command_name.as_str()).cloned()
             {
+                self.params.observe_resolved("function");
                 return self.execute_via_function(func_registration).await;
             }
         }
@@ -403,10 +405,12 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
         // then invoke it.
         if let Some(builtin) = builtin {
             if !builtin.disabled {
+                self.params.observe_resolved("builtin");
                 return self.execute_via_builtin(builtin).await;
             }
         }
 
+        self.params.observe_resolved("external");
         // We still haven't found a command to invoke. We'll need to look for an external command.
         if !sys::fs::contains_path_separator(&self.command_name) {
             // All else failed; if we were given path directories to search, try to look through
@@ -1042,7 +1046,8 @@ pub(crate) async fn invoke_shell_function(
     let positional_args = args.iter().map(|a| a.to_string());
 
     // Pass through open files.
-    let params = context.params.clone();
+    let mut params = context.params.clone();
+    params.observation_unit = function.observation_unit();
 
     if let Some(cancelled) = context.shell.check_interpreter_boundary(&params).await? {
         return Ok(cancelled.into());

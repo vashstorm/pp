@@ -1,4 +1,4 @@
-use brush_parser::ast::{self, CommandPrefixOrSuffixItem};
+use brush_parser::ast::{self, CommandPrefixOrSuffixItem, SourceLocation};
 use itertools::Itertools;
 use std::collections::VecDeque;
 use std::io::Write;
@@ -53,6 +53,10 @@ pub struct ExecutionParameters {
     pipeline_observer: Option<Arc<dyn PipelineObserver>>,
     /// Nearest enclosing multi-stage pipeline occurrence, if any.
     pipeline_parent: Option<u64>,
+    /// 当前语法单元及父执行身份，clone 后仍指向同一份解析来源。
+    pub(crate) observation_unit: Option<u64>,
+    pub(crate) observation_command: Option<u64>,
+    pub(crate) observation_source: Option<Arc<str>>,
 }
 
 #[allow(clippy::missing_const_for_fn)]
@@ -113,6 +117,26 @@ impl ExecutionParameters {
     /// Returns the nearest enclosing multi-stage pipeline occurrence, if any.
     pub const fn pipeline_parent(&self) -> Option<u64> {
         self.pipeline_parent
+    }
+
+    pub(crate) fn observe_skipped(&self, span: Option<crate::SourceSpan>) {
+        if let Some(observer) = &self.pipeline_observer {
+            observer.skipped(self.observation_unit, span);
+        }
+    }
+
+    pub(crate) fn observe_iteration(&self, span: Option<crate::SourceSpan>) {
+        if let Some(observer) = &self.pipeline_observer {
+            observer.iteration(self.observation_unit, span);
+        }
+    }
+
+    pub(crate) fn observe_resolved(&self, kind: &str) {
+        if let (Some(observer), Some(execution)) =
+            (&self.pipeline_observer, self.observation_command)
+        {
+            observer.command_resolved(execution, kind);
+        }
     }
 
     /// Returns the standard input file; usable with `write!` et al.
@@ -640,9 +664,11 @@ impl Execute for ast::AndOrList {
             // operator before it).
             if is_and {
                 if !result.is_success() {
+                    params.observe_skipped(pipeline.location());
                     continue;
                 }
             } else if result.is_success() {
+                params.observe_skipped(pipeline.location());
                 continue;
             }
 
@@ -1136,64 +1162,115 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::Command {
             return Ok(ExecutionSpawnResult::Completed(ExecutionResult::success()));
         }
 
-        // Updates the shell with information about the currently executing command.
-        pipeline_context.shell.set_current_cmd(self);
-
-        match self {
-            Self::Simple(simple) => simple.execute_in_pipeline(pipeline_context, params).await,
-            Self::Compound(compound, redirects) => {
-                // Set up any additional redirects.
-                if let Some(redirects) = redirects {
-                    for redirect in &redirects.0 {
-                        setup_redirect(&mut pipeline_context.shell, &mut params, redirect).await?;
-                    }
+        let mut observation = params.pipeline_observer().and_then(|observer| {
+            observer
+                .command_begin(params.observation_unit, self, params.observation_command)
+                .map(|execution| {
+                    let observation = crate::pipeline::CommandObservation::new(
+                        Arc::clone(observer),
+                        execution,
+                        params.cancel_token().cloned(),
+                    );
+                    (execution, observation)
+                })
+        });
+        if let Some((execution, _)) = &observation {
+            params.observation_command = Some(*execution);
+        }
+        let result = execute_command_body(self, pipeline_context, params).await;
+        if let Some((_, mut observation)) = observation.take() {
+            return match result {
+                Ok(ExecutionSpawnResult::Completed(result)) => {
+                    observation.finish(&result);
+                    Ok(ExecutionSpawnResult::Completed(result))
                 }
+                Ok(ExecutionSpawnResult::StartedProcess(mut child)) => {
+                    child.set_command_observation(observation);
+                    Ok(ExecutionSpawnResult::StartedProcess(child))
+                }
+                Ok(ExecutionSpawnResult::StartedTask(task)) => Ok(
+                    ExecutionSpawnResult::StartedTask(tokio::spawn(async move {
+                        let result = task.await?;
+                        if let Ok(result) = &result {
+                            observation.finish(result);
+                        }
+                        result
+                    })),
+                ),
+                Err(error) => {
+                    // 错误转换为 shell 状态的规则仍由原错误类型负责。
+                    let result = ExecutionResult::new(ExecutionExitCode::from(&error).into());
+                    observation.finish(&result);
+                    Err(error)
+                }
+            };
+        }
+        result
+    }
+}
 
-                // An owned pipeline stage must start producing before later
-                // stages are assembled: a compound body can block on its output
-                // pipe (or wait for a sibling stage) for an unbounded time. Run
-                // it as a concurrent logical task and hand the handle back, just
-                // like an external stage hands back its child process.
-                match pipeline_context.shell {
-                    commands::ShellForCommand::OwnedShell { target, .. } => {
-                        let compound = compound.clone();
-                        let handle = tokio::spawn(async move {
-                            let mut shell = *target;
-                            compound.execute(&mut shell, &params).await
-                        });
-                        Ok(ExecutionSpawnResult::StartedTask(handle))
-                    }
-                    commands::ShellForCommand::ParentShell(shell) => {
-                        Ok(compound.execute(shell, &params).await?.into())
-                    }
+async fn execute_command_body<SE: extensions::ShellExtensions>(
+    command: &ast::Command,
+    mut pipeline_context: PipelineExecutionContext<'_, SE>,
+    mut params: ExecutionParameters,
+) -> Result<ExecutionSpawnResult, error::Error> {
+    // Updates the shell with information about the currently executing command.
+    pipeline_context.shell.set_current_cmd(command);
+
+    match command {
+        ast::Command::Simple(simple) => simple.execute_in_pipeline(pipeline_context, params).await,
+        ast::Command::Compound(compound, redirects) => {
+            // Set up any additional redirects.
+            if let Some(redirects) = redirects {
+                for redirect in &redirects.0 {
+                    setup_redirect(&mut pipeline_context.shell, &mut params, redirect).await?;
                 }
             }
-            Self::Function(func) => Ok(func
-                .execute(&mut pipeline_context.shell, &params)
-                .await?
-                .into()),
-            Self::ExtendedTest(e, redirects) => {
-                // Set up any additional redirects.
-                if let Some(redirects) = redirects {
-                    for redirect in &redirects.0 {
-                        setup_redirect(&mut pipeline_context.shell, &mut params, redirect).await?;
-                    }
-                }
 
-                // Evaluate the extended test expression.
-                let result = if extendedtests::eval_extended_test_expr(
-                    &e.expr,
-                    &mut pipeline_context.shell,
-                    &params,
-                )
-                .await?
-                {
-                    0
-                } else {
-                    1
-                };
-                Ok(ExecutionResult::new(result).into())
+            // An owned pipeline stage must start producing before later
+            // stages are assembled: a compound body can block on its output
+            // pipe (or wait for a sibling stage) for an unbounded time. Run
+            // it as a concurrent logical task and hand the handle back, just
+            // like an external stage hands back its child process.
+            match pipeline_context.shell {
+                commands::ShellForCommand::OwnedShell { target, .. } => {
+                    let compound = compound.clone();
+                    let handle = tokio::spawn(async move {
+                        let mut shell = *target;
+                        compound.execute(&mut shell, &params).await
+                    });
+                    Ok(ExecutionSpawnResult::StartedTask(handle))
+                }
+                commands::ShellForCommand::ParentShell(shell) => {
+                    Ok(compound.execute(shell, &params).await?.into())
+                }
             }
+        }
+        ast::Command::Function(func) => Ok(func
+            .execute(&mut pipeline_context.shell, &params)
+            .await?
+            .into()),
+        ast::Command::ExtendedTest(e, redirects) => {
+            // Set up any additional redirects.
+            if let Some(redirects) = redirects {
+                for redirect in &redirects.0 {
+                    setup_redirect(&mut pipeline_context.shell, &mut params, redirect).await?;
+                }
+            }
+
+            // Evaluate the extended test expression.
+            let result = if extendedtests::eval_extended_test_expr(
+                &e.expr,
+                &mut pipeline_context.shell,
+                &params,
+            )
+            .await?
+            {
+                0
+            } else {
+                1
+            };
+            Ok(ExecutionResult::new(result).into())
         }
     }
 }
@@ -1365,6 +1442,9 @@ impl Execute for ast::ForClauseCommand {
             expanded_values.extend_from_slice(shell.current_shell_args());
         }
 
+        if expanded_values.is_empty() {
+            params.observe_skipped(self.body.list.location());
+        }
         for value in expanded_values {
             if let Some(cancelled) = shell.check_interpreter_boundary(params).await? {
                 return Ok(cancelled);
@@ -1398,6 +1478,7 @@ impl Execute for ast::ForClauseCommand {
                 EnvironmentScope::Global,
             )?;
 
+            params.observe_iteration(self.location());
             result = self.body.list.execute(shell, params).await?;
             if result.is_return_or_exit() {
                 break;
@@ -1436,7 +1517,7 @@ impl Execute for ast::CaseClauseCommand {
         let mut result: ExecutionResult = ExecutionResult::success();
         let mut force_execute_next_case = false;
 
-        for case in &self.cases {
+        for (case_index, case) in self.cases.iter().enumerate() {
             if force_execute_next_case {
                 force_execute_next_case = false;
             } else {
@@ -1454,6 +1535,9 @@ impl Execute for ast::CaseClauseCommand {
                 }
 
                 if !matches {
+                    if let Some(body) = &case.cmd {
+                        params.observe_skipped(body.location());
+                    }
                     continue;
                 }
             }
@@ -1470,7 +1554,14 @@ impl Execute for ast::CaseClauseCommand {
             }
 
             match case.post_action {
-                ast::CaseItemPostAction::ExitCase => break,
+                ast::CaseItemPostAction::ExitCase => {
+                    for skipped in &self.cases[case_index + 1..] {
+                        if let Some(body) = &skipped.cmd {
+                            params.observe_skipped(body.location());
+                        }
+                    }
+                    break;
+                }
                 ast::CaseItemPostAction::UnconditionallyExecuteNextCaseItem => {
                     force_execute_next_case = true;
                 }
@@ -1502,11 +1593,18 @@ impl Execute for ast::IfClauseCommand {
         }
 
         if condition.is_success() {
+            for clause in self.elses.iter().flatten() {
+                if let Some(condition) = &clause.condition {
+                    params.observe_skipped(condition.location());
+                }
+                params.observe_skipped(clause.body.location());
+            }
             return self.then.execute(shell, params).await;
         }
+        params.observe_skipped(self.then.location());
 
         if let Some(elses) = &self.elses {
-            for else_clause in elses {
+            for (index, else_clause) in elses.iter().enumerate() {
                 match &else_clause.condition {
                     Some(else_condition) => {
                         let else_condition_result =
@@ -1518,8 +1616,15 @@ impl Execute for ast::IfClauseCommand {
                         }
 
                         if else_condition_result.is_success() {
+                            for clause in &elses[index + 1..] {
+                                if let Some(condition) = &clause.condition {
+                                    params.observe_skipped(condition.location());
+                                }
+                                params.observe_skipped(clause.body.location());
+                            }
                             return else_clause.body.execute(shell, params).await;
                         }
+                        params.observe_skipped(else_clause.body.location());
                     }
                     None => {
                         return else_clause.body.execute(shell, params).await;
@@ -1577,9 +1682,11 @@ impl Execute for (WhileOrUntil, &ast::WhileOrUntilClauseCommand) {
             }
 
             if condition_result.is_success() != is_while {
+                params.observe_skipped(body.list.location());
                 break;
             }
 
+            params.observe_iteration(self.1.location());
             result = body.list.execute(shell, params).await?;
             if result.is_return_or_exit() {
                 break;
@@ -1643,6 +1750,7 @@ impl Execute for ast::ArithmeticForClauseCommand {
                 }
             }
 
+            params.observe_iteration(self.location());
             result = self.body.list.execute(shell, params).await?;
             if result.is_return_or_exit() {
                 break;
@@ -1671,7 +1779,7 @@ impl Execute for ast::FunctionDefinition {
     async fn execute(
         &self,
         shell: &mut Shell<impl extensions::ShellExtensions>,
-        _params: &ExecutionParameters,
+        params: &ExecutionParameters,
     ) -> Result<ExecutionResult, error::Error> {
         let func_name = self.fname.value.clone();
 
@@ -1698,7 +1806,10 @@ impl Execute for ast::FunctionDefinition {
             .map_or_else(crate::SourceInfo::default, |frame| {
                 frame.adjusted_source_info()
             });
-        shell.define_func(func_name, self.clone(), &source_info);
+        shell.define_func(func_name.clone(), self.clone(), &source_info);
+        if let Some(registration) = shell.funcs_mut().get_mut(&func_name) {
+            registration.set_observation_unit(params.observation_unit);
+        }
 
         let result = ExecutionResult::success();
         shell.set_last_exit_status(result.exit_code.into());
@@ -2444,10 +2555,7 @@ fn setup_redirect_output_and_error_to(
     let abs_file_path: PathBuf = shell.absolute_path(Path::new(file_path));
 
     let mut file_options = std::fs::File::options();
-    file_options
-        .write(true)
-        .truncate(!append)
-        .append(append);
+    file_options.write(true).truncate(!append).append(append);
 
     let creation = RedirectCreation {
         mode: shell.redirect_creation_mode(),
@@ -2603,9 +2711,40 @@ mod tests {
         pipes: std::sync::Mutex<Vec<(u64, usize, String, String)>>,
         stages: std::sync::Mutex<Vec<(u64, usize, u8, Option<i32>)>>,
         finishes: std::sync::Mutex<Vec<(u64, u8)>>,
+        units: std::sync::Mutex<Vec<Option<u64>>>,
+        commands: std::sync::Mutex<Vec<(u64, Option<u64>, usize, usize)>>,
+        ends: std::sync::Mutex<Vec<(u64, Option<u8>)>>,
     }
 
     impl PipelineObserver for RecordingPipelineObserver {
+        fn parsed(
+            &self,
+            _program: &ast::Program,
+            _source: Option<&str>,
+            parent: Option<u64>,
+        ) -> Option<u64> {
+            let mut units = self.units.lock().unwrap();
+            units.push(parent);
+            Some(units.len() as u64)
+        }
+
+        fn command_begin(
+            &self,
+            unit: Option<u64>,
+            command: &ast::Command,
+            _parent: Option<u64>,
+        ) -> Option<u64> {
+            let span = command.location()?;
+            let mut commands = self.commands.lock().unwrap();
+            let id = commands.len() as u64 + 1;
+            commands.push((id, unit, span.start.index, span.end.index));
+            Some(id)
+        }
+
+        fn command_end(&self, execution: u64, status: Option<u8>, _signal: Option<i32>) {
+            self.ends.lock().unwrap().push((execution, status));
+        }
+
         fn begin(
             &self,
             parent: Option<u64>,
@@ -2690,6 +2829,38 @@ mod tests {
         );
 
         (shell, params, observer)
+    }
+
+    #[tokio::test]
+    async fn command_observation_tracks_function_source_and_real_completion() {
+        let (mut shell, params, observer) = observing_shell().await;
+        let source = "f() { /bin/echo ok; }; f; f; /bin/sh -c 'exit 7'";
+        let result = shell
+            .run_string(source, &crate::SourceInfo::default(), &params)
+            .await
+            .unwrap();
+        assert_eq!(u8::from(result.exit_code), 7);
+        let commands = observer.commands.lock().unwrap();
+        let ends = observer.ends.lock().unwrap();
+        assert_eq!(commands.len(), ends.len());
+        assert!(commands.iter().all(|(_, unit, _, _)| *unit == Some(1)));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|(_, _, start, _)| *start == 6)
+                .count(),
+            2
+        );
+        assert_eq!(ends.last().unwrap().1, Some(7));
+        drop(ends);
+        drop(commands);
+        let mut unobserved = params.clone();
+        unobserved.pipeline_observer = None;
+        let result = shell
+            .run_string(source, &crate::SourceInfo::default(), &unobserved)
+            .await
+            .unwrap();
+        assert_eq!(u8::from(result.exit_code), 7);
     }
 
     #[tokio::test]

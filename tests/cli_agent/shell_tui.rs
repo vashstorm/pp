@@ -95,7 +95,7 @@ while [[ ! -e scroll-finish ]]; do sleep 0.01; done
         ask_reply_calls(request, protocol, json!([tool]));
         pty.text("Elapsed:");
         let row_of = |screen: &vt100::Screen, needle: &str| {
-            screen.contents().lines().position(|line| line.contains(needle)).unwrap()
+            screen.contents().lines().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("未找到 {needle}:\n{}", screen.contents()))
         };
         assert_eq!(
             row_of(pty.parser.screen(), "Elapsed:") - row_of(pty.parser.screen(), "Output"),
@@ -123,7 +123,7 @@ while [[ ! -e scroll-finish ]]; do sleep 0.01; done
         let text = screen.contents();
         assert!(text.contains("scroll-line-06") && !text.contains("scroll-line-05"), "{text}");
         assert!(text.contains("6 earlier lines, showing 10 of 16"), "{text}");
-        let anchors = ["$ bash scroll-output.sh", "Output", "scroll-line-15", "Elapsed:"]
+        let anchors = ["bash scroll-output.sh", "Output", "scroll-line-15", "Elapsed:"]
             .map(|needle| row_of(screen, needle));
         assert_eq!(anchors[3] - anchors[1], 12, "10 行正文及一行提示");
         assert!(!screen.alternate_screen());
@@ -138,7 +138,7 @@ while [[ ! -e scroll-finish ]]; do sleep 0.01; done
         let text = screen.contents();
         assert!(text.contains("scroll-line-10") && !text.contains("scroll-line-09"), "{text}");
         assert!(text.contains("10 earlier lines, showing 10 of 20"), "{text}");
-        for (needle, row) in ["$ bash scroll-output.sh", "Output", "scroll-line-19", "Elapsed:"]
+        for (needle, row) in ["bash scroll-output.sh", "Output", "scroll-line-19", "Elapsed:"]
             .into_iter().zip(anchors)
         {
             assert_eq!(row_of(screen, needle), row, "{protocol}: {needle}\n{text}");

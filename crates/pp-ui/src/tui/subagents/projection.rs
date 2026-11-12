@@ -557,7 +557,8 @@ impl Projection {
             AgentEvent::ToolOutput { .. }
             | AgentEvent::ToolArgumentsDelta { .. }
             | AgentEvent::ToolOutputSnapshot { .. }
-            | AgentEvent::ToolPipelineSnapshot { .. } => {}
+            | AgentEvent::ToolPipelineSnapshot { .. }
+            | AgentEvent::ToolShellSnapshot { .. } => {}
             AgentEvent::UserInputAccepted { text, .. } => self.insert_lifecycle(
                 agent,
                 run,
@@ -1540,6 +1541,7 @@ mod tests {
         HubSnapshot {
             output_previews: Vec::new(),
             pipeline_previews: Vec::new(),
+            shell_previews: Vec::new(),
             agents: agents
                 .into_iter()
                 .map(|record| HubAgent {

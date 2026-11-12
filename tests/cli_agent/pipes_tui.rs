@@ -450,3 +450,59 @@ fn pipeline_f8_does_not_override_ask_modal() {
     pty.finish();
 }
 
+
+#[test]
+fn shell_display_bang_chain_resize_and_native_history() {
+    let provider = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut pty = bang_shell_start(&provider, home.path(), project.path(), "completion", "");
+    pty.input("!ls -la && echo '---' && sh -c 'exit 2'\r");
+    pty.wait_for("多行伪代码显示实际失败", |screen| {
+        let text = screen.contents();
+        text.contains("and print(\"---\")") && text.contains("and × sh -c") && text.contains("exit 2") && text.contains("Wall:")
+    });
+    pty.resize(30, 42);
+    pty.wait_for("窄屏保留多行命令", |screen| screen.contents().contains("and print(\"---\")"));
+    pty.resize(30, 100);
+    pty.wait_for("恢复宽屏后命令只出现一次", |screen| {
+        let text = screen.contents();
+        text.matches("and print(\"---\")").count() == 1 && text.contains("Wall:")
+    });
+    pty.input("\x0f");
+    pty.wait_for("展开不重复命令", |screen| screen.contents().matches("and print(\"---\")").count() == 1);
+    cancel_assert_no_request(&provider);
+    pty.input("\x03");
+    pty.finish();
+    no_more(&provider);
+}
+
+#[test]
+fn shell_display_llm_pipeline_both_protocols_keep_metadata_out_of_requests() {
+    for protocol in ["completion", "response"] {
+        let provider = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = ask_tui_start(&provider, home.path(), project.path(), protocol);
+        pty.input("show shell display\r");
+        let (request, _) = pty.request_at(&provider, api_path(protocol));
+        let args = json!({"command":"printf 'one\\ntwo\\n' | head -n 1; echo done"});
+        let call = if protocol == "completion" { call("display", "bash", args) } else { response_call("display", "bash", args) };
+        ask_reply_calls(request, protocol, json!([call]));
+        let (request, body) = pty.request_at(&provider, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        let result = &outputs.last().unwrap().1;
+        assert!(result.get("shell").is_none(), "{protocol}: {result}");
+        assert_eq!(result["output"], "one\ndone\n");
+        pty.wait_for("真实工具结果显示管道简写", |screen| {
+            let text = screen.contents();
+            text.contains("⇡ first 1") && text.contains("print(\"done\")")
+        });
+        ask_final_reply(request, protocol, "shell display done");
+        pty.text("shell display done");
+        pty.ready();
+        pty.input("\x03");
+        pty.finish();
+        no_more(&provider);
+    }
+}

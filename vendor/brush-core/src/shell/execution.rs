@@ -166,8 +166,13 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
         source_info: &crate::SourceInfo,
         params: &ExecutionParameters,
     ) -> Result<ExecutionResult, error::Error> {
-        let parse_result = self.parse_string(command);
-        self.run_parsed_result(parse_result, source_info, params)
+        let command = command.into();
+        let parse_result = self.parse_string(command.clone());
+        let mut params = params.clone();
+        params.observation_source = params
+            .pipeline_observer()
+            .map(|_| std::sync::Arc::from(command));
+        self.run_parsed_result(parse_result, source_info, &params)
             .await
     }
 
@@ -247,7 +252,18 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
     ) -> Result<ExecutionResult, error::Error> {
         // If parsing succeeded, run the program. If there's a parse error, it's fatal (per spec).
         let result = match parse_result {
-            Ok(prog) => self.run_program(prog, params).await,
+            Ok(prog) => {
+                let mut params = params.clone();
+                params.observation_unit = params.pipeline_observer().and_then(|observer| {
+                    observer.parsed(
+                        &prog,
+                        params.observation_source.as_deref(),
+                        params.observation_command,
+                    )
+                });
+                params.observation_source = None;
+                self.run_program(prog, &params).await
+            }
             Err(parse_err) => Err(error::Error::from(error::ErrorKind::ParseError(
                 parse_err,
                 source_info.clone(),

@@ -1,3 +1,4 @@
+mod display;
 mod host;
 mod relay;
 mod streams;
@@ -46,6 +47,13 @@ pub(super) fn run(
     pipe_store: &PipeStore,
 ) -> Result<Value> {
     let pipes = new_pipe_run(pipe_store, call_id)?;
+    pipes.prepare_shell(command);
+    if let Some(snapshot) = pipes.shell_snapshot() {
+        emit(AgentEvent::ToolShellSnapshot {
+            id: call_id.to_owned(),
+            snapshot,
+        });
+    }
     let stop = CancellationToken::new();
     let sink = Arc::new(Mutex::new(sink));
     let outcome = host::run_host(
@@ -66,6 +74,9 @@ pub(super) fn run(
     .context("running embedded bash")?;
     let mut result = lock(&sink).value();
     result["pipes"] = pipes.pipes_json();
+    if let Some(snapshot) = pipes.shell_snapshot() {
+        result["shell"] = serde_json::to_value(snapshot)?;
+    }
     let (ok, timed_out, cancelled) = match outcome.termination {
         host::Termination::Exited => (outcome.exit_code == Some(0), false, false),
         host::Termination::TimedOut => (false, true, false),
@@ -152,6 +163,7 @@ struct BackgroundState {
     cleanup_error: Option<String>,
     /// 完成时从 run 复制出的有界阶段/流元数据（不含阶段正文）。
     final_pipes: Option<Value>,
+    final_shell: Option<pp_core::shell_display::ShellPresentation>,
 }
 
 impl BackgroundTask {
@@ -178,6 +190,7 @@ impl BackgroundTask {
             value["warning"] = json!(warning);
         }
         let final_pipes = state.final_pipes.clone();
+        let final_shell = state.final_shell.clone();
         drop(state);
         // 运行中读同一份 live run；完成后只读有界元数据，不重新持有已可淘汰的
         // run 状态与环形缓存。
@@ -185,6 +198,14 @@ impl BackgroundTask {
             final_pipes.or_else(|| lock(&self.pipes).as_ref().map(streams::PipeRun::pipes_json));
         if let Some(pipes) = pipes {
             value["pipes"] = pipes;
+        }
+        let shell = final_shell.or_else(|| {
+            lock(&self.pipes)
+                .as_ref()
+                .and_then(streams::PipeRun::shell_snapshot)
+        });
+        if let Some(shell) = shell {
+            value["shell"] = serde_json::to_value(shell)?;
         }
         Ok(value)
     }
@@ -284,6 +305,7 @@ impl TaskManager {
         let id = format!("bg-{next_id}");
         // 与前台一致：每个任务一个 run，共享根会话的临时管道存储。
         let pipes = new_pipe_run(pipe_store, call_id)?;
+        pipes.prepare_shell(command);
         let output = Arc::new(Mutex::new(sink));
         let task = Arc::new(BackgroundTask {
             label: command.chars().take(200).collect(),
@@ -299,6 +321,7 @@ impl TaskManager {
                 warning: None,
                 cleanup_error: None,
                 final_pipes: None,
+                final_shell: None,
             }),
             worker: Mutex::new(None),
         });
@@ -440,6 +463,7 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
     lock(state.output.as_ref()).finish();
     state.duration_ms = Some(task.started.elapsed().as_millis() as u64);
     state.final_pipes = Some(final_pipes);
+    state.final_shell = pipes.shell_snapshot();
     match result {
         Ok(outcome) => {
             state.exit_code = outcome.exit_code;

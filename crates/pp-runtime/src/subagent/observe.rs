@@ -38,6 +38,8 @@ pub struct HubSnapshot {
     /// 每个子 Agent 最近的管道阶段预览；与主输出预览分开有界保留。
     #[serde(skip)]
     pub pipeline_previews: Vec<ObservedRecord>,
+    #[serde(skip)]
+    pub shell_previews: Vec<ObservedRecord>,
     pub agents: Vec<HubAgent>,
     pub runs: Vec<super::Run>,
     /// 观察日志健康提示；不进入旧 snapshots wire。
@@ -162,11 +164,13 @@ impl Inner {
         }
         if let Some(
             event @ (AgentEvent::ToolOutputSnapshot { .. }
-            | AgentEvent::ToolPipelineSnapshot { .. }),
+            | AgentEvent::ToolPipelineSnapshot { .. }
+            | AgentEvent::ToolShellSnapshot { .. }),
         ) = event
         {
             let previews = match event {
                 AgentEvent::ToolPipelineSnapshot { .. } => &self.pipeline_previews,
+                AgentEvent::ToolShellSnapshot { .. } => &self.shell_previews,
                 _ => &self.output_previews,
             };
             lock(previews).insert(
@@ -191,6 +195,7 @@ impl Inner {
         ) {
             lock(&self.output_previews).remove(agent_id);
             lock(&self.pipeline_previews).remove(agent_id);
+            lock(&self.shell_previews).remove(agent_id);
         }
         let gate = self.append_lock(agent_id);
         let root = self
@@ -292,6 +297,7 @@ impl Binding {
                 .values()
                 .cloned()
                 .collect(),
+            shell_previews: lock(&self.inner.shell_previews).values().cloned().collect(),
             agents,
             runs,
             warnings,
