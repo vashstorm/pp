@@ -22,6 +22,16 @@ use text::{count_lines, page_text, read_from};
 pub(crate) use url::WebCache;
 use url::{UrlInput, UrlReader};
 
+/// 与实际读取共享选择器解析，资源 URI 不参与本地项目规则发现。
+pub(super) fn local_path(path: &str, cwd: &Path) -> Result<Option<std::path::PathBuf>> {
+    let target = Target::parse(path, cwd)?;
+    let resource = target.is_url()
+        || ["skill://", "artifact://", "pipe://", "agent://"]
+            .iter()
+            .any(|prefix| target.source.starts_with(prefix));
+    Ok((!resource).then(|| cwd.join(target.source)))
+}
+
 pub(super) fn agent_result(
     uri: &str,
     cwd: &Path,

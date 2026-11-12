@@ -766,7 +766,6 @@ impl Agent {
             &mut self.pending_project_load,
             &mut self.reported_project_load,
             &mut self.journal,
-            self.tools.cwd(),
             emit,
         )?;
         let before_tokens = self.context_usage()?.estimated_tokens;

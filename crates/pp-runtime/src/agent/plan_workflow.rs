@@ -206,8 +206,14 @@ impl Agent {
         mode: &str,
         model: &str,
         tool_names: Vec<String>,
-    ) -> Result<(String, Vec<pp_config::skills::SkillHeader>, String)> {
-        let project = project_instructions::load(self.tools.cwd())?;
+    ) -> Result<(
+        String,
+        Vec<pp_config::skills::SkillHeader>,
+        Vec<project_instructions::Document>,
+    )> {
+        let documents = self.tools.project_documents()?;
+        let project =
+            self.tools.project_scope_summary() + &project_instructions::render(&documents);
         let skills = self
             .tools
             .skills
@@ -231,19 +237,14 @@ impl Agent {
                 instructions,
             )
         } else {
-            let mut system = project_instructions::compose(
-                &self.base_system,
-                self.tools.cwd(),
-                &project,
-                &summary,
-            );
+            let mut system = project_instructions::compose(&self.base_system, &project, &summary);
             if !instructions.is_empty() {
                 system.push_str("\n\n");
                 system.push_str(instructions);
             }
             Ok(system)
         }?;
-        Ok((system, skills, project))
+        Ok((system, skills, documents))
     }
 
     /// 候选会话使用目标模式的工具清单，逐请求刷新使用原生请求里的实际清单。
@@ -925,8 +926,9 @@ impl Agent {
             self.tools.clear_changes();
             self.clear_session_usage();
             self.clear_session_cost();
-            self.pending_project_load = None;
-            self.reported_project_load = None;
+            self.pending_project_load.clear();
+            self.reported_project_load.clear();
+            self.tools.reset_project_instructions([]);
         }
         self.finish_approved_move(pending_move, &token);
         Ok(ExecutionPreparation {
@@ -1060,8 +1062,13 @@ impl Agent {
         if let Some(id) = self.journal.id() {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
         }
-        self.pending_project_load = None;
+        self.pending_project_load.clear();
         self.reported_project_load = super::turn::reported_project_load(&replay);
+        self.tools.reset_project_instructions(
+            self.reported_project_load
+                .keys()
+                .map(std::path::PathBuf::from),
+        );
         self.replay = replay;
         self.tools.clear_changes();
         if let Some(debug) = &mut self.debug {

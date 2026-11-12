@@ -913,22 +913,24 @@ fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
         let path = dir.path().join(format!("{id}.jsonl"));
         // 用只读句柄制造真实写入失败，不能把未落盘的加载报告为成功。
         journal.active.as_mut().unwrap().file = File::open(&path).unwrap();
-        let mut pending = Some("frozen project body".to_owned());
-        let mut reported = None;
+        std::fs::write(dir.path().join("AGENTS.md"), "frozen project body").unwrap();
+        let mut pending = crate::project_instructions::State::new(dir.path())
+            .refresh()
+            .unwrap();
+        let mut reported = Default::default();
         let mut events = Vec::new();
         assert!(
             super::super::turn::publish_project_load(
                 &mut pending,
                 &mut reported,
                 &mut journal,
-                dir.path(),
                 &mut |event| events.push(event),
             )
             .is_err()
         );
         assert!(events.is_empty());
-        assert_eq!(pending.as_deref(), Some("frozen project body"));
-        assert!(reported.is_none());
+        assert_eq!(pending[0].content, "frozen project body");
+        assert!(reported.is_empty());
         drop(journal);
 
         let mut restored =
@@ -941,7 +943,6 @@ fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
             &mut pending,
             &mut reported,
             &mut restored.journal,
-            dir.path(),
             &mut |event| events.push(event),
         )
         .unwrap();

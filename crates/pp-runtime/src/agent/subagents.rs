@@ -12,6 +12,8 @@ struct SavedChild {
     session: Session,
     model: String,
     thinking: ThinkLevel,
+    #[serde(default)]
+    instruction_paths: Vec<PathBuf>,
 }
 impl Agent {
     pub fn ensure_subagents(&mut self) -> Result<()> {
@@ -243,8 +245,8 @@ impl Agent {
                 ),
                 prompt_source: None,
                 pending_instructions: None,
-                pending_project_load: None,
-                reported_project_load: None,
+                pending_project_load: Vec::new(),
+                reported_project_load: Default::default(),
                 request_skills: Vec::new(),
                 journal: SessionJournal::with_locks(
                     sessions.clone(),
@@ -263,6 +265,9 @@ impl Agent {
                 child.client.set_mock_scripts(Arc::clone(scripts))?;
             }
             if let Some(saved) = saved {
+                child
+                    .tools
+                    .reset_project_instructions(saved.instruction_paths);
                 ensure!(
                     match &saved.session {
                         Session::Completion(request) =>
@@ -388,6 +393,7 @@ impl Agent {
             path,
             &SavedChild {
                 role_route: self.role_route.clone(),
+                instruction_paths: self.tools.project_instruction_paths(),
                 version: 2,
                 session: serde_json::from_value(serde_json::to_value(&self.session)?)?,
                 model: self.current_model.reference.clone(),

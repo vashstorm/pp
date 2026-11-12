@@ -138,8 +138,8 @@ pub struct Agent {
     base_system: String,
     prompt_source: Option<crate::system_prompt::Snapshot>,
     pending_instructions: Option<String>,
-    pending_project_load: Option<String>,
-    reported_project_load: Option<String>,
+    pending_project_load: Vec<crate::project_instructions::Document>,
+    reported_project_load: turn::ReportedProjectLoads,
     request_skills: Vec<pp_config::skills::SkillHeader>,
     journal: persistence::SessionJournal,
     replay: Vec<persistence::ReplayRecord>,
@@ -449,6 +449,7 @@ impl Agent {
         prompt_source: crate::system_prompt::Snapshot,
         stats_db: PathBuf,
     ) -> Result<Self> {
+        tools.reset_project_instructions([]);
         let catalog = models.catalog_snapshot();
         let (config, selection) = Self::resolve_selection(&models)?;
         let think_level = selection.effort;
@@ -519,8 +520,8 @@ impl Agent {
             base_system: system,
             prompt_source: Some(prompt_source),
             pending_instructions: None,
-            pending_project_load: None,
-            reported_project_load: None,
+            pending_project_load: Vec::new(),
+            reported_project_load: Default::default(),
             request_skills: Vec::new(),
             journal: SessionJournal::with_locks(sessions_dir, lock_dir, stats_db),
             replay: Vec::new(),
@@ -603,6 +604,7 @@ impl Agent {
             mut journal,
             mut replay,
         } = restored;
+        tools.reset_project_instructions(reported_project_load(&replay).keys().map(PathBuf::from));
         let catalog = models.catalog_snapshot();
         let (config, resolved) = Self::resolve_selection(&models)?;
         let model_source = models.source();
@@ -696,7 +698,7 @@ impl Agent {
             base_system: checkpoint.base_system,
             prompt_source: checkpoint.prompt_source,
             pending_instructions: None,
-            pending_project_load: None,
+            pending_project_load: Vec::new(),
             reported_project_load: reported_project_load(&replay),
             request_skills: Vec::new(),
             journal,
@@ -879,8 +881,10 @@ impl Agent {
             view.clear_title();
         }
         self.pending_instructions = None;
-        self.pending_project_load = None;
+        self.pending_project_load.clear();
         self.reported_project_load = reported_project_load(&replay);
+        self.tools
+            .reset_project_instructions(self.reported_project_load.keys().map(PathBuf::from));
         Ok(TreeNavigation { replay, draft })
     }
     pub fn take_session_notice(&mut self) -> Option<String> {
@@ -915,14 +919,19 @@ impl Agent {
             }
         }
         self.request_skills = skills;
-        if project.is_empty() {
-            self.pending_project_load = None;
-            self.reported_project_load = None;
-        } else if self.reported_project_load.as_deref() == Some(project.as_str()) {
-            self.pending_project_load = None;
-        } else {
-            self.pending_project_load = Some(project);
-        }
+        self.reported_project_load.retain(|path, _| {
+            project
+                .iter()
+                .any(|document| document.path.to_string_lossy() == path.as_str())
+        });
+        self.pending_project_load = project
+            .into_iter()
+            .filter(|document| {
+                self.reported_project_load
+                    .get(&document.path.display().to_string())
+                    != Some(&document.content)
+            })
+            .collect();
         let unchanged = match &self.session {
             Session::Completion(request) => {
                 matches!(request.messages.first(), Some(ChatCompletionRequestMessage::System(message)) if matches!(&message.content, async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(text) if text == &system))
@@ -1470,8 +1479,9 @@ impl Agent {
         self.replay.clear();
         self.clear_session_usage();
         self.clear_session_cost();
-        self.pending_project_load = None;
-        self.reported_project_load = None;
+        self.pending_project_load.clear();
+        self.reported_project_load.clear();
+        self.tools.reset_project_instructions([]);
         match &mut self.session {
             Session::Completion(request) => request.messages.truncate(1),
             Session::Response(request) => response_input(request).clear(),

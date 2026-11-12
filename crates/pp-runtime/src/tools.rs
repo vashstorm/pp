@@ -37,6 +37,7 @@ pub(crate) mod diff;
 mod edit;
 mod glob;
 mod hashline;
+mod instructions;
 mod plan;
 mod rg;
 pub(crate) use plan::PlanChange;
@@ -84,6 +85,7 @@ pub struct Tools {
     pub(crate) write_lock: std::sync::Arc<std::sync::Mutex<()>>,
     web_cache: RefCell<read::WebCache>,
     snapshots: RefCell<hashline::Store>,
+    project_instructions: RefCell<Option<crate::project_instructions::State>>,
     background_tasks: bash::TaskManager,
     wait_state: RefCell<wait::State>,
     pub(crate) limits: ToolLimits,
@@ -236,6 +238,7 @@ impl Tools {
             write_lock: Default::default(),
             web_cache: RefCell::default(),
             snapshots: RefCell::default(),
+            project_instructions: RefCell::default(),
             background_tasks: Default::default(),
             wait_state: RefCell::default(),
             limits: ToolLimits::default(),
@@ -934,6 +937,9 @@ impl Tools {
         if name == "lsp" {
             crate::lsp::tool::validate_access(arguments, lsp_access)?;
         }
+        if let Some(message) = self.instruction_batch_blocked() {
+            bail!("{message}");
+        }
         // 审批门只作用于 Execute；Plan/Review 的白名单门禁已是完整授权边界。
         // 与 Plan/Review 门禁一样在参数解析与分发之前执行，失败由
         // execute_with_fetch 统一回填为 ok:false 的工具结果。
@@ -1042,6 +1048,7 @@ impl Tools {
                     )
                     .map(|result| (result.value, None, None));
                 }
+                self.activate_read_instructions(&args.path)?;
                 let result = read::run_with_snapshots(
                     &args.path,
                     &self.cwd,
@@ -1060,6 +1067,7 @@ impl Tools {
                 let request = edit::Request::parse(self.edit_mode, arguments)?;
                 let path = request.path().to_owned();
                 ensure!(!path.starts_with("artifact://"), "artifacts are read-only");
+                self.check_mutation_instructions("edit", arguments)?;
                 let target = self.workspace.target(Path::new(&path), false)?;
                 let normalized_path = self.workspace.key(Path::new(&path))?;
                 let registry = self.lsp_save_registry();
@@ -1141,6 +1149,7 @@ impl Tools {
                     "artifacts are read-only"
                 );
                 ensure!(!args.path.trim().is_empty(), "path must not be blank");
+                self.check_mutation_instructions("write", arguments)?;
                 let target = self.workspace.target(Path::new(&args.path), true)?;
                 let normalized_path = self.workspace.key(Path::new(&args.path))?;
                 let registry = self.lsp_save_registry();

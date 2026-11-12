@@ -1,31 +1,36 @@
 use super::*;
-pub(super) fn reported_project_load(replay: &[persistence::ReplayRecord]) -> Option<String> {
-    replay.iter().rev().find_map(|record| match record {
-        persistence::ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
-            content, ..
-        }) => Some(content.clone()),
-        _ => None,
-    })
+pub(super) type ReportedProjectLoads = std::collections::BTreeMap<String, String>;
+
+pub(super) fn reported_project_load(replay: &[persistence::ReplayRecord]) -> ReportedProjectLoads {
+    replay
+        .iter()
+        .filter_map(|record| match record {
+            persistence::ReplayRecord::Event(AgentEvent::ProjectInstructionsLoaded {
+                path,
+                content,
+            }) => Some((path.clone(), content.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 pub(super) fn publish_project_load(
-    pending: &mut Option<String>,
-    reported: &mut Option<String>,
+    pending: &mut Vec<crate::project_instructions::Document>,
+    reported: &mut ReportedProjectLoads,
     journal: &mut SessionJournal,
-    cwd: &std::path::Path,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<()> {
-    let Some(content) = pending.as_ref() else {
-        return Ok(());
-    };
-    let event = AgentEvent::ProjectInstructionsLoaded {
-        path: cwd.join("AGENTS.md").display().to_string(),
-        content: content.clone(),
-    };
-    journal.event(&event);
-    journal.check()?;
-    emit(event);
-    *reported = pending.take();
+    while let Some(document) = pending.first() {
+        let path = document.path.display().to_string();
+        let event = AgentEvent::ProjectInstructionsLoaded {
+            path: path.clone(),
+            content: document.content.clone(),
+        };
+        journal.event(&event);
+        journal.check()?;
+        emit(event);
+        reported.insert(path, pending.remove(0).content);
+    }
     Ok(())
 }
 
@@ -33,8 +38,8 @@ pub(super) struct RequestUpdate<'a> {
     pub(super) user: Option<&'a str>,
     pub(super) instructions: Option<&'a str>,
     pub(super) debug: &'a mut Option<debug::DebugState>,
-    pub(super) pending_project_load: &'a mut Option<String>,
-    pub(super) reported_project_load: &'a mut Option<String>,
+    pub(super) pending_project_load: &'a mut Vec<crate::project_instructions::Document>,
+    pub(super) reported_project_load: &'a mut ReportedProjectLoads,
 }
 
 impl RequestUpdate<'_> {
@@ -372,6 +377,7 @@ pub(super) fn completion_turn(
         protocol = "completion"
     );
     let request_started = std::time::Instant::now();
+    tools.project_request_sent();
     let response = {
         let journal = RefCell::new(&mut *journal);
         let emit = RefCell::new(&mut *emit);
@@ -399,7 +405,6 @@ pub(super) fn completion_turn(
                 update.pending_project_load,
                 update.reported_project_load,
                 &mut journal,
-                metadata.cwd,
                 &mut **emit.borrow_mut(),
             )?;
             update.record_prompt(
@@ -451,6 +456,16 @@ pub(super) fn completion_turn(
             awaiting_user_answer,
         });
     }
+    tools.prepare_instruction_batch(
+        calls.iter().filter_map(|call| match call {
+            ChatCompletionMessageToolCalls::Function(call) => Some((
+                call.function.name.as_str(),
+                call.function.arguments.as_str(),
+            )),
+            _ => None,
+        }),
+        workflow.mode,
+    );
     let count = calls.len();
     let assistant_index = request.messages.len();
     request
@@ -473,7 +488,10 @@ pub(super) fn completion_turn(
             else {
                 bail!("agent invariant: missing function call");
             };
-            if !sealed && call.function.name == "todo" {
+            if !sealed
+                && tools.instruction_batch_blocked().is_none()
+                && call.function.name == "todo"
+            {
                 plan_sync::sync_plan_todos(tools, journal, workflow, emit, false)?;
                 *plan_dirty = false;
             }
@@ -572,6 +590,7 @@ pub(super) fn response_turn(
         protocol = "response"
     );
     let request_started = std::time::Instant::now();
+    tools.project_request_sent();
     let turn = {
         let journal = RefCell::new(&mut *journal);
         let emit = RefCell::new(&mut *emit);
@@ -599,7 +618,6 @@ pub(super) fn response_turn(
                 update.pending_project_load,
                 update.reported_project_load,
                 &mut journal,
-                metadata.cwd,
                 &mut **emit.borrow_mut(),
             )?;
             update.record_prompt(
@@ -645,6 +663,15 @@ pub(super) fn response_turn(
         });
     }
     let end = input.len();
+    tools.prepare_instruction_batch(
+        input[start..end].iter().filter_map(|item| match item {
+            InputItem::Item(Item::FunctionCall(call)) => {
+                Some((call.name.as_str(), call.arguments.as_str()))
+            }
+            _ => None,
+        }),
+        workflow.mode,
+    );
     let mut stop_error = None;
     let mut sealed = false;
     let batch_result = (|| -> Result<()> {
@@ -652,7 +679,7 @@ pub(super) fn response_turn(
             let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
                 continue;
             };
-            if !sealed && call.name == "todo" {
+            if !sealed && tools.instruction_batch_blocked().is_none() && call.name == "todo" {
                 plan_sync::sync_plan_todos(tools, journal, workflow, emit, false)?;
                 *plan_dirty = false;
             }

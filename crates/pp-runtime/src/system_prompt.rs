@@ -271,7 +271,7 @@ impl Snapshot {
                 .to_owned(),
         );
         blocks.push(
-            project_instructions::compose("", Path::new(&context.cwd), project, skills)
+            project_instructions::compose("", project, skills)
                 .trim()
                 .to_owned(),
         );

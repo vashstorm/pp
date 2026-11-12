@@ -49,6 +49,453 @@ fn tool_call(request: Request, protocol: &str, id: &str, name: &str, args: Value
     }
 }
 
+fn tool_batch(request: Request, protocol: &str, calls: &[(&str, &str, Value)]) {
+    if protocol == "completion" {
+        calls_reply(
+            request,
+            Value::Array(
+                calls
+                    .iter()
+                    .map(|(id, name, args)| call(id, name, args.clone()))
+                    .collect(),
+            ),
+        );
+    } else {
+        response_reply(
+            request,
+            Value::Array(
+                calls
+                    .iter()
+                    .map(|(id, name, args)| response_call(id, name, args.clone()))
+                    .collect(),
+            ),
+        );
+    }
+}
+
+fn tool_output(body: &Value, protocol: &str, id: &str) -> Value {
+    let item = history(body, protocol)
+        .iter()
+        .find(|item| {
+            item["tool_call_id"] == id
+                || item["call_id"] == id && item["type"] == "function_call_output"
+        })
+        .unwrap();
+    if protocol == "completion" {
+        result(item, id)
+    } else {
+        response_result(item, id)
+    }
+}
+
+fn assert_rules_blocked(body: &Value, protocol: &str, id: &str) {
+    let output = tool_output(body, protocol, id);
+    assert_eq!(output["ok"], false, "{output}");
+    assert!(
+        output["error"].as_str().unwrap().contains("Not executed:"),
+        "{output}"
+    );
+}
+
+#[test]
+fn agents_layered_external_reads_keep_scopes_and_write_limits_both_protocols() {
+    for protocol in APIS {
+        let server = server();
+        let parent = tempfile::tempdir().unwrap();
+        let cwd = parent.path().join("main");
+        let external = parent.path().join("external");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(external.join(".git")).unwrap();
+        fs::write(cwd.join("AGENTS.md"), "main-project-rule").unwrap();
+        fs::write(external.join("AGENTS.md"), "foreign-project-rule").unwrap();
+        fs::write(external.join("code.txt"), "external-content").unwrap();
+        fs::write(parent.path().join("AGENTS.md"), "unrelated-parent-rule").unwrap();
+        fs::write(parent.path().join("loose.txt"), "loose-content").unwrap();
+        let cli = Cli::start_with(
+            &cwd,
+            Some("inspect external files"),
+            fixture_settings(),
+            &response_models(&server, Some(protocol)),
+        );
+        let (request, _) = receive_for(&server, protocol);
+        tool_batch(
+            request,
+            protocol,
+            &[
+                (
+                    "external-read",
+                    "read",
+                    json!({"path":external.join("code.txt")}),
+                ),
+                (
+                    "loose-read",
+                    "read",
+                    json!({"path":parent.path().join("loose.txt")}),
+                ),
+            ],
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_tool_ok(&body, protocol, "external-read");
+        assert_tool_ok(&body, protocol, "loose-read");
+        let text = system(&body, protocol);
+        assert!(text.contains("main-project-rule") && text.contains("foreign-project-rule"));
+        assert!(!text.contains("unrelated-parent-rule"));
+        assert!(text.contains(external.canonicalize().unwrap().to_str().unwrap()));
+        tool_call(
+            request,
+            protocol,
+            "escape",
+            "write",
+            json!({"path":"../external/code.txt","content":"forbidden"}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_eq!(tool_output(&body, protocol, "escape")["ok"], false);
+        assert_eq!(
+            fs::read_to_string(external.join("code.txt")).unwrap(),
+            "external-content"
+        );
+        finish_request(request, protocol, "done");
+        assert!(cli.finish().status.success());
+    }
+}
+
+#[test]
+fn agents_layered_resume_refreshes_previously_loaded_child_rules_both_protocols() {
+    for protocol in APIS {
+        let server = server();
+        let cwd = tempfile::tempdir().unwrap();
+        fs::create_dir(cwd.path().join("child")).unwrap();
+        fs::write(
+            cwd.path().join("child/AGENTS.md"),
+            "child-rule-before-resume",
+        )
+        .unwrap();
+        fs::write(cwd.path().join("child/code.txt"), "before").unwrap();
+        let cli = Cli::start_with(
+            cwd.path(),
+            Some("inspect child"),
+            fixture_settings(),
+            &response_models(&server, Some(protocol)),
+        );
+        let (request, _) = receive_for(&server, protocol);
+        tool_call(
+            request,
+            protocol,
+            "read-child",
+            "read",
+            json!({"path":"child/code.txt"}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert!(system(&body, protocol).contains("child-rule-before-resume"));
+        finish_request(request, protocol, "saved");
+        assert!(cli.finish().status.success());
+        let file = journal(cwd.path());
+        let id = file.file_stem().unwrap().to_str().unwrap();
+        fs::write(
+            cwd.path().join("child/AGENTS.md"),
+            "child-rule-after-resume",
+        )
+        .unwrap();
+        let cli = Cli::spawn(
+            cwd.path(),
+            &["-r", id, "-p", "modify child"],
+            &[("HOME", cwd.path().to_str().unwrap())],
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert!(system(&body, protocol).contains("child-rule-after-resume"));
+        assert!(!system(&body, protocol).contains("child-rule-before-resume"));
+        tool_call(
+            request,
+            protocol,
+            "edit-resumed",
+            "edit",
+            json!({"path":"child/code.txt","edits":[{"oldText":"before","newText":"after"}]}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_tool_ok(&body, protocol, "edit-resumed");
+        finish_request(request, protocol, "resumed");
+        assert!(cli.finish().status.success());
+        assert_eq!(
+            fs::read_to_string(cwd.path().join("child/code.txt")).unwrap(),
+            "after"
+        );
+    }
+}
+
+#[test]
+fn agents_layered_compaction_retains_rules_and_new_resets_scope_both_protocols() {
+    for protocol in APIS {
+        let server = server();
+        let cwd = tempfile::tempdir().unwrap();
+        fs::create_dir(cwd.path().join("child")).unwrap();
+        fs::write(
+            cwd.path().join("child/AGENTS.md"),
+            "child-rule-before-compact",
+        )
+        .unwrap();
+        fs::write(cwd.path().join("child/code.txt"), "before").unwrap();
+        let mut cli = start(&server, cwd.path(), protocol);
+        cli.input("old-task\n");
+        let (request, _) = receive_for(&server, protocol);
+        tool_call(
+            request,
+            protocol,
+            "read-child",
+            "read",
+            json!({"path":"child/code.txt"}),
+        );
+        let (request, _) = receive_for(&server, protocol);
+        finish_request(request, protocol, &"old-material ".repeat(5000));
+        cli.wait_for(Pipe::Stdout, "old-material");
+        cli.input("recent-task\n");
+        let (request, _) = receive_for(&server, protocol);
+        finish_request(request, protocol, "recent-answer");
+        cli.wait_for(Pipe::Stdout, "recent-answer");
+        fs::write(
+            cwd.path().join("child/AGENTS.md"),
+            "child-rule-after-compact",
+        )
+        .unwrap();
+        cli.input("/compact\n");
+        let (request, body) = receive_for(&server, protocol);
+        assert!(system(&body, protocol).contains("child-rule-after-compact"));
+        assert!(body.get("tools").is_none_or(Value::is_null));
+        finish_request(request, protocol, "compact-summary");
+        cli.wait_for(Pipe::Stderr, "Context compacted:");
+        cli.input("after-compact\n");
+        let (request, body) = receive_for(&server, protocol);
+        assert!(system(&body, protocol).contains("child-rule-after-compact"));
+        tool_call(
+            request,
+            protocol,
+            "edit-compacted",
+            "edit",
+            json!({"path":"child/code.txt","edits":[{"oldText":"before","newText":"after"}]}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_tool_ok(&body, protocol, "edit-compacted");
+        finish_request(request, protocol, "compacted-done");
+        cli.wait_for(Pipe::Stdout, "compacted-done");
+        cli.input("/new\nafter-new\n");
+        let (request, body) = receive_for(&server, protocol);
+        assert!(!system(&body, protocol).contains("child-rule-after-compact"));
+        tool_call(
+            request,
+            protocol,
+            "write-after-new",
+            "write",
+            json!({"path":"child/new.txt","content":"must-reconsider"}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_rules_blocked(&body, protocol, "write-after-new");
+        assert!(!cwd.path().join("child/new.txt").exists());
+        assert!(system(&body, protocol).contains("child-rule-after-compact"));
+        finish_request(request, protocol, "new-done");
+        cli.wait_for(Pipe::Stdout, "new-done");
+        cli.input("/quit\n");
+        assert!(cli.finish().status.success());
+    }
+}
+
+#[test]
+fn agents_layered_startup_loads_git_ancestors_in_order_both_protocols() {
+    for protocol in APIS {
+        let server = server();
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("project");
+        let cwd = root.join("crates/runtime/src");
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(parent.path().join("AGENTS.md"), "outside-root-rule").unwrap();
+        fs::write(root.join("AGENTS.md"), "root-layer-rule").unwrap();
+        fs::write(root.join("crates/AGENTS.md"), "middle-layer-rule").unwrap();
+        fs::write(root.join("crates/runtime/AGENTS.md"), "runtime-layer-rule").unwrap();
+        fs::write(root.join(".gitignore"), "AGENTS.md\n").unwrap();
+        let cli = Cli::start_with(
+            &cwd,
+            Some("inspect"),
+            fixture_settings(),
+            &response_models(&server, Some(protocol)),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        let text = system(&body, protocol);
+        assert!(text.find("root-layer-rule").unwrap() < text.find("middle-layer-rule").unwrap());
+        assert!(text.find("middle-layer-rule").unwrap() < text.find("runtime-layer-rule").unwrap());
+        assert!(!text.contains("outside-root-rule"));
+        finish_request(request, protocol, "loaded");
+        assert!(cli.finish().status.success());
+    }
+}
+
+#[test]
+fn agents_layered_read_loads_full_rules_before_edit_both_protocols() {
+    for protocol in APIS {
+        let server = server();
+        let cwd = tempfile::tempdir().unwrap();
+        fs::create_dir(cwd.path().join("child")).unwrap();
+        let rules = format!(
+            "child-rules-start\n{}child-rules-end",
+            "完整规则\n".repeat(12000)
+        );
+        fs::write(cwd.path().join("child/AGENTS.md"), &rules).unwrap();
+        fs::write(cwd.path().join("child/code.txt"), "before\nsecond\n").unwrap();
+        let mut cli = start(&server, cwd.path(), protocol);
+        cli.input("change child\n");
+        let (request, body) = receive_for(&server, protocol);
+        assert!(!system(&body, protocol).contains("child-rules-start"));
+        tool_call(
+            request,
+            protocol,
+            "read-child",
+            "read",
+            json!({"path":"child/code.txt:1-1"}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_tool_ok(&body, protocol, "read-child");
+        assert!(system(&body, protocol).contains(&rules));
+        tool_call(
+            request,
+            protocol,
+            "edit-child",
+            "edit",
+            json!({"path":"child/code.txt","edits":[{"oldText":"before","newText":"after"}]}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_tool_ok(&body, protocol, "edit-child");
+        assert_eq!(
+            fs::read_to_string(cwd.path().join("child/code.txt")).unwrap(),
+            "after\nsecond\n"
+        );
+        finish_request(request, protocol, "done");
+        cli.wait_for(Pipe::Stdout, "done");
+        cli.input("/quit\n");
+        assert!(cli.finish().status.success());
+        let loaded: Vec<_> = records(&journal(cwd.path()))
+            .into_iter()
+            .filter_map(|record| {
+                record["data"]["event"]["project_instructions_loaded"]["content"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(loaded, [rules]);
+    }
+}
+
+#[test]
+fn agents_layered_unseen_rules_block_whole_batch_without_creating_directories_both_protocols() {
+    for protocol in APIS {
+        let server = server();
+        let cwd = tempfile::tempdir().unwrap();
+        fs::create_dir(cwd.path().join("child")).unwrap();
+        fs::write(cwd.path().join("child/AGENTS.md"), "unseen-child-rule").unwrap();
+        fs::write(cwd.path().join("child/code.txt"), "before").unwrap();
+        let mut cli = start(&server, cwd.path(), protocol);
+        cli.input("write files\n");
+        let (request, _) = receive_for(&server, protocol);
+        tool_batch(
+            request,
+            protocol,
+            &[
+                (
+                    "early-write",
+                    "write",
+                    json!({"path":"early.txt","content":"must-not-write"}),
+                ),
+                ("same-read", "read", json!({"path":"child/code.txt"})),
+                (
+                    "late-write",
+                    "write",
+                    json!({"path":"child/new/deep/file.txt","content":"new"}),
+                ),
+            ],
+        );
+        let (request, body) = receive_for(&server, protocol);
+        for id in ["early-write", "same-read", "late-write"] {
+            assert_rules_blocked(&body, protocol, id);
+        }
+        assert!(system(&body, protocol).contains("unseen-child-rule"));
+        assert!(!cwd.path().join("early.txt").exists());
+        assert!(!cwd.path().join("child/new").exists());
+        tool_call(
+            request,
+            protocol,
+            "retry-write",
+            "write",
+            json!({"path":"child/new/deep/file.txt","content":"reconsidered"}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_tool_ok(&body, protocol, "retry-write");
+        assert_eq!(
+            fs::read_to_string(cwd.path().join("child/new/deep/file.txt")).unwrap(),
+            "reconsidered"
+        );
+        assert!(!cwd.path().join("early.txt").exists());
+        finish_request(request, protocol, "done");
+        cli.wait_for(Pipe::Stdout, "done");
+        cli.input("/quit\n");
+        assert!(cli.finish().status.success());
+    }
+}
+
+#[test]
+fn agents_layered_rule_update_stops_batch_suffix_both_protocols() {
+    for protocol in APIS {
+        let server = server();
+        let cwd = tempfile::tempdir().unwrap();
+        fs::write(cwd.path().join("AGENTS.md"), "rule-version-one").unwrap();
+        fs::write(cwd.path().join("code.txt"), "before").unwrap();
+        let mut cli = start(&server, cwd.path(), protocol);
+        cli.input("update rules and code\n");
+        let (request, _) = receive_for(&server, protocol);
+        tool_batch(
+            request,
+            protocol,
+            &[
+                (
+                    "rules-update",
+                    "write",
+                    json!({"path":"AGENTS.md","content":"rule-version-two"}),
+                ),
+                (
+                    "stale-edit",
+                    "edit",
+                    json!({"path":"code.txt","edits":[{"oldText":"before","newText":"stale"}]}),
+                ),
+                ("suffix", "bash", json!({"command":"touch suffix-marker"})),
+            ],
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_tool_ok(&body, protocol, "rules-update");
+        assert_rules_blocked(&body, protocol, "stale-edit");
+        assert_rules_blocked(&body, protocol, "suffix");
+        assert!(system(&body, protocol).contains("rule-version-two"));
+        assert!(!system(&body, protocol).contains("rule-version-one"));
+        assert_eq!(
+            fs::read_to_string(cwd.path().join("code.txt")).unwrap(),
+            "before"
+        );
+        assert!(!cwd.path().join("suffix-marker").exists());
+        tool_call(
+            request,
+            protocol,
+            "fresh-edit",
+            "edit",
+            json!({"path":"code.txt","edits":[{"oldText":"before","newText":"fresh"}]}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_tool_ok(&body, protocol, "fresh-edit");
+        assert_eq!(
+            fs::read_to_string(cwd.path().join("code.txt")).unwrap(),
+            "fresh"
+        );
+        finish_request(request, protocol, "done");
+        cli.wait_for(Pipe::Stdout, "done");
+        cli.input("/quit\n");
+        assert!(cli.finish().status.success());
+    }
+}
+
 fn assert_tool_ok(body: &Value, protocol: &str, id: &str) {
     let item = history(body, protocol)
         .iter()
@@ -84,11 +531,14 @@ fn journal(cwd: &Path) -> std::path::PathBuf {
 }
 
 fn records(path: &Path) -> Vec<Value> {
-    fs::read_to_string(path)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+    let mut reader =
+        pp_core::session_jsonl::Reader::new(std::io::BufReader::new(fs::File::open(path).unwrap()));
+    let mut records = Vec::new();
+    let mut line = Vec::new();
+    while reader.read_record(&mut line).unwrap() != 0 {
+        records.push(serde_json::from_slice(&line).unwrap());
+    }
+    records
 }
 
 #[test]

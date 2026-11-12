@@ -69,7 +69,7 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 `tools` 省略时采用当前模式允许的通用子 Agent 工具集，显式 `[]` 禁用普通工具，非空列表按工具名精确匹配。`readonly` 默认是 `false`，设为 `true` 时只允许只读工具。仅包含只读工具的列表也会自动应用只读限制。可用 MCP 工具取决于父级开放范围、用户的只读授权和 Role 的工具集合。无论默认工具、自定义 `tools` 还是旧记录，child 的有效工具集都会剔除 `task`。`spawns` 字段保留解析与存储兼容，但即使设为 `["*"]` 也不能让 child 继续派发。子 Agent 能力仍受工作模式限制。`blocking: true` 在批次全部启动后等待该自定义任务，默认异步；普通异步任务可用 `wait` 等待结果。`output` 可定义结构化结果约束，任务项的 `output_schema` 优先。
 
-普通 child 不复制父对话，只接收系统 Role 对应的任务约束、任务、共享背景、适用的 `AGENTS.md`、可用 Skill 与相关批准计划；不注入 Main 的 Plan／批准执行委托规则。父 TODO 和计划状态仍由 Main 管理。自定义提示词、任务背景、项目规则和批准计划中的原文不会被字符串清洗，普通任务说明、结果约定及 `yield` 提示保持不变。
+普通 child 不复制父对话，只接收系统 Role 对应的任务约束、任务、共享背景、适用的 `AGENTS.md`、可用 Skill 与相关批准计划；不注入 Main 的 Plan／批准执行委托规则。父 TODO 和计划状态仍由 Main 管理。 每个 child 独立加载工作目录的祖先规则及按需访问的目录规则；本地修改前使用自己的模型请求快照检查，不继承 Main 的放行状态。独立 worktree 按自身路径和实际文件解析，规则语义见[分层 AGENTS.md](guide.md#项目级-agentsmd)。自定义提示词、任务背景、项目规则和批准计划中的原文不会被字符串清洗，普通任务说明、结果约定及 `yield` 提示保持不变。
 
 内置 Role 采用相同的 Markdown 格式，随二进制打包，修改后重新构建生效。模型绑定和启用状态通过 `/Roles` 保存在 `agent.db`。
 
