@@ -747,7 +747,6 @@ mod tests {
     ) {
         let mut text = serde_json::json!({
             "type": "session",
-            "version": 3,
             "id": id,
             "timestamp": "2026-10-30T12:00:00Z",
             "cwd": cwd,
@@ -770,7 +769,7 @@ mod tests {
             text.push('\n');
         }
         let path = dir.join(format!("{id}.jsonl"));
-        fs::write(&path, text).unwrap();
+        crate::agent::persistence::tests::write_log(&path, &text);
         let file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         file.set_times(fs::FileTimes::new().set_modified(mtime))
             .unwrap();

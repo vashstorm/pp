@@ -23,11 +23,12 @@ use pp_core::events::AgentEvent;
 use pp_core::model::ThinkLevel;
 use pp_core::plan::WorkMode;
 use pp_core::plan::WorkflowState;
+use pp_core::session_jsonl::{Reader as SessionReader, Storage};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, DirBuilder, File, OpenOptions},
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    io::{BufReader, Seek, SeekFrom, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{
@@ -64,7 +65,6 @@ impl RestoredSession {
 
 pub(super) struct Checkpoint {
     pub(super) role_route: Option<pp_config::config::RoleRoute>,
-    version: u32,
     id: String,
     created_at_ms: u64,
     pub(super) cwd: PathBuf,
@@ -126,6 +126,7 @@ struct Active {
     header_written: bool,
     tail: Option<String>,
     used_ids: HashSet<String>,
+    storage: Storage,
 }
 
 pub(super) struct SessionJournal {
@@ -135,7 +136,6 @@ pub(super) struct SessionJournal {
     stats_db: PathBuf,
     active: Option<Active>,
     committed: usize,
-    replay_version: u32,
     capture: replay::Capture,
     buffer: Vec<u8>,
     first_error: Option<String>,
@@ -265,7 +265,6 @@ impl SessionJournal {
             stats_db,
             active: None,
             committed: 0,
-            replay_version: 0,
             capture: replay::Capture::default(),
             buffer: Vec::new(),
             first_error: None,
@@ -377,7 +376,17 @@ impl SessionJournal {
                 active.file.seek(SeekFrom::End(0))?;
                 active.truncate_to = None;
             }
-            active.file.write_all(&self.buffer)?;
+            let mut physical = if active.header_written {
+                active
+                    .storage
+                    .encode(&serde_json::from_slice(&self.buffer)?)?
+            } else {
+                self.buffer.clone()
+            };
+            if !physical.ends_with(b"\n") {
+                physical.push(b'\n');
+            }
+            active.file.write_all(&physical)?;
             if sync {
                 active.file.flush()?;
                 active.file.sync_data()?;
@@ -431,7 +440,6 @@ impl SessionJournal {
             &mut self.buffer,
             &HeaderRef {
                 kind: "session",
-                version: 3,
                 id: &active.id,
                 timestamp: &timestamp,
                 cwd: metadata.cwd,
@@ -494,7 +502,6 @@ impl SessionJournal {
         state.tree = tree;
         // 导航失败时保留此前完整提交，避免半条或未同步的 state 在恢复时生效。
         self.synced_custom(CustomRef::State(state))?;
-        self.replay_version = 1;
         self.committed = session.len();
         self.model_reference.clear();
         self.model_reference.push_str(metadata.model_reference);
@@ -554,10 +561,7 @@ impl SessionJournal {
         if self.active.is_none() {
             return Ok(());
         }
-        self.synced_custom(CustomRef::Workflow(WorkflowRef {
-            version: 1,
-            workflow,
-        }))
+        self.synced_custom(CustomRef::Workflow(WorkflowRef { workflow }))
     }
 
     /// 退出 Plan 时一次提交模式和模型；空会话仍等首条请求才落盘。
@@ -713,25 +717,13 @@ impl SessionJournal {
                     SessionRef::Completion(request) => serde_json::to_value(&request.tools)?,
                     SessionRef::Response(request) => serde_json::to_value(&request.tools)?,
                 };
-                self.custom(
-                    CustomRef::ToolDefinitions {
-                        version: 1,
-                        tools: &tools,
-                    },
-                    false,
-                )?;
+                self.custom(CustomRef::ToolDefinitions { tools: &tools }, false)?;
                 self.pending_tools = false;
             }
             if let Some(system) = instructions {
                 self.custom(CustomRef::Instructions { system }, false)?;
             }
             self.commit(session)?;
-        }
-        if self.replay_version == 0 {
-            let mut state = StateRef::new(metadata, session, workflow);
-            state.session = None;
-            self.synced_custom(CustomRef::State(state))?;
-            self.replay_version = 1;
         }
         if let Some(text) = user {
             let result = now_ms().and_then(|timestamp| {
@@ -867,7 +859,7 @@ impl SessionJournal {
             let result = self.write_display("error", None);
             let _ = self.latch(result.map(|_| ()));
         }
-        if self.replay_version == 1 && matches!(event, AgentEvent::AssistantStarted) {
+        if matches!(event, AgentEvent::AssistantStarted) {
             let id = self
                 .active
                 .as_ref()
@@ -887,12 +879,10 @@ impl SessionJournal {
             }
             _ => {}
         }
-        if self.replay_version == 1
-            && !matches!(
-                event,
-                AgentEvent::AssistantStarted | AgentEvent::ModelAttemptFailed { .. }
-            )
-            && self.capture.event(event)
+        if !matches!(
+            event,
+            AgentEvent::AssistantStarted | AgentEvent::ModelAttemptFailed { .. }
+        ) && self.capture.event(event)
         {
             return;
         }
@@ -1038,6 +1028,7 @@ fn create(
                     header_written: false,
                     tail: None,
                     used_ids: HashSet::new(),
+                    storage: Storage::default(),
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1202,7 +1193,7 @@ pub fn load(
         "saved session is not a regular file: {}",
         path.display()
     );
-    let mut reader = BufReader::new(&file);
+    let mut reader = SessionReader::new(BufReader::new(&file));
     let mut line = Vec::new();
     let mut line_number = 0;
     let mut offset = 0;
@@ -1212,11 +1203,10 @@ pub fn load(
     let mut tail: Option<String> = None;
     let mut used_ids = HashSet::new();
     let mut projector = replay::Projector::default();
-    let mut replay_version = 0;
     let mut has_tree = false;
     loop {
         line.clear();
-        let count = reader.read_until(b'\n', &mut line).with_context(|| {
+        let count = reader.read_record(&mut line).with_context(|| {
             format!(
                 "reading session {} line {}",
                 path.display(),
@@ -1254,7 +1244,6 @@ pub fn load(
                     saved.kind == "session",
                     "first record must be a session header"
                 );
-                ensure!(saved.version == 3, "unsupported session version");
                 ensure!(saved.id == id, "session ID does not match filename");
                 ensure!(
                     saved.cwd.is_absolute(),
@@ -1282,10 +1271,6 @@ pub fn load(
                     has_tree = true;
                     projector = replay::Projector::default();
                 }
-                let version = state.replay_version.unwrap_or(0);
-                ensure!(version <= 1, "unsupported session replay version");
-                ensure!(version >= replay_version, "invalid session replay boundary");
-                replay_version = version;
             }
             apply_native(
                 &mut checkpoint,
@@ -1321,6 +1306,7 @@ pub fn load(
         Session::Completion(request) => request.model.clone(),
         Session::Response(request) => request.model.clone().unwrap_or_default(),
     };
+    let storage = reader.into_storage();
     let mut replay = projector.finish()?;
     if has_tree {
         let tree = tree::Tree::read(&file)?;
@@ -1343,9 +1329,9 @@ pub fn load(
                 header_written: true,
                 tail,
                 used_ids,
+                storage,
             }),
             committed,
-            replay_version,
             capture: replay::Capture::default(),
             buffer: Vec::new(),
             first_error: None,
@@ -1376,13 +1362,8 @@ fn apply_native(
         Payload::Custom {
             custom: Custom::State(state),
         } => {
-            ensure!(
-                state.replay_version.unwrap_or(0) <= 1,
-                "unsupported session replay version"
-            );
             let saved = Checkpoint {
                 role_route: state.role_route,
-                version: state.version,
                 id: header.id.clone(),
                 created_at_ms: parse_timestamp(&header.timestamp)?,
                 cwd: header.cwd.clone(),
@@ -1404,7 +1385,6 @@ fn apply_native(
         Payload::Custom {
             custom: Custom::Workflow(record),
         } => {
-            ensure!(record.version == 1, "unsupported saved workflow version");
             record.workflow.validate()?;
             let state = checkpoint
                 .as_mut()
@@ -1412,9 +1392,8 @@ fn apply_native(
             state.workflow = record.workflow;
         }
         Payload::Custom {
-            custom: Custom::ToolDefinitions { version, tools },
+            custom: Custom::ToolDefinitions { tools },
         } => {
-            ensure!(version == 1, "unsupported saved tool definitions version");
             checkpoint
                 .as_mut()
                 .context("tool definitions before pp session state")?
@@ -1484,7 +1463,6 @@ fn apply_native(
 }
 
 fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
-    ensure!(saved.version == 1, "unsupported pp session version");
     ensure!(saved.id == id, "session ID does not match filename");
     ensure!(
         saved.cwd.is_absolute(),
@@ -1542,16 +1520,15 @@ fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 mod slimming_tests;
 
 /// 冻结的展示格式 fixture 通过与生产读取相同的投影器进入 UI 测试。
 #[cfg(feature = "test-support")]
-pub fn replay_fixture(version: u32, lines: &str) -> Result<Vec<ReplayRecord>> {
+pub fn replay_fixture(lines: &str) -> Result<Vec<ReplayRecord>> {
     let mut projector = replay::Projector::default();
-    projector.state(Some(version))?;
     for line in lines.lines() {
         let entry: Entry = serde_json::from_str(line).context("invalid replay fixture")?;
         projector.feed(&entry.payload, line.as_bytes())?;

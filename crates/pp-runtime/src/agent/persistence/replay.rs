@@ -1,4 +1,4 @@
-//! 消息展示快照与按物理格式边界切换的共用回放器。展示数据不进入原生请求。
+//! 消息展示快照的共用回放器；展示数据不进入原生请求。
 use super::*;
 use pp_core::events::OutputStream;
 use serde_json::{Value, json};
@@ -52,7 +52,6 @@ enum Step {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Meta {
-    version: u32,
     attempt: String,
     order: Vec<Step>,
 }
@@ -121,14 +120,11 @@ impl Capture {
                 name,
                 arguments,
             } => {
-                let parsed = serde_json::from_str::<Value>(arguments)
-                    .ok()
-                    .filter(Value::is_object);
                 self.part(Part::Call {
                     id: id.clone(),
                     name: name.clone(),
-                    raw_arguments: parsed.is_none().then(|| arguments.clone()),
-                    arguments: parsed,
+                    raw_arguments: Some(arguments.clone()),
+                    arguments: None,
                 });
             }
             AgentEvent::ToolFinished { id, result } => {
@@ -232,7 +228,6 @@ impl Capture {
         }
         let timestamp = now_ms()?;
         let meta = Meta {
-            version: 1,
             attempt: capture.attempt.context("missing replay attempt")?,
             order: capture.order,
         };
@@ -250,53 +245,25 @@ impl Capture {
 
 #[derive(Default)]
 pub(super) struct Projector {
-    version: u32,
     active: bool,
-    legacy_tools: HashSet<String>,
     retained: Vec<AgentEvent>,
     messages: Vec<Value>,
     records: Vec<ReplayRecord>,
 }
 
 impl Projector {
-    pub fn with_version(version: u32) -> Self {
-        Self {
-            version,
-            ..Self::default()
-        }
-    }
-
-    pub fn state(&mut self, version: Option<u32>) -> Result<()> {
-        let version = version.unwrap_or(0);
-        ensure!(version <= 1, "unsupported session replay version");
-        // 版本按物理顺序生效，树选择不能重置 writer 的格式。
-        ensure!(version >= self.version, "invalid session replay boundary");
-        if version != self.version {
-            let interrupted = self.version == 0 && (self.active || !self.legacy_tools.is_empty());
-            self.flush(false)?;
-            if interrupted {
-                // 升级前的崩溃尾部仍是失败前缀，不能被后续新回复标成完成。
-                self.records.push(ReplayRecord::Error(
-                    "Previous request was interrupted.".into(),
-                ));
-            }
-        }
-        self.version = version;
-        Ok(())
-    }
-
     pub fn feed(&mut self, payload: &Payload, line: &[u8]) -> Result<()> {
         match payload {
             Payload::Custom {
-                custom: Custom::State(state),
-            } => self.state(state.replay_version)?,
+                custom: Custom::State(_),
+            } => {}
             Payload::Message {
                 message: SavedMessage::User { content, .. },
             } => {
                 self.flush(false)?;
                 self.records.push(ReplayRecord::User(content.clone()));
             }
-            Payload::Message { .. } if self.version == 1 => {
+            Payload::Message { .. } => {
                 #[derive(Deserialize)]
                 struct Record {
                     message: Value,
@@ -308,21 +275,7 @@ impl Projector {
             Payload::Custom {
                 custom: Custom::Event { event },
             } => {
-                if self.version == 0 {
-                    match event {
-                        AgentEvent::AssistantStarted => self.active = true,
-                        AgentEvent::AssistantFinished { .. }
-                        | AgentEvent::ModelAttemptFailed { .. } => self.active = false,
-                        AgentEvent::ToolStarted { id, .. } => {
-                            self.legacy_tools.insert(id.clone());
-                        }
-                        AgentEvent::ToolFinished { id, .. } => {
-                            self.legacy_tools.remove(id);
-                        }
-                        _ => {}
-                    }
-                    self.records.push(ReplayRecord::Event(event.clone()));
-                } else if matches!(
+                if matches!(
                     event,
                     AgentEvent::AssistantStarted | AgentEvent::ModelAttemptFailed { .. }
                 ) {
@@ -408,7 +361,6 @@ impl Projector {
         let messages = std::mem::take(&mut self.messages);
         let retained = std::mem::take(&mut self.retained);
         self.active = false;
-        self.legacy_tools.clear();
         let messages = if committed { messages } else { Vec::new() };
         let Some(assistant) = messages.iter().find(|m| m["role"] == "assistant") else {
             self.records
@@ -418,10 +370,7 @@ impl Projector {
         if let Some(meta) = assistant.get("ppReplay") {
             let meta: Meta = serde_json::from_value(meta.clone())
                 .map_err(|_| anyhow::anyhow!("invalid replay snapshot"))?;
-            ensure!(
-                meta.version == 1 && !meta.attempt.is_empty(),
-                "unsupported replay snapshot version"
-            );
+            ensure!(!meta.attempt.is_empty(), "invalid replay attempt");
             let content: Vec<Part> = serde_json::from_value(assistant["content"].clone())
                 .map_err(|_| anyhow::anyhow!("invalid replay content"))?;
             let results: Vec<_> = messages
@@ -635,7 +584,7 @@ mod tests {
 
     #[test]
     fn standard_content_keeps_refusal_summary_all_text_results_and_native_argument_fallback() {
-        let mut projector = Projector::with_version(1);
+        let mut projector = Projector::default();
         feed(&mut projector,json!({"type":"message","message":{"role":"assistant","stopReason":"toolUse","content":[
             {"type":"thinking","thinking":"summary","summary":true}, {"type":"thinking","thinking":"raw","summary":false},
             {"type":"text","text":"text"},{"type":"refusal","refusal":"refusal"},{"type":"future","value":"ignored"},
@@ -670,35 +619,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_ignores_unknown_display_content_and_new_versions_fail_closed() {
-        let mut legacy = Projector::default();
-        feed(
-            &mut legacy,
-            json!({"type":"message","message":{"role":"assistant","content":{"old":"unparsed"}}}),
-        )
-        .unwrap();
-        assert!(legacy.finish().unwrap().is_empty());
-        let mut projector = Projector::default();
-        assert!(projector.state(Some(2)).is_err());
-        projector.state(Some(1)).unwrap();
-        assert!(projector.state(None).is_err());
-        let result=tool_result(&json!({"content":[{"type":"text","text":"{\"ok\":true,"},{"type":"text","text":"\"pipes\":{\"run_id\":\"r\"}}"}]})).unwrap();
+    fn tool_result_joins_all_text_parts() {
+        let result = tool_result(&json!({"content":[{"type":"text","text":"{\"ok\":true,"},{"type":"text","text":"\"pipes\":{\"run_id\":\"r\"}}"}]})).unwrap();
         assert_eq!(result, json!({"ok":true,"pipes":{"run_id":"r"}}));
-    }
-
-    #[test]
-    fn legacy_crash_prefix_is_failed_at_message_format_boundary() {
-        let mut projector = Projector::default();
-        feed(
-            &mut projector,
-            json!({"type":"custom","customType":"pp.event","data":{"event":"assistant_started"}}),
-        )
-        .unwrap();
-        feed(&mut projector, json!({"type":"custom","customType":"pp.event","data":{"event":{"assistant_delta":{"text":"legacy prefix","refusal":false}}}})).unwrap();
-        projector.state(Some(1)).unwrap();
-        let records = projector.finish().unwrap();
-        assert!(
-            matches!(records.as_slice(), [ReplayRecord::Event(AgentEvent::AssistantStarted), ReplayRecord::Event(AgentEvent::AssistantDelta { text, .. }), ReplayRecord::Error(_)] if text == "legacy prefix")
-        );
     }
 }

@@ -313,7 +313,7 @@ fn snapshot(home: &Path) -> Vec<(String, String)> {
 // Full-line JSONL records; an unterminated trailing record (the only
 // ignorable corruption) is excluded here on purpose.
 fn records(path: &Path) -> Vec<Value> {
-    let text = fs::read_to_string(path).unwrap();
+    let text = session_text(path);
     let terminated = match text.rfind('\n') {
         Some(index) if !text.ends_with('\n') => &text[..index + 1],
         _ => text.as_str(),
@@ -344,7 +344,7 @@ fn rebuild_request(records: &[Value]) -> Value {
                 request = data["session"]["request"].clone();
             }
             ("custom", Some("pp.tools")) => {
-                assert_eq!(data["version"], 1);
+                assert!(data.get("version").is_none());
                 request["tools"] = data["tools"].clone();
             }
             ("custom", Some("pp.instructions")) => {
@@ -410,13 +410,13 @@ fn canonical_messages(records: &[Value]) -> Vec<Value> {
 fn assert_session_contract(records: &[Value], id: &str, cwd: &Path) {
     let header = &records[0];
     assert_eq!(header["type"], "session");
-    assert_eq!(header["version"], 3);
+    assert!(header.get("version").is_none());
     assert_eq!(header["id"], id);
     assert_eq!(
         header["cwd"],
         cwd.canonicalize().unwrap().display().to_string()
     );
-    assert_eq!(header.as_object().unwrap().len(), 5);
+    assert_eq!(header.as_object().unwrap().len(), 4);
     let mut ids = std::collections::HashSet::new();
     let mut parent = Value::Null;
     for (index, record) in records.iter().enumerate() {
@@ -572,7 +572,7 @@ fn with_mutated_records(path: &Path, mutate: impl FnOnce(&mut Vec<Value>)) {
         .iter()
         .map(|record| format!("{record}\n"))
         .collect::<String>();
-    fs::write(path, text).unwrap();
+    write_session_text(path, &text);
 }
 
 // A freshly saved Chat session with one mutation applied to its records.
@@ -595,10 +595,10 @@ fn corrupted_base(
 }
 
 fn insert_raw_line(path: &Path, index: usize, line: &str) {
-    let text = fs::read_to_string(path).unwrap();
+    let text = session_text(path);
     let mut lines: Vec<&str> = text.lines().collect();
     lines.insert(index, line);
-    fs::write(path, format!("{}\n", lines.join("\n"))).unwrap();
+    write_session_text(path, &format!("{}\n", lines.join("\n")));
 }
 
 fn copy_session(from: &Path, to: &Path, id: &str) {
@@ -618,3 +618,32 @@ mod lock_cases;
 mod restore_cases;
 #[path = "session/settings_cases.rs"]
 mod settings_cases;
+
+fn session_text(path: &Path) -> String {
+    let mut reader =
+        pp_core::session_jsonl::Reader::new(std::io::BufReader::new(fs::File::open(path).unwrap()));
+    let mut line = Vec::new();
+    let mut result = Vec::new();
+    while reader.read_record(&mut line).unwrap() != 0 {
+        result.extend_from_slice(&line);
+    }
+    String::from_utf8(result).unwrap()
+}
+
+fn write_session_text(path: &Path, text: &str) {
+    let mut storage = pp_core::session_jsonl::Storage::default();
+    let mut output = Vec::new();
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        if index == 0 {
+            output.extend_from_slice(line.as_bytes());
+        } else if let Ok(value) = serde_json::from_str::<Value>(line) {
+            output.extend(storage.encode(&value).unwrap());
+            if line.ends_with('\n') {
+                output.push(b'\n');
+            }
+        } else {
+            output.extend_from_slice(line.as_bytes());
+        }
+    }
+    fs::write(path, output).unwrap();
+}

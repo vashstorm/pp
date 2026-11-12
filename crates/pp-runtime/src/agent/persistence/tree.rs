@@ -50,14 +50,14 @@ pub struct Node {
     pub text: String,
     native: Cursor,
     before: Cursor,
-    replay: (u64, u64, u32),
+    replay: (u64, u64),
 }
 
 #[derive(Default, Debug)]
 pub struct Tree {
     pub nodes: Vec<Node>,
     pub leaf: Option<usize>,
-    pending: (u64, u64, u32),
+    pending: (u64, u64),
 }
 
 pub struct View {
@@ -66,22 +66,28 @@ pub struct View {
 }
 
 fn replay_range(
-    reader: &mut BufReader<&File>,
+    reader: &mut SessionReader<BufReader<&File>>,
     line: &mut Vec<u8>,
-    (start, end, version): (u64, u64, u32),
+    (start, end): (u64, u64),
     records: &mut Vec<ReplayRecord>,
 ) -> Result<()> {
-    reader.seek(SeekFrom::Start(start))?;
-    let mut offset = start;
-    let mut projector = replay::Projector::with_version(version);
+    if reader.position() > start {
+        reader.rewind()?;
+    }
+    let mut offset = reader.position();
+    let mut projector = replay::Projector::default();
     while offset < end {
         line.clear();
-        let count = reader.read_until(b'\n', line)?;
+        let count = reader.read_record(line)?;
         ensure!(
             count > 0 && line.ends_with(b"\n"),
             "incomplete session tree replay"
         );
+        let previous = offset;
         offset += count as u64;
+        if previous < start {
+            continue;
+        }
         let value: serde_json::Value = serde_json::from_slice(line)
             .map_err(|_| anyhow::anyhow!("invalid session tree replay"))?;
         if value["type"] == "session" {
@@ -97,7 +103,8 @@ fn replay_range(
 
 impl Tree {
     pub(super) fn view(self, file: &File) -> Result<View> {
-        let mut reader = BufReader::new(file);
+        let mut reader = SessionReader::new(BufReader::new(file));
+        reader.rewind()?;
         let mut line = Vec::new();
         let mut records = Vec::with_capacity(self.nodes.len());
         for node in &self.nodes {
@@ -124,11 +131,11 @@ impl Tree {
                     text: (*text).into(),
                     native: Cursor { offset: 0, len: 0 },
                     before: Cursor { offset: 0, len: 0 },
-                    replay: (0, 0, 0),
+                    replay: (0, 0),
                 })
                 .collect(),
             leaf,
-            pending: (0, 0, 0),
+            pending: (0, 0),
         }
     }
 
@@ -143,8 +150,8 @@ impl Tree {
     }
 
     pub(super) fn read(file: &File) -> Result<Self> {
-        let mut reader = BufReader::new(file);
-        reader.seek(SeekFrom::Start(0))?;
+        let mut reader = SessionReader::new(BufReader::new(file));
+        reader.rewind()?;
         let mut tree = Self::default();
         let mut checkpoint = None;
         let mut header = None;
@@ -152,15 +159,13 @@ impl Tree {
         let mut line = Vec::new();
         let mut offset = 0;
         let mut start = 0;
-        let mut replay_version = 0;
-        let mut start_version = 0;
         let mut native = Cursor { offset: 0, len: 0 };
         let mut assistant: Option<String> = None;
         let mut protocol: Option<String> = None;
         let mut tools = Vec::new();
         loop {
             line.clear();
-            let count = reader.read_until(b'\n', &mut line)?;
+            let count = reader.read_record(&mut line)?;
             if count == 0 || !line.ends_with(b"\n") {
                 break;
             }
@@ -188,17 +193,6 @@ impl Tree {
                     } else {
                         ensure!(protocol.is_some(), "missing pp session baseline");
                     }
-                    let version = data
-                        .get("replayVersion")
-                        .map(|v| v.as_u64().context("invalid session replay version"))
-                        .transpose()?
-                        .unwrap_or(0);
-                    ensure!(version <= 1, "unsupported session replay version");
-                    ensure!(
-                        version >= u64::from(replay_version),
-                        "invalid session replay boundary"
-                    );
-                    replay_version = version as u32;
                     native.offset = offset;
                     if let Some(selection) = data.get("tree").filter(|v| !v.is_null()) {
                         let selection: Selection = serde_json::from_value(selection.clone())
@@ -209,7 +203,6 @@ impl Tree {
                             .map(|id| ids.get(id).copied().context("unknown session tree target"))
                             .transpose()?;
                         start = offset;
-                        start_version = replay_version;
                         assistant = None;
                         tools.clear();
                     }
@@ -347,14 +340,13 @@ impl Tree {
                     text,
                     native,
                     before,
-                    replay: (start, offset, start_version),
+                    replay: (start, offset),
                 });
                 tree.leaf = Some(tree.nodes.len() - 1);
                 start = offset;
-                start_version = replay_version;
             }
         }
-        tree.pending = (start, offset, start_version);
+        tree.pending = (start, offset);
         tree.retain_active_path();
         Ok(tree)
     }
@@ -377,7 +369,8 @@ impl Tree {
         leaf: Option<usize>,
         pending: bool,
     ) -> Result<Vec<ReplayRecord>> {
-        let mut reader = BufReader::new(file);
+        let mut reader = SessionReader::new(BufReader::new(file));
+        reader.rewind()?;
         let mut records = Vec::new();
         let mut ranges: Vec<_> = self
             .path(leaf)
@@ -427,18 +420,17 @@ fn session_at(
     file: &File,
     cursor: Cursor,
 ) -> Result<(Session, String, Vec<TodoPhase>, Option<String>)> {
-    let mut reader = BufReader::new(file);
-    reader.seek(SeekFrom::Start(0))?;
+    let mut reader = SessionReader::new(BufReader::new(file));
+    reader.rewind()?;
     let mut offset = 0;
     let mut checkpoint = None;
     let mut line = Vec::new();
-    reader.read_until(b'\n', &mut line)?;
-    offset += line.len() as u64;
+    offset += reader.read_record(&mut line)? as u64;
     let header: Header = serde_json::from_slice(&line)
         .map_err(|_| anyhow::anyhow!("invalid session tree header"))?;
     while offset < cursor.offset {
         line.clear();
-        let count = reader.read_until(b'\n', &mut line)?;
+        let count = reader.read_record(&mut line)?;
         ensure!(
             count > 0 && line.ends_with(b"\n"),
             "incomplete session tree history"
@@ -609,11 +601,10 @@ mod tests {
     /// Data payload of the last appended `pp.session_state` record.
     fn last_tree_state(bytes: &[u8]) -> serde_json::Value {
         let mut state = None;
-        for line in bytes.split(|byte| *byte == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            let entry: serde_json::Value = serde_json::from_slice(line).unwrap();
+        let mut reader = SessionReader::new(BufReader::new(bytes));
+        let mut line = Vec::new();
+        while reader.read_record(&mut line).unwrap() != 0 {
+            let entry: serde_json::Value = serde_json::from_slice(&line).unwrap();
             if entry["customType"] == "pp.session_state" {
                 state = Some(entry["data"].clone());
             }

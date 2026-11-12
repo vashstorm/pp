@@ -17,7 +17,6 @@ pub(super) fn header(line: &[u8], id: &str) -> Result<Header> {
         header.kind == "session",
         "first record must be a session header"
     );
-    ensure!(header.version == 3, "unsupported session version");
     ensure!(header.id == id, "session ID does not match filename");
     ensure!(
         header.cwd.is_absolute(),
@@ -193,7 +192,7 @@ mod tests {
         let id = format!("2026-10-17T01-02-03-{}", "a".repeat(32));
         let valid = format!(
             "{}\n",
-            serde_json::json!({"type":"session","version":3,"id":id,"timestamp":"2026-10-17T01:02:03Z","cwd":"/project"})
+            serde_json::json!({"type":"session","id":id,"timestamp":"2026-10-17T01:02:03Z","cwd":"/project"})
         );
         assert!(header(valid.as_bytes(), &id).is_ok());
         for broken in [

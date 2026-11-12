@@ -6,6 +6,7 @@ pub mod logging;
 pub mod lsp_report;
 pub mod model;
 pub mod plan;
+pub mod session_jsonl;
 pub mod sqlite;
 pub mod text;
 pub mod todo;

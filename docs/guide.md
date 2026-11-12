@@ -830,7 +830,7 @@ TUI 空闲时提交无参数 `/tree`，在原消息区域浏览当前有效历�
 
 JSONL 采用逻辑失效，不删除旧行，也不添加逐条 tombstone。回退同步追加带 `data.tree.leaf` 和完整目标原生 session 的现有 `pp.session_state`；只有提交成功才替换内存历史和画面，失败保留此前历史和草稿。原始消息、native append、显示事件和旧 state 保留原字节以供审计，不承诺秘密擦除或节省磁盘；物理 `parentId` 仍连接追加末尾，不表示消息仍有效。例如 A → B → C 回退到 B 助手后，即使立即退出，恢复、回放、列表摘要及 `/tree` 也只使用 A/B；新输入 D 后是 A → B → D，C 的 ID 不可再选择。回退到首条用户消息之前提交 `leaf:null` 和空对话，列表仍保留该 `Untitled session`。恢复原生上下文使用最新完整 state 加后续 native append，不从旧普通消息补齐。
 
-树完整解析和校验旧日志后，仅输出最终已提交的根到叶路径，避免读取废弃节点的展示区间。旧 v3 线性日志及含合法历史跳转的旧日志均无需迁移；升级后只保留最终有效路径，不提供找回废弃分支的入口，也不支持手工编辑 JSONL 改变有效性。读取不改写文件字节或 mtime。行模式提示 `/tree requires the TUI`；`pp -p '/tree'` 仍是普通模型任务。
+树完整解析和校验旧日志后，仅输出最终已提交的根到叶路径，避免读取废弃节点的展示区间。会话只保留最终有效路径，不提供找回废弃分支的入口，也不支持手工编辑 JSONL 改变有效性。读取不改写文件字节或 mtime。行模式提示 `/tree requires the TUI`；`pp -p '/tree'` 仍是普通模型任务。
 
 ## 最近任务变更与安全撤销
 
@@ -880,15 +880,15 @@ TUI 恢复可见消息、工具结果和错误，输入框为空；不恢复草�
 
 “最新”按文件修改时间选择，时间相同按 ID 字典序降序；只查看恢复不会提高排序，不按项目过滤。session 文件必须是普通文件，不跟随符号链接；进程通过 `~/.pp/run/sessions/SESSION_ID.lock` 持有非阻塞排他锁，另一进程恢复同一 ID 会报 `session is already in use`。最新文件损坏或已锁时直接报错，不换另一个文件。锁覆盖整个 session 生命周期，包括等待输入、回复完成、任务取消及请求失败；退出或进程崩溃时由操作系统释放。恢复其他 session 时先获取目标锁，成功切换后释放旧锁，失败保留原会话；选择当前 ID 不重加锁。每次成功获取锁刷新锁文件的 mtime，不修改原会话日志的 mtime 或排序；锁文件存在不表示正在占用。新目录权限为 `0700`、锁文件为 `0600`，拒绝锁目录及锁文件本身为符号链接、锁文件不是普通文件的情况。
 
-JSONL 使用 oh-my-pi 风格容器：首行是 `type:"session"`、`version:3` 的 header，保存现有完整 session ID、原工作目录和 UTC RFC3339 毫秒创建时间；其余条目都有 `id`、`parentId`、`timestamp`，形成线性链。正文 ID 是当前日志内唯一的 8 位小写随机 hex，首条 parent 为 null。支持的正文类型只有 `message`、`model_change`、`thinking_level_change`、`custom`；普通消息提供 `user`、`assistant`、`toolResult` 及 text/thinking/toolCall 内容，供通用阅读，不虚构 usage/cost。
+JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其他结构。首行为 `type:"session"` 的 header，保存完整 session ID、原工作目录和 UTC RFC3339 毫秒创建时间。后续每行包含 `values` 与 `root`：`values` 追加本会话首次出现的共享值，`root` 引用本条逻辑记录。共享值用 `s` 保存原始标量、`a` 保存数组元素引用、`o` 保存对象字段引用，只允许引用已定义的值。正文、思考、工具参数与结果、提示词、配置及完整历史快照复用同一份数据；不同轮次与 attempt 的记录身份、顺序及提交边界仍独立保留。去重只按完整 JSON 值相等判断，不合并相似文本或不同轮次。工具参数及 JSON 字符串保持原文，禁止通过解析、重排来改变供应商请求。
 
-pp 的无损恢复使用 `custom` 扩展：`pp.session_state`（独立原生版本 1）、`pp.native_append`、`pp.instructions` 保存协议原生请求及增量；`pp.workflow`（version 1）与 native state 同步提交模式、绑定计划和审查报告，checkpoint 同样携带 workflow。缺少 workflow 的旧 v3 session 默认 Execute；未知字段／版本、非法 ID／修订／状态组合明确失败。审批与状态提交失败会截断并同步回滚到原提交边界，不先在内存发布执行权限；`pp.event`、`pp.error` 保存展示事件与错误；`pp.cancelled`（`data:{}`）同步保存主动取消终态，恢复时不追加提示块，也不误报中断，也不进入模型上下文。取消后的列表状态为 aborted，后续真实任务完成可再次标为 done。普通 assistant/toolResult 消息不反推模型上下文。新 state 显式写 `replayVersion:1`，TUI 从 message 的 `ppReplay` 顺序元数据及保留事件恢复完整历史卡片；缺省标记的旧段继续从展示事件恢复，旧文件续写先同步提交切换边界。工具结果只保留完整 `content` 与 `isError`，不再重复保存顶层 `details`。`model_change` 仅作审计，后续完整 native state 才提交模型切换。这是结构对齐，不支持直接互读上游会话文件。旧 `checkpoint` 格式明确报 `unsupported legacy session format`，不迁移、不改写；最新文件为旧格式时也直接失败，不跳过。
+展开共享值后，逻辑条目保留 `id`、`parentId`、`timestamp` 形成物理线性链；`message`、`model_change`、`thinking_level_change` 与 `custom` 承载消息、设置及扩展。`pp.session_state`、`pp.native_append`、`pp.instructions` 保存无损原生请求及增量；`pp.workflow` 与 state 保存模式、绑定计划及审查报告。`pp.event`、`pp.error`、`pp.cancelled` 与消息的 `ppReplay` 顺序元数据恢复展示卡片；普通 assistant/toolResult 消息不反推模型上下文。模型审计记录不提交模型切换，后续原生 state 才是提交点。读取、TUI 回放、会话树及搜索索引共用解码器，游标始终按物理字节计算。未知结构、损坏完整行、无效引用与非法状态明确失败，不自动兼容。
 
 首个 `pp.session_state`、用户原生输入、每个完整模型/工具批次及设置更改均同步落盘。新格式将流式正文、思考及已执行工具合并为展示快照，在完整批次提交、模型 attempt 失败、主动取消或普通错误时保存；失败／取消快照用 `stopReason:error`／`aborted` 标记，不进入模型请求，也不作为成功完成的列表预览。SIGKILL 或掉电可能丢失本轮尚未提交的流式正文，但已保存的用户输入仍可恢复。原生历史与展示日志分离，Responses item ID、encrypted reasoning、call_id 及工具原始结果均保留。完整工具批次在下一次请求前提交；网络错误不撤销已执行工具。写入失败锁存首次 `persisting session` 错误，当前已接受工具批次仍执行完毕，停止后续 HTTP；`/new` 或重启后才可重新发送。模型/思考级别设置写入失败保留旧内存选择。
 
-压缩通过同步追加新的完整 `pp.session_state` 提交替换后的原生历史，同时更新增量游标；不虚构 `model_change`，成功后立即退出也能恢复摘要与近期后缀。`ContextUpdated`、请求开始／输出进度／完成指标、压缩阶段／结果事件及摘要调用的 assistant/thinking 流不写 `pp.event`；恢复重新估算，不恢复旧 usage。首个 state 必须包含完整 Session；后续省略 `session` 表示沿用已折叠所有先前增量的原生请求，并逐条校验本条元数据。产品只在旧格式升级前已经完整提交原生增量的明确边界省略基线；换模型／请求配置、协议转换、压缩、tree 选择及 Plan 交接仍保存完整 Session，不按消息条数推断历史相等。旧二进制可能无法读取带省略基线或新展示格式的日志。逻辑提交点是同步 state 记录，不是文件 rename，也不承诺断电绝对原子性。
+压缩通过同步追加新的完整 `pp.session_state` 提交替换后的原生历史，同时更新增量游标；不虚构 `model_change`，成功后立即退出也能恢复摘要与近期后缀。`ContextUpdated`、请求开始／输出进度／完成指标、压缩阶段／结果事件及摘要调用的 assistant/thinking 流不写 `pp.event`；恢复重新估算，不恢复旧 usage。首个 state 必须包含完整 Session；后续省略 `session` 表示沿用已折叠所有先前增量的原生请求，并逐条校验本条元数据。产品只在已经完整提交原生增量的明确边界省略基线；换模型／请求配置、协议转换、压缩、tree 选择及 Plan 交接仍保存完整 Session，不按消息条数推断历史相等。逻辑提交点是同步 state 记录，不是文件 rename，也不承诺断电绝对原子性。
 
-仅允许忽略末尾未换行的残缺记录；恢复时提示，首次真正追加前持锁截去残尾。完整坏行、未知版本/记录、ID 不符或协议不符均报错，不覆盖旧日志。正常退出和完整批次可恢复；强杀期间的未完成回答不提交到模型历史，工具副作用不提供事务、回滚或 exactly-once 保证。
+仅允许忽略末尾未换行的残缺记录；恢复时提示，首次真正追加前持锁截去残尾。完整坏行、未知结构或记录、ID 不符或协议不符均报错，不覆盖旧日志。正常退出和完整批次可恢复；强杀期间的未完成回答不提交到模型历史，工具副作用不提供事务、回滚或 exactly-once 保证。
 
 `/new` 保持当前模型和思考级别，清空原生历史并释放旧 session 锁，旧日志与锁文件保留；下次真实模型请求才创建新 ID 并获取新锁。
 

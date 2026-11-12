@@ -588,5 +588,9 @@ fn session_file_size_limit_latches_after_executing_whole_tool_batch() {
     // The latched write left an unterminated partial record.
     assert!(!bytes.ends_with(b"\n"));
     assert!(String::from_utf8_lossy(&bytes).contains("\"type\":\"session\""));
-    assert!(String::from_utf8_lossy(&bytes).contains("\"customType\":\"pp.session_state\""));
+    assert!(
+        records(&sessions_dir(home.path()).join(format!("{id}.jsonl")))
+            .iter()
+            .any(|r| r["customType"] == "pp.session_state")
+    );
 }

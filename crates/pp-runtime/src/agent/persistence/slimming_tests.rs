@@ -49,8 +49,7 @@ fn event_values(records: &[ReplayRecord]) -> Vec<Value> {
 }
 
 fn records(path: &Path) -> Vec<Value> {
-    fs::read_to_string(path)
-        .unwrap()
+    super::tests::read_log(path)
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect()
@@ -109,83 +108,13 @@ fn frozen_legacy(dir: &Path, protocol: Protocol) -> String {
 }
 
 #[test]
-fn slimming_mixed_legacy_two_new_turns_and_tree_ranges_both_protocols() {
-    for protocol in [Protocol::Completion, Protocol::Response] {
-        let dir = tempfile::tempdir().unwrap();
-        let id = frozen_legacy(dir.path(), protocol);
-        let path = dir.path().join(format!("{id}.jsonl"));
-        let before = fs::read(&path).unwrap();
-        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), before);
-        let mut journal = restored.journal;
-        let mut session = restored.checkpoint.session;
-        for answer in ["new one", "new two"] {
-            start(&mut journal, &mut session, dir.path(), answer);
-            journal.event(&AgentEvent::ThinkingDelta {
-                text: "new thought".into(),
-            });
-            journal.event(&AgentEvent::AssistantDelta {
-                text: answer.into(),
-                refusal: false,
-            });
-            journal.event(&AgentEvent::AssistantFinished {
-                text: answer.into(),
-            });
-            append_answer(&mut session, answer);
-            journal.commit((&session).into()).unwrap();
-        }
-        let states: Vec<_> = records(&path)
-            .into_iter()
-            .filter(|r| r["customType"] == "pp.session_state")
-            .collect();
-        assert_eq!(states.len(), 2);
-        assert_eq!(states[1]["data"]["replayVersion"], 1);
-        assert!(states[1]["data"].get("session").is_none());
-        let view = journal.tree_view().unwrap();
-        assert_eq!(view.tree.nodes.len(), 6);
-        for (i, expected) in [(3, "new one"), (5, "new two")] {
-            assert!(
-                event_values(&view.records[i])
-                    .iter()
-                    .any(|e| e["assistant_finished"]["text"] == expected)
-            );
-            assert!(
-                !event_values(&view.records[i])
-                    .iter()
-                    .any(|e| e["assistant_finished"]["text"] == "old answer")
-            );
-        }
-        let selected = journal.prepare_tree(&view.tree.nodes[3].id).unwrap();
-        journal
-            .write_tree_state(
-                &metadata(dir.path()),
-                (&selected.session).into(),
-                &WorkflowState::default(),
-                Some(&selected.selection),
-            )
-            .unwrap();
-        assert_eq!(journal.replay_version, 1);
-        drop(journal);
-        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
-        // 树选择恢复旧节点与新节点各一次，裁剪掉第二个新分支。
-        assert_eq!(
-            event_values(&restored.replay)
-                .iter()
-                .filter(|e| e["assistant_finished"]["text"] == "old answer")
-                .count(),
-            1
-        );
-        assert!(
-            event_values(&restored.replay)
-                .iter()
-                .any(|e| e["assistant_finished"]["text"] == "new one")
-        );
-        assert!(
-            !event_values(&restored.replay)
-                .iter()
-                .any(|e| e["assistant_finished"]["text"] == "new two")
-        );
-    }
+fn unsupported_session_is_rejected_without_rewriting() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = frozen_legacy(dir.path(), Protocol::Completion);
+    let path = dir.path().join(format!("{id}.jsonl"));
+    let before = fs::read(&path).unwrap();
+    assert!(load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).is_err());
+    assert_eq!(fs::read(path).unwrap(), before);
 }
 
 #[test]
@@ -537,7 +466,6 @@ fn slimming_omitted_state_inherits_tools_instructions_thinking_and_append_for_al
         journal
             .custom(
                 CustomRef::ToolDefinitions {
-                    version: 1,
                     tools: &definitions,
                 },
                 false,
@@ -570,29 +498,4 @@ fn slimming_omitted_state_inherits_tools_instructions_thinking_and_append_for_al
             serde_json::to_value(&session).unwrap()
         );
     }
-}
-
-#[test]
-fn slimming_failed_upgrade_keeps_legacy_writer_and_original_bytes() {
-    let dir = tempfile::tempdir().unwrap();
-    let id = frozen_legacy(dir.path(), Protocol::Completion);
-    let path = dir.path().join(format!("{id}.jsonl"));
-    let before = fs::read(&path).unwrap();
-    let mut restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
-    restored.journal.use_read_only_file(&path);
-    assert!(
-        restored
-            .journal
-            .sent(
-                &metadata(dir.path()),
-                (&restored.checkpoint.session).into(),
-                &WorkflowState::default(),
-                None,
-                None
-            )
-            .is_err()
-    );
-    assert_eq!(restored.journal.replay_version, 0);
-    assert_eq!(fs::read(path).unwrap(), before);
-    assert!(restored.journal.check().is_err());
 }

@@ -22,7 +22,7 @@ use std::{
     collections::HashSet,
     ffi::OsStr,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Read},
+    io::{BufReader, Read},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
 };
@@ -244,9 +244,10 @@ fn project_contents(
     diagnostics: &mut Vec<String>,
 ) -> Result<Step> {
     // fd 边界受限读取：打开后文件增长的部分永不进入本次投影。
-    let mut reader = BufReader::new(file.take(current.bytes as u64));
+    let mut reader =
+        pp_core::session_jsonl::Reader::new(BufReader::new(file.take(current.bytes as u64)));
     let mut line = Vec::new();
-    if reader.read_until(b'\n', &mut line).is_err() {
+    if reader.read_record(&mut line).is_err() {
         diagnostics.push(format!("{id}: session file could not be read"));
         return Ok(Step::Invalid);
     }
@@ -295,14 +296,21 @@ fn project_contents(
     let mut done = false;
     loop {
         line.clear();
-        match reader.read_until(b'\n', &mut line) {
+        let count = match reader.read_record(&mut line) {
             Ok(0) => break,
-            Ok(_) => {}
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData && head.has_summary() => {
+                done = false;
+                diagnostics.push(format!(
+                    "{id}: invalid session record after first user message"
+                ));
+                break;
+            }
             Err(_) => {
                 diagnostics.push(format!("{id}: session file could not be read"));
                 return Ok(Step::Invalid);
             }
-        }
+        };
         // 边界处的不完整尾行不入索引；补齐后的元数据变化会触发重建。
         if !line.ends_with(b"\n") {
             done = false;
@@ -342,7 +350,7 @@ fn project_contents(
                 return Ok(Step::Invalid);
             }
         }
-        offset += line.len() as i64;
+        offset += count as i64;
     }
     drop(insert_prompt);
 
@@ -423,7 +431,6 @@ mod tests {
     use crate::history::Store;
     use pp_core::cancellation::Cancelled;
     use serde_json::json;
-    use std::io::Write as _;
 
     struct Fixture {
         _root: tempfile::TempDir,
@@ -455,15 +462,13 @@ mod tests {
         }
 
         fn write_session(&self, n: u8, body: &str) {
-            fs::write(self.path(n), body).unwrap();
+            super::super::tests::write_log(&self.path(n), body);
         }
 
         fn append(&self, n: u8, tail: &str) {
-            let mut file = fs::OpenOptions::new()
-                .append(true)
-                .open(self.path(n))
-                .unwrap();
-            file.write_all(tail.as_bytes()).unwrap();
+            let mut text = super::super::tests::read_log(&self.path(n));
+            text.push_str(tail);
+            super::super::tests::write_log(&self.path(n), &text);
         }
 
         fn count(&self, sql: &str) -> i64 {
@@ -546,9 +551,12 @@ mod tests {
         assert_eq!(
             fixture.prompts(&id),
             vec![
-                (head.len() as i64, "首条 无关键词的介绍".into()),
                 (
-                    (head.len() + first.len()) as i64,
+                    super::super::tests::encode_log(&head).len() as i64,
+                    "首条 无关键词的介绍".into()
+                ),
+                (
+                    super::super::tests::encode_log(&format!("{head}{first}")).len() as i64,
                     "修复模型切换失败 needle_42".into()
                 ),
             ]
@@ -556,7 +564,7 @@ mod tests {
         assert_eq!(fixture.search("needle_42"), vec![id.clone()]);
         let summary = fixture.summary(&id);
         assert!(summary.done);
-        assert_eq!(summary.bytes, base.len() as u64);
+        assert_eq!(summary.bytes, fs::metadata(fixture.path(1)).unwrap().len());
 
         // 追加不完整尾行（自定义事件）：不入索引，done=false，不重复。
         let partial = "{\"type\":\"custom\",\"customType\":\"pp.event\",\"data\":{";

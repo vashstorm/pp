@@ -218,7 +218,7 @@ fn plan_headless_restore_refuses_before_mcp_or_model_start() {
         with_mutated_records(&path, |records| {
             push_entry(
                 records,
-                json!({"type":"custom","customType":"pp.workflow","data":{"version":1,"workflow":{"mode":"plan","plan":null,"review":null}}}),
+                json!({"type":"custom","customType":"pp.workflow","data":{"workflow":{"mode":"plan","plan":null,"review":null}}}),
             );
         });
         configure(home.path(), &json!({"mcpServers":{"must_not_spawn":{"command":"bash","args":["-c","touch forbidden-mcp; exit 1"]}}}).to_string(), &api.models(&provider));
@@ -360,7 +360,7 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
                 home.path(),
                 cwd.path(),
                 &args,
-                &["unsupported legacy session format"],
+                &["unsupported session format"],
                 &["fixture-key"],
             );
         }
@@ -377,7 +377,7 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
             home.path(),
             cwd.path(),
             &["-r", &id, "-p", "hi"],
-            &["unsupported session version"],
+            &["unsupported session format"],
             &["fixture-key"],
         );
     }
@@ -473,7 +473,7 @@ fn session_loader_rejects_corrupt_or_unavailable_logs() {
     // get real chain envelopes, and intentional reordering is relinked.
     type MutationCase = (&'static str, fn(&mut Vec<Value>));
     let cases: &[MutationCase] = &[
-        ("unsupported pp session version", |records| {
+        ("invalid session record", |records| {
             session_state_mut(records)["version"] = json!(2);
         }),
         ("missing pp session state", |records| {

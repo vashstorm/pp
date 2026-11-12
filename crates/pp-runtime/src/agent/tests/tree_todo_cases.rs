@@ -228,7 +228,7 @@ fn todo_runtime_snapshots_follow_durable_transitions_and_are_not_journaled() {
                             .map(|entry| entry.unwrap().path())
                             .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
                             .unwrap();
-                        let text = std::fs::read_to_string(journal).unwrap();
+                        let text = crate::agent::persistence::tests::read_log(&journal);
                         let saved: Value = text
                             .lines()
                             .filter_map(|line| serde_json::from_str::<Value>(line).ok())

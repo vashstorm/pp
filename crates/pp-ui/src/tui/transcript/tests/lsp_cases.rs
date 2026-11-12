@@ -305,7 +305,7 @@ fn slimming_message_snapshot_matches_live_card_order_diff_lsp_and_folded_body() 
             {"type":"thinking","thinking":"thought","summary":false}, {"type":"text","text":"answer"},
             {"type":"toolCall","id":"read","name":"read","rawArguments":"{\"path\":\"src/a.rs\"}"},
             {"type":"toolCall","id":"write","name":"write","rawArguments":"{\"path\":\"src/a.rs\"}"}],
-            "ppReplay":{"version":1,"attempt":"frozen-attempt","order":[
+            "ppReplay":{"attempt":"frozen-attempt","order":[
                 {"kind":"content","index":0},{"kind":"content","index":1},{"kind":"finish"},
                 {"kind":"content","index":2},{"kind":"result","index":0},
                 {"kind":"content","index":3},{"kind":"event","index":0},{"kind":"event","index":1},{"kind":"result","index":1}]}}}),
@@ -335,7 +335,7 @@ fn slimming_message_snapshot_matches_live_card_order_diff_lsp_and_folded_body() 
     let mut replayed = Transcript::new();
     assert!(
         replayed
-            .replay(pp_runtime::agent::persistence::replay_fixture(1, &lines).unwrap())
+            .replay(pp_runtime::agent::persistence::replay_fixture(&lines).unwrap())
             .is_none()
     );
     assert_eq!(live.entries.len(), replayed.entries.len());

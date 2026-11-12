@@ -126,12 +126,12 @@ fn listing_reads_preview_size_and_latest_turn_status_without_native_content() {
             "message":{"role":"assistant", "content":[{"type":"thinking", "thinking":"private thought"},
             {"type":"text", "text":"已经\n修复"}], "stopReason":"stop"}})
     );
-    fs::write(&path, &data).unwrap();
+    write_log(&path, &data);
     let listing = indexed_listing(dir.path()).unwrap();
     let summary = &listing.sessions[0];
     assert_eq!(summary.summary, "修复 测试");
     assert_eq!(summary.preview, "已经 修复");
-    assert_eq!(summary.bytes, data.len() as u64);
+    assert_eq!(summary.bytes, fs::metadata(&path).unwrap().len());
     assert!(summary.done);
     for tail in [
         "{\"type\":\"custom\",\"customType\":\"pp.error\",\"data\":{\"message\":\"safe error\"}}\n",
@@ -141,7 +141,7 @@ fn listing_reads_preview_size_and_latest_turn_status_without_native_content() {
     ] {
         let original = data.clone();
         data.push_str(tail);
-        fs::write(&path, &data).unwrap();
+        write_log(&path, &data);
         assert!(!indexed_listing(dir.path()).unwrap().sessions[0].done);
         data = original;
     }
@@ -218,7 +218,7 @@ fn listing_is_read_only_sorted_and_isolates_invalid_sessions() {
             ));
             data.push_str("broken after user\n{partial");
         }
-        fs::write(&path, data).unwrap();
+        write_log(&path, &data);
         File::open(&path)
             .unwrap()
             .set_times(fs::FileTimes::new().set_modified(
@@ -308,16 +308,16 @@ fn listing_rejects_invalid_headers_and_ignores_unfinished_user_records() {
     ] {
         let mut invalid = header.clone();
         invalid[key] = value;
-        fs::write(&path, format!("{invalid}\n{user}\n")).unwrap();
+        write_log(&path, &format!("{invalid}\n{user}\n"));
         let listing = indexed_listing(dir.path()).unwrap();
         assert!(listing.sessions.is_empty(), "{key}");
         assert_eq!(listing.diagnostics.len(), 1, "{key}");
     }
-    fs::write(&path, format!("{header}\n{user}")).unwrap();
+    write_log(&path, &format!("{header}\n{user}"));
     let listing = indexed_listing(dir.path()).unwrap();
     assert!(listing.sessions.is_empty());
     assert!(listing.diagnostics.is_empty());
-    fs::write(&path, format!("{header}\n{user}\n{{partial")).unwrap();
+    write_log(&path, &format!("{header}\n{user}\n{{partial"));
     let listing = indexed_listing(dir.path()).unwrap();
     assert_eq!(listing.sessions[0].summary, "first");
     assert!(listing.diagnostics.is_empty());
@@ -497,8 +497,7 @@ fn incomplete_native_commit_never_restores_projections_or_model_audit() {
         );
         restored.journal.think(ThinkLevel::High).unwrap();
         drop(restored);
-        let records: Vec<serde_json::Value> = fs::read_to_string(&path)
-            .unwrap()
+        let records: Vec<serde_json::Value> = read_log(&path)
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
@@ -1015,7 +1014,7 @@ fn stats_context_early_journal_does_not_consume_capture_and_restore_does_not_rea
 
 pub(super) fn rewrite_records(path: &Path, mutate: impl Fn(&mut serde_json::Value)) {
     let mut out = String::new();
-    for line in fs::read_to_string(path).unwrap().lines() {
+    for line in read_log(path).lines() {
         let mut record: serde_json::Value = serde_json::from_str(line).unwrap();
         mutate(&mut record);
         if record.is_null() {
@@ -1024,7 +1023,7 @@ pub(super) fn rewrite_records(path: &Path, mutate: impl Fn(&mut serde_json::Valu
         out.push_str(&record.to_string());
         out.push('\n');
     }
-    fs::write(path, out).unwrap();
+    write_log(path, &out);
 }
 
 fn read_only(path: &Path, journal: &mut SessionJournal) {
@@ -1065,15 +1064,15 @@ fn workflow_state_survives_restore_without_moving_native_cursor() {
     let before = fs::read(&path).unwrap();
     let nodes_before = journal.tree().unwrap().nodes.len();
 
-    // Workflow-only updates append their own strict versioned record and
+    // Workflow-only updates append their own record and
     // never touch native history or the logical tree.
     let mut updated = workflow.clone();
     updated.plan.as_mut().unwrap().revision = 2;
     updated.plan.as_mut().unwrap().content = "- [x] Create hello.txt\n".into();
     journal.write_workflow(&updated).unwrap();
-    let text = fs::read_to_string(&path).unwrap();
+    let text = read_log(&path);
     assert!(text.contains(r#""customType":"pp.workflow""#));
-    assert!(text.contains(r#""version":1"#));
+    assert!(!text.contains(r#""version""#));
     assert!(fs::read(&path).unwrap().starts_with(&before));
     assert_eq!(journal.tree().unwrap().nodes.len(), nodes_before);
     drop(journal);
@@ -1141,26 +1140,26 @@ fn workflow_records_fail_closed_on_version_unknown_fields_and_privilege() {
     let mut ready = plan_workflow();
     ready.plan.as_mut().unwrap().content = "sensitive-plan-body".into();
     let ready_json = serde_json::to_value(&ready).unwrap();
-    let base = fs::read_to_string(&path).unwrap();
+    let base = read_log(&path);
     let records = [
         (
             serde_json::json!({"type":"custom", "customType":"pp.workflow",
                     "data":{"version":2, "workflow":{"mode":"execute", "plan":null, "review":null}}}),
-            ("unsupported saved workflow version", None),
-        ),
-        (
-            serde_json::json!({"type":"custom", "customType":"pp.workflow",
-                    "data":{"version":1, "workflow":{"mode":"plan", "plan":null, "review":null}, "extra":1}}),
             ("invalid session record", None),
         ),
         (
             serde_json::json!({"type":"custom", "customType":"pp.workflow",
-                    "data":{"version":1, "workflow":{"mode":"admin", "plan":null, "review":null}}}),
+                    "data":{"workflow":{"mode":"plan", "plan":null, "review":null}, "extra":1}}),
             ("invalid session record", None),
         ),
         (
             serde_json::json!({"type":"custom", "customType":"pp.workflow",
-                    "data":{"version":1, "workflow":{"mode":"execute", "plan":ready_json["plan"], "review":null}}}),
+                    "data":{"workflow":{"mode":"admin", "plan":null, "review":null}}}),
+            ("invalid session record", None),
+        ),
+        (
+            serde_json::json!({"type":"custom", "customType":"pp.workflow",
+                    "data":{"workflow":{"mode":"execute", "plan":ready_json["plan"], "review":null}}}),
             ("Invalid saved workflow state.", Some("sensitive-plan-body")),
         ),
     ];
@@ -1172,7 +1171,7 @@ fn workflow_records_fail_closed_on_version_unknown_fields_and_privilege() {
         record["id"] = serde_json::json!("workflow-corruption");
         record["parentId"] = entries.last().unwrap()["id"].clone();
         record["timestamp"] = entries[0]["timestamp"].clone();
-        fs::write(&path, format!("{base}{record}\n")).unwrap();
+        write_log(&path, &format!("{base}{record}\n"));
         let error = format!(
             "{:#}",
             load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false)
@@ -1291,7 +1290,7 @@ fn commit_plan_handoff_commits_projection_and_state_atomically() {
         let id = journal.id().unwrap().to_owned();
         assert_eq!(journal.take_notice().as_deref(), Some(id.as_str()));
         let path = dir.path().join(format!("{id}.jsonl"));
-        let text = fs::read_to_string(&path).unwrap();
+        let text = read_log(&path);
         let first: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         assert_eq!(first["type"], "session");
         drop(journal);
@@ -1456,4 +1455,42 @@ fn transient_pipeline_snapshots_never_reach_the_journal() {
     });
     // 瞬时预览不进入可恢复日志；最终结果里的 pipes 才是权威。
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+// 测试观察逻辑记录；物理字节和游标断言仍直接读取文件。
+pub(crate) fn read_log(path: &Path) -> String {
+    let mut reader = SessionReader::new(BufReader::new(File::open(path).unwrap()));
+    let mut line = Vec::new();
+    let mut result = Vec::new();
+    while reader.read_record(&mut line).unwrap() != 0 {
+        result.extend_from_slice(&line);
+    }
+    String::from_utf8(result).unwrap()
+}
+
+pub(super) fn encode_log(text: &str) -> Vec<u8> {
+    let mut storage = Storage::default();
+    let mut output = Vec::new();
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line) else {
+            output.extend_from_slice(line.as_bytes());
+            continue;
+        };
+        if index == 0 {
+            if value["version"] == 3 {
+                value.as_object_mut().unwrap().remove("version");
+            }
+            output.extend(serde_json::to_vec(&value).unwrap());
+        } else {
+            output.extend(storage.encode(&value).unwrap());
+        }
+        if line.ends_with('\n') {
+            output.push(b'\n');
+        }
+    }
+    output
+}
+
+pub(crate) fn write_log(path: &Path, text: &str) {
+    fs::write(path, encode_log(text)).unwrap();
 }

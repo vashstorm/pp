@@ -146,7 +146,7 @@ pub(super) fn write_plan_file(agent: &Agent, content: &str) {
 /// without taking the session's exclusive flock (the agent holds it).
 pub(super) fn journal_workflow(dir: &std::path::Path, id: &str) -> pp_core::plan::WorkflowState {
     let path = dir.join("sessions").join(format!("{id}.jsonl"));
-    let text = std::fs::read_to_string(path).unwrap();
+    let text = crate::agent::persistence::tests::read_log(&path);
     let mut latest = None;
     for line in text.lines() {
         let record: serde_json::Value = serde_json::from_str(line).unwrap();

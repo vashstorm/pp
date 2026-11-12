@@ -1,4 +1,4 @@
-//! The session container is readable by generic viewers; only pp native extensions restore requests.
+//! 共享值展开后的逻辑记录；只有原生扩展用于恢复模型请求。
 use super::{Metadata, Session, SessionRef};
 use async_openai::types::{chat as c, responses as r};
 use pp_config::config::EditMode;
@@ -15,10 +15,10 @@ use std::{
 };
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Header {
     #[serde(rename = "type")]
     pub kind: String,
-    pub version: u32,
     pub id: String,
     pub timestamp: String,
     pub cwd: PathBuf,
@@ -28,7 +28,6 @@ pub(super) struct Header {
 pub(super) struct HeaderRef<'a> {
     #[serde(rename = "type")]
     pub kind: &'static str,
-    pub version: u32,
     pub id: &'a str,
     pub timestamp: &'a str,
     pub cwd: &'a Path,
@@ -71,14 +70,12 @@ pub(super) enum PayloadRef<'a> {
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WorkflowRef<'a> {
-    pub version: u32,
     pub workflow: &'a WorkflowState,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Workflow {
-    pub version: u32,
     pub workflow: WorkflowState,
 }
 
@@ -92,7 +89,7 @@ pub(super) enum CustomRef<'a> {
     #[serde(rename = "pp.workflow")]
     Workflow(WorkflowRef<'a>),
     #[serde(rename = "pp.tools")]
-    ToolDefinitions { version: u32, tools: &'a Value },
+    ToolDefinitions { tools: &'a Value },
     #[serde(rename = "pp.instructions")]
     Instructions { system: &'a str },
     #[serde(rename = "pp.event")]
@@ -110,7 +107,6 @@ pub(super) struct StateRef<'a> {
     pub role_route: Option<&'a pp_config::config::RoleRoute>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tree: Option<&'a super::tree::Selection>,
-    pub version: u32,
     pub model_reference: &'a str,
     pub think_level: ThinkLevel,
     pub edit_mode: EditMode,
@@ -120,7 +116,6 @@ pub(super) struct StateRef<'a> {
     pub prompt_source: Option<&'a crate::system_prompt::Snapshot>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionRef<'a>>,
-    pub replay_version: u32,
     pub workflow: &'a WorkflowState,
 }
 impl<'a> StateRef<'a> {
@@ -132,7 +127,6 @@ impl<'a> StateRef<'a> {
         Self {
             role_route: metadata.role_route,
             tree: None,
-            version: 1,
             model_reference: metadata.model_reference,
             think_level: metadata.think_level,
             edit_mode: metadata.edit_mode,
@@ -140,7 +134,6 @@ impl<'a> StateRef<'a> {
             base_system: metadata.base_system,
             prompt_source: metadata.prompt_source,
             session: Some(session),
-            replay_version: 1,
             workflow,
         }
     }
@@ -225,7 +218,7 @@ pub(super) enum Custom {
     #[serde(rename = "pp.workflow")]
     Workflow(Box<Workflow>),
     #[serde(rename = "pp.tools")]
-    ToolDefinitions { version: u32, tools: Value },
+    ToolDefinitions { tools: Value },
     #[serde(rename = "pp.instructions")]
     Instructions { system: String },
     #[serde(rename = "pp.event")]
@@ -236,13 +229,12 @@ pub(super) enum Custom {
     Cancelled {},
 }
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct State {
     #[serde(default)]
     pub role_route: Option<pp_config::config::RoleRoute>,
     #[serde(default)]
     pub tree: Option<super::tree::Selection>,
-    pub version: u32,
     pub model_reference: String,
     pub think_level: ThinkLevel,
     pub edit_mode: EditMode,
@@ -252,8 +244,6 @@ pub(super) struct State {
     pub prompt_source: Option<crate::system_prompt::Snapshot>,
     #[serde(default)]
     pub session: Option<Session>,
-    #[serde(default)]
-    pub replay_version: Option<u32>,
     #[serde(default)]
     pub workflow: WorkflowState,
 }

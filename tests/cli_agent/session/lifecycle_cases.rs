@@ -76,7 +76,7 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
                 .iter()
                 .find(|record| record["customType"] == "pp.session_state")
                 .unwrap()["data"];
-            assert_eq!(state["version"], 1);
+            assert!(state.get("version").is_none());
             assert_eq!(state["modelReference"], "fixture/primary");
             assert!(state["thinkLevel"].is_string());
             assert!(state["editMode"].is_string());
@@ -583,7 +583,7 @@ fn session_continue_sends_exactly_the_saved_native_request() {
         {
             assert_eq!(
                 *calls[index],
-                json!({"type":"toolCall","id":id,"name":name,"arguments":arguments})
+                json!({"type":"toolCall","id":id,"name":name,"rawArguments":arguments.to_string()})
             );
             let tool = &original_messages[index + 2];
             assert_eq!(tool["toolCallId"], id);
