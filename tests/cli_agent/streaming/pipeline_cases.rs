@@ -81,14 +81,13 @@ fn assert_stats_have_no_marker(home: &Path, marker: &str) {
     assert!(path.is_file(), "stats database missing: {path:?}");
     let database = Connection::open(&path).unwrap();
     let mut statement = database
-        .prepare("SELECT request_json, output_json, session_entry_json FROM request_payloads")
+        .prepare("SELECT request_json, skills_json FROM request_contexts")
         .unwrap();
     let rows = statement
         .query_map([], |row| {
             Ok([
                 row.get::<_, Option<String>>(0)?,
                 row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
             ])
         })
         .unwrap();

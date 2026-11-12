@@ -61,8 +61,7 @@ impl RequestContext {
 pub struct Observation {
     pub timestamp: i64,
     pub ttft_ms: Option<u64>,
-    pub text: String,
-    pub thinking: String,
+    /// 原生模型输出；只在请求边界用于提取工具调用，不整体落库。
     pub output: Value,
     pub stop_reason: Option<String>,
     pub usage: Option<pp_core::context::TokenUsage>,
@@ -73,8 +72,6 @@ impl Observation {
         Self {
             timestamp: chrono::Utc::now().timestamp_millis(),
             ttft_ms: None,
-            text: String::new(),
-            thinking: String::new(),
             output: Value::Null,
             stop_reason: None,
             usage: None,
@@ -82,15 +79,11 @@ impl Observation {
         }
     }
     pub fn event(&mut self, event: &pp_core::events::AgentEvent, started: Instant) {
-        use pp_core::events::AgentEvent;
-        match event {
-            AgentEvent::ModelOutputProgress { output_bytes } if *output_bytes > 0 => {
-                self.ttft_ms
-                    .get_or_insert(started.elapsed().as_millis() as u64);
-            }
-            AgentEvent::AssistantDelta { text, .. } => self.text.push_str(text),
-            AgentEvent::ThinkingDelta { text } => self.thinking.push_str(text),
-            _ => {}
+        if let pp_core::events::AgentEvent::ModelOutputProgress { output_bytes } = event
+            && *output_bytes > 0
+        {
+            self.ttft_ms
+                .get_or_insert(started.elapsed().as_millis() as u64);
         }
     }
 }
@@ -283,10 +276,10 @@ impl RequestRow {
     }
 }
 
-/// 列表查询的 SQL；最后一列是 `has_context`（是否已采集原始请求 JSON）。
+/// 列表查询的 SQL；最后一列是 `has_context`（是否已采集首次请求快照）。
 fn latest_sql() -> String {
     format!(
-        "SELECT {COLUMNS},EXISTS(SELECT 1 FROM request_payloads WHERE request_id=requests.id AND request_json IS NOT NULL) FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"
+        "SELECT {COLUMNS},EXISTS(SELECT 1 FROM request_contexts WHERE request_id=requests.id AND request_json IS NOT NULL) FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"
     )
 }
 
@@ -318,6 +311,60 @@ pub struct ToolCall<'a> {
     pub error_message: Option<&'a str>,
     pub timestamp: i64,
     pub duration_ms: f64,
+}
+
+/// 工具调用参数的字符数：字符串按字符、null 为 0、其余按 JSON 文本，与旧聚合口径一致。
+fn args_chars(args: &Value) -> u64 {
+    match args {
+        Value::String(args) => args.chars().count() as u64,
+        Value::Null => 0,
+        args => args.to_string().chars().count() as u64,
+    }
+}
+
+/// 从原生模型输出中提取本请求发出的工具调用，不按 id 去重。
+///
+/// Chat 读 `tool_calls`；Responses 读输出数组（或 `output` 数组）里
+/// `type == "function_call"` 的项。
+fn call_tools(output: &Value) -> Vec<(String, u64)> {
+    if let Some(calls) = output["tool_calls"].as_array() {
+        return calls
+            .iter()
+            .filter_map(|call| {
+                let name = call["function"]["name"].as_str()?;
+                Some((name.to_owned(), args_chars(&call["function"]["arguments"])))
+            })
+            .collect();
+    }
+    output
+        .as_array()
+        .or_else(|| output["output"].as_array())
+        .into_iter()
+        .flatten()
+        .filter(|call| call["type"] == "function_call")
+        .filter_map(|call| {
+            let name = call["name"].as_str()?;
+            Some((name.to_owned(), args_chars(&call["arguments"])))
+        })
+        .collect()
+}
+
+/// 从旧库的已提交会话条目快照里提取工具调用，仅在迁移时使用。
+///
+/// 与迁移前的聚合顺序一致：`message.content` 中 `type == "toolCall"` 的块优先；
+/// [`maintain`] 在快照为空时回退到 [`call_tools`] 的模型输出。
+fn saved_tool_calls(entry: &Value) -> Vec<(String, u64)> {
+    entry
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| entry["message"]["content"].as_array().into_iter().flatten())
+        .filter(|call| call["type"] == "toolCall")
+        .filter_map(|call| {
+            let name = call["name"].as_str()?;
+            Some((name.to_owned(), args_chars(&call["arguments"])))
+        })
+        .collect()
 }
 
 /// 生产环境的统计库路径：`$HOME/.pp/stats/stats.db`。
@@ -384,6 +431,112 @@ pub(crate) fn session_requests_sql(columns: &str) -> String {
     )
 }
 
+/// 一次性退役旧 `request_payloads`：复制首请求快照、回填工具调用、删表并回收空间。
+///
+/// 幂等：旧表不存在时只提交一个空事务后返回，不建表、不 `VACUUM`。迁移只写
+/// `request_contexts`／`request_tools`，不改动 `requests` 的任一字段。仅在
+/// `server::run` 启动与 [`gc`] 中调用，运行期写路径与 `Store::open` 不执行。
+pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
+    // 迁移与其它连接的写事务竞争，临时放宽锁等待；无论成败都恢复 `Store::open`
+    // 的 250ms，避免把一次性迁移的等待时间留在常驻连接上。
+    conn.busy_timeout(Duration::from_secs(5))?;
+    let result = (|| -> Result<bool> {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let legacy = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='request_payloads')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !legacy {
+            tx.commit()?;
+            return Ok(false);
+        }
+        // 更早的旧库可能缺这两列（旧版 `ensure_schema` 会补）；迁移前就地补齐，
+        // 随后整表删除，不改变永久 schema。
+        let mut columns = table_columns(&tx, "request_payloads")?;
+        ensure_column(
+            &tx,
+            "request_payloads",
+            &mut columns,
+            "request_json",
+            "TEXT",
+        )?;
+        ensure_column(&tx, "request_payloads", &mut columns, "skills_json", "TEXT")?;
+        tx.execute(
+            "INSERT OR IGNORE INTO request_contexts(request_id,request_json,skills_json) \
+             SELECT request_id,request_json,skills_json FROM request_payloads \
+             WHERE request_json IS NOT NULL",
+            [],
+        )?;
+        // 先取一次已回填的请求集合，重试时整行跳过，避免逐行查询。
+        let existing = {
+            let mut statement = tx.prepare("SELECT DISTINCT request_id FROM request_tools")?;
+            statement
+                .query_map([], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<std::collections::HashSet<_>>>()?
+        };
+        let mut insert =
+            tx.prepare("INSERT INTO request_tools(request_id,tool,args_chars) VALUES (?1,?2,?3)")?;
+        // 逐行流式读取旧正文，避免把整库文本同时读进内存。
+        let mut payloads =
+            tx.prepare("SELECT request_id,output_json,session_entry_json FROM request_payloads")?;
+        let mut rows = payloads.query([])?;
+        while let Some(row) = rows.next()? {
+            let request_id: i64 = row.get(0)?;
+            if existing.contains(&request_id) {
+                continue;
+            }
+            // 与迁移前的聚合口径一致：已提交会话条目里的 toolCall 优先，缺失时回退到
+            // 旧包装 `{"native":…}` 的原生输出；损坏的快照按空处理，不中断整次迁移。
+            let entry = row
+                .get::<_, Option<String>>(2)?
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok())
+                .unwrap_or(Value::Null);
+            let mut calls = saved_tool_calls(&entry);
+            if calls.is_empty() {
+                let output = row
+                    .get::<_, Option<String>>(1)?
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str::<Value>(json).ok())
+                    .unwrap_or(Value::Null);
+                calls = call_tools(&output["native"]);
+            }
+            for (tool, chars) in calls {
+                insert.execute(params![
+                    request_id,
+                    tool,
+                    i64::try_from(chars).context("tool argument length exceeds i64")?
+                ])?;
+            }
+        }
+        drop(rows);
+        drop(payloads);
+        drop(insert);
+        tx.execute("DROP TABLE IF EXISTS request_payloads", [])?;
+        tx.commit()?;
+        Ok(true)
+    })();
+    // 大库迁移提交后立即回收空间；`VACUUM` 仍在放宽后的锁等待内执行。
+    let outcome = match result {
+        Ok(true) => {
+            let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
+            let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
+            if page_count.saturating_mul(page_size) > 64 * 1024 * 1024 {
+                conn.execute_batch("VACUUM;")?;
+            }
+            Ok(())
+        }
+        Ok(false) => Ok(()),
+        Err(error) => Err(error),
+    };
+    // 无论迁移或回收成败，都恢复 `Store::open` 的默认超时。
+    let restored = conn.busy_timeout(Duration::from_millis(250));
+    outcome?;
+    restored?;
+    Ok(())
+}
+
 /// Returns (total requests before cleanup, removed), counted in the same transaction.
 /// Delete request snapshots before their parents, then reclaim the freed pages.
 pub fn gc(cutoff: i64) -> Result<(u64, u64)> {
@@ -394,6 +547,8 @@ pub fn gc(cutoff: i64) -> Result<(u64, u64)> {
         Err(error) => return Err(error.into()),
     }
     let mut store = Store::open(&path)?;
+    // 旧库迁移失败时保留旧表并让本次 `gc` 失败（非零退出），下次重试。
+    maintain(&mut store.conn)?;
     let tx = store
         .conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -401,7 +556,11 @@ pub fn gc(cutoff: i64) -> Result<(u64, u64)> {
         row.get::<_, i64>(0)
     })? as u64;
     tx.execute(
-        "DELETE FROM request_payloads WHERE request_id IN (SELECT id FROM requests WHERE timestamp < ?1)",
+        "DELETE FROM request_tools WHERE request_id IN (SELECT id FROM requests WHERE timestamp < ?1)",
+        [cutoff],
+    )?;
+    tx.execute(
+        "DELETE FROM request_contexts WHERE request_id IN (SELECT id FROM requests WHERE timestamp < ?1)",
         [cutoff],
     )?;
     let removed = tx.execute("DELETE FROM requests WHERE timestamp < ?1", [cutoff])? as u64;
@@ -428,9 +587,13 @@ fn ensure_schema(conn: &mut Connection) -> Result<()> {
             status TEXT NOT NULL CHECK(status IN ('ok','failed','aborted')), stop_reason TEXT, error_message TEXT,
             cache_write_tokens INTEGER, cost_json TEXT, rate_json TEXT
         );
-        CREATE TABLE IF NOT EXISTS request_payloads (
-            request_id INTEGER PRIMARY KEY REFERENCES requests(id), output_json TEXT NOT NULL,
-            session_entry_json TEXT, request_json TEXT, skills_json TEXT
+        CREATE TABLE IF NOT EXISTS request_contexts (
+            request_id INTEGER PRIMARY KEY REFERENCES requests(id),
+            request_json TEXT NOT NULL, skills_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS request_tools (
+            request_id INTEGER NOT NULL REFERENCES requests(id),
+            tool TEXT NOT NULL, args_chars INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS tool_calls (
             id INTEGER PRIMARY KEY, request_key TEXT, session_file TEXT NOT NULL, call_id TEXT NOT NULL,
@@ -457,6 +620,10 @@ fn ensure_schema(conn: &mut Connection) -> Result<()> {
             "tool_calls_time",
             "CREATE INDEX IF NOT EXISTS tool_calls_time ON tool_calls(timestamp DESC,id DESC)",
         ),
+        (
+            "request_tools_request",
+            "CREATE INDEX IF NOT EXISTS request_tools_request ON request_tools(request_id)",
+        ),
     ] {
         changed |= !index_exists(&tx, name)?;
         tx.execute_batch(ddl)?;
@@ -468,7 +635,6 @@ fn ensure_schema(conn: &mut Connection) -> Result<()> {
         changed = true;
     }
     let mut requests = table_columns(&tx, "requests")?;
-    let mut payloads = table_columns(&tx, "request_payloads")?;
     changed |= ensure_column(
         &tx,
         "requests",
@@ -478,20 +644,6 @@ fn ensure_schema(conn: &mut Connection) -> Result<()> {
     )?;
     changed |= ensure_column(&tx, "requests", &mut requests, "cost_json", "TEXT")?;
     changed |= ensure_column(&tx, "requests", &mut requests, "rate_json", "TEXT")?;
-    changed |= ensure_column(
-        &tx,
-        "request_payloads",
-        &mut payloads,
-        "request_json",
-        "TEXT",
-    )?;
-    changed |= ensure_column(
-        &tx,
-        "request_payloads",
-        &mut payloads,
-        "skills_json",
-        "TEXT",
-    )?;
     if changed {
         // 只在新结构第一次出现时给 planner 补统计，之后每次打开不写库。
         tx.execute_batch("ANALYZE requests; ANALYZE tool_calls;")?;
@@ -619,22 +771,36 @@ impl Store {
         let tx = self.conn.transaction()?;
         let inserted = tx.execute("INSERT INTO requests (request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens,cost_json,rate_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) ON CONFLICT(request_key) DO NOTHING",params![record.request_key,record.timestamp,record.model,record.provider,record.model_reference,record.api,record.project,record.cwd,record.purpose,record.session_file,record.duration_ms,record.ttft_ms,record.input_tokens,record.output_tokens,record.cached_tokens,record.status,record.stop_reason,record.error_message,record.cache_write_tokens,cost_json,rate_json])?;
         if inserted != 0 {
-            tx.execute(
-                "INSERT INTO request_payloads(request_id,output_json,request_json,skills_json) VALUES (?1,?2,?3,?4)",
-                params![tx.last_insert_rowid(), serde_json::to_string(output)?, context.map(|c| serde_json::to_string(&c.request)).transpose()?, context.map(|c| serde_json::to_string(&c.skills)).transpose()?],
-            )?;
+            let request_id = tx.last_insert_rowid();
+            for (tool, chars) in call_tools(output) {
+                tx.execute(
+                    "INSERT INTO request_tools(request_id,tool,args_chars) VALUES (?1,?2,?3)",
+                    params![
+                        request_id,
+                        tool,
+                        i64::try_from(chars).context("tool argument length exceeds i64")?
+                    ],
+                )?;
+            }
+            if let Some(context) = context {
+                tx.execute(
+                    "INSERT INTO request_contexts(request_id,request_json,skills_json) VALUES (?1,?2,?3)",
+                    params![
+                        request_id,
+                        serde_json::to_string(&context.request)?,
+                        serde_json::to_string(&context.skills)?
+                    ],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(())
     }
-    pub fn link(&mut self, key: &str, file: &Path, entries: &[Value]) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        let entry_id = entries.first().and_then(|e| e["id"].as_str());
-        tx.execute("UPDATE requests SET session_file=?1,entry_id=COALESCE(?2,entry_id) WHERE request_key=?3",params![file.to_string_lossy(),entry_id,key])?;
-        if !entries.is_empty() {
-            tx.execute("UPDATE request_payloads SET session_entry_json=?1 WHERE request_id=(SELECT id FROM requests WHERE request_key=?2)",params![serde_json::to_string(entries)?,key])?;
-        }
-        tx.commit()?;
+    pub fn link(&mut self, key: &str, file: &Path) -> Result<()> {
+        self.conn.execute(
+            "UPDATE requests SET session_file=?1 WHERE request_key=?2",
+            params![file.to_string_lossy(), key],
+        )?;
         Ok(())
     }
     /// 幂等写入一次工具执行：同一会话内同一个 call ID 只保留最后一次结果。
@@ -692,13 +858,16 @@ impl Store {
         let Some(record) = record else {
             return Ok(None);
         };
-        let (output, entry, request, skills): (String, Option<String>, Option<String>, Option<String>) = self.conn.query_row(
-            "SELECT output_json,session_entry_json,request_json,skills_json FROM request_payloads WHERE request_id=?1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )?;
-        let request_context = request
-            .map(|request| -> Result<RequestSnapshot> {
+        let context: Option<(String, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT request_json,skills_json FROM request_contexts WHERE request_id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let request_context = context
+            .map(|(request, skills)| -> Result<RequestSnapshot> {
                 Ok(RequestSnapshot {
                     request: serde_json::from_str(&request)?,
                     skills: skills
@@ -709,7 +878,7 @@ impl Store {
             })
             .transpose()?;
         Ok(Some(
-            json!({"request":record.value()?,"output_message":serde_json::from_str::<Value>(&output)?,"session_entry":entry.map(|s|serde_json::from_str::<Value>(&s)).transpose()?,"request_context":request_context}),
+            json!({"request":record.value()?,"request_context":request_context}),
         ))
     }
     pub fn overview(&self, range: Range, now: i64) -> Result<Value> {
@@ -851,7 +1020,6 @@ pub fn save(
             cost: None,
             rates: None,
         };
-        let output = json!({"native":observation.output,"text":observation.text,"thinking":observation.thinking,"partial":outcome.is_err()});
         let mut store = Store::open(&context.database)?;
         // 费用与费率在采集时按当次模型配置固定下来，读取路径不再回算。
         let (cost, rates) = Rates::load(&store.models_path).snapshot(
@@ -864,7 +1032,11 @@ pub fn save(
         );
         record.cost = cost;
         record.rates = rates;
-        store.insert_with_context(&record, &output, observation.request_context.as_ref())?;
+        store.insert_with_context(
+            &record,
+            &observation.output,
+            observation.request_context.as_ref(),
+        )?;
         if let Some(unlinked) = &context.unlinked_requests
             && context.session_file.is_none()
         {
@@ -883,8 +1055,8 @@ pub fn save(
         }
     }
 }
-pub fn link(database: &Path, key: &str, file: &Path, entries: &[Value]) {
-    if (|| -> Result<()> { Store::open(database)?.link(key, file, entries) })().is_err() {
+pub fn link(database: &Path, key: &str, file: &Path) {
+    if (|| -> Result<()> { Store::open(database)?.link(key, file) })().is_err() {
         warn();
     }
 }
@@ -1034,7 +1206,10 @@ mod tests {
         assert!(!store.latest_with_context(0, 2000, 1).unwrap()[0].1);
         store
             .conn
-            .execute_batch("DELETE FROM request_payloads WHERE request_id=(SELECT id FROM requests WHERE request_key='first'); DELETE FROM requests WHERE request_key='first';")
+            .execute_batch(
+                "DELETE FROM request_contexts WHERE request_id=(SELECT id FROM requests WHERE request_key='first');
+                 DELETE FROM requests WHERE request_key='first';",
+            )
             .unwrap();
         assert!(
             store
@@ -1046,28 +1221,44 @@ mod tests {
     }
 
     #[test]
-    fn stats_payload_columns_restore_and_snapshots_deduplicate_atomically() {
+    fn stats_context_tables_restore_and_snapshots_deduplicate_atomically() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("stats.db");
         let mut store = open_store(&path).unwrap();
         let record = fixture("legacy", 1000);
         store
-            .insert(&record, &json!({"text":"old output"}))
-            .unwrap();
-        store
-            .link(
-                "legacy",
-                Path::new("/missing/session.jsonl"),
-                &[json!({"id":"retained-entry"})],
+            .insert(
+                &record,
+                &json!({"tool_calls":[{"function":{"name":"read","arguments":"abc"}}]}),
             )
             .unwrap();
-        store.conn.execute_batch("ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json;").unwrap();
+        store
+            .link("legacy", Path::new("/missing/session.jsonl"))
+            .unwrap();
+        // 模拟没有快照表的旧库：重开时幂等建表，请求历史保持原样。
+        store
+            .conn
+            .execute_batch("DROP TABLE request_contexts; DROP TABLE request_tools;")
+            .unwrap();
         drop(store);
         let mut store = open_store(&path).unwrap();
         let old = store.detail(1).unwrap().unwrap();
-        assert_eq!(old["output_message"]["text"], "old output");
-        assert_eq!(old["session_entry"], json!([{"id":"retained-entry"}]));
+        assert!(old.get("output_message").is_none());
+        assert!(old.get("session_entry").is_none());
         assert!(old["request_context"].is_null());
+        assert_eq!(old["request"]["request_key"], "legacy");
+        assert_eq!(old["request"]["session_file"], "/missing/session.jsonl");
+        assert_eq!(
+            ["request_contexts", "request_tools"].map(|table| store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()),
+            [1, 1]
+        );
         let snapshot = RequestSnapshot {
             request: json!({"instructions":"full\n\t<script>&</script>","input":[{"type":"input_image","image_url":"data:image/png;base64,AAAA","future_field":{"nested":[1,null]}}],"tools":[{"type":"function","name":"read","parameters":{"additionalProperties":false}}],"unknown":{"preserved":true}}),
             skills: vec![pp_config::skills::SkillHeader {
@@ -1078,10 +1269,14 @@ mod tests {
         };
         let record = fixture("snapshot", 1001);
         store
-            .insert_with_context(&record, &json!({"text":"new output"}), Some(&snapshot))
+            .insert_with_context(&record, &Value::Null, Some(&snapshot))
             .unwrap();
         store
-            .insert_with_context(&record, &json!({"text":"must not overwrite"}), None)
+            .insert_with_context(
+                &record,
+                &json!({"tool_calls":[{"function":{"name":"bash","arguments":"x"}}]}),
+                None,
+            )
             .unwrap();
         assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 2);
         drop(store);
@@ -1091,11 +1286,252 @@ mod tests {
             detail["request_context"],
             serde_json::to_value(&snapshot).unwrap()
         );
-        assert_eq!(detail["output_message"]["text"], "new output");
+        assert!(detail.get("output_message").is_none());
+        assert!(detail.get("session_entry").is_none());
+        // 重复键的写入不会补写工具行或覆盖快照。
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT COUNT(*) FROM request_tools", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
         let (status, _, body) = server::dispatch(&store, "/api/stats/requests?range=all", &[]);
         assert_eq!(status, 200);
         assert!(!body.contains("request_context"));
         assert!(!body.contains("future_field"));
+    }
+
+    #[test]
+    fn stats_request_tools_capture_chat_and_responses_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        store
+            .insert(
+                &fixture("chat", 1000),
+                &json!({"tool_calls":[
+                    {"id":"call-1","function":{"name":"read","arguments":"abc"}},
+                    {"id":"call-1","function":{"name":"bash","arguments":null}},
+                    {"function":{"name":"edit","arguments":{"path":"a.rs"}}}
+                ]}),
+            )
+            .unwrap();
+        store
+            .insert(
+                &fixture("responses", 1001),
+                &json!([
+                    {"type":"function_call","name":"read","arguments":"中😀"},
+                    {"type":"message","content":[]},
+                    {"type":"function_call","name":"bash","arguments":"{}"}
+                ]),
+            )
+            .unwrap();
+        let mut statement = store
+            .conn
+            .prepare(
+                "SELECT request_id,tool,args_chars FROM request_tools ORDER BY request_id,rowid",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                // 同一请求内不按调用 id 去重；null 参数为 0，对象按 JSON 文本计字符。
+                (1, "read".to_owned(), 3),
+                (1, "bash".to_owned(), 0),
+                (1, "edit".to_owned(), 15),
+                (2, "read".to_owned(), 2),
+                (2, "bash".to_owned(), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn stats_legacy_payloads_migrate_contexts_and_tools_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        store.insert(&fixture("saved", 1000), &Value::Null).unwrap();
+        store
+            .insert(&fixture("native", 1001), &Value::Null)
+            .unwrap();
+        // 手工还原旧库形态：request_payloads 保存原生输出包装与会话条目快照。
+        store
+            .conn
+            .execute_batch(
+                "CREATE TABLE request_payloads (
+                    request_id INTEGER PRIMARY KEY REFERENCES requests(id), output_json TEXT NOT NULL,
+                    session_entry_json TEXT, request_json TEXT, skills_json TEXT
+                );",
+            )
+            .unwrap();
+        let request_json = json!({"instructions":"first request","tools":[{"name":"read"}]});
+        let skills_json = json!([{"name":"demo","description":"d","uri":"skill://demo"}]);
+        let entry = json!([{
+            "type":"message",
+            "message":{"content":[{"type":"toolCall","name":"read","arguments":"abc"}]}
+        }]);
+        // 已提交会话条目里有 toolCall 时优先，原生输出不参与。
+        let saved_output = json!({
+            "native":{"tool_calls":[{"function":{"name":"ignored","arguments":"zzz"}}]},
+            "text":"answer body","thinking":"thinking body","partial":null
+        });
+        store
+            .conn
+            .execute(
+                "INSERT INTO request_payloads(request_id,output_json,session_entry_json,request_json,skills_json) VALUES (1,?1,?2,?3,?4)",
+                params![
+                    serde_json::to_string(&saved_output).unwrap(),
+                    serde_json::to_string(&entry).unwrap(),
+                    serde_json::to_string(&request_json).unwrap(),
+                    serde_json::to_string(&skills_json).unwrap()
+                ],
+            )
+            .unwrap();
+        // 没有会话条目时从旧包装的 native 回退，参数按字符数计。
+        let native_output = json!({
+            "native":[{"type":"function_call","name":"grep","arguments":"中😀"}],
+            "text":"answer body"
+        });
+        store
+            .conn
+            .execute(
+                "INSERT INTO request_payloads(request_id,output_json,session_entry_json,request_json,skills_json) VALUES (2,?1,NULL,NULL,NULL)",
+                params![serde_json::to_string(&native_output).unwrap()],
+            )
+            .unwrap();
+        let contexts_before: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM request_payloads WHERE request_json IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(contexts_before, 1);
+        let requests = |store: &Store| {
+            let mut statement = store
+                .conn
+                .prepare(
+                    "SELECT id,request_key,session_file,entry_id,status,timestamp FROM requests ORDER BY id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let before = requests(&store);
+        assert_eq!(before.len(), 2);
+
+        maintain(&mut store.conn).unwrap();
+
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='request_payloads'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        let contexts = {
+            let mut statement = store
+                .conn
+                .prepare(
+                    "SELECT request_id,request_json,skills_json FROM request_contexts ORDER BY request_id",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(contexts.len() as i64, contexts_before);
+        assert_eq!(contexts[0].0, 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(&contexts[0].1).unwrap(),
+            request_json
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(contexts[0].2.as_deref().unwrap()).unwrap(),
+            skills_json
+        );
+        let tools = {
+            let mut statement = store
+                .conn
+                .prepare(
+                    "SELECT request_id,tool,args_chars FROM request_tools ORDER BY request_id,rowid",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(
+            tools,
+            vec![(1, "read".to_owned(), 3), (2, "grep".to_owned(), 2)]
+        );
+        assert_eq!(requests(&store), before);
+        // 迁移结束恢复打开时的默认超时。
+        assert_eq!(
+            store
+                .conn
+                .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            250
+        );
+
+        // 旧表已不存在：重复调用是空操作，不写任何行。
+        maintain(&mut store.conn).unwrap();
+        for (table, expected) in [("request_contexts", 1), ("request_tools", 2)] {
+            assert_eq!(
+                store
+                    .conn
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(requests(&store), before);
     }
 
     #[test]
@@ -1197,19 +1633,20 @@ providers:
         let mut failed = fixture("old", 1000);
         failed.status = "failed".into();
         failed.error_message = Some("retained failure".into());
-        store.insert(&failed, &json!({"text":"retained"})).unwrap();
-        let snapshot = json!({"id":"old-entry","type":"message","message":{"role":"assistant","content":"retained snapshot"}});
+        let snapshot = RequestSnapshot {
+            request: json!({"id":"old-entry","type":"message","message":{"role":"assistant","content":"retained snapshot"}}),
+            skills: Vec::new(),
+        };
         store
-            .link(
-                "old",
-                Path::new("/missing/session.jsonl"),
-                std::slice::from_ref(&snapshot),
-            )
+            .insert_with_context(&failed, &Value::Null, Some(&snapshot))
+            .unwrap();
+        store
+            .link("old", Path::new("/missing/session.jsonl"))
             .unwrap();
         store
             .conn
             .execute_batch(
-                "DROP INDEX requests_failed_time; ALTER TABLE requests DROP COLUMN cache_write_tokens; ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json;",
+                "DROP INDEX requests_failed_time; ALTER TABLE requests DROP COLUMN cache_write_tokens;",
             )
             .unwrap();
         drop(store);
@@ -1217,10 +1654,16 @@ providers:
         let old = store.detail(1).unwrap().unwrap();
         assert_eq!(old["request"]["cached_tokens"], 80);
         assert!(old["request"]["cache_write_tokens"].is_null());
-        assert_eq!(old["output_message"]["text"], "retained");
+        assert!(old.get("output_message").is_none());
+        assert!(old.get("session_entry").is_none());
+        assert_eq!(
+            old["request_context"],
+            serde_json::to_value(&snapshot).unwrap()
+        );
         assert_eq!(old["request"]["status"], "failed");
-        assert_eq!(old["request"]["entry_id"], "old-entry");
-        assert_eq!(old["session_entry"], json!([snapshot]));
+        // 会话关联只写 session_file，entry_id 不再由 link 写入。
+        assert!(old["request"]["entry_id"].is_null());
+        assert_eq!(old["request"]["session_file"], "/missing/session.jsonl");
         let errors = store.errors(Range::All, 2000, 50).unwrap();
         assert_eq!(errors["requests"].as_array().unwrap().len(), 1);
         assert_eq!(errors["requests"][0]["error_message"], "retained failure");
@@ -1253,14 +1696,19 @@ providers:
                 .insert(&record, &json!({"text":format!("{key} full output")}))
                 .unwrap();
         }
-        store.link("failed-one", Path::new("/missing/session.jsonl"), &[json!({"id":"entry","type":"message","message":{"role":"assistant","content":"retained snapshot"}})]).unwrap();
+        store
+            .link("failed-one", Path::new("/missing/session.jsonl"))
+            .unwrap();
         let errors = store.errors(Range::All, 2000, 50).unwrap();
         assert_eq!(errors["requests"].as_array().unwrap().len(), 2);
         let latest = serde_json::to_value(store.latest(0, 2000, 500).unwrap()).unwrap();
         let details = (1..=4)
             .map(|id| store.detail(id).unwrap().unwrap())
             .collect::<Vec<_>>();
-        store.conn.execute_batch("DROP INDEX requests_failed_time; ALTER TABLE request_payloads DROP COLUMN request_json; ALTER TABLE request_payloads DROP COLUMN skills_json;").unwrap();
+        store
+            .conn
+            .execute_batch("DROP INDEX requests_failed_time;")
+            .unwrap();
         drop(store);
         for _ in 0..2 {
             let store = open_store(&path).unwrap();
@@ -1622,10 +2070,11 @@ providers:
         assert_eq!(trace["summary"]["wall_ms"], 7_202_000.0);
         assert_eq!(trace["summary"]["model_ms"], 4000.0);
         assert!(!trace.to_string().contains("private-output"));
-        assert_eq!(
-            store.detail(1).unwrap().unwrap()["output_message"]["text"],
-            "private-output"
-        );
+        let detail = store.detail(1).unwrap().unwrap();
+        assert!(detail.get("output_message").is_none());
+        assert!(detail.get("session_entry").is_none());
+        assert!(detail["request_context"].is_null());
+        assert!(!detail.to_string().contains("private-output"));
         assert!(store.trace(9999, now, &HashMap::new()).unwrap().is_none());
         assert_eq!(
             store.trace(2, now, &HashMap::new()).unwrap().unwrap()["summary"]["requests"],
@@ -1711,25 +2160,18 @@ providers:
         let mut store = open_store(&dir.path().join("stats.db")).unwrap();
         let now = chrono::Utc::now().timestamp_millis();
         let rates = Rates::load(&store.models_path);
-        let completion = json!({"native":{"tool_calls":[
+        let completion = json!({"tool_calls":[
             {"function":{"name":"read","arguments":"private-arguments"}},
             {"function":{"name":"bash","arguments":"{}"}}
-        ]},"text":"private-output"});
+        ]});
         let mut first = fixture("one", now - 1000);
         first.session_file = Some("/missing/session.jsonl".into());
         snapshot_for(&rates, &mut first);
         store.insert(&first, &completion).unwrap();
         store
-            .link(
-                "one",
-                Path::new("/missing/session.jsonl"),
-                &[json!({"id":"entry","message":{"content":[
-                    {"type":"toolCall","name":"read","arguments":{"path":"private-arguments"}},
-                    {"type":"toolCall","name":"bash","arguments":{}}
-                ]}})],
-            )
+            .link("one", Path::new("/missing/session.jsonl"))
             .unwrap();
-        let responses = json!({"native":[{"type":"function_call","name":"read","arguments":"{}"}]});
+        let responses = json!([{"type":"function_call","name":"read","arguments":"{}"}]);
         for n in 0..501 {
             let mut r = fixture(&format!("response-{n}"), now);
             r.api = "responses".into();
@@ -1744,7 +2186,12 @@ providers:
         let mut failed = fixture("failed", now);
         failed.status = "aborted".into();
         snapshot_for(&rates, &mut failed);
-        store.insert(&failed, &json!({"native":{"output":[{"type":"function_call","name":"rg","arguments":"中😀"}]}})).unwrap();
+        store
+            .insert(
+                &failed,
+                &json!({"output":[{"type":"function_call","name":"rg","arguments":"中😀"}]}),
+            )
+            .unwrap();
         store
             .insert(&fixture("future", now + 1), &responses)
             .unwrap();
@@ -1801,10 +2248,10 @@ providers:
         store
             .insert(
                 &first,
-                &json!({"native":{"tool_calls":[
+                &json!({"tool_calls":[
                     {"function":{"name":"bash","arguments":"{}"}},
                     {"function":{"name":"read","arguments":"{}"}}
-                ]}}),
+                ]}),
             )
             .unwrap();
         fn tool_call<'a>(
@@ -2016,16 +2463,46 @@ providers:
         let path = dir.path().join("stats/stats.db");
         let mut store = open_store(&path).unwrap();
         let record = fixture("one", 1000);
-        store.insert(&record, &json!({"text":"hello"})).unwrap();
-        store.insert(&record, &json!({"text":"wrong"})).unwrap();
-        store.link("one",Path::new("/tmp/session.jsonl"),&[json!({"id":"entry","type":"message","message":{"role":"assistant","content":"hello"}})]).unwrap();
+        let snapshot = RequestSnapshot {
+            request: json!({"instructions":"hello"}),
+            skills: Vec::new(),
+        };
+        store
+            .insert_with_context(
+                &record,
+                &json!({"tool_calls":[{"function":{"name":"read","arguments":"abc"}}]}),
+                Some(&snapshot),
+            )
+            .unwrap();
+        store
+            .insert_with_context(
+                &record,
+                &json!({"tool_calls":[{"function":{"name":"bash","arguments":"x"}}]}),
+                None,
+            )
+            .unwrap();
+        store.link("one", Path::new("/tmp/session.jsonl")).unwrap();
         drop(store);
         let store = open_store(&path).unwrap();
         assert_eq!(store.latest(0, 2000, 500).unwrap().len(), 1);
         let detail = store.detail(1).unwrap().unwrap();
-        assert_eq!(detail["output_message"]["text"], "hello");
-        assert_eq!(detail["request"]["entry_id"], "entry");
-        assert_eq!(detail["session_entry"][0]["id"], "entry");
+        assert_eq!(
+            detail["request_context"],
+            serde_json::to_value(&snapshot).unwrap()
+        );
+        assert!(detail.get("output_message").is_none());
+        assert!(detail.get("session_entry").is_none());
+        // 重复键不再补写工具行；entry_id 不再由 link 写入。
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT tool FROM request_tools", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "read"
+        );
+        assert!(detail["request"]["entry_id"].is_null());
+        assert_eq!(detail["request"]["session_file"], "/tmp/session.jsonl");
         assert_eq!(
             fs::metadata(path.parent().unwrap())
                 .unwrap()
@@ -2159,11 +2636,14 @@ providers:
             server::dispatch(&store, "/api/stats/requests/999", &[]).0,
             404
         );
-        assert!(
-            server::dispatch(&store, "/api/stats/requests/1", &[])
-                .2
-                .contains("private output")
-        );
+        let (status, _, body) = server::dispatch(&store, "/api/stats/requests/1", &[]);
+        assert_eq!(status, 200);
+        let detail: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(detail["request"]["request_key"], "test");
+        assert!(detail["request_context"].is_null());
+        assert!(detail.get("output_message").is_none());
+        assert!(detail.get("session_entry").is_none());
+        assert!(!body.contains("private output"));
     }
     #[test]
     fn stats_symlinks_are_rejected() {

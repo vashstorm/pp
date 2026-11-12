@@ -764,22 +764,6 @@ function tracePage() {
 
 /* ----------------------------- 抽屉 ----------------------------- */
 
-function traceRequestToolCalls(detail) {
-  const content = (detail.session_entry || []).flatMap(
-    (entry) => entry.message?.content || [],
-  );
-  const saved = content.filter((block) => block.type === "toolCall");
-  if (saved.length) return saved;
-  const native = detail.output_message?.native;
-  if (native?.tool_calls)
-    return native.tool_calls.map((call) => ({
-      id: call.id,
-      name: call.function?.name,
-      arguments: call.function?.arguments,
-    }));
-  const items = Array.isArray(native) ? native : native?.output || [];
-  return items.filter((item) => item.type === "function_call");
-}
 function traceDrawerMetrics(span, track) {
   const items = [
     [
@@ -872,27 +856,7 @@ function traceDrawerHTML(view, state) {
         15,
       )}<span>Failed to load request: ${h(detail.error)}</span></div>`;
     else if (detail.data) {
-      const output = detail.data.output_message || {};
-      if (output.text)
-        sections += `<div class="x-stack" style="gap:6px"><div class="section-label">Text</div><pre class="code-block traces-pre" data-scroll="true">${h(
-          output.text,
-        )}</pre></div>`;
-      if (output.thinking)
-        sections += `<div class="x-stack" style="gap:6px"><div class="section-label">Thinking</div><pre class="code-block traces-pre" data-scroll="true">${h(
-          output.thinking,
-        )}</pre></div>`;
-      const calls = traceRequestToolCalls(detail.data);
-      if (calls.length)
-        sections += `<div class="x-stack" style="gap:6px"><div class="section-label">Tool calls · arguments only</div>${calls
-          .map(
-            (call, index) =>
-              `<details class="traces-json"><summary>${h(
-                call.name || "Tool",
-              )} · ${h(call.id || call.call_id || index + 1)}</summary><pre class="code-block traces-pre">${h(
-                String(call.arguments ?? ""),
-              )}</pre></details>`,
-          )
-          .join("")}</div>`;
+      sections += `<div class="x-stack" style="gap:6px"><div class="section-label">Message content</div><div class="x-muted traces-note">Text, thinking and tool arguments are not recorded by pp.</div></div>`;
       sections += `<details class="traces-json" data-trace-json><summary>Raw request</summary><pre class="code-block traces-pre"></pre></details>`;
     }
   }

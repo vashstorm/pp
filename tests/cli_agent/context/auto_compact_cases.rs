@@ -72,8 +72,15 @@ fn context_auto_compact_summarizes_old_prefix_inside_task_both_protocols() {
             )
             .unwrap();
         assert_eq!(summaries, 1);
-        let entries: i64 = statistics.query_row("SELECT COUNT(*) FROM requests r JOIN request_payloads p ON r.id=p.request_id WHERE r.purpose='auto_compact' AND p.session_entry_json IS NOT NULL", [], |r|r.get(0)).unwrap();
-        assert_eq!(entries, 0);
+        // 摘要请求不是会话首次请求，也不再保存正文与会话条目。
+        let snapshots: i64 = statistics
+            .query_row(
+                "SELECT COUNT(*) FROM requests r JOIN request_contexts c ON c.request_id=r.id WHERE r.purpose='auto_compact'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(snapshots, 0);
     }
 }
 

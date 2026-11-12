@@ -198,7 +198,7 @@ impl SessionJournal {
             if !keys.is_empty() {
                 let file = self.dir.join(format!("{id}.jsonl"));
                 for key in keys {
-                    pp_stats::link(&self.stats_db, &key, &file, &[]);
+                    pp_stats::link(&self.stats_db, &key, &file);
                 }
             }
         }
@@ -790,7 +790,6 @@ impl SessionJournal {
                         )
                     }
                 };
-                let mut entries = Vec::new();
                 let captured = self.capture.active();
                 if captured {
                     let reason = if messages
@@ -801,28 +800,17 @@ impl SessionJournal {
                     } else {
                         "stop"
                     };
-                    entries = self.write_display(reason, Some(&model_reference))?;
+                    self.write_display(reason, Some(&model_reference))?;
                 }
                 for message in messages.iter().filter(|_| !captured) {
                     self.record(PayloadRef::Message { message }, false)?;
-                    if self.pending_stats.is_some()
-                        && matches!(message, Message::Assistant { .. })
-                        && let Ok(entry) = serde_json::from_slice::<serde_json::Value>(&self.buffer)
-                    {
-                        entries.push(entry);
-                    }
                 }
                 self.custom(CustomRef::NativeAppend(append), true)?;
                 self.committed = end;
                 if let Some(key) = self.pending_stats.take()
                     && let Some(id) = self.id()
                 {
-                    pp_stats::link(
-                        &self.stats_db,
-                        &key,
-                        &self.dir.join(format!("{id}.jsonl")),
-                        &entries,
-                    );
+                    pp_stats::link(&self.stats_db, &key, &self.dir.join(format!("{id}.jsonl")));
                 }
                 Ok(())
             })();
@@ -857,7 +845,7 @@ impl SessionJournal {
             AgentEvent::ModelAttemptFailed { .. } | AgentEvent::AssistantStarted
         ) {
             let result = self.write_display("error", None);
-            let _ = self.latch(result.map(|_| ()));
+            let _ = self.latch(result);
         }
         if matches!(event, AgentEvent::AssistantStarted) {
             let id = self
@@ -888,11 +876,7 @@ impl SessionJournal {
         }
         let _ = self.custom(CustomRef::Event { event }, false);
     }
-    fn write_display(
-        &mut self,
-        reason: &str,
-        model_reference: Option<&str>,
-    ) -> Result<Vec<serde_json::Value>> {
+    fn write_display(&mut self, reason: &str, model_reference: Option<&str>) -> Result<()> {
         self.check()?;
         let mut messages = self.capture.messages(
             reason,
@@ -904,17 +888,10 @@ impl SessionJournal {
                 message["model"] = self.wire_model.clone().into();
             }
         }
-        let mut entries = Vec::new();
         for message in &messages {
             self.record(PayloadRef::DisplayMessage { message }, false)?;
-            if message["role"] == "assistant" {
-                entries.push(
-                    serde_json::from_slice(&self.buffer)
-                        .context("invalid serialized display record")?,
-                );
-            }
         }
-        Ok(entries)
+        Ok(())
     }
 
     pub(super) fn cancelled(&mut self) -> Result<()> {
@@ -925,7 +902,7 @@ impl SessionJournal {
     pub(super) fn error(&mut self, message: &str) {
         self.pending_stats = None;
         let result = self.write_display("error", None);
-        let _ = self.latch(result.map(|_| ()));
+        let _ = self.latch(result);
         let _ = self.custom(CustomRef::Error { message }, true);
     }
     pub(super) fn think(&mut self, level: ThinkLevel) -> Result<()> {

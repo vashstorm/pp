@@ -2117,7 +2117,14 @@ function detailsGrid(items) {
 let payloads = {};
 function payload(label, key, value, expanded = false) {
   payloads[key] = value;
-  return `<div class="payload"><div class="payload-top"><button class="payload-toggle" data-payload="${key}" aria-expanded="${expanded}" aria-controls="payload-${key}">${icon(expanded ? "down" : "chevron", 12)}${label}</button><button class="copy" data-copy="${key}">${icon("copy", 12)} Copy</button></div><div id="payload-${key}" ${expanded ? "" : "hidden"}>${value == null ? '<div class="unavailable">Not recorded for this request.</div>' : `<pre><code>${h(JSON.stringify(value, null, 2))}</code></pre>`}</div></div>`;
+  const recorded = value != null;
+  const copy = recorded
+    ? `<button class="copy" data-copy="${key}">${icon("copy", 12)} Copy</button>`
+    : "";
+  const body = recorded
+    ? `<pre><code>${h(JSON.stringify(value, null, 2))}</code></pre>`
+    : `<div class="unavailable">Not recorded — pp stores request metrics and the first-request context only.</div>`;
+  return `<div class="payload"><div class="payload-top"><button class="payload-toggle" data-payload="${key}" aria-expanded="${expanded}" aria-controls="payload-${key}">${icon(expanded ? "down" : "chevron", 12)}${label}</button>${copy}</div><div id="payload-${key}" ${expanded ? "" : "hidden"}>${body}</div></div>`;
 }
 function drawerContent(detail) {
   const r = detail.request;

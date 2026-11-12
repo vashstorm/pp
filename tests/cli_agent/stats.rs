@@ -53,9 +53,10 @@ fn stats_slash_starts_reuses_and_stops_server_without_models() {
 pub(super) fn database(home: &std::path::Path) -> Connection {
     Connection::open(home.join(".pp/stats/stats.db")).unwrap()
 }
+/// 每个请求一行：首个请求有快照时为 `{request, skills}`，其余请求为 null。
 pub(super) fn contexts(home: &std::path::Path) -> Vec<Value> {
     database(home)
-        .prepare("SELECT request_json,skills_json FROM request_payloads ORDER BY request_id")
+        .prepare("SELECT c.request_json,c.skills_json FROM requests r LEFT JOIN request_contexts c ON c.request_id=r.id ORDER BY r.id")
         .unwrap()
         .query_map([], |row| {
             let request = row.get::<_, Option<String>>(0)?;
@@ -70,7 +71,24 @@ pub(super) fn contexts(home: &std::path::Path) -> Vec<Value> {
         .unwrap()
 }
 pub(super) fn rows(home: &std::path::Path) -> Vec<Value> {
-    database(home).prepare("SELECT r.id,r.status,r.input_tokens,r.output_tokens,r.cached_tokens,r.ttft_ms,r.purpose,r.entry_id,r.session_file,p.output_json,p.session_entry_json,r.error_message,r.cache_write_tokens FROM requests r JOIN request_payloads p ON p.request_id=r.id ORDER BY r.id").unwrap().query_map([],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"input":r.get::<_,Option<i64>>(2)?,"output":r.get::<_,Option<i64>>(3)?,"cache":r.get::<_,Option<i64>>(4)?,"ttft":r.get::<_,Option<f64>>(5)?,"purpose":r.get::<_,String>(6)?,"entry_id":r.get::<_,Option<String>>(7)?,"session_file":r.get::<_,Option<String>>(8)?,"payload":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap(),"entry":r.get::<_,Option<String>>(10)?.map(|s|serde_json::from_str::<Value>(&s).unwrap()),"error":r.get::<_,Option<String>>(11)?,"cache_write":r.get::<_,Option<i64>>(12)?}))).unwrap().collect::<Result<_,_>>().unwrap()
+    database(home).prepare("SELECT id,status,input_tokens,output_tokens,cached_tokens,ttft_ms,purpose,session_file,error_message,cache_write_tokens FROM requests ORDER BY id").unwrap().query_map([],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"input":r.get::<_,Option<i64>>(2)?,"output":r.get::<_,Option<i64>>(3)?,"cache":r.get::<_,Option<i64>>(4)?,"ttft":r.get::<_,Option<f64>>(5)?,"purpose":r.get::<_,String>(6)?,"session_file":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?,"cache_write":r.get::<_,Option<i64>>(9)?}))).unwrap().collect::<Result<_,_>>().unwrap()
+}
+
+/// 模型在每个请求边界发出的工具调用：`request_tools` 只保存工具名与参数字符数。
+pub(super) fn tools(home: &std::path::Path) -> Vec<Value> {
+    database(home)
+        .prepare("SELECT request_id,tool,args_chars FROM request_tools ORDER BY request_id,rowid")
+        .unwrap()
+        .query_map([], |r| {
+            Ok(json!({
+                "request":r.get::<_,i64>(0)?,
+                "tool":r.get::<_,String>(1)?,
+                "args":r.get::<_,i64>(2)?,
+            }))
+        })
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 
 fn gc_counts(output: &Output) -> Vec<Vec<u64>> {
@@ -100,8 +118,24 @@ fn gc_removes_expired_logs_and_sqlite_snapshots_without_models() {
         (3, cutoff + 91 * 24 * 60 * 60 * 1000),
     ] {
         db.execute("INSERT INTO requests(id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,duration_ms,status) VALUES (?1,?1,?2,'m','p','p/m','completion','project','/project','task',1,'ok')", rusqlite::params![id, timestamp]).unwrap();
-        db.execute("INSERT INTO request_payloads(request_id,output_json,session_entry_json) VALUES (?1,?2,'[]')", rusqlite::params![id, if id == 1 { format!("\"{}\"", "x".repeat(1024 * 1024)) } else { "{}".to_owned() }]).unwrap();
-        db.execute(r#"UPDATE request_payloads SET request_json='{"model":"fixture","instructions":"retained context"}',skills_json='[]' WHERE request_id=?1"#, [id]).unwrap();
+        // 过期行携带 1 MiB 首请求快照与一条工具调用，使 VACUUM 回收可观测。
+        db.execute(
+            "INSERT INTO request_contexts(request_id,request_json,skills_json) VALUES (?1,?2,'[]')",
+            rusqlite::params![
+                id,
+                if id == 1 {
+                    format!("\"{}\"", "x".repeat(1024 * 1024))
+                } else {
+                    "{}".to_owned()
+                }
+            ],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO request_tools(request_id,tool,args_chars) VALUES (?1,'read',12)",
+            [id],
+        )
+        .unwrap();
     }
     let pages_before: i64 = db
         .pragma_query_value(None, "page_count", |r| r.get(0))
@@ -173,14 +207,19 @@ fn gc_removes_expired_logs_and_sqlite_snapshots_without_models() {
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     assert_eq!(remaining, [2, 3]);
-    let payload_ids: Vec<i64> = db
-        .prepare("SELECT request_id FROM request_payloads ORDER BY request_id")
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    assert_eq!(payload_ids, [2, 3]);
+    // 首请求快照与工具调用跟随请求删除，不会变成孤儿行。
+    for table in ["request_contexts", "request_tools"] {
+        let children: Vec<i64> = db
+            .prepare(&format!(
+                "SELECT request_id FROM {table} ORDER BY request_id"
+            ))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(children, [2, 3], "{table} must follow its request");
+    }
     let pages_after: i64 = db
         .pragma_query_value(None, "page_count", |r| r.get(0))
         .unwrap();
@@ -227,6 +266,79 @@ fn gc_empty_home_does_not_create_storage_and_rejects_symlink_database() {
 }
 
 #[test]
+fn gc_migrates_legacy_payloads_before_deleting_requests() {
+    use chrono::Utc;
+
+    let home = tempfile::tempdir().unwrap();
+    let (_server, _address) = start_stats_server(home.path());
+    let db = database(home.path());
+    let cutoff = Utc::now().timestamp_millis() - 90 * 24 * 60 * 60 * 1000;
+    // 旧版本二进制仍在写这张表；升级后第一次 `pp gc` 必须先把快照与工具调用迁走。
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS request_payloads (
+            request_id INTEGER PRIMARY KEY REFERENCES requests(id), output_json TEXT NOT NULL,
+            session_entry_json TEXT, request_json TEXT, skills_json TEXT
+        );",
+    )
+    .unwrap();
+    for (id, timestamp, context) in [
+        (1, cutoff - 60_000, None),
+        (2, cutoff + 60_000, Some("{\"model\":\"retained\"}")),
+    ] {
+        db.execute("INSERT INTO requests(id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,duration_ms,status) VALUES (?1,?1,?2,'m','p','p/m','completion','project','/project','task',1,'ok')", rusqlite::params![id, timestamp]).unwrap();
+        db.execute(
+            "INSERT INTO request_payloads(request_id,output_json,session_entry_json,request_json,skills_json) VALUES (?1,'{\"native\":[{\"type\":\"function_call\",\"name\":\"read\",\"arguments\":\"abcd\"}]}','[]',?2,'[]')",
+            rusqlite::params![id, context],
+        )
+        .unwrap();
+    }
+    let output = Cli::spawn(home.path(), &["gc"], &[]).finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // 迁移先把旧正文与工具调用回填到新表，再删旧表；删除请求因此不受外键阻挡。
+    let legacy: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='request_payloads'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy, 0);
+    let requests: Vec<i64> = db
+        .prepare("SELECT id FROM requests ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(requests, [2]);
+    let legacy_tools: Vec<(i64, String, i64)> = db
+        .prepare("SELECT request_id,tool,args_chars FROM request_tools ORDER BY request_id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(legacy_tools, [(2, "read".to_owned(), 4)]);
+    let retained: Vec<(i64, String)> = db
+        .prepare("SELECT request_id,request_json FROM request_contexts ORDER BY request_id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(retained, [(2, "{\"model\":\"retained\"}".to_owned())]);
+    assert_eq!(
+        db.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+            .unwrap(),
+        "ok"
+    );
+}
+
+#[test]
 fn gc_days_argument_overrides_default_cutoff() {
     use chrono::{Days, Local, Utc};
 
@@ -240,7 +352,12 @@ fn gc_days_argument_overrides_default_cutoff() {
     )
     .unwrap();
     db.execute(
-        "INSERT INTO request_payloads(request_id,output_json,session_entry_json) VALUES (?1,'{}','[]')",
+        "INSERT INTO request_contexts(request_id,request_json,skills_json) VALUES (?1,'{}','[]')",
+        [1],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO request_tools(request_id,tool,args_chars) VALUES (?1,'read',5)",
         [1],
     )
     .unwrap();
@@ -445,7 +562,7 @@ fn stats_context_first_request_freezes_full_body_skills_and_session_identity() {
 }
 
 #[test]
-fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
+fn stats_chat_captures_metrics_first_request_context_and_tool_calls() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("sample.txt"), "fixture contents").unwrap();
@@ -492,28 +609,24 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     assert_eq!(last["cache"], 100);
     assert_eq!(last["cache_write"], 10);
     assert!(last["ttft"].is_number());
-    assert_eq!(last["payload"]["thinking"], "verified reasoning");
-    assert_eq!(last["entry"][0]["id"], last["entry_id"]);
-    assert_eq!(
-        records[0]["payload"]["native"]["tool_calls"][0]["function"]["name"],
-        "read"
-    );
-    let session = std::fs::read_to_string(last["session_file"].as_str().unwrap()).unwrap();
-    for record in &records {
-        for entry in record["entry"].as_array().unwrap() {
-            assert!(
-                session
-                    .lines()
-                    .any(|line| serde_json::from_str::<Value>(line).ok().as_ref() == Some(entry))
-            );
-        }
-    }
-    let payloads = records
-        .iter()
-        .map(|r| r["payload"].to_string())
-        .collect::<String>();
-    assert!(!payloads.contains("private input marker"));
-    assert!(!payloads.contains("fixture-key"));
+    // 工具调用只落工具名与参数字符数，不再从回答正文反推。
+    let calls = tools(dir.path());
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["request"], records[0]["id"]);
+    assert_eq!(calls[0]["tool"], "read");
+    assert!(calls[0]["args"].as_i64().unwrap() > 0);
+    // 技能摘要头不含用户输入或凭据；回答正文与思考完全不入库。
+    let skills = database(dir.path())
+        .query_row(
+            "SELECT group_concat(skills_json) FROM request_contexts",
+            [],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .unwrap()
+        .unwrap_or_default();
+    assert!(!skills.contains("private input marker"));
+    assert!(!skills.contains("fixture-key"));
+    assert!(!skills.contains("verified reasoning"));
     std::fs::write(
         dir.path().join(".pp/stats/pricing.json"),
         "invalid ignored file",
@@ -536,6 +649,19 @@ fn stats_chat_captures_usage_thinking_tools_and_real_session_entries() {
     assert_eq!(trace["requests"].as_array().unwrap().len(), 2);
     assert!(!body.contains("private input marker"));
     assert!(!body.contains("verified reasoning"));
+    // 详情只返回指标行与首请求快照，正文与会话条目字段不再存在。
+    let (status, body) = http(
+        &address,
+        &format!("/api/stats/requests/{}", last["id"]),
+        &address,
+    );
+    assert_eq!(status, 200);
+    let detail: Value = serde_json::from_str(&body).unwrap();
+    assert!(detail.get("output_message").is_none());
+    assert!(detail.get("session_entry").is_none());
+    assert!(detail["request_context"].is_null());
+    assert!(!body.contains("verified reasoning"));
+    assert!(!body.contains("private input marker"));
     let (status, body) = http(&address, "/api/stats/errors?range=all", &address);
     assert_eq!(status, 200);
     let errors: Value = serde_json::from_str(&body).unwrap();
@@ -733,7 +859,6 @@ fn stats_responses_captures_real_usage_and_keeps_unknown_cache_unknown() {
                 Value::Null
             }
         );
-        assert_eq!(records[0]["entry"][0]["id"], records[0]["entry_id"]);
         assert!(records[0]["ttft"].is_number());
     }
 }
@@ -768,7 +893,6 @@ fn stats_http_errors_are_counted_once_without_response_body_or_credentials() {
         assert_eq!(records.len(), 1);
         assert_eq!(contexts(dir.path())[0]["request"], first_body);
         assert_eq!(records[0]["status"], "failed");
-        assert!(records[0]["entry"].is_null());
         let encoded = records[0].to_string();
         assert!(!encoded.contains("private-error-body"));
         assert!(!encoded.contains("fixture-key"));
@@ -1118,7 +1242,7 @@ fn stats_server_starts_without_models_and_rejects_foreign_hosts() {
 }
 
 #[test]
-fn stats_interrupted_streams_keep_partial_output_without_committing_session_entries() {
+fn stats_interrupted_streams_keep_metrics_without_storing_partial_output() {
     for protocol in ["completion", "response"] {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
@@ -1152,9 +1276,8 @@ fn stats_interrupted_streams_keep_partial_output_without_committing_session_entr
         assert_eq!(records.len(), 1);
         assert_eq!(contexts(dir.path())[0]["request"], first_body);
         assert_eq!(records[0]["status"], "failed");
-        assert_eq!(records[0]["payload"]["partial"], true);
-        assert_eq!(records[0]["payload"]["text"], "partial model output");
-        assert!(records[0]["entry"].is_null());
+        // 未提交的流只留下指标：正文、思考与会话条目都不入库。
+        assert!(tools(dir.path()).is_empty());
         assert!(records[0]["ttft"].is_number());
         no_more(&server);
     }
@@ -1182,8 +1305,6 @@ fn stats_truncated_chat_preserves_reported_usage() {
     assert_eq!(records[0]["output"], 15);
     assert_eq!(records[0]["cache"], 100);
     assert_eq!(records[0]["cache_write"], 10);
-    assert_eq!(records[0]["payload"]["native"]["finish_reason"], "length");
-    assert!(records[0]["entry"].is_null());
 }
 
 #[test]
@@ -1248,7 +1369,6 @@ fn stats_cache_write_extensions_preserve_unknown_zero_and_failed_usage() {
             assert_eq!(records[0]["status"], "failed");
             assert_eq!(records[0]["input"], 50);
             assert_eq!(records[0]["cache_write"], json!(expected));
-            assert!(records[0]["entry"].is_null());
         }
     }
 }

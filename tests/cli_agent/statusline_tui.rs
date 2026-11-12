@@ -339,7 +339,7 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
         );
         assert_eq!(
             db.query_row(
-                "SELECT COUNT(*) FROM request_payloads WHERE request_json IS NOT NULL",
+                "SELECT COUNT(*) FROM request_contexts",
                 [],
                 |r| r.get::<_, i64>(0)
             )
@@ -461,7 +461,8 @@ fn task_status_cost_survives_statistics_write_failure_both_protocols() {
         // 金额先于统计落盘更新，等待标题本身发布作为写入完成栅栏。
         pty.text("独立费用快照");
         let db = rusqlite::Connection::open(home.path().join(".pp/stats/stats.db")).unwrap();
-        db.execute_batch("DROP TABLE request_payloads;").unwrap();
+        // 删除写路径依赖的表，让下一次统计写入失败但不影响费用累计。
+        db.execute_batch("DROP TABLE request_tools;").unwrap();
         statusline_reply_usage(main, protocol, "statistics-failure-main-answer");
         pty.completed_after("statistics-failure-main-answer");
         pty.wait_for("统计写失败不影响费用累计", |screen| {

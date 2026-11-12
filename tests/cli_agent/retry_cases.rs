@@ -196,7 +196,11 @@ fn request_retry_recovers_transient_http_failures_on_either_protocol() {
             assert_eq!(records[0]["status"], "ok");
             assert_eq!(stats::contexts(dir.path()).len(), 1);
             assert_eq!(stats::contexts(dir.path())[0]["request"], first_body);
-            assert!(records[0]["entry"].is_array());
+            assert!(
+                records[0]["session_file"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with(".jsonl"))
+            );
             no_more(&server);
         }
     }

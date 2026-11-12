@@ -1,4 +1,4 @@
-use super::{Range, Store, database_path};
+use super::{Range, Store, database_path, maintain};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::io::{IsTerminal, Write};
@@ -15,7 +15,11 @@ pub fn run(
         !host.is_unspecified(),
         "stats host must be a specific IP address, not an unspecified address"
     );
-    let store = Store::open(&database_path()?).context("opening statistics database")?;
+    let mut store = Store::open(&database_path()?).context("opening statistics database")?;
+    // 旧库退役在服务启动时执行；失败只告警，服务照常启动并在下次重试。
+    if let Err(error) = maintain(&mut store.conn) {
+        tracing::warn!(event = "statistics_migration_failed", error = %error);
+    }
     let server = Server::http(std::net::SocketAddr::new(host, port))
         .map_err(|e| anyhow::anyhow!("starting statistics server: {e}"))?;
     let address = server
