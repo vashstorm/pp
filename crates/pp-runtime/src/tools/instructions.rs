@@ -235,7 +235,7 @@ mod tests {
         }
         let documents = tools.project_documents().unwrap();
         let text = crate::project_instructions::render(&documents);
-        assert!(text.contains("main-rule") && text.contains("external-rule"));
+        assert!(!text.contains("main-rule") && text.contains("external-rule"));
         assert!(!text.contains("unrelated-rule"));
         tools.project_request_sent();
         // 相对路径不能通过逃逸启动目录获得临时根的写权限。

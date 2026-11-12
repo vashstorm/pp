@@ -30,7 +30,6 @@ pub(super) const GLOB_TITLE: Color = Color::Rgb(156, 185, 201);
 pub(super) const WRITE_TITLE: Color = Color::Rgb(165, 189, 143);
 pub(super) const SHELL_TITLE: Color = Color::Rgb(197, 187, 139);
 pub(super) const BASH_TITLE: Color = Color::Rgb(244, 191, 84);
-pub(super) const SKILL_TITLE: Color = Color::Rgb(182, 160, 210);
 pub(super) const MCP_TITLE: Color = Color::Rgb(194, 158, 175);
 // MCP 卡片标题分段配色：`mcp` 前缀、服务名与工具名各用独立色相，避免整串名称连写。
 pub(super) const MCP_SERVER: Color = Color::Rgb(160, 196, 224);
@@ -42,9 +41,7 @@ pub(super) const ASK_BG: Color = Color::Rgb(40, 42, 54);
 pub(super) const ASK_BORDER: Color = Color::Rgb(39, 135, 165);
 pub(super) const ASK_TAB_BG: Color = Color::Rgb(60, 63, 75);
 pub(super) const READ_BG: Color = TOOL_BG;
-pub(super) const READ_BORDER: Color = TOOL_BORDER;
 pub(super) const READ_TEXT: Color = Color::Rgb(190, 190, 185);
-pub(super) const READ_ACCENT: Color = Color::Rgb(204, 153, 51);
 pub(super) const READ_SUMMARY_BG: Color = TOOL_BG;
 pub(super) const READ_SUMMARY_TITLE: Color = READ_TITLE;
 pub(super) const READ_SUMMARY_PATH: Color = ACCENT;

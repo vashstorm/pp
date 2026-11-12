@@ -227,11 +227,7 @@ fn read_status_clock_animates_groups_and_stops_after_completion() {
             transcript.entries.last_mut().unwrap().started = Some(started);
         }
         let initial = render(&mut transcript, 80, 20);
-        let (icon_x, icon_y) = if paths[0].starts_with("skill:") {
-            (3, 0)
-        } else {
-            (2, 1)
-        };
+        let (icon_x, icon_y) = (2, 1);
         assert_eq!(initial[(icon_x, icon_y)].symbol(), "\u{f1456}");
         let count = if paths.len() > 1 {
             format!("Read ({})", paths.len())

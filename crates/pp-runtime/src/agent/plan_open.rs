@@ -419,6 +419,11 @@ mod tests {
             let selection = selection();
             let previous_session = serde_json::to_value(&agent.session).unwrap();
             let previous_workflow = agent.workflow.clone();
+            agent.tools.reset_project_instructions([dir
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("AGENTS.md")]);
             // 项目规则读取拒绝 symlink：候选准备在任何写入前失败。
             let target = dir.path().join("agents-source.md");
             std::fs::write(&target, "rules\n").unwrap();

@@ -69,7 +69,6 @@ pub(super) enum EntryKind {
     Bash,
     Think,
     Rg,
-    Read,
     Diff,
     Ask,
     Data,
@@ -664,15 +663,14 @@ impl Transcript {
             // 完整任务只在固定区展示，旧日志的快照同样不生成历史卡片。
             AgentEvent::TodoSnapshot { .. } | AgentEvent::TodoStateUpdated { .. } => {}
             AgentEvent::ProjectInstructionsLoaded { path, content } => {
-                // 自动加载的 AGENTS 正文：独立完成的 Read 卡片，不注册 running_tools。
+                // 自动加载的规则沿用普通 read 展示，不注册模型工具调用。
                 let mut entry = TranscriptEntry::new(
-                    EntryKind::Read,
-                    "Read AGENTS.md".into(),
+                    EntryKind::Data,
+                    "read".into(),
                     content,
                     Some("read".into()),
                 );
-                entry.arguments = serde_json::json!({"path": "AGENTS.md"});
-                entry.footer = format!("⟨Resolved path: {}⟩", pp_core::text::display_text(&path));
+                entry.arguments = serde_json::json!({"path": path});
                 entry.display = self.display;
                 entry.expanded = self.tools_expanded;
                 self.read_groups_key = None;
@@ -863,13 +861,6 @@ impl Transcript {
                     EntryKind::Ask
                 } else if name == "lsp" {
                     EntryKind::Lsp
-                } else if name == "read"
-                    && arguments
-                        .as_ref()
-                        .is_some_and(|args| tool_display::is_skill_read(args, None))
-                {
-                    // 技能正文读取使用独立 Read 卡片；普通文件 read 保持 Data。
-                    EntryKind::Read
                 } else {
                     EntryKind::Data
                 };
@@ -924,17 +915,16 @@ impl Transcript {
                     let label = palette::mcp_label(&name).unwrap_or_else(|| name.clone());
                     match detail {
                         Some(command) if name == "bash" => format!("$ {command}"),
-                        Some(path) if kind == EntryKind::Read => format!("Read {path}"),
                         Some(path) => format!("{label} · {path}"),
                         None => label,
                     }
                 };
-                let title = if matches!(kind, EntryKind::Diff | EntryKind::Ask | EntryKind::Read) {
+                let title = if matches!(kind, EntryKind::Diff | EntryKind::Ask) {
                     pp_core::text::display_text(&title).into_owned()
                 } else {
                     title
                 };
-                let title = if name == "bash" || name == "lsp" || kind == EntryKind::Read {
+                let title = if name == "bash" || name == "lsp" {
                     title
                 } else {
                     format!("{} {title}", palette::tool_icon(&name))
@@ -1124,30 +1114,6 @@ impl Transcript {
                     entry.stdout.clear();
                     entry.stderr.clear();
                     entry.pipeline_preview = None;
-                    if entry.tool.as_deref() == Some("read") {
-                        // 开始时无法从参数识别的技能读取，完成后按结果来源兜底归类。
-                        if entry.kind != EntryKind::Read
-                            && tool_display::is_skill_read(&entry.arguments, Some(&result))
-                        {
-                            entry.kind = EntryKind::Read;
-                            // 此前可能作为普通 read 组成员被隐藏，归类后必须独立可见。
-                            entry.hidden = false;
-                            if let Some(source) = result["source"]
-                                .as_str()
-                                .filter(|source| !source.is_empty())
-                            {
-                                entry.title =
-                                    format!("Read {}", pp_core::text::display_text(source));
-                            }
-                        }
-                        if entry.kind == EntryKind::Read
-                            && let Some(path) =
-                                result["path"].as_str().filter(|path| !path.is_empty())
-                        {
-                            entry.footer =
-                                format!("⟨Resolved path: {}⟩", pp_core::text::display_text(path));
-                        }
-                    }
                     if entry.tool.as_deref() == Some("lsp") {
                         // 工具结果是内联权威；结构化 diagnostics 直接渲染，
                         // 同一份内容的可读正文不再重复；其他动作展示 content。

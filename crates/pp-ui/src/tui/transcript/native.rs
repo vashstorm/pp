@@ -158,11 +158,7 @@ impl Transcript {
         // 相邻 read 还可能合并成同一摘要，整组关闭前不能冻结组首。
         if self.has_live_activity() {
             let mut index = self.entries.len();
-            while index > 0
-                && self.entries[index - 1].tool.as_deref() == Some("read")
-                // 指令卡片独立成卡，不会并入 read 摘要组。
-                && self.entries[index - 1].kind != EntryKind::Read
-            {
+            while index > 0 && self.entries[index - 1].tool.as_deref() == Some("read") {
                 index -= 1;
             }
             frontier = frontier.min(index);

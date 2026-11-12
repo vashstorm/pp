@@ -49,6 +49,27 @@ fn tool_call(request: Request, protocol: &str, id: &str, name: &str, args: Value
     }
 }
 
+pub(super) fn read_project_file(request: Request, protocol: &str, path: &str) {
+    tool_call(
+        request,
+        protocol,
+        "activate-rules",
+        "read",
+        json!({"path":path}),
+    );
+}
+
+pub(super) fn activate_rules(
+    server: &Server,
+    protocol: &str,
+    request: Request,
+) -> (Request, Value) {
+    read_project_file(request, protocol, ".pp/agent/settings.yml");
+    let (request, body) = receive_for(server, protocol);
+    assert_tool_ok(&body, protocol, "activate-rules");
+    (request, body)
+}
+
 fn tool_batch(request: Request, protocol: &str, calls: &[(&str, &str, Value)]) {
     if protocol == "completion" {
         calls_reply(
@@ -138,7 +159,7 @@ fn agents_layered_external_reads_keep_scopes_and_write_limits_both_protocols() {
         assert_tool_ok(&body, protocol, "external-read");
         assert_tool_ok(&body, protocol, "loose-read");
         let text = system(&body, protocol);
-        assert!(text.contains("main-project-rule") && text.contains("foreign-project-rule"));
+        assert!(!text.contains("main-project-rule") && text.contains("foreign-project-rule"));
         assert!(!text.contains("unrelated-parent-rule"));
         assert!(text.contains(external.canonicalize().unwrap().to_str().unwrap()));
         tool_call(
@@ -298,7 +319,7 @@ fn agents_layered_compaction_retains_rules_and_new_resets_scope_both_protocols()
 }
 
 #[test]
-fn agents_layered_startup_loads_git_ancestors_in_order_both_protocols() {
+fn agents_layered_first_read_loads_git_ancestors_in_order_both_protocols() {
     for protocol in APIS {
         let server = server();
         let parent = tempfile::tempdir().unwrap();
@@ -318,6 +339,8 @@ fn agents_layered_startup_loads_git_ancestors_in_order_both_protocols() {
             &response_models(&server, Some(protocol)),
         );
         let (request, body) = receive_for(&server, protocol);
+        assert!(!system(&body, protocol).contains("root-layer-rule"));
+        let (request, body) = activate_rules(&server, protocol, request);
         let text = system(&body, protocol);
         assert!(text.find("root-layer-rule").unwrap() < text.find("middle-layer-rule").unwrap());
         assert!(text.find("middle-layer-rule").unwrap() < text.find("runtime-layer-rule").unwrap());
@@ -387,12 +410,14 @@ fn agents_layered_unseen_rules_block_whole_batch_without_creating_directories_bo
     for protocol in APIS {
         let server = server();
         let cwd = tempfile::tempdir().unwrap();
+        fs::write(cwd.path().join("AGENTS.md"), "unseen-root-rule").unwrap();
         fs::create_dir(cwd.path().join("child")).unwrap();
         fs::write(cwd.path().join("child/AGENTS.md"), "unseen-child-rule").unwrap();
         fs::write(cwd.path().join("child/code.txt"), "before").unwrap();
         let mut cli = start(&server, cwd.path(), protocol);
         cli.input("write files\n");
-        let (request, _) = receive_for(&server, protocol);
+        let (request, body) = receive_for(&server, protocol);
+        assert!(!system(&body, protocol).contains("unseen-root-rule"));
         tool_batch(
             request,
             protocol,
@@ -414,6 +439,7 @@ fn agents_layered_unseen_rules_block_whole_batch_without_creating_directories_bo
         for id in ["early-write", "same-read", "late-write"] {
             assert_rules_blocked(&body, protocol, id);
         }
+        assert!(system(&body, protocol).contains("unseen-root-rule"));
         assert!(system(&body, protocol).contains("unseen-child-rule"));
         assert!(!cwd.path().join("early.txt").exists());
         assert!(!cwd.path().join("child/new").exists());
@@ -448,6 +474,7 @@ fn agents_layered_rule_update_stops_batch_suffix_both_protocols() {
         let mut cli = start(&server, cwd.path(), protocol);
         cli.input("update rules and code\n");
         let (request, _) = receive_for(&server, protocol);
+        let (request, _) = activate_rules(&server, protocol, request);
         tool_batch(
             request,
             protocol,
@@ -530,7 +557,7 @@ fn journal(cwd: &Path) -> std::path::PathBuf {
     entries[0].clone()
 }
 
-fn records(path: &Path) -> Vec<Value> {
+pub(super) fn records(path: &Path) -> Vec<Value> {
     let mut reader =
         pp_core::session_jsonl::Reader::new(std::io::BufReader::new(fs::File::open(path).unwrap()));
     let mut records = Vec::new();
@@ -542,7 +569,7 @@ fn records(path: &Path) -> Vec<Value> {
 }
 
 #[test]
-fn agents_loads_only_startup_document_in_full_with_skill_summary_both_protocols() {
+fn agents_defers_full_document_until_first_read_with_skill_summary_both_protocols() {
     for protocol in APIS {
         let server = server();
         let parent = tempfile::tempdir().unwrap();
@@ -563,6 +590,9 @@ fn agents_loads_only_startup_document_in_full_with_skill_summary_both_protocols(
             &response_models(&server, Some(protocol)),
         );
         let (request, body) = receive_for(&server, protocol);
+        assert!(!system(&body, protocol).contains(&document));
+        assert!(system(&body, protocol).contains("Rust 测试指导"));
+        let (request, body) = activate_rules(&server, protocol, request);
         let system = system(&body, protocol);
         assert!(system.contains(&document));
         assert_eq!(system.matches("始终保留项目规则。").count(), 1);
@@ -806,12 +836,25 @@ fn agents_invalid_files_block_requests_without_disclosing_contents_both_protocol
             }
             let cli = Cli::start_with(
                 cwd.path(),
-                Some("must not send"),
+                Some("inspect without eager rules"),
                 fixture_settings(),
                 &response_models(&server, Some(protocol)),
             );
+            let (request, body) = receive_for(&server, protocol);
+            assert!(!system(&body, protocol).contains("[Project instructions:"));
+            tool_call(
+                request,
+                protocol,
+                "invalid-rules",
+                "read",
+                json!({"path":"."}),
+            );
+            let (request, body) = receive_for(&server, protocol);
+            assert_eq!(tool_output(&body, protocol, "invalid-rules")["ok"], false);
+            assert!(!body.to_string().contains("secret-document-content"));
+            finish_request(request, protocol, "invalid rules rejected");
             let output = cli.finish();
-            assert!(!output.status.success(), "{protocol}: {kind}");
+            assert!(output.status.success(), "{protocol}: {kind}");
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(stderr.contains("AGENTS.md"), "{stderr}");
             assert!(!stderr.contains("secret-document-content"));
@@ -832,13 +875,25 @@ fn agents_load_errors_recover_in_same_process_and_block_after_tools_both_protoco
         fs::write(&path, b"invalid\xff").unwrap();
         let mut cli = start(&server, cwd.path(), protocol);
         cli.input("rejected-before-history\n");
-        cli.wait_for(Pipe::Stderr, "as UTF-8");
-        no_more(&server);
+        let (request, body) = receive_for(&server, protocol);
+        assert!(!system(&body, protocol).contains("[Project instructions:"));
+        tool_call(
+            request,
+            protocol,
+            "invalid-rules",
+            "read",
+            json!({"path":"."}),
+        );
+        let (request, body) = receive_for(&server, protocol);
+        assert_eq!(tool_output(&body, protocol, "invalid-rules")["ok"], false);
+        finish_request(request, protocol, "first-read-rejected");
+        cli.wait_for(Pipe::Stdout, "first-read-rejected");
         fs::write(&path, "recovered-rule").unwrap();
         cli.input("accepted-after-repair\n");
         let (request, body) = receive_for(&server, protocol);
+        assert!(!system(&body, protocol).contains("recovered-rule"));
+        let (request, body) = activate_rules(&server, protocol, request);
         assert!(system(&body, protocol).contains("recovered-rule"));
-        assert!(!body.to_string().contains("rejected-before-history"));
         tool_call(
             request,
             protocol,
@@ -873,6 +928,8 @@ fn agents_new_and_protocol_switch_use_current_rules() {
     fs::write(cwd.path().join("AGENTS.md"), "first-project-rule").unwrap();
     cli.input("first-task\n");
     let (request, body) = receive_for(&server, "completion");
+    assert!(!system(&body, "completion").contains("first-project-rule"));
+    let (request, body) = activate_rules(&server, "completion", request);
     assert!(system(&body, "completion").contains("first-project-rule"));
     final_reply(request, "first-done");
     cli.wait_for(Pipe::Stdout, "first-done");
@@ -884,6 +941,12 @@ fn agents_new_and_protocol_switch_use_current_rules() {
         fs::write(cwd.path().join("AGENTS.md"), marker).unwrap();
         cli.input(&format!("{command}\n{marker}-task\n"));
         let (request, body) = receive_for(&server, protocol);
+        let (request, body) = if command == "/new" {
+            assert!(!system(&body, protocol).contains(marker));
+            activate_rules(&server, protocol, request)
+        } else {
+            (request, body)
+        };
         assert_eq!(system(&body, protocol).matches(marker).count(), 1);
         assert!(!system(&body, protocol).contains("first-project-rule"));
         if command == "/new" {
@@ -910,6 +973,7 @@ fn agents_resume_and_continue_refresh_from_restored_cwd_and_journal_both_protoco
             &response_models(&server, Some(protocol)),
         );
         let (request, _) = receive_for(&server, protocol);
+        let (request, _) = activate_rules(&server, protocol, request);
         finish_request(request, protocol, "saved-answer");
         assert!(cli.finish().status.success());
         let file = journal(cwd.path());
@@ -991,6 +1055,7 @@ fn agents_manual_and_auto_compaction_refresh_before_summary_and_followup_both_pr
             ));
             cli.input("old-task\n");
             let (request, _) = receive_for(&server, protocol);
+            let (request, _) = activate_rules(&server, protocol, request);
             finish_request(request, protocol, &"old-material ".repeat(5000));
             cli.wait_for(Pipe::Stdout, "old-material");
             cli.input("recent-task\n");
@@ -1064,6 +1129,7 @@ fn agents_growing_during_auto_summary_rechecks_capacity_before_followup_both_pro
         ));
         cli.input("old-task\n");
         let (request, _) = receive_for(&server, protocol);
+        let (request, _) = activate_rules(&server, protocol, request);
         finish_request(request, protocol, &"old-material ".repeat(5000));
         cli.wait_for(Pipe::Stdout, "old-material");
         cli.input("recent-task\n");

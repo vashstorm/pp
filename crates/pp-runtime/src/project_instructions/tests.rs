@@ -18,6 +18,8 @@ fn project_instructions_git_ancestor_chain_and_ignored_rules() {
     fs::write(root.join("crates/AGENTS.md"), "   ").unwrap();
     fs::write(root.join("crates/runtime/AGENTS.md"), "runtime-rule").unwrap();
     let mut state = State::new(&cwd);
+    assert!(state.refresh().unwrap().is_empty());
+    state.activate(cwd.clone()).unwrap();
     let documents = state.refresh().unwrap();
     assert_eq!(
         documents
@@ -99,6 +101,7 @@ fn project_instructions_external_worktree_nested_repository_and_loose_files() {
             .collect::<Vec<_>>(),
         ["nested-rule"]
     );
+    state.activate(root.clone()).unwrap();
     state.activate(external.clone()).unwrap();
     state.activate(loose.clone()).unwrap();
     let text = render(&state.refresh().unwrap());
@@ -116,16 +119,17 @@ fn project_instructions_rule_failures_never_become_empty_rules() {
     let path = root.join("AGENTS.md");
     fs::write(&path, [0xff]).unwrap();
     let mut state = State::new(&root);
-    assert!(state.refresh().is_err());
+    assert!(state.activate(root.clone()).is_err());
     fs::remove_file(&path).unwrap();
     fs::create_dir(&path).unwrap();
-    assert!(state.refresh().is_err());
+    assert!(state.activate(root.clone()).is_err());
     fs::remove_dir(&path).unwrap();
     fs::write(root.join("source"), "must-not-follow").unwrap();
     symlink(root.join("source"), &path).unwrap();
-    assert!(state.refresh().is_err());
+    assert!(state.activate(root.clone()).is_err());
     fs::remove_file(&path).unwrap();
     fs::write(path, "repaired").unwrap();
+    state.activate(root).unwrap();
     assert_eq!(state.refresh().unwrap()[0].content, "repaired");
 }
 
@@ -158,6 +162,7 @@ fn project_instructions_nested_empty_project_removes_ancestor_rules() {
     let child = directory(&root, "child");
     fs::write(root.join("AGENTS.md"), "outer-rule").unwrap();
     let mut state = State::new(&root);
+    state.activate(root.clone()).unwrap();
     state.refresh().unwrap();
     state.sent();
     directory(&child, ".git");

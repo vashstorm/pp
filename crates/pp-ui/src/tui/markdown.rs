@@ -105,7 +105,7 @@ pub(super) struct HeadingAnchor {
 }
 
 pub(super) fn parse(source: &str) -> MarkdownDocument {
-    parse_styled(source, false, None)
+    parse_styled(source, None)
 }
 
 pub(super) fn parse_streaming(source: &str, streaming: bool) -> MarkdownDocument {
@@ -113,52 +113,13 @@ pub(super) fn parse_streaming(source: &str, streaming: bool) -> MarkdownDocument
         return parse(source);
     }
     let tail_start = source.rfind('\n').map(|newline| newline + 1);
-    parse_styled(source, false, tail_start)
+    parse_styled(source, tail_start)
 }
 
-/// 指令正文保留源换行；frontmatter 按原文展示，避免被识别为 Setext 标题。
-pub(super) fn parse_instruction(source: &str) -> MarkdownDocument {
-    let Some(metadata) = source
-        .strip_prefix("---\n")
-        .or_else(|| source.strip_prefix("---\r\n"))
-    else {
-        return parse_styled(source, true, None);
-    };
-    let mut header = Vec::new();
-    let mut offset = 0;
-    let mut closed = false;
-    for line in metadata.split_inclusive('\n') {
-        offset += line.len();
-        if line.trim_end() == "---" {
-            closed = true;
-            break;
-        }
-        let text = line.trim_end_matches(['\r', '\n']);
-        let content = text.trim_start_matches(' ');
-        let indent = &text[..text.len() - content.len()];
-        header.push(WrapLine {
-            first: vec![Span::raw(indent.to_owned())],
-            rest: Vec::new(),
-            spans: vec![Span::raw(display_text(content).into_owned())],
-        });
-    }
-    let mut blocks = vec![Block::Rule(Vec::new()), Block::Paragraph(header, None)];
-    if closed {
-        blocks.push(Block::Rule(Vec::new()));
-    }
-    blocks.extend(parse_styled(&metadata[offset..], true, None).blocks);
-    MarkdownDocument {
-        blocks,
-        cached: Vec::new(),
-        table_tail_start: None,
-    }
-}
-
-fn parse_styled(source: &str, instruction: bool, tail_start: Option<usize>) -> MarkdownDocument {
+fn parse_styled(source: &str, tail_start: Option<usize>) -> MarkdownDocument {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH);
     let mut b = Builder::new(source);
-    b.instruction = instruction;
     for (ev, range) in Parser::new_ext(source, opts).into_offset_iter() {
         match ev {
             Event::Start(tag) => match tag {
@@ -372,7 +333,6 @@ struct TableState {
 
 struct Builder<'a> {
     source: &'a str,
-    instruction: bool,
     blocks: Vec<Block>,
     lines: Vec<WrapLine>,
     cur: Vec<Span<'static>>,
@@ -403,7 +363,6 @@ impl<'a> Builder<'a> {
     fn new(source: &'a str) -> Self {
         Builder {
             source,
-            instruction: false,
             blocks: Vec::new(),
             lines: Vec::new(),
             cur: Vec::new(),
@@ -443,18 +402,9 @@ impl<'a> Builder<'a> {
     fn inline_style(&self) -> Style {
         let mut st = Style::new();
         if self.heading {
-            st = if self.instruction {
-                st.fg(super::transcript_style::READ_ACCENT)
-                    .add_modifier(Modifier::UNDERLINED)
-            } else {
-                st.fg(MD_HEADING).add_modifier(Modifier::BOLD)
-            };
+            st = st.fg(MD_HEADING).add_modifier(Modifier::BOLD);
         } else if self.table_head {
-            st = st.fg(if self.instruction {
-                super::transcript_style::READ_ACCENT
-            } else {
-                MD_HEADING
-            });
+            st = st.fg(MD_HEADING);
         }
         if self.strong > 0 {
             st = st.add_modifier(Modifier::BOLD);
@@ -474,11 +424,9 @@ impl<'a> Builder<'a> {
         st
     }
 
-    /// 指令卡片沿用 READ_ACCENT；标题与表头保留黄色，正文区分粗体和代码。
+    /// 标题与表头保留黄色，正文区分粗体和代码。
     fn emphasis_fg(&self, color: Color) -> Option<Color> {
-        if self.instruction {
-            Some(super::transcript_style::READ_ACCENT)
-        } else if self.heading || self.table_head {
+        if self.heading || self.table_head {
             None
         } else {
             Some(color)
@@ -829,10 +777,6 @@ impl<'a> Builder<'a> {
     }
 
     fn on_soft_break(&mut self) {
-        if self.instruction && self.code.is_none() && self.images.is_empty() && !self.in_cell {
-            self.push_line();
-            return;
-        }
         if let Some(code) = self.code.as_mut() {
             code.buf.push('\n');
             return;

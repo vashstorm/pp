@@ -257,8 +257,10 @@ fn tui_skill_read_preview_busy_rejection_and_resize_for_both_apis() {
             super::super::skills::send_skill_read(request, protocol, "中文技能");
             let (request, body) = receive_at(&server, path);
             assert!(body.to_string().contains("secret-skill-line-19"));
-            pty.text("Read skill://");
-            pty.text("name: 中文技能");
+            pty.text("skill://");
+            if preview {
+                pty.text("name: 中文技能");
+            }
             pty.drain();
             let screen = pty.parser.screen();
             let text = screen.contents();
@@ -267,10 +269,7 @@ fn tui_skill_read_preview_busy_rejection_and_resize_for_both_apis() {
                 "旧技能卡片标题不应再出现: {text}"
             );
             assert!(!text.contains("secret-skill-line-19"));
-            assert!(
-                text.contains("name: 中文技能"),
-                "技能预览应包含 frontmatter: {text}"
-            );
+            assert_eq!(text.contains("name: 中文技能"), preview, "{text}");
             pty.function_key('o');
             pty.text("secret-skill-line-19");
             pty.resize(4, 20);

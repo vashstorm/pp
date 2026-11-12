@@ -44,7 +44,7 @@ impl Transcript {
             || matches!(entry.kind, EntryKind::Error | EntryKind::Notice)
         {
             0
-        } else if matches!(entry.kind, EntryKind::Bash | EntryKind::Read) || entry.is_search() {
+        } else if entry.kind == EntryKind::Bash || entry.is_search() {
             4
         } else {
             2
@@ -64,13 +64,7 @@ impl Transcript {
         }
         let mut index = 0;
         while index < self.entries.len() {
-            if self.entries[index].tool.as_deref() != Some("read")
-                || self.entries[index].kind == EntryKind::Read
-                || tool_display::is_skill_read(
-                    &self.entries[index].arguments,
-                    self.entries[index].result.as_ref(),
-                )
-            {
+            if self.entries[index].tool.as_deref() != Some("read") {
                 index += 1;
                 continue;
             }
@@ -83,11 +77,6 @@ impl Transcript {
             if grouped {
                 while end < self.entries.len()
                     && self.entries[end].tool.as_deref() == Some("read")
-                    && self.entries[end].kind != EntryKind::Read
-                    && !tool_display::is_skill_read(
-                        &self.entries[end].arguments,
-                        self.entries[end].result.as_ref(),
-                    )
                     && self.entries[end].status != EntryStatus::Failed
                     && !self.entries[end].display.full
                     && !self.entries[end].expanded
@@ -179,7 +168,6 @@ impl Transcript {
                     continue;
                 }
                 let bash = entry.kind == EntryKind::Bash;
-                let read = entry.kind == EntryKind::Read;
                 let edit = entry.is_edit();
                 let file_read = entry.is_file_read();
                 // 自带完整外框的条目：不再叠加左侧竖线，也不缩进正文。
@@ -192,8 +180,6 @@ impl Transcript {
                     Some(palette::EDIT_BG)
                 } else if search {
                     Some(palette::RG_BG)
-                } else if read {
-                    Some(palette::READ_BG)
                 } else if file_read {
                     Some(palette::READ_SUMMARY_BG)
                 } else if matches!(entry.kind, EntryKind::Diff | EntryKind::Ask) {
@@ -324,22 +310,16 @@ impl Transcript {
                             ])
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
-                    } else if read || edit {
+                    } else if edit {
                         let (left, right, horizontal, label) = match line.source() {
                             Some(Source::Title) => ("╭", "╮", true, ""),
                             Some(Source::Divider) => ("├", "┤", true, " Output "),
                             Some(Source::Bottom) => ("╰", "╯", true, ""),
                             _ => ("│", "│", false, ""),
                         };
-                        let style = if edit {
-                            Style::default()
-                                .fg(palette::EDIT_BORDER)
-                                .bg(palette::EDIT_BG)
-                        } else {
-                            Style::default()
-                                .fg(palette::READ_BORDER)
-                                .bg(palette::READ_BG)
-                        };
+                        let style = Style::default()
+                            .fg(palette::EDIT_BORDER)
+                            .bg(palette::EDIT_BG);
                         if horizontal {
                             Span::styled("─".repeat(usize::from(area.width)), style)
                                 .render(Rect::new(area.x, row, area.width, 1), buffer);
@@ -373,11 +353,7 @@ impl Transcript {
                 }
                 let padding = if compact || file_read || framed {
                     0
-                } else if bash
-                    || search
-                    || read
-                    || (edit && matches!(line.source(), Some(Source::Title)))
-                {
+                } else if bash || search || (edit && matches!(line.source(), Some(Source::Title))) {
                     4
                 } else {
                     inset

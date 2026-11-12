@@ -17,8 +17,6 @@ mod wait;
 pub(super) use wait::render as wait_body;
 
 const READ_LINES: usize = 3;
-// 指令卡片（自动 AGENTS 加载与技能正文读取）固定预览 10 个逻辑行。
-const INSTRUCTION_LINES: usize = 10;
 const RG_LINES: usize = 6;
 const SEARCH_EXPANDED_LINES: usize = 24;
 const FIND_ITEMS: usize = 8;
@@ -57,7 +55,6 @@ pub(super) struct View<'a> {
     pub running: bool,
     pub failed: bool,
     pub expanded: bool,
-    pub instruction_read: bool,
     pub context: Context,
 }
 
@@ -146,17 +143,6 @@ pub(super) fn command(text: &str, expanded: bool, context: Context) -> Vec<Strin
         lines.insert(0, format!("… {hidden} earlier lines (Ctrl + O to expand)"));
     }
     lines
-}
-
-pub(super) fn is_skill_read(arguments: &Value, result: Option<&Value>) -> bool {
-    arguments["path"]
-        .as_str()
-        .is_some_and(|p| p.starts_with("skill://"))
-        || result.is_some_and(|r| {
-            r["source"]
-                .as_str()
-                .is_some_and(|p| p.starts_with("skill://"))
-        })
 }
 
 pub(super) fn rg_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
@@ -494,27 +480,6 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     if view.name == "glob" {
         return glob_body(&view, width);
     }
-    if view.instruction_read && !view.failed {
-        let source = logical(text);
-        let shown = if expanded {
-            source.len()
-        } else {
-            source.len().min(INSTRUCTION_LINES)
-        };
-        let mut rows =
-            super::markdown::parse_instruction(&source[..shown].join("\n")).layout(width);
-        for line in &mut rows {
-            line.style = Style::default().fg(palette::READ_TEXT).bg(palette::READ_BG);
-        }
-        if shown < source.len() {
-            rows.extend(wrap(
-                [hint(source.len() - shown, MoreHint::Expand("lines"))],
-                width,
-                Style::default().fg(palette::DIM).bg(palette::READ_BG),
-            ));
-        }
-        return rows;
-    }
     if view.context.full && !matches!(view.name, "bash" | "bash_task") {
         let text = if view.name == "write" && !view.failed {
             view.arguments
@@ -534,10 +499,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
     match view.name {
         "read" => {
-            if !expanded
-                && !view.context.read_preview
-                && !is_skill_read(view.arguments, view.result)
-            {
+            if !expanded && !view.context.read_preview {
                 return Vec::new();
             }
             head(
@@ -1311,7 +1273,6 @@ mod tests {
                 running: false,
                 failed: false,
                 expanded,
-                instruction_read: false,
                 context: Context {
                     full,
                     ..Context::default()
@@ -1373,7 +1334,6 @@ mod tests {
                     running,
                     failed: false,
                     expanded,
-                    instruction_read: false,
                     context: Context {
                         terminal_rows,
                         ..Context::default()
@@ -1418,7 +1378,6 @@ mod tests {
             running: true,
             failed: false,
             expanded: false,
-            instruction_read: false,
             context,
         };
         let rows = body(view, 40, Style::default());
@@ -1461,7 +1420,6 @@ mod tests {
                     running: false,
                     failed: false,
                     expanded,
-                    instruction_read: false,
                     context: Context::default(),
                 },
                 100,
@@ -1494,48 +1452,29 @@ mod tests {
     }
 
     #[test]
-    fn instruction_reads_preview_ten_lines_regardless_of_config() {
-        let content = (0..15)
-            .map(|i| format!("agents-{i:02}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let args = json!({"path": "AGENTS.md"});
-        let view = |expanded: bool, read_preview: bool| View {
-            name: "read",
-            text: &content,
-            arguments: &args,
-            result: None,
-            running: false,
-            failed: false,
-            expanded,
-            instruction_read: true,
-            context: Context {
-                read_preview,
-                ..Context::default()
-            },
-        };
-        let collapsed = text(body(view(false, false), 100, Style::default()));
-        assert!(collapsed.contains("agents-09") && !collapsed.contains("agents-10"));
-        assert!(collapsed.contains("5 more lines (Ctrl + O to expand)"));
-        // 预览配置关闭时指令卡片仍然可见。
-        assert_eq!(
-            collapsed,
-            text(body(view(false, true), 100, Style::default()))
-        );
-        let expanded = text(body(view(true, false), 100, Style::default()));
-        assert!(expanded.contains("agents-14") && !expanded.contains("more lines"));
-        // 普通 read 在预览关闭时保持隐藏。
-        assert!(
-            body(
-                View {
-                    instruction_read: false,
-                    ..view(false, false)
+    fn instruction_reads_obey_normal_preview_settings() {
+        let content = "first\nsecond\nthird\nfourth";
+        for path in ["AGENTS.md", "skill://rust", "file.rs"] {
+            let args = json!({"path": path});
+            let view = |expanded, read_preview| View {
+                name: "read",
+                text: content,
+                arguments: &args,
+                result: None,
+                running: false,
+                failed: false,
+                expanded,
+                context: Context {
+                    read_preview,
+                    ..Context::default()
                 },
-                100,
-                Style::default()
-            )
-            .is_empty()
-        );
+            };
+            assert!(body(view(false, false), 100, Style::default()).is_empty());
+            let preview = text(body(view(false, true), 100, Style::default()));
+            assert!(preview.contains("third") && !preview.contains("fourth"));
+            assert!(preview.contains("1 more lines (Ctrl + O to expand)"));
+            assert!(text(body(view(true, false), 100, Style::default())).contains("fourth"));
+        }
     }
 
     #[test]
@@ -1551,7 +1490,6 @@ mod tests {
                     running: false,
                     failed: false,
                     expanded,
-                    instruction_read: false,
                     context: Context::default(),
                 },
                 100,
@@ -1575,7 +1513,6 @@ mod tests {
                     running,
                     failed: false,
                     expanded: false,
-                    instruction_read: false,
                     context: Context::default(),
                 },
                 100,

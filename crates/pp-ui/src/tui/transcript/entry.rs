@@ -15,7 +15,6 @@ impl EntryKind {
             Self::Bash => Color::Yellow,
             Self::Think | Self::Activity => MUTED_TEXT,
             Self::Rg => Color::Cyan,
-            Self::Read => Color::Reset,
             Self::Diff | Self::Ask => palette::ACCENT,
             Self::Lsp => palette::ACCENT,
             Self::Data => Color::Reset,
@@ -179,13 +178,7 @@ impl AskBlock {
 
 impl TranscriptEntry {
     pub(super) fn tool_accent(&self) -> Color {
-        if self.tool.as_deref() == Some("read")
-            && tool_display::is_skill_read(&self.arguments, self.result.as_ref())
-        {
-            palette::SKILL_TITLE
-        } else {
-            palette::tool_accent(self.tool.as_deref().unwrap_or_default())
-        }
+        palette::tool_accent(self.tool.as_deref().unwrap_or_default())
     }
 
     fn tool_title(&self, text: &str) -> Line<'static> {
@@ -365,7 +358,7 @@ impl TranscriptEntry {
     }
 
     pub(super) fn is_file_read(&self) -> bool {
-        self.tool.as_deref() == Some("read") && self.kind != EntryKind::Read
+        self.tool.as_deref() == Some("read")
     }
 
     pub(super) fn is_edit(&self) -> bool {
@@ -536,17 +529,6 @@ impl TranscriptEntry {
             };
             return Line::styled(text, Style::default().fg(color).bg(BASH_BACKGROUND));
         }
-        if self.kind == EntryKind::Read && matches!(source, Source::Title) {
-            let mut header = self.read_header(1);
-            header.spans.push(Span::styled(
-                format!(
-                    " {} ",
-                    pp_core::text::display_text(text.strip_prefix("Read ").unwrap_or(&text))
-                ),
-                Style::default().fg(palette::READ_SUMMARY_PATH),
-            ));
-            return header.style(Style::default().bg(palette::READ_BG));
-        }
         if matches!(source, Source::Title) {
             let mut spans = if self.tool.is_some() {
                 if range.start == 0 {
@@ -572,9 +554,7 @@ impl TranscriptEntry {
             }
             Line::from(spans)
         } else {
-            let style = if self.kind == EntryKind::Read {
-                Style::default().fg(palette::DIM).bg(palette::READ_BG)
-            } else if matches!((self.kind, source), (EntryKind::Diff, _)) {
+            let style = if matches!((self.kind, source), (EntryKind::Diff, _)) {
                 Style::default().fg(palette::MUTED)
             } else if self.tool.is_some() {
                 Style::default().add_modifier(Modifier::DIM)
@@ -608,11 +588,7 @@ impl TranscriptEntry {
         {
             self.update_bash_footer(self.started.map(|started| started.elapsed()));
         }
-        if !self.hidden
-            && self.tool.as_deref() == Some("read")
-            && self.kind != EntryKind::Read
-            && self.display_title.is_none()
-        {
+        if !self.hidden && self.tool.as_deref() == Some("read") && self.display_title.is_none() {
             self.display_title = Some(Self::read_summary(std::slice::from_ref(self)));
         }
         if self.markdown_dirty {
@@ -719,7 +695,6 @@ impl TranscriptEntry {
                     running: self.status == EntryStatus::Running,
                     failed: self.status == EntryStatus::Failed,
                     expanded: self.expanded,
-                    instruction_read: false,
                     context: self.display,
                 },
                 width,
@@ -740,7 +715,6 @@ impl TranscriptEntry {
         let mut lines = Vec::new();
         let bash = self.kind == EntryKind::Bash;
         let user = self.kind == EntryKind::User;
-        let read = self.kind == EntryKind::Read;
         let edit = self.is_edit();
         let search = self.is_search();
         let file_read = self.is_file_read();
@@ -757,10 +731,6 @@ impl TranscriptEntry {
         }
         if user || file_read {
             lines.push(border(Source::Padding));
-        }
-        if read {
-            // 顶部边框行内嵌标题与状态圆点。
-            self.add_lines(Source::Title, &mut lines);
         }
         if self.has_file_header() {
             lines.push(border(Source::Title));
@@ -863,7 +833,6 @@ impl TranscriptEntry {
                 running: self.status == EntryStatus::Running,
                 failed: self.status == EntryStatus::Failed,
                 expanded: self.expanded,
-                instruction_read: false,
                 context: self.display,
             };
             lines.extend(
@@ -901,8 +870,7 @@ impl TranscriptEntry {
                         }),
                 );
             }
-        } else if !read
-            && self.kind != EntryKind::Lsp
+        } else if self.kind != EntryKind::Lsp
             && !self.kind.hides_title()
             && !matches!(self.body, EntryBody::Tips)
         {
@@ -935,14 +903,6 @@ impl TranscriptEntry {
             }
             let style = if bash {
                 Style::default().fg(MUTED_TEXT).bg(BASH_BACKGROUND)
-            } else if read {
-                Style::default()
-                    .fg(if self.status == EntryStatus::Failed {
-                        palette::REMOVED
-                    } else {
-                        palette::READ_TEXT
-                    })
-                    .bg(palette::READ_BG)
             } else {
                 Style::default().add_modifier(Modifier::DIM)
             };
@@ -956,7 +916,6 @@ impl TranscriptEntry {
                         running: self.status == EntryStatus::Running,
                         failed: self.status == EntryStatus::Failed,
                         expanded: self.expanded,
-                        instruction_read: self.kind == EntryKind::Read,
                         context: self.display,
                     },
                     width,
@@ -1141,13 +1100,6 @@ impl TranscriptEntry {
                 self.add_lines(Source::Text, &mut lines);
             }
         }
-        if read {
-            if !self.footer.is_empty() {
-                lines.push(border(Source::Divider));
-                self.add_lines(Source::Footer, &mut lines);
-            }
-            lines.push(border(Source::Bottom));
-        }
         if user || file_read {
             lines.push(border(Source::Padding));
         }
@@ -1158,7 +1110,7 @@ impl TranscriptEntry {
         for line in &mut lines {
             line.height = if self.kind == EntryKind::Activity
                 // 边框行必须保持单行，窄宽度下标题按现有规则裁剪。
-                || ((read || edit) && matches!(line.source(), Some(Source::Title | Source::Bottom)))
+                || (edit && matches!(line.source(), Some(Source::Title | Source::Bottom)))
                 || matches!(line.content, LayoutContent::Styled(_))
             {
                 1
@@ -1256,16 +1208,9 @@ impl TranscriptEntry {
             EntryStatus::Failed => ("\u{f00d}", palette::REMOVED),
         };
         let mut header = Line::from(vec![
-            Span::raw(if self.is_file_read() { "  " } else { " " }),
+            Span::raw("  "),
             Span::styled(icon, Style::default().fg(color)),
-            Span::styled(
-                " Read",
-                Style::default().fg(if self.is_file_read() {
-                    palette::READ_SUMMARY_TITLE
-                } else {
-                    self.tool_accent()
-                }),
-            ),
+            Span::styled(" Read", Style::default().fg(palette::READ_SUMMARY_TITLE)),
         ]);
         if count > 1 {
             header.spans.push(Span::styled(

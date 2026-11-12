@@ -88,6 +88,9 @@ fn system_prompt_cli_and_discovery_keep_literal_and_required_blocks_both_protoco
             args.extend(flags);
             let cli = Cli::spawn(cwd.path(), &args, &[]);
             let (request, body) = receive_for(&server, protocol);
+            assert!(!system(&body, protocol).contains("project rule {{unknown}}"));
+            let (request, body) =
+                super::project_instructions::activate_rules(&server, protocol, request);
             let text = system(&body, protocol);
             assert!(text.starts_with(base), "{text}");
             assert!(text.contains("project rule {{unknown}}"));
@@ -167,7 +170,9 @@ fn system_prompt_sources_stay_fixed_across_tools_new_and_model_switch_both_proto
             &models.to_string(),
         ));
         cli.input("first task\n");
-        let (request, body) = receive_for(&server, protocol);
+        let (request, _) = receive_for(&server, protocol);
+        let (request, body) =
+            super::project_instructions::activate_rules(&server, protocol, request);
         assert_live(&body, protocol, "execute");
         write(cwd.path(), ".pp/APPEND_SYSTEM.md", "changed append");
         write(cwd.path(), "AGENTS.md", "fresh project rule");
@@ -237,7 +242,9 @@ fn system_prompt_resume_and_continue_use_saved_sources_and_legacy_stays_readable
         write(cwd.path(), "AGENTS.md", "restored fresh rule");
         for args in [vec!["-r", id, "-p", "resumed"], vec!["-c", id]] {
             let cli = Cli::spawn(cwd.path(), &args, &[]);
-            let (request, body) = receive_for(&server, protocol);
+            let (request, _) = receive_for(&server, protocol);
+            let (request, body) =
+                super::project_instructions::activate_rules(&server, protocol, request);
             assert_live(&body, protocol, "execute");
             let text = system(&body, protocol);
             assert_eq!(text.matches("saved append").count(), 1);
@@ -246,11 +253,9 @@ fn system_prompt_resume_and_continue_use_saved_sources_and_legacy_stays_readable
             assert!(cli.finish().status.success());
         }
         // 模拟新字段出现前的 v3 日志：只保留原 baseSystem。
-        let records = fs::read_to_string(&path)
-            .unwrap()
-            .lines()
-            .map(|line| {
-                let mut entry: Value = serde_json::from_str(line).unwrap();
+        let records = super::project_instructions::records(&path)
+            .into_iter()
+            .map(|mut entry| {
                 if entry["customType"] == "pp.session_state" {
                     let data = entry["data"].as_object_mut().unwrap();
                     data.remove("promptSource");
@@ -261,11 +266,25 @@ fn system_prompt_resume_and_continue_use_saved_sources_and_legacy_stays_readable
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        fs::write(&path, records).unwrap();
+        let mut storage = pp_core::session_jsonl::Storage::default();
+        let mut encoded = Vec::new();
+        for (index, line) in records.lines().enumerate() {
+            if index == 0 {
+                encoded.extend_from_slice(line.as_bytes());
+            } else {
+                encoded.extend(
+                    storage
+                        .encode(&serde_json::from_str::<Value>(line).unwrap())
+                        .unwrap(),
+                );
+            }
+            encoded.push(b'\n');
+        }
+        fs::write(&path, encoded).unwrap();
         let cli = Cli::spawn(cwd.path(), &["-r", id, "-p", "legacy task"], &[]);
         let (request, body) = receive_for(&server, protocol);
         let text = system(&body, protocol);
-        assert!(text.starts_with("legacy base marker"));
+        assert!(text.starts_with("legacy base marker"), "{text}");
         assert!(!text.contains("saved append"));
         assert!(text.contains("restored fresh rule"));
         finish_request(request, protocol, "legacy done");

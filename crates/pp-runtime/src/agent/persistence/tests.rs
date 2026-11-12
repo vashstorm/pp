@@ -914,9 +914,9 @@ fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
         // 用只读句柄制造真实写入失败，不能把未落盘的加载报告为成功。
         journal.active.as_mut().unwrap().file = File::open(&path).unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "frozen project body").unwrap();
-        let mut pending = crate::project_instructions::State::new(dir.path())
-            .refresh()
-            .unwrap();
+        let mut state = crate::project_instructions::State::new(dir.path());
+        state.activate(dir.path().to_owned()).unwrap();
+        let mut pending = state.refresh().unwrap();
         let mut reported = Default::default();
         let mut events = Vec::new();
         assert!(

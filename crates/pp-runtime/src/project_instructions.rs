@@ -36,7 +36,7 @@ impl State {
     pub(crate) fn new(cwd: &Path) -> Self {
         Self {
             cwd: cwd.to_owned(),
-            directories: BTreeSet::from([cwd.to_owned()]),
+            directories: BTreeSet::new(),
             current: Vec::new(),
             sent: Vec::new(),
             roots: BTreeSet::new(),

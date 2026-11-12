@@ -469,7 +469,7 @@ fn stats_context_first_request_freezes_full_body_skills_and_session_identity() {
             &first["instructions"]
         };
         assert!(system.as_str().unwrap().starts_with(&base));
-        assert!(system.as_str().unwrap().contains("original-project-rule"));
+        assert!(!system.as_str().unwrap().contains("original-project-rule"));
         assert!(system.as_str().unwrap().contains("skill://available"));
         assert!(
             !system
@@ -482,7 +482,7 @@ fn stats_context_first_request_freezes_full_body_skills_and_session_identity() {
         fs::remove_dir_all(config_path(dir.path(), "skills")).unwrap();
         cli.input("second user\n");
         let (request, second) = receive_at(&server, endpoint);
-        assert!(second.to_string().contains("changed-project-rule"));
+        assert!(!second.to_string().contains("changed-project-rule"));
         finish(request, "second done");
         cli.input("/new\nthird user\n");
         let (request, third) = receive_at(&server, endpoint);

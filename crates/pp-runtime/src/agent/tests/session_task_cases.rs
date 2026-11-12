@@ -9,6 +9,11 @@ fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
         let mut agent =
             runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        agent.tools.reset_project_instructions([dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("AGENTS.md")]);
         for (expected, next, expected_loads) in [
             (
                 "loaded-before-network-result",
