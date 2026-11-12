@@ -305,17 +305,6 @@ impl Panel {
             return;
         };
         let old = self.selected_model().effort;
-        let other = self.roles.get(&self.role());
-        if if self.editing_fallback {
-            other.is_some_and(|a| a.model == model)
-        } else {
-            other
-                .and_then(|a| a.fallback.as_ref())
-                .is_some_and(|f| f.model == model)
-        } {
-            self.message = "Primary and fallback must use different models".into();
-            return;
-        }
         let effort = if choice.thinking.supports(old) {
             old
         } else {
@@ -1346,6 +1335,36 @@ mod tests {
             draw(&mut panel, width, height);
         }
     }
+    #[test]
+    fn fallback_roles_allow_selecting_the_same_model_in_either_row() {
+        for editing_fallback in [false, true] {
+            let mut panel = panel();
+            let value = RoleAssignment {
+                enabled: true,
+                model: "fixture/one".into(),
+                effort: ThinkLevel::High,
+                fallback: Some(RoleModel {
+                    model: "fixture/one".into(),
+                    effort: ThinkLevel::Low,
+                }),
+            };
+            panel.roles.insert(ModelRole::Default, value.clone());
+            key(&mut panel, KeyCode::Right);
+            if editing_fallback {
+                key(&mut panel, KeyCode::Down);
+            }
+            key(&mut panel, KeyCode::Enter);
+            key(&mut panel, KeyCode::Enter);
+            assert_eq!(panel.view, View::Effort);
+            assert!(panel.message.is_empty());
+            let Action::Save(ModelRole::Default, Some(updated)) = key(&mut panel, KeyCode::Enter)
+            else {
+                panic!("主备模型相同时也应允许保存");
+            };
+            assert_eq!(updated, value);
+        }
+    }
+
     #[test]
     fn fallback_roles_can_be_configured_before_primary() {
         let mut panel = panel();

@@ -276,8 +276,6 @@ impl AgentStore {
         )
         .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
         if let Some(effort) = default_role {
-            let duplicate: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM model_roles WHERE role='default' AND fallback_reference=?1)", params![reference], |row| row.get(0)).map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
-            ensure!(!duplicate, "role primary and fallback must differ");
             tx.execute(
                 "UPDATE model_roles SET model_reference=?1, effort=?2 WHERE role='default'",
                 params![reference, effort.as_str()],

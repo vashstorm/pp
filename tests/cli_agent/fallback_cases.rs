@@ -44,6 +44,35 @@ fn reject(request: Request) {
 }
 
 #[test]
+fn fallback_roles_same_model_loads_and_runs_in_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let settings = json!({"rate_limit_retry_budget_seconds":0,
+            "model_roles":{"default":{"model":"first/main","effort":"none",
+                "fallback":{"model":"first/main","effort":"high"}}}})
+        .to_string();
+        let cli = Cli::start_with(
+            home.path(),
+            Some("use the shared role model"),
+            &settings,
+            &models(&server, protocol, protocol),
+        );
+        let (request, body) = receive_at(&server, path(protocol));
+        assert_eq!(body["model"], "main-model");
+        finish(request, protocol, "shared role model answer");
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("shared role model answer"));
+        no_more(&server);
+    }
+}
+
+#[test]
 fn fallback_exhausts_each_model_once_without_nested_attempts() {
     for protocol in ["completion", "response"] {
         let server = server();

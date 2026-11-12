@@ -84,10 +84,6 @@ impl RoleAssignment {
                 "model_roles model must use provider/model"
             );
         }
-        ensure!(
-            self.fallback.as_ref().is_none_or(|f| f.model != self.model),
-            "role primary and fallback must differ"
-        );
         Ok(())
     }
 }
@@ -431,6 +427,53 @@ mod tests {
         }
     }
     #[test]
+    fn fallback_roles_allow_same_model_and_preserve_independent_efforts() {
+        let (dir, mut catalog) = fixture();
+        for effort in [ThinkLevel::Low, ThinkLevel::High] {
+            let mut value = assignment("fixture/two", ThinkLevel::High);
+            value.fallback = Some(RoleModel {
+                model: value.model.clone(),
+                effort,
+            });
+            for role in ModelRole::ALL {
+                catalog.save_model_role(role, Some(value.clone())).unwrap();
+            }
+            let restored = ModelCatalog::from_files(
+                &dir.path().join("settings.yml"),
+                &dir.path().join("models.yml"),
+            )
+            .unwrap();
+            for role in ModelRole::ALL {
+                assert_eq!(restored.model_roles()[&role], value);
+                assert_eq!(restored.role_route(role).unwrap().fallback, value.fallback);
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_roles_save_default_model_matching_fallback() {
+        let (dir, mut catalog) = fixture();
+        let mut value = assignment("fixture/one", ThinkLevel::High);
+        value.fallback = Some(RoleModel {
+            model: "fixture/two".into(),
+            effort: ThinkLevel::Low,
+        });
+        catalog
+            .save_model_role(ModelRole::Default, Some(value.clone()))
+            .unwrap();
+        catalog.save_default_model("fixture/two").unwrap();
+        value.model = "fixture/two".into();
+        assert_eq!(catalog.model_roles()[&ModelRole::Default], value);
+        let restored = ModelCatalog::from_files(
+            &dir.path().join("settings.yml"),
+            &dir.path().join("models.yml"),
+        )
+        .unwrap();
+        assert_eq!(restored.default_reference(), "fixture/two");
+        assert_eq!(restored.model_roles()[&ModelRole::Default], value);
+    }
+
+    #[test]
     fn fallback_roles_roundtrip_missing_primary_and_validation_are_atomic() {
         let (dir, mut catalog) = fixture();
         let mut value = assignment("fixture/two", ThinkLevel::High);
@@ -448,7 +491,7 @@ mod tests {
         .unwrap();
         assert_eq!(restored.model_roles()[&ModelRole::Fast], value);
         let mut invalid = value.clone();
-        invalid.fallback.as_mut().unwrap().model = invalid.model.clone();
+        invalid.fallback.as_mut().unwrap().model = "removed/model".into();
         assert!(
             catalog
                 .save_model_role(ModelRole::Fast, Some(invalid))
