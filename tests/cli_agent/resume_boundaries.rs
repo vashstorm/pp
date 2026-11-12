@@ -753,7 +753,7 @@ fn tui_slash_resume_selecting_current_session_is_a_noop() {
 }
 
 #[test]
-fn tui_slash_resume_interrupted_session_replays_partial_text_once() {
+fn tui_slash_resume_interrupted_session_preserves_input_and_drops_uncommitted_text() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
@@ -765,7 +765,7 @@ fn tui_slash_resume_interrupted_session_replays_partial_text_once() {
         )
         .unwrap();
 
-        // 传输完成但协议轮次中断：保留部分展示文字，无原生提交。
+        // 强杀不保证本轮未提交正文；输入与中断状态仍可恢复。
         let mut interrupted = Pty::start_with_existing_files(home.path());
         interrupted.ready();
         interrupted.input("interrupted resume input\r");
@@ -794,7 +794,7 @@ fn tui_slash_resume_interrupted_session_replays_partial_text_once() {
         assert!(notification_bounds(pty.parser.screen(), "Error", red).is_some());
         let text = pty.parser.screen().contents();
         assert_eq!(text.matches("interrupted resume input").count(), 1);
-        assert_eq!(text.matches("partial-resume-marker").count(), 1);
+        assert_eq!(text.matches("partial-resume-marker").count(), 0);
         no_more(&server);
 
         // 未提交的 turn 不进入后续原生请求。

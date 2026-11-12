@@ -1764,12 +1764,15 @@ impl Agent {
         result: Result<RunOutcome>,
         cancellation: &CancellationToken,
     ) -> Result<RunOutcome> {
+        let mut result = result;
         if cancellation.is_cancelled() || result.is_err() {
             self.cancel_lsp_diagnostics();
         }
         if cancellation.is_cancelled() {
-            if let Some(binding) = &self.tools.subagent {
-                binding.cancel_owned()?;
+            if let Some(binding) = &self.tools.subagent
+                && let Err(cleanup) = binding.cancel_owned()
+            {
+                result = Err(cleanup);
             }
             self.client.cancel_pending_io();
         }

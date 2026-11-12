@@ -50,6 +50,10 @@ pub(super) enum PayloadRef<'a> {
     Message {
         message: &'a Message<'a>,
     },
+    #[serde(rename = "message")]
+    DisplayMessage {
+        message: &'a Value,
+    },
     ModelChange {
         model: &'a str,
         role: &'static str,
@@ -114,7 +118,9 @@ pub(super) struct StateRef<'a> {
     pub base_system: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_source: Option<&'a crate::system_prompt::Snapshot>,
-    pub session: SessionRef<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionRef<'a>>,
+    pub replay_version: u32,
     pub workflow: &'a WorkflowState,
 }
 impl<'a> StateRef<'a> {
@@ -133,7 +139,8 @@ impl<'a> StateRef<'a> {
             tool_limits: metadata.tool_limits,
             base_system: metadata.base_system,
             prompt_source: metadata.prompt_source,
-            session,
+            session: Some(session),
+            replay_version: 1,
             workflow,
         }
     }
@@ -243,7 +250,10 @@ pub(super) struct State {
     pub base_system: String,
     #[serde(default)]
     pub prompt_source: Option<crate::system_prompt::Snapshot>,
-    pub session: Session,
+    #[serde(default)]
+    pub session: Option<Session>,
+    #[serde(default)]
+    pub replay_version: Option<u32>,
     #[serde(default)]
     pub workflow: WorkflowState,
 }
@@ -278,8 +288,6 @@ pub(super) enum Message<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_name: Option<&'a str>,
         content: Vec<Content<'a>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        details: Option<Value>,
         is_error: bool,
         timestamp: u64,
     },
@@ -301,6 +309,8 @@ pub(super) enum Content<'a> {
         name: &'a str,
         #[serde(skip_serializing_if = "Option::is_none")]
         arguments: Option<Map<String, Value>>,
+        #[serde(rename = "rawArguments", skip_serializing_if = "Option::is_none")]
+        raw_arguments: Option<&'a str>,
     },
 }
 fn text(text: &str) -> Content<'_> {
@@ -308,11 +318,13 @@ fn text(text: &str) -> Content<'_> {
         text: Cow::Borrowed(text),
     }
 }
-fn call<'a>(id: &'a str, name: &'a str, arguments: &str) -> Content<'a> {
+fn call<'a>(id: &'a str, name: &'a str, arguments: &'a str) -> Content<'a> {
+    let parsed = serde_json::from_str(arguments).ok();
     Content::ToolCall {
         id,
         name,
-        arguments: serde_json::from_str(arguments).ok(),
+        raw_arguments: parsed.is_none().then_some(arguments),
+        arguments: parsed,
     }
 }
 fn assistant<'a>(
@@ -345,17 +357,14 @@ fn result<'a>(
     output: Cow<'a, str>,
     timestamp: u64,
 ) -> Message<'a> {
-    let details: Option<Value> = serde_json::from_str(&output).ok();
-    let is_error = details
-        .as_ref()
-        .and_then(|value| value.get("ok"))
-        .and_then(Value::as_bool)
+    let is_error = serde_json::from_str::<Value>(&output)
+        .ok()
+        .and_then(|value| value.get("ok").and_then(Value::as_bool))
         == Some(false);
     Message::ToolResult {
         tool_call_id: id,
         tool_name: name,
         content: vec![Content::Text { text: output }],
-        details,
         is_error,
         timestamp,
     }
@@ -552,7 +561,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn chat_projection_keeps_refusals_and_omits_nonobject_arguments() {
+    fn chat_projection_keeps_refusals_and_preserves_raw_nonobject_arguments() {
         let messages: Vec<c::ChatCompletionRequestMessage> = serde_json::from_value(json!([
             {"role":"assistant", "content":[{"type":"text","text":"text"},
                 {"type":"refusal","refusal":"part refusal"}], "refusal":"refusal",
@@ -580,12 +589,14 @@ mod tests {
         assert_eq!(value[0]["content"][3]["text"], "refusal");
         assert_eq!(value[0]["content"][4]["id"], "real-call");
         assert!(value[0]["content"][4].get("arguments").is_none());
+        assert_eq!(value[0]["content"][4]["rawArguments"], "[]");
         assert!(value[0]["content"][5].get("arguments").is_none());
+        assert_eq!(value[0]["content"][5]["rawArguments"], "{");
         assert_eq!(value[0]["content"][6]["arguments"], json!({}));
         assert_eq!(value[0]["stopReason"], "toolUse");
         assert_eq!(value[1]["toolName"], "read");
         assert_eq!(value[1]["isError"], true);
-        assert_eq!(value[1]["details"], json!({"ok":false}));
+        assert!(value[1].get("details").is_none());
         assert!(value[2].get("toolName").is_none());
         assert!(value[2].get("details").is_none());
     }
@@ -624,5 +635,23 @@ mod tests {
         assert_eq!(value[1]["toolName"], "read");
         assert_eq!(value[1]["content"][0]["text"], "{\"ok\":true}");
         assert_eq!(value[1]["isError"], false);
+    }
+    #[test]
+    fn result_error_flag_requires_an_object_with_explicit_false_ok() {
+        for (output, is_error) in [
+            ("[false]", false),
+            ("false", false),
+            ("not json", false),
+            (r#"{"ok":false}"#, true),
+            (r#"{"ok":null}"#, false),
+            (r#"{"ok":0}"#, false),
+            (r#"{"ok":true,"ok":false}"#, true),
+        ] {
+            let value =
+                serde_json::to_value(result("call", None, Cow::Borrowed(output), 0)).unwrap();
+            assert_eq!(value["isError"], is_error, "{output}");
+            assert_eq!(value["content"][0]["text"], output);
+            assert!(value.get("details").is_none());
+        }
     }
 }

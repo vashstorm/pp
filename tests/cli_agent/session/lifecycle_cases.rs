@@ -557,12 +557,12 @@ fn session_continue_sends_exactly_the_saved_native_request() {
         if api == Api::Chat {
             assert_eq!(thinking.len(), 1);
             assert_eq!(thinking[0]["thinking"], "plan the writes");
-            assert!(thinking[0].get("summary").is_none());
+            assert_eq!(thinking[0]["summary"], false);
         } else {
             assert_eq!(thinking.len(), 2);
             assert_eq!(thinking[0]["thinking"], "plan the writes");
             assert_eq!(thinking[0]["summary"], true);
-            assert_eq!(thinking[1]["thinking"], "plan");
+            assert_eq!(thinking[1]["thinking"], "\n\nplan");
             assert_eq!(thinking[1]["summary"], false);
         }
         let calls: Vec<_> = content
@@ -592,7 +592,7 @@ fn session_continue_sends_exactly_the_saved_native_request() {
             let raw = tool["content"][0]["text"].as_str().unwrap();
             assert_eq!(tool["content"][0]["type"], "text");
             let details: Value = serde_json::from_str(raw).unwrap();
-            assert_eq!(tool["details"], details);
+            assert!(tool.get("details").is_none());
             assert_eq!(details["ok"], true);
             if index == 0 {
                 assert_eq!(details["bytes_written"], 13);

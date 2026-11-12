@@ -50,14 +50,14 @@ pub struct Node {
     pub text: String,
     native: Cursor,
     before: Cursor,
-    replay: (u64, u64),
+    replay: (u64, u64, u32),
 }
 
 #[derive(Default, Debug)]
 pub struct Tree {
     pub nodes: Vec<Node>,
     pub leaf: Option<usize>,
-    pending: (u64, u64),
+    pending: (u64, u64, u32),
 }
 
 pub struct View {
@@ -68,15 +68,19 @@ pub struct View {
 fn replay_range(
     reader: &mut BufReader<&File>,
     line: &mut Vec<u8>,
-    (start, end): (u64, u64),
+    (start, end, version): (u64, u64, u32),
     records: &mut Vec<ReplayRecord>,
 ) -> Result<()> {
     reader.seek(SeekFrom::Start(start))?;
     let mut offset = start;
+    let mut projector = replay::Projector::with_version(version);
     while offset < end {
         line.clear();
         let count = reader.read_until(b'\n', line)?;
-        ensure!(count > 0, "incomplete session tree replay");
+        ensure!(
+            count > 0 && line.ends_with(b"\n"),
+            "incomplete session tree replay"
+        );
         offset += count as u64;
         let value: serde_json::Value = serde_json::from_slice(line)
             .map_err(|_| anyhow::anyhow!("invalid session tree replay"))?;
@@ -85,22 +89,9 @@ fn replay_range(
         }
         let entry: Entry = serde_json::from_value(value)
             .map_err(|_| anyhow::anyhow!("invalid session tree replay"))?;
-        match entry.payload {
-            Payload::Message {
-                message: SavedMessage::User { content, .. },
-            } => records.push(ReplayRecord::User(content)),
-            Payload::Custom {
-                custom: Custom::Event { event },
-            } => records.push(ReplayRecord::Event(event)),
-            Payload::Custom {
-                custom: Custom::Error { message },
-            } => records.push(ReplayRecord::Error(message)),
-            Payload::Custom {
-                custom: Custom::Cancelled {},
-            } => records.push(ReplayRecord::Cancelled),
-            _ => {}
-        }
+        projector.feed(&entry.payload, line)?;
     }
+    records.extend(projector.finish()?);
     Ok(())
 }
 
@@ -133,11 +124,11 @@ impl Tree {
                     text: (*text).into(),
                     native: Cursor { offset: 0, len: 0 },
                     before: Cursor { offset: 0, len: 0 },
-                    replay: (0, 0),
+                    replay: (0, 0, 0),
                 })
                 .collect(),
             leaf,
-            pending: (0, 0),
+            pending: (0, 0, 0),
         }
     }
 
@@ -155,12 +146,17 @@ impl Tree {
         let mut reader = BufReader::new(file);
         reader.seek(SeekFrom::Start(0))?;
         let mut tree = Self::default();
+        let mut checkpoint = None;
+        let mut header = None;
         let mut ids = HashMap::new();
         let mut line = Vec::new();
         let mut offset = 0;
         let mut start = 0;
+        let mut replay_version = 0;
+        let mut start_version = 0;
         let mut native = Cursor { offset: 0, len: 0 };
         let mut assistant: Option<String> = None;
+        let mut protocol: Option<String> = None;
         let mut tools = Vec::new();
         loop {
             line.clear();
@@ -176,15 +172,34 @@ impl Tree {
             let mut node = None;
             match custom {
                 "pp.session_state" => {
-                    let request = &data["session"]["request"];
-                    native = Cursor {
-                        offset,
-                        len: request["messages"]
+                    if let Some(session) = data.get("session").filter(|v| !v.is_null()) {
+                        protocol = Some(
+                            session["protocol"]
+                                .as_str()
+                                .context("invalid session tree protocol")?
+                                .into(),
+                        );
+                        let request = &session["request"];
+                        native.len = request["messages"]
                             .as_array()
                             .or_else(|| request["input"].as_array())
                             .context("invalid session tree history")?
-                            .len(),
-                    };
+                            .len();
+                    } else {
+                        ensure!(protocol.is_some(), "missing pp session baseline");
+                    }
+                    let version = data
+                        .get("replayVersion")
+                        .map(|v| v.as_u64().context("invalid session replay version"))
+                        .transpose()?
+                        .unwrap_or(0);
+                    ensure!(version <= 1, "unsupported session replay version");
+                    ensure!(
+                        version >= u64::from(replay_version),
+                        "invalid session replay boundary"
+                    );
+                    replay_version = version as u32;
+                    native.offset = offset;
                     if let Some(selection) = data.get("tree").filter(|v| !v.is_null()) {
                         let selection: Selection = serde_json::from_value(selection.clone())
                             .map_err(|_| anyhow::anyhow!("invalid session tree selection"))?;
@@ -194,11 +209,20 @@ impl Tree {
                             .map(|id| ids.get(id).copied().context("unknown session tree target"))
                             .transpose()?;
                         start = offset;
+                        start_version = replay_version;
                         assistant = None;
                         tools.clear();
                     }
                 }
+                "pp.event" if data["event"].get("model_attempt_failed").is_some() => {
+                    assistant = None;
+                    tools.clear();
+                }
                 "pp.native_append" => {
+                    ensure!(
+                        data["protocol"].as_str() == protocol.as_deref(),
+                        "session tree protocol mismatch"
+                    );
                     native.len += data["messages"]
                         .as_array()
                         .or_else(|| data["items"].as_array())
@@ -228,8 +252,19 @@ impl Tree {
                     }
                     tools.clear();
                 }
-                "pp.cancelled" => node = Some((Kind::Assistant, "(aborted)".into())),
-                "pp.error" => node = Some((Kind::Assistant, "(error)".into())),
+                "pp.cancelled" | "pp.error" => {
+                    node = Some((
+                        Kind::Assistant,
+                        if custom == "pp.cancelled" {
+                            "(aborted)"
+                        } else {
+                            "(error)"
+                        }
+                        .into(),
+                    ));
+                    assistant = None;
+                    tools.clear();
+                }
                 _ => {}
             }
             if entry["type"] == "message" {
@@ -248,14 +283,18 @@ impl Tree {
                         let content = message["content"]
                             .as_array()
                             .context("invalid session tree assistant")?;
-                        assistant = Some(
+                        let text = replay::completed_text(message).unwrap_or_else(|| {
                             content
                                 .iter()
                                 .filter(|v| v["type"] == "text")
                                 .filter_map(|v| v["text"].as_str())
                                 .collect::<Vec<_>>()
-                                .join(" "),
-                        );
+                                .join(" ")
+                        });
+                        match &mut assistant {
+                            Some(previous) => previous.push_str(&text),
+                            None => assistant = Some(text),
+                        }
                         tools.extend(
                             content
                                 .iter()
@@ -266,6 +305,22 @@ impl Tree {
                     }
                     _ => {}
                 }
+            }
+            if entry["type"] == "session" {
+                header = Some(
+                    serde_json::from_value::<Header>(entry.clone())
+                        .map_err(|_| anyhow::anyhow!("invalid session tree header"))?,
+                );
+            } else if entry["type"] != "message"
+                && !matches!(custom, "pp.event" | "pp.error" | "pp.cancelled")
+            {
+                let saved: Entry = serde_json::from_slice(&line)
+                    .map_err(|_| anyhow::anyhow!("invalid session tree record"))?;
+                apply_native(
+                    &mut checkpoint,
+                    header.as_ref().context("missing session tree header")?,
+                    saved.payload,
+                )?;
             }
             if let Some((kind, text)) = node {
                 let id = entry["id"]
@@ -292,13 +347,14 @@ impl Tree {
                     text,
                     native,
                     before,
-                    replay: (start, offset),
+                    replay: (start, offset, start_version),
                 });
                 tree.leaf = Some(tree.nodes.len() - 1);
                 start = offset;
+                start_version = replay_version;
             }
         }
-        tree.pending = (start, offset);
+        tree.pending = (start, offset, start_version);
         tree.retain_active_path();
         Ok(tree)
     }
@@ -374,65 +430,29 @@ fn session_at(
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(0))?;
     let mut offset = 0;
-    let mut session = None;
-    let mut model_reference = String::new();
-    let mut todos = Vec::new();
-    let mut todo_plan_id = None;
+    let mut checkpoint = None;
     let mut line = Vec::new();
+    reader.read_until(b'\n', &mut line)?;
+    offset += line.len() as u64;
+    let header: Header = serde_json::from_slice(&line)
+        .map_err(|_| anyhow::anyhow!("invalid session tree header"))?;
     while offset < cursor.offset {
         line.clear();
         let count = reader.read_until(b'\n', &mut line)?;
-        ensure!(count > 0, "incomplete session tree history");
+        ensure!(
+            count > 0 && line.ends_with(b"\n"),
+            "incomplete session tree history"
+        );
         offset += count as u64;
-        if session.is_none() && offset == count as u64 {
-            continue;
-        }
         let entry: Entry = serde_json::from_slice(&line)
             .map_err(|_| anyhow::anyhow!("invalid session tree history"))?;
-        match entry.payload {
-            Payload::Custom {
-                custom: Custom::State(state),
-            } => {
-                model_reference = state.model_reference;
-                session = Some(state.session);
-                todos = state.workflow.todos;
-                todo_plan_id = state.workflow.todo_plan_id;
-            }
-            Payload::Custom {
-                custom: Custom::Workflow(record),
-            } => {
-                todos = record.workflow.todos;
-                todo_plan_id = record.workflow.todo_plan_id;
-            }
-            Payload::Custom {
-                custom: Custom::ToolDefinitions { version, tools },
-            } => {
-                ensure!(version == 1, "unsupported saved tool definitions version");
-                session
-                    .as_mut()
-                    .context("missing session tree state")?
-                    .restore_tools(tools)?;
-            }
-            Payload::Custom {
-                custom: Custom::NativeAppend(append),
-            } => {
-                match (
-                    session.as_mut().context("missing session tree state")?,
-                    append,
-                ) {
-                    (Session::Completion(request), NativeAppend::Completion { messages }) => {
-                        request.messages.extend(messages)
-                    }
-                    (Session::Response(request), NativeAppend::Response { items }) => {
-                        super::super::turn::response_input(request).extend(items)
-                    }
-                    _ => bail!("session tree protocol mismatch"),
-                }
-            }
-            _ => {}
-        }
+        apply_native(&mut checkpoint, &header, entry.payload)?;
     }
-    let mut session = session.context("missing session tree state")?;
+    let checkpoint = checkpoint.context("missing session tree state")?;
+    let mut session = checkpoint.session;
+    let model_reference = checkpoint.model_reference;
+    let todos = checkpoint.workflow.todos;
+    let todo_plan_id = checkpoint.workflow.todo_plan_id;
     match &mut session {
         Session::Completion(request) => {
             ensure!(
@@ -876,7 +896,8 @@ mod tests {
                 .tree
                 .replay(&journal.active.as_ref().unwrap().file, view.tree.leaf, true)
                 .unwrap();
-            assert!(replay_pending.iter().any(|record| matches!(
+            // 终态快照只在提交／失败／取消时落盘，未提交的流式尾部不进入磁盘回放。
+            assert!(!replay_pending.iter().any(|record| matches!(
                 record,
                 ReplayRecord::Event(AgentEvent::AssistantFinished { text })
                     if text == "pending answer"

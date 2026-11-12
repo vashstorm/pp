@@ -846,6 +846,9 @@ fn slow_agent_hub_rebinds_after_slash_resume_without_a_turn() {
     pty.text("Agent Hub · fast / a1");
     pty.text("rebind-child-final");
     pty.input("\x1b");
+    pty.wait_for("子 Agent 详情返回 roster", |screen| {
+        screen.contents().contains("Roster ·") && !screen.contents().contains("Agent Hub · fast / a1")
+    });
     hub_close(&mut pty);
     // `/new` 同样会停掉旧根：新会话 Hub 也要能重新绑定，而不是只能等下一条消息。
     pty.input("/new\r");

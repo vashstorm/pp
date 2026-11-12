@@ -224,3 +224,134 @@ fn lsp_terminal_replay_rebuilds_frozen_reports_without_new_queries() {
     let text = screen(&render(&mut transcript, 100, 24));
     assert!(text.contains("expected i32"), "{text}");
 }
+
+#[test]
+fn slimming_message_snapshot_matches_live_card_order_diff_lsp_and_folded_body() {
+    use pp_core::events::{DiffHunk, DiffLine, DiffLineKind};
+    let diagnostic_report = report("src/a.rs", vec![diagnostic(1, 1, "expected i32")]);
+    let changed = AgentEvent::FileChanged {
+        id: "write".into(),
+        path: "src/a.rs".into(),
+        diff: FileDiff::Text {
+            created: false,
+            deleted: false,
+            added: 1,
+            removed: 1,
+            hunks: vec![DiffHunk {
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Removed,
+                        old_line: Some(1),
+                        new_line: None,
+                        text: "old".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        old_line: None,
+                        new_line: Some(1),
+                        text: "new".into(),
+                    },
+                ],
+            }],
+        },
+    };
+    let inline = AgentEvent::LspDiagnostics {
+        id: Some("write".into()),
+        report: diagnostic_report.clone(),
+    };
+    let late = late(diagnostic_report);
+    let read_result = json!({"ok":true,"path":"src/a.rs","content":(0..100).map(|i|format!("line-{i}\n")).collect::<String>()});
+    let write_result = json!({"ok":true,"path":"src/a.rs"});
+    let events = vec![
+        AgentEvent::AssistantStarted,
+        AgentEvent::ThinkingDelta {
+            text: "thought".into(),
+        },
+        AgentEvent::AssistantDelta {
+            text: "answer".into(),
+            refusal: false,
+        },
+        AgentEvent::AssistantFinished {
+            text: "answer".into(),
+        },
+        AgentEvent::ToolStarted {
+            id: "read".into(),
+            name: "read".into(),
+            arguments: r#"{"path":"src/a.rs"}"#.into(),
+        },
+        AgentEvent::ToolFinished {
+            id: "read".into(),
+            result: read_result.clone(),
+        },
+        AgentEvent::ToolStarted {
+            id: "write".into(),
+            name: "write".into(),
+            arguments: r#"{"path":"src/a.rs"}"#.into(),
+        },
+        changed.clone(),
+        inline.clone(),
+        AgentEvent::ToolFinished {
+            id: "write".into(),
+            result: write_result.clone(),
+        },
+        late.clone(),
+    ];
+    // 冻结新 wire fixture；附属事件先于 assistant 快照写盘，读取时按 order 归并。
+    let payloads = vec![
+        json!({"type":"custom","customType":"pp.event","data":{"event":"assistant_started"}}),
+        json!({"type":"custom","customType":"pp.event","data":{"event":changed}}),
+        json!({"type":"custom","customType":"pp.event","data":{"event":inline}}),
+        json!({"type":"message","message":{"role":"assistant","stopReason":"toolUse","content":[
+            {"type":"thinking","thinking":"thought","summary":false}, {"type":"text","text":"answer"},
+            {"type":"toolCall","id":"read","name":"read","rawArguments":"{\"path\":\"src/a.rs\"}"},
+            {"type":"toolCall","id":"write","name":"write","rawArguments":"{\"path\":\"src/a.rs\"}"}],
+            "ppReplay":{"version":1,"attempt":"frozen-attempt","order":[
+                {"kind":"content","index":0},{"kind":"content","index":1},{"kind":"finish"},
+                {"kind":"content","index":2},{"kind":"result","index":0},
+                {"kind":"content","index":3},{"kind":"event","index":0},{"kind":"event","index":1},{"kind":"result","index":1}]}}}),
+        json!({"type":"message","message":{"role":"toolResult","toolCallId":"read","isError":false,"content":[{"type":"text","text":read_result.to_string()}]}}),
+        json!({"type":"message","message":{"role":"toolResult","toolCallId":"write","isError":false,"content":[{"type":"text","text":write_result.to_string()}]}}),
+        json!({"type":"custom","customType":"pp.native_append","data":{"protocol":"response","items":[]}}),
+        json!({"type":"custom","customType":"pp.event","data":{"event":late}}),
+    ];
+    let lines = payloads
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut p)| {
+            p["id"] = format!("entry-{i}").into();
+            p["parentId"] = if i == 0 {
+                serde_json::Value::Null
+            } else {
+                format!("entry-{}", i - 1).into()
+            };
+            p["timestamp"] = "2026-11-12T00:00:00Z".into();
+            format!("{p}\n")
+        })
+        .collect::<String>();
+    let mut live = Transcript::new();
+    for event in events {
+        live.progress(event);
+    }
+    let mut replayed = Transcript::new();
+    assert!(
+        replayed
+            .replay(pp_runtime::agent::persistence::replay_fixture(1, &lines).unwrap())
+            .is_none()
+    );
+    assert_eq!(live.entries.len(), replayed.entries.len());
+    for expanded in [false, true] {
+        for (a, b) in live.entries.iter_mut().zip(&mut replayed.entries) {
+            assert_eq!(a.kind, b.kind);
+            assert_eq!(a.status, b.status);
+            assert_eq!(a.text, b.text);
+            assert_eq!(a.arguments, b.arguments);
+            assert_eq!(a.result, b.result);
+            assert_eq!(a.diagnostics.len(), b.diagnostics.len());
+            a.expanded = expanded;
+            b.expanded = expanded;
+            a.layout = None;
+            b.layout = None;
+            assert_eq!(entry_text(a, 100), entry_text(b, 100));
+        }
+    }
+}

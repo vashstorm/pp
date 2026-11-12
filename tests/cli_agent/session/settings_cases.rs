@@ -488,7 +488,8 @@ fn session_restore_keeps_saved_edit_mode_and_execution_limits() {
             assert_eq!(tools[index]["isError"], is_error);
             let raw: Value =
                 serde_json::from_str(tools[index]["content"][0]["text"].as_str().unwrap()).unwrap();
-            assert_eq!(tools[index]["details"], raw);
+            assert!(raw.is_object());
+            assert!(tools[index].get("details").is_none());
         }
         no_more(&server);
     }

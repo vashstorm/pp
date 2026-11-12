@@ -56,16 +56,14 @@ fn session_failures_keep_executed_tool_results_and_display_only_fragments() {
         let id = only_session_id(home.path());
         let path = sessions_dir(home.path()).join(format!("{id}.jsonl"));
         let file_text = fs::read_to_string(&path).unwrap();
-        // The partial fragment is display log only: present as an event
-        // record, absent from the rebuilt native history.
+        // 失败前缀仅写展示快照，不进入后续原生请求。
         assert!(file_text.contains("partial fragment"));
         let saved = records(&path);
         assert_session_contract(&saved, &id, project.path());
-        assert!(
-            !serde_json::to_string(&canonical_messages(&saved))
-                .unwrap()
-                .contains("partial fragment")
-        );
+        assert!(canonical_messages(&saved).iter().any(|message| {
+            matches!(message["stopReason"].as_str(), Some("error" | "aborted"))
+                && message["content"].to_string().contains("partial fragment")
+        }));
         assert!(
             records(&path)
                 .iter()

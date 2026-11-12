@@ -149,6 +149,14 @@ impl Inner {
         event: Option<&AgentEvent>,
         hub: Option<HubEvent>,
     ) {
+        let event = if matches!(event, Some(AgentEvent::ModelOutputProgress { .. })) {
+            if hub.is_none() {
+                return;
+            }
+            None
+        } else {
+            event
+        };
         if matches!(event, Some(AgentEvent::ToolArgumentsDelta { .. })) {
             return;
         }
@@ -645,6 +653,57 @@ mod tests {
         assert!(value["runs"].as_array().unwrap().is_empty());
         let legacy = binding.snapshots();
         assert_eq!(legacy["agents"][0]["id"], "a1");
+    }
+
+    #[test]
+    fn progress_does_not_write_or_bump_revision_and_sequence_gaps_are_valid() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path(), "a1");
+        let revision = binding.hub_revision();
+        for sequence in 1..100 {
+            binding.inner.observe(
+                "a1",
+                Some("r1"),
+                1,
+                Some(sequence),
+                Some(&AgentEvent::ModelOutputProgress {
+                    output_bytes: sequence,
+                }),
+                None,
+            );
+        }
+        assert_eq!(binding.hub_revision(), revision);
+        assert!(binding.hub_snapshot().output_previews.is_empty());
+        assert!(read_all(&binding, "a1").is_empty());
+        for sequence in [100, 200] {
+            binding.inner.observe(
+                "a1",
+                Some("r1"),
+                1,
+                Some(sequence),
+                Some(&AgentEvent::ThinkingDelta {
+                    text: "kept".into(),
+                }),
+                None,
+            );
+        }
+        let entries = read_all(&binding, "a1");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].record.sequence, Some(100));
+        assert_eq!(entries[1].record.sequence, Some(200));
+        binding.inner.observe(
+            "a1",
+            Some("r1"),
+            1,
+            Some(201),
+            Some(&AgentEvent::ModelOutputProgress { output_bytes: 201 }),
+            Some(HubEvent::RunState {
+                status: "completed".into(),
+            }),
+        );
+        let entries = read_all(&binding, "a1");
+        assert!(entries[2].record.event.is_none());
+        assert!(entries[2].record.hub.is_some());
     }
 
     #[test]

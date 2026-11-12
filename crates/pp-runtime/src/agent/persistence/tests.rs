@@ -1013,7 +1013,7 @@ fn stats_context_early_journal_does_not_consume_capture_and_restore_does_not_rea
     }
 }
 
-fn rewrite_records(path: &Path, mutate: impl Fn(&mut serde_json::Value)) {
+pub(super) fn rewrite_records(path: &Path, mutate: impl Fn(&mut serde_json::Value)) {
     let mut out = String::new();
     for line in fs::read_to_string(path).unwrap().lines() {
         let mut record: serde_json::Value = serde_json::from_str(line).unwrap();

@@ -392,7 +392,9 @@ fn plan_todo_draft_refuses_all_todo_calls_and_never_creates_snapshots() {
         let records = plan_journal(home.path(), &saved_session_id(home.path()));
         let results: Vec<_> = records
             .iter()
-            .filter_map(|record| record["data"]["event"]["tool_finished"].as_object())
+            .filter(|record| record["message"]["role"] == "toolResult")
+            .map(|record| json!({"id":record["message"]["toolCallId"],
+                "result":serde_json::from_str::<Value>(record["message"]["content"][0]["text"].as_str().unwrap()).unwrap()}))
             .collect();
         for op in [
             "init", "start", "done", "block", "unblock", "append", "rm", "drop",

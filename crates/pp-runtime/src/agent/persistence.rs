@@ -1,6 +1,7 @@
 mod format;
 pub(crate) mod index;
 pub mod locks;
+mod replay;
 mod summary;
 pub mod tree;
 
@@ -134,10 +135,13 @@ pub(super) struct SessionJournal {
     stats_db: PathBuf,
     active: Option<Active>,
     committed: usize,
+    replay_version: u32,
+    capture: replay::Capture,
     buffer: Vec<u8>,
     first_error: Option<String>,
     notice: Option<String>,
     model_reference: String,
+    wire_model: String,
     thinking: String,
     capture_thinking: bool,
     pending_checkpoint: bool,
@@ -261,10 +265,13 @@ impl SessionJournal {
             stats_db,
             active: None,
             committed: 0,
+            replay_version: 0,
+            capture: replay::Capture::default(),
             buffer: Vec::new(),
             first_error: None,
             notice: None,
             model_reference: String::new(),
+            wire_model: String::new(),
             thinking: String::new(),
             capture_thinking: false,
             pending_checkpoint: false,
@@ -487,9 +494,14 @@ impl SessionJournal {
         state.tree = tree;
         // 导航失败时保留此前完整提交，避免半条或未同步的 state 在恢复时生效。
         self.synced_custom(CustomRef::State(state))?;
+        self.replay_version = 1;
         self.committed = session.len();
         self.model_reference.clear();
         self.model_reference.push_str(metadata.model_reference);
+        self.wire_model = match session {
+            SessionRef::Completion(request) => request.model.clone(),
+            SessionRef::Response(request) => request.model.clone().unwrap_or_default(),
+        };
         self.capture_thinking = matches!(session, SessionRef::Completion(_));
         self.thinking.clear();
         self.pending_checkpoint = false;
@@ -715,6 +727,12 @@ impl SessionJournal {
             }
             self.commit(session)?;
         }
+        if self.replay_version == 0 {
+            let mut state = StateRef::new(metadata, session, workflow);
+            state.session = None;
+            self.synced_custom(CustomRef::State(state))?;
+            self.replay_version = 1;
+        }
         if let Some(text) = user {
             let result = now_ms().and_then(|timestamp| {
                 self.record(
@@ -781,7 +799,19 @@ impl SessionJournal {
                     }
                 };
                 let mut entries = Vec::new();
-                for message in &messages {
+                let captured = self.capture.active();
+                if captured {
+                    let reason = if messages
+                        .iter()
+                        .any(|m| matches!(m, Message::ToolResult { .. }))
+                    {
+                        "toolUse"
+                    } else {
+                        "stop"
+                    };
+                    entries = self.write_display(reason, Some(&model_reference))?;
+                }
+                for message in messages.iter().filter(|_| !captured) {
                     self.record(PayloadRef::Message { message }, false)?;
                     if self.pending_stats.is_some()
                         && matches!(message, Message::Assistant { .. })
@@ -830,16 +860,20 @@ impl SessionJournal {
         ) {
             return;
         }
-        if self.capture_thinking && self.active.is_some() && self.first_error.is_none() {
-            match event {
-                AgentEvent::AssistantStarted | AgentEvent::ModelAttemptFailed { .. } => {
-                    self.thinking.clear()
-                }
-                AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } => {
-                    self.thinking.push_str(text)
-                }
-                _ => {}
-            }
+        if matches!(
+            event,
+            AgentEvent::ModelAttemptFailed { .. } | AgentEvent::AssistantStarted
+        ) {
+            let result = self.write_display("error", None);
+            let _ = self.latch(result.map(|_| ()));
+        }
+        if self.replay_version == 1 && matches!(event, AgentEvent::AssistantStarted) {
+            let id = self
+                .active
+                .as_ref()
+                .and_then(|active| active.tail.clone())
+                .unwrap_or_default();
+            self.capture.start(id);
         }
         match event {
             AgentEvent::ToolStarted { id, name, .. } => {
@@ -853,14 +887,55 @@ impl SessionJournal {
             }
             _ => {}
         }
+        if self.replay_version == 1
+            && !matches!(
+                event,
+                AgentEvent::AssistantStarted | AgentEvent::ModelAttemptFailed { .. }
+            )
+            && self.capture.event(event)
+        {
+            return;
+        }
         let _ = self.custom(CustomRef::Event { event }, false);
     }
+    fn write_display(
+        &mut self,
+        reason: &str,
+        model_reference: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>> {
+        self.check()?;
+        let mut messages = self.capture.messages(
+            reason,
+            model_reference.unwrap_or(&self.model_reference),
+            self.capture_thinking,
+        )?;
+        for message in &mut messages {
+            if message["role"] == "assistant" {
+                message["model"] = self.wire_model.clone().into();
+            }
+        }
+        let mut entries = Vec::new();
+        for message in &messages {
+            self.record(PayloadRef::DisplayMessage { message }, false)?;
+            if message["role"] == "assistant" {
+                entries.push(
+                    serde_json::from_slice(&self.buffer)
+                        .context("invalid serialized display record")?,
+                );
+            }
+        }
+        Ok(entries)
+    }
+
     pub(super) fn cancelled(&mut self) -> Result<()> {
         self.pending_stats = None;
+        self.write_display("aborted", None)?;
         self.custom(CustomRef::Cancelled {}, true)
     }
     pub(super) fn error(&mut self, message: &str) {
         self.pending_stats = None;
+        let result = self.write_display("error", None);
+        let _ = self.latch(result.map(|_| ()));
         let _ = self.custom(CustomRef::Error { message }, true);
     }
     pub(super) fn think(&mut self, level: ThinkLevel) -> Result<()> {
@@ -1136,7 +1211,8 @@ pub fn load(
     let mut checkpoint: Option<Checkpoint> = None;
     let mut tail: Option<String> = None;
     let mut used_ids = HashSet::new();
-    let mut replay = Vec::new();
+    let mut projector = replay::Projector::default();
+    let mut replay_version = 0;
     let mut has_tree = false;
     loop {
         line.clear();
@@ -1195,136 +1271,27 @@ pub fn load(
                 "invalid session entry chain"
             );
             parse_timestamp(&entry.timestamp)?;
-            match entry.payload {
-                Payload::Custom {
-                    custom: Custom::State(state),
-                } => {
-                    has_tree |= state.tree.is_some();
-                    let header = header.as_ref().expect("header checked");
-                    let saved = Checkpoint {
-                        role_route: state.role_route,
-                        version: state.version,
-                        id: header.id.clone(),
-                        created_at_ms: parse_timestamp(&header.timestamp)?,
-                        cwd: header.cwd.clone(),
-                        model_reference: state.model_reference,
-                        think_level: state.think_level,
-                        edit_mode: state.edit_mode,
-                        tool_limits: state.tool_limits,
-                        base_system: state.base_system,
-                        prompt_source: state.prompt_source,
-                        session: state.session,
-                        workflow: state.workflow,
-                    };
-                    validate_checkpoint(&saved, &id)?;
-                    checkpoint = Some(saved);
-                }
-                Payload::Custom {
-                    custom: Custom::Workflow(record),
-                } => {
-                    ensure!(record.version == 1, "unsupported saved workflow version");
-                    record.workflow.validate()?;
-                    let state = checkpoint
-                        .as_mut()
-                        .context("state change before pp session state")?;
-                    state.workflow = record.workflow;
-                }
-                Payload::Custom {
-                    custom: Custom::ToolDefinitions { version, tools },
-                } => {
-                    ensure!(version == 1, "unsupported saved tool definitions version");
-                    checkpoint
-                        .as_mut()
-                        .context("tool definitions before pp session state")?
-                        .session
-                        .restore_tools(tools)?;
-                }
-                Payload::Custom {
-                    custom: Custom::Instructions { system },
-                } => {
-                    let saved = checkpoint
-                        .as_mut()
-                        .context("state change before pp session state")?;
-                    match &mut saved.session {
-                        Session::Completion(request) => {
-                            let Some(ChatCompletionRequestMessage::System(message)) =
-                                request.messages.first_mut()
-                            else {
-                                bail!("missing system message");
-                            };
-                            message.content = system.into();
-                        }
-                        Session::Response(request) => request.instructions = Some(system),
-                    }
-                }
-                Payload::ThinkingLevelChange { thinking_level } => {
-                    let saved = checkpoint
-                        .as_mut()
-                        .context("state change before pp session state")?;
-                    saved.think_level = thinking_level;
-                    saved.session.set_think_level(thinking_level);
-                }
-                Payload::Custom {
-                    custom: Custom::NativeAppend(append),
-                } => {
-                    let saved = checkpoint
-                        .as_mut()
-                        .context("state change before pp session state")?;
-                    match (&mut saved.session, append) {
-                        (Session::Completion(request), NativeAppend::Completion { messages }) => {
-                            request.messages.extend(messages)
-                        }
-                        (Session::Response(request), NativeAppend::Response { items }) => {
-                            let InputParam::Items(input) = &mut request.input else {
-                                bail!("Responses input must be items");
-                            };
-                            input.extend(items);
-                        }
-                        _ => bail!("append protocol mismatch"),
-                    }
-                }
-                Payload::ModelChange { model, role } => {
-                    let format::DefaultRole::Default = role;
-                    ensure!(
-                        model.split_once('/').is_some_and(
-                            |(provider, model)| !provider.is_empty() && !model.is_empty()
-                        ),
-                        "invalid saved model reference"
-                    );
-                    // Auditing only: a subsequent native state is the model switch commit point.
-                }
-                Payload::Message {
-                    message: SavedMessage::User { content, .. },
-                } => {
-                    if include_replay {
-                        replay.push(ReplayRecord::User(content));
-                    }
-                }
-                Payload::Message {
-                    message: SavedMessage::Assistant { .. } | SavedMessage::ToolResult { .. },
-                } => {}
-                Payload::Custom {
-                    custom: Custom::Event { event },
-                } => {
-                    if include_replay {
-                        replay.push(ReplayRecord::Event(event));
-                    }
-                }
-                Payload::Custom {
-                    custom: Custom::Error { message },
-                } => {
-                    if include_replay {
-                        replay.push(ReplayRecord::Error(message));
-                    }
-                }
-                Payload::Custom {
-                    custom: Custom::Cancelled {},
-                } => {
-                    if include_replay {
-                        replay.push(ReplayRecord::Cancelled);
-                    }
-                }
+            if include_replay && !has_tree {
+                projector.feed(&entry.payload, &line)?;
             }
+            if let Payload::Custom {
+                custom: Custom::State(state),
+            } = &entry.payload
+            {
+                if state.tree.is_some() {
+                    has_tree = true;
+                    projector = replay::Projector::default();
+                }
+                let version = state.replay_version.unwrap_or(0);
+                ensure!(version <= 1, "unsupported session replay version");
+                ensure!(version >= replay_version, "invalid session replay boundary");
+                replay_version = version;
+            }
+            apply_native(
+                &mut checkpoint,
+                header.as_ref().expect("header checked"),
+                entry.payload,
+            )?;
             used_ids.insert(entry.id.clone());
             tail = Some(entry.id);
             Ok(())
@@ -1350,6 +1317,11 @@ pub fn load(
     let created_at_ms = checkpoint.created_at_ms;
     let model_reference = checkpoint.model_reference.clone();
     let capture_thinking = matches!(checkpoint.session, Session::Completion(_));
+    let wire_model = match &checkpoint.session {
+        Session::Completion(request) => request.model.clone(),
+        Session::Response(request) => request.model.clone().unwrap_or_default(),
+    };
+    let mut replay = projector.finish()?;
     if has_tree {
         let tree = tree::Tree::read(&file)?;
         if include_replay {
@@ -1373,10 +1345,13 @@ pub fn load(
                 used_ids,
             }),
             committed,
+            replay_version,
+            capture: replay::Capture::default(),
             buffer: Vec::new(),
             first_error: None,
             notice: None,
             model_reference,
+            wire_model,
             thinking: String::new(),
             capture_thinking,
             pending_checkpoint: false,
@@ -1389,6 +1364,123 @@ pub fn load(
         },
         replay,
     })
+}
+
+/// 逐条应用原生增量，每条 state 都验证有效基线与元数据，不能只验证最终结果。
+fn apply_native(
+    checkpoint: &mut Option<Checkpoint>,
+    header: &Header,
+    payload: Payload,
+) -> Result<()> {
+    match payload {
+        Payload::Custom {
+            custom: Custom::State(state),
+        } => {
+            ensure!(
+                state.replay_version.unwrap_or(0) <= 1,
+                "unsupported session replay version"
+            );
+            let saved = Checkpoint {
+                role_route: state.role_route,
+                version: state.version,
+                id: header.id.clone(),
+                created_at_ms: parse_timestamp(&header.timestamp)?,
+                cwd: header.cwd.clone(),
+                model_reference: state.model_reference,
+                think_level: state.think_level,
+                edit_mode: state.edit_mode,
+                tool_limits: state.tool_limits,
+                base_system: state.base_system,
+                prompt_source: state.prompt_source,
+                session: state
+                    .session
+                    .or_else(|| checkpoint.take().map(|saved| saved.session))
+                    .context("missing pp session baseline")?,
+                workflow: state.workflow,
+            };
+            validate_checkpoint(&saved, &header.id)?;
+            *checkpoint = Some(saved);
+        }
+        Payload::Custom {
+            custom: Custom::Workflow(record),
+        } => {
+            ensure!(record.version == 1, "unsupported saved workflow version");
+            record.workflow.validate()?;
+            let state = checkpoint
+                .as_mut()
+                .context("state change before pp session state")?;
+            state.workflow = record.workflow;
+        }
+        Payload::Custom {
+            custom: Custom::ToolDefinitions { version, tools },
+        } => {
+            ensure!(version == 1, "unsupported saved tool definitions version");
+            checkpoint
+                .as_mut()
+                .context("tool definitions before pp session state")?
+                .session
+                .restore_tools(tools)?;
+        }
+        Payload::Custom {
+            custom: Custom::Instructions { system },
+        } => {
+            let saved = checkpoint
+                .as_mut()
+                .context("state change before pp session state")?;
+            match &mut saved.session {
+                Session::Completion(request) => {
+                    let Some(ChatCompletionRequestMessage::System(message)) =
+                        request.messages.first_mut()
+                    else {
+                        bail!("missing system message");
+                    };
+                    message.content = system.into();
+                }
+                Session::Response(request) => request.instructions = Some(system),
+            }
+        }
+        Payload::ThinkingLevelChange { thinking_level } => {
+            let saved = checkpoint
+                .as_mut()
+                .context("state change before pp session state")?;
+            saved.think_level = thinking_level;
+            saved.session.set_think_level(thinking_level);
+        }
+        Payload::Custom {
+            custom: Custom::NativeAppend(append),
+        } => {
+            let saved = checkpoint
+                .as_mut()
+                .context("state change before pp session state")?;
+            match (&mut saved.session, append) {
+                (Session::Completion(request), NativeAppend::Completion { messages }) => {
+                    request.messages.extend(messages)
+                }
+                (Session::Response(request), NativeAppend::Response { items }) => {
+                    let InputParam::Items(input) = &mut request.input else {
+                        bail!("Responses input must be items");
+                    };
+                    input.extend(items);
+                }
+                _ => bail!("append protocol mismatch"),
+            }
+        }
+        Payload::ModelChange { model, role } => {
+            let format::DefaultRole::Default = role;
+            ensure!(
+                model
+                    .split_once('/')
+                    .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty()),
+                "invalid saved model reference"
+            );
+            // Auditing only: a subsequent native state is the model switch commit point.
+        }
+        Payload::Message { .. }
+        | Payload::Custom {
+            custom: Custom::Event { .. } | Custom::Error { .. } | Custom::Cancelled {},
+        } => {}
+    }
+    Ok(())
 }
 
 fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
@@ -1451,3 +1543,18 @@ fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod slimming_tests;
+
+/// 冻结的展示格式 fixture 通过与生产读取相同的投影器进入 UI 测试。
+#[cfg(feature = "test-support")]
+pub fn replay_fixture(version: u32, lines: &str) -> Result<Vec<ReplayRecord>> {
+    let mut projector = replay::Projector::default();
+    projector.state(Some(version))?;
+    for line in lines.lines() {
+        let entry: Entry = serde_json::from_str(line).context("invalid replay fixture")?;
+        projector.feed(&entry.payload, line.as_bytes())?;
+    }
+    projector.finish()
+}

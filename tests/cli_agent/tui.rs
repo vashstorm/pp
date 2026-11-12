@@ -299,7 +299,7 @@ impl Pty {
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
-        self.drain();
+        self.wait_for("resize 前的完整绘制帧", |_| true);
         let previous_output = self.raw.len();
         self.master
             .resize(PtySize {
@@ -313,7 +313,7 @@ impl Pty {
         let deadline = Instant::now() + DEADLINE;
         loop {
             self.drain();
-            if self.raw.len() > previous_output {
+            if self.raw.len() > previous_output && self.frame_closed() {
                 return;
             }
             assert!(
@@ -478,6 +478,15 @@ impl Pty {
         )
     }
 
+    fn frame_closed(&self) -> bool {
+        let begin = b"\x1b[?2026h";
+        let end = b"\x1b[?2026l";
+        self.raw
+            .windows(begin.len())
+            .rposition(|bytes| bytes == begin)
+            <= self.raw.windows(end.len()).rposition(|bytes| bytes == end)
+    }
+
     pub(super) fn wait_for(
         &mut self,
         description: &str,
@@ -495,7 +504,7 @@ impl Pty {
         let deadline = Instant::now() + timeout;
         loop {
             self.drain();
-            if condition(self.parser.screen()) {
+            if self.frame_closed() && condition(self.parser.screen()) {
                 return;
             }
             assert!(

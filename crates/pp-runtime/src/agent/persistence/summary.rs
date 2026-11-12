@@ -48,7 +48,23 @@ enum SummaryMessage {
         content: Vec<SummaryContent>,
         #[serde(default, rename = "stopReason")]
         stop_reason: String,
+        #[serde(default, rename = "ppReplay")]
+        replay: Option<SummaryReplay>,
     },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct SummaryReplay {
+    #[serde(default)]
+    order: Vec<SummaryStep>,
+}
+#[derive(Deserialize)]
+#[serde(tag = "kind")]
+enum SummaryStep {
+    #[serde(rename = "finish")]
+    Finish { text: Option<String> },
     #[serde(other)]
     Other,
 }
@@ -84,10 +100,35 @@ pub(super) fn classify(line: &[u8]) -> Result<Classified> {
     }
     Ok(match entry.message {
         Some(SummaryMessage::User { content }) => Classified::User(content),
+        Some(SummaryMessage::Assistant { stop_reason, .. })
+            if matches!(stop_reason.as_str(), "aborted" | "error") =>
+        {
+            Classified::Other(Some(false))
+        }
         Some(SummaryMessage::Assistant {
-            content,
+            mut content,
             stop_reason,
-        }) => Classified::Assistant(content, stop_reason == "stop"),
+            replay,
+        }) => {
+            if let Some(replay) = replay
+                && let Some(text) = replay.order.into_iter().rev().find_map(|step| match step {
+                    SummaryStep::Finish { text } => Some(text.unwrap_or_else(|| {
+                        content
+                            .iter()
+                            .filter(|part| part.kind == "text")
+                            .map(|part| part.text.as_str())
+                            .collect()
+                    })),
+                    SummaryStep::Other => None,
+                })
+            {
+                content = vec![SummaryContent {
+                    kind: "text".into(),
+                    text,
+                }];
+            }
+            Classified::Assistant(content, stop_reason == "stop")
+        }
         _ => Classified::Other(None),
     })
 }
@@ -187,5 +228,27 @@ mod tests {
             .is_err()
         );
         assert!(Head::default().finish().is_none());
+    }
+    #[test]
+    fn message_snapshot_summary_uses_final_text_without_fragment_spaces() {
+        for (finish, expected) in [
+            (serde_json::json!({"kind":"finish"}), "prefixsuffix"),
+            (
+                serde_json::json!({"kind":"finish","text":"final replacement"}),
+                "final replacement",
+            ),
+        ] {
+            let message = serde_json::json!({"type":"message","message":{"role":"assistant","stopReason":"stop",
+                "content":[{"type":"text","text":"prefix"},{"type":"thinking","thinking":"thought"},{"type":"text","text":"suffix"}],
+                "ppReplay":{"version":1,"attempt":"fixture","order":[finish]}}});
+            let mut head = Head::default();
+            head.feed(Classified::User("question".into()));
+            head.feed(classify(message.to_string().as_bytes()).unwrap());
+            assert_eq!(head.finish().unwrap().1, expected);
+            assert_eq!(
+                super::super::replay::completed_text(&message["message"]).as_deref(),
+                Some(expected)
+            );
+        }
     }
 }

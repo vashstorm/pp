@@ -381,9 +381,28 @@ fn diff_blocks_clone_journal_without_file_changed(home: &Path, source: &str, id:
     header["id"] = json!(id);
     let mut cloned = format!("{header}\n");
     let mut parent = Value::Null;
+    let mut event_map = Vec::new();
+    let mut retained = 0;
     for line in lines {
         let mut entry: Value = serde_json::from_str(line).unwrap();
-        if entry["data"]["event"].get("file_changed").is_some() { continue; }
+        if entry["data"]["event"] == "assistant_started" {
+            event_map.clear(); retained = 0;
+        } else if entry["customType"] == "pp.event" {
+            if entry["data"]["event"].get("file_changed").is_some() {
+                event_map.push(None); continue;
+            }
+            event_map.push(Some(retained)); retained += 1;
+        }
+        if let Some(order) = entry["message"]["ppReplay"]["order"].as_array_mut() {
+            order.retain_mut(|step| {
+                if step["kind"] != "event" { return true; }
+                let old = step["index"].as_u64().unwrap() as usize;
+                match event_map[old] {
+                    Some(index) => { step["index"] = json!(index); true }
+                    None => false,
+                }
+            });
+        }
         entry["parentId"] = parent;
         parent = entry["id"].clone();
         cloned.push_str(&entry.to_string());
@@ -991,7 +1010,7 @@ fn transcript_blocks_diff_resume_replays_committed_diffs_without_reexecution() {
             "new\nkeep\n"
         );
 
-        // Phase 4: 删除 FileChanged 事件的旧日志只显示结果摘要，不伪造 diff。
+        // 删除可选 FileChanged 及其顺序引用后只显示结果摘要，不伪造 diff。
         let stripped_id = resume_boundary_crafted_id(9, 'a');
         diff_blocks_clone_journal_without_file_changed(home.path(), &id, &stripped_id);
         {

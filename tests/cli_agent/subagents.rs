@@ -748,6 +748,32 @@ fn subagent_task_is_hidden_and_recursive_dispatch_is_rejected() {
 
 #[test]
 fn slow_subagent_concurrency_limits_are_shared_across_batches() {
+    fn receive_concurrent(server: &Server, protocol: &str) -> (Request, Value) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "missing concurrent CLI request");
+            if let Some(mut request) = server
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+                .unwrap()
+            {
+                assert_eq!(
+                    request.url(),
+                    if protocol == "completion" {
+                        "/v1/chat/completions"
+                    } else {
+                        "/v1/responses"
+                    }
+                );
+                let body = serde_json::from_reader(request.as_reader()).unwrap();
+                return (request, body);
+            }
+            // tiny_http 0.12 的空闲线程计数与任务入队存在竞态；短连接促使 accept
+            // 再次调度队列。探测不发送 HTTP，不产生模型请求，也不延长原有 10s 栅栏。
+            let stream = std::net::TcpStream::connect(server.server_addr().to_string()).unwrap();
+            stream.shutdown(std::net::Shutdown::Both).unwrap();
+        }
+    }
     for protocol in ["completion", "response"] {
         for (task_settings, limit) in [
             ("", 4),
@@ -776,7 +802,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
                 .iter()
                 .map(|marker| json!({"role":"fast","task":marker}))
                 .collect::<Vec<_>>();
-            let (request, body) = receive_sub(&server, protocol);
+            let (request, body) = receive_concurrent(&server, protocol);
             assert!(!is_child(&body));
             sub_call(
                 request,
@@ -788,7 +814,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
             let mut children = std::collections::BTreeMap::new();
             let mut parent = None;
             while children.len() < limit || parent.is_none() {
-                let (request, body) = receive_sub(&server, protocol);
+                let (request, body) = receive_concurrent(&server, protocol);
                 if is_child(&body) {
                     // 优先最长标记，避免 first-1 抢先匹配 first-10。
                     let text = body.to_string();
@@ -815,7 +841,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
                 json!({"context":"Return only your assigned task marker.",
                     "tasks":[{"role":"fast","task":"concurrency-extra"}]}),
             );
-            let (request, body) = receive_sub(&server, protocol);
+            let (request, body) = receive_concurrent(&server, protocol);
             assert!(!is_child(&body), "child exceeded limit {limit}: {body}");
             sub_call(request, protocol, "concurrency-wait", "wait", json!({}));
             no_more(&server);
@@ -857,7 +883,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
                 "bash",
                 json!({"command":"printf lifecycle-step"}),
             );
-            let (request, body) = receive_sub(&server, protocol);
+            let (request, body) = receive_concurrent(&server, protocol);
             assert!(is_child(&body), "{body}");
             assert!(body.to_string().contains(&marker), "{body}");
             assert!(!body.to_string().contains("concurrency-extra"), "{body}");
@@ -869,7 +895,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
             assert_running_limit();
             no_more(&server);
             sub_final(request, protocol, &marker);
-            let (extra, body) = receive_sub(&server, protocol);
+            let (extra, body) = receive_concurrent(&server, protocol);
             assert!(is_child(&body), "{body}");
             assert!(body.to_string().contains("concurrency-extra"), "{body}");
             no_more(&server);
@@ -878,7 +904,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
             }
             sub_final(extra, protocol, "concurrency-extra");
 
-            let (request, body) = receive_sub(&server, protocol);
+            let (request, body) = receive_concurrent(&server, protocol);
             assert!(!is_child(&body), "{body}");
             let waited = sub_tool_result(&body, protocol, "concurrency-wait");
             assert_eq!(waited["ok"], true, "{waited}");

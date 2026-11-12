@@ -91,8 +91,7 @@ fn tui_session_resume_replays_history_without_request() {
         .unwrap();
         assert!(journal.contains("what did I say"));
 
-        // A separately isolated crash keeps streamed display text, but no
-        // partial assistant turn may become native request history.
+        // 强制终止可丢失本轮未提交正文，原生历史仍不得包含失败前缀。
         let interrupted_home = tempfile::tempdir().unwrap();
         std::fs::write(
             config_path(interrupted_home.path(), "settings.yml"),
@@ -137,7 +136,7 @@ fn tui_session_resume_replays_history_without_request() {
             interrupted_home.path(),
             &["-r", &interrupted_id],
         );
-        resumed.text("partial-session-marker");
+
         resumed.wait_for("恢复中断会话显示红色弹窗", |screen| {
             notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
                 && screen
@@ -147,7 +146,7 @@ fn tui_session_resume_replays_history_without_request() {
         resumed.ready();
         let screen = resumed.parser.screen().contents();
         assert_eq!(screen.matches("interrupted input").count(), 1);
-        assert_eq!(screen.matches("partial-session-marker").count(), 1);
+        assert_eq!(screen.matches("partial-session-marker").count(), 0);
         no_more(&server);
         resumed.input("/quit\r");
         resumed.finish();
