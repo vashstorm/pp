@@ -591,14 +591,10 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                     if line == "[stderr]" {
                         stderr = true;
                     }
-                    let color = if view.failed
-                        && (stderr || view.result.is_some_and(|r| r["error"].is_string()))
-                    {
+                    let color = if stderr {
                         palette::REMOVED
-                    } else if stderr {
-                        palette::ACCENT
                     } else {
-                        palette::RG_TEXT
+                        palette::MUTED
                     };
                     wrap([line.to_owned()], width, style.fg(color))
                 })

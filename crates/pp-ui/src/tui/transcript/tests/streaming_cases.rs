@@ -592,7 +592,7 @@ fn glob_card_groups_paths_and_replays_without_changing_results() {
 }
 
 #[test]
-fn bash_card_distinguishes_live_stderr_and_failed_status_from_stdout() {
+fn bash_card_keeps_stdout_gray_and_stderr_red_and_marks_failed_status() {
     let mut transcript = Transcript::new();
     tool(
         &mut transcript,
@@ -617,14 +617,19 @@ fn bash_card_distinguishes_live_stderr_and_failed_status_from_stdout() {
         .lines()
         .position(|line| line.contains("compiler diagnostic"))
         .unwrap() as u16;
-    assert_eq!(live[(2, row)].fg, palette::ACCENT);
+    assert_eq!(live[(2, row)].fg, palette::REMOVED);
     transcript.progress(AgentEvent::ToolFinished { id: "b".into(), result: json!({"ok":false,"exit_code":1,"stdout":"checking crate\n","stderr":"compiler diagnostic\n"}) });
     let failed = render(&mut transcript, 80, 20);
     let text = screen(&failed);
     assert!(text.contains("Bash · failed") && text.contains("Exit: 1"));
     assert_eq!(failed[(0, 0)].fg, palette::REMOVED);
+    let output_row = text
+        .lines()
+        .position(|line| line.contains(" Output "))
+        .unwrap() as u16;
+    assert_eq!(failed[(3, output_row)].fg, palette::TEXT);
     for (needle, color) in [
-        ("checking crate", palette::RG_TEXT),
+        ("checking crate", palette::MUTED),
         ("compiler diagnostic", palette::REMOVED),
         ("Exit: 1", palette::MUTED),
     ] {

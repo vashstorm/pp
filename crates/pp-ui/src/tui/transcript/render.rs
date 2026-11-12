@@ -249,7 +249,8 @@ impl Transcript {
                                 .render(Rect::new(area.right() - 1, row, 1, 1), buffer);
                         }
                         if !label.is_empty() && area.width > 4 {
-                            Span::styled(label, Style::default().fg(palette::MUTED).bg(card_bg))
+                            let label_color = if bash { palette::TEXT } else { palette::MUTED };
+                            Span::styled(label, Style::default().fg(label_color).bg(card_bg))
                                 .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
                         if bash && matches!(line.source(), Some(Source::Bottom)) && area.width > 4 {
