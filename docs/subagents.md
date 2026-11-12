@@ -65,7 +65,7 @@ readonly: true
 Review the assigned API contract. Report concrete compatibility issues and file references.
 ````
 
-文件加载后可调用 `{"role":"api-auditor","task":"审阅接口兼容性"}`。旧调用中的 `agent` 改为 `role`。如果旧调用同时使用内置角色覆盖自定义选模，请将模型和 effort 写入自定义定义，再传入该自定义角色名称。自定义角色按 `task.agent_models`、定义中的 `model`、默认模型配置的顺序选模。思考档位优先使用定义中的 `thinking`，其次使用默认配置的有效 effort。显式停用 DEFAULT 后，自定义角色需要配置自己的模型。
+文件加载后，可通过完整参数 `{"context":"审阅当前项目的接口契约","tasks":[{"role":"api-auditor","task":"审阅接口兼容性"}]}` 调用 `task`。旧调用中的 `agent` 改为 `role`。如果旧调用同时使用内置角色覆盖自定义选模，请将模型和 effort 写入自定义定义，再传入该自定义角色名称。自定义角色按 `task.agent_models`、定义中的 `model`、默认模型配置的顺序选模。思考档位优先使用定义中的 `thinking`，其次使用默认配置的有效 effort。显式停用 DEFAULT 后，自定义角色需要配置自己的模型。
 
 `tools` 省略时采用当前模式允许的通用子 Agent 工具集，显式 `[]` 禁用普通工具，非空列表按工具名精确匹配。`readonly` 默认是 `false`，设为 `true` 时只允许只读工具。仅包含只读工具的列表也会自动应用只读限制。可用 MCP 工具取决于父级开放范围、用户的只读授权和 Role 的工具集合。无论默认工具、自定义 `tools` 还是旧记录，child 的有效工具集都会剔除 `task`。`spawns` 字段保留解析与存储兼容，但即使设为 `["*"]` 也不能让 child 继续派发。子 Agent 能力仍受工作模式限制。`blocking: true` 在批次全部启动后等待该自定义任务，默认异步；普通异步任务可用 `wait` 等待结果。`output` 可定义结构化结果约束，任务项的 `output_schema` 优先。
 
@@ -86,6 +86,8 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 `task` 默认异步，支持同批多个任务：
 
+顶层只接受必填的 `context` 和 `tasks`。`tasks` 是包含 1–32 个任务对象的数组，即使只派发一个任务也必须包在数组中。每项必填 `role` 和 `task`；`name`、`readonly`、`isolated`、`output_schema` 也是任务项字段，不能放在顶层。`role` 从当次工具 schema 列出的可用角色中选择。子 Agent 不继承父对话，所需背景放在共享 `context`，具体范围、交付物与验证要求放在各项的 `task`。
+
 ```json
 {
   "context": "Inspect the current repository and report file references.",
@@ -96,11 +98,13 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 }
 ```
 
-每项返回 `agent_id`、`run_id` 和 `output_uri`。使用返回的身份，不根据显示名猜测 URI。
+每项返回 `agent_id`、`run_id` 和 `output_uri`，批次顶层额外返回可直接作为 `wait` 完整参数的 `wait_args`，例如 `{"run_ids":["r1","r2"]}`。新建后续 Run 的返回值也包含 `wait_args`。等待子 Agent 使用 `run_id` → `wait.run_ids`；`agent_id`（如 `a1`）与 `output_uri`（如 `agent://a1`）用于读取结果或发送消息，不是等待 ID。`wait.task_ids` 仅接受后台 `bash(mode="background")` 返回的 `task_id`（如 `bg-1`）。使用返回的身份，不根据显示名猜测 URI 或按编号推导 Run。
+
+参数解析失败时不会启动任何子任务，错误会同时返回参数层级指引和具体解析原因。根据反馈修正结构后再调用；不要原样重复失败的参数。
 
 | 接口 | 行为 |
 | --- | --- |
-| `wait` | 等待选中的自有子 Agent 与后台 Bash 全部进入终态；支持 `run_ids`／`task_ids`，固定上限 120 分钟，超时后终止并回收本批未完成工作 |
+| `wait` | 等待选中的自有子 Agent（`run_ids`）与后台 Bash（`task_ids`）全部进入终态；固定上限 120 分钟，超时后终止并回收本批未完成工作 |
 | `read agent://<id>` | 查看当前 Run 与最近已发布结果，从结果文件分页读取正文；旧结果标记 `superseded` |
 | `write agent://<id>` | 通过 `content` 补充运行中指令，或开始后续 Run |
 | `read history://` | 列出当前根会话可访问的子 Agent |
@@ -111,6 +115,8 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 后台结果自动回到直接 owner。`wait` 与自动投递共用消费标识，父原生上下文提交成功后才确认消费；普通读取不会消费结果。父模型结束输出但仍有自有子任务时等待该批全部结束，再交付结果并汇总；隐式等待同样使用 120 分钟上限，Steering 不会提前放行。
 
 `wait({})` 自动选择当前调用者拥有且尚未交付结果的目标；任一 ID 列表非空时仅等待显式指定目标，两个列表可以混用。目标集合在调用开始时冻结，新启动任务不会加入本次等待。工具 schema 不再提供 `timeout_ms`；旧调用中的非负整数仍可解析，但数值完全忽略，包括 `0`。未知、其他 owner 或上一用户任务的后台 ID 整体报错，不消费其他有效结果。
+
+等待参数或目标无效时，错误保留具体原因，并提示各类 ID 对应的参数及 `wait_args` 用法。按反馈修正后再调用；仅在确实需要等待全部自有未交付工作时使用 `{}`。
 
 返回值保留 `ok`、`results` 和 `pending`，并增加 `background_results`、`jobs`、`timed_out`、`interrupted`。`results` 保留子 Agent 的 `delivery_marker`／`run` 信封；`background_results` 保存后台 Bash 终态、退出码、有限输出及 artifact 元数据；`jobs` 为本次目标的 ID、类型、标题、状态、耗时与交付状态。`ok` 表示等待调用成功，任务自身仍可能失败或取消。已交付目标再次等待只返回状态，查看正文使用不消费结果的读取接口。后台 Bash 仍只在显式等待时交付，不增加自动注入。
 

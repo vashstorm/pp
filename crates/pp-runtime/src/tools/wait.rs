@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(120 * 60);
 const PROGRESS: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_millis(25);
+const TARGET_GUIDANCE: &str = "For subagents created by task, copy the returned wait_args object, or put their run_id values (e.g. r1) in run_ids. task_ids accepts only task_id values from bash(mode=background) (e.g. bg-1). agent_id values (e.g. a1) and agent:// URIs are for read/write, never wait IDs. Use {} only when you intend to wait for all owned undelivered work. Correct the selector or ID before retrying.";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -53,8 +54,8 @@ pub(super) fn definition() -> FunctionObject {
         name: "wait".into(),
         description: Some("Wait until every selected owned background Bash task and subagent run has settled, then return all undelivered results. Optional run_ids/task_ids select targets; omit both to watch all undelivered owned work. The fixed timeout is 120 minutes; on timeout, unfinished selected jobs and their descendants are stopped and reaped before returning. Steering stays queued until the batch finishes. Esc cancels the parent task and its owned work. Results are delivered once after context commit; use read for non-consuming output inspection and bash_task status only for persistent services. Continue useful work before waiting. Before calling wait in Execute mode, reconcile any existing TODO list: mark every actually running item in progress with todo start, mark verified completed work done, and record real blockers. Put required todo calls before wait in the tool-call order, never after it in the same batch; the model cannot update TODOs while wait is running. Multiple TODO items may stay in progress concurrently; starting one preserves the others. Do not mark queued work as started or block running children merely because the parent awaits results. Skip TODO updates when no list exists or its state is already current; Plan mode must not call todo. Finite commands (tests, builds, installs, checks) must use foreground bash even when slow; do not background them to use wait. Running services may never exit: verify readiness with actual requests, then stop them explicitly.".into()),
         parameters: Some(json!({"type":"object","properties":{
-            "run_ids":{"type":"array","items":{"type":"string","minLength":1}},
-            "task_ids":{"type":"array","items":{"type":"string","minLength":1}}
+            "run_ids":{"type":"array","description":"Subagent run_id values returned by task, e.g. [\"r1\",\"r2\"]. Do not pass agent_id values such as a1. You can copy task's wait_args object as the complete wait arguments.","items":{"type":"string","minLength":1}},
+            "task_ids":{"type":"array","description":"Background Bash task_id values returned by bash(mode=background), e.g. [\"bg-1\"]. For subagents created by task, use run_ids instead.","items":{"type":"string","minLength":1}}
         },"additionalProperties":false})),
         ..Default::default()
     }
@@ -135,20 +136,23 @@ impl Tools {
         emit: &mut dyn FnMut(AgentEvent),
         mut elapsed: impl FnMut() -> Duration,
     ) -> Result<Value> {
-        let args: Args = serde_json::from_str(arguments).context("invalid wait arguments")?;
+        let args: Args = serde_json::from_str(arguments)
+            .with_context(|| format!("Invalid wait arguments. {TARGET_GUIDANCE}"))?;
         ensure!(
             args.run_ids
                 .iter()
                 .chain(&args.task_ids)
                 .all(|id| !id.trim().is_empty()),
-            "wait IDs must not be blank"
+            "wait IDs must not be blank. {TARGET_GUIDANCE}"
         );
         let explicit = !args.run_ids.is_empty() || !args.task_ids.is_empty();
         // 所有 ID 在任何结果预留之前统一校验。
-        let selected = self.wait_jobs(
-            (!explicit || !args.run_ids.is_empty()).then_some(args.run_ids.as_slice()),
-            (!explicit || !args.task_ids.is_empty()).then_some(args.task_ids.as_slice()),
-        )?;
+        let selected = self
+            .wait_jobs(
+                (!explicit || !args.run_ids.is_empty()).then_some(args.run_ids.as_slice()),
+                (!explicit || !args.task_ids.is_empty()).then_some(args.task_ids.as_slice()),
+            )
+            .with_context(|| format!("Invalid wait targets. {TARGET_GUIDANCE}"))?;
         let selected = selected
             .into_iter()
             .filter(|job| explicit || !job.delivered)

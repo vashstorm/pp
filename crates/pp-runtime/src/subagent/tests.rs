@@ -90,6 +90,50 @@ fn wait_subagent_reservations_acknowledge_only_after_commit_and_reject_other_own
 }
 
 #[test]
+fn wait_wrong_id_kinds_explain_selectors_without_reserving_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(dir.path(), TaskSettings::default());
+    let mut tools =
+        crate::tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(binding.clone());
+    let mut run = wait_fixture_run("r1", "completed");
+    run.agent_id = "a1".into();
+    lock(&binding.inner.state)
+        .disk
+        .runs
+        .insert("r1".into(), run);
+    for args in [
+        json!({"task_ids":["a1"]}),
+        json!({"task_ids":["r1"]}),
+        json!({"run_ids":["a1"]}),
+        json!({"run_ids":["agent://a1"]}),
+        json!({"run_ids":["bg-1"]}),
+        json!({"run_ids":["r1"],"task_ids":["a1"]}),
+    ] {
+        let result = unified_wait(&tools, args);
+        assert_eq!(result["ok"], false, "{result}");
+        let error = result["error"].as_str().unwrap();
+        for hint in [
+            "wait_args",
+            "run_id",
+            "run_ids",
+            "task_id",
+            "task_ids",
+            "agent_id",
+        ] {
+            assert!(error.contains(hint), "缺少 ID 用途指引 {hint}: {error}");
+        }
+        assert_eq!(binding.deliveries(&[]).len(), 1);
+    }
+    let corrected = unified_wait(&tools, json!({"run_ids":["r1"]}));
+    assert_eq!(corrected["ok"], true, "{corrected}");
+    assert_eq!(corrected["results"].as_array().unwrap().len(), 1);
+    assert_eq!(corrected["results"][0]["run"]["id"], "r1");
+    tools.commit_wait_results().unwrap();
+    assert!(binding.deliveries(&[]).is_empty());
+}
+
+#[test]
 fn wait_mixed_targets_wait_for_child_and_background_bash() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());
@@ -839,6 +883,61 @@ fn custom_role_uses_model_override_and_works_without_builtin_roles() {
     assert_eq!(custom.output_schema, Some(json!({"type":"object"})));
     assert_eq!(custom.prompt, "Custom analysis prompt.");
     assert_eq!(custom.tools, vec!["read", "rg"]);
+}
+
+#[test]
+fn task_argument_errors_explain_nesting_without_dispatching_children() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding = binding(dir.path(), TaskSettings::default());
+    let mut tools =
+        crate::tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(binding.clone());
+    for arguments in [
+        json!({"context":"test","role":"fast","task":"flat task"}).to_string(),
+        json!({"context":"test","tasks":[{"role":"fast","task":"valid"}],"role":"fast"})
+            .to_string(),
+        json!({"context":"test","tasks":[{"task":"missing role"}]}).to_string(),
+        json!({"context":"test","tasks":[{"role":"fast","task":"valid","agent":"fast"}]})
+            .to_string(),
+        "{".to_owned(),
+    ] {
+        let result = tools.execute(
+            "task",
+            &arguments,
+            "invalid-task",
+            crate::tools::ToolPolicy::Execute {
+                workflow: &Default::default(),
+            },
+            &Default::default(),
+            &mut |_| {},
+        );
+        let output: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(output["ok"], false, "{output}");
+        let error = output["error"].as_str().unwrap();
+        for field in ["context", "tasks[]", "role", "task"] {
+            assert!(error.contains(field), "缺少参数层级指引 {field}: {error}");
+        }
+        let state = lock(&binding.inner.state);
+        assert!(state.disk.agents.is_empty());
+        assert!(state.disk.runs.is_empty());
+        assert_eq!(state.disk.next_id, 0);
+        assert_eq!(state.workers, 0);
+    }
+    let result = binding
+        .execute(
+            "task",
+            r#"{"context":"test","tasks":[{"role":"fast","task":"corrected task"}]}"#,
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+    assert_eq!(result["tasks"][0]["agent_id"], "a1");
+    assert_eq!(result["wait_args"], json!({"run_ids":["r1"]}));
+    assert_eq!(
+        lock(&binding.inner.state).disk.agents["a1"].spec.definition,
+        "fast"
+    );
+    binding.shutdown().unwrap();
 }
 
 #[test]

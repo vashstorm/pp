@@ -258,12 +258,40 @@ fn subagent_result_read_pages_full_disk_output_in_both_protocols() {
                 let spawned = sub_tool_result(&body, protocol, "spawn");
                 let run = spawned["tasks"][0]["run_id"].as_str().unwrap();
                 let uri = spawned["tasks"][0]["output_uri"].as_str().unwrap();
-                sub_call(request, protocol, "wait", "wait", json!({"run_ids":[run]}));
-                resource = Some((uri.to_owned(), run.to_owned()));
+                assert_eq!(spawned["wait_args"], json!({"run_ids":[run]}));
+                resource = Some((
+                    request,
+                    uri.to_owned(),
+                    run.to_owned(),
+                    spawned["wait_args"].clone(),
+                    spawned["tasks"][0]["agent_id"].clone(),
+                ));
             }
         }
-        let (uri, run) = resource.unwrap();
-        let (request, _) = receive_sub(&server, protocol);
+        let (request, uri, run, wait_args, agent_id) = resource.unwrap();
+        sub_call(
+            request,
+            protocol,
+            "wrong-wait",
+            "wait",
+            json!({"task_ids":[agent_id]}),
+        );
+        let (request, body) = receive_sub(&server, protocol);
+        let wrong = sub_tool_result(&body, protocol, "wrong-wait");
+        assert_eq!(wrong["ok"], false);
+        let error = wrong["error"].as_str().unwrap();
+        for hint in [
+            "run_ids",
+            "task_ids",
+            "agent_id",
+            "wait_args",
+            "Unknown background task",
+        ] {
+            assert!(error.contains(hint), "{wrong}");
+        }
+        sub_call(request, protocol, "wait", "wait", wait_args);
+        let (request, body) = receive_sub(&server, protocol);
+        assert_eq!(sub_tool_result(&body, protocol, "wait")["ok"], true);
         sub_call(request, protocol, "read-first", "read", json!({"path":uri}));
         let (request, body) = receive_sub(&server, protocol);
         let first = sub_tool_result(&body, protocol, "read-first");

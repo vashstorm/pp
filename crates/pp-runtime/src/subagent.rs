@@ -480,16 +480,38 @@ impl Binding {
             .collect::<Vec<_>>()
             .join("; ");
         let review_help = if names.contains(&"review") {
-            " Select role=review for read-only code review."
+            " Select tasks[].role=review for read-only code review."
         } else {
             ""
         };
+        let example = json!({
+            "context": "Current workspace, relevant files, constraints and required evidence.",
+            "tasks": [{"role": names[0], "task": "Investigate the assigned question and report file references."}]
+        });
         vec![function(
             "task",
             &format!(
-                "Delegate independent tasks with explicit shared context. Final results automatically return to you; use wait when blocked. When executing an existing TODO list, identify which items each child covers and keep checklist updates with the parent. After dispatch and before wait, use todo start for every actually running item covered by the children and reconcile verified completions and real blockers. Multiple TODO items may be in progress concurrently; starting one preserves the others. Delegation is not completion, and a running child is not blocked merely because the parent awaits its result. Do not mark queued or dependency-blocked work as started. Plan mode must not call todo. Every task must explicitly set role to one of the available roles: {help}.{review_help} Tasks are asynchronous unless the custom role sets blocking=true. Plan-mode children are always read-only."
+                "Delegate independent work to subagents. {TASK_ARGUMENTS_GUIDANCE}\nExample arguments: {example}\nAvailable roles: {help}.{review_help}\nTo wait for this batch, pass the returned wait_args object as the complete arguments to wait. Subagent run_id values go in wait.run_ids; agent_id and output_uri are for read/write. wait.task_ids is only for background Bash, not this tool.\n\nChildren receive the shared context and their own task, not the parent conversation. Include all information needed to work independently. Tasks are asynchronous unless the custom role sets blocking=true. Final results automatically return to you; continue independent work and use wait when blocked. Plan-mode children are always read-only.\n\nFor an existing TODO list, identify the items each child covers; the parent owns checklist updates. After dispatch and before wait, use todo start for every actually running item and reconcile verified completions and real blockers. Multiple items may be in progress concurrently. Do not start queued or dependency-blocked items, mark delegation as completion, or block a running child merely because the parent awaits its result. Plan mode must not call todo."
             ),
-            json!({"context":{"type":"string"},"tasks":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"name":{"type":"string"},"role":{"type":"string","enum":names},"task":{"type":"string"},"isolated":{"type":"boolean"},"readonly":{"type":"boolean","description":"Limit this task to read-only investigation without delegation."},"output_schema":{}},"required":["task","role"],"additionalProperties":false}}}),
+            json!({
+                "context": {"type":"string", "description":"Shared background for every child; include relevant files, constraints and prior findings. Children do not inherit the parent conversation."},
+                "tasks": {
+                    "type":"array", "minItems":1, "maxItems":32,
+                    "description":"Task objects. Even one task must be wrapped in this array; role and task belong inside each item.",
+                    "items": {
+                        "type":"object",
+                        "properties": {
+                            "name": {"type":"string", "description":"Optional non-empty name, unique within this batch."},
+                            "role": {"type":"string", "enum":names, "description":"Required role for this task item. Select a value from this enum."},
+                            "task": {"type":"string", "description":"Required non-empty assignment: scope, expected result and verification."},
+                            "isolated": {"type":"boolean", "description":"Use an isolated worktree. Not allowed in Plan mode."},
+                            "readonly": {"type":"boolean", "description":"Limit this task to read-only investigation without delegation."},
+                            "output_schema": {"description":"Optional JSON Schema for the child's final structured result."}
+                        },
+                        "required":["task","role"], "additionalProperties":false
+                    }
+                }
+            }),
             &["context", "tasks"],
         )]
     }
@@ -503,7 +525,9 @@ impl Binding {
     ) -> Result<Value> {
         match name {
             "task" => {
-                let args: Batch = serde_json::from_str(arguments)?;
+                let args: Batch = serde_json::from_str(arguments).with_context(|| {
+                    format!("Invalid task arguments. {TASK_ARGUMENTS_GUIDANCE} No tasks were started; correct the arguments before retrying.")
+                })?;
                 self.spawn(args, plan, token)
             }
             _ => bail!("unknown subagent tool"),
@@ -741,7 +765,11 @@ impl Binding {
                 value["results"] = self.wait(&[id], u64::MAX, token)?;
             }
         }
-        Ok(json!({"ok":true,"tasks":results}))
+        let run_ids = results
+            .iter()
+            .map(|task| task["run_id"].clone())
+            .collect::<Vec<_>>();
+        Ok(json!({"ok":true,"tasks":results,"wait_args":{"run_ids":run_ids}}))
     }
     fn launch(
         &self,
@@ -1295,7 +1323,7 @@ impl Binding {
             self.settle(&run, json!({"ok":false,"error":format!("{error:#}")}), 0)?;
             return Err(error);
         }
-        Ok(json!({"ok":true,"run_id":run}))
+        Ok(json!({"ok":true,"run_id":run,"wait_args":{"run_ids":[run]}}))
     }
     pub fn control(&self, id: &str, action: &str, content: Option<&str>) -> Result<Value> {
         if action == "revive" {
@@ -1984,6 +2012,8 @@ fn worker(
         );
     }
 }
+const TASK_ARGUMENTS_GUIDANCE: &str = "The top-level JSON object accepts only context (string) and tasks (array of 1-32 objects), both required. Every tasks[] item requires role and task; role must be from the current tool schema. Put role, task, name, readonly, isolated and output_schema inside tasks[] items, never at the top level. Use the tasks array even for a single task.";
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Batch {

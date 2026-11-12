@@ -146,7 +146,12 @@ fn wait_validates_arguments_and_remains_available_without_subagents() {
         json!({"run_ids":["r1"]}),
         json!({"extra":true}),
     ] {
-        assert_eq!(execute(&tools, "wait", args.clone())["ok"], false, "{args}");
+        let result = execute(&tools, "wait", args.clone());
+        assert_eq!(result["ok"], false, "{args}");
+        assert!(
+            result["error"].as_str().unwrap().contains("wait_args"),
+            "{result}"
+        );
     }
     assert_eq!(
         crate::tools::approval::tier_of("wait"),
