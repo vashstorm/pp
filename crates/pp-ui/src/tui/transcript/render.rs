@@ -181,7 +181,7 @@ impl Transcript {
                 } else if search {
                     Some(palette::RG_BG)
                 } else if file_read {
-                    Some(palette::READ_SUMMARY_BG)
+                    None
                 } else if matches!(entry.kind, EntryKind::Diff | EntryKind::Ask) {
                     Some(match entry.status {
                         EntryStatus::Running => palette::TOOL_PENDING_BG,
@@ -337,6 +337,7 @@ impl Transcript {
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
                     } else if !think
+                        && !file_read
                         && !framed
                         && entry.kind != EntryKind::Activity
                         && background.is_none()

@@ -227,7 +227,7 @@ fn read_status_clock_animates_groups_and_stops_after_completion() {
             transcript.entries.last_mut().unwrap().started = Some(started);
         }
         let initial = render(&mut transcript, 80, 20);
-        let (icon_x, icon_y) = (2, 1);
+        let (icon_x, icon_y) = (2, 0);
         assert_eq!(initial[(icon_x, icon_y)].symbol(), "\u{f1456}");
         let count = if paths.len() > 1 {
             format!("Read ({})", paths.len())
@@ -288,16 +288,15 @@ fn read_filename_color_preserves_colons_spaces_and_parameter_color() {
     );
     assert!(!text.contains(" · ok"));
     let rows: Vec<_> = text.lines().map(str::trim_end).collect();
-    assert_eq!(rows[0], "");
-    assert_eq!(rows[2], "");
-    assert_eq!(transcript.entries[0].layout.as_ref().unwrap().height, 3);
-    let start = rows[1].find(path).unwrap();
-    let start = Line::raw(&rows[1][..start]).width();
+    assert_eq!(rows[1], "");
+    assert_eq!(transcript.entries[0].layout.as_ref().unwrap().height, 1);
+    let start = rows[0].find(path).unwrap();
+    let start = Line::raw(&rows[0][..start]).width();
     for column in start..start + path.len() {
-        assert_eq!(buffer[(column as u16, 1)].fg, palette::READ_SUMMARY_PATH);
+        assert_eq!(buffer[(column as u16, 0)].fg, palette::READ_SUMMARY_PATH);
     }
     assert_eq!(
-        buffer[((start + path.len()) as u16, 1)].fg,
+        buffer[((start + path.len()) as u16, 0)].fg,
         palette::ACTIVITY
     );
 }
@@ -305,6 +304,7 @@ fn read_filename_color_preserves_colons_spaces_and_parameter_color() {
 #[test]
 fn read_summary_matches_reference_layout_colors_and_wrapping() {
     let mut transcript = Transcript::new();
+    transcript.append("Assistant", "before");
     let files = [
         ("src/tools.rs", 184, 707),
         ("src/agent/plan_workflow.rs", 1, 315),
@@ -318,11 +318,13 @@ fn read_summary_matches_reference_layout_colors_and_wrapping() {
                 result: json!({"ok":true,"source":path,"ranges":[{"start":start,"end":end}],"content":"retained body"}),
             });
     }
+    transcript.append("Assistant", "after");
     let buffer = render(&mut transcript, 80, 10);
     let text = screen(&buffer);
     assert_eq!(
-        text.lines().take(7).map(str::trim_end).collect::<Vec<_>>(),
+        text.lines().take(9).map(str::trim_end).collect::<Vec<_>>(),
         [
+            "  before",
             "",
             "  \u{f00c} Read (4)",
             "    ├─ src/tools.rs:184-707",
@@ -330,30 +332,32 @@ fn read_summary_matches_reference_layout_colors_and_wrapping() {
             "    ├─ src/events.rs:1-170",
             "    └─ src/agent.rs:1430-1600",
             "",
+            "  after",
         ]
     );
-    assert_eq!(transcript.entries[0].layout.as_ref().unwrap().height, 7);
-    assert_eq!(buffer[(2, 1)].fg, palette::ADDED);
-    assert_eq!(buffer[(9, 1)].fg, palette::READ_SUMMARY_META);
-    for row in 0..7 {
+    assert_eq!(transcript.entries[1].layout.as_ref().unwrap().height, 5);
+    assert_eq!(buffer[(2, 2)].fg, palette::ADDED);
+    assert_eq!(buffer[(9, 2)].fg, palette::READ_SUMMARY_META);
+    for row in 1..8 {
         for col in 0..80 {
-            assert_eq!(buffer[(col, row)].bg, palette::READ_SUMMARY_BG);
+            assert_eq!(buffer[(col, row)].bg, Color::Reset);
             assert!(!buffer[(col, row)].modifier.contains(Modifier::BOLD));
         }
-        if (2..6).contains(&row) {
+        if (3..7).contains(&row) {
             assert_eq!(buffer[(4, row)].fg, palette::READ_SUMMARY_META);
             assert_eq!(buffer[(7, row)].fg, palette::READ_SUMMARY_PATH);
         }
     }
-    assert_eq!(buffer[(19, 2)].fg, palette::ACTIVITY);
+    assert_eq!(buffer[(19, 3)].fg, palette::ACTIVITY);
     let narrow = screen(&render(&mut transcript, 20, 20));
     assert!(narrow.contains("    │  n_workflow.rs"), "{narrow}");
     assert!(narrow.contains("    └─ src/agent.rs:"), "{narrow}");
-    assert_eq!(transcript.entries.len(), 4);
+    assert_eq!(transcript.entries.len(), 6);
     assert!(
         transcript
             .entries
             .iter()
+            .filter(|entry| entry.tool.as_deref() == Some("read"))
             .all(|entry| entry.text == "retained body")
     );
 }

@@ -313,9 +313,6 @@ impl TranscriptEntry {
                 rows.push(Line::from(spans));
             }
         }
-        for row in &mut rows {
-            row.style = Style::default().bg(palette::READ_SUMMARY_BG);
-        }
         rows
     }
 }

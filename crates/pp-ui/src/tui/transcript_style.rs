@@ -42,7 +42,6 @@ pub(super) const ASK_BORDER: Color = Color::Rgb(39, 135, 165);
 pub(super) const ASK_TAB_BG: Color = Color::Rgb(60, 63, 75);
 pub(super) const READ_BG: Color = TOOL_BG;
 pub(super) const READ_TEXT: Color = Color::Rgb(190, 190, 185);
-pub(super) const READ_SUMMARY_BG: Color = TOOL_BG;
 pub(super) const READ_SUMMARY_TITLE: Color = READ_TITLE;
 pub(super) const READ_SUMMARY_PATH: Color = ACCENT;
 pub(super) const READ_SUMMARY_META: Color = Color::Rgb(96, 102, 114);

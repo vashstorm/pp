@@ -155,7 +155,6 @@ impl TranscriptEntry {
         let user = self.kind == EntryKind::User;
         let edit = self.is_edit();
         let search = self.is_search();
-        let file_read = self.is_file_read();
         let border = |source| LayoutLine {
             content: LayoutContent::Source {
                 source,
@@ -167,7 +166,7 @@ impl TranscriptEntry {
         if bash || search {
             lines.push(border(Source::Top));
         }
-        if user || file_read {
+        if user {
             lines.push(border(Source::Padding));
         }
         if self.has_file_header() {
@@ -538,7 +537,7 @@ impl TranscriptEntry {
                 self.add_lines(Source::Text, &mut lines);
             }
         }
-        if user || file_read {
+        if user {
             lines.push(border(Source::Padding));
         }
         if edit {
