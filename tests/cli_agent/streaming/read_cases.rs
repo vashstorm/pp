@@ -12,8 +12,8 @@ fn read_files_images_web_and_resume_send_real_content_both_protocols() {
             .unwrap();
         let image_bytes = std::fs::read(&image_path).unwrap();
         std::fs::write(dir.path().join("source"), "one\r\ntwo\r\nthree\r\nfour\r\n").unwrap();
-        let url = format!("http://{}/page", web.server_addr());
-        let image_url = format!("http://{}/image", web.server_addr());
+        let url = format!("http://{}/page", web.addr());
+        let image_url = format!("http://{}/image", web.addr());
         let cli = protocol.start_with_settings(
             &server,
             dir.path(),
@@ -66,25 +66,24 @@ fn read_files_images_web_and_resume_send_real_content_both_protocols() {
             ]),
         );
         let request = web.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
-        assert_eq!(request.url(), "/page");
-        assert!(
-            !request
-                .headers()
-                .iter()
-                .any(|h| h.field.equiv("Authorization"))
-        );
+        assert_eq!(request.target(), "/page");
+        assert!(!request.headers().contains_key("authorization"));
         request
             .respond(
-                Response::from_string("first\nsecond\nthird\nfourth\n")
-                    .with_header(Header::from_bytes("Content-Type", "text/plain").unwrap()),
+                Response::builder()
+                    .header("Content-Type", "text/plain")
+                    .body(Body::from("first\nsecond\nthird\nfourth\n"))
+                    .unwrap(),
             )
             .unwrap();
         let request = web.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
-        assert_eq!(request.url(), "/image");
+        assert_eq!(request.target(), "/image");
         request
             .respond(
-                Response::from_data(image_bytes.clone())
-                    .with_header(Header::from_bytes("Content-Type", "image/png").unwrap()),
+                Response::builder()
+                    .header("Content-Type", "image/png")
+                    .body(Body::from(image_bytes))
+                    .unwrap(),
             )
             .unwrap();
         let (request, body) = protocol.receive(&server);
@@ -162,7 +161,7 @@ fn read_image_model_switch_and_compaction_keep_visual_exchange() {
             Protocol::Chat => ("completion", "response"),
             Protocol::Responses => ("response", "completion"),
         };
-        let provider = |protocol: &str| json!({"api_key":"fixture", "protocol":protocol,"base_url":format!("http://{}/v1",server.server_addr()),"models":{"one":{"model":"one","context_window":65536}}});
+        let provider = |protocol: &str| json!({"api_key":"fixture", "protocol":protocol,"base_url":format!("http://{}/v1",server.addr()),"models":{"one":{"model":"one","context_window":65536}}});
         let models = json!({"providers":{"a":provider(source),"b":provider(target)}}).to_string();
         let mut cli = LiveCli::new(Cli::start_with(
             dir.path(),

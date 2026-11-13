@@ -107,7 +107,7 @@ fn tui_session_resume_replays_history_without_request() {
         interrupted.ready();
         interrupted.input("interrupted input\r");
         let (request, _) = receive_at(&server, path);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         streaming_delta(&mut stream, protocol, "partial-session-marker");
         // Observed terminal output fences event persistence; do not finish
         // the stream before killing the process.

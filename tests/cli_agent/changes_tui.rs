@@ -4,7 +4,7 @@
 const CHANGES_ORIGINAL: &[u8] = b"user-local\r\nkeep";
 
 fn changes_start(
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
     mode: &str,
 ) -> (tempfile::TempDir, tempfile::TempDir, Pty) {
@@ -29,12 +29,12 @@ fn changes_start(
 // Ask the running fixture for a real read before each hashline edit; never synthesize anchors.
 fn changes_edit_arguments(
     pty: &mut Pty,
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
     mode: &str,
-    request: Request,
+    request: CapturedRequest,
     step: usize,
-) -> (Request, Value) {
+) -> (CapturedRequest, Value) {
     let old = if step == 1 { "user-local" } else { "agent-one" };
     let new = if step == 1 { "agent-one" } else { "agent-final" };
     let file = if step == 1 { "demo.txt" } else { "./demo.txt" };
@@ -58,7 +58,7 @@ fn changes_edit_arguments(
     (request, json!({"input":format!("{header}\nPUT 1.=1:\n+{new}")}))
 }
 
-fn changes_modify_twice(pty: &mut Pty, server: &Server, protocol: &str, mode: &str) {
+fn changes_modify_twice(pty: &mut Pty, server: &TestServer, protocol: &str, mode: &str) {
     pty.input("changes task edits twice and creates a file\r");
     let (request, _) = pty.request_at(server, api_path(protocol));
     let (request, arguments) =

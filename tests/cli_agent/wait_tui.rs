@@ -1,10 +1,10 @@
 // 通过真实 PTY 验证等待刷新、Steering、取消和两种协议的结果回填。
 fn wait_tui_start(
     protocol: &str,
-    fixture: &Server,
+    fixture: &TestServer,
     home: &std::path::Path,
     project: &std::path::Path,
-) -> (Pty, String, Request) {
+) -> (Pty, String, CapturedRequest) {
     std::fs::write(config_path(home, "settings.yml"), CANCEL_SETTINGS).unwrap();
     std::fs::write(
         config_path(home, "models.yml"),
@@ -158,7 +158,7 @@ fn slow_wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_set
             {"role":"fast","task":"stage-one"}, {"role":"fast","task":"stage-two"}, {"role":"fast","task":"stage-three"}
         ]}));
         let mut parent = None;
-        let mut children: Vec<Option<Request>> = (0..3).map(|_| None).collect();
+        let mut children: Vec<Option<CapturedRequest>> = (0..3).map(|_| None).collect();
         while parent.is_none() || children.iter().any(Option::is_none) {
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             if hub_is_child(&body) {

@@ -7,7 +7,7 @@
 use super::streaming::{LiveCli, Pipe};
 use super::*;
 
-fn ask_receive(server: &Server, protocol: &str) -> (Request, Value) {
+fn ask_receive(server: &TestServer, protocol: &str) -> (CapturedRequest, Value) {
     receive_at(
         server,
         if protocol == "completion" {
@@ -81,7 +81,7 @@ fn ask_call(protocol: &str, id: &str, arguments: Value) -> Value {
     }
 }
 
-fn ask_calls_reply(request: Request, protocol: &str, calls: Value) {
+fn ask_calls_reply(request: CapturedRequest, protocol: &str, calls: Value) {
     if protocol == "completion" {
         calls_reply(request, calls);
     } else {
@@ -89,7 +89,7 @@ fn ask_calls_reply(request: Request, protocol: &str, calls: Value) {
     }
 }
 
-fn ask_final(request: Request, protocol: &str, text: &str) {
+fn ask_final(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {

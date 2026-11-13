@@ -38,7 +38,7 @@ fn plan_tui_compact_then_execute_case(outcome: &str) {
         plan_wait_mode(&mut pty, "Plan");
         match outcome {
             "failure" => request
-                .respond(Response::empty(tiny_http::StatusCode(500)))
+                .respond(Response::builder().status(500).body(Body::empty()).unwrap())
                 .unwrap(),
             "cancel" => {
                 pty.input("\x1b");

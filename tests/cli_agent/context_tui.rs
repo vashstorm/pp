@@ -31,12 +31,12 @@ fn context_tui_live_settings(auto_compact: bool, threshold_percent: u8) -> Strin
     )
 }
 
-fn context_tui_models(server: &Server, protocol: &str, window: u64) -> String {
+fn context_tui_models(server: &TestServer, protocol: &str, window: u64) -> String {
     json!({
         "providers": {"fixture": {
             "protocol": protocol,
             "api_key": "fixture-key",
-            "base_url": format!("http://{}/v1", server.server_addr()),
+            "base_url": format!("http://{}/v1", server.addr()),
             "models": {"primary": { "model": "fixture-model",
                         "context_window": window}}
         }}
@@ -46,7 +46,7 @@ fn context_tui_models(server: &Server, protocol: &str, window: u64) -> String {
 
 // 独立 HOME 的双配置：默认自动压缩关闭、通知 2 秒。
 fn context_tui_start_with_policy(
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
     window: u64,
     threshold_percent: u8,
@@ -69,7 +69,7 @@ fn context_tui_start_with_policy(
 }
 
 fn context_tui_start(
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
     window: u64,
     threshold_percent: u8,
@@ -78,7 +78,7 @@ fn context_tui_start(
 }
 
 fn context_tui_start_auto(
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
     window: u64,
     threshold_percent: u8,
@@ -110,7 +110,7 @@ fn context_tui_filler(marker: &str, bytes: usize) -> String {
 // 一轮交互：粘贴提示词、回答请求、等待回答与空闲输入框。
 fn context_tui_exchange(
     pty: &mut Pty,
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
     prompt: &str,
     answer: &str,
@@ -240,17 +240,17 @@ fn context_tui_positive_speed(screen: &vt100::Screen) -> bool {
 
 // 流式请求的权威收尾：Chat 用 usage-only 尾块 + DONE，Responses 用 completed
 // 事件携带同一 usage；文本与已发送的增量一致，供速率按服务端 output 校正。
-fn context_tui_stream_usage(stream: &mut SseReply, protocol: &str, text: &str) {
+fn context_tui_stream_usage(stream: &mut SseWriter, protocol: &str, text: &str) {
     if protocol == "completion" {
-        stream.event(chat_chunk(json!({}), Some("stop")));
-        stream.event(json!({
+        stream.event(&chat_chunk(json!({}), Some("stop"))).unwrap();
+        stream.event(&json!({
             "id":"chatcmpl-fixture", "object":"chat.completion.chunk",
             "created":1, "model":"fixture-model", "choices":[],
             "usage":{"prompt_tokens":12000, "completion_tokens":300,
                      "total_tokens":12300,
                      "prompt_tokens_details":{"cached_tokens":40,"cache_write_tokens":120}}
-        }));
-        stream.frame("[DONE]");
+        })).unwrap();
+        stream.frame("[DONE]").unwrap();
     } else {
         let mut response = response_body(json!([response_message(
             "msg-live",
@@ -263,29 +263,29 @@ fn context_tui_stream_usage(stream: &mut SseReply, protocol: &str, text: &str) {
             "output_tokens_details":{"reasoning_tokens":50},
             "total_tokens":12300
         });
-        stream.event(json!({
+        stream.event(&json!({
             "type":"response.completed", "sequence_number":100, "response":response
-        }));
+        })).unwrap();
     }
 }
 
 // 摘要请求的回复：与普通流一样收尾，但压缩流不进入指标（由空回调隔离）。
-fn context_tui_summary_reply(stream: &mut SseReply, protocol: &str) {
+fn context_tui_summary_reply(stream: &mut SseWriter, protocol: &str) {
     if protocol == "completion" {
-        stream.event(chat_chunk(
+        stream.event(&chat_chunk(
             json!({"role":"assistant","content":CONTEXT_TUI_SUMMARY}),
             None,
-        ));
-        stream.event(chat_chunk(json!({}), Some("stop")));
-        stream.frame("[DONE]");
+        )).unwrap();
+        stream.event(&chat_chunk(json!({}), Some("stop"))).unwrap();
+        stream.frame("[DONE]").unwrap();
     } else {
-        stream.event(json!({
+        stream.event(&json!({
             "type":"response.completed", "sequence_number":100,
             "response": response_body(json!([response_message(
                 "msg-summary",
                 json!([response_text(CONTEXT_TUI_SUMMARY)])
             )]))
-        }));
+        })).unwrap();
     }
 }
 
@@ -396,7 +396,7 @@ fn context_tui_assert_summary_body(
 
 // 三个 8KB 交互使旧前缀超过 40000/5 token 的保留预算，
 // 摘要只覆盖第一个交互，最近交互始终原生保留。
-fn context_tui_fill_three_exchanges(pty: &mut Pty, server: &Server, protocol: &str) {
+fn context_tui_fill_three_exchanges(pty: &mut Pty, server: &TestServer, protocol: &str) {
     for marker in ["context-old-one", "context-old-two", "context-recent-keep"] {
         context_tui_exchange(
             pty,
@@ -418,7 +418,7 @@ fn context_tui_write_batch(home: &Path, name: &str, marker: &str, bytes: usize) 
     std::fs::write(home.join(name), context_tui_filler(marker, bytes)).unwrap();
 }
 
-fn context_tui_read_calls(request: Request, protocol: &str, id: &str, path: &str) {
+fn context_tui_read_calls(request: CapturedRequest, protocol: &str, id: &str, path: &str) {
     let args = json!({"path": path});
     if protocol == "completion" {
         calls_reply(request, json!([call(id, "read", args)]));
@@ -427,7 +427,7 @@ fn context_tui_read_calls(request: Request, protocol: &str, id: &str, path: &str
     }
 }
 
-fn context_tui_final(request: Request, protocol: &str, text: &str) {
+fn context_tui_final(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {
@@ -469,7 +469,7 @@ fn context_tui_esc_cancel_during_held_summary_preserves_draft_and_history() {
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         context_tui_assert_summary_body(&body, protocol, "context-old-one", "context-recent-keep");
         // 服务端握住摘要 SSE：屏幕保持 Compacting 状态。
-        let _held = SseReply::new(request);
+        let _held = request.start_sse().unwrap();
         pty.text("Compacting context...");
         // 压缩期间继续编辑草稿；Esc 取消并等待压缩终态。
         pty.input("context-draft-保留");
@@ -702,7 +702,7 @@ fn context_tui_auto_compact_cancel_keeps_draft_and_recovers_accepted_history() {
 
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         context_tui_assert_summary_body(&body, protocol, first, second);
-        let _held = SseReply::new(request);
+        let _held = request.start_sse().unwrap();
         pty.text("Compacting context");
         pty.wait_for("自动压缩触发后的用量超过 80%", |screen| {
             context_tui_ctx_percent(screen) >= 80
@@ -878,7 +878,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
 
         pty.input("context-metrics-live\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         let first = format!("context-metrics-live-one {}", "x".repeat(600));
         streaming_delta(&mut stream, protocol, &first);
         pty.text("context-metrics-live-one");
@@ -979,7 +979,7 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         pty.resize(30, 140);
         pty.input("context-metrics-missing\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         // 服务端暂不返回首个 delta：新请求等待期间必须保留上一笔完成速度。
         pty.wait_for(
             "下一请求等待首字节时速度不闪回未知",
@@ -1034,7 +1034,7 @@ fn context_tui_token_metrics_cancel_stops_and_recounts() {
         // 流式生成中 Esc：速度计时停止并从状态栏清除。
         pty.input("context-metrics-cancel\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         streaming_delta(&mut stream, protocol, "context-metrics-cancel-partial");
         pty.text("context-metrics-cancel-partial");
         pty.wait_for("取消前显示估算速度", context_tui_positive_speed);
@@ -1054,7 +1054,7 @@ fn context_tui_token_metrics_cancel_stops_and_recounts() {
         // 下一轮请求重新计数：新请求再次出现不带前缀的非零估算速度。
         pty.input("context-metrics-recount\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         streaming_delta(&mut stream, protocol, "context-metrics-recount-partial");
         pty.text("context-metrics-recount-partial");
         pty.wait_for("新请求重新显示估算速度", context_tui_positive_speed);
@@ -1087,7 +1087,7 @@ fn context_tui_token_metrics_cancel_stops_and_recounts() {
         );
         pty.input("context-metrics-authoritative\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         streaming_delta(
             &mut stream,
             protocol,
@@ -1108,7 +1108,7 @@ fn context_tui_token_metrics_cancel_stops_and_recounts() {
         pty.resize(30, 140);
         pty.input("context-metrics-retain-on-cancel\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let mut cancelled_stream = SseReply::new(request);
+        let mut cancelled_stream = request.start_sse().unwrap();
         streaming_delta(
             &mut cancelled_stream,
             protocol,
@@ -1139,7 +1139,7 @@ fn context_tui_token_metrics_cancel_stops_and_recounts() {
             "context-metrics-first",
             "context-metrics-second",
         );
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         pty.text("Compacting context...");
         pty.wait_for(
             "压缩等待期间保留既有指标与临时状态",

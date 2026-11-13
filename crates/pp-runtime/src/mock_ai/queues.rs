@@ -1,13 +1,23 @@
 use std::{
     collections::BTreeMap,
+    io::Cursor,
     ops::Range,
+    pin::Pin,
     sync::{Arc, Mutex},
+    task::{Context, Poll},
 };
 
 use anyhow::{Result, ensure};
+use axum::{
+    body::{Body, Bytes},
+    extract::{Request, State},
+    http::{StatusCode, header},
+    response::Response,
+};
+use futures_util::Stream;
 use pp_core::cancellation::CancellationToken;
 use serde_json::json;
-use tiny_http::{Header, Method, Request, Response};
+use tokio::sync::mpsc;
 
 use super::{
     MockEndpoint,
@@ -100,18 +110,21 @@ impl Queues {
     }
 }
 
-pub(super) fn handle(mut request: Request, endpoint: MockEndpoint) {
-    let Some((run, lane)) = route(request.url()) else {
-        let _ = request.respond(Response::empty(404));
-        return;
+/// 单一 fallback 入口：路由、方法与队列策略都按原始 request-target 判定。
+pub(super) async fn handle(State(endpoint): State<MockEndpoint>, request: Request) -> Response {
+    let (parts, body) = request.into_parts();
+    let target = parts
+        .uri
+        .path_and_query()
+        .map_or_else(String::new, |target| target.as_str().to_owned());
+    let Some((run, lane)) = route(&target) else {
+        return empty(StatusCode::NOT_FOUND);
     };
-    if *request.method() != Method::Post {
-        let _ = request.respond(Response::empty(405));
-        return;
+    if parts.method != axum::http::Method::POST {
+        return empty(StatusCode::METHOD_NOT_ALLOWED);
     }
     if endpoint.shutdown.is_cancelled() {
-        let _ = request.respond(Response::empty(503));
-        return;
+        return empty(StatusCode::SERVICE_UNAVAILABLE);
     }
     let queue = {
         let mut queues = endpoint.queues.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -121,38 +134,55 @@ pub(super) fn handle(mut request: Request, endpoint: MockEndpoint) {
         let mut state = queue.lock().unwrap_or_else(|e| e.into_inner());
         if state.busy {
             drop(state);
-            error(
-                request,
-                409,
+            return error(
+                StatusCode::CONFLICT,
                 "mock_queue_busy",
                 "Mock queue already has an active response.",
             );
-            return;
         }
         state.busy = true;
         state.cursor == state.script.len()
     };
-    let _busy = BusyGuard(Arc::clone(&queue));
+    let busy = BusyGuard(Arc::clone(&queue));
     if needs_script {
-        let script = match protocol::parse_script(request.as_reader()) {
-            Ok(script) => script,
-            Err(failure) => {
-                drop(_busy);
-                error(request, 400, failure.code, failure.message);
-                return;
+        // 只有未耗尽的队列才读取并解析正文；其余请求在 busy 检查后立即收尾。
+        let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "invalid_mock_script",
+                "mock script request could not be read",
+            );
+        };
+        let parsing =
+            tokio::task::spawn_blocking(move || protocol::parse_script(&mut Cursor::new(bytes)));
+        let parsed = tokio::select! {
+            result = parsing => result,
+            _ = endpoint.shutdown.cancelled() => {
+                return empty(StatusCode::SERVICE_UNAVAILABLE);
+            }
+        };
+        if endpoint.shutdown.is_cancelled() {
+            return empty(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        let script = match parsed {
+            Ok(Ok(script)) => script,
+            Ok(Err(failure)) => {
+                return error(StatusCode::BAD_REQUEST, failure.code, failure.message);
+            }
+            Err(join) => {
+                // 内部失败：诊断不含脚本或凭据，且不改动 cursor 与 generation。
+                tracing::error!(event = "mock_ai_script_parse_failed", error = %join);
+                return empty(StatusCode::INTERNAL_SERVER_ERROR);
             }
         };
         let mut state = queue.lock().unwrap_or_else(|e| e.into_inner());
         let Some(generation) = state.generation.checked_add(1) else {
             drop(state);
-            drop(_busy);
-            error(
-                request,
-                400,
+            return error(
+                StatusCode::BAD_REQUEST,
                 "invalid_mock_script",
                 "Mock generation limit reached.",
             );
-            return;
         };
         state.script = Arc::new(script);
         state.cursor = 0;
@@ -179,36 +209,70 @@ pub(super) fn handle(mut request: Request, endpoint: MockEndpoint) {
     );
     // 失败指令只占一个步骤：直接用供应商错误收尾，客户端据此进入自动重试。
     if let Some(status) = reservation.script[reservation.steps.start].status {
-        error(
-            request,
-            status,
+        return error(
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             "mock_http_error",
             "Mock provider failure injected by the fixture.",
         );
-        return;
     }
-    let _ = sse::send(
-        request,
-        &reservation.script[reservation.steps.clone()],
-        &identity,
-        &lane,
-        &endpoint.shutdown,
-        &reservation.cancellation,
-    );
+    let (sender, receiver) = mpsc::channel(1);
+    // producer 只持预留的脚本 Arc 与 range，不复制整个脚本、不持队列锁。
+    let script = Arc::clone(&reservation.script);
+    let steps = reservation.steps.clone();
+    let shutdown = endpoint.shutdown.clone();
+    let run_cancel = reservation.cancellation.clone();
+    tokio::spawn(async move {
+        let _ = sse::send(
+            sender,
+            &script[steps],
+            &identity,
+            &lane,
+            &shutdown,
+            &run_cancel,
+        )
+        .await;
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .body(Body::from_stream(BodyStream {
+            receiver,
+            _busy: busy,
+        }))
+        .expect("static mock AI SSE response")
 }
 
-fn error(request: Request, status: u16, code: &str, message: &str) {
-    let response = Response::from_string(
-        json!({"error": {
-            "type": "invalid_request_error", "code": code, "message": message
-        }})
-        .to_string(),
-    )
-    .with_status_code(status)
-    .with_header(
-        Header::from_bytes("Content-Type", "application/json").expect("static HTTP header"),
-    );
-    let _ = request.respond(response);
+fn error(status: StatusCode, code: &str, message: &str) -> Response {
+    let body = json!({"error": {
+        "type": "invalid_request_error", "code": code, "message": message
+    }})
+    .to_string();
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body))
+        .expect("static mock AI error response")
+}
+
+fn empty(status: StatusCode) -> Response {
+    Response::builder()
+        .status(status)
+        .body(Body::empty())
+        .expect("static mock AI response")
+}
+
+/// 响应 body：直到 EOF 或 body 被 Drop 才释放队列的 busy 标记。
+struct BodyStream {
+    receiver: mpsc::Receiver<Bytes>,
+    _busy: BusyGuard,
+}
+
+impl Stream for BodyStream {
+    type Item = std::io::Result<Bytes>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.receiver.poll_recv(context).map(|frame| frame.map(Ok))
+    }
 }
 
 fn route(path: &str) -> Option<(String, String)> {

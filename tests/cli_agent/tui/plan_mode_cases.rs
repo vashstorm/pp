@@ -208,7 +208,7 @@ fn plan_toggle_waits_for_prompt_and_preserves_drafts() {
         pty.input("Continue the unsaved research\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         request
-            .respond(Response::from_string("").with_status_code(400))
+            .respond(Response::builder().status(400).body(Body::empty()).unwrap())
             .unwrap();
         pty.text("HTTP status 400");
         pty.ready();

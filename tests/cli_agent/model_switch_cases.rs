@@ -5,7 +5,7 @@ fn model_switch_reload_same_reference_rebinds_provider_without_losing_history() 
     let first = server();
     let second = server();
     let home = tempfile::tempdir().unwrap();
-    let models = |server: &Server, key: &str, model: &str| {
+    let models = |server: &TestServer, key: &str, model: &str| {
         json!({"providers":{"fixture":slash_provider(server,key,"completion",json!({"primary":{"model":model}}))}}).to_string()
     };
     let mut cli = Cli::start_with(

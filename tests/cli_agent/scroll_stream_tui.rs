@@ -11,7 +11,7 @@ fn scroll_stream_case(thinking: bool) {
                 runtime_input_start(&provider, protocol, "tui:\n  max_fps: 60\n");
             pty.input("scroll stream task\r");
             let (request, _) = pty.request_at(&provider, api_path(protocol));
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             let prefix = if code {
                 format!(
                     "```rust\n{}",
@@ -24,7 +24,7 @@ fn scroll_stream_case(thinking: bool) {
                     .map(|i| format!("- **row_{i:04}** `中文🙂`\n"))
                     .collect::<String>()
             };
-            let send = |stream: &mut SseReply, text: &str| {
+            let send = |stream: &mut SseWriter, text: &str| {
                 if thinking {
                     runtime_reasoning_delta(stream, protocol, text);
                 } else {

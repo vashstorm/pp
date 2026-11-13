@@ -128,7 +128,7 @@ fn tree_tui_rewind(pty: &mut Pty, keys: &[&str], expected: &str) {
 // 生成已回退会话 fixture：A、B 两轮后回退到 B 用户消息之前（有效历史只剩
 // A），导航 state 同步提交后立即退出，期间不发任何模型请求。返回 HOME 与
 // 唯一会话 ID，供重启、/resume 与 -c 恢复类测试复用。
-fn tree_tui_rewound_session(server: &Server, protocol: &str) -> (tempfile::TempDir, String) {
+fn tree_tui_rewound_session(server: &TestServer, protocol: &str) -> (tempfile::TempDir, String) {
     let (home, mut pty) = context_tui_start(server, protocol, 100_000, 80);
     context_tui_exchange(
         &mut pty,
@@ -168,7 +168,7 @@ fn tree_tui_assert_abandoned_invisible(screen: &vt100::Screen, abandoned: &[&str
 #[test]
 fn tree_tui_rewind_immediately_invalidates_abandoned_messages_after_restart_both_protocols() {
     for protocol in ["completion", "response"] {
-        let server = Server::http("127.0.0.1:0").unwrap();
+        let server = TestServer::start().unwrap();
         let (home, id) = tree_tui_rewound_session(&server, protocol);
         let abandoned = ["tree-rewind-second-question", "tree-rewind-second-answer"];
 
@@ -226,7 +226,7 @@ fn tree_tui_rewind_immediately_invalidates_abandoned_messages_after_restart_both
 #[test]
 fn tree_tui_slash_resume_after_rewind_restores_only_valid_history_both_protocols() {
     for protocol in ["completion", "response"] {
-        let server = Server::http("127.0.0.1:0").unwrap();
+        let server = TestServer::start().unwrap();
         let (home, id) = tree_tui_rewound_session(&server, protocol);
         let abandoned = ["tree-rewind-second-question", "tree-rewind-second-answer"];
 
@@ -271,7 +271,7 @@ fn tree_tui_slash_resume_after_rewind_restores_only_valid_history_both_protocols
 #[test]
 fn tree_tui_cli_continue_after_rewind_requests_only_valid_history_both_protocols() {
     for protocol in ["completion", "response"] {
-        let server = Server::http("127.0.0.1:0").unwrap();
+        let server = TestServer::start().unwrap();
         let (home, id) = tree_tui_rewound_session(&server, protocol);
 
         // -c 不输入新问题：恢复后立即发出的实际请求只含有效历史 A。
@@ -399,7 +399,7 @@ fn tree_tui_repeated_rewinds_hide_abandoned_messages_by_default_and_after_resume
 
 #[test]
 fn slow_tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
-    let server = Server::http("127.0.0.1:0").unwrap();
+    let server = TestServer::start().unwrap();
     let (_home, mut pty) = context_tui_start(&server, "completion", 100_000, 80);
     pty.input("tree-seed\r");
     let (request, _) = pty.request_at(&server, api_path("completion"));
@@ -777,7 +777,7 @@ fn tree_tui_failed_navigation_preserves_branch_and_restarts_from_previous_state(
 
 #[test]
 fn tree_tui_inline_cancel_restores_viewport_and_draft() {
-    let server = Server::http("127.0.0.1:0").unwrap();
+    let server = TestServer::start().unwrap();
     let (_home, mut pty) = context_tui_start(&server, "completion", 100_000, 80);
     context_tui_fill_three_exchanges(&mut pty, &server, "completion");
     // 先留在历史位置：PgUp 翻到最早的消息。

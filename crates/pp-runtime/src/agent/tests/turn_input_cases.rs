@@ -1,24 +1,26 @@
 use super::*;
+use pp_test_support::TestServer;
+use std::sync::Arc;
 
 #[test]
 fn runtime_input_steering_applies_at_committed_boundary_and_replays_once() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         let queue = InputQueue::default();
         queue.begin_run().unwrap();
         let (tx, rx) = std::sync::mpsc::channel::<Value>();
         let serving = protocol.to_owned();
+        let worker = Arc::clone(&server);
         let server_thread = std::thread::spawn(move || {
             // 第一轮：最终回复结束；补充在请求进行中入队，须在完整提交边界后消费。
             for text in ["first reply", "second reply", "resumed reply"] {
-                let mut request = server
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(10))
                     .unwrap()
                     .unwrap();
-                let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                let body: Value = request.json().unwrap();
                 tx.send(body).unwrap();
                 final_for(&serving, request, text, true);
             }
@@ -111,20 +113,20 @@ fn runtime_input_steering_applies_at_committed_boundary_and_replays_once() {
 fn runtime_input_acceptance_arrivals_wait_for_the_next_committed_boundary() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         let queue = InputQueue::default();
         queue.begin_run().unwrap();
         let serving = protocol.to_owned();
+        let worker = Arc::clone(&server);
         let handle = std::thread::spawn(move || {
             let mut bodies = Vec::new();
             for text in ["first", "second", "third"] {
-                let mut request = server
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
-                bodies.push(serde_json::from_reader::<_, Value>(request.as_reader()).unwrap());
+                bodies.push(request.json().unwrap());
                 final_for(&serving, request, text, true);
             }
             bodies
@@ -264,9 +266,8 @@ fn runtime_input_persistence_failure_rolls_back_append_and_restores_batch() {
 fn runtime_input_queued_during_summary_waits_for_next_normal_request() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         // 首个完整交换是可压缩内容；最后的完整交换与待回复后缀必须保留。
         let big = "filler ".repeat(20000);
         seed_exchange(&mut agent, &big, "ack");
@@ -290,13 +291,14 @@ fn runtime_input_queued_during_summary_waits_for_next_normal_request() {
         queue.begin_run().unwrap();
         let (tx, rx) = std::sync::mpsc::channel::<Value>();
         let serving = protocol.to_owned();
+        let worker = Arc::clone(&server);
         let server_thread = std::thread::spawn(move || {
             // 请求 1：临时摘要请求，不得包含摘要期间入队的补充。
-            let mut request = server
+            let request = worker
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap()
                 .unwrap();
-            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let body: Value = request.json().unwrap();
             assert!(
                 !body.to_string().contains("after summary"),
                 "summary request consumed queued input"
@@ -304,11 +306,11 @@ fn runtime_input_queued_during_summary_waits_for_next_normal_request() {
             tx.send(body).unwrap();
             final_for(&serving, request, "compact summary", true);
             // 请求 2：摘要后的普通请求，补充在该边界应用。
-            let mut request = server
+            let request = worker
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap()
                 .unwrap();
-            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let body: Value = request.json().unwrap();
             tx.send(body).unwrap();
             final_for(&serving, request, "final answer", true);
         });

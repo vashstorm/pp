@@ -509,7 +509,7 @@ fn session_first_create_failure_is_deterministic_without_invented_session() {
         let (request, _) = api.receive(&server);
         // Headers are enough to trigger the create-on-open hook; the task
         // aborts before any stream content is consumed.
-        let stream = SseReply::new(request);
+        let stream = request.start_sse().unwrap();
         let output = cli.finish();
         drop(stream);
         assert!(

@@ -751,7 +751,10 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         request
             .respond(
-                Response::from_string("private-provider-error fixture-key").with_status_code(400),
+                Response::builder()
+                    .status(400)
+                    .body(Body::from("private-provider-error fixture-key"))
+                    .unwrap(),
             )
             .unwrap();
         pty.wait_for(

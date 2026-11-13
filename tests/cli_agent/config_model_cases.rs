@@ -21,7 +21,7 @@ fn yaml_model_maps_preserve_file_order_and_default_selection() {
       primary:
         model: vendor-other
 "#,
-        server.server_addr()
+        server.addr()
     );
     let mut cli = Cli::start_with(home.path(), None, "{}", &models);
     cli.input("hello\n/model\n/quit\n");
@@ -95,7 +95,7 @@ fn yaml_block_configs_drive_both_protocols() {
         let home = tempfile::tempdir().unwrap();
         let models = format!(
             "# 模型配置\nproviders:\n  fixture:\n    protocol: {protocol}\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: yaml-model\n        cost:\n          input: 2.0\n          cacheRead: 0.2\n          output: 8.0\n",
-            server.server_addr()
+            server.addr()
         );
         let cli = Cli::start_with(
             home.path(),
@@ -133,7 +133,7 @@ fn file_configs_override_provider_environment() {
     .unwrap();
     std::fs::write(config_path(work.path(), "models.yml"), format!(
         "# 回环服务\nproviders:\n  chosen:\n    protocol: completion\n    api_key: file-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: file-model\n",
-        server.server_addr()
+        server.addr()
     ))
     .unwrap();
     let cli = Cli::spawn(
@@ -178,7 +178,7 @@ fn missing_settings_uses_first_provider_first_model_and_defaults() {
             "first": {
                 "protocol": "completion",
                 "api_key": "first-key",
-                "base_url": format!("http://{}/v1", server.server_addr()),
+                "base_url": format!("http://{}/v1", server.addr()),
                 "models": {
                     "primary": { "model": "first-primary"},
                     "secondary": { "model": "first-secondary"}}
@@ -186,7 +186,7 @@ fn missing_settings_uses_first_provider_first_model_and_defaults() {
             "second": {
                 "protocol": "completion",
                 "api_key": "second-key",
-                "base_url": format!("http://{}/v1", unused.server_addr()),
+                "base_url": format!("http://{}/v1", unused.addr()),
                 "models": {"primary": { "model": "second-primary"}}
             }}
     })
@@ -216,13 +216,13 @@ fn unmatched_default_model_falls_back_to_first_provider_first_model() {
             "first": {
                 "protocol": "completion",
                 "api_key": "first-key",
-                "base_url": format!("http://{}/v1", server.server_addr()),
+                "base_url": format!("http://{}/v1", server.addr()),
                 "models": {"primary": { "model": "first-primary"}}
             },
             "second": {
                 "protocol": "completion",
                 "api_key": "second-key",
-                "base_url": format!("http://{}/v1", unused.server_addr()),
+                "base_url": format!("http://{}/v1", unused.addr()),
                 "models": {"primary": { "model": "second-primary"}}
             }}
     })
@@ -256,13 +256,13 @@ fn unselected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
             "anthropic": {
                 "protocol": "anthropic",
                 "api_key": "secret-marker-anthropic",
-                "base_url": format!("http://{}/v1", anthropic.server_addr()),
+                "base_url": format!("http://{}/v1", anthropic.addr()),
                 "models": {"primary": { "model": "anthropic-model"}}
             },
             "openai": {
                 "protocol": "completion",
                 "api_key": "secret-marker-openai",
-                "base_url": format!("http://{}/v1", openai.server_addr()),
+                "base_url": format!("http://{}/v1", openai.addr()),
                 "models": {"primary": { "model": "openai-model"}}
             }}
     })
@@ -306,13 +306,13 @@ fn selected_anthropic_refuses_both_cli_modes_without_requests_or_tools() {
             "anthropic": {
                 "protocol": "anthropic",
                 "api_key": "secret-marker-anthropic",
-                "base_url": format!("http://{}/v1", anthropic.server_addr()),
+                "base_url": format!("http://{}/v1", anthropic.addr()),
                 "models": {"primary": { "model": "anthropic-model"}}
             },
             "openai": {
                 "protocol": "completion",
                 "api_key": "secret-marker-openai",
-                "base_url": format!("http://{}/v1", openai.server_addr()),
+                "base_url": format!("http://{}/v1", openai.addr()),
                 "models": {"primary": { "model": "openai-model"}}
             }}
     })

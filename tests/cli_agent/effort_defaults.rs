@@ -497,7 +497,7 @@ fn sqlite_effort_save_reports_busy_database_and_recovers() {
 
 // 每模型 thinking 策略的真实 PTY 回归：A 仅 low/high 且显式默认 high，
 // B 仅 medium/max 且显式默认 medium，C 单档 medium，全局 think_level 为 max。
-fn model_thinking_models(server: &Server) -> String {
+fn model_thinking_models(server: &TestServer) -> String {
     json!({"providers":{"fixture": slash_provider(server, "fixture", "completion", json!({
         "a": {"model":"model-a","thinking":{"efforts":["low","high"],"defaultLevel":"high"}},
         "b": {"model":"model-b","thinking":{"efforts":["medium","max"],"defaultLevel":"medium"}},
@@ -505,7 +505,7 @@ fn model_thinking_models(server: &Server) -> String {
     .to_string()
 }
 
-fn model_thinking_home(server: &Server) -> tempfile::TempDir {
+fn model_thinking_home(server: &TestServer) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(
         config_path(home.path(), "settings.yml"),

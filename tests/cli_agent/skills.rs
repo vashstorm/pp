@@ -20,11 +20,11 @@ pub(super) fn install(home: &std::path::Path, folder: &str, name: &str) -> std::
     .unwrap();
     file
 }
-pub(super) fn send_skill_read(request: Request, protocol: &str, name: &str) {
+pub(super) fn send_skill_read(request: CapturedRequest, protocol: &str, name: &str) {
     let path = format!("skill://{}", utf8_percent_encode(name, SKILL_NAME));
     send_read(request, protocol, &path);
 }
-fn send_read(request: Request, protocol: &str, path: &str) {
+fn send_read(request: CapturedRequest, protocol: &str, path: &str) {
     if protocol == "response" {
         response_reply(
             request,
@@ -34,7 +34,7 @@ fn send_read(request: Request, protocol: &str, path: &str) {
         calls_reply(request, json!([call("load", "read", json!({"path":path}))]));
     }
 }
-fn finish_request(request: Request, protocol: &str) {
+fn finish_request(request: CapturedRequest, protocol: &str) {
     if protocol == "response" {
         response_final(request, "ok");
     } else {

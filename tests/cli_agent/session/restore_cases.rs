@@ -18,25 +18,31 @@ fn session_failures_keep_executed_tool_results_and_display_only_fragments() {
         let (request, body) = api.receive(&server);
         assert_eq!(api.tool_result(&body, "w")["bytes_written"], 4);
         // The next model answer fails after streaming a partial fragment.
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         match api {
             Api::Chat => {
-                stream.event(chat_chunk(
-                    json!({"role":"assistant","content":"partial fragment"}),
-                    None,
-                ));
-                stream.event(json!({"error":{
-                    "message":"private-provider-body fixture-key",
-                    "type":"server_error","code":"private-provider-body"
-                }}));
+                stream
+                    .event(&chat_chunk(
+                        json!({"role":"assistant","content":"partial fragment"}),
+                        None,
+                    ))
+                    .unwrap();
+                stream
+                    .event(&json!({"error":{
+                        "message":"private-provider-body fixture-key",
+                        "type":"server_error","code":"private-provider-body"
+                    }}))
+                    .unwrap();
                 stream.finish();
             }
             Api::Responses => {
-                stream.event(json!({
-                    "type":"response.output_text.delta","sequence_number":0,
-                    "item_id":"msg-x","output_index":0,"content_index":0,
-                    "delta":"partial fragment","logprobs":[]
-                }));
+                stream
+                    .event(&json!({
+                        "type":"response.output_text.delta","sequence_number":0,
+                        "item_id":"msg-x","output_index":0,"content_index":0,
+                        "delta":"partial fragment","logprobs":[]
+                    }))
+                    .unwrap();
                 // End HTTP before response.completed: a complete transport with an interrupted protocol turn.
                 stream.finish();
             }

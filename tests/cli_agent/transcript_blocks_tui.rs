@@ -9,7 +9,7 @@
 
 const MARKDOWN_BLOCKS_ERROR: vt100::Color = vt100::Color::Rgb(224, 108, 117);
 
-fn markdown_blocks_start(fixture: &Server, protocol: &str, home: &Path, project: &Path) -> Pty {
+fn markdown_blocks_start(fixture: &TestServer, protocol: &str, home: &Path, project: &Path) -> Pty {
     std::fs::write(config_path(home, "settings.yml"), r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0,"read":{"toolResultPreview":true}}"#).unwrap();
     std::fs::write(
         config_path(home, "models.yml"),
@@ -50,47 +50,47 @@ fn markdown_blocks_bold(screen: &vt100::Screen, needle: &str) -> bool {
 
 // completion：refusal delta 走 chat chunk 的 refusal 字段；response：refusal
 // 占 (0,0) 部分并立即补 content_part.done，让流位置推进到下一列。
-fn markdown_blocks_refusal_delta(stream: &mut SseReply, protocol: &str, text: &str) {
+fn markdown_blocks_refusal_delta(stream: &mut SseWriter, protocol: &str, text: &str) {
     if protocol == "completion" {
-        stream.event(chat_chunk(json!({"role":"assistant","refusal":text}), None));
+        stream.event(&chat_chunk(json!({"role":"assistant","refusal":text}), None)).unwrap();
     } else {
-        stream.event(json!({
+        stream.event(&json!({
             "type":"response.refusal.delta", "sequence_number":0,
             "item_id":"msg-live", "output_index":0, "content_index":0,
             "delta":text, "logprobs":[]
-        }));
-        stream.event(json!({
+        })).unwrap();
+        stream.event(&json!({
             "type":"response.content_part.done", "sequence_number":1,
             "item_id":"msg-live", "output_index":0, "content_index":0,
             "part":{"type":"refusal","refusal":text}
-        }));
+        })).unwrap();
     }
 }
 
 // response 协议的正文与 refusal 属于不同 content part，正文 delta 必须落在
 // (0,1)；completion 仍复用既有 streaming_delta。
-fn markdown_blocks_content_delta(stream: &mut SseReply, protocol: &str, text: &str) {
+fn markdown_blocks_content_delta(stream: &mut SseWriter, protocol: &str, text: &str) {
     if protocol == "completion" {
         streaming_delta(stream, protocol, text);
     } else {
-        stream.event(json!({
+        stream.event(&json!({
             "type":"response.output_text.delta", "sequence_number":2,
             "item_id":"msg-live", "output_index":0, "content_index":1,
             "delta":text, "logprobs":[]
-        }));
+        })).unwrap();
     }
 }
 
-fn markdown_blocks_refusal_content_complete(stream: &mut SseReply, refusal: &str, text: &str) {
-    stream.event(json!({
+fn markdown_blocks_refusal_content_complete(stream: &mut SseWriter, refusal: &str, text: &str) {
+    stream.event(&json!({
         "type":"response.completed", "sequence_number":3,
         "response": response_body(json!([response_message("msg-live", json!([
             {"type":"refusal","refusal":refusal}, response_text(text)
         ]))]))
-    }));
+    })).unwrap();
 }
 
-fn markdown_blocks_reply_calls(request: Request, protocol: &str, batch: &[(&str, &str, Value)]) {
+fn markdown_blocks_reply_calls(request: CapturedRequest, protocol: &str, batch: &[(&str, &str, Value)]) {
     if protocol == "completion" {
         calls_reply(
             request,
@@ -114,7 +114,7 @@ fn markdown_blocks_reply_calls(request: Request, protocol: &str, batch: &[(&str,
     }
 }
 
-fn markdown_blocks_final(request: Request, protocol: &str, text: &str) {
+fn markdown_blocks_final(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {
@@ -146,16 +146,16 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
         pty.ready();
         pty.input("render thinking markdown\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         for (index, chunk) in [first, second, third].into_iter().enumerate() {
             if protocol == "completion" {
-                stream.event(chat_chunk(json!({"reasoning_content":chunk}), None));
+                stream.event(&chat_chunk(json!({"reasoning_content":chunk}), None)).unwrap();
             } else {
-                stream.event(json!({
+                stream.event(&json!({
                     "type":"response.reasoning_summary_text.delta", "sequence_number":index,
                     "item_id":"reasoning-live", "output_index":0, "summary_index":0,
                     "delta":chunk
-                }));
+                })).unwrap();
             }
             match index {
                 0 => {
@@ -205,14 +205,14 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
             streaming_delta(&mut stream, protocol, "Final answer");
             streaming_complete(&mut stream, protocol, "Final answer");
         } else {
-            stream.event(json!({
+            stream.event(&json!({
                 "type":"response.completed", "sequence_number":3,
                 "response":response_body(json!([
                     {"type":"reasoning", "id":"reasoning-live", "status":"completed",
                      "summary":[{"type":"summary_text", "text":reasoning}]},
                     response_message("answer", json!([response_text("Final answer")]))
                 ]))
-            }));
+            })).unwrap();
         }
         stream.finish();
         pty.text("Final answer");
@@ -262,7 +262,7 @@ fn transcript_blocks_markdown_streams_staged_blocks_and_styles() {
         pty.ready();
         pty.input("stream markdown please\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
 
         // 阶段 1：标题加粗渲染，未闭合的 ** 保持字面。
         streaming_delta(&mut stream, protocol, stage1);
@@ -347,7 +347,7 @@ fn transcript_blocks_markdown_refusal_swap_refusal_only_and_empty_turn() {
         pty.ready();
         pty.input("refusal swap\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         markdown_blocks_refusal_delta(&mut stream, protocol, "provisional refusal mark");
         pty.text("provisional refusal mark");
         markdown_blocks_content_delta(&mut stream, protocol, "content wins final mark");
@@ -375,7 +375,7 @@ fn transcript_blocks_markdown_refusal_swap_refusal_only_and_empty_turn() {
         if protocol == "completion" {
             pty.input("refusal only\r");
             let (request, _) = pty.request_at(&fixture, api_path(protocol));
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             markdown_blocks_refusal_delta(&mut stream, protocol, "only refusal final text");
             streaming_complete(&mut stream, protocol, "");
             stream.finish();
@@ -388,8 +388,8 @@ fn transcript_blocks_markdown_refusal_swap_refusal_only_and_empty_turn() {
             // 空正文：报错弹窗，不产生空 Markdown 卡片，旧内容不被复制。
             pty.input("empty final\r");
             let (request, _) = pty.request_at(&fixture, api_path(protocol));
-            let mut stream = SseReply::new(request);
-            stream.event(chat_chunk(json!({"role":"assistant","content":""}), None));
+            let mut stream = request.start_sse().unwrap();
+            stream.event(&chat_chunk(json!({"role":"assistant","content":""}), None)).unwrap();
             streaming_complete(&mut stream, protocol, "");
             stream.finish();
             pty.wait_for("空正文报错弹窗", |s| {
@@ -556,7 +556,7 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
     pty.ready();
     pty.input("scroll marker task\r");
     let (request, _) = pty.request_at(&fixture, api_path("completion"));
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     streaming_delta(&mut stream, "completion", &stage1);
     pty.wait_for("流式中间态已显示代码块与早期段落", |s| {
         s.contents().contains("scrollback code line")
@@ -614,7 +614,7 @@ fn transcript_blocks_markdown_scroll_offset_follow_and_exit_scrollback() {
     pty.completed();
     pty.input("follow bottom task\r");
     let (request, _) = pty.request_at(&fixture, api_path("completion"));
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     streaming_delta(&mut stream, "completion", "follow-bottom-restored 中");
     pty.text("follow-bottom-restored 中");
     streaming_complete(&mut stream, "completion", "follow-bottom-restored 中");

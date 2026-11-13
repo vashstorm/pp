@@ -195,7 +195,7 @@ fn tui_ctrl_c_keeps_partial_output_without_waiting_for_response() {
             "/v1/responses"
         };
         let (request, _) = receive_at(&server, path);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         streaming_delta(&mut stream, protocol, "partial-retained 中😀");
         pty.text("partial-retained");
         pty.input("\x03");

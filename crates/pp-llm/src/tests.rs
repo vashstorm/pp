@@ -5,41 +5,60 @@ use anyhow::bail;
 use async_openai::types::chat::ChatCompletionRequestAssistantMessageContent;
 use async_openai::types::chat::CreateChatCompletionRequest;
 use async_openai::types::responses::CreateResponse;
+use axum::{
+    body::{Body, Bytes},
+    http::{HeaderMap, StatusCode},
+    response::Response,
+};
 use pp_core::events::AgentEvent;
+use pp_test_support::TestServer;
 use serde_json::{Value, json};
 use std::io::Write;
+use std::sync::Arc;
 
 #[test]
 fn read_http_redirects_without_provider_auth_and_redacts_errors() {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/first", server.server_addr());
-    let worker =
-        std::thread::spawn(move || {
-            let request = server
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            assert!(!request.headers().iter().any(|h| matches!(
-                h.field.as_str().as_str().to_ascii_lowercase().as_str(),
-                "authorization" | "openai-organization" | "openai-project" | "cookie"
-            )));
-            request
-                .respond(
-                    tiny_http::Response::empty(302)
-                        .with_header(tiny_http::Header::from_bytes("Location", "/final").unwrap()),
-                )
-                .unwrap();
-            let request = server
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .unwrap();
-            assert_eq!(request.url(), "/final");
-            request
-                .respond(tiny_http::Response::from_string("web body").with_header(
-                    tiny_http::Header::from_bytes("Content-Type", "text/plain").unwrap(),
-                ))
-                .unwrap();
-        });
+    let server = Arc::new(TestServer::start().unwrap());
+    let url = format!("http://{}/first", server.addr());
+    let responder = Arc::clone(&server);
+    let worker = std::thread::spawn(move || {
+        let request = responder
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert!(
+            ![
+                "authorization",
+                "openai-organization",
+                "openai-project",
+                "cookie",
+            ]
+            .iter()
+            .any(|name| request.headers().contains_key(*name))
+        );
+        request
+            .respond(
+                Response::builder()
+                    .status(302)
+                    .header("Location", "/final")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .unwrap();
+        let request = responder
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.target(), "/final");
+        request
+            .respond(
+                Response::builder()
+                    .header("Content-Type", "text/plain")
+                    .body(Body::from("web body"))
+                    .unwrap(),
+            )
+            .unwrap();
+    });
     let mut client = test_client("http://127.0.0.1:1/v1");
     let response = client
         .fetch_read_url(&url, &CancellationToken::new())
@@ -64,30 +83,35 @@ fn read_http_redirects_without_provider_auth_and_redacts_errors() {
 #[test]
 fn read_http_limits_redirects_and_response_body_without_retries() {
     for oversize in [false, true] {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/loop", server.server_addr());
+        let server = Arc::new(TestServer::start().unwrap());
+        let url = format!("http://{}/loop", server.addr());
+        let responder = Arc::clone(&server);
         let worker = std::thread::spawn(move || {
             for _ in 0..if oversize { 1 } else { 6 } {
-                let request = server
+                let request = responder
                     .recv_timeout(Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
                 if oversize {
-                    let _ = request.respond(tiny_http::Response::from_data(vec![
-                        b'x';
-                        crate::http::MAX_INPUT_BYTES
-                            + 1
-                    ]));
+                    let _ = request.respond(
+                        Response::builder()
+                            .body(Body::from(vec![b'x'; crate::http::MAX_INPUT_BYTES + 1]))
+                            .unwrap(),
+                    );
                 } else {
                     request
-                        .respond(tiny_http::Response::empty(302).with_header(
-                            tiny_http::Header::from_bytes("Location", "/loop").unwrap(),
-                        ))
+                        .respond(
+                            Response::builder()
+                                .status(302)
+                                .header("Location", "/loop")
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
                         .unwrap();
                 }
             }
             assert!(
-                server
+                responder
                     .recv_timeout(Duration::from_millis(100))
                     .unwrap()
                     .is_none()
@@ -106,10 +130,11 @@ fn read_http_limits_redirects_and_response_body_without_retries() {
 
 #[test]
 fn read_http_gzip_limit_counts_decompressed_bytes() {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/compressed", server.server_addr());
+    let server = Arc::new(TestServer::start().unwrap());
+    let url = format!("http://{}/compressed", server.addr());
+    let responder = Arc::clone(&server);
     let worker = std::thread::spawn(move || {
-        let request = server
+        let request = responder
             .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap();
@@ -121,8 +146,10 @@ fn read_http_gzip_limit_counts_decompressed_bytes() {
         let compressed = encoder.finish().unwrap();
         assert!(compressed.len() < crate::http::MAX_INPUT_BYTES);
         let _ = request.respond(
-            tiny_http::Response::from_data(compressed)
-                .with_header(tiny_http::Header::from_bytes("Content-Encoding", "gzip").unwrap()),
+            Response::builder()
+                .header("Content-Encoding", "gzip")
+                .body(Body::from(compressed))
+                .unwrap(),
         );
     });
     let error = test_client("http://127.0.0.1:1/v1")
@@ -136,35 +163,40 @@ fn read_http_gzip_limit_counts_decompressed_bytes() {
 #[test]
 fn read_http_status_timeout_and_cancel_leave_no_background_fetch() {
     for mode in ["status", "timeout", "cancel"] {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let url = format!("http://{}/private-query", server.server_addr());
+        let server = Arc::new(TestServer::start().unwrap());
+        let url = format!("http://{}/private-query", server.addr());
         let cancel = CancellationToken::new();
         let worker_cancel = cancel.clone();
         let (done, release) = std::sync::mpsc::channel();
+        let responder = Arc::clone(&server);
         let worker = std::thread::spawn(move || {
-            let request = server
+            let request = responder
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
             if mode == "status" {
                 request
-                    .respond(tiny_http::Response::from_string("secret-body").with_status_code(429))
+                    .respond(
+                        Response::builder()
+                            .status(429)
+                            .body(Body::from("secret-body"))
+                            .unwrap(),
+                    )
                     .unwrap();
-            } else {
-                let mut writer = request.into_writer();
-                if mode == "cancel" {
-                    writer
-                        .write_all(
-                            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n",
-                        )
-                        .unwrap();
-                    writer.flush().unwrap();
-                    worker_cancel.cancel();
-                }
+            } else if mode == "cancel" {
+                let mut writer = request
+                    .start_stream(StatusCode::OK, HeaderMap::new())
+                    .unwrap();
+                writer.send(Bytes::from_static(b"x")).unwrap();
+                worker_cancel.cancel();
                 release.recv_timeout(Duration::from_secs(5)).unwrap();
+                writer.finish();
+            } else {
+                release.recv_timeout(Duration::from_secs(5)).unwrap();
+                drop(request);
             }
             assert!(
-                server
+                responder
                     .recv_timeout(Duration::from_millis(100))
                     .unwrap()
                     .is_none()
@@ -331,34 +363,11 @@ fn chat_chunk(delta: Value, finish: Option<&str>) -> Value {
     })
 }
 
-fn sse_writer(request: tiny_http::Request) -> Box<dyn Write + Send> {
-    let mut writer = request.into_writer();
-    writer
-            .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
-            )
-            .unwrap();
-    writer.flush().unwrap();
-    writer
-}
-
-fn sse_frame(writer: &mut Box<dyn Write + Send>, data: &str) {
-    let frame = format!("data: {data}\n\n");
-    write!(writer, "{:x}\r\n{}\r\n", frame.len(), frame).unwrap();
-    writer.flush().unwrap();
-}
-
-fn sse_end(mut writer: Box<dyn Write + Send>) {
-    // The peer may already be gone after cancellation; closing is best effort.
-    let _ = writer.write_all(b"0\r\n\r\n");
-    let _ = writer.flush();
-}
-
 #[test]
 fn http_errors_hide_body_and_redirects_are_not_followed() {
-    for status in [302, 401, 429, 500] {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let base_url = format!("http://{}", server.server_addr());
+    for status in [302u16, 401, 429, 500] {
+        let server = TestServer::start().unwrap();
+        let base_url = format!("http://{}", server.addr());
         let mut client = test_client(&base_url);
         let token = CancellationToken::new();
         std::thread::scope(|scope| {
@@ -369,12 +378,11 @@ fn http_errors_hide_body_and_redirects_are_not_followed() {
                     .unwrap();
                 request
                     .respond(
-                        tiny_http::Response::from_string("private-body")
-                            .with_status_code(status)
-                            .with_header(
-                                tiny_http::Header::from_bytes("Location", base_url.as_str())
-                                    .unwrap(),
-                            ),
+                        Response::builder()
+                            .status(status)
+                            .header("Location", base_url.as_str())
+                            .body(Body::from("private-body"))
+                            .unwrap(),
                     )
                     .unwrap();
             });
@@ -506,9 +514,8 @@ fn request_retry_policy_shares_attempt_cap_budget_and_error_boundary() {
 
 #[test]
 fn rate_limited_opening_retries_then_finishes_the_request() {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let mut client =
-        test_client_with_rate_limit_budget(&format!("http://{}", server.server_addr()), 30);
+    let server = TestServer::start().unwrap();
+    let mut client = test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 30);
     let token = CancellationToken::new();
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -518,26 +525,29 @@ fn rate_limited_opening_retries_then_finishes_the_request() {
                 .unwrap();
             first
                 .respond(
-                    tiny_http::Response::from_string("private-body fixture")
-                        .with_status_code(429)
-                        .with_header(tiny_http::Header::from_bytes("Retry-After", "0").unwrap()),
+                    Response::builder()
+                        .status(429)
+                        .header("Retry-After", "0")
+                        .body(Body::from("private-body fixture"))
+                        .unwrap(),
                 )
                 .unwrap();
             let second = server
                 .recv_timeout(Duration::from_secs(3))
                 .unwrap()
                 .unwrap();
-            let mut writer = sse_writer(second);
-            sse_frame(
-                &mut writer,
-                &chat_chunk(json!({"role":"assistant","content":"recovered"}), None).to_string(),
-            );
-            sse_frame(
-                &mut writer,
-                &chat_chunk(json!({}), Some("stop")).to_string(),
-            );
-            sse_frame(&mut writer, "[DONE]");
-            sse_end(writer);
+            let mut writer = second.start_sse().unwrap();
+            writer
+                .frame(
+                    &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
+                        .to_string(),
+                )
+                .unwrap();
+            writer
+                .frame(&chat_chunk(json!({}), Some("stop")).to_string())
+                .unwrap();
+            writer.frame("[DONE]").unwrap();
+            writer.finish();
         });
         let mut sent = 0;
         let mut rate_limited = Vec::new();
@@ -578,11 +588,10 @@ fn rate_limited_opening_retries_then_finishes_the_request() {
 
 #[test]
 fn rate_limited_opening_gives_up_when_budget_is_spent() {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let server = TestServer::start().unwrap();
     // A 1s budget without a Retry-After header: the first backoff of 1s
     // spends it entirely, so the second 429 fails the request.
-    let mut client =
-        test_client_with_rate_limit_budget(&format!("http://{}", server.server_addr()), 1);
+    let mut client = test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 1);
     let token = CancellationToken::new();
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -593,8 +602,10 @@ fn rate_limited_opening_gives_up_when_budget_is_spent() {
                     .unwrap();
                 request
                     .respond(
-                        tiny_http::Response::from_string("private-body fixture")
-                            .with_status_code(429),
+                        Response::builder()
+                            .status(429)
+                            .body(Body::from("private-body fixture"))
+                            .unwrap(),
                     )
                     .unwrap();
             }
@@ -642,8 +653,8 @@ fn rate_limited_opening_gives_up_when_budget_is_spent() {
 
 #[test]
 fn cancelled_before_request_reports_cancelled_without_sending() {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let mut client = test_client(&format!("http://{}", server.server_addr()));
+    let server = TestServer::start().unwrap();
+    let mut client = test_client(&format!("http://{}", server.addr()));
     let token = CancellationToken::new();
     token.cancel();
     let mut sent = 0;
@@ -696,8 +707,8 @@ fn sent_callback_error_takes_precedence_over_cancellation() {
 fn sqlite_model_usage_counts_logical_requests_once() {
     // 发送前取消：未实际尝试发送，不计数。
     {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut client = test_client(&format!("http://{}", server.server_addr()));
+        let server = TestServer::start().unwrap();
+        let mut client = test_client(&format!("http://{}", server.addr()));
         let token = CancellationToken::new();
         token.cancel();
         let error = client
@@ -720,9 +731,9 @@ fn sqlite_model_usage_counts_logical_requests_once() {
     }
     // 建连 429 重试后成功：一次逻辑请求只计一次。
     {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let server = TestServer::start().unwrap();
         let mut client =
-            test_client_with_rate_limit_budget(&format!("http://{}", server.server_addr()), 30);
+            test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 30);
         let token = CancellationToken::new();
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -732,30 +743,29 @@ fn sqlite_model_usage_counts_logical_requests_once() {
                     .unwrap();
                 first
                     .respond(
-                        tiny_http::Response::from_string("private-body fixture")
-                            .with_status_code(429)
-                            .with_header(
-                                tiny_http::Header::from_bytes(&b"Retry-After"[..], &b"0"[..])
-                                    .unwrap(),
-                            ),
+                        Response::builder()
+                            .status(429)
+                            .header("Retry-After", "0")
+                            .body(Body::from("private-body fixture"))
+                            .unwrap(),
                     )
                     .unwrap();
                 let second = server
                     .recv_timeout(Duration::from_secs(3))
                     .unwrap()
                     .unwrap();
-                let mut writer = sse_writer(second);
-                sse_frame(
-                    &mut writer,
-                    &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
-                        .to_string(),
-                );
-                sse_frame(
-                    &mut writer,
-                    &chat_chunk(json!({}), Some("stop")).to_string(),
-                );
-                sse_frame(&mut writer, "[DONE]");
-                sse_end(writer);
+                let mut writer = second.start_sse().unwrap();
+                writer
+                    .frame(
+                        &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
+                            .to_string(),
+                    )
+                    .unwrap();
+                writer
+                    .frame(&chat_chunk(json!({}), Some("stop")).to_string())
+                    .unwrap();
+                writer.frame("[DONE]").unwrap();
+                writer.finish();
             });
             client
                 .complete(
@@ -776,9 +786,9 @@ fn sqlite_model_usage_counts_logical_requests_once() {
     }
     // 发送后的失败（重试预算耗尽）：仍计一次。
     {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let server = TestServer::start().unwrap();
         let mut client =
-            test_client_with_rate_limit_budget(&format!("http://{}", server.server_addr()), 1);
+            test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 1);
         let token = CancellationToken::new();
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -789,8 +799,10 @@ fn sqlite_model_usage_counts_logical_requests_once() {
                         .unwrap();
                     request
                         .respond(
-                            tiny_http::Response::from_string("private-body fixture")
-                                .with_status_code(429),
+                            Response::builder()
+                                .status(429)
+                                .body(Body::from("private-body fixture"))
+                                .unwrap(),
                         )
                         .unwrap();
                 }
@@ -810,8 +822,8 @@ fn sqlite_model_usage_counts_logical_requests_once() {
     }
     // 发送后取消：计一次。
     {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut client = test_client(&format!("http://{}", server.server_addr()));
+        let server = TestServer::start().unwrap();
+        let mut client = test_client(&format!("http://{}", server.addr()));
         let token = CancellationToken::new();
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -819,17 +831,18 @@ fn sqlite_model_usage_counts_logical_requests_once() {
                     .recv_timeout(Duration::from_secs(3))
                     .unwrap()
                     .unwrap();
-                let mut writer = sse_writer(request);
-                sse_frame(
-                    &mut writer,
-                    &chat_chunk(json!({"role":"assistant","content":"ignored"}), None).to_string(),
-                );
-                sse_frame(
-                    &mut writer,
-                    &chat_chunk(json!({}), Some("stop")).to_string(),
-                );
-                sse_frame(&mut writer, "[DONE]");
-                sse_end(writer);
+                let mut writer = request.start_sse().unwrap();
+                writer
+                    .frame(
+                        &chat_chunk(json!({"role":"assistant","content":"ignored"}), None)
+                            .to_string(),
+                    )
+                    .unwrap();
+                writer
+                    .frame(&chat_chunk(json!({}), Some("stop")).to_string())
+                    .unwrap();
+                writer.frame("[DONE]").unwrap();
+                writer.finish();
             });
             let error = client
                 .complete(
@@ -855,12 +868,9 @@ fn sqlite_model_usage_counts_logical_requests_once() {
     }
     // Responses 协议成功按各自引用计数，不影响其他模型。
     {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut client = test_client_at(
-            &format!("http://{}", server.server_addr()),
-            0,
-            "fixture/secondary",
-        );
+        let server = TestServer::start().unwrap();
+        let mut client =
+            test_client_at(&format!("http://{}", server.addr()), 0, "fixture/secondary");
         let completed = json!({
             "type":"response.completed", "sequence_number":5,
             "response":{
@@ -872,14 +882,14 @@ fn sqlite_model_usage_counts_logical_requests_once() {
         })
         .to_string();
         std::thread::scope(|scope| {
-            scope.spawn(move || {
+            scope.spawn(|| {
                 let request = server
                     .recv_timeout(Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
-                let mut writer = sse_writer(request);
-                sse_frame(&mut writer, &completed);
-                sse_end(writer);
+                let mut writer = request.start_sse().unwrap();
+                writer.frame(&completed).unwrap();
+                writer.finish();
             });
             let turn = client
                 .respond(
@@ -898,39 +908,43 @@ fn sqlite_model_usage_counts_logical_requests_once() {
 
 #[test]
 fn cancelled_stream_is_dropped_and_next_request_rebuilds_runtime() {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let mut client = test_client(&format!("http://{}", server.server_addr()));
+    let server = TestServer::start().unwrap();
+    let mut client = test_client(&format!("http://{}", server.addr()));
     let (release_first, first_released) = std::sync::mpsc::channel::<()>();
+    // 接收端只能属于唯一线程；scoped worker 借 `&TestServer`，主线程保留 sender。
+    let shared = &server;
     std::thread::scope(|scope| {
         scope.spawn(move || {
             // First request: a single partial delta, then the response is held open.
-            let request = server
+            let request = shared
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
-            let mut writer = sse_writer(request);
-            sse_frame(
-                &mut writer,
-                &chat_chunk(json!({"role":"assistant","content":"partial"}), None).to_string(),
-            );
+            let mut writer = request.start_sse().unwrap();
+            writer
+                .frame(
+                    &chat_chunk(json!({"role":"assistant","content":"partial"}), None).to_string(),
+                )
+                .unwrap();
             first_released.recv_timeout(Duration::from_secs(5)).unwrap();
-            sse_end(writer);
+            writer.finish();
             // Second request: a fresh client must reconnect and finish normally.
-            let request = server
+            let request = shared
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
-            let mut writer = sse_writer(request);
-            sse_frame(
-                &mut writer,
-                &chat_chunk(json!({"role":"assistant","content":"recovered"}), None).to_string(),
-            );
-            sse_frame(
-                &mut writer,
-                &chat_chunk(json!({}), Some("stop")).to_string(),
-            );
-            sse_frame(&mut writer, "[DONE]");
-            sse_end(writer);
+            let mut writer = request.start_sse().unwrap();
+            writer
+                .frame(
+                    &chat_chunk(json!({"role":"assistant","content":"recovered"}), None)
+                        .to_string(),
+                )
+                .unwrap();
+            writer
+                .frame(&chat_chunk(json!({}), Some("stop")).to_string())
+                .unwrap();
+            writer.frame("[DONE]").unwrap();
+            writer.finish();
         });
         let token = CancellationToken::new();
         let mut sent = 0;
@@ -1095,41 +1109,46 @@ fn context_chat_cached_breakdown_preserves_unknown_and_zero() {
 
 #[test]
 fn context_chat_usage_only_chunk_after_finish_returns_usage() {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let mut client = test_client(&format!("http://{}", server.server_addr()));
+    let server = TestServer::start().unwrap();
+    let mut client = test_client(&format!("http://{}", server.addr()));
     std::thread::scope(|scope| {
-        scope.spawn(move || {
-                // First request: normal chunks, then a choices-empty usage-only chunk.
-                let request = server
-                    .recv_timeout(Duration::from_secs(5))
-                    .unwrap()
-                    .unwrap();
-                let mut writer = sse_writer(request);
-                sse_frame(
-                    &mut writer,
+        scope.spawn(|| {
+            // First request: normal chunks, then a choices-empty usage-only chunk.
+            let request = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let mut writer = request.start_sse().unwrap();
+            writer
+                .frame(
                     &chat_chunk(json!({"role":"assistant","content":"answer"}), None).to_string(),
-                );
-                sse_frame(&mut writer, &chat_chunk(json!({}), Some("stop")).to_string());
-                sse_frame(
-                    &mut writer,
+                )
+                .unwrap();
+            writer
+                .frame(&chat_chunk(json!({}), Some("stop")).to_string())
+                .unwrap();
+            writer
+                .frame(
                     r#"{"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":2,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":12000,"completion_tokens":300,"total_tokens":12300}}"#,
-                );
-                sse_frame(&mut writer, "[DONE]");
-                sse_end(writer);
-                // Second request: no usage at all; the answer still succeeds.
-                let request = server
-                    .recv_timeout(Duration::from_secs(5))
-                    .unwrap()
-                    .unwrap();
-                let mut writer = sse_writer(request);
-                sse_frame(
-                    &mut writer,
+                )
+                .unwrap();
+            writer.frame("[DONE]").unwrap();
+            writer.finish();
+            // Second request: no usage at all; the answer still succeeds.
+            let request = server
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let mut writer = request.start_sse().unwrap();
+            writer
+                .frame(
                     &chat_chunk(json!({"role":"assistant","content":"again"}), Some("stop"))
                         .to_string(),
-                );
-                sse_frame(&mut writer, "[DONE]");
-                sse_end(writer);
-            });
+                )
+                .unwrap();
+            writer.frame("[DONE]").unwrap();
+            writer.finish();
+        });
         let token = CancellationToken::new();
         let mut finished = None;
         let turn = client
@@ -1188,8 +1207,8 @@ fn context_chat_usage_only_chunk_after_finish_returns_usage() {
 
 #[test]
 fn context_responses_usage_extracted_and_missing_usage_is_none() {
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-    let mut client = test_client(&format!("http://{}", server.server_addr()));
+    let server = TestServer::start().unwrap();
+    let mut client = test_client(&format!("http://{}", server.addr()));
     let completed = |usage: Option<Value>| {
         let mut response = json!({
             "id":"fixture", "object":"response", "created_at":0, "model":"fixture",
@@ -1203,28 +1222,27 @@ fn context_responses_usage_extracted_and_missing_usage_is_none() {
         json!({"type":"response.completed","sequence_number":5,"response":response}).to_string()
     };
     std::thread::scope(|scope| {
-        scope.spawn(move || {
+        scope.spawn(|| {
             let request = server
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
-            let mut writer = sse_writer(request);
-            sse_frame(
-                &mut writer,
-                &completed(Some(json!({
+            let mut writer = request.start_sse().unwrap();
+            writer
+                .frame(&completed(Some(json!({
                     "input_tokens":12000, "output_tokens":300, "total_tokens":12300,
                     "input_tokens_details":{"cached_tokens":40},
                     "output_tokens_details":{"reasoning_tokens":50}
-                }))),
-            );
-            sse_end(writer);
+                }))))
+                .unwrap();
+            writer.finish();
             let request = server
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
-            let mut writer = sse_writer(request);
-            sse_frame(&mut writer, &completed(None));
-            sse_end(writer);
+            let mut writer = request.start_sse().unwrap();
+            writer.frame(&completed(None)).unwrap();
+            writer.finish();
         });
         let token = CancellationToken::new();
         let mut finished = None;

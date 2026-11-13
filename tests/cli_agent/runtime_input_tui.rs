@@ -2,7 +2,7 @@
 include!("runtime_input_queue_tui.rs");
 include!("runtime_input_resume_tui.rs");
 
-fn runtime_input_home(server: &Server, protocol: &str, settings_extra: &str) -> tempfile::TempDir {
+fn runtime_input_home(server: &TestServer, protocol: &str, settings_extra: &str) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(
         config_path(home.path(), "settings.yml"),
@@ -20,7 +20,7 @@ fn runtime_input_home(server: &Server, protocol: &str, settings_extra: &str) -> 
 }
 
 fn runtime_input_start(
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
     settings_extra: &str,
 ) -> (tempfile::TempDir, Pty) {
@@ -38,7 +38,7 @@ fn runtime_input_counts(pty: &mut Pty, steering: usize, queued: usize, paused: b
     });
 }
 
-fn runtime_input_final(request: Request, protocol: &str, text: &str) {
+fn runtime_input_final(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {
@@ -46,7 +46,7 @@ fn runtime_input_final(request: Request, protocol: &str, text: &str) {
     }
 }
 
-fn runtime_input_calls(request: Request, protocol: &str, calls: &[(&str, &str, Value)]) {
+fn runtime_input_calls(request: CapturedRequest, protocol: &str, calls: &[(&str, &str, Value)]) {
     if protocol == "completion" {
         calls_reply(
             request,
@@ -70,20 +70,20 @@ fn runtime_input_calls(request: Request, protocol: &str, calls: &[(&str, &str, V
     }
 }
 
-fn runtime_input_live(pty: &mut Pty, server: &Server, protocol: &str, prompt: &str) -> SseReply {
+fn runtime_input_live(pty: &mut Pty, server: &TestServer, protocol: &str, prompt: &str) -> SseWriter {
     pty.input(&format!("{prompt}\r"));
     let (request, body) = pty.request_at(server, api_path(protocol));
     assert_eq!(
         cancel_user_messages(&body, protocol).last().unwrap(),
         prompt
     );
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     streaming_delta(&mut stream, protocol, "runtime-live-marker");
     pty.text("runtime-live-marker");
     stream
 }
 
-fn runtime_input_end_live(mut stream: SseReply, protocol: &str) {
+fn runtime_input_end_live(mut stream: SseWriter, protocol: &str) {
     streaming_complete(&mut stream, protocol, "runtime-live-marker");
     stream.finish();
 }

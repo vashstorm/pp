@@ -1,4 +1,6 @@
 use super::*;
+use pp_test_support::TestServer;
+use std::sync::Arc;
 
 #[test]
 fn todo_tree_navigation_restores_standalone_and_retains_current_plan_authority() {
@@ -191,25 +193,25 @@ fn todo_failed_journal_commit_restores_trusted_runtime() {
 fn todo_runtime_snapshots_follow_durable_transitions_and_are_not_journaled() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         let serving = protocol.to_owned();
-        let worker = std::thread::spawn(move || {
+        let worker = Arc::clone(&server);
+        let handle = std::thread::spawn(move || {
             for args in [
                 json!({"op":"init","items":["A","B"]}),
                 json!({"op":"done","task":"missing"}),
                 json!({"op":"done"}),
                 json!({"op":"init","list":[]}),
             ] {
-                let mut request = server
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
-                let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                let _: Value = request.json().unwrap();
                 tool_call_for(&serving, request, "todo", &args.to_string());
             }
-            let request = server
+            let request = worker
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
@@ -245,7 +247,7 @@ fn todo_runtime_snapshots_follow_durable_transitions_and_are_not_journaled() {
                 },
             )
             .unwrap();
-        worker.join().unwrap();
+        handle.join().unwrap();
         // 失败操作不发布状态，清空必须发布空快照。
         assert_eq!(snapshots.len(), 3);
         assert_eq!(

@@ -315,7 +315,7 @@ fn ask_call_raw(protocol: &str, id: &str, arguments: &str) -> Value {
     }
 }
 
-fn ask_reply_calls(request: Request, protocol: &str, calls: Value) {
+fn ask_reply_calls(request: CapturedRequest, protocol: &str, calls: Value) {
     if protocol == "completion" {
         calls_reply(request, calls);
     } else {
@@ -324,40 +324,40 @@ fn ask_reply_calls(request: Request, protocol: &str, calls: Value) {
 }
 
 // 覆盖完整参数快照与分片 SSE；Responses 起始项省略 arguments 的格式也必须可用。
-fn ask_provider_reply(request: Request, protocol: &str, id: &str, arguments: &str, fragmented: bool) {
+fn ask_provider_reply(request: CapturedRequest, protocol: &str, id: &str, arguments: &str, fragmented: bool) {
     if !fragmented {
         ask_reply_calls(request, protocol, json!([ask_call_raw(protocol, id, arguments)]));
         return;
     }
     let split = arguments.char_indices().nth(arguments.chars().count() / 2).unwrap().0;
     let parts = [&arguments[..split], &arguments[split..]];
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     if protocol == "completion" {
-        stream.event(chat_chunk(json!({"role":"assistant","tool_calls":[{
+        stream.event(&chat_chunk(json!({"role":"assistant","tool_calls":[{
             "index":0,"id":id,"type":"function","function":{"name":"ask","arguments":parts[0]}
-        }]}), None));
-        stream.event(chat_chunk(json!({"tool_calls":[{
+        }]}), None)).unwrap();
+        stream.event(&chat_chunk(json!({"tool_calls":[{
             "index":0,"function":{"arguments":parts[1]}
-        }]}), None));
-        stream.event(chat_chunk(json!({}), Some("tool_calls")));
-        stream.frame("[DONE]");
+        }]}), None)).unwrap();
+        stream.event(&chat_chunk(json!({}), Some("tool_calls"))).unwrap();
+        stream.frame("[DONE]").unwrap();
     } else {
         let item = ask_call_raw(protocol, id, arguments);
         let mut added = item.clone();
         added["status"] = json!("in_progress");
         added.as_object_mut().unwrap().remove("arguments");
-        stream.event(json!({"type":"response.output_item.added","sequence_number":0,
-            "output_index":0,"item":added}));
+        stream.event(&json!({"type":"response.output_item.added","sequence_number":0,
+            "output_index":0,"item":added})).unwrap();
         for (index, part) in parts.into_iter().enumerate() {
-            stream.event(json!({"type":"response.function_call_arguments.delta","sequence_number":index+1,
-                "item_id":item["id"],"output_index":0,"delta":part}));
+            stream.event(&json!({"type":"response.function_call_arguments.delta","sequence_number":index+1,
+                "item_id":item["id"],"output_index":0,"delta":part})).unwrap();
         }
-        stream.event(json!({"type":"response.function_call_arguments.done","sequence_number":3,
-            "item_id":item["id"],"output_index":0,"name":"ask","arguments":arguments}));
-        stream.event(json!({"type":"response.output_item.done","sequence_number":4,
-            "output_index":0,"item":item}));
-        stream.event(json!({"type":"response.completed","sequence_number":5,
-            "response":response_body(json!([item]))}));
+        stream.event(&json!({"type":"response.function_call_arguments.done","sequence_number":3,
+            "item_id":item["id"],"output_index":0,"name":"ask","arguments":arguments})).unwrap();
+        stream.event(&json!({"type":"response.output_item.done","sequence_number":4,
+            "output_index":0,"item":item})).unwrap();
+        stream.event(&json!({"type":"response.completed","sequence_number":5,
+            "response":response_body(json!([item]))})).unwrap();
     }
     stream.finish();
 }
@@ -377,29 +377,29 @@ fn ask_tui_streaming_null_placeholder_waits_for_complete_arguments_and_response(
     let mut added = call.clone();
     added["status"] = json!("in_progress");
     added["arguments"] = Value::Null;
-    let mut stream = SseReply::new(request);
-    stream.event(json!({"type":"response.output_item.added", "sequence_number":0,
-        "output_index":1, "item":added}));
-    stream.event(json!({"type":"response.function_call_arguments.delta", "sequence_number":1,
-        "item_id":call["id"], "output_index":1, "delta":&arguments[..split]}));
+    let mut stream = request.start_sse().unwrap();
+    stream.event(&json!({"type":"response.output_item.added", "sequence_number":0,
+        "output_index":1, "item":added})).unwrap();
+    stream.event(&json!({"type":"response.function_call_arguments.delta", "sequence_number":1,
+        "item_id":call["id"], "output_index":1, "delta":&arguments[..split]})).unwrap();
     // 正文分片是接收栅栏，证明前面的起始项和半截参数已被消费；不靠 sleep 猜时序。
-    stream.event(json!({"type":"response.output_text.delta", "sequence_number":2,
+    stream.event(&json!({"type":"response.output_text.delta", "sequence_number":2,
         "item_id":"msg-stream", "output_index":0, "content_index":0,
-        "delta":"ask-partial-received"}));
+        "delta":"ask-partial-received"})).unwrap();
     pty.text("ask-partial-received");
     assert!(!pty.parser.screen().contents().contains("╭ Ask"));
     assert!(!pty.parser.screen().contents().contains("invalid"));
     no_more(&server);
 
-    stream.event(json!({"type":"response.function_call_arguments.delta", "sequence_number":3,
-        "item_id":call["id"], "output_index":1, "delta":&arguments[split..]}));
-    stream.event(json!({"type":"response.function_call_arguments.done", "sequence_number":4,
-        "item_id":call["id"], "output_index":1, "arguments":arguments}));
-    stream.event(json!({"type":"response.output_item.done", "sequence_number":5,
-        "output_index":1, "item":call}));
-    stream.event(json!({"type":"response.output_text.delta", "sequence_number":6,
+    stream.event(&json!({"type":"response.function_call_arguments.delta", "sequence_number":3,
+        "item_id":call["id"], "output_index":1, "delta":&arguments[split..]})).unwrap();
+    stream.event(&json!({"type":"response.function_call_arguments.done", "sequence_number":4,
+        "item_id":call["id"], "output_index":1, "arguments":arguments})).unwrap();
+    stream.event(&json!({"type":"response.output_item.done", "sequence_number":5,
+        "output_index":1, "item":call})).unwrap();
+    stream.event(&json!({"type":"response.output_text.delta", "sequence_number":6,
         "item_id":"msg-stream", "output_index":0, "content_index":0,
-        "delta":" ask-json-received"}));
+        "delta":" ask-json-received"})).unwrap();
     pty.text("ask-json-received");
     assert!(!pty.parser.screen().contents().contains("╭ Ask"),
         "参数完整后也须等整轮完成才执行 ask");
@@ -407,8 +407,8 @@ fn ask_tui_streaming_null_placeholder_waits_for_complete_arguments_and_response(
 
     let message = response_message("msg-stream",
         json!([response_text("ask-partial-received ask-json-received")]));
-    stream.event(json!({"type":"response.completed", "sequence_number":7,
-        "response":response_body(json!([message, call]))}));
+    stream.event(&json!({"type":"response.completed", "sequence_number":7,
+        "response":response_body(json!([message, call]))})).unwrap();
     stream.finish();
     ask_wait_panel(&mut pty, "Which database should the project use?");
     pty.input("\r");
@@ -425,7 +425,7 @@ fn ask_tui_streaming_null_placeholder_waits_for_complete_arguments_and_response(
     no_more(&server);
 }
 
-fn ask_final_reply(request: Request, protocol: &str, text: &str) {
+fn ask_final_reply(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {
@@ -433,7 +433,7 @@ fn ask_final_reply(request: Request, protocol: &str, text: &str) {
     }
 }
 
-fn ask_tui_start(server: &Server, home: &Path, project: &Path, protocol: &str) -> Pty {
+fn ask_tui_start(server: &TestServer, home: &Path, project: &Path, protocol: &str) -> Pty {
     // 弹窗一秒淡出，避免与 5 秒栅栏竞争。
     crate::write_settings(home,
         r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"read":{"toolResultPreview":true}}"#,

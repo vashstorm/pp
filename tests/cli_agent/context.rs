@@ -1,7 +1,6 @@
 use super::streaming::{LiveCli, Pipe};
 use super::*;
 use serde_json::{Value, json};
-use tiny_http::{Request, Response, Server};
 
 // Both protocols share one fixture shape: the server reports usage of
 // 12000 input / 300 output tokens for a request whose estimated context is
@@ -25,7 +24,7 @@ impl Protocol {
         }
     }
 
-    fn models(self, server: &Server, windows: &[(&str, Option<u64>)]) -> String {
+    fn models(self, server: &TestServer, windows: &[(&str, Option<u64>)]) -> String {
         let models: serde_json::Map<String, Value> = windows
             .iter()
             .map(|(id, window)| {
@@ -40,7 +39,7 @@ impl Protocol {
             "providers": {"fixture": {
                 "protocol": self.name(),
                 "api_key": "fixture-key",
-                "base_url": format!("http://{}/v1", server.server_addr()),
+                "base_url": format!("http://{}/v1", server.addr()),
                 "models": models,
             }}
         })
@@ -49,7 +48,7 @@ impl Protocol {
 
     fn start(
         self,
-        server: &Server,
+        server: &TestServer,
         cwd: &std::path::Path,
         windows: &[(&str, Option<u64>)],
         settings: &str,
@@ -62,7 +61,7 @@ impl Protocol {
         ))
     }
 
-    fn receive(self, server: &Server) -> (Request, Value) {
+    fn receive(self, server: &TestServer) -> (CapturedRequest, Value) {
         let path = match self {
             Self::Chat => "/v1/chat/completions",
             Self::Responses => "/v1/responses",
@@ -73,14 +72,14 @@ impl Protocol {
     }
 
     // The reply carries server-side usage for the request it answers.
-    fn usage_reply(self, request: Request, text: &str) {
+    fn usage_reply(self, request: CapturedRequest, text: &str) {
         match self {
             Self::Chat => chat_usage_reply(request, text),
             Self::Responses => response_usage_final(request, text),
         }
     }
 
-    fn final_reply(self, request: Request, text: &str) {
+    fn final_reply(self, request: CapturedRequest, text: &str) {
         match self {
             Self::Chat => final_reply(request, text),
             Self::Responses => response_final(request, text),
@@ -90,23 +89,30 @@ impl Protocol {
 
 // The usage-only chunk arrives after the finish chunk and carries no choices,
 // exactly as an include_usage stream delivers it.
-fn chat_usage_reply(request: Request, text: &str) {
-    let mut stream = SseReply::new(request);
-    stream.event(chat_chunk(json!({"role":"assistant","content":text}), None));
-    stream.event(chat_chunk(json!({}), Some("stop")));
-    stream.event(json!({
-        "id":"chatcmpl-fixture", "object":"chat.completion.chunk",
-        "created":1, "model":"fixture-model", "choices":[],
-        "usage":{"prompt_tokens":USAGE_INPUT, "completion_tokens":USAGE_OUTPUT,
-                 "total_tokens":USAGE_INPUT + USAGE_OUTPUT,
-                 "prompt_tokens_details":{"cached_tokens":40}}
-    }));
-    stream.frame("[DONE]");
+fn chat_usage_reply(request: CapturedRequest, text: &str) {
+    let mut stream = request.start_sse().unwrap();
+    stream
+        .event(&chat_chunk(
+            json!({"role":"assistant","content":text}),
+            None,
+        ))
+        .unwrap();
+    stream.event(&chat_chunk(json!({}), Some("stop"))).unwrap();
+    stream
+        .event(&json!({
+            "id":"chatcmpl-fixture", "object":"chat.completion.chunk",
+            "created":1, "model":"fixture-model", "choices":[],
+            "usage":{"prompt_tokens":USAGE_INPUT, "completion_tokens":USAGE_OUTPUT,
+                     "total_tokens":USAGE_INPUT + USAGE_OUTPUT,
+                     "prompt_tokens_details":{"cached_tokens":40}}
+        }))
+        .unwrap();
+    stream.frame("[DONE]").unwrap();
     stream.finish();
 }
 
 // A completed-only Responses event with usage in the final response object.
-fn response_usage_final(request: Request, text: &str) {
+fn response_usage_final(request: CapturedRequest, text: &str) {
     let mut response = response_body(json!([response_message(
         "msg-final",
         json!([response_text(text)])
@@ -118,10 +124,12 @@ fn response_usage_final(request: Request, text: &str) {
         "output_tokens_details":{"reasoning_tokens":50},
         "total_tokens":USAGE_INPUT + USAGE_OUTPUT
     });
-    let mut stream = SseReply::new(request);
-    stream.event(json!({
-        "type":"response.completed", "sequence_number":100, "response":response
-    }));
+    let mut stream = request.start_sse().unwrap();
+    stream
+        .event(&json!({
+            "type":"response.completed", "sequence_number":100, "response":response
+        }))
+        .unwrap();
     stream.finish();
 }
 
@@ -169,7 +177,7 @@ fn context_write_large_file(dir: &std::path::Path) {
     std::fs::write(dir.join("big.txt"), content).unwrap();
 }
 
-fn context_calls_reply(protocol: Protocol, request: Request, id: &str) {
+fn context_calls_reply(protocol: Protocol, request: CapturedRequest, id: &str) {
     let args = json!({"path":"big.txt"});
     match protocol {
         Protocol::Chat => calls_reply(request, json!([call(id, "read", args)])),
@@ -179,7 +187,7 @@ fn context_calls_reply(protocol: Protocol, request: Request, id: &str) {
 
 // A Responses final answer with opaque encrypted reasoning in the *recent*
 // exchange, so the compaction suffix must carry it verbatim.
-fn context_reasoning_final(request: Request, reasoning: &str, encrypted: &str, text: &str) {
+fn context_reasoning_final(request: CapturedRequest, reasoning: &str, encrypted: &str, text: &str) {
     let output = json!([
         {
             "type": "reasoning",
@@ -190,23 +198,27 @@ fn context_reasoning_final(request: Request, reasoning: &str, encrypted: &str, t
         },
         response_message("msg-recent", json!([response_text(text)]))
     ]);
-    let mut stream = SseReply::new(request);
-    stream.event(json!({
-        "type": "response.reasoning_summary_text.delta", "sequence_number": 0,
-        "item_id": "rs-recent", "output_index": 0, "summary_index": 0,
-        "delta": reasoning
-    }));
-    stream.event(json!({
-        "type": "response.completed", "sequence_number": 10,
-        "response": response_body(output)
-    }));
+    let mut stream = request.start_sse().unwrap();
+    stream
+        .event(&json!({
+            "type": "response.reasoning_summary_text.delta", "sequence_number": 0,
+            "item_id": "rs-recent", "output_index": 0, "summary_index": 0,
+            "delta": reasoning
+        }))
+        .unwrap();
+    stream
+        .event(&json!({
+            "type": "response.completed", "sequence_number": 10,
+            "response": response_body(output)
+        }))
+        .unwrap();
     stream.finish();
 }
 
 // Two complete exchanges. The first carries a tool batch whose result is
 // larger than the retained-suffix budget; the second is the recent native
 // exchange (with encrypted Responses reasoning in the Responses variant).
-fn context_seed_history(protocol: Protocol, server: &Server, cli: &mut LiveCli) {
+fn context_seed_history(protocol: Protocol, server: &TestServer, cli: &mut LiveCli) {
     cli.input(&format!("{OLD_USER}\n"));
     let (request, _) = protocol.receive(server);
     context_calls_reply(protocol, request, "old-read");
@@ -460,7 +472,7 @@ impl ManualFailure {
         }
     }
 
-    fn reply(self, protocol: Protocol, request: Request) {
+    fn reply(self, protocol: Protocol, request: CapturedRequest) {
         match self {
             Self::Blank => match protocol {
                 Protocol::Chat => final_reply(request, "   "),
@@ -468,13 +480,15 @@ impl ManualFailure {
             },
             Self::Refusal => match protocol {
                 Protocol::Chat => {
-                    let mut stream = SseReply::new(request);
-                    stream.event(chat_chunk(
-                        json!({"role":"assistant","refusal":"Cannot help"}),
-                        None,
-                    ));
-                    stream.event(chat_chunk(json!({}), Some("stop")));
-                    stream.frame("[DONE]");
+                    let mut stream = request.start_sse().unwrap();
+                    stream
+                        .event(&chat_chunk(
+                            json!({"role":"assistant","refusal":"Cannot help"}),
+                            None,
+                        ))
+                        .unwrap();
+                    stream.event(&chat_chunk(json!({}), Some("stop"))).unwrap();
+                    stream.frame("[DONE]").unwrap();
                     stream.finish();
                 }
                 Protocol::Responses => response_reply(
@@ -495,42 +509,50 @@ impl ManualFailure {
             }
             Self::Truncated => match protocol {
                 Protocol::Chat => {
-                    let mut stream = SseReply::new(request);
-                    stream.event(chat_chunk(
-                        json!({"role":"assistant","content":"partial"}),
-                        None,
-                    ));
-                    stream.event(chat_chunk(json!({}), Some("length")));
-                    stream.frame("[DONE]");
+                    let mut stream = request.start_sse().unwrap();
+                    stream
+                        .event(&chat_chunk(
+                            json!({"role":"assistant","content":"partial"}),
+                            None,
+                        ))
+                        .unwrap();
+                    stream
+                        .event(&chat_chunk(json!({}), Some("length")))
+                        .unwrap();
+                    stream.frame("[DONE]").unwrap();
                     stream.finish();
                 }
                 Protocol::Responses => {
                     let mut response = response_body(json!([]));
                     response["status"] = json!("incomplete");
                     response["incomplete_details"] = json!({"reason":"max_output_tokens"});
-                    let mut stream = SseReply::new(request);
-                    stream.event(json!({
-                        "type":"response.incomplete",
-                        "sequence_number":9,
-                        "response":response
-                    }));
+                    let mut stream = request.start_sse().unwrap();
+                    stream
+                        .event(&json!({
+                            "type":"response.incomplete",
+                            "sequence_number":9,
+                            "response":response
+                        }))
+                        .unwrap();
                     stream.finish();
                 }
             },
             Self::Eof => match protocol {
                 Protocol::Chat => {
-                    let mut stream = SseReply::new(request);
-                    stream.event(chat_chunk(
-                        json!({"role":"assistant","content":"partial"}),
-                        None,
-                    ));
+                    let mut stream = request.start_sse().unwrap();
+                    stream
+                        .event(&chat_chunk(
+                            json!({"role":"assistant","content":"partial"}),
+                            None,
+                        ))
+                        .unwrap();
                     stream.finish();
                 }
-                Protocol::Responses => SseReply::new(request).finish(),
+                Protocol::Responses => request.start_sse().unwrap().finish(),
             },
             Self::Http => {
                 request
-                    .respond(Response::from_string("").with_status_code(500))
+                    .respond(Response::builder().status(500).body(Body::empty()).unwrap())
                     .unwrap();
             }
         }
@@ -619,7 +641,7 @@ fn context_has_tools(body: &Value) -> bool {
 // exactly as a provider returns encrypted native state.
 fn context_auto_calls(
     protocol: Protocol,
-    request: Request,
+    request: CapturedRequest,
     id: &str,
     path: &str,
     reasoning: Option<&str>,
@@ -650,31 +672,37 @@ fn context_auto_calls(
             }
             output.push(response_call(id, "read", arguments));
             let output = Value::Array(output);
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             if let Some(reasoning) = reasoning {
-                stream.event(json!({
-                    "type": "response.reasoning_summary_text.delta",
-                    "sequence_number": 0,
-                    "item_id": format!("rs-{id}"),
-                    "output_index": 0,
-                    "summary_index": 0,
-                    "delta": reasoning
-                }));
+                stream
+                    .event(&json!({
+                        "type": "response.reasoning_summary_text.delta",
+                        "sequence_number": 0,
+                        "item_id": format!("rs-{id}"),
+                        "output_index": 0,
+                        "summary_index": 0,
+                        "delta": reasoning
+                    }))
+                    .unwrap();
             }
             for (index, item) in output.as_array().unwrap().iter().enumerate() {
-                stream.event(json!({
-                    "type": "response.output_item.done",
-                    "sequence_number": index + 1,
-                    "output_index": index,
-                    "item": item
-                }));
+                stream
+                    .event(&json!({
+                        "type": "response.output_item.done",
+                        "sequence_number": index + 1,
+                        "output_index": index,
+                        "item": item
+                    }))
+                    .unwrap();
             }
             let sequence = output.as_array().unwrap().len() + 1;
-            stream.event(json!({
-                "type": "response.completed",
-                "sequence_number": sequence,
-                "response": response_body(output)
-            }));
+            stream
+                .event(&json!({
+                    "type": "response.completed",
+                    "sequence_number": sequence,
+                    "response": response_body(output)
+                }))
+                .unwrap();
             stream.finish();
         }
     }
@@ -682,21 +710,20 @@ fn context_auto_calls(
 
 // Reads the request exactly as it went over the wire; the estimator counts the
 // same serialization, so this measures the boundary without duplicating it.
-fn context_receive_raw(protocol: Protocol, server: &Server) -> (Request, Value, u64) {
+fn context_receive_raw(protocol: Protocol, server: &TestServer) -> (CapturedRequest, Value, u64) {
     let path = match protocol {
         Protocol::Chat => "/v1/chat/completions",
         Protocol::Responses => "/v1/responses",
     };
-    let mut request = server
+    let request = server
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap()
         .expect("missing CLI request");
-    assert_eq!(request.url(), path);
-    let mut raw = Vec::new();
-    std::io::Read::read_to_end(request.as_reader(), &mut raw).unwrap();
-    let body: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(request.target(), path);
+    let body: Value = serde_json::from_slice(request.body()).unwrap();
     assert_eq!(body["stream"], true);
-    (request, body, raw.len() as u64)
+    let len = request.body().len() as u64;
+    (request, body, len)
 }
 
 fn context_auto_summary_wrap() -> String {
@@ -956,7 +983,7 @@ fn context_assert_no_summary_with(protocol: Protocol, body: &Value, next: &str, 
 // request, while with an unknown/small window it is the next normal request.
 fn context_auto_grow_two_batches(
     protocol: Protocol,
-    server: &Server,
+    server: &TestServer,
     cli: &mut LiveCli,
     reasoning: bool,
 ) {
@@ -981,7 +1008,12 @@ fn context_auto_grow_two_batches(
 
 // Grow one task with `count` complete read batches of the same large file.
 // Unique call ids keep the native history valid for compaction boundaries.
-fn context_auto_grow_batches(protocol: Protocol, server: &Server, cli: &mut LiveCli, count: usize) {
+fn context_auto_grow_batches(
+    protocol: Protocol,
+    server: &TestServer,
+    cli: &mut LiveCli,
+    count: usize,
+) {
     cli.input("grow the context\n");
     for index in 0..count {
         let (request, body) = protocol.receive(server);
@@ -1045,7 +1077,7 @@ impl AutoSummaryFailure {
         }
     }
 
-    fn reply(self, protocol: Protocol, request: Request) {
+    fn reply(self, protocol: Protocol, request: CapturedRequest) {
         match self {
             Self::Blank => ManualFailure::Blank.reply(protocol, request),
             Self::Refusal => ManualFailure::Refusal.reply(protocol, request),

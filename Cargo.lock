@@ -163,12 +163,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
-name = "ascii"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
-
-[[package]]
 name = "async-compression"
 version = "0.4.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -274,6 +268,52 @@ dependencies = [
  "dunce",
  "fs_extra",
  "pkg-config",
+]
+
+[[package]]
+name = "axum"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
+dependencies = [
+ "axum-core",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "itoa",
+ "matchit",
+ "memchr",
+ "mime",
+ "percent-encoding",
+ "pin-project-lite",
+ "serde_core",
+ "sync_wrapper",
+ "tokio",
+ "tower",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "axum-core"
+version = "0.5.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "sync_wrapper",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]
@@ -629,12 +669,6 @@ dependencies = [
  "wasm-bindgen",
  "windows-link",
 ]
-
-[[package]]
-name = "chunked_transfer"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e4de3bc4ea267985becf712dc6d9eed8b04c953b3fcfb339ebc87acd9804901"
 
 [[package]]
 name = "clap"
@@ -1827,6 +1861,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -2469,6 +2504,12 @@ dependencies = [
  "tendril",
  "web_atoms 0.3.0",
 ]
+
+[[package]]
+name = "matchit"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "memchr"
@@ -3219,6 +3260,7 @@ name = "pp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "chrono",
  "clap",
  "image",
@@ -3228,13 +3270,13 @@ dependencies = [
  "pp-core",
  "pp-runtime",
  "pp-stats",
+ "pp-test-support",
  "pp-ui",
  "rusqlite",
  "rustix 1.1.5",
  "serde_json",
  "serde_yaml",
  "tempfile",
- "tiny_http",
  "tracing",
  "vt100",
 ]
@@ -3244,10 +3286,12 @@ name = "pp-config"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64 0.22.1",
  "getrandom 0.4.3",
  "percent-encoding",
  "pp-core",
+ "pp-test-support",
  "reqwest",
  "rusqlite",
  "rustix 1.1.5",
@@ -3255,7 +3299,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
- "tiny_http",
  "tokio",
  "tracing",
  "unicode-segmentation",
@@ -3287,17 +3330,18 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-openai",
+ "axum",
  "flate2",
  "futures-util",
  "pp-config",
  "pp-core",
  "pp-stats",
+ "pp-test-support",
  "reqwest",
  "serde",
  "serde_json",
  "serde_path_to_error",
  "tempfile",
- "tiny_http",
  "tokio",
  "tower",
  "tracing",
@@ -3309,11 +3353,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-openai",
+ "axum",
  "base64 0.22.1",
  "brush-builtins",
  "brush-core",
  "chrono",
  "dom_smoothie",
+ "futures-util",
  "getrandom 0.4.3",
  "globset",
  "grep-matcher",
@@ -3331,6 +3377,7 @@ dependencies = [
  "pp-core",
  "pp-llm",
  "pp-stats",
+ "pp-test-support",
  "ratatui",
  "regex",
  "reqwest",
@@ -3342,7 +3389,6 @@ dependencies = [
  "serde_yaml",
  "similar",
  "tempfile",
- "tiny_http",
  "tokio",
  "toml",
  "tracing",
@@ -3356,6 +3402,7 @@ name = "pp-stats"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "chrono",
  "getrandom 0.4.3",
  "pp-config",
@@ -3366,8 +3413,19 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "tiny_http",
+ "tokio",
  "tracing",
+]
+
+[[package]]
+name = "pp-test-support"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -4654,18 +4712,6 @@ name = "time-core"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
-
-[[package]]
-name = "tiny_http"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389915df6413a2e74fb181895f933386023c71110878cd0825588928e64cdc82"
-dependencies = [
- "ascii",
- "chunked_transfer",
- "httpdate",
- "log",
-]
 
 [[package]]
 name = "tinystr"

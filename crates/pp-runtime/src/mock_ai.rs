@@ -18,12 +18,11 @@ use std::{
     net::{Ipv4Addr, TcpListener},
     sync::{Arc, OnceLock},
     thread::{self, JoinHandle},
-    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
+use axum::Router;
 use pp_core::cancellation::CancellationToken;
-use tiny_http::Server;
 
 static ENDPOINT: OnceLock<MockEndpoint> = OnceLock::new();
 
@@ -66,54 +65,47 @@ pub fn current_endpoint() -> Result<MockEndpoint> {
         .context("mock AI endpoint is not installed")
 }
 
-/// 监听器与 accept 线程的唯一 owner；响应线程不参与退出时的 join。
+/// 监听器与 HTTP 服务线程的唯一 owner；Drop 立即取消，不等待连接排空。
 pub struct MockServer {
     endpoint: MockEndpoint,
-    server: Arc<Server>,
-    accept: Option<JoinHandle<()>>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl MockServer {
     pub fn start() -> Result<Self> {
         let listener = bind_listener()?;
         let port = listener.local_addr()?.port();
-        let server = Arc::new(
-            Server::from_listener(listener, None)
-                .map_err(|error| anyhow::anyhow!("starting mock AI HTTP server: {error}"))?,
-        );
+        listener.set_nonblocking(true)?;
         let endpoint = MockEndpoint {
             port,
             shutdown: CancellationToken::new(),
             queues: Arc::new(queues::Queues::default()),
         };
-        let accept_server = Arc::clone(&server);
-        let accept_endpoint = endpoint.clone();
-        let accept = thread::Builder::new()
-            .name("pp-mock-accept".into())
-            .spawn(move || {
-                while !accept_endpoint.shutdown.is_cancelled() {
-                    match accept_server.recv_timeout(Duration::from_millis(100)) {
-                        Ok(Some(request)) => {
-                            // 后续 SSE 的慢读者不得占用 accept 线程。
-                            let endpoint = accept_endpoint.clone();
-                            let _ = thread::Builder::new()
-                                .name("pp-mock-response".into())
-                                .spawn(move || {
-                                    queues::handle(request, endpoint);
-                                });
-                        }
-                        Ok(None) => {}
-                        Err(_) => break,
-                    }
-                }
-            })
-            .context("starting mock AI accept thread")?;
-        tracing::info!(event = "mock_ai_started", pid = std::process::id(), port);
-        Ok(Self {
-            endpoint,
-            server,
-            accept: Some(accept),
-        })
+        let (ready, started) = std::sync::mpsc::channel();
+        let service = endpoint.clone();
+        let thread = thread::Builder::new()
+            .name("pp-mock-http".into())
+            .spawn(move || serve(listener, service, &ready))
+            .context("starting mock AI service thread")?;
+        match started.recv() {
+            Ok(Ok(())) => {
+                tracing::info!(event = "mock_ai_started", pid = std::process::id(), port);
+                Ok(Self {
+                    endpoint,
+                    thread: Some(thread),
+                })
+            }
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(_) => {
+                let _ = thread.join();
+                Err(anyhow::anyhow!(
+                    "mock AI service stopped before it was ready"
+                ))
+            }
+        }
     }
 
     pub fn endpoint(&self) -> MockEndpoint {
@@ -124,12 +116,50 @@ impl MockServer {
 impl Drop for MockServer {
     fn drop(&mut self) {
         self.endpoint.shutdown.cancel();
-        self.server.unblock();
-        if let Some(accept) = self.accept.take() {
-            let _ = accept.join();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
         self.endpoint.queues.clear();
     }
+}
+
+/// 单线程 runtime 承载 `axum::serve`；就绪后才回报启动结果。
+fn serve(
+    listener: TcpListener,
+    endpoint: MockEndpoint,
+    ready: &std::sync::mpsc::Sender<Result<()>>,
+) {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = ready.send(Err(error.into()));
+            return;
+        }
+    };
+    runtime.block_on(async move {
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(listener) => listener,
+            Err(error) => {
+                let _ = ready.send(Err(error.into()));
+                return;
+            }
+        };
+        let router = Router::new()
+            .fallback(queues::handle)
+            .with_state(endpoint.clone());
+        if ready.send(Ok(())).is_err() {
+            return;
+        }
+        tokio::select! {
+            _ = axum::serve(listener, router) => {}
+            _ = endpoint.shutdown.cancelled() => {}
+        }
+    });
+    // 已开始的纯解析任务不再持有业务状态，退出时不必等待它们。
+    runtime.shutdown_background();
 }
 
 fn bind_listener() -> Result<TcpListener> {
@@ -155,7 +185,7 @@ mod lifecycle_tests {
     use std::{
         io::{Read, Write},
         net::{SocketAddr, TcpStream},
-        time::Instant,
+        time::{Duration, Instant},
     };
 
     #[test]

@@ -8,6 +8,8 @@ use pp_config::config::RoleAssignment;
 use pp_config::config::RoleModel;
 use pp_config::model_state::Selection;
 use pp_core::model::ModelSource;
+use pp_test_support::TestServer;
+use std::sync::Arc;
 
 fn fixture(dir: &std::path::Path, protocol: &str) -> Agent {
     let mut agent = runtime_input_agent(dir, protocol, "127.0.0.1:1", "");
@@ -793,26 +795,26 @@ fn runtime_think_level_applies_to_next_request_mid_task() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("marker.txt"), "marker body").unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         // 先发布一次配置写：`Change::Think` 的待应用 revision 来自 ModelState。
         agent.reload_models().unwrap();
         let (tx, rx) = std::sync::mpsc::channel::<Value>();
         let serving = protocol.to_owned();
+        let worker = Arc::clone(&server);
         let server_thread = std::thread::spawn(move || {
-            let mut request = server
+            let request = worker
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap()
                 .unwrap();
-            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let body: Value = request.json().unwrap();
             tx.send(body).unwrap();
             tool_call_for(&serving, request, "read", r#"{"path":"marker.txt"}"#);
-            let mut request = server
+            let request = worker
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap()
                 .unwrap();
-            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let body: Value = request.json().unwrap();
             tx.send(body).unwrap();
             final_for(&serving, request, "marker read", true);
         });
@@ -857,8 +859,8 @@ fn runtime_subagent_roles_switch_at_next_request_mid_run() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("marker.txt"), "child marker").unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let address = server.server_addr().to_string();
+        let server = TestServer::start().unwrap();
+        let address = server.addr().to_string();
         let mut agent = runtime_input_agent(dir.path(), protocol, &address, "");
         add_other_provider(dir.path(), protocol, &address);
         agent.reload_models().unwrap();
@@ -879,11 +881,11 @@ fn runtime_subagent_roles_switch_at_next_request_mid_run() {
             .unwrap();
 
         // 第一轮：旧 model + 旧 effort；先提交角色更新再回工具调用，避免竞态。
-        let mut request = server
+        let request = server
             .recv_timeout(std::time::Duration::from_secs(10))
             .unwrap()
             .unwrap();
-        let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+        let body: Value = request.json().unwrap();
         assert_eq!(body["model"], "one");
         assert_eq!(request_effort(protocol, &body), &json!("low"));
         assert!(service.submit(Change::Role(role, role_with("other/two", ThinkLevel::High))));
@@ -891,11 +893,11 @@ fn runtime_subagent_roles_switch_at_next_request_mid_run() {
         tool_call_for(protocol, request, "read", r#"{"path":"marker.txt"}"#);
 
         // 第二轮：同一次运行里同时切到新 model 与新 effort。
-        let mut request = server
+        let request = server
             .recv_timeout(std::time::Duration::from_secs(10))
             .unwrap()
             .unwrap();
-        let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+        let body: Value = request.json().unwrap();
         assert_eq!(body["model"], "two");
         assert_eq!(request_effort(protocol, &body), &json!("high"));
         final_for(protocol, request, "child done", true);

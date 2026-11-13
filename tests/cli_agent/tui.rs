@@ -56,20 +56,20 @@ fn test_task_tui_child(protocol: &str, body: &Value) -> bool {
 }
 
 // 仅 TUI 夹具自动处理旁路标题；CLI 仍严格拒绝任何额外请求。
-fn receive(server: &Server) -> (Request, Value) {
+fn receive(server: &TestServer) -> (CapturedRequest, Value) {
     receive_at(server, "/v1/chat/completions")
 }
 /// 并行档会同时启动多个真实 PTY；总预算覆盖标题应答后继续等待主请求的时间。
-fn receive_at(server: &Server, path: &str) -> (Request, Value) {
+fn receive_at(server: &TestServer, path: &str) -> (CapturedRequest, Value) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let (request, body) = receive_raw_within(server, remaining);
         if !is_task_title(&body) {
-            assert_eq!(request.url(), path);
+            assert_eq!(request.target(), path);
             return (request, body);
         }
-        if request.url().ends_with("responses") {
+        if request.target().ends_with("responses") {
             response_final(request, "Task");
         } else {
             final_reply(request, "Task");
@@ -77,14 +77,14 @@ fn receive_at(server: &Server, path: &str) -> (Request, Value) {
     }
 }
 
-fn no_more(server: &Server) {
-    while let Some(mut request) = server.recv_timeout(Duration::from_millis(100)).unwrap() {
-        let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+fn no_more(server: &TestServer) {
+    while let Some(request) = server.recv_timeout(Duration::from_millis(100)).unwrap() {
+        let body = request.json().unwrap();
         assert!(
             is_task_title(&body),
             "unexpected extra model request: {body}"
         );
-        let _ = request.respond(Response::empty(204));
+        let _ = request.respond(Response::builder().status(204).body(Body::empty()).unwrap());
     }
 }
 
@@ -146,7 +146,7 @@ fn terminal_flags(master: &dyn MasterPty) -> [u128; 4] {
 }
 
 impl Pty {
-    pub(super) fn start(server: &Server, cwd: &Path) -> Self {
+    pub(super) fn start(server: &TestServer, cwd: &Path) -> Self {
         std::fs::write(config_path(cwd, "settings.yml"), fixture_settings()).unwrap();
         std::fs::write(config_path(cwd, "models.yml"), fixture_models(server)).unwrap();
         Self::start_with_existing_files(cwd)
@@ -572,7 +572,7 @@ impl Pty {
         }
     }
 
-    fn request(&mut self, server: &Server) -> (Request, Value) {
+    fn request(&mut self, server: &TestServer) -> (CapturedRequest, Value) {
         // Reuse the HTTP fixture, adding the PTY's diagnostics on its deadline.
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| receive(server))) {
             Ok(request) => request,
@@ -583,7 +583,11 @@ impl Pty {
         }
     }
 
-    pub(super) fn request_at(&mut self, server: &Server, path: &str) -> (Request, Value) {
+    pub(super) fn request_at(
+        &mut self,
+        server: &TestServer,
+        path: &str,
+    ) -> (CapturedRequest, Value) {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| receive_at(server, path))) {
             Ok(request) => request,
             Err(_) => {
@@ -641,29 +645,38 @@ impl Drop for Pty {
     }
 }
 
-fn streaming_delta(stream: &mut SseReply, protocol: &str, text: &str) {
+fn streaming_delta(stream: &mut SseWriter, protocol: &str, text: &str) {
     if protocol == "completion" {
-        stream.event(chat_chunk(json!({"role":"assistant","content":text}), None));
+        stream
+            .event(&chat_chunk(
+                json!({"role":"assistant","content":text}),
+                None,
+            ))
+            .unwrap();
     } else {
-        stream.event(json!({
-            "type":"response.output_text.delta", "sequence_number":0,
-            "item_id":"msg-live", "output_index":0, "content_index":0,
-            "delta":text, "logprobs":[]
-        }));
+        stream
+            .event(&json!({
+                "type":"response.output_text.delta", "sequence_number":0,
+                "item_id":"msg-live", "output_index":0, "content_index":0,
+                "delta":text, "logprobs":[]
+            }))
+            .unwrap();
     }
 }
 
-fn streaming_complete(stream: &mut SseReply, protocol: &str, text: &str) {
+fn streaming_complete(stream: &mut SseWriter, protocol: &str, text: &str) {
     if protocol == "completion" {
-        stream.event(chat_chunk(json!({}), Some("stop")));
-        stream.frame("[DONE]");
+        stream.event(&chat_chunk(json!({}), Some("stop"))).unwrap();
+        stream.frame("[DONE]").unwrap();
     } else {
-        stream.event(json!({
-            "type":"response.completed", "sequence_number":1,
-            "response":response_body(json!([
-                response_message("msg-live", json!([response_text(text)]))
-            ]))
-        }));
+        stream
+            .event(&json!({
+                "type":"response.completed", "sequence_number":1,
+                "response":response_body(json!([
+                    response_message("msg-live", json!([response_text(text)]))
+                ]))
+            }))
+            .unwrap();
     }
 }
 
@@ -823,7 +836,7 @@ fn saved_session_id(home: &Path) -> String {
 }
 
 // 驱动一个带 bash+read 工具批次与会话，退出后返回保存的 session ID。
-fn create_tool_session(server: &Server, home: &Path, protocol: &str) -> String {
+fn create_tool_session(server: &TestServer, home: &Path, protocol: &str) -> String {
     std::fs::write(config_path(home, "settings.yml"), fixture_settings()).unwrap();
     std::fs::write(
         config_path(home, "models.yml"),

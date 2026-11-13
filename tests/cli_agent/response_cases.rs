@@ -278,8 +278,10 @@ fn responses_invalid_batches_never_write_and_repl_recovers() {
         );
         cli.input("do not execute an invalid batch\n");
         let (request, _) = receive_at(&server, "/v1/responses");
-        let mut stream = SseReply::new(request);
-        stream.event(json!({"type":"response.completed","sequence_number":0,"response":invalid}));
+        let mut stream = request.start_sse().unwrap();
+        stream
+            .event(&json!({"type":"response.completed","sequence_number":0,"response":invalid}))
+            .unwrap();
         stream.finish();
         cli.input("recover\n");
         let (request, body) = receive_at(&server, "/v1/responses");

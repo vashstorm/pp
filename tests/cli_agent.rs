@@ -1,11 +1,13 @@
+use axum::{body::Body, response::Response};
+use pp_test_support::{CapturedRequest, SseWriter, TestServer};
 use serde_json::{Value, json};
 use std::{
     io::Write,
     process::{Child, Command, Output, Stdio},
+    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
-use tiny_http::{Header, Request, Response, Server};
 
 #[path = "cli_agent/auth.rs"]
 mod auth;
@@ -102,7 +104,7 @@ impl Cli {
             .stderr(Stdio::piped());
         Self(Some(command.spawn().unwrap()))
     }
-    fn start(server: &Server, cwd: &std::path::Path, prompt: Option<&str>) -> Self {
+    fn start(server: &TestServer, cwd: &std::path::Path, prompt: Option<&str>) -> Self {
         Self::start_with(cwd, prompt, fixture_settings(), &fixture_models(server))
     }
     fn spawn(cwd: &std::path::Path, args: &[&str], envs: &[(&str, &str)]) -> Self {
@@ -168,29 +170,29 @@ fn task_fixture_settings() -> String {
     format!("{}{FIXTURE_FAST_ROLE}", fixture_settings())
 }
 
-fn fixture_models(server: &Server) -> String {
+fn fixture_models(server: &TestServer) -> String {
     format!(
         "# 此测试进程的回环服务\nproviders:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: fixture-model\n",
-        server.server_addr()
+        server.addr()
     )
 }
 
-fn server() -> Server {
-    Server::http("127.0.0.1:0").unwrap()
+fn server() -> Arc<TestServer> {
+    Arc::new(TestServer::start().unwrap())
 }
-fn receive(server: &Server) -> (Request, Value) {
+fn receive(server: &TestServer) -> (CapturedRequest, Value) {
     receive_at(server, "/v1/chat/completions")
 }
-fn receive_raw(server: &Server) -> (Request, Value) {
+fn receive_raw(server: &TestServer) -> (CapturedRequest, Value) {
     receive_raw_within(server, Duration::from_secs(10))
 }
-fn receive_raw_within(server: &Server, timeout: Duration) -> (Request, Value) {
+fn receive_raw_within(server: &TestServer, timeout: Duration) -> (CapturedRequest, Value) {
     // 默认并行档会同时运行多个真实二进制与 PTY；冷启动可超过 5s，但请求仍应确定到达。
-    let mut request = server
+    let request = server
         .recv_timeout(timeout)
         .unwrap()
         .expect("missing CLI request");
-    let body = serde_json::from_reader(request.as_reader()).unwrap();
+    let body = request.json().unwrap();
     (request, body)
 }
 fn is_task_title(body: &Value) -> bool {
@@ -201,38 +203,10 @@ fn is_task_title(body: &Value) -> bool {
             text.starts_with("Generate a short task title for a terminal statusline.")
         })
 }
-fn receive_at(server: &Server, path: &str) -> (Request, Value) {
+fn receive_at(server: &TestServer, path: &str) -> (CapturedRequest, Value) {
     let (request, body) = receive_raw(server);
-    assert_eq!(request.url(), path);
+    assert_eq!(request.target(), path);
     (request, body)
-}
-
-struct SseReply {
-    writer: Box<dyn Write + Send>,
-}
-
-impl SseReply {
-    fn new(request: Request) -> Self {
-        let mut writer = request.into_writer();
-        writer.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap();
-        writer.flush().unwrap();
-        Self { writer }
-    }
-
-    fn frame(&mut self, data: &str) {
-        let frame = format!("data: {data}\n\n");
-        write!(self.writer, "{:x}\r\n{}\r\n", frame.len(), frame).unwrap();
-        self.writer.flush().unwrap();
-    }
-
-    fn event(&mut self, event: Value) {
-        self.frame(&event.to_string());
-    }
-
-    fn finish(mut self) {
-        self.writer.write_all(b"0\r\n\r\n").unwrap();
-        self.writer.flush().unwrap();
-    }
 }
 
 fn chat_chunk(delta: Value, finish: Option<&str>) -> Value {
@@ -243,7 +217,7 @@ fn chat_chunk(delta: Value, finish: Option<&str>) -> Value {
     })
 }
 
-fn reply(request: Request, mut message: Value) {
+fn reply(request: CapturedRequest, mut message: Value) {
     let finish_reason = if message.get("tool_calls").is_some() {
         "tool_calls"
     } else {
@@ -254,19 +228,21 @@ fn reply(request: Request, mut message: Value) {
             call["index"] = json!(index);
         }
     }
-    let mut stream = SseReply::new(request);
-    stream.event(chat_chunk(message, None));
-    stream.event(chat_chunk(json!({}), Some(finish_reason)));
-    stream.frame("[DONE]");
+    let mut stream = request.start_sse().unwrap();
+    stream.event(&chat_chunk(message, None)).unwrap();
+    stream
+        .event(&chat_chunk(json!({}), Some(finish_reason)))
+        .unwrap();
+    stream.frame("[DONE]").unwrap();
     stream.finish();
 }
-fn final_reply(request: Request, text: &str) {
+fn final_reply(request: CapturedRequest, text: &str) {
     reply(request, json!({"role":"assistant","content":text}));
 }
 fn call(id: &str, name: &str, args: Value) -> Value {
     json!({"id":id,"type":"function","function":{"name":name,"arguments":args.to_string()}})
 }
-fn calls_reply(request: Request, calls: Value) {
+fn calls_reply(request: CapturedRequest, calls: Value) {
     reply(
         request,
         json!({"role":"assistant","content":null,"tool_calls":calls}),
@@ -277,7 +253,7 @@ fn result(message: &Value, id: &str) -> Value {
     assert_eq!(message["tool_call_id"], id);
     serde_json::from_str(message["content"].as_str().unwrap()).unwrap()
 }
-fn no_more(server: &Server) {
+fn no_more(server: &TestServer) {
     assert!(
         server
             .recv_timeout(Duration::from_millis(100))
@@ -287,19 +263,20 @@ fn no_more(server: &Server) {
     );
 }
 
-fn authorization(request: &Request) -> String {
+fn authorization(request: &CapturedRequest) -> String {
     request
         .headers()
-        .iter()
-        .find(|header| header.field.equiv("Authorization"))
-        .map(|header| header.value.as_str().to_owned())
+        .get("authorization")
+        .expect("认证请求必须带 Authorization")
+        .to_str()
         .unwrap()
+        .to_owned()
 }
 
-fn response_models(server: &Server, protocol: Option<&str>) -> String {
+fn response_models(server: &TestServer, protocol: Option<&str>) -> String {
     let mut provider = json!({
         "api_key": "fixture-key",
-        "base_url": format!("http://{}/v1", server.server_addr()),
+        "base_url": format!("http://{}/v1", server.addr()),
         "models": {"primary": { "model": "fixture-model"}}
     });
     if let Some(protocol) = protocol {
@@ -320,8 +297,8 @@ fn response_body(output: Value) -> Value {
     })
 }
 
-fn response_reply(request: Request, output: Value) {
-    let mut stream = SseReply::new(request);
+fn response_reply(request: CapturedRequest, output: Value) {
+    let mut stream = request.start_sse().unwrap();
     let mut sequence = 0;
     for (output_index, item) in output.as_array().unwrap().iter().enumerate() {
         if let Some(parts) = item["content"].as_array() {
@@ -331,31 +308,39 @@ fn response_reply(request: Request, output: Value) {
                     Some("refusal") => ("response.refusal.delta", part["refusal"].as_str()),
                     _ => continue,
                 };
-                stream.event(json!({
-                    "type":event_type, "sequence_number":sequence,
-                    "item_id":item["id"], "output_index":output_index,
-                    "content_index":content_index, "delta":text.unwrap(),
-                    "logprobs":[]
-                }));
+                stream
+                    .event(&json!({
+                        "type":event_type, "sequence_number":sequence,
+                        "item_id":item["id"], "output_index":output_index,
+                        "content_index":content_index, "delta":text.unwrap(),
+                        "logprobs":[]
+                    }))
+                    .unwrap();
                 sequence += 1;
-                stream.event(json!({
-                    "type":"response.content_part.done", "sequence_number":sequence,
-                    "item_id":item["id"], "output_index":output_index,
-                    "content_index":content_index, "part":part
-                }));
+                stream
+                    .event(&json!({
+                        "type":"response.content_part.done", "sequence_number":sequence,
+                        "item_id":item["id"], "output_index":output_index,
+                        "content_index":content_index, "part":part
+                    }))
+                    .unwrap();
                 sequence += 1;
             }
         }
-        stream.event(json!({
-            "type":"response.output_item.done", "sequence_number":sequence,
-            "output_index":output_index, "item":item
-        }));
+        stream
+            .event(&json!({
+                "type":"response.output_item.done", "sequence_number":sequence,
+                "output_index":output_index, "item":item
+            }))
+            .unwrap();
         sequence += 1;
     }
-    stream.event(json!({
-        "type":"response.completed", "sequence_number":sequence,
-        "response":response_body(output)
-    }));
+    stream
+        .event(&json!({
+            "type":"response.completed", "sequence_number":sequence,
+            "response":response_body(output)
+        }))
+        .unwrap();
     stream.finish();
 }
 
@@ -374,7 +359,7 @@ fn response_text(text: &str) -> Value {
     json!({"type": "output_text", "text": text, "annotations": [], "logprobs": null})
 }
 
-fn response_final(request: Request, text: &str) {
+fn response_final(request: CapturedRequest, text: &str) {
     response_reply(
         request,
         json!([response_message("msg-final", json!([response_text(text)]))]),
@@ -411,11 +396,11 @@ fn response_user(item: &Value, expected: &str) {
     }
 }
 
-fn slash_provider(server: &Server, id: &str, protocol: &str, models: Value) -> Value {
+fn slash_provider(server: &TestServer, id: &str, protocol: &str, models: Value) -> Value {
     json!({
         "protocol": protocol,
         "api_key": format!("{id}-key"),
-        "base_url": format!("http://{}/v1", server.server_addr()),
+        "base_url": format!("http://{}/v1", server.addr()),
         "models": models
     })
 }

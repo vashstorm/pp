@@ -74,7 +74,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
-        let base = format!("http://{}/v1", fixture.server_addr());
+        let base = format!("http://{}/v1", fixture.addr());
         crate::write_settings(
             home.path(),
             r#"{"default_model":"first/primary","notification_timeout_seconds":1}"#,
@@ -214,7 +214,9 @@ fn plan_mcp_tool_names<'a>(body: &'a Value, protocol: &str) -> Vec<&'a str> {
         .collect()
 }
 
-fn plan_mcp_session(protocol: &str) -> (Server, tempfile::TempDir, tempfile::TempDir, Pty) {
+fn plan_mcp_session(
+    protocol: &str,
+) -> (Arc<TestServer>, tempfile::TempDir, tempfile::TempDir, Pty) {
     let fixture = server();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
@@ -792,16 +794,20 @@ fn plan_completion_requires_success_and_approved_tasks() {
         // 全部勾选但最终错误：流中错误使任务失败，不归档。
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         {
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             if protocol == "completion" {
-                stream.event(json!({
-                    "error":{"message":"fixture stream error","type":"server_error"}
-                }));
+                stream
+                    .event(&json!({
+                        "error":{"message":"fixture stream error","type":"server_error"}
+                    }))
+                    .unwrap();
             } else {
-                stream.event(json!({
-                    "type":"error","sequence_number":1,"code":"server_error",
-                    "message":"fixture stream error","param":null
-                }));
+                stream
+                    .event(&json!({
+                        "type":"error","sequence_number":1,"code":"server_error",
+                        "message":"fixture stream error","param":null
+                    }))
+                    .unwrap();
             }
             stream.finish();
         }

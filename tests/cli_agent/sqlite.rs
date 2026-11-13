@@ -91,9 +91,11 @@ fn sqlite_model_usage_counts_logical_requests() {
         };
         first
             .respond(
-                Response::from_string("private-error-body fixture-key")
-                    .with_status_code(429)
-                    .with_header(Header::from_bytes(&b"Retry-After"[..], &b"0"[..]).unwrap()),
+                Response::builder()
+                    .status(429)
+                    .header("Retry-After", "0")
+                    .body(Body::from("private-error-body fixture-key"))
+                    .unwrap(),
             )
             .unwrap();
         let (second, second_body) = if responses {
@@ -126,7 +128,12 @@ fn sqlite_model_usage_counts_logical_requests() {
             receive(&server)
         };
         request
-            .respond(Response::from_string("private-error-body fixture-key").with_status_code(401))
+            .respond(
+                Response::builder()
+                    .status(401)
+                    .body(Body::from("private-error-body fixture-key"))
+                    .unwrap(),
+            )
             .unwrap();
         let output = cli.finish();
         assert!(!output.status.success(), "{protocol}");

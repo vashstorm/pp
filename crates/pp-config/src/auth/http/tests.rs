@@ -1,6 +1,8 @@
 use super::*;
+use axum::{body::Body, response::Response};
+use pp_test_support::TestServer;
+use std::sync::Arc;
 use std::thread;
-use tiny_http::{Header, Response, Server};
 
 struct Captured {
     path: String,
@@ -8,47 +10,45 @@ struct Captured {
     headers: Vec<(String, String)>,
 }
 
-fn mock(replies: Vec<(u16, Value)>) -> (String, thread::JoinHandle<Vec<Captured>>) {
-    let server = Server::http("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", server.server_addr());
+fn mock(
+    replies: Vec<(u16, Value)>,
+) -> (Arc<TestServer>, String, thread::JoinHandle<Vec<Captured>>) {
+    let server = Arc::new(TestServer::start().unwrap());
+    let url = format!("http://{}", server.addr());
+    let responder = Arc::clone(&server);
     let handle = thread::spawn(move || {
         replies
             .into_iter()
             .map(|(status, body)| {
-                let mut request = server
+                let request = responder
                     .recv_timeout(Duration::from_secs(15))
                     .unwrap()
                     .expect("认证请求必须到达");
-                let mut input = String::new();
-                request.as_reader().read_to_string(&mut input).unwrap();
                 let captured = Captured {
-                    path: request.url().to_owned(),
-                    body: input,
+                    path: request.target().to_owned(),
+                    body: String::from_utf8_lossy(request.body()).into_owned(),
                     headers: request
                         .headers()
                         .iter()
-                        .map(|h| {
-                            (
-                                h.field.as_str().to_string().to_lowercase(),
-                                h.value.to_string(),
-                            )
+                        .map(|(name, value)| {
+                            (name.as_str().to_owned(), value.to_str().unwrap().to_owned())
                         })
                         .collect(),
                 };
                 request
                     .respond(
-                        Response::from_string(body.to_string())
-                            .with_status_code(status)
-                            .with_header(
-                                Header::from_bytes("Content-Type", "application/json").unwrap(),
-                            ),
+                        Response::builder()
+                            .status(status)
+                            .header("Content-Type", "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
                     )
                     .unwrap();
                 captured
             })
             .collect()
     });
-    (url, handle)
+    (server, url, handle)
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -172,7 +172,7 @@ fn auth_discovery_roundtrip_preserves_model_protocols_and_manual_priority() {
         .unwrap();
         let store = Store::load(&dir.path().join("agent.db")).unwrap();
         let credential = &store.credentials[&provider];
-        let (base, server) = mock(vec![(
+        let (_owner, base, server) = mock(vec![(
             200,
             json!({"data":[
                 {"id":"a-response", "supported_endpoints":["/responses"], "context_window":128000},
@@ -292,7 +292,7 @@ fn auth_discovery_http_all_providers_use_auth_headers_and_redact_errors() {
         } else {
             json!({"data":[{"id":"remote-model", "context_length":32768}]})
         };
-        let (base, server) = mock(vec![
+        let (_owner, base, server) = mock(vec![
             (200, data),
             (404, json!({"secret":"private-body"})),
             (401, json!({"error":"private-body"})),
@@ -329,8 +329,8 @@ fn auth_discovery_http_all_providers_use_auth_headers_and_redact_errors() {
 
 #[test]
 fn auth_discovery_is_cancellable_while_response_is_pending() {
-    let server = Server::http("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/models", server.server_addr());
+    let server = TestServer::start().unwrap();
+    let url = format!("http://{}/models", server.addr());
     let token = pp_core::cancellation::CancellationToken::new();
     let cancel = token.clone();
     let worker = thread::spawn(move || {
@@ -370,7 +370,7 @@ fn jwt(account: &str) -> String {
 
 #[test]
 fn auth_kimi_device_login_polls_pending_and_refresh_rotates_tokens() {
-    let (base, server) = mock(vec![
+    let (_owner, base, server) = mock(vec![
         (
             200,
             json!({"device_code":"device-private","user_code":"USER-CODE","verification_uri":"https://www.kimi.com/activate","interval":1,"expires_in":60}),
@@ -434,7 +434,7 @@ fn auth_kimi_device_login_polls_pending_and_refresh_rotates_tokens() {
 
 #[test]
 fn auth_copilot_login_discovers_subscription_endpoint() {
-    let (base, server) = mock(vec![
+    let (_owner, base, server) = mock(vec![
         (
             200,
             json!({"device_code":"device","user_code":"USER","verification_uri":"https://github.com/login/device","interval":1,"expires_in":60}),
@@ -476,7 +476,7 @@ fn auth_copilot_login_discovers_subscription_endpoint() {
 #[test]
 fn auth_codex_device_login_exchanges_code_and_keeps_account_identity() {
     let token = jwt("account-fixture");
-    let (base, server) = mock(vec![
+    let (_owner, base, server) = mock(vec![
         (
             200,
             json!({"device_auth_id":"device-id","user_code":"USER","interval":"1"}),
@@ -515,7 +515,7 @@ fn auth_codex_device_login_exchanges_code_and_keeps_account_identity() {
 
 #[test]
 fn auth_refresh_errors_redact_bodies_and_retain_existing_tokens() {
-    let (base, server) = mock(vec![(
+    let (_owner, base, server) = mock(vec![(
         401,
         json!({"error_description":"private-credential-must-not-leak"}),
     )]);
@@ -552,13 +552,14 @@ fn auth_refresh_errors_redact_bodies_and_retain_existing_tokens() {
 
 #[test]
 fn auth_refresh_is_cancellable_during_network_wait() {
-    let server = Server::http("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", server.server_addr());
+    let server = Arc::new(TestServer::start().unwrap());
+    let url = format!("http://{}", server.addr());
     let cancellation = pp_core::cancellation::CancellationToken::new();
     let cancel = cancellation.clone();
     let (release, wait) = std::sync::mpsc::channel();
+    let responder = Arc::clone(&server);
     let handle = thread::spawn(move || {
-        let request = server
+        let request = responder
             .recv_timeout(Duration::from_secs(5))
             .unwrap()
             .unwrap();

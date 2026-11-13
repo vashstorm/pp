@@ -24,15 +24,17 @@ fn thinking_and_bash_cards_stream_with_default_style_and_expand_without_editing_
             "/v1/responses"
         };
         let (request, body) = receive_at(&server, path);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         if protocol == "completion" {
-            stream.event(chat_chunk(
-                json!({"role":"assistant","reasoning_content":"Check the diff 中"}),
-                None,
-            ));
+            stream
+                .event(&chat_chunk(
+                    json!({"role":"assistant","reasoning_content":"Check the diff 中"}),
+                    None,
+                ))
+                .unwrap();
         } else {
             assert_eq!(body["reasoning"]["summary"], "concise");
-            stream.event(json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":"Check the diff 中"}));
+            stream.event(&json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":"Check the diff 中"})).unwrap();
         }
         pty.text("Check the diff 中");
         let row = (0..30)
@@ -57,10 +59,10 @@ fn thinking_and_bash_cards_stream_with_default_style_and_expand_without_editing_
             streaming_delta(&mut stream, protocol, "inspected");
             streaming_complete(&mut stream, protocol, "inspected");
         } else {
-            stream.event(json!({"type":"response.completed","sequence_number":2,"response":response_body(json!([
+            stream.event(&json!({"type":"response.completed","sequence_number":2,"response":response_body(json!([
                     {"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"Check the diff 中"}]},
                     response_message("m",json!([response_text("inspected")]))
-                ]))}));
+                ]))})).unwrap();
         }
         stream.finish();
         pty.text("inspected");
@@ -136,7 +138,7 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         };
         let (request, body) = receive_at(&server, path);
         assert_eq!(body["stream"], true);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         streaming_delta(&mut stream, protocol, "first-中");
         pty.text("first-中");
         pty.wait_for("流式回复状态带有时钟", |screen| {
@@ -292,18 +294,18 @@ fn slow_streaming_tui_partial_failures_preserve_text_and_recover_without_leaks()
                 "/v1/responses"
             };
             let (request, _) = receive_at(&server, path);
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             streaming_delta(&mut stream, protocol, "partial-visible");
             pty.text("partial-visible");
             match ending {
-                "json" => stream.frame("{private-provider-body fixture-key"),
-                "failed" if protocol == "completion" => stream.event(json!({
+                "json" => stream.frame("{private-provider-body fixture-key").unwrap(),
+                "failed" if protocol == "completion" => stream.event(&json!({
                     "error":{"message":"private-provider-body fixture-key","type":"server_error"}
-                })),
-                "failed" => stream.event(json!({
+                })).unwrap(),
+                "failed" => stream.event(&json!({
                     "type":"error","sequence_number":1,"code":"server_error",
                     "message":"private-provider-body fixture-key","param":null
-                })),
+                })).unwrap(),
                 _ => {}
             }
             stream.finish();

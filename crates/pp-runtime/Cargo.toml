@@ -12,6 +12,8 @@ pp-stats = { path = "../pp-stats" }
 pp-llm = { path = "../pp-llm" }
 anyhow = { workspace = true }
 async-openai = { workspace = true }
+axum = { workspace = true }
+futures-util = { workspace = true }
 brush-builtins = { workspace = true }
 brush-core = { workspace = true }
 libc = { workspace = true }
@@ -45,11 +47,11 @@ dom_smoothie = { workspace = true }
 html2text = { workspace = true }
 tempfile = { workspace = true }
 tracing = { workspace = true }
-tiny_http = { workspace = true }
 
 ratatui = { workspace = true }
 
 [dev-dependencies]
+pp-test-support = { workspace = true }
 serde_yaml = { workspace = true }
 
 [features]

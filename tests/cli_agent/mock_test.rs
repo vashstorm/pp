@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Read, Write},
-    net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream},
+    net::{Ipv4Addr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
 };
 
@@ -135,13 +135,13 @@ fn wait_for_session(home: &Path) -> PathBuf {
     }
 }
 
-fn request_for(server: &Server, timeout: Duration) -> (Request, Value) {
+fn request_for(server: &TestServer, timeout: Duration) -> (CapturedRequest, Value) {
     let deadline = Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match server.recv_timeout(remaining) {
-            Ok(Some(mut request)) => {
-                let body = serde_json::from_reader(request.as_reader()).unwrap();
+            Ok(Some(request)) => {
+                let body = request.json().unwrap();
                 return (request, body);
             }
             Ok(None) => {
@@ -634,7 +634,8 @@ fn http_request(port: u16, method: &str, path: &str, body: &[u8]) -> HttpRespons
     stream.write_all(request.as_bytes()).unwrap();
     stream.write_all(body).unwrap();
     stream.flush().unwrap();
-    let _ = stream.shutdown(Shutdown::Write);
+    // 请求已按 Content-Length 完整发送；不回写半关闭（Hyper 的 h1 默认不支持
+    // 对端 half-close 后继续响应）。响应按 framing 读到终止块，不依赖连接关闭。
 
     let mut reader = BufReader::new(stream);
     let mut status_line = String::new();

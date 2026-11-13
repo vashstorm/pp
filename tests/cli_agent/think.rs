@@ -25,7 +25,7 @@ pub(super) fn assert_level(body: &Value, protocol: &str, level: &str) {
     }
 }
 
-pub(super) fn finish_request(request: Request, protocol: &str) {
+pub(super) fn finish_request(request: CapturedRequest, protocol: &str) {
     if protocol == "response" {
         response_final(request, "ok");
     } else {
@@ -151,7 +151,7 @@ fn thinking_model(model: &str, efforts: Value, default_level: Option<&str>) -> V
     entry
 }
 
-fn model_thinking_reply(request: Request, protocol: &str, text: &str) {
+fn model_thinking_reply(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "response" {
         response_final(request, text);
     } else {

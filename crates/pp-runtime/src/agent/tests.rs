@@ -1,5 +1,6 @@
 use super::turn::apply_todo_change;
 use super::*;
+use pp_test_support::CapturedRequest;
 use serde_json::{Value, json};
 
 mod model_role_cases;
@@ -12,7 +13,7 @@ mod turn_input_cases;
 pub(super) fn runtime_input_agent(
     dir: &std::path::Path,
     protocol: &str,
-    server_addr: &str,
+    address: &str,
     settings_extra: &str,
 ) -> Agent {
     let settings = dir.join("settings.yml");
@@ -28,7 +29,7 @@ pub(super) fn runtime_input_agent(
         json!({"providers":{"fixture": {
             "api_key":"fixture-key",
             "protocol":protocol,
-            "base_url":format!("http://{server_addr}/v1"),
+            "base_url":format!("http://{address}/v1"),
             "models":{"one":model}
         }}})
         .to_string(),
@@ -168,27 +169,18 @@ pub(super) fn err_message<T>(result: Result<T>) -> String {
     }
 }
 
-pub(super) fn sse_stream(request: tiny_http::Request, events: &[Value]) {
-    use std::io::Write as _;
-    let mut writer = request.into_writer();
-    writer
-        .write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-              Transfer-Encoding: chunked\r\n\r\n",
-        )
-        .unwrap();
+pub(super) fn sse_stream(request: CapturedRequest, events: &[Value]) {
+    let mut stream = request.start_sse().unwrap();
     for event in events {
-        let frame = match event {
-            Value::String(text) => format!("data: {text}\n\n"),
-            event => format!("data: {event}\n\n"),
-        };
-        write!(writer, "{:x}\r\n{}\r\n", frame.len(), frame).unwrap();
+        match event {
+            Value::String(text) => stream.frame(text).unwrap(),
+            event => stream.event(event).unwrap(),
+        }
     }
-    writer.write_all(b"0\r\n\r\n").unwrap();
-    writer.flush().unwrap();
+    stream.finish();
 }
 
-pub(super) fn completion_stream(request: tiny_http::Request, message: Value, finish: &str) {
+pub(super) fn completion_stream(request: CapturedRequest, message: Value, finish: &str) {
     let chunk = |delta: Value, finish: Option<&str>| {
         json!({
             "id":"chatcmpl-fixture", "object":"chat.completion.chunk",
@@ -208,7 +200,7 @@ pub(super) fn completion_stream(request: tiny_http::Request, message: Value, fin
 
 /// `emit_part_done` covers both server shapes: the reviewer fixture omits
 /// `response.content_part.done`, while the chat fixture sends it.
-pub(super) fn response_stream(request: tiny_http::Request, output: &[Value], emit_part_done: bool) {
+pub(super) fn response_stream(request: CapturedRequest, output: &[Value], emit_part_done: bool) {
     let mut events = Vec::new();
     let mut sequence = 0u64;
     for (output_index, item) in output.iter().enumerate() {
@@ -254,7 +246,7 @@ pub(super) fn response_stream(request: tiny_http::Request, output: &[Value], emi
 
 pub(super) fn final_for(
     protocol: &str,
-    request: tiny_http::Request,
+    request: CapturedRequest,
     text: &str,
     emit_part_done: bool,
 ) {
@@ -275,7 +267,7 @@ pub(super) fn final_for(
     }
 }
 
-fn tool_call_for(protocol: &str, request: tiny_http::Request, name: &str, arguments: &str) {
+fn tool_call_for(protocol: &str, request: CapturedRequest, name: &str, arguments: &str) {
     match protocol {
         "completion" => completion_stream(
             request,

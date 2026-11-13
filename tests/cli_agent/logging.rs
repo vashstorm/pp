@@ -299,22 +299,22 @@ impl Api {
             Self::Responses => "response",
         }
     }
-    fn models(self, server: &Server) -> String {
+    fn models(self, server: &TestServer) -> String {
         match self {
             Self::Chat => fixture_models(server),
             Self::Responses => response_models(server, Some("response")),
         }
     }
-    fn receive(self, server: &Server) -> (Request, Value) {
+    fn receive(self, server: &TestServer) -> (CapturedRequest, Value) {
         receive_at(server, self.path())
     }
-    fn calls_reply(self, request: Request, calls: Value) {
+    fn calls_reply(self, request: CapturedRequest, calls: Value) {
         match self {
             Self::Chat => calls_reply(request, calls),
             Self::Responses => response_reply(request, calls),
         }
     }
-    fn final_reply(self, request: Request, text: &str) {
+    fn final_reply(self, request: CapturedRequest, text: &str) {
         match self {
             Self::Chat => final_reply(request, text),
             Self::Responses => response_final(request, text),
@@ -497,14 +497,16 @@ fn logging_operational_events_do_not_store_content_or_secrets() {
         let (request, _) = api.receive(&failure_server);
         request
             .respond(
-                Response::from_string(
-                    json!({
-                        "error": {"message": format!("upstream exposed fixture-key {error_marker}")}
-                    })
-                    .to_string(),
-                )
-                .with_status_code(500)
-                .with_header(Header::from_bytes("x-request-id", "request-evidence-500").unwrap()),
+                Response::builder()
+                    .status(500)
+                    .header("x-request-id", "request-evidence-500")
+                    .body(Body::from(
+                        json!({
+                            "error": {"message": format!("upstream exposed fixture-key {error_marker}")}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
             )
             .unwrap();
         let output = failure.finish();
@@ -562,7 +564,7 @@ fn logging_ai_failures_preserve_parse_and_stream_evidence() {
                 &api.models(&server),
             );
             let (request, _) = api.receive(&server);
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             let partial = match api {
                 Api::Chat => chat_chunk(
                     json!({"role":"assistant","content":"partial-evidence"}),
@@ -572,19 +574,21 @@ fn logging_ai_failures_preserve_parse_and_stream_evidence() {
                     json!({"type":"response.output_text.delta","sequence_number":1,"item_id":"msg","output_index":0,"content_index":0,"delta":"partial-evidence"})
                 }
             };
-            stream.event(partial);
+            stream.event(&partial).unwrap();
             match kind {
-                "syntax" => {
-                    stream.frame(r#"{"evidence":"bad-json-evidence fixture-key","broken":]}"#)
-                }
-                "structure" => stream.event(match api {
-                    Api::Chat => {
-                        chat_chunk(json!({"role":"unknown-role-evidence fixture-key"}), None)
-                    }
-                    Api::Responses => {
-                        json!({"type":"unknown-event-evidence","evidence":"fixture-key"})
-                    }
-                }),
+                "syntax" => stream
+                    .frame(r#"{"evidence":"bad-json-evidence fixture-key","broken":]}"#)
+                    .unwrap(),
+                "structure" => stream
+                    .event(&match api {
+                        Api::Chat => {
+                            chat_chunk(json!({"role":"unknown-role-evidence fixture-key"}), None)
+                        }
+                        Api::Responses => {
+                            json!({"type":"unknown-event-evidence","evidence":"fixture-key"})
+                        }
+                    })
+                    .unwrap(),
                 _ => {}
             }
             stream.finish();
@@ -868,7 +872,12 @@ fn debug_logging_keeps_first_prompt_when_provider_rejects_request() {
     );
     let (request, _) = receive(&server);
     request
-        .respond(Response::from_string("private provider error body").with_status_code(401))
+        .respond(
+            Response::builder()
+                .status(401)
+                .body(Body::from("private provider error body"))
+                .unwrap(),
+        )
         .unwrap();
     let output = cli.finish();
     assert!(!output.status.success());

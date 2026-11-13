@@ -220,7 +220,7 @@ fn provider_model_selection_routes_to_second_provider_second_model() {
             "openai": {
                 "protocol": "completion",
                 "api_key": "first-key",
-                "base_url": format!("http://{}/v1", unused.server_addr()),
+                "base_url": format!("http://{}/v1", unused.addr()),
                 "models": {
                     "primary": { "model": "first-primary"},
                     "secondary": { "model": "first-secondary"}}
@@ -228,7 +228,7 @@ fn provider_model_selection_routes_to_second_provider_second_model() {
             "gateway": {
                 "protocol": "completion",
                 "api_key": "second-key",
-                "base_url": format!("http://{}/v1", selected.server_addr()),
+                "base_url": format!("http://{}/v1", selected.addr()),
                 "models": {
                     "primary": { "model": "second-primary"},
                     "team/secondary": { "model": "second-secondary"}}

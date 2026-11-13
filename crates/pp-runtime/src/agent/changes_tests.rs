@@ -4,9 +4,11 @@ use crate::agent::tests::{
     response_stream, runtime_input_agent, seed_session, write_plan_file,
 };
 use crate::tools::{ToolPolicy, UndoToken};
+use axum::{body::Body, response::Response};
 use pp_core::plan::ExecutionContext;
 use pp_core::plan::PlanStatus;
 use pp_core::plan::WorkMode;
+use pp_test_support::TestServer;
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
 
@@ -18,7 +20,7 @@ enum Reply {
 }
 
 fn serve(
-    server: &Arc<tiny_http::Server>,
+    server: &Arc<TestServer>,
     protocol: &str,
     replies: Vec<Reply>,
 ) -> std::thread::JoinHandle<Vec<Value>> {
@@ -27,11 +29,11 @@ fn serve(
     std::thread::spawn(move || {
         let mut bodies = Vec::new();
         for (index, reply) in replies.into_iter().enumerate() {
-            let mut request = server
+            let request = server
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()
                 .expect("expected a loopback model request");
-            bodies.push(serde_json::from_reader(request.as_reader()).unwrap());
+            bodies.push(request.json().unwrap());
             match reply {
                 Reply::Write(path, content) => {
                     let arguments = json!({"path":path,"content":content}).to_string();
@@ -58,7 +60,9 @@ fn serve(
                     }
                 }
                 Reply::Final(text) => final_for(&protocol, request, text, true),
-                Reply::Fail => request.respond(tiny_http::Response::empty(500)).unwrap(),
+                Reply::Fail => request
+                    .respond(Response::builder().status(500).body(Body::empty()).unwrap())
+                    .unwrap(),
             }
         }
         bodies
@@ -112,9 +116,8 @@ fn commit_write(agent: &Agent, path: &str, content: &str) {
 fn changes_steering_and_continue_preserve_first_committed_baseline() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         let path = dir.path().join("demo.txt");
         let original = b"user-local\r\nkeep";
         std::fs::write(&path, original).unwrap();
@@ -184,9 +187,8 @@ fn changes_steering_and_continue_preserve_first_committed_baseline() {
 fn changes_rejected_entry_retains_but_next_accepted_run_replaces_task() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         let path = dir.path().join("demo.txt");
         std::fs::write(&path, b"before either task\n").unwrap();
         let worker = serve(
@@ -256,9 +258,9 @@ fn changes_failed_and_cancelled_runs_keep_successful_commits() {
     for protocol in ["completion", "response"] {
         for cancel_after_commit in [false, true] {
             let dir = tempfile::tempdir().unwrap();
-            let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+            let server = Arc::new(TestServer::start().unwrap());
             let mut agent =
-                runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+                runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
             let path = dir.path().join("demo.txt");
             std::fs::write(&path, b"user bytes\r\nlast").unwrap();
             commit_write(&agent, "previous.txt", "previous task\n");
@@ -303,15 +305,14 @@ fn changes_failed_and_cancelled_runs_keep_successful_commits() {
 fn changes_model_effort_compaction_retain_undo_and_reset_invalidates_it() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         // The second configured model uses the same isolated loopback provider.
         std::fs::write(
             dir.path().join("models.yml"),
             json!({"providers":{"fixture":{
                 "api_key":"fixture-key","protocol":protocol,
-                "base_url":format!("http://{}/v1", server.server_addr()),
+                "base_url":format!("http://{}/v1", server.addr()),
                 "models":{"one":{"model":"one"},"two":{"model":"two"}}
             }}})
             .to_string(),
@@ -363,9 +364,8 @@ fn changes_model_effort_compaction_retain_undo_and_reset_invalidates_it() {
 fn changes_plan_view_is_local_but_api_refuses_undo() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = TestServer::start().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         let path = dir.path().join("demo.txt");
         std::fs::write(&path, b"user content\n").unwrap();
         commit_write(&agent, "demo.txt", "agent content\n");
@@ -426,9 +426,9 @@ fn changes_plan_fresh_commits_clear_keep_and_failed_fresh_retain() {
             (ExecutionContext::Keep, false),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+            let server = Arc::new(TestServer::start().unwrap());
             let mut agent =
-                runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+                runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
             let path = dir.path().join("demo.txt");
             std::fs::write(&path, b"before planning\r\n").unwrap();
             commit_write(&agent, "demo.txt", "existing execution bytes\n");
@@ -536,8 +536,8 @@ fn changes_resume_success_clears_failed_resume_retains() {
         let saved_dir = root.join(format!("saved-{protocol}"));
         std::fs::create_dir(&current_dir).unwrap();
         std::fs::create_dir(&saved_dir).unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let addr = server.server_addr().to_string();
+        let server = TestServer::start().unwrap();
+        let addr = server.addr().to_string();
         let mut current = runtime_input_agent(&current_dir, protocol, &addr, "");
         let mut saved = runtime_input_agent(&saved_dir, protocol, &addr, "");
         current.journal = persistence::SessionJournal::new(global_sessions.clone());

@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = [".", "crates/pp-core", "crates/pp-config", "crates/pp-stats", "crates/pp-llm", "crates/pp-runtime", "crates/pp-ui"]
+members = [
+    ".",
+    "crates/pp-core",
+    "crates/pp-config",
+    "crates/pp-stats",
+    "crates/pp-llm",
+    "crates/pp-runtime",
+    "crates/pp-ui",
+    "crates/pp-test-support",
+]
 default-members = ["."]
 exclude = ["vendor/brush-core", "vendor/brush-builtins"]
 
@@ -12,7 +21,9 @@ rust-version = "1.88"
 [workspace.dependencies]
 brush-builtins = "=0.2.0"
 brush-core = "=0.5.0"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 libc = "0.2"
+pp-test-support = { path = "crates/pp-test-support" }
 anyhow = "1"
 arboard = { version = "3.7", default-features = false, features = ["image-data", "wayland-data-control"] }
 async-openai = { version = "0.42.2", default-features = false, features = ["chat-completion", "responses", "rustls", "byot", "middleware"] }
@@ -47,7 +58,6 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["xxh32"] 
 rustix = { version = "1", features = ["fs", "process"] }
 tempfile = "3"
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
-tiny_http = "0.12"
 base64 = "0.22"
 dom_smoothie = "0.18"
 html2text = "0.17"
@@ -85,12 +95,13 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
+pp-test-support = { workspace = true }
 rusqlite = { workspace = true }
 rustix = { workspace = true }
 image = { workspace = true }
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
-tiny_http = { workspace = true }
 tempfile = { workspace = true }
 percent-encoding = { workspace = true }
 portable-pty = { workspace = true }

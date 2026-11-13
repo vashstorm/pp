@@ -43,7 +43,7 @@ fn resume_boundary_journal(home: &Path, id: &str) -> std::path::PathBuf {
 // Drive one real session (completion protocol) in the given cwd under the
 // shared HOME and return its saved ID.
 fn resume_boundary_create_session_with(
-    server: &Server,
+    server: &TestServer,
     home: &Path,
     cwd: &Path,
     settings: &str,
@@ -76,7 +76,7 @@ fn resume_boundary_create_session_with(
 }
 
 fn resume_boundary_create_session(
-    server: &Server,
+    server: &TestServer,
     home: &Path,
     cwd: &Path,
     user_message: &str,
@@ -770,7 +770,7 @@ fn tui_slash_resume_interrupted_session_preserves_input_and_drops_uncommitted_te
         interrupted.ready();
         interrupted.input("interrupted resume input\r");
         let (request, _) = receive_at(&server, path);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         streaming_delta(&mut stream, protocol, "partial-resume-marker");
         interrupted.text("partial-resume-marker");
         drop(interrupted);

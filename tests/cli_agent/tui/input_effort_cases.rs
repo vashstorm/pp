@@ -259,7 +259,7 @@ fn tui_mouse_wheel_scrolls_history_and_resumes_following() {
     pty.ready();
     pty.input("wheel task\r");
     let (request, _) = receive_at(&server, "/v1/chat/completions");
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     let mut full = format!(
         "```text\n{}",
         (0..60)
@@ -320,7 +320,7 @@ fn tui_mouse_wheel_scrolls_history_and_resumes_following() {
     pty.input("\x7f\x7f\x7f\x7f\x7f\x7f\x7f");
     pty.input("follow task\r");
     let (request, _) = receive_at(&server, "/v1/chat/completions");
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     streaming_delta(&mut stream, "completion", "follow-visible");
     pty.text("follow-visible");
     streaming_complete(&mut stream, "completion", "follow-visible");

@@ -1,28 +1,29 @@
 //! Responses API 的 SSE 编码：单一生命周期、原生 item 事件与可取消的 token 限速。
+//!
+//! 这里只产出 SSE 帧字节，HTTP 状态行、chunked framing 与连接由 Axum／Hyper 负责。
 
 use std::{
     borrow::Cow,
-    io::Write,
-    thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
+use axum::body::Bytes;
 use pp_core::cancellation::CancellationToken;
 use serde_json::{Value, json};
-use tiny_http::Request;
+use tokio::{
+    sync::mpsc,
+    time::{Instant, sleep_until},
+};
 
 use super::protocol::{self, Instruction, Text, Tool};
 
-/// 限速等待期间检查取消的最大间隔。
-const WAKE_SLICE: Duration = Duration::from_millis(10);
-
-/// 将一个已预留的指令组编码为单个 Responses SSE 响应。
+/// 将一个已预留的指令组编码为 Responses SSE 帧，并写入容量 1 的 body 通道。
 ///
 /// 队列的 busy 标记与取消由调用方持有；这里只负责在分片之间与限速等待中
-/// 检查取消，并在写入失败时立即停止。
-pub(super) fn send(
-    request: Request,
+/// 检查取消与接收端关闭，并在写入失败时立即停止。
+pub(super) async fn send(
+    sender: mpsc::Sender<Bytes>,
     instructions: &[Instruction],
     identity: &str,
     lane: &str,
@@ -30,23 +31,37 @@ pub(super) fn send(
     run_cancel: &CancellationToken,
 ) -> Result<()> {
     let usage = protocol::group_usage(instructions)?;
-    let mut stream = Stream::open(request)?;
-    if cancelled(shutdown, run_cancel) {
-        return stream.abort();
+    let mut stream = Stream::new(sender);
+    if stopped(shutdown, run_cancel, &stream.sender) {
+        return Ok(());
     }
     let id = format!("resp-{identity}");
     let model = format!("pp-mock-{lane}");
     let created_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
-    stream.event(
-        "response.created",
-        json!({"response": response_body(&id, &model, created_at, "in_progress", &[])}),
-    )?;
-    stream.event(
-        "response.in_progress",
-        json!({"response": response_body(&id, &model, created_at, "in_progress", &[])}),
-    )?;
+    if !stream
+        .event(
+            "response.created",
+            json!({"response": response_body(&id, &model, created_at, "in_progress", &[])}),
+            shutdown,
+            run_cancel,
+        )
+        .await?
+    {
+        return Ok(());
+    }
+    if !stream
+        .event(
+            "response.in_progress",
+            json!({"response": response_body(&id, &model, created_at, "in_progress", &[])}),
+            shutdown,
+            run_cancel,
+        )
+        .await?
+    {
+        return Ok(());
+    }
     let mut turn = Turn {
         stream,
         identity,
@@ -57,46 +72,61 @@ pub(super) fn send(
     };
     for (step, instruction) in instructions.iter().enumerate() {
         if !turn.running() {
-            return turn.stream.abort();
+            return Ok(());
         }
         let step = u64::try_from(step).context("mock AI script is too long")?;
         let mut throttle = Throttle::new(instruction.tokens_per_second)?;
         let think = full_text(&instruction.think);
-        if !think.is_empty() && !turn.reasoning(step, &think, &instruction.think, &mut throttle)? {
-            return turn.stream.abort();
+        if !think.is_empty()
+            && !turn
+                .reasoning(step, &think, &instruction.think, &mut throttle)
+                .await?
+        {
+            return Ok(());
         }
         let content = full_text(&instruction.content);
         if !content.is_empty()
-            && !turn.message(
-                "msg",
-                step,
-                &content,
-                Body::Text(&instruction.content),
-                &mut throttle,
-            )?
+            && !turn
+                .message(
+                    "msg",
+                    step,
+                    &content,
+                    Body::Text(&instruction.content),
+                    &mut throttle,
+                )
+                .await?
         {
-            return turn.stream.abort();
+            return Ok(());
         }
         if let Some(echo) = echo_text(instruction.response.as_ref())? {
             let echo = echo.as_ref();
-            if !turn.message("echo", step, echo, Body::Plain(echo), &mut throttle)? {
-                return turn.stream.abort();
+            if !turn
+                .message("echo", step, echo, Body::Plain(echo), &mut throttle)
+                .await?
+            {
+                return Ok(());
             }
         }
         if let Some(tool) = instruction.tool.as_ref()
-            && !turn.function_call(step, tool, &mut throttle)?
+            && !turn.function_call(step, tool, &mut throttle).await?
         {
-            return turn.stream.abort();
+            return Ok(());
         }
     }
     if !turn.running() {
-        return turn.stream.abort();
+        return Ok(());
     }
     let mut response = response_body(&id, &model, created_at, "completed", &turn.output);
     response["usage"] = usage.unwrap_or(Value::Null);
     turn.stream
-        .event("response.completed", json!({"response": response}))?;
-    turn.stream.finish()
+        .event(
+            "response.completed",
+            json!({"response": response}),
+            shutdown,
+            run_cancel,
+        )
+        .await?;
+    Ok(())
 }
 
 fn response_body(id: &str, model: &str, created_at: u64, status: &str, output: &[Value]) -> Value {
@@ -140,7 +170,7 @@ struct Turn<'a> {
 
 impl Turn<'_> {
     fn running(&self) -> bool {
-        !cancelled(self.shutdown, self.run_cancel)
+        !stopped(self.shutdown, self.run_cancel, &self.stream.sender)
     }
 
     fn item_id(&self, kind: &str, step: u64) -> String {
@@ -155,7 +185,7 @@ impl Turn<'_> {
         Ok(index)
     }
 
-    fn reasoning(
+    async fn reasoning(
         &mut self,
         step: u64,
         text: &str,
@@ -164,37 +194,50 @@ impl Turn<'_> {
     ) -> Result<bool> {
         let item_id = self.item_id("reasoning", step);
         let index = self.take_index()?;
-        self.stream.event(
-            "response.output_item.added",
-            json!({
-                "output_index": index,
-                "item": {
-                    "type": "reasoning",
-                    "id": item_id,
-                    "summary": [],
-                    "status": "in_progress"
-                }
-            }),
-        )?;
-        self.stream.event(
-            "response.reasoning_summary_part.added",
-            json!({
-                "item_id": item_id,
-                "output_index": index,
-                "summary_index": 0,
-                "part": {"type": "summary_text", "text": ""}
-            }),
-        )?;
-        let mut emit = |stream: &mut Stream, delta: &str| {
-            stream.event(
-                "response.reasoning_summary_text.delta",
+        if !self
+            .stream
+            .event(
+                "response.output_item.added",
+                json!({
+                    "output_index": index,
+                    "item": {
+                        "type": "reasoning",
+                        "id": item_id,
+                        "summary": [],
+                        "status": "in_progress"
+                    }
+                }),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        if !self
+            .stream
+            .event(
+                "response.reasoning_summary_part.added",
                 json!({
                     "item_id": item_id,
                     "output_index": index,
                     "summary_index": 0,
-                    "delta": delta
+                    "part": {"type": "summary_text", "text": ""}
                 }),
+                self.shutdown,
+                self.run_cancel,
             )
+            .await?
+        {
+            return Ok(false);
+        }
+        let emit = |delta: &str| {
+            json!({
+                "item_id": item_id,
+                "output_index": index,
+                "summary_index": 0,
+                "delta": delta
+            })
         };
         if !emit_body(
             &mut self.stream,
@@ -202,47 +245,74 @@ impl Turn<'_> {
             Body::Text(body),
             self.shutdown,
             self.run_cancel,
-            &mut emit,
-        )? {
+            "response.reasoning_summary_text.delta",
+            emit,
+        )
+        .await?
+        {
             return Ok(false);
         }
         if !self.running() {
             return Ok(false);
         }
-        self.stream.event(
-            "response.reasoning_summary_text.done",
-            json!({
-                "item_id": item_id,
-                "output_index": index,
-                "summary_index": 0,
-                "text": text
-            }),
-        )?;
+        if !self
+            .stream
+            .event(
+                "response.reasoning_summary_text.done",
+                json!({
+                    "item_id": item_id,
+                    "output_index": index,
+                    "summary_index": 0,
+                    "text": text
+                }),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
         let part = json!({"type": "summary_text", "text": text});
-        self.stream.event(
-            "response.reasoning_summary_part.done",
-            json!({
-                "item_id": item_id,
-                "output_index": index,
-                "summary_index": 0,
-                "part": part
-            }),
-        )?;
+        if !self
+            .stream
+            .event(
+                "response.reasoning_summary_part.done",
+                json!({
+                    "item_id": item_id,
+                    "output_index": index,
+                    "summary_index": 0,
+                    "part": part
+                }),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
         let item = json!({
             "type": "reasoning",
             "id": item_id,
             "summary": [part],
             "status": "completed"
         });
-        self.stream.event(
-            "response.output_item.done",
-            json!({"output_index": index, "item": item}),
-        )?;
+        if !self
+            .stream
+            .event(
+                "response.output_item.done",
+                json!({"output_index": index, "item": item}),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
         self.output.push(item);
         Ok(self.running())
     }
 
-    fn message(
+    async fn message(
         &mut self,
         kind: &str,
         step: u64,
@@ -255,38 +325,51 @@ impl Turn<'_> {
         }
         let item_id = self.item_id(kind, step);
         let index = self.take_index()?;
-        self.stream.event(
-            "response.output_item.added",
-            json!({
-                "output_index": index,
-                "item": {
-                    "type": "message",
-                    "id": item_id,
-                    "role": "assistant",
-                    "status": "in_progress",
-                    "content": []
-                }
-            }),
-        )?;
-        self.stream.event(
-            "response.content_part.added",
-            json!({
-                "item_id": item_id,
-                "output_index": index,
-                "content_index": 0,
-                "part": output_text("")
-            }),
-        )?;
-        let mut emit = |stream: &mut Stream, delta: &str| {
-            stream.event(
-                "response.output_text.delta",
+        if !self
+            .stream
+            .event(
+                "response.output_item.added",
+                json!({
+                    "output_index": index,
+                    "item": {
+                        "type": "message",
+                        "id": item_id,
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": []
+                    }
+                }),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        if !self
+            .stream
+            .event(
+                "response.content_part.added",
                 json!({
                     "item_id": item_id,
                     "output_index": index,
                     "content_index": 0,
-                    "delta": delta
+                    "part": output_text("")
                 }),
+                self.shutdown,
+                self.run_cancel,
             )
+            .await?
+        {
+            return Ok(false);
+        }
+        let emit = |delta: &str| {
+            json!({
+                "item_id": item_id,
+                "output_index": index,
+                "content_index": 0,
+                "delta": delta
+            })
         };
         if !emit_body(
             &mut self.stream,
@@ -294,32 +377,51 @@ impl Turn<'_> {
             body,
             self.shutdown,
             self.run_cancel,
-            &mut emit,
-        )? {
+            "response.output_text.delta",
+            emit,
+        )
+        .await?
+        {
             return Ok(false);
         }
         if !self.running() {
             return Ok(false);
         }
-        self.stream.event(
-            "response.output_text.done",
-            json!({
-                "item_id": item_id,
-                "output_index": index,
-                "content_index": 0,
-                "text": text,
-                "logprobs": null
-            }),
-        )?;
-        self.stream.event(
-            "response.content_part.done",
-            json!({
-                "item_id": item_id,
-                "output_index": index,
-                "content_index": 0,
-                "part": output_text(text)
-            }),
-        )?;
+        if !self
+            .stream
+            .event(
+                "response.output_text.done",
+                json!({
+                    "item_id": item_id,
+                    "output_index": index,
+                    "content_index": 0,
+                    "text": text,
+                    "logprobs": null
+                }),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        if !self
+            .stream
+            .event(
+                "response.content_part.done",
+                json!({
+                    "item_id": item_id,
+                    "output_index": index,
+                    "content_index": 0,
+                    "part": output_text(text)
+                }),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
         let item = json!({
             "type": "message",
             "id": item_id,
@@ -327,43 +429,61 @@ impl Turn<'_> {
             "status": "completed",
             "content": [output_text(text)]
         });
-        self.stream.event(
-            "response.output_item.done",
-            json!({"output_index": index, "item": item}),
-        )?;
+        if !self
+            .stream
+            .event(
+                "response.output_item.done",
+                json!({"output_index": index, "item": item}),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
         self.output.push(item);
         Ok(self.running())
     }
 
-    fn function_call(&mut self, step: u64, tool: &Tool, throttle: &mut Throttle) -> Result<bool> {
+    async fn function_call(
+        &mut self,
+        step: u64,
+        tool: &Tool,
+        throttle: &mut Throttle,
+    ) -> Result<bool> {
         let arguments =
             serde_json::to_string(&tool.arguments).context("serializing mock tool arguments")?;
         let item_id = self.item_id("fc", step);
         let call_id = format!("call-{}-{step}", self.identity);
         let index = self.take_index()?;
-        self.stream.event(
-            "response.output_item.added",
-            json!({
-                "output_index": index,
-                "item": {
-                    "type": "function_call",
-                    "id": item_id,
-                    "call_id": call_id,
-                    "name": tool.name,
-                    "arguments": "",
-                    "status": "in_progress"
-                }
-            }),
-        )?;
-        let mut emit = |stream: &mut Stream, delta: &str| {
-            stream.event(
-                "response.function_call_arguments.delta",
+        if !self
+            .stream
+            .event(
+                "response.output_item.added",
                 json!({
-                    "item_id": item_id,
                     "output_index": index,
-                    "delta": delta
+                    "item": {
+                        "type": "function_call",
+                        "id": item_id,
+                        "call_id": call_id,
+                        "name": tool.name,
+                        "arguments": "",
+                        "status": "in_progress"
+                    }
                 }),
+                self.shutdown,
+                self.run_cancel,
             )
+            .await?
+        {
+            return Ok(false);
+        }
+        let emit = |delta: &str| {
+            json!({
+                "item_id": item_id,
+                "output_index": index,
+                "delta": delta
+            })
         };
         if !emit_body(
             &mut self.stream,
@@ -371,22 +491,33 @@ impl Turn<'_> {
             Body::Plain(&arguments),
             self.shutdown,
             self.run_cancel,
-            &mut emit,
-        )? {
+            "response.function_call_arguments.delta",
+            emit,
+        )
+        .await?
+        {
             return Ok(false);
         }
         if !self.running() {
             return Ok(false);
         }
-        self.stream.event(
-            "response.function_call_arguments.done",
-            json!({
-                "item_id": item_id,
-                "output_index": index,
-                "name": tool.name,
-                "arguments": arguments
-            }),
-        )?;
+        if !self
+            .stream
+            .event(
+                "response.function_call_arguments.done",
+                json!({
+                    "item_id": item_id,
+                    "output_index": index,
+                    "name": tool.name,
+                    "arguments": arguments
+                }),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
         let item = json!({
             "type": "function_call",
             "id": item_id,
@@ -395,10 +526,18 @@ impl Turn<'_> {
             "arguments": arguments,
             "status": "completed"
         });
-        self.stream.event(
-            "response.output_item.done",
-            json!({"output_index": index, "item": item}),
-        )?;
+        if !self
+            .stream
+            .event(
+                "response.output_item.done",
+                json!({"output_index": index, "item": item}),
+                self.shutdown,
+                self.run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
         self.output.push(item);
         Ok(self.running())
     }
@@ -414,14 +553,15 @@ enum Body<'a> {
     Plain(&'a str),
 }
 
-/// 按 mock token 逐个写出；返回 `false` 表示取消发生在写出之前。
-fn emit_body(
+/// 按 mock token 逐个写出；返回 `false` 表示取消或接收端关闭发生在写出之前。
+async fn emit_body(
     stream: &mut Stream,
     throttle: &mut Throttle,
     body: Body<'_>,
     shutdown: &CancellationToken,
     run_cancel: &CancellationToken,
-    emit: &mut dyn FnMut(&mut Stream, &str) -> Result<()>,
+    kind: &str,
+    emit: impl Fn(&str) -> Value,
 ) -> Result<bool> {
     match body {
         Body::Text(Text::Chunks(chunks)) => {
@@ -430,51 +570,85 @@ fn emit_body(
                 if chunk.is_empty() {
                     continue;
                 }
-                if !throttle.ready(shutdown, run_cancel)? {
+                if !throttle.ready(shutdown, run_cancel, &stream.sender).await? {
                     return Ok(false);
                 }
-                emit(stream, chunk)?;
+                if !stream
+                    .event(kind, emit(chunk), shutdown, run_cancel)
+                    .await?
+                {
+                    return Ok(false);
+                }
             }
             Ok(true)
         }
         Body::Text(Text::String(text)) => {
-            emit_plain(stream, throttle, text, shutdown, run_cancel, emit)
+            emit_plain(stream, throttle, text, shutdown, run_cancel, kind, &emit).await
         }
-        Body::Plain(text) => emit_plain(stream, throttle, text, shutdown, run_cancel, emit),
+        Body::Plain(text) => {
+            emit_plain(stream, throttle, text, shutdown, run_cancel, kind, &emit).await
+        }
     }
 }
 
 /// 不限速字符串整段一帧；限速时按 Unicode scalar 分片，不按 UTF-8 字节切割。
-fn emit_plain(
+async fn emit_plain(
     stream: &mut Stream,
     throttle: &mut Throttle,
     text: &str,
     shutdown: &CancellationToken,
     run_cancel: &CancellationToken,
-    emit: &mut dyn FnMut(&mut Stream, &str) -> Result<()>,
+    kind: &str,
+    emit: &impl Fn(&str) -> Value,
 ) -> Result<bool> {
     if text.is_empty() {
         return Ok(true);
     }
     if !throttle.limited() {
-        if !throttle.ready(shutdown, run_cancel)? {
+        if !throttle.ready(shutdown, run_cancel, &stream.sender).await? {
             return Ok(false);
         }
-        emit(stream, text)?;
-        return Ok(true);
+        return stream.event(kind, emit(text), shutdown, run_cancel).await;
     }
     let mut buffer = [0; 4];
     for character in text.chars() {
-        if !throttle.ready(shutdown, run_cancel)? {
+        if !throttle.ready(shutdown, run_cancel, &stream.sender).await? {
             return Ok(false);
         }
-        emit(stream, character.encode_utf8(&mut buffer))?;
+        if !stream
+            .event(
+                kind,
+                emit(character.encode_utf8(&mut buffer)),
+                shutdown,
+                run_cancel,
+            )
+            .await?
+        {
+            return Ok(false);
+        }
     }
     Ok(true)
 }
 
-fn cancelled(shutdown: &CancellationToken, run_cancel: &CancellationToken) -> bool {
-    shutdown.is_cancelled() || run_cancel.is_cancelled()
+fn stopped(
+    shutdown: &CancellationToken,
+    run_cancel: &CancellationToken,
+    sender: &mpsc::Sender<Bytes>,
+) -> bool {
+    shutdown.is_cancelled() || run_cancel.is_cancelled() || sender.is_closed()
+}
+
+/// 任一停止信号到达即返回：全局关闭、run 级取消或 body 接收端关闭。
+async fn halt(
+    shutdown: &CancellationToken,
+    run_cancel: &CancellationToken,
+    sender: &mpsc::Sender<Bytes>,
+) {
+    tokio::select! {
+        _ = shutdown.cancelled() => {}
+        _ = run_cancel.cancelled() => {}
+        _ = sender.closed() => {}
+    }
 }
 
 /// 每条指令独立的单调时钟限速；首个 token 立即发送。
@@ -491,7 +665,7 @@ impl Throttle {
                 next: None,
             });
         }
-        ensure!(
+        anyhow::ensure!(
             tokens_per_second.is_finite() && tokens_per_second > 0.0,
             "mock AI token rate is invalid"
         );
@@ -507,13 +681,14 @@ impl Throttle {
         self.interval.is_some()
     }
 
-    /// 等到下一个 mock token 的 deadline；`false` 表示等待期间被取消。
-    fn ready(
+    /// 等到下一个 mock token 的 deadline；`false` 表示等待期间被取消或接收端关闭。
+    async fn ready(
         &mut self,
         shutdown: &CancellationToken,
         run_cancel: &CancellationToken,
+        sender: &mpsc::Sender<Bytes>,
     ) -> Result<bool> {
-        if cancelled(shutdown, run_cancel) {
+        if stopped(shutdown, run_cancel, sender) {
             return Ok(false);
         }
         let Some(interval) = self.interval else {
@@ -527,15 +702,9 @@ impl Throttle {
             );
             return Ok(true);
         };
-        loop {
-            if cancelled(shutdown, run_cancel) {
-                return Ok(false);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            thread::sleep(deadline.duration_since(now).min(WAKE_SLICE));
+        tokio::select! {
+            _ = sleep_until(deadline) => {}
+            _ = halt(shutdown, run_cancel, sender) => return Ok(false),
         }
         self.next = Some(
             deadline
@@ -546,161 +715,111 @@ impl Throttle {
     }
 }
 
-/// chunked SSE 单帧写入与递增的 `sequence_number`。
+/// SSE 帧编码与递增的 `sequence_number`；只写帧，不写 HTTP framing。
 struct Stream {
-    writer: Box<dyn Write + Send>,
+    sender: mpsc::Sender<Bytes>,
     sequence: u64,
 }
 
 impl Stream {
-    fn open(request: Request) -> Result<Self> {
-        let mut stream = Self::with_writer(request.into_writer());
-        stream
-            .writer
-            .write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
-            )
-            .context("starting mock AI SSE response")?;
-        stream
-            .writer
-            .flush()
-            .context("flushing mock AI SSE headers")?;
-        Ok(stream)
-    }
-
-    fn with_writer(writer: Box<dyn Write + Send>) -> Self {
+    fn new(sender: mpsc::Sender<Bytes>) -> Self {
         Self {
-            writer,
+            sender,
             sequence: 0,
         }
     }
 
-    fn event(&mut self, kind: &str, mut data: Value) -> Result<()> {
+    /// 发送一帧；`false` 表示取消或接收端关闭。
+    async fn event(
+        &mut self,
+        kind: &str,
+        mut data: Value,
+        shutdown: &CancellationToken,
+        run_cancel: &CancellationToken,
+    ) -> Result<bool> {
         let object = data
             .as_object_mut()
             .context("mock AI SSE event payload must be an object")?;
         object.insert("type".to_owned(), Value::String(kind.to_owned()));
         object.insert("sequence_number".to_owned(), Value::from(self.sequence));
         self.sequence = self.sequence.saturating_add(1);
-        let frame = format!("event: {kind}\ndata: {data}\n\n");
-        write!(self.writer, "{:x}\r\n", frame.len()).context("writing mock AI SSE chunk header")?;
-        self.writer
-            .write_all(frame.as_bytes())
-            .context("writing mock AI SSE chunk")?;
-        self.writer
-            .write_all(b"\r\n")
-            .context("writing mock AI SSE chunk terminator")?;
-        self.writer.flush().context("flushing mock AI SSE chunk")?;
-        Ok(())
-    }
-
-    fn finish(mut self) -> Result<()> {
-        self.writer
-            .write_all(b"0\r\n\r\n")
-            .context("finishing mock AI SSE response")?;
-        self.writer
-            .flush()
-            .context("flushing mock AI SSE response")?;
-        Ok(())
-    }
-
-    /// 取消或断开时结束 chunked body，但不发送 `response.completed`。
-    fn abort(self) -> Result<()> {
-        self.finish()
+        let frame = Bytes::from(format!("event: {kind}\ndata: {data}\n\n"));
+        if stopped(shutdown, run_cancel, &self.sender) {
+            return Ok(false);
+        }
+        tokio::select! {
+            result = self.sender.send(frame) => Ok(result.is_ok()),
+            _ = halt(shutdown, run_cancel, &self.sender) => Ok(false),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        io,
-        sync::{Arc, Mutex},
-    };
 
-    #[derive(Clone, Default)]
-    struct Sink(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for Sink {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn stream() -> (Stream, Sink) {
-        let sink = Sink::default();
-        (Stream::with_writer(Box::new(sink.clone())), sink)
-    }
-
-    /// 只解析 chunked framing，返回每个完整 SSE 帧。
-    fn dechunk(bytes: &[u8]) -> Vec<String> {
-        let mut rest = bytes;
+    /// 收集帧里的 `type` 与 `sequence_number`，以及 `data` 负载。
+    async fn collect(receiver: &mut mpsc::Receiver<Bytes>) -> Vec<(String, Value)> {
         let mut frames = Vec::new();
-        loop {
-            let end = rest
-                .windows(2)
-                .position(|window| window == b"\r\n")
-                .expect("chunk header terminator");
-            let size =
-                usize::from_str_radix(std::str::from_utf8(&rest[..end]).unwrap(), 16).unwrap();
-            rest = &rest[end + 2..];
-            if size == 0 {
-                assert_eq!(rest, b"\r\n", "invalid final chunk terminator");
-                break;
-            }
-            frames.push(String::from_utf8(rest[..size].to_vec()).unwrap());
-            assert_eq!(&rest[size..size + 2], b"\r\n".as_slice());
-            rest = &rest[size + 2..];
+        while let Some(frame) = receiver.recv().await {
+            let frame = String::from_utf8(frame.to_vec()).unwrap();
+            let (kind, data) = frame
+                .strip_prefix("event: ")
+                .and_then(|frame| frame.split_once("\ndata: "))
+                .and_then(|(kind, data)| data.strip_suffix("\n\n").map(|data| (kind, data)))
+                .expect("SSE 帧必须是 event + data");
+            let data: Value = serde_json::from_str(data).unwrap();
+            assert_eq!(data["type"], kind);
+            frames.push((kind.to_owned(), data));
         }
         frames
     }
 
-    #[test]
-    fn mock_sse_frames_are_chunked_and_sequenced() {
-        let (mut stream, sink) = stream();
-        stream
-            .event("response.created", json!({"response": {"id": "resp"}}))
-            .unwrap();
-        stream
-            .event("response.in_progress", json!({"response": {"id": "resp"}}))
-            .unwrap();
-        stream.finish().unwrap();
-        let bytes = sink.0.lock().unwrap().clone();
-        let frames = dechunk(&bytes);
-        assert_eq!(frames.len(), 2);
-        let created = frames[0]
-            .strip_prefix("event: response.created\ndata: ")
-            .unwrap();
-        let created = created.strip_suffix("\n\n").unwrap();
-        let created: Value = serde_json::from_str(created).unwrap();
-        assert_eq!(created["type"], "response.created");
-        assert_eq!(created["sequence_number"], 0);
-        let progress = frames[1]
-            .strip_prefix("event: response.in_progress\ndata: ")
-            .unwrap();
-        let progress = progress.strip_suffix("\n\n").unwrap();
-        let progress: Value = serde_json::from_str(progress).unwrap();
-        assert_eq!(progress["sequence_number"], 1);
-    }
-
-    fn tokens(body: Body<'_>, rate: f64) -> Vec<String> {
-        let mut stream = Stream::with_writer(Box::new(io::sink()));
-        let mut throttle = Throttle::new(rate).unwrap();
+    #[tokio::test]
+    async fn mock_sse_frames_are_sequenced() {
+        let (sender, mut receiver) = mpsc::channel(2);
         let shutdown = CancellationToken::new();
         let run_cancel = CancellationToken::new();
-        let mut collected = Vec::new();
-        let mut emit = |_: &mut Stream, delta: &str| {
-            collected.push(delta.to_owned());
-            Ok(())
-        };
+        let mut stream = Stream::new(sender);
+        assert!(
+            stream
+                .event(
+                    "response.created",
+                    json!({"response": {"id": "resp"}}),
+                    &shutdown,
+                    &run_cancel,
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            stream
+                .event(
+                    "response.in_progress",
+                    json!({"response": {"id": "resp"}}),
+                    &shutdown,
+                    &run_cancel,
+                )
+                .await
+                .unwrap()
+        );
+        drop(stream);
+        let frames = collect(&mut receiver).await;
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].0, "response.created");
+        assert_eq!(frames[0].1["sequence_number"], 0);
+        assert_eq!(frames[1].0, "response.in_progress");
+        assert_eq!(frames[1].1["sequence_number"], 1);
+    }
+
+    /// 逐帧收集 `delta`：通道容量足以容纳这些帧，因此无需消费者任务。
+    async fn tokens(body: Body<'_>, rate: f64) -> Vec<String> {
+        let (sender, mut receiver) = mpsc::channel(16);
+        let shutdown = CancellationToken::new();
+        let run_cancel = CancellationToken::new();
+        let mut stream = Stream::new(sender);
+        let mut throttle = Throttle::new(rate).unwrap();
+        let emit = |delta: &str| json!({"delta": delta});
         assert!(
             emit_body(
                 &mut stream,
@@ -708,37 +827,83 @@ mod tests {
                 body,
                 &shutdown,
                 &run_cancel,
-                &mut emit
+                "delta",
+                emit,
             )
+            .await
             .unwrap()
         );
+        drop(stream);
+        let mut collected = Vec::new();
+        while let Some(frame) = receiver.recv().await {
+            let frame = String::from_utf8(frame.to_vec()).unwrap();
+            let data = frame
+                .strip_prefix("event: delta\ndata: ")
+                .and_then(|data| data.strip_suffix("\n\n"))
+                .expect("delta 帧");
+            let data: Value = serde_json::from_str(data).unwrap();
+            collected.push(data["delta"].as_str().unwrap().to_owned());
+        }
         collected
     }
 
-    #[test]
-    fn mock_sse_tokens_follow_rate_and_chunk_rules() {
+    #[tokio::test]
+    async fn mock_sse_tokens_follow_rate_and_chunk_rules() {
         // 不限速字符串整段一帧，显式空分片不产生 token。
-        assert_eq!(tokens(Body::Plain("héllo"), 0.0), ["héllo"]);
+        assert_eq!(tokens(Body::Plain("héllo"), 0.0).await, ["héllo"]);
         let chunks = Text::Chunks(vec!["a".into(), String::new(), "bé".into()]);
-        assert_eq!(tokens(Body::Text(&chunks), 0.0), ["a", "bé"]);
+        assert_eq!(tokens(Body::Text(&chunks), 0.0).await, ["a", "bé"]);
         // 限速时按 Unicode scalar 分片，不切断多字节字符。
-        assert_eq!(tokens(Body::Plain("aé"), 1_000.0), ["a", "é"]);
+        assert_eq!(tokens(Body::Plain("aé"), 1_000.0).await, ["a", "é"]);
         let text = Text::String("xy".into());
-        assert_eq!(tokens(Body::Text(&text), 1_000.0), ["x", "y"]);
+        assert_eq!(tokens(Body::Text(&text), 1_000.0).await, ["x", "y"]);
     }
 
-    #[test]
-    fn mock_sse_throttle_stops_when_cancelled() {
-        let mut throttle = Throttle::new(0.1).unwrap();
+    #[tokio::test]
+    async fn mock_sse_throttle_stops_when_cancelled() {
+        let (sender, receiver) = mpsc::channel(1);
         let shutdown = CancellationToken::new();
         let run_cancel = CancellationToken::new();
-        assert!(throttle.ready(&shutdown, &run_cancel).unwrap());
+        let mut throttle = Throttle::new(0.1).unwrap();
+        assert!(
+            throttle
+                .ready(&shutdown, &run_cancel, &sender)
+                .await
+                .unwrap()
+        );
         run_cancel.cancel();
-        assert!(!throttle.ready(&shutdown, &run_cancel).unwrap());
+        assert!(
+            !throttle
+                .ready(&shutdown, &run_cancel, &sender)
+                .await
+                .unwrap()
+        );
         assert!(
             !Throttle::new(0.0)
                 .unwrap()
-                .ready(&shutdown, &run_cancel)
+                .ready(&shutdown, &run_cancel, &sender)
+                .await
+                .unwrap()
+        );
+        drop(receiver);
+    }
+
+    #[tokio::test]
+    async fn mock_sse_stops_when_the_body_is_dropped() {
+        let (sender, receiver) = mpsc::channel(1);
+        let shutdown = CancellationToken::new();
+        let run_cancel = CancellationToken::new();
+        let mut stream = Stream::new(sender);
+        drop(receiver);
+        assert!(
+            !stream
+                .event(
+                    "response.created",
+                    json!({"response": {"id": "resp"}}),
+                    &shutdown,
+                    &run_cancel,
+                )
+                .await
                 .unwrap()
         );
     }

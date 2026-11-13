@@ -437,18 +437,21 @@ mod tests {
         journal_workflow, plan_workflow, response_stream, runtime_input_agent, seed_session,
         write_plan_file,
     };
+    use axum::{body::Body, response::Response};
     use pp_core::model::ThinkLevel;
     use pp_core::plan::PlanStatus;
     use pp_core::plan::WorkMode;
+    use pp_test_support::{CapturedRequest, TestServer};
     use serde_json::{Value, json};
+    use std::sync::Arc;
 
     const REPORT: &str = "## Findings\n\n- Minor: verification step is vague.\n";
 
     #[test]
     fn model_roles_review_uses_its_own_model_protocol_and_effort_without_changing_main() {
         for protocol in ["completion", "response"] {
-            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-            let address = server.server_addr().to_string();
+            let server = Arc::new(TestServer::start().unwrap());
+            let address = server.addr().to_string();
             let dir = tempfile::tempdir().unwrap();
             let (mut agent, token) = ready_reviewer(
                 dir.path(),
@@ -477,14 +480,13 @@ mod tests {
                 )
                 .unwrap();
             let main = serde_json::to_value(&agent.session).unwrap();
+            let worker = Arc::clone(&server);
             let handle = std::thread::spawn(move || {
-                let mut request = server
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(10))
                     .unwrap()
                     .unwrap();
-                let mut body = String::new();
-                request.as_reader().read_to_string(&mut body).unwrap();
-                let body: Value = serde_json::from_str(&body).unwrap();
+                let body: Value = request.json().unwrap();
                 assert_eq!(body["model"], "audit-model");
                 let effort = if protocol == "completion" {
                     &body["reasoning_effort"]
@@ -512,8 +514,8 @@ mod tests {
     #[test]
     fn fallback_plan_review_switches_scratch_protocol_without_changing_main() {
         for protocol in ["completion", "response"] {
-            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-            let address = server.server_addr().to_string();
+            let server = Arc::new(TestServer::start().unwrap());
+            let address = server.addr().to_string();
             let dir = tempfile::tempdir().unwrap();
             let (mut agent, token) = ready_reviewer(dir.path(), protocol, &address);
             let backup_protocol = if protocol == "completion" {
@@ -542,25 +544,28 @@ mod tests {
                 )
                 .unwrap();
             let before = serde_json::to_value(&agent.session).unwrap();
+            let worker = Arc::clone(&server);
             let handle = std::thread::spawn(move || {
-                let request = server
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
-                request.respond(tiny_http::Response::empty(503)).unwrap();
-                let mut request = server
+                request
+                    .respond(Response::builder().status(503).body(Body::empty()).unwrap())
+                    .unwrap();
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
                 assert_eq!(
-                    request.url(),
+                    request.target(),
                     if backup_protocol == "completion" {
                         "/v1/chat/completions"
                     } else {
                         "/v1/responses"
                     }
                 );
-                let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                let body: Value = request.json().unwrap();
                 assert_eq!(body["model"], "review-backup");
                 final_for(backup_protocol, request, REPORT, false);
             });
@@ -586,9 +591,9 @@ mod tests {
     fn ready_reviewer(
         dir: &std::path::Path,
         protocol: &str,
-        server_addr: &str,
+        address: &str,
     ) -> (Agent, ReviewToken) {
-        let mut agent = runtime_input_agent(dir, protocol, server_addr, "");
+        let mut agent = runtime_input_agent(dir, protocol, address, "");
         agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Ready);
         write_plan_file(&agent, PLAN_CONTENT);
         seed_session(&mut agent, EXPLORATION);
@@ -609,7 +614,7 @@ mod tests {
     // The SSE/stream builders are shared with `crate::agent::tests`. The
     // reviewer fixture intentionally omits `response.content_part.done`.
 
-    fn refusal_for(protocol: &str, request: tiny_http::Request) {
+    fn refusal_for(protocol: &str, request: CapturedRequest) {
         match protocol {
             "completion" => completion_stream(
                 request,
@@ -629,7 +634,7 @@ mod tests {
         }
     }
 
-    fn calls_for(protocol: &str, request: tiny_http::Request, calls: &[(&str, &str, Value)]) {
+    fn calls_for(protocol: &str, request: CapturedRequest, calls: &[(&str, &str, Value)]) {
         if protocol == "completion" {
             let calls: Vec<_> = calls
                 .iter()
@@ -657,10 +662,8 @@ mod tests {
         }
     }
 
-    fn request_body(request: &mut tiny_http::Request) -> Value {
-        let mut body = String::new();
-        std::io::Read::read_to_string(request.as_reader(), &mut body).unwrap();
-        serde_json::from_str(&body).unwrap()
+    fn request_body(request: &CapturedRequest) -> Value {
+        request.json().unwrap()
     }
 
     fn history_entries(body: &Value, protocol: &str) -> Vec<Value> {
@@ -817,9 +820,9 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("canary"), "original\n").unwrap();
             std::fs::write(dir.path().join("source.txt"), "needle here\n").unwrap();
-            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let server = Arc::new(TestServer::start().unwrap());
             let (mut agent, token) =
-                ready_reviewer(dir.path(), protocol, &server.server_addr().to_string());
+                ready_reviewer(dir.path(), protocol, &server.addr().to_string());
             let plan_id = agent.workflow.plan.as_ref().unwrap().id.clone();
             let session_before = serde_json::to_value(&agent.session).unwrap();
             let journal = dir
@@ -829,12 +832,13 @@ mod tests {
             let lines_before = std::fs::read_to_string(&journal).unwrap().lines().count();
 
             let serving = protocol.to_owned();
-            let worker = std::thread::spawn(move || {
-                let mut request = server
+            let worker = Arc::clone(&server);
+            let handle = std::thread::spawn(move || {
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
-                let body = request_body(&mut request);
+                let body = request_body(&request);
                 // The only user message carries the origin prompt and the
                 // exact plan revision, never the planning chat.
                 let entries = history_entries(&body, &serving);
@@ -899,11 +903,11 @@ mod tests {
                         ("mystery", "mcp_unknown", json!({})),
                     ],
                 );
-                let mut request = server
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
-                let body = request_body(&mut request);
+                let body = request_body(&request);
                 // The tool batch was appended natively with paired results.
                 let entries = history_entries(&body, &serving);
                 let outputs = entries
@@ -912,7 +916,7 @@ mod tests {
                     .count();
                 assert_eq!(outputs, 8);
                 final_for(&serving, request, REPORT, false);
-                (server, plan_id)
+                plan_id
             });
 
             let mut results = Vec::new();
@@ -928,7 +932,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let (server, plan_id) = worker.join().unwrap();
+            let plan_id = handle.join().unwrap();
 
             assert!(server.try_recv().unwrap().is_none());
             assert_eq!(results.len(), 8);
@@ -986,19 +990,19 @@ mod tests {
         for protocol in ["completion", "response"] {
             // Provider refusal replaces nothing.
             let dir = tempfile::tempdir().unwrap();
-            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let server = Arc::new(TestServer::start().unwrap());
             let (mut agent, token) =
-                ready_reviewer(dir.path(), protocol, &server.server_addr().to_string());
+                ready_reviewer(dir.path(), protocol, &server.addr().to_string());
             let previous = previous_report(&agent);
             agent.workflow.review = Some(previous.clone());
             let session_before = serde_json::to_value(&agent.session).unwrap();
-            let worker = std::thread::spawn(move || {
-                let request = server
+            let worker = Arc::clone(&server);
+            let handle = std::thread::spawn(move || {
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
                 refusal_for(protocol, request);
-                server
             });
             let error = err_message(agent.review_plan(
                 token,
@@ -1006,7 +1010,7 @@ mod tests {
                 &CancellationToken::new(),
                 &mut |_| {},
             ));
-            worker.join().unwrap();
+            handle.join().unwrap();
             assert_eq!(error, "Plan review was refused by the model.");
             assert_eq!(agent.workflow.review, Some(previous));
             assert_eq!(

@@ -5,7 +5,7 @@
 // 前缀命名，不新增 use 声明，避免与兄弟 include 文件冲突。
 
 fn bang_shell_start(
-    server: &Server,
+    server: &TestServer,
     home: &Path,
     project: &Path,
     protocol: &str,
@@ -398,14 +398,14 @@ fn bang_shell_tui_busy_and_plan_reject() {
         pty.input("QS\r");
         runtime_input_counts(&mut pty, 1, 0, false);
         if protocol == "completion" {
-            stream.event(json!({
+            stream.event(&json!({
                 "error": {"message": "queue-shell-boom", "type": "server_error"}
-            }));
+            })).unwrap();
         } else {
-            stream.event(json!({
+            stream.event(&json!({
                 "type": "error", "sequence_number": 9, "code": "server_error",
                 "message": "queue-shell-boom", "param": null
-            }));
+            })).unwrap();
         }
         stream.finish();
         runtime_input_failed_terminal(&mut pty, 1, 0);

@@ -29,22 +29,22 @@ impl Api {
             Self::Responses => "/v1/responses",
         }
     }
-    fn models(self, server: &Server) -> String {
+    fn models(self, server: &TestServer) -> String {
         match self {
             Self::Chat => fixture_models(server),
             Self::Responses => response_models(server, Some("response")),
         }
     }
-    fn receive(self, server: &Server) -> (Request, Value) {
+    fn receive(self, server: &TestServer) -> (CapturedRequest, Value) {
         receive_at(server, self.path())
     }
-    fn final_reply(self, request: Request, text: &str) {
+    fn final_reply(self, request: CapturedRequest, text: &str) {
         match self {
             Self::Chat => final_reply(request, text),
             Self::Responses => response_final(request, text),
         }
     }
-    fn calls_reply(self, request: Request, calls: Value) {
+    fn calls_reply(self, request: CapturedRequest, calls: Value) {
         match self {
             Self::Chat => calls_reply(request, calls),
             Self::Responses => response_reply(request, calls),
@@ -249,7 +249,7 @@ fn start(home: &Path, cwd: &Path, args: &[&str]) -> Live {
     Live::new(Cli(Some(command(home, cwd, args).spawn().unwrap())))
 }
 
-fn start_configured(api: Api, server: &Server, home: &Path, cwd: &Path, args: &[&str]) -> Live {
+fn start_configured(api: Api, server: &TestServer, home: &Path, cwd: &Path, args: &[&str]) -> Live {
     configure(home, fixture_settings(), &api.models(server));
     start(home, cwd, args)
 }
@@ -489,7 +489,7 @@ fn relink_entries(records: &mut [Value]) {
 
 fn make_saved_session(
     api: Api,
-    server: &Server,
+    server: &TestServer,
     home: &Path,
     cwd: &Path,
     prompt: &str,
@@ -514,7 +514,7 @@ fn make_saved_session(
 // none of the forbidden secrets echoed, zero model requests, and untouched
 // saved files.
 fn expect_restore_failure(
-    server: &Server,
+    server: &TestServer,
     home: &Path,
     cwd: &Path,
     args: &[&str],
@@ -559,7 +559,7 @@ fn with_mutated_records(path: &Path, mutate: impl FnOnce(&mut Vec<Value>)) {
 
 // A freshly saved Chat session with one mutation applied to its records.
 fn corrupted_base(
-    server: &Server,
+    server: &TestServer,
     cwd: &Path,
     mutate: impl FnOnce(&mut Vec<Value>),
 ) -> (tempfile::TempDir, String) {

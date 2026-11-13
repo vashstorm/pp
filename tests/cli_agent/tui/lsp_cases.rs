@@ -20,7 +20,7 @@ fn lsp_tui_settings(home: &Path, enabled: bool) {
 fn lsp_tui_fixture(
     home: &Path,
     cwd: &Path,
-    provider: &Server,
+    provider: &TestServer,
     pull: &str,
     severity: u8,
 ) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -84,7 +84,7 @@ fn lsp_tui_release(fifo: &Path) {
     writer.flush().unwrap();
 }
 
-fn lsp_tui_write_task(pty: &mut Pty, provider: &Server, path: &str, content: &str) {
+fn lsp_tui_write_task(pty: &mut Pty, provider: &TestServer, path: &str, content: &str) {
     pty.input("write the file\r");
     let (request, _) = pty.request(provider);
     calls_reply(

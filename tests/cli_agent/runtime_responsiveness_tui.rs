@@ -1,11 +1,11 @@
-fn runtime_reasoning_delta(stream: &mut SseReply, protocol: &str, text: &str) {
+fn runtime_reasoning_delta(stream: &mut SseWriter, protocol: &str, text: &str) {
     if protocol == "completion" {
-        stream.event(chat_chunk(
+        stream.event(&chat_chunk(
             json!({"role":"assistant","reasoning_content":text}),
             None,
-        ));
+        )).unwrap();
     } else {
-        stream.event(json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":text}));
+        stream.event(&json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":text})).unwrap();
     }
 }
 
@@ -34,7 +34,7 @@ fn tui_runtime_responsiveness_continuous_thinking_unicode_paste_and_cursor() {
                 "/v1/responses"
             };
             let (request, _) = receive_at(&server, path);
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             let prefix = if code {
                 format!(
                     "```rust\n{}",

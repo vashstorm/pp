@@ -13,7 +13,7 @@ const DIFF_BLOCKS_ADDED: vt100::Color = vt100::Color::Rgb(137, 210, 129);
 const DIFF_BLOCKS_REMOVED: vt100::Color = vt100::Color::Rgb(252, 58, 75);
 
 fn diff_blocks_stream_delta(
-    stream: &mut SseReply,
+    stream: &mut SseWriter,
     protocol: &str,
     name: &str,
     call_id: &str,
@@ -28,14 +28,14 @@ fn diff_blocks_stream_delta(
             call["id"] = json!(call_id);
             call["type"] = json!("function");
         }
-        stream.event(chat_chunk(json!({"tool_calls":[call]}), None));
+        stream.event(&chat_chunk(json!({"tool_calls":[call]}), None)).unwrap();
     } else {
         if first {
-            stream.event(json!({"type":"response.output_item.added","sequence_number":0,"output_index":0,
-                "item":{"type":"function_call","id":item_id,"call_id":call_id,"name":name,"arguments":""}}));
+            stream.event(&json!({"type":"response.output_item.added","sequence_number":0,"output_index":0,
+                "item":{"type":"function_call","id":item_id,"call_id":call_id,"name":name,"arguments":""}})).unwrap();
         }
-        stream.event(json!({"type":"response.function_call_arguments.delta","sequence_number":1,
-            "output_index":0,"item_id":item_id,"delta":text}));
+        stream.event(&json!({"type":"response.function_call_arguments.delta","sequence_number":1,
+            "output_index":0,"item_id":item_id,"delta":text})).unwrap();
     }
 }
 
@@ -68,7 +68,7 @@ fn edit_preview_tui_streams_before_commit_both_protocols_and_edit_modes() {
             let arguments = args.to_string();
             let split = arguments.find("-READY").unwrap();
             let end = split + "-READY".len();
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             diff_blocks_stream_delta(
                 &mut stream,
                 protocol,
@@ -107,11 +107,11 @@ fn edit_preview_tui_streams_before_commit_both_protocols_and_edit_modes() {
                 false,
             );
             if protocol == "completion" {
-                stream.event(chat_chunk(json!({}), Some("tool_calls")));
-                stream.frame("[DONE]");
+                stream.event(&chat_chunk(json!({}), Some("tool_calls"))).unwrap();
+                stream.frame("[DONE]").unwrap();
             } else {
-                stream.event(json!({"type":"response.completed","sequence_number":2,
-                    "response":response_body(json!([response_call("stream-edit", "edit", args)]))}));
+                stream.event(&json!({"type":"response.completed","sequence_number":2,
+                    "response":response_body(json!([response_call("stream-edit", "edit", args)]))})).unwrap();
             }
             stream.finish();
             let (request, body) = pty.request_at(&provider, path);
@@ -154,7 +154,7 @@ fn edit_preview_tui_cancel_discards_partial_arguments_without_saving() {
         pty.ready();
         pty.input("cancel-edit-preview\r");
         let (request, _) = pty.request_at(&provider, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         diff_blocks_stream_delta(
             &mut stream,
             protocol,
@@ -217,7 +217,7 @@ fn write_preview_tui_streams_before_commit_both_protocols() {
                 && !text.contains("write-row-04")
                 && !text.contains("write-row-01")
         };
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         diff_blocks_stream_delta(
             &mut stream,
             protocol,
@@ -260,11 +260,11 @@ fn write_preview_tui_streams_before_commit_both_protocols() {
             false,
         );
         if protocol == "completion" {
-            stream.event(chat_chunk(json!({}), Some("tool_calls")));
-            stream.frame("[DONE]");
+            stream.event(&chat_chunk(json!({}), Some("tool_calls"))).unwrap();
+            stream.frame("[DONE]").unwrap();
         } else {
-            stream.event(json!({"type":"response.completed","sequence_number":2,
-                "response":response_body(json!([response_call("stream-write", "write", args)]))}));
+            stream.event(&json!({"type":"response.completed","sequence_number":2,
+                "response":response_body(json!([response_call("stream-write", "write", args)]))})).unwrap();
         }
         stream.finish();
         let (request, body) = pty.request_at(&provider, path);
@@ -339,7 +339,7 @@ fn diff_blocks_call(protocol: &str, id: &str, name: &str, args: Value) -> Value 
     }
 }
 
-fn diff_blocks_calls_reply(request: Request, protocol: &str, calls: Value) {
+fn diff_blocks_calls_reply(request: CapturedRequest, protocol: &str, calls: Value) {
     if protocol == "completion" {
         calls_reply(request, calls);
     } else {
@@ -347,7 +347,7 @@ fn diff_blocks_calls_reply(request: Request, protocol: &str, calls: Value) {
     }
 }
 
-fn diff_blocks_final(request: Request, protocol: &str, text: &str) {
+fn diff_blocks_final(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {

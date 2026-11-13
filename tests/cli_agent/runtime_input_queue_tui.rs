@@ -2,7 +2,7 @@
 // Unicode 草稿、取消/供应商错误后暂停并等待功能键 R、取消收尾忙碌期拒绝入队、
 // Esc 与已提交回复的竞争不自动续跑、取回原始模板 slash 且只执行编辑后的新值、
 // 非空草稿阻止取回且光标不变、Tab 不取回、Esc 只关菜单不取消任务、100×30 与
-// 40×10 下队列列表/草稿/原生光标不被覆盖。全部用真实 PTY、tiny_http 与屏幕/
+// 40×10 下队列列表/草稿/原生光标不被覆盖。全部用真实 PTY、回环 fixture 与屏幕/
 // HTTP/文件 marker 作栅栏，不用 sleep 猜测阶段。辅助函数一律使用
 // `runtime_input_` 前缀，不新增 use 声明，避免与兄弟 include 文件冲突。
 
@@ -88,7 +88,7 @@ fn runtime_input_cursor_kept(pty: &mut Pty, marker: &str, column: u16) {
 
 // 场景 5 需要 /命令 模板在 pp 启动前就位；配置写法与 runtime_input_start 相同。
 fn runtime_input_command_start(
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
     command_body: &str,
 ) -> (tempfile::TempDir, Pty) {
@@ -128,7 +128,7 @@ fn tui_runtime_input_followup_fifo_and_draft_both_protocols() {
             "{protocol}: first follow-up must be Q1 exactly once"
         );
         runtime_input_counts(&mut pty, 0, 1, false);
-        let mut q1 = SseReply::new(request);
+        let mut q1 = request.start_sse().unwrap();
         streaming_delta(&mut q1, protocol, "fifo-q1-live");
         pty.text("fifo-q1-live");
         no_more(&server);
@@ -252,14 +252,14 @@ fn tui_runtime_input_provider_error_pauses_queue_until_resume() {
         pty.draft("errdraft");
 
         if protocol == "completion" {
-            stream.event(json!({
+            stream.event(&json!({
                 "error":{"message":"runtime-input-provider-boom","type":"server_error"}
-            }));
+            })).unwrap();
         } else {
-            stream.event(json!({
+            stream.event(&json!({
                 "type":"error","sequence_number":9,"code":"server_error",
                 "message":"runtime-input-provider-boom","param":null
-            }));
+            })).unwrap();
         }
         stream.finish();
         runtime_input_failed_terminal(&mut pty, 1, 1);

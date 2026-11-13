@@ -121,7 +121,12 @@ fn resume_history_exit_scrollback(pty: &mut Pty, last_answer: &str) -> String {
 // First reply of the saved session: visible reasoning plus a bash+read tool
 // batch. The Responses variant carries opaque encrypted reasoning that must
 // survive resume verbatim in later native requests.
-fn resume_history_tool_batch(request: Request, protocol: &str, reasoning: &str, calls: Value) {
+fn resume_history_tool_batch(
+    request: CapturedRequest,
+    protocol: &str,
+    reasoning: &str,
+    calls: Value,
+) {
     if protocol == "completion" {
         reply(
             request,
@@ -148,22 +153,22 @@ fn resume_history_tool_batch(request: Request, protocol: &str, reasoning: &str, 
     .chain(calls.as_array().unwrap().iter().cloned())
     .collect::<Vec<_>>();
     let batch = Value::Array(batch);
-    let mut stream = SseReply::new(request);
-    stream.event(json!({
+    let mut stream = request.start_sse().unwrap();
+    stream.event(&json!({
         "type": "response.reasoning_summary_text.delta", "sequence_number": 0,
         "item_id": "rh-think", "output_index": 0, "summary_index": 0, "delta": reasoning
-    }));
+    })).unwrap();
     for (index, item) in batch.as_array().unwrap().iter().enumerate() {
-        stream.event(json!({
+        stream.event(&json!({
             "type": "response.output_item.done", "sequence_number": index + 1,
             "output_index": index, "item": item
-        }));
+        })).unwrap();
     }
-    stream.event(json!({
+    stream.event(&json!({
         "type": "response.completed",
         "sequence_number": batch.as_array().unwrap().len() + 1,
         "response": response_body(batch)
-    }));
+    })).unwrap();
     stream.finish();
 }
 

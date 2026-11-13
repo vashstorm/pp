@@ -11,13 +11,13 @@ enum Protocol {
 }
 
 impl Protocol {
-    fn start(self, server: &Server, cwd: &std::path::Path, prompt: Option<&str>) -> LiveCli {
+    fn start(self, server: &TestServer, cwd: &std::path::Path, prompt: Option<&str>) -> LiveCli {
         self.start_with_settings(server, cwd, prompt, fixture_settings())
     }
 
     fn start_with_settings(
         self,
-        server: &Server,
+        server: &TestServer,
         cwd: &std::path::Path,
         prompt: Option<&str>,
         settings: &str,
@@ -29,7 +29,7 @@ impl Protocol {
         LiveCli::new(Cli::start_with(cwd, prompt, settings, &models))
     }
 
-    fn receive(self, server: &Server) -> (Request, Value) {
+    fn receive(self, server: &TestServer) -> (CapturedRequest, Value) {
         let path = match self {
             Self::Chat => "/v1/chat/completions",
             Self::Responses => "/v1/responses",
@@ -56,16 +56,21 @@ impl Protocol {
         }
     }
 
-    fn text(self, stream: &mut SseReply, text: &str) {
+    fn text(self, stream: &mut SseWriter, text: &str) {
         match self {
-            Self::Chat => {
-                stream.event(chat_chunk(json!({"role":"assistant","content":text}), None))
-            }
-            Self::Responses => stream.event(json!({
-                "type":"response.output_text.delta", "sequence_number":1,
-                "item_id":"msg-stream", "output_index":0, "content_index":0,
-                "delta":text
-            })),
+            Self::Chat => stream
+                .event(&chat_chunk(
+                    json!({"role":"assistant","content":text}),
+                    None,
+                ))
+                .unwrap(),
+            Self::Responses => stream
+                .event(&json!({
+                    "type":"response.output_text.delta", "sequence_number":1,
+                    "item_id":"msg-stream", "output_index":0, "content_index":0,
+                    "delta":text
+                }))
+                .unwrap(),
         }
     }
 
@@ -76,33 +81,37 @@ impl Protocol {
         }
     }
 
-    fn calls_reply(self, request: Request, calls: Value) {
+    fn calls_reply(self, request: CapturedRequest, calls: Value) {
         match self {
             Self::Chat => calls_reply(request, calls),
             Self::Responses => response_reply(request, calls),
         }
     }
 
-    fn final_reply(self, request: Request, text: &str) {
+    fn final_reply(self, request: CapturedRequest, text: &str) {
         match self {
             Self::Chat => final_reply(request, text),
             Self::Responses => response_final(request, text),
         }
     }
 
-    fn complete(self, stream: &mut SseReply, output: Value, has_calls: bool) {
+    fn complete(self, stream: &mut SseWriter, output: Value, has_calls: bool) {
         match self {
             Self::Chat => {
-                stream.event(chat_chunk(
-                    json!({}),
-                    Some(if has_calls { "tool_calls" } else { "stop" }),
-                ));
-                stream.frame("[DONE]");
+                stream
+                    .event(&chat_chunk(
+                        json!({}),
+                        Some(if has_calls { "tool_calls" } else { "stop" }),
+                    ))
+                    .unwrap();
+                stream.frame("[DONE]").unwrap();
             }
-            Self::Responses => stream.event(json!({
-                "type":"response.completed", "sequence_number":100,
-                "response":response_body(output)
-            })),
+            Self::Responses => stream
+                .event(&json!({
+                    "type":"response.completed", "sequence_number":100,
+                    "response":response_body(output)
+                }))
+                .unwrap(),
         }
     }
 
@@ -420,7 +429,7 @@ fn assert_edit_schema(tool: &Value, replace: bool) {
     );
 }
 
-fn fragmented_calls(protocol: Protocol, stream: &mut SseReply, invalid: bool) -> Value {
+fn fragmented_calls(protocol: Protocol, stream: &mut SseWriter, invalid: bool) -> Value {
     let args = [
         json!({"path":"first-file","content":"first"}),
         json!({"path":"second-file","content":"second"}),
@@ -428,21 +437,23 @@ fn fragmented_calls(protocol: Protocol, stream: &mut SseReply, invalid: bool) ->
     let names = ["write", if invalid { "  " } else { "write" }];
     match protocol {
         Protocol::Chat => {
-            stream.event(chat_chunk(json!({"role":"assistant"}), None));
+            stream
+                .event(&chat_chunk(json!({"role":"assistant"}), None))
+                .unwrap();
             // Index 1 arrives first, and names/arguments are interleaved. The
             // resulting history and execution order must still be index order.
             for index in [1, 0] {
                 let arguments = args[index].to_string();
-                stream.event(chat_chunk(json!({"tool_calls":[{
+                stream.event(&chat_chunk(json!({"tool_calls":[{
                     "index":index,"id":format!("fragment-{index}"),"type":"function",
                     "function":{"name":&names[index][..2],"arguments":&arguments[..arguments.len()/2]}
-                }]}), None));
+                }]}), None)).unwrap();
             }
             for index in [0, 1] {
                 let arguments = args[index].to_string();
-                stream.event(chat_chunk(json!({"tool_calls":[{
+                stream.event(&chat_chunk(json!({"tool_calls":[{
                     "index":index,"function":{"name":&names[index][2..],"arguments":&arguments[arguments.len()/2..]}
-                }]}), None));
+                }]}), None)).unwrap();
             }
         }
         Protocol::Responses => {
@@ -458,10 +469,12 @@ fn fragmented_calls(protocol: Protocol, stream: &mut SseReply, invalid: bool) ->
                 if index == 0 {
                     item.as_object_mut().unwrap().remove("arguments");
                 }
-                stream.event(
-                    json!({"type":"response.output_item.added","sequence_number":index,
-                    "output_index":index,"item":item}),
-                );
+                stream
+                    .event(
+                        &json!({"type":"response.output_item.added","sequence_number":index,
+                "output_index":index,"item":item}),
+                    )
+                    .unwrap();
             }
             for index in [1, 0] {
                 let arguments = args[index].to_string();
@@ -469,14 +482,14 @@ fn fragmented_calls(protocol: Protocol, stream: &mut SseReply, invalid: bool) ->
                     &arguments[..arguments.len() / 2],
                     &arguments[arguments.len() / 2..],
                 ] {
-                    stream.event(json!({"type":"response.function_call_arguments.delta","sequence_number":10+index,
-                        "item_id":format!("fc-fragment-{index}"),"output_index":index,"delta":part}));
+                    stream.event(&json!({"type":"response.function_call_arguments.delta","sequence_number":10+index,
+                        "item_id":format!("fc-fragment-{index}"),"output_index":index,"delta":part})).unwrap();
                 }
-                stream.event(json!({"type":"response.function_call_arguments.done","sequence_number":20+index,
+                stream.event(&json!({"type":"response.function_call_arguments.done","sequence_number":20+index,
                     "item_id":format!("fc-fragment-{index}"),"output_index":index,
-                    "arguments":arguments,"name":names[index]}));
-                stream.event(json!({"type":"response.output_item.done","sequence_number":30+index,
-                    "output_index":index,"item":protocol.call(&format!("fragment-{index}"),names[index],args[index].clone())}));
+                    "arguments":arguments,"name":names[index]})).unwrap();
+                stream.event(&json!({"type":"response.output_item.done","sequence_number":30+index,
+                    "output_index":index,"item":protocol.call(&format!("fragment-{index}"),names[index],args[index].clone())})).unwrap();
             }
         }
     }
@@ -488,13 +501,15 @@ fn fragmented_calls(protocol: Protocol, stream: &mut SseReply, invalid: bool) ->
 
 // A text delta after all argument fragments is the observable processing fence:
 // no sleep can prove that the model parser has actually consumed a fragment.
-fn calls_fence(protocol: Protocol, stream: &mut SseReply) {
+fn calls_fence(protocol: Protocol, stream: &mut SseWriter) {
     match protocol {
         Protocol::Chat => protocol.text(stream, "batch-gate"),
-        Protocol::Responses => stream.event(json!({
-            "type":"response.output_text.delta","sequence_number":50,
-            "item_id":"msg-stream","output_index":2,"content_index":0,"delta":"batch-gate"
-        })),
+        Protocol::Responses => stream
+            .event(&json!({
+                "type":"response.output_text.delta","sequence_number":50,
+                "item_id":"msg-stream","output_index":2,"content_index":0,"delta":"batch-gate"
+            }))
+            .unwrap(),
     }
 }
 
@@ -507,21 +522,27 @@ enum Broken {
     Incomplete(&'static str),
 }
 
-fn break_stream(protocol: Protocol, stream: &mut SseReply, broken: Broken) {
+fn break_stream(protocol: Protocol, stream: &mut SseWriter, broken: Broken) {
     match (protocol, broken) {
         (_, Broken::Eof) => {}
-        (_, Broken::Malformed) => stream.frame("{private-provider-body fixture-key invalid-json"),
-        (Protocol::Chat, Broken::Error(code)) => stream.event(json!({"error":{
-            "message":"private-provider-body fixture-key","type":"server_error","code":code
-        }})),
+        (_, Broken::Malformed) => stream
+            .frame("{private-provider-body fixture-key invalid-json")
+            .unwrap(),
+        (Protocol::Chat, Broken::Error(code)) => stream
+            .event(&json!({"error":{
+                "message":"private-provider-body fixture-key","type":"server_error","code":code
+            }}))
+            .unwrap(),
         (Protocol::Chat, Broken::Failed(reason) | Broken::Incomplete(reason)) => {
-            stream.event(chat_chunk(json!({}), Some(reason)));
+            stream.event(&chat_chunk(json!({}), Some(reason))).unwrap();
         }
-        (Protocol::Responses, Broken::Error(code)) => stream.event(json!({
-            "type":"error","sequence_number":90,"code":code,
-            "message":"private-provider-body fixture-key https://private-provider.invalid",
-            "param":"private-provider-param"
-        })),
+        (Protocol::Responses, Broken::Error(code)) => stream
+            .event(&json!({
+                "type":"error","sequence_number":90,"code":code,
+                "message":"private-provider-body fixture-key https://private-provider.invalid",
+                "param":"private-provider-param"
+            }))
+            .unwrap(),
         (Protocol::Responses, Broken::Failed(code)) => {
             let mut response = response_body(json!([]));
             response["status"] = json!("failed");
@@ -530,32 +551,36 @@ fn break_stream(protocol: Protocol, stream: &mut SseReply, broken: Broken) {
                 "message":"private-provider-body fixture-key https://private-provider.invalid",
                 "param":"private-provider-param"
             });
-            stream.event(json!({
-                "type":"response.failed","sequence_number":90,"response":response
-            }));
+            stream
+                .event(&json!({
+                    "type":"response.failed","sequence_number":90,"response":response
+                }))
+                .unwrap();
         }
         (Protocol::Responses, Broken::Incomplete(reason)) => {
             let mut response = response_body(json!([]));
             response["status"] = json!("incomplete");
             response["incomplete_details"] = json!({"reason":reason});
-            stream.event(json!({
-                "type":"response.incomplete","sequence_number":90,"response":response
-            }));
+            stream
+                .event(&json!({
+                    "type":"response.incomplete","sequence_number":90,"response":response
+                }))
+                .unwrap();
         }
     }
 }
 
-fn pending_write(protocol: Protocol, stream: &mut SseReply) {
+fn pending_write(protocol: Protocol, stream: &mut SseWriter) {
     match protocol {
-        Protocol::Chat => stream.event(chat_chunk(json!({"role":"assistant","tool_calls":[{
+        Protocol::Chat => stream.event(&chat_chunk(json!({"role":"assistant","tool_calls":[{
             "index":0,"id":"pending","type":"function","function":{
                 "name":"write","arguments":json!({"path":"must-not-exist","content":"not committed"}).to_string()
             }
-        }]}), None)),
+        }]}), None)).unwrap(),
         Protocol::Responses => {
             let mut item = response_call("pending", "write", json!({"path":"must-not-exist","content":"not committed"}));
             item["status"] = json!("in_progress");
-            stream.event(json!({"type":"response.output_item.added","sequence_number":10,"output_index":1,"item":item}));
+            stream.event(&json!({"type":"response.output_item.added","sequence_number":10,"output_index":1,"item":item})).unwrap();
         }
     }
 }

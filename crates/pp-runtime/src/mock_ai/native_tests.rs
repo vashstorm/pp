@@ -6,10 +6,12 @@
 use super::{MockEndpoint, MockServer};
 use anyhow::Result;
 use async_openai::types::responses::{CreateResponse, FunctionToolCall, OutputItem};
+use axum::{body::Body, response::Response};
 use pp_core::cancellation::CancellationToken;
 use pp_core::context::TokenUsage;
 use pp_core::events::AgentEvent;
 use pp_llm::{MockScripts, OpenAiClient, ResponseTurn};
+use pp_test_support::TestServer;
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, atomic::AtomicBool},
@@ -314,11 +316,11 @@ fn native_client_observes_reasoning_body_arguments_and_exact_usage() {
 
 #[test]
 fn native_client_missing_model_script_fails_without_http() {
-    let sentinel = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let sentinel = TestServer::start().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let mut client = make_client(
         &dir,
-        &format!("http://{}/mock/missing/root/v1", sentinel.server_addr()),
+        &format!("http://{}/mock/missing/root/v1", sentinel.addr()),
         "mock-root/primary",
         "pp-mock-root",
     );
@@ -331,7 +333,7 @@ fn native_client_missing_model_script_fails_without_http() {
 
     let responder = thread::spawn(move || {
         if let Some(request) = sentinel.recv_timeout(Duration::from_secs(1)).unwrap() {
-            let _ = request.respond(tiny_http::Response::empty(400));
+            let _ = request.respond(Response::builder().status(400).body(Body::empty()).unwrap());
             true
         } else {
             false

@@ -2,7 +2,7 @@
 
 const PLAN_TUI_BODY: &str = "# Create canary\n\nCreate canary.txt with the exact bytes `approved bytes`.\n\n- [ ] Create canary.txt and read it back as approved bytes.\n- [ ] Verify the failure boundary without marking an unverified task complete.\n";
 
-fn plan_start(server: &Server, home: &Path, project: &Path, protocol: &str) -> Pty {
+fn plan_start(server: &TestServer, home: &Path, project: &Path, protocol: &str) -> Pty {
     std::fs::write(
         config_path(home, "settings.yml"),
         r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0}"#,
@@ -29,7 +29,7 @@ fn plan_start(server: &Server, home: &Path, project: &Path, protocol: &str) -> P
     }
 }
 
-fn plan_start_with_role_models(server: &Server, home: &Path, project: &Path, protocol: &str) -> Pty {
+fn plan_start_with_role_models(server: &TestServer, home: &Path, project: &Path, protocol: &str) -> Pty {
     std::fs::write(
         config_path(home, "settings.yml"),
         r#"{"notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0,"model_roles":{"default":{"model":"fixture/primary","effort":"low"},"plan":{"model":"fixture/planner","effort":"high"}}}"#,
@@ -58,7 +58,7 @@ fn plan_call(protocol: &str, id: &str, name: &str, arguments: Value) -> Value {
     }
 }
 
-fn plan_calls(request: Request, protocol: &str, calls: Value) {
+fn plan_calls(request: CapturedRequest, protocol: &str, calls: Value) {
     if protocol == "completion" {
         calls_reply(request, calls);
     } else {
@@ -66,7 +66,7 @@ fn plan_calls(request: Request, protocol: &str, calls: Value) {
     }
 }
 
-fn plan_final(request: Request, protocol: &str, text: &str) {
+fn plan_final(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {
@@ -95,7 +95,7 @@ fn plan_wait_execute(pty: &mut Pty) {
     });
 }
 
-fn plan_enter(pty: &mut Pty, server: &Server) {
+fn plan_enter(pty: &mut Pty, server: &TestServer) {
     pty.ready();
     plan_wait_execute(pty);
     pty.input("/plan\r");
@@ -131,13 +131,13 @@ fn plan_path(project: &Path) -> std::path::PathBuf {
     files.into_iter().next().unwrap()
 }
 
-fn plan_drive_ready(pty: &mut Pty, server: &Server, protocol: &str, task: &str, content: &str) {
+fn plan_drive_ready(pty: &mut Pty, server: &TestServer, protocol: &str, task: &str, content: &str) {
     plan_drive_ready_with_mcp(pty, server, protocol, task, content, &[]);
 }
 
 fn plan_drive_ready_with_mcp(
     pty: &mut Pty,
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
     task: &str,
     content: &str,

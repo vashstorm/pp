@@ -7,14 +7,14 @@ fn todo_call(protocol: &str, id: &str, arguments: Value) -> Value {
     }
 }
 
-fn todo_calls(request: Request, protocol: &str, calls: Value) {
+fn todo_calls(request: CapturedRequest, protocol: &str, calls: Value) {
     match protocol {
         "completion" => calls_reply(request, calls),
         _ => response_reply(request, calls),
     }
 }
 
-fn todo_receive(server: &Server, protocol: &str) -> (Request, Value) {
+fn todo_receive(server: &TestServer, protocol: &str) -> (CapturedRequest, Value) {
     receive_at(
         server,
         if protocol == "completion" {
@@ -190,7 +190,7 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
     }
 }
 
-fn todo_final(request: Request, protocol: &str, text: &str) {
+fn todo_final(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {

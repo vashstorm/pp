@@ -67,18 +67,18 @@ fn hub_is_child(body: &Value) -> bool {
 /// 派发一批子 Agent，按 task 文本归位各自的第一个模型请求。
 fn hub_dispatch(
     pty: &mut Pty,
-    fixture: &Server,
+    fixture: &TestServer,
     protocol: &str,
     tasks: Value,
     needles: &[&str],
-) -> Vec<Request> {
+) -> Vec<CapturedRequest> {
     let (request, _) = pty.request_at(fixture, api_path(protocol));
     ask_reply_calls(
         request,
         protocol,
         json!([hub_call(protocol, "task", "task", tasks)]),
     );
-    let mut found: Vec<Option<Request>> = needles.iter().map(|_| None).collect();
+    let mut found: Vec<Option<CapturedRequest>> = needles.iter().map(|_| None).collect();
     // 父方在子 Agent pending 期间会自动继续，必须消费它紧随其后的请求。
     let mut parent_answered = false;
     while found.iter().any(Option::is_none) || !parent_answered {
@@ -100,7 +100,7 @@ fn hub_dispatch(
 }
 
 /// 结束子 Agent；只有整批完成后才消费父方继续请求。
-fn hub_finish_child(pty: &mut Pty, fixture: &Server, protocol: &str, child: Request, text: &str) {
+fn hub_finish_child(pty: &mut Pty, fixture: &TestServer, protocol: &str, child: CapturedRequest, text: &str) {
     ask_final_reply(child, protocol, text);
     let (request, body) = pty.request_at(fixture, api_path(protocol));
     assert!(!hub_is_child(&body), "unexpected child request");
@@ -263,7 +263,7 @@ fn agent_hub_streams_and_anchors_activity() {
             &["the two hub chunks", "probe.txt"],
         );
         // LiveWriter 保持 SSE 打开；ToolFailure 走 失败工具 + 后续成功回复。
-        let mut live = SseReply::new(children.remove(0));
+        let mut live = children.remove(0).start_sse().unwrap();
         ask_reply_calls(
             children.remove(0),
             protocol,
@@ -713,7 +713,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
         &["legacy child work"],
     );
     // 让 child 的完整历史超过 64 KiB，最早的 task 卡片只能靠完整读取看到。
-    let mut stream = SseReply::new(children.remove(0));
+    let mut stream = children.remove(0).start_sse().unwrap();
     for index in 0..40 {
         streaming_delta(&mut stream, protocol, &format!("{}-{index}\n", "x".repeat(2_000)));
     }

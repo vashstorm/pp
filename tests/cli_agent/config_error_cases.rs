@@ -7,7 +7,7 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
         "providers": {"fixture": {
             "protocol": "completion",
             "api_key": "secret-marker",
-            "base_url": format!("http://{}/v1", server.server_addr()),
+            "base_url": format!("http://{}/v1", server.addr()),
             "models": {"primary": { "model": "fixture-model"}}
         }}
     });

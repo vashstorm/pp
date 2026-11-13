@@ -1,10 +1,10 @@
 use super::*;
 
-fn models(server: &Server, primary: &str, backup: &str) -> String {
+fn models(server: &TestServer, primary: &str, backup: &str) -> String {
     json!({"providers": {
-        "first": {"api_key":"fixture-key", "base_url":format!("http://{}/v1", server.server_addr()),
+        "first": {"api_key":"fixture-key", "base_url":format!("http://{}/v1", server.addr()),
             "protocol":primary, "models":{"main":{"model":"main-model"}}},
-        "second": {"api_key":"backup-key", "base_url":format!("http://{}/v1", server.server_addr()),
+        "second": {"api_key":"backup-key", "base_url":format!("http://{}/v1", server.addr()),
             "protocol":backup, "models":{"backup":{"model":"backup-model"}}}
     }})
     .to_string()
@@ -25,7 +25,7 @@ fn path(protocol: &str) -> &'static str {
     }
 }
 
-fn finish(request: Request, protocol: &str, text: &str) {
+fn finish(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "response" {
         response_final(request, text);
     } else {
@@ -33,12 +33,14 @@ fn finish(request: Request, protocol: &str, text: &str) {
     }
 }
 
-fn reject(request: Request) {
+fn reject(request: CapturedRequest) {
     request
         .respond(
-            Response::from_string("private fixture-key")
-                .with_status_code(503)
-                .with_header(Header::from_bytes("Retry-After", "0").unwrap()),
+            Response::builder()
+                .status(503)
+                .header("Retry-After", "0")
+                .body(Body::from("private fixture-key"))
+                .unwrap(),
         )
         .unwrap();
 }
@@ -178,11 +180,13 @@ fn fallback_retry_preserves_committed_tools_and_excludes_partial_stream() {
             response_reply(request, json!([response_call("once", "bash", args)]));
         }
         let (request, boundary) = receive_at(&server, path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         if protocol == "completion" {
-            stream.event(chat_chunk(json!({"content":"discarded-fragment"}), None));
+            stream
+                .event(&chat_chunk(json!({"content":"discarded-fragment"}), None))
+                .unwrap();
         } else {
-            stream.event(json!({"type":"response.output_text.delta", "item_id":"partial", "output_index":0,"content_index":0,"sequence_number":1,"delta":"discarded-fragment"}));
+            stream.event(&json!({"type":"response.output_text.delta", "item_id":"partial", "output_index":0,"content_index":0,"sequence_number":1,"delta":"discarded-fragment"})).unwrap();
         }
         stream.finish();
         let (request, retried) = receive_at(&server, path(protocol));

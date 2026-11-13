@@ -9,7 +9,6 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tiny_http::Request;
 
 const LSP_DEADLINE: Duration = Duration::from_secs(10);
 const LSP_HELPER: &str = "pub fn value() -> i32 {\n    \"wrong\"\n}\n";
@@ -27,7 +26,7 @@ fn lsp_api_path(protocol: &str) -> &'static str {
     }
 }
 
-fn lsp_models(server: &Server, protocol: &str) -> String {
+fn lsp_models(server: &TestServer, protocol: &str) -> String {
     match protocol {
         "completion" => fixture_models(server),
         _ => response_models(server, Some("response")),
@@ -94,7 +93,7 @@ fn lsp_write_config(home: &Path, log: &Path, barrier: &Path, extra: &[&str]) {
     .unwrap();
 }
 
-fn lsp_receive(server: &Server, protocol: &str) -> (Request, Value) {
+fn lsp_receive(server: &TestServer, protocol: &str) -> (CapturedRequest, Value) {
     receive_at(server, lsp_api_path(protocol))
 }
 
@@ -105,14 +104,14 @@ fn lsp_call(protocol: &str, id: &str, arguments: Value) -> Value {
     }
 }
 
-fn lsp_calls_reply(request: Request, protocol: &str, calls: Value) {
+fn lsp_calls_reply(request: CapturedRequest, protocol: &str, calls: Value) {
     match protocol {
         "completion" => calls_reply(request, calls),
         _ => response_reply(request, calls),
     }
 }
 
-fn lsp_final(request: Request, protocol: &str, text: &str) {
+fn lsp_final(request: CapturedRequest, protocol: &str, text: &str) {
     match protocol {
         "completion" => final_reply(request, text),
         _ => response_final(request, text),
@@ -447,14 +446,14 @@ fn lsp_dev_message(protocol: &str, body: &Value) -> String {
     }
 }
 
-fn lsp_no_more_tui(server: &Server) {
-    while let Some(mut request) = server.recv_timeout(Duration::from_millis(100)).unwrap() {
-        let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+fn lsp_no_more_tui(server: &TestServer) {
+    while let Some(request) = server.recv_timeout(Duration::from_millis(100)).unwrap() {
+        let body = request.json().unwrap();
         assert!(
             is_task_title(&body),
             "unexpected extra model request: {body}"
         );
-        let _ = request.respond(tiny_http::Response::empty(204));
+        let _ = request.respond(Response::builder().status(204).body(Body::empty()).unwrap());
     }
 }
 

@@ -13,7 +13,7 @@ fn streaming_idle_timeout_keeps_active_text_thinking_and_heartbeats_alive() {
                 "request_timeout_seconds: 1\nrate_limit_retry_budget_seconds: 0\nthink_level: high\n",
             );
             let (request, _) = protocol.receive(&server);
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             let mut text = "started".to_owned();
             let mut thinking = String::new();
             protocol.text(&mut stream, &text);
@@ -31,24 +31,33 @@ fn streaming_idle_timeout_keeps_active_text_thinking_and_heartbeats_alive() {
                     }
                     "thinking" => {
                         match protocol {
-                            Protocol::Chat => {
-                                stream.event(chat_chunk(json!({"reasoning_content":delta}), None))
-                            }
-                            Protocol::Responses => stream.event(json!({
-                                "type":"response.reasoning_summary_text.delta",
-                                "sequence_number":index + 2, "item_id":"r",
-                                "output_index":1, "summary_index":0, "delta":delta
-                            })),
+                            Protocol::Chat => stream
+                                .event(&chat_chunk(json!({"reasoning_content":delta}), None))
+                                .unwrap(),
+                            Protocol::Responses => stream
+                                .event(&json!({
+                                    "type":"response.reasoning_summary_text.delta",
+                                    "sequence_number":index + 2, "item_id":"r",
+                                    "output_index":1, "summary_index":0, "delta":delta
+                                }))
+                                .unwrap(),
                         }
                         thinking.push_str(&delta);
                         cli.wait_for(Pipe::Stderr, &thinking);
                     }
                     "heartbeat" => {
-                        // SSE 注释不会产生模型事件，但收到字节也应重置闲置等待。
-                        let heartbeat = ": keepalive\n\n";
-                        write!(stream.writer, "{:x}\r\n{}\r\n", heartbeat.len(), heartbeat)
-                            .unwrap();
-                        stream.writer.flush().unwrap();
+                        // 收到字节同样重置闲置等待；两种协议都发一帧合法但不驱动
+                        // 输出的负载（无增量 delta／SDK 已知的 in_progress 事件）。
+                        match protocol {
+                            Protocol::Chat => stream.event(&chat_chunk(json!({}), None)).unwrap(),
+                            Protocol::Responses => stream
+                                .event(&json!({
+                                    "type":"response.in_progress",
+                                    "sequence_number":0,
+                                    "response":response_body(json!([]))
+                                }))
+                                .unwrap(),
+                        }
                     }
                     _ => unreachable!(),
                 }
@@ -85,7 +94,7 @@ fn streaming_idle_timeout_stops_silent_stream_before_or_after_output() {
                 "request_timeout_seconds: 1\nrate_limit_retry_budget_seconds: 0\n",
             );
             let (request, _) = protocol.receive(&server);
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             if partial {
                 protocol.text(&mut stream, "partial");
                 cli.wait_for(Pipe::Stdout, "partial");
@@ -124,16 +133,16 @@ fn thinking_is_streamed_when_enabled_without_polluting_stdout() {
             r#"{"think_level":"high"}"#,
         );
         let (request, body) = protocol.receive(&server);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         let reasoning = json!({"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"inspect 中"}],"encrypted_content":"opaque-hidden"});
         match protocol {
-            Protocol::Chat => stream.event(chat_chunk(
+            Protocol::Chat => stream.event(&chat_chunk(
                 json!({"role":"assistant","reasoning_text":"inspect 中","reasoning_opaque":"opaque-hidden"}),
                 None,
-            )),
+            )).unwrap(),
             Protocol::Responses => {
                 assert_eq!(body["reasoning"], json!({"effort":"high","summary":"concise"}));
-                stream.event(json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":"inspect 中"}));
+                stream.event(&json!({"type":"response.reasoning_summary_text.delta","sequence_number":1,"item_id":"r","output_index":0,"summary_index":0,"delta":"inspect 中"})).unwrap();
             }
         }
         cli.wait_for(Pipe::Stderr, "inspect 中");
@@ -145,8 +154,8 @@ fn thinking_is_streamed_when_enabled_without_polluting_stdout() {
                 protocol.complete(&mut stream, text_output("answer"), false);
             }
             Protocol::Responses => {
-                stream.event(json!({"type":"response.reasoning_summary_text.done","sequence_number":2,"item_id":"r","output_index":0,"summary_index":0,"text":"inspect 中"}));
-                stream.event(json!({"type":"response.completed","sequence_number":3,"response":response_body(json!([reasoning,response_message("m",json!([response_text("answer")]))]))}));
+                stream.event(&json!({"type":"response.reasoning_summary_text.done","sequence_number":2,"item_id":"r","output_index":0,"summary_index":0,"text":"inspect 中"})).unwrap();
+                stream.event(&json!({"type":"response.completed","sequence_number":3,"response":response_body(json!([reasoning,response_message("m",json!([response_text("answer")]))]))})).unwrap();
             }
         }
         stream.finish();
@@ -172,7 +181,7 @@ fn streaming_first_chunk_is_visible_before_finish_and_repl_history_is_complete()
                 cli.input("first task\n");
             }
             let (request, _) = protocol.receive(&server);
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             protocol.text(&mut stream, "first-中");
             cli.wait_for(Pipe::Stdout, "first-中");
             cli.assert_running();
@@ -290,7 +299,7 @@ fn streaming_fragmented_calls_wait_for_complete_batch_before_side_effects() {
         let dir = tempfile::tempdir().unwrap();
         let mut cli = protocol.start(&server, dir.path(), Some("fragmented tools"));
         let (request, _) = protocol.receive(&server);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         let calls = fragmented_calls(protocol, &mut stream, false);
         calls_fence(protocol, &mut stream);
         cli.wait_for(Pipe::Stdout, "batch-gate");
@@ -351,7 +360,7 @@ fn streaming_invalid_later_call_rejects_entire_batch_and_repl_history() {
         let mut cli = protocol.start(&server, dir.path(), None);
         cli.input("invalid batch\n");
         let (request, _) = protocol.receive(&server);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         let mut calls = fragmented_calls(protocol, &mut stream, true)
             .as_array()
             .unwrap()
@@ -430,7 +439,7 @@ fn streaming_failures_keep_partial_and_never_commit_when_retries_disabled() {
                     cli.input("broken turn\n");
                 }
                 let (request, _) = protocol.receive(&server);
-                let mut stream = SseReply::new(request);
+                let mut stream = request.start_sse().unwrap();
                 protocol.text(&mut stream, "partial-visible");
                 cli.wait_for(Pipe::Stdout, "partial-visible");
                 cli.assert_running();
@@ -517,7 +526,7 @@ fn default_reasoning_rejection_allows_manual_effort_recovery_without_committing_
     let (request, body) = protocol.receive(&server);
     super::super::think::assert_level(&body, "response", "default");
     protocol.assert_only_users(&body, &["original task"]);
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     protocol.text(&mut stream, "failed-visible");
     cli.wait_for(Pipe::Stdout, "failed-visible");
     pending_write(protocol, &mut stream);
@@ -549,7 +558,7 @@ fn default_reasoning_rejection_allows_manual_effort_recovery_without_committing_
     assert!(stderr.contains("reasoning.effort"));
     assert!(stderr.contains("/effort low"));
     assert!(!stderr.contains("tool write: running"));
-    assert!(!stderr.contains(&server.server_addr().to_string()));
+    assert!(!stderr.contains(&server.addr().to_string()));
     assert!(!dir.path().join("must-not-exist").exists());
     assert_clean_pipes(&output);
     no_more(&server);
@@ -575,26 +584,34 @@ fn streaming_responses_annotations_default_only_when_missing() {
             part["annotations"] = annotations.clone();
         }
         let item = response_message("msg-stream", json!([part]));
-        let mut stream = SseReply::new(request);
-        stream.event(json!({
-            "type":"response.output_item.added", "sequence_number":0,
-            "output_index":0, "item":item
-        }));
-        stream.event(json!({
-            "type":"response.content_part.added", "sequence_number":1,
-            "item_id":"msg-stream", "output_index":0, "content_index":0,
-            "part":part
-        }));
+        let mut stream = request.start_sse().unwrap();
+        stream
+            .event(&json!({
+                "type":"response.output_item.added", "sequence_number":0,
+                "output_index":0, "item":item
+            }))
+            .unwrap();
+        stream
+            .event(&json!({
+                "type":"response.content_part.added", "sequence_number":1,
+                "item_id":"msg-stream", "output_index":0, "content_index":0,
+                "part":part
+            }))
+            .unwrap();
         Protocol::Responses.text(&mut stream, "answer");
-        stream.event(json!({
-            "type":"response.content_part.done", "sequence_number":2,
-            "item_id":"msg-stream", "output_index":0, "content_index":0,
-            "part":part
-        }));
-        stream.event(json!({
-            "type":"response.output_item.done", "sequence_number":3,
-            "output_index":0, "item":item
-        }));
+        stream
+            .event(&json!({
+                "type":"response.content_part.done", "sequence_number":2,
+                "item_id":"msg-stream", "output_index":0, "content_index":0,
+                "part":part
+            }))
+            .unwrap();
+        stream
+            .event(&json!({
+                "type":"response.output_item.done", "sequence_number":3,
+                "output_index":0, "item":item
+            }))
+            .unwrap();
         Protocol::Responses.complete(&mut stream, json!([item]), false);
         cli.wait_for(Pipe::Stdout, "answer\n");
         cli.input("second task\n");
@@ -622,36 +639,48 @@ fn streaming_responses_command_code_alias_completes_and_commits_history() {
         let mut cli = Protocol::Responses.start(&server, dir.path(), None);
         cli.input("first task\n");
         let (request, _) = Protocol::Responses.receive(&server);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         let mut part = json!({"type":"output_text", "text":"answer"});
         if annotations {
             part["annotations"] = json!([]);
         }
         let item = response_message("msg", json!([part]));
-        stream.event(
-            json!({"type":"response.reasoning_summary_text.delta", "sequence_number":0,
-            "item_id":"rs", "output_index":0, "summary_index":0, "delta":"thinking"}),
-        );
-        stream.event(
-            json!({"type":"response.content_part.added", "sequence_number":1,
-            "item_id":"msg", "output_index":0, "summary_index":0, "part":part}),
-        );
-        stream.event(
-            json!({"type":"response.output_text.delta", "sequence_number":2,
-            "item_id":"msg", "output_index":0, "summary_index":0, "delta":"answer"}),
-        );
-        stream.event(
-            json!({"type":"response.output_text.done", "sequence_number":3,
-            "item_id":"msg", "output_index":0, "summary_index":0, "text":"answer"}),
-        );
-        stream.event(
-            json!({"type":"response.content_part.done", "sequence_number":4,
-            "item_id":"msg", "output_index":0, "summary_index":0, "part":part}),
-        );
-        stream.event(
-            json!({"type":"response.output_item.done", "sequence_number":5,
-            "output_index":0, "item":item}),
-        );
+        stream
+            .event(
+                &json!({"type":"response.reasoning_summary_text.delta", "sequence_number":0,
+        "item_id":"rs", "output_index":0, "summary_index":0, "delta":"thinking"}),
+            )
+            .unwrap();
+        stream
+            .event(
+                &json!({"type":"response.content_part.added", "sequence_number":1,
+        "item_id":"msg", "output_index":0, "summary_index":0, "part":part}),
+            )
+            .unwrap();
+        stream
+            .event(
+                &json!({"type":"response.output_text.delta", "sequence_number":2,
+        "item_id":"msg", "output_index":0, "summary_index":0, "delta":"answer"}),
+            )
+            .unwrap();
+        stream
+            .event(
+                &json!({"type":"response.output_text.done", "sequence_number":3,
+        "item_id":"msg", "output_index":0, "summary_index":0, "text":"answer"}),
+            )
+            .unwrap();
+        stream
+            .event(
+                &json!({"type":"response.content_part.done", "sequence_number":4,
+        "item_id":"msg", "output_index":0, "summary_index":0, "part":part}),
+            )
+            .unwrap();
+        stream
+            .event(
+                &json!({"type":"response.output_item.done", "sequence_number":5,
+        "output_index":0, "item":item}),
+            )
+            .unwrap();
         Protocol::Responses.complete(&mut stream, json!([item]), false);
         stream.finish();
         cli.wait_for(Pipe::Stdout, "answer\n");
@@ -679,16 +708,20 @@ fn streaming_responses_partial_failure_displays_model_event_and_missing_field() 
     let dir = tempfile::tempdir().unwrap();
     let cli = Protocol::Responses.start(&server, dir.path(), Some("task"));
     let (request, _) = Protocol::Responses.receive(&server);
-    let mut stream = SseReply::new(request);
-    stream.event(
-        json!({"type":"response.reasoning_summary_text.delta", "sequence_number":0,
-        "item_id":"rs", "output_index":0, "summary_index":0, "delta":"thinking"}),
-    );
-    stream.event(
-        json!({"type":"response.content_part.added", "sequence_number":1,
-        "item_id":"private-id", "output_index":0,
-        "part":{"type":"output_text", "text":"private-text", "annotations":[]}}),
-    );
+    let mut stream = request.start_sse().unwrap();
+    stream
+        .event(
+            &json!({"type":"response.reasoning_summary_text.delta", "sequence_number":0,
+    "item_id":"rs", "output_index":0, "summary_index":0, "delta":"thinking"}),
+        )
+        .unwrap();
+    stream
+        .event(
+            &json!({"type":"response.content_part.added", "sequence_number":1,
+    "item_id":"private-id", "output_index":0,
+    "part":{"type":"output_text", "text":"private-text", "annotations":[]}}),
+        )
+        .unwrap();
     stream.finish();
     let output = cli.finish();
     assert!(!output.status.success());
@@ -726,7 +759,7 @@ fn streaming_responses_function_arguments_invalid_or_missing_final_still_fail() 
                     item.as_object_mut().unwrap().remove("arguments");
                 }
             }
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             if stage == "completed" {
                 // 同时触发正文注释兼容路径，仍不得补齐最终工具参数。
                 Protocol::Responses.complete(
@@ -741,10 +774,12 @@ fn streaming_responses_function_arguments_invalid_or_missing_final_still_fail() 
                     true,
                 );
             } else {
-                stream.event(json!({
-                    "type":format!("response.output_item.{stage}"), "sequence_number":0,
-                    "output_index":0, "item":item
-                }));
+                stream
+                    .event(&json!({
+                        "type":format!("response.output_item.{stage}"), "sequence_number":0,
+                        "output_index":0, "item":item
+                    }))
+                    .unwrap();
             }
             stream.finish();
             let output = cli.finish();
@@ -773,7 +808,7 @@ fn streaming_responses_annotations_invalid_values_still_fail() {
         let dir = tempfile::tempdir().unwrap();
         let cli = Protocol::Responses.start(&server, dir.path(), Some("task"));
         let (request, _) = Protocol::Responses.receive(&server);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         Protocol::Responses.complete(
             &mut stream,
             json!([response_message("msg-stream", json!([part]))]),
@@ -798,7 +833,7 @@ fn streaming_completed_only_text_and_missing_tail_are_printed_once() {
         let mut cli = Protocol::Responses.start(&server, dir.path(), None);
         cli.input("first task\n");
         let (request, _) = Protocol::Responses.receive(&server);
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         if let Some(prefix) = prefix {
             Protocol::Responses.text(&mut stream, prefix);
             cli.wait_for(Pipe::Stdout, prefix);
@@ -832,28 +867,32 @@ fn streaming_refusal_is_printed_once_and_content_has_priority() {
             let dir = tempfile::tempdir().unwrap();
             let cli = protocol.start(&server, dir.path(), Some("refusal selection"));
             let (request, _) = protocol.receive(&server);
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             match protocol {
                 Protocol::Chat => {
-                    stream.event(chat_chunk(
-                        json!({"role":"assistant","refusal":"provisional-refusal"}),
-                        None,
-                    ));
+                    stream
+                        .event(&chat_chunk(
+                            json!({"role":"assistant","refusal":"provisional-refusal"}),
+                            None,
+                        ))
+                        .unwrap();
                     if let Some(content) = content {
                         protocol.text(&mut stream, content);
                     }
                 }
                 Protocol::Responses => {
-                    stream.event(json!({"type":"response.refusal.delta","sequence_number":1,
-                        "item_id":"msg-stream","output_index":0,"content_index":0,"delta":"provisional-refusal"}));
-                    stream.event(
-                        json!({"type":"response.content_part.done","sequence_number":2,
-                        "item_id":"msg-stream","output_index":0,"content_index":0,
-                        "part":{"type":"refusal","refusal":"provisional-refusal"}}),
-                    );
+                    stream.event(&json!({"type":"response.refusal.delta","sequence_number":1,
+                        "item_id":"msg-stream","output_index":0,"content_index":0,"delta":"provisional-refusal"})).unwrap();
+                    stream
+                        .event(
+                            &json!({"type":"response.content_part.done","sequence_number":2,
+                    "item_id":"msg-stream","output_index":0,"content_index":0,
+                    "part":{"type":"refusal","refusal":"provisional-refusal"}}),
+                        )
+                        .unwrap();
                     if let Some(content) = content {
-                        stream.event(json!({"type":"response.output_text.delta","sequence_number":3,
-                            "item_id":"msg-stream","output_index":0,"content_index":1,"delta":content}));
+                        stream.event(&json!({"type":"response.output_text.delta","sequence_number":3,
+                            "item_id":"msg-stream","output_index":0,"content_index":1,"delta":content})).unwrap();
                     }
                 }
             }
@@ -886,7 +925,7 @@ fn streaming_chat_copilot_missing_object_and_role_keeps_tool_rounds_and_followup
     let mut cli = Protocol::Chat.start(&server, dir.path(), None);
     cli.input("write a file\n");
     let (request, _) = Protocol::Chat.receive(&server);
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     let mut chunk = chat_chunk(
         json!({"tool_calls":[{
             "index":0,"id":"copilot-call","type":"function","function":{
@@ -896,13 +935,13 @@ fn streaming_chat_copilot_missing_object_and_role_keeps_tool_rounds_and_followup
         Some("tool_calls"),
     );
     chunk.as_object_mut().unwrap().remove("object");
-    stream.event(chunk);
+    stream.event(&chunk).unwrap();
     let mut usage = chat_chunk(json!({}), None);
     usage.as_object_mut().unwrap().remove("object");
     usage["choices"] = json!([]);
     usage["usage"] = json!({"prompt_tokens":100,"completion_tokens":10,"total_tokens":110});
-    stream.event(usage);
-    stream.frame("[DONE]");
+    stream.event(&usage).unwrap();
+    stream.frame("[DONE]").unwrap();
     stream.finish();
     let (request, body) = Protocol::Chat.receive(&server);
     let result = Protocol::Chat.tool_result(&body, "copilot-call");
@@ -911,11 +950,11 @@ fn streaming_chat_copilot_missing_object_and_role_keeps_tool_rounds_and_followup
         std::fs::read_to_string(dir.path().join("copilot-result")).unwrap(),
         "OK"
     );
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     let mut final_chunk = chat_chunk(json!({"content":"done"}), Some("stop"));
     final_chunk.as_object_mut().unwrap().remove("object");
-    stream.event(final_chunk);
-    stream.frame("[DONE]");
+    stream.event(&final_chunk).unwrap();
+    stream.frame("[DONE]").unwrap();
     stream.finish();
     cli.wait_for(Pipe::Stdout, "done");
     cli.input("continue\n");
@@ -929,11 +968,11 @@ fn streaming_chat_copilot_missing_object_and_role_keeps_tool_rounds_and_followup
     assert_eq!(assistants.len(), 2);
     assert_eq!(assistants[0]["tool_calls"][0]["id"], "copilot-call");
     assert_eq!(assistants[1]["content"], "done");
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     let mut followup = chat_chunk(json!({"content":"continued"}), Some("stop"));
     followup.as_object_mut().unwrap().remove("object");
-    stream.event(followup);
-    stream.frame("[DONE]");
+    stream.event(&followup).unwrap();
+    stream.frame("[DONE]").unwrap();
     stream.finish();
     cli.input("/quit\n");
     let output = cli.finish();
@@ -950,10 +989,12 @@ fn streaming_chat_copilot_refusal_is_printed_once_and_restored_as_text() {
     let mut cli = Protocol::Chat.start(&server, dir.path(), None);
     cli.input("refuse\n");
     let (request, _) = Protocol::Chat.receive(&server);
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     Protocol::Chat.text(&mut stream, "Cannot help");
-    stream.event(chat_chunk(json!({}), Some("refusal")));
-    stream.frame("[DONE]");
+    stream
+        .event(&chat_chunk(json!({}), Some("refusal")))
+        .unwrap();
+    stream.frame("[DONE]").unwrap();
     stream.finish();
     cli.wait_for(Pipe::Stdout, "Cannot help");
     cli.input("continue\n");
@@ -982,7 +1023,7 @@ fn streaming_completed_only_refusal_is_printed_once() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Protocol::Responses.start(&server, dir.path(), Some("refuse"));
     let (request, _) = Protocol::Responses.receive(&server);
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     Protocol::Responses.complete(
         &mut stream,
         json!([response_message(
@@ -1008,7 +1049,7 @@ fn streaming_completed_prefix_conflict_fails_without_tools_or_history() {
     let mut cli = Protocol::Responses.start(&server, dir.path(), None);
     cli.input("conflicting completion\n");
     let (request, _) = Protocol::Responses.receive(&server);
-    let mut stream = SseReply::new(request);
+    let mut stream = request.start_sse().unwrap();
     Protocol::Responses.text(&mut stream, "visible-prefix");
     cli.wait_for(Pipe::Stdout, "visible-prefix");
     Protocol::Responses.complete(

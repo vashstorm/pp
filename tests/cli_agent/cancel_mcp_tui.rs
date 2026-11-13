@@ -40,7 +40,11 @@ fn cancel_mcp_protocol_path(protocol: &str) -> &'static str {
     if protocol == "completion" { "/v1/chat/completions" } else { "/v1/responses" }
 }
 
-fn cancel_mcp_reply_calls(request: Request, protocol: &str, entries: &[(&str, &str, Value)]) {
+fn cancel_mcp_reply_calls(
+    request: CapturedRequest,
+    protocol: &str,
+    entries: &[(&str, &str, Value)],
+) {
     if protocol == "completion" {
         calls_reply(request, entries.iter().map(|(id, name, args)| call(id, name, args.clone())).collect());
     } else {
@@ -61,7 +65,7 @@ fn cancel_mcp_outputs(body: &Value, protocol: &str) -> Vec<(String, Value)> {
     }).collect()
 }
 
-fn cancel_mcp_begin(pty: &mut Pty, provider: &Server, dir: &Path, protocol: &str) {
+fn cancel_mcp_begin(pty: &mut Pty, provider: &TestServer, dir: &Path, protocol: &str) {
     pty.ready();
     pty.input("cancel MCP\r");
     let (request, _) = receive_at(provider, cancel_mcp_protocol_path(protocol));

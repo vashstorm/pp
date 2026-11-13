@@ -24,4 +24,5 @@ tempfile = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
-tiny_http = { workspace = true }
+axum = { workspace = true }
+pp-test-support = { workspace = true }

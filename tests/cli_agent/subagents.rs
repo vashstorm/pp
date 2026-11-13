@@ -327,7 +327,7 @@ fn subagent_result_read_pages_full_disk_output_in_both_protocols() {
     }
 }
 
-fn receive_sub(server: &Server, protocol: &str) -> (Request, Value) {
+fn receive_sub(server: &TestServer, protocol: &str) -> (CapturedRequest, Value) {
     receive_at(
         server,
         if protocol == "completion" {
@@ -337,14 +337,14 @@ fn receive_sub(server: &Server, protocol: &str) -> (Request, Value) {
         },
     )
 }
-fn sub_call(request: Request, protocol: &str, id: &str, name: &str, args: Value) {
+fn sub_call(request: CapturedRequest, protocol: &str, id: &str, name: &str, args: Value) {
     if protocol == "completion" {
         calls_reply(request, json!([call(id, name, args)]));
     } else {
         response_reply(request, json!([response_call(id, name, args)]));
     }
 }
-fn sub_final(request: Request, protocol: &str, text: &str) {
+fn sub_final(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {
@@ -776,32 +776,6 @@ fn subagent_task_is_hidden_and_recursive_dispatch_is_rejected() {
 
 #[test]
 fn slow_subagent_concurrency_limits_are_shared_across_batches() {
-    fn receive_concurrent(server: &Server, protocol: &str) -> (Request, Value) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            assert!(!remaining.is_zero(), "missing concurrent CLI request");
-            if let Some(mut request) = server
-                .recv_timeout(remaining.min(Duration::from_millis(100)))
-                .unwrap()
-            {
-                assert_eq!(
-                    request.url(),
-                    if protocol == "completion" {
-                        "/v1/chat/completions"
-                    } else {
-                        "/v1/responses"
-                    }
-                );
-                let body = serde_json::from_reader(request.as_reader()).unwrap();
-                return (request, body);
-            }
-            // tiny_http 0.12 的空闲线程计数与任务入队存在竞态；短连接促使 accept
-            // 再次调度队列。探测不发送 HTTP，不产生模型请求，也不延长原有 10s 栅栏。
-            let stream = std::net::TcpStream::connect(server.server_addr().to_string()).unwrap();
-            stream.shutdown(std::net::Shutdown::Both).unwrap();
-        }
-    }
     for protocol in ["completion", "response"] {
         for (task_settings, limit) in [
             ("", 4),
@@ -830,7 +804,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
                 .iter()
                 .map(|marker| json!({"role":"fast","task":marker}))
                 .collect::<Vec<_>>();
-            let (request, body) = receive_concurrent(&server, protocol);
+            let (request, body) = receive_sub(&server, protocol);
             assert!(!is_child(&body));
             sub_call(
                 request,
@@ -842,7 +816,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
             let mut children = std::collections::BTreeMap::new();
             let mut parent = None;
             while children.len() < limit || parent.is_none() {
-                let (request, body) = receive_concurrent(&server, protocol);
+                let (request, body) = receive_sub(&server, protocol);
                 if is_child(&body) {
                     // 优先最长标记，避免 first-1 抢先匹配 first-10。
                     let text = body.to_string();
@@ -869,7 +843,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
                 json!({"context":"Return only your assigned task marker.",
                     "tasks":[{"role":"fast","task":"concurrency-extra"}]}),
             );
-            let (request, body) = receive_concurrent(&server, protocol);
+            let (request, body) = receive_sub(&server, protocol);
             assert!(!is_child(&body), "child exceeded limit {limit}: {body}");
             sub_call(request, protocol, "concurrency-wait", "wait", json!({}));
             no_more(&server);
@@ -911,7 +885,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
                 "bash",
                 json!({"command":"printf lifecycle-step"}),
             );
-            let (request, body) = receive_concurrent(&server, protocol);
+            let (request, body) = receive_sub(&server, protocol);
             assert!(is_child(&body), "{body}");
             assert!(body.to_string().contains(&marker), "{body}");
             assert!(!body.to_string().contains("concurrency-extra"), "{body}");
@@ -923,7 +897,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
             assert_running_limit();
             no_more(&server);
             sub_final(request, protocol, &marker);
-            let (extra, body) = receive_concurrent(&server, protocol);
+            let (extra, body) = receive_sub(&server, protocol);
             assert!(is_child(&body), "{body}");
             assert!(body.to_string().contains("concurrency-extra"), "{body}");
             no_more(&server);
@@ -932,7 +906,7 @@ fn slow_subagent_concurrency_limits_are_shared_across_batches() {
             }
             sub_final(extra, protocol, "concurrency-extra");
 
-            let (request, body) = receive_concurrent(&server, protocol);
+            let (request, body) = receive_sub(&server, protocol);
             assert!(!is_child(&body), "{body}");
             let waited = sub_tool_result(&body, protocol, "concurrency-wait");
             assert_eq!(waited["ok"], true, "{waited}");
@@ -1200,7 +1174,7 @@ fn fallback_subagent_uses_its_role_backup_without_switching_parent() {
         };
         let provider = |protocol, model| {
             json!({"api_key":"fixture-key","protocol":protocol,
-            "base_url":format!("http://{}/v1", server.server_addr()),"models":{"model":{"model":model}}})
+            "base_url":format!("http://{}/v1", server.addr()),"models":{"model":{"model":model}}})
         };
         let models = json!({"providers":{"first":provider(protocol,"main"),"second":provider(backup_protocol,"backup")}});
         let settings = json!({"rate_limit_retry_budget_seconds":0,"default_model":"first/model",
@@ -1222,15 +1196,17 @@ fn fallback_subagent_uses_its_role_backup_without_switching_parent() {
         let mut failed_child = 0;
         let mut backup_child = 0;
         loop {
-            let mut request = server
+            let request = server
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
-            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let body = request.json().unwrap();
             if is_child(&body) {
                 if body["model"] == "main" {
                     failed_child += 1;
-                    request.respond(Response::empty(503)).unwrap();
+                    request
+                        .respond(Response::builder().status(503).body(Body::empty()).unwrap())
+                        .unwrap();
                 } else {
                     assert_eq!(body["model"], "backup");
                     backup_child += 1;
@@ -1276,7 +1252,7 @@ fn custom_role_roundtrip_rejects_invented_names_and_routes_each_role() {
         std::fs::write(definitions.join("analyst.md"), "---\nname: analyst\ndescription: configured analyst\nmodel: custom/special\nthinking: high\ntools: [read, write]\nreadonly: true\nspawns: []\n---\nconfigured-analysis-prompt-marker").unwrap();
         let provider = |protocol, model| {
             json!({"protocol":protocol,"api_key":"fixture-key",
-            "base_url":format!("http://{}/v1", server.server_addr()),"models":{"special":{"model":model}}})
+            "base_url":format!("http://{}/v1", server.addr()),"models":{"special":{"model":model}}})
         };
         let models = json!({"providers":{"main":provider(protocol,"main-model"),"custom":provider(custom_protocol,"custom-model")}});
         let settings = json!({"default_model":"main/special","rate_limit_retry_budget_seconds":0,
@@ -1354,7 +1330,7 @@ fn custom_role_roundtrip_rejects_invented_names_and_routes_each_role() {
                     _ => panic!("unexpected child model: {model}"),
                 };
                 assert_eq!(
-                    request.url(),
+                    request.target(),
                     if child_protocol == "completion" {
                         "/v1/chat/completions"
                     } else {

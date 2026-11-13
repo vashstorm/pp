@@ -3,7 +3,11 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
-use tiny_http::{Header, Method, Response, Server, StatusCode};
+
+mod http;
+
+/// 同步工作端不可用时的固定响应体，HTTP 层与 [`dispatch`] 共用同一份字面量。
+pub(super) const DATABASE_UNAVAILABLE: &str = r#"{"error":"statistics database unavailable"}"#;
 
 pub fn run(
     host: std::net::IpAddr,
@@ -20,75 +24,29 @@ pub fn run(
     if let Err(error) = maintain(&mut store.conn) {
         tracing::warn!(event = "statistics_migration_failed", error = %error);
     }
-    let server = Server::http(std::net::SocketAddr::new(host, port))
-        .map_err(|e| anyhow::anyhow!("starting statistics server: {e}"))?;
-    let address = server
-        .server_addr()
-        .to_ip()
-        .context("statistics listener unavailable")?;
-    let url = format!("http://{address}/#/overview?range=24h");
+    let (transport, mut queries) =
+        http::start(std::net::SocketAddr::new(host, port)).context("starting statistics server")?;
+    let url = format!("http://{}/#/overview?range=24h", transport.address());
     println!("pp stats: {url}");
     std::io::stdout().flush()?;
     // Auto-open only on interactive terminals; piped, agent, or CI contexts just print the URL.
     if open && std::io::stdout().is_terminal() {
         open_browser(url);
     }
-    let mut allowed = vec![address.to_string()];
-    if address.ip().is_loopback() {
-        allowed.push(format!("localhost:{}", address.port()));
-    }
-    let allowed_origins = allowed
-        .iter()
-        .map(|host| format!("http://{host}"))
-        .collect::<Vec<_>>();
-    for request in server.incoming_requests() {
-        let host = request
-            .headers()
-            .iter()
-            .find(|h| h.field.equiv("Host"))
-            .map(|h| h.value.as_str())
-            .unwrap_or_default();
-        let origin = request
-            .headers()
-            .iter()
-            .find(|h| h.field.equiv("Origin"))
-            .map(|h| h.value.as_str());
-        let valid_host = allowed.iter().any(|s| s == host);
-        let valid_origin = origin.is_none_or(|o| allowed_origins.iter().any(|s| s == o));
-        let (status, kind, body) = if !valid_host || !valid_origin {
-            (
-                403,
-                "application/json",
-                json!({"error":"allowed origin required"}).to_string(),
-            )
-        } else if request.method() != &Method::Get {
-            (
-                405,
-                "application/json",
-                json!({"error":"GET required"}).to_string(),
-            )
-        } else if request.url() == "/fonts/InterVariable.woff2" {
-            (200, "font/woff2", String::new())
-        } else {
-            let titles = if request.url().starts_with("/api/stats/traces") {
-                session_titles()
-            } else {
-                Vec::new()
-            };
-            dispatch(&store, request.url(), &titles)
-        };
-        let body = if kind == "font/woff2" {
-            include_bytes!("fonts/InterVariable.woff2").to_vec()
-        } else {
-            body.into_bytes()
-        };
-        let mut response = Response::from_data(body).with_status_code(StatusCode(status));
-        for (name,value) in [("Content-Type",format!("{kind}; charset=utf-8")),("Cache-Control","no-store".into()),("X-Content-Type-Options","nosniff".into()),("Content-Security-Policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'".into())] {
-            if let Ok(header)=Header::from_bytes(name,value){response.add_header(header);}
+    // 查询串行化在启动线程上：`Store` 只被这里使用，标题回调也只在这里执行。
+    while let Some(query) = queries.blocking_recv() {
+        if query.reply.is_closed() {
+            continue;
         }
-        let _ = request.respond(response);
+        let titles = if query.target.starts_with("/api/stats/traces") {
+            session_titles()
+        } else {
+            Vec::new()
+        };
+        let response = dispatch(&store, &query.target, &titles);
+        let _ = query.reply.send(response);
     }
-    Ok(())
+    transport.join()
 }
 
 fn open_browser(url: String) {
@@ -121,18 +79,8 @@ pub(super) fn dispatch(
     path: &str,
     titles: &[(String, String)],
 ) -> (u16, &'static str, String) {
-    match path {
-        "/" | "/index.html" => return (200, "text/html", include_str!("index.html").into()),
-        "/stats.css" => return (200, "text/css", include_str!("stats.css").into()),
-        "/ui.css" => return (200, "text/css", include_str!("ui.css").into()),
-        "/traces.css" => return (200, "text/css", include_str!("traces.css").into()),
-        "/stats.js" => return (200, "text/javascript", include_str!("stats.js").into()),
-        "/activity.js" => return (200, "text/javascript", include_str!("activity.js").into()),
-        "/insights.js" => return (200, "text/javascript", include_str!("insights.js").into()),
-        "/traces.js" => return (200, "text/javascript", include_str!("traces.js").into()),
-        "/context.js" => return (200, "text/javascript", include_str!("context.js").into()),
-        "/icon.svg" => return (200, "image/svg+xml", include_str!("icon.svg").into()),
-        _ => {}
+    if let Some((kind, text)) = static_text(path) {
+        return (200, kind, text.to_owned());
     }
     match api(store, path, titles) {
         Ok(Some(value)) => (200, "application/json", value.to_string()),
@@ -148,13 +96,26 @@ pub(super) fn dispatch(
         ),
         Err(ApiError::Database) => {
             tracing::warn!(event = "statistics_query_failed");
-            (
-                503,
-                "application/json",
-                json!({"error":"statistics database unavailable"}).to_string(),
-            )
+            (503, "application/json", DATABASE_UNAVAILABLE.to_owned())
         }
     }
+}
+
+/// 内嵌文本资源表：HTTP 层与 [`dispatch`] 共用同一份精确 request-target 匹配。
+pub(super) fn static_text(target: &str) -> Option<(&'static str, &'static str)> {
+    Some(match target {
+        "/" | "/index.html" => ("text/html", include_str!("index.html")),
+        "/stats.css" => ("text/css", include_str!("stats.css")),
+        "/ui.css" => ("text/css", include_str!("ui.css")),
+        "/traces.css" => ("text/css", include_str!("traces.css")),
+        "/stats.js" => ("text/javascript", include_str!("stats.js")),
+        "/activity.js" => ("text/javascript", include_str!("activity.js")),
+        "/insights.js" => ("text/javascript", include_str!("insights.js")),
+        "/traces.js" => ("text/javascript", include_str!("traces.js")),
+        "/context.js" => ("text/javascript", include_str!("context.js")),
+        "/icon.svg" => ("image/svg+xml", include_str!("icon.svg")),
+        _ => return None,
+    })
 }
 enum ApiError {
     Invalid,

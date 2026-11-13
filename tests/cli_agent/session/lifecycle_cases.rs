@@ -43,17 +43,21 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
             );
             let (request, _) = api.receive(&server);
             assert!(!sessions_dir(home.path()).exists());
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             match api {
-                Api::Chat => stream.event(chat_chunk(
-                    json!({"role":"assistant","content":"alpha noted"}),
-                    None,
-                )),
-                Api::Responses => stream.event(json!({
-                    "type":"response.output_text.delta","sequence_number":0,
-                    "item_id":"msg-final","output_index":0,"content_index":0,
-                    "delta":"alpha noted","logprobs":[]
-                })),
+                Api::Chat => stream
+                    .event(&chat_chunk(
+                        json!({"role":"assistant","content":"alpha noted"}),
+                        None,
+                    ))
+                    .unwrap(),
+                Api::Responses => stream
+                    .event(&json!({
+                        "type":"response.output_text.delta","sequence_number":0,
+                        "item_id":"msg-final","output_index":0,"content_index":0,
+                        "delta":"alpha noted","logprobs":[]
+                    }))
+                    .unwrap(),
             }
             cli.wait_for(Pipe::Out, "alpha noted");
             let id = only_session_id(home.path());
@@ -106,24 +110,30 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
             // Complete the stream and finish the task.
             match api {
                 Api::Chat => {
-                    stream.event(chat_chunk(json!({}), Some("stop")));
-                    stream.frame("[DONE]");
+                    stream.event(&chat_chunk(json!({}), Some("stop"))).unwrap();
+                    stream.frame("[DONE]").unwrap();
                 }
                 Api::Responses => {
                     let part = response_text("alpha noted");
                     let message = response_message("msg-final", json!([part.clone()]));
-                    stream.event(json!({
-                        "type":"response.content_part.done","sequence_number":1,
-                        "item_id":"msg-final","output_index":0,"content_index":0,"part":part
-                    }));
-                    stream.event(json!({
-                        "type":"response.output_item.done","sequence_number":2,
-                        "output_index":0,"item":message
-                    }));
-                    stream.event(json!({
-                        "type":"response.completed","sequence_number":3,
-                        "response":response_body(json!([message]))
-                    }));
+                    stream
+                        .event(&json!({
+                            "type":"response.content_part.done","sequence_number":1,
+                            "item_id":"msg-final","output_index":0,"content_index":0,"part":part
+                        }))
+                        .unwrap();
+                    stream
+                        .event(&json!({
+                            "type":"response.output_item.done","sequence_number":2,
+                            "output_index":0,"item":message
+                        }))
+                        .unwrap();
+                    stream
+                        .event(&json!({
+                            "type":"response.completed","sequence_number":3,
+                            "response":response_body(json!([message]))
+                        }))
+                        .unwrap();
                 }
             }
             stream.finish();

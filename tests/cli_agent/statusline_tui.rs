@@ -1,5 +1,5 @@
 // 标题专用测试直接控制旁路请求，不使用通用夹具的自动标题响应。
-fn statusline_home(server: &Server, protocol: &str, fast: bool) -> tempfile::TempDir {
+fn statusline_home(server: &TestServer, protocol: &str, fast: bool) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     let other = if protocol == "completion" {
         "response"
@@ -20,7 +20,7 @@ fn statusline_home(server: &Server, protocol: &str, fast: bool) -> tempfile::Tem
     home
 }
 
-fn statusline_start(server: &Server, protocol: &str, fast: bool) -> (tempfile::TempDir, Pty) {
+fn statusline_start(server: &TestServer, protocol: &str, fast: bool) -> (tempfile::TempDir, Pty) {
     let home = statusline_home(server, protocol, fast);
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready();
@@ -28,7 +28,7 @@ fn statusline_start(server: &Server, protocol: &str, fast: bool) -> (tempfile::T
     (home, pty)
 }
 
-fn statusline_requests(server: &Server) -> ((Request, Value), (Request, Value)) {
+fn statusline_requests(server: &TestServer) -> ((CapturedRequest, Value), (CapturedRequest, Value)) {
     let first = receive_raw(server);
     let second = receive_raw(server);
     if is_task_title(&first.1) {
@@ -40,34 +40,33 @@ fn statusline_requests(server: &Server) -> ((Request, Value), (Request, Value)) 
     }
 }
 
-fn statusline_reply_usage(request: Request, protocol: &str, text: &str) {
-    let mut stream = SseReply::new(request);
+fn statusline_reply_usage(request: CapturedRequest, protocol: &str, text: &str) {
+    let mut stream = request.start_sse().unwrap();
     streaming_delta(&mut stream, protocol, text);
     context_tui_stream_usage(&mut stream, protocol, text);
     stream.finish();
 }
 
-fn statusline_reply_calls_usage(request: Request, protocol: &str, mut calls: Value) {
-    let mut stream = SseReply::new(request);
+fn statusline_reply_calls_usage(request: CapturedRequest, protocol: &str, mut calls: Value) {
+    let mut stream = request.start_sse().unwrap();
     if protocol == "completion" {
         for (index, call) in calls.as_array_mut().unwrap().iter_mut().enumerate() {
             call["index"] = json!(index);
         }
-        stream.event(chat_chunk(
+        stream.event(&chat_chunk(
             json!({"role":"assistant","tool_calls":calls}),
             None,
-        ));
-        stream.event(chat_chunk(json!({}), Some("tool_calls")));
-        stream.event(json!({"id":"chatcmpl-cost", "object":"chat.completion.chunk", "created":1,
+        )).unwrap();
+        stream.event(&chat_chunk(json!({}), Some("tool_calls"))).unwrap();
+        stream.event(&json!({"id":"chatcmpl-cost", "object":"chat.completion.chunk", "created":1,
             "model":"main-model", "choices":[], "usage":{"prompt_tokens":12000,"completion_tokens":300,
-            "total_tokens":12300,"prompt_tokens_details":{"cached_tokens":40,"cache_write_tokens":120}}}));
-        stream.frame("[DONE]");
+            "total_tokens":12300,"prompt_tokens_details":{"cached_tokens":40,"cache_write_tokens":120}}})).unwrap();
+        stream.frame("[DONE]").unwrap();
     } else {
         let mut response = response_body(calls);
         response["usage"] = json!({"input_tokens":12000,"output_tokens":300,"total_tokens":12300,
             "input_tokens_details":{"cached_tokens":40,"cache_write_tokens":120},"output_tokens_details":{"reasoning_tokens":0}});
-        stream
-            .event(json!({"type":"response.completed","sequence_number":100,"response":response}));
+        stream.event(&json!({"type":"response.completed","sequence_number":100,"response":response})).unwrap();
     }
     stream.finish();
 }
@@ -80,7 +79,7 @@ fn slow_statusline_out_accumulates_session_usage_across_requests_both_protocols(
         pty.input("live out task\r");
         let ((main, _), (title, _)) = statusline_requests(&fixture);
         statusline_reply_usage(title, protocol, "实时输出");
-        let mut stream = SseReply::new(main);
+        let mut stream = main.start_sse().unwrap();
         // 19 字节正文；本次请求尚未收尾时，out 只能来自字节估算。
         streaming_delta(&mut stream, protocol, "statusline-live-out");
         pty.text("statusline-live-out");
@@ -120,7 +119,7 @@ fn statusline_cost_displays_only_settled_session_subtotal() {
         pty.input("live cost task\r");
         let ((main, _), (title, _)) = statusline_requests(&fixture);
         // 标题请求保持未应答，两个请求都还没有结算。
-        let mut stream = SseReply::new(main);
+        let mut stream = main.start_sse().unwrap();
         streaming_delta(&mut stream, protocol, "statusline-live-cost");
         pty.text("statusline-live-cost");
         pty.wait_for("首笔费用结算前隐藏费用字段", |screen| {
@@ -236,7 +235,7 @@ fn task_status_cost_includes_child_subagents_without_double_counting_both_protoc
                 hub_call(protocol, "wait-cost", "wait", json!({}))
             ]),
         );
-        let mut children: Vec<Option<Request>> = vec![None, None];
+        let mut children: Vec<Option<CapturedRequest>> = vec![None, None];
         while children.iter().any(Option::is_none) {
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             assert!(
@@ -288,7 +287,7 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
         assert_eq!(title_body["model"], "title-model");
         assert!(title_body["tools"].is_null());
         assert!(title_body["tool_choice"].is_null());
-        assert_eq!(title.url(), api_path(title_protocol));
+        assert_eq!(title.target(), api_path(title_protocol));
         assert!(!body.to_string().contains("Generate a short task title"));
         statusline_reply_usage(title, title_protocol, "修复会话历史");
         pty.wait_for("后台标题和费用先于主回复到达", |screen| {
@@ -369,7 +368,7 @@ fn task_status_title_without_fast_cancel_and_next_generation_both_protocols() {
         pty.input("first task\r");
         let ((main, _), (old_title, title_body)) = statusline_requests(&fixture);
         assert_eq!(title_body["model"], "main-model");
-        let mut stream = SseReply::new(main);
+        let mut stream = main.start_sse().unwrap();
         streaming_delta(&mut stream, protocol, "first-task-partial");
         pty.text("first-task-partial");
         pty.input("\x1b");
@@ -378,7 +377,12 @@ fn task_status_title_without_fast_cancel_and_next_generation_both_protocols() {
         pty.input("second task\r");
         let ((main, body), (title, _)) = statusline_requests(&fixture);
         assert!(!body.to_string().contains("Generate a short task title"));
-        let _ = old_title.respond(Response::empty(204));
+        let _ = old_title.respond(
+            Response::builder()
+                .status(204)
+                .body(Body::empty())
+                .unwrap(),
+        );
         drop(stream);
         statusline_reply_usage(title, protocol, "第二任务标题");
         pty.text("第二任务标题");
@@ -401,7 +405,12 @@ fn task_status_title_failure_is_hidden_and_displays_known_cost() {
         pty.input("title failure task\r");
         let ((main, _), (title, _)) = statusline_requests(&fixture);
         title
-            .respond(Response::from_string("{}").with_status_code(500))
+            .respond(
+                Response::builder()
+                    .status(500)
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
             .unwrap();
         statusline_reply_usage(main, protocol, "main-still-completes");
         pty.completed_after("main-still-completes");
@@ -427,11 +436,16 @@ fn task_status_title_fallback_cross_protocol_retains_no_tools_and_actual_price()
         pty.input("fallback title task\r");
         let ((main, _), (title, _)) = statusline_requests(&fixture);
         title
-            .respond(Response::from_string("{}").with_status_code(500))
+            .respond(
+                Response::builder()
+                    .status(500)
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
             .unwrap();
         let (title, body) = receive_raw(&fixture);
         assert!(is_task_title(&body));
-        assert_eq!(title.url(), api_path(protocol));
+        assert_eq!(title.target(), api_path(protocol));
         assert_eq!(body["model"], "main-model");
         assert!(body["tools"].is_null() && body["tool_choice"].is_null());
         statusline_reply_usage(title, protocol, "备用标题");

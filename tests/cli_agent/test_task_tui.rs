@@ -1,6 +1,6 @@
 // Debug 构建的 `/test-task` 与 mock 场景结束后的正常 Agent 恢复。
 
-fn mock_tui_fixture_start(server: &Server, home: &Path, project: &Path) -> Pty {
+fn mock_tui_fixture_start(server: &TestServer, home: &Path, project: &Path) -> Pty {
     crate::write_settings(
         home,
         json!({

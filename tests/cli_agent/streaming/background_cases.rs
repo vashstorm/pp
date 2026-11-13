@@ -257,9 +257,17 @@ fn background_task_cleanup_at_run_boundaries() {
                     cli.wait_for(Pipe::Stdout, "boundary-answer");
                 }
                 RunBoundary::ModelError => {
-                    request.respond(Response::from_string(
-                        json!({"error":{"message":"fixture failure","type":"server_error"}}).to_string()
-                    ).with_status_code(500)).unwrap();
+                    request
+                        .respond(
+                            Response::builder()
+                                .status(500)
+                                .body(Body::from(
+                                    json!({"error":{"message":"fixture failure","type":"server_error"}})
+                                        .to_string(),
+                                ))
+                                .unwrap(),
+                        )
+                        .unwrap();
                     cli.wait_for(Pipe::Stderr, "error: ");
                 }
             }

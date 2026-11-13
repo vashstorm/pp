@@ -407,7 +407,9 @@ fn fallback_context_summary_keeps_native_suffix_and_rolls_back_on_failure() {
             cli.input("/compact\n");
             let (request, body) = protocol.receive(&server);
             context_assert_summary_request(protocol, &body);
-            request.respond(Response::empty(503)).unwrap();
+            request
+                .respond(Response::builder().status(503).body(Body::empty()).unwrap())
+                .unwrap();
             let (request, body) = protocol.receive(&server);
             assert_eq!(body["model"], "fixture-backup");
             context_assert_summary_request(protocol, &body);
@@ -415,7 +417,9 @@ fn fallback_context_summary_keeps_native_suffix_and_rolls_back_on_failure() {
                 protocol.final_reply(request, SUMMARY_TEXT);
                 cli.wait_for(Pipe::Stderr, "Context compacted: ~");
             } else {
-                request.respond(Response::empty(503)).unwrap();
+                request
+                    .respond(Response::builder().status(503).body(Body::empty()).unwrap())
+                    .unwrap();
                 cli.wait_for(Pipe::Stderr, "HTTP status 503");
             }
             cli.input("after summary fallback\n");

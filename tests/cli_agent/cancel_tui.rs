@@ -126,7 +126,7 @@ fn cancel_called_ids(body: &Value, protocol: &str) -> Vec<String> {
     }
 }
 
-fn cancel_assert_no_request(fixture: &Server) {
+fn cancel_assert_no_request(fixture: &TestServer) {
     assert!(
         fixture
             .recv_timeout(Duration::from_millis(300))
@@ -139,7 +139,7 @@ fn cancel_assert_no_request(fixture: &Server) {
 // 驱动 write→bash→write 批次并等到 bash 进入等待阶段。
 fn cancel_drive_batch(
     pty: &mut Pty,
-    fixture: &Server,
+    fixture: &TestServer,
     protocol: &str,
     prompt: &str,
     project: &Path,
@@ -228,8 +228,8 @@ fn cancel_assert_paired_results(body: &Value, protocol: &str) {
     assert_eq!(skipped["error"], "Not executed: task cancelled.");
 }
 
-// —— 验证项 1 的原始 TCP fixture：tiny_http 的 SseReply 只能写不能观察
-// 对端关闭，这里读完整 Content-Length 请求并可检测 peer EOF/reset。 ——
+// —— 验证项 1 的原始 TCP fixture：这里读完整 Content-Length 请求并可检测
+// peer EOF/reset，共享测试传输无法观察对端关闭。 ——
 
 enum CancelRawEvent {
     Request { path: String, body: Value },
@@ -740,7 +740,7 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
             match phase {
                 CancelPhase::Headers => {
                     pty.input("persist cancel prompt\r");
-                    // 请求已到达但未回应；持有 Request 防止对端提前 EOF。
+                    // 请求已到达但未回应；持有 CapturedRequest 防止对端提前 EOF。
                     let (_request, _) = pty.request_at(&fixture, path);
                     pty.input("\x1b");
                     cancel_wait_cancelled_ready(&mut pty);
@@ -748,7 +748,7 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
                 CancelPhase::Sse => {
                     pty.input("persist cancel prompt\r");
                     let (request, _) = pty.request_at(&fixture, path);
-                    let mut stream = SseReply::new(request);
+                    let mut stream = request.start_sse().unwrap();
                     streaming_delta(&mut stream, protocol, "persist-partial-token");
                     pty.text("persist-partial-token");
                     pty.input("\x1b");
@@ -1072,7 +1072,13 @@ fn background_hold_command(parent_marker: &str, child_marker: &str, log: Option<
 }
 
 // 按协议回复单个工具调用。
-fn background_reply_call(request: Request, protocol: &str, id: &str, name: &str, args: Value) {
+fn background_reply_call(
+    request: CapturedRequest,
+    protocol: &str,
+    id: &str,
+    name: &str,
+    args: Value,
+) {
     if protocol == "completion" {
         calls_reply(request, json!([call(id, name, args)]));
     } else {
@@ -1099,11 +1105,11 @@ fn background_paired_snapshot(body: &Value, protocol: &str, call_id: &str) -> Va
 // start 的完成不能被当作服务已退出。返回 (task_id, 启动快照, 持有的请求)。
 fn background_start_and_wait(
     pty: &mut Pty,
-    fixture: &Server,
+    fixture: &TestServer,
     protocol: &str,
     project: &Path,
     start: &BackgroundStart<'_>,
-) -> (String, Value, Request) {
+) -> (String, Value, CapturedRequest) {
     let [parent, child] = start.markers else {
         panic!("后台启动需要恰好两个 PID marker");
     };
@@ -1357,9 +1363,11 @@ fn request_retry_tui_stays_quiet_and_cancels_backoff_before_recovering() {
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         request
             .respond(
-                Response::from_string("private-error-body fixture-key")
-                    .with_status_code(503)
-                    .with_header(Header::from_bytes("Retry-After", "30").unwrap()),
+                Response::builder()
+                    .status(503)
+                    .header("Retry-After", "30")
+                    .body(Body::from("private-error-body fixture-key"))
+                    .unwrap(),
             )
             .unwrap();
         // 日志作为已进入退避的栅栏；TUI 不再显示自动重试通知。

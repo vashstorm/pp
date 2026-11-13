@@ -2,6 +2,7 @@ use super::*;
 use pp_config::config::ModelRole;
 use pp_config::config::RoleAssignment;
 use pp_core::plan::WorkMode;
+use pp_test_support::TestServer;
 
 #[test]
 fn model_roles_plan_applies_once_and_manual_model_and_effort_survive_continuation() {
@@ -64,8 +65,8 @@ fn model_roles_unavailable_plan_fails_before_changing_workflow_or_history() {
 #[test]
 fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
     for protocol in ["completion", "response"] {
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let address = server.server_addr().to_string();
+        let server = TestServer::start().unwrap();
+        let address = server.addr().to_string();
         let dir = tempfile::tempdir().unwrap();
         let parent_protocol = if protocol == "completion" {
             "response"
@@ -131,19 +132,19 @@ fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
             .unwrap();
         let mut seen = std::collections::BTreeSet::new();
         for _ in 0..4 {
-            let mut request = server
+            let request = server
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                request.url(),
+                request.target(),
                 if protocol == "completion" {
                     "/v1/chat/completions"
                 } else {
                     "/v1/responses"
                 }
             );
-            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let body: Value = request.json().unwrap();
             let model = body["model"].as_str().unwrap();
             assert!(seen.insert(model.to_owned()));
             let effort = match model {

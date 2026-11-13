@@ -581,14 +581,16 @@ fn stats_chat_captures_metrics_first_request_context_and_tool_calls() {
         json!([call("read-one", "read", json!({"path":"sample.txt"}))]),
     );
     let (request, _) = receive(&server);
-    let mut stream = SseReply::new(request);
-    stream.event(chat_chunk(
-        json!({"role":"assistant","reasoning_content":"verified reasoning","content":"done"}),
-        None,
-    ));
-    stream.event(chat_chunk(json!({}), Some("stop")));
-    stream.event(json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":15,"total_tokens":135,"prompt_tokens_details":{"cached_tokens":100,"cache_write_tokens":10}}}));
-    stream.frame("[DONE]");
+    let mut stream = request.start_sse().unwrap();
+    stream
+        .event(&chat_chunk(
+            json!({"role":"assistant","reasoning_content":"verified reasoning","content":"done"}),
+            None,
+        ))
+        .unwrap();
+    stream.event(&chat_chunk(json!({}), Some("stop"))).unwrap();
+    stream.event(&json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":15,"total_tokens":135,"prompt_tokens_details":{"cached_tokens":100,"cache_write_tokens":10}}})).unwrap();
+    stream.frame("[DONE]").unwrap();
     stream.finish();
     let output = cli.finish();
     assert!(
@@ -828,9 +830,11 @@ fn stats_responses_captures_real_usage_and_keeps_unknown_cache_unknown() {
                 body["usage"]["input_tokens_details"]["cache_write_tokens"] = json!(written);
             }
         }
-        let mut stream = SseReply::new(request);
-        stream.event(json!({"type":"response.output_text.delta","sequence_number":0,"item_id":"msg-stats","output_index":0,"content_index":0,"delta":"response done","logprobs":[]}));
-        stream.event(json!({"type":"response.completed","sequence_number":1,"response":body}));
+        let mut stream = request.start_sse().unwrap();
+        stream.event(&json!({"type":"response.output_text.delta","sequence_number":0,"item_id":"msg-stats","output_index":0,"content_index":0,"delta":"response done","logprobs":[]})).unwrap();
+        stream
+            .event(&json!({"type":"response.completed","sequence_number":1,"response":body}))
+            .unwrap();
         stream.finish();
         let output = cli.finish();
         assert!(
@@ -885,7 +889,12 @@ fn stats_http_errors_are_counted_once_without_response_body_or_credentials() {
             },
         );
         request
-            .respond(Response::from_string("private-error-body fixture-key").with_status_code(429))
+            .respond(
+                Response::builder()
+                    .status(429)
+                    .body(Body::from("private-error-body fixture-key"))
+                    .unwrap(),
+            )
             .unwrap();
         let output = cli.finish();
         assert!(!output.status.success());
@@ -925,30 +934,73 @@ pub(super) fn http(address: &str, path: &str, host: &str) -> (u16, String) {
 }
 
 fn http_with_origin(address: &str, path: &str, host: &str, origin: Option<&str>) -> (u16, String) {
+    let reply = raw_request(address, "GET", path, host, origin);
+    (
+        reply.status,
+        String::from_utf8(reply.body).expect("文本资源必须是 UTF-8"),
+    )
+}
+
+/// 原始回环响应：状态、headers 与未经解码的 body 字节。
+struct RawReply {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl RawReply {
+    fn header(&self, name: &str) -> &str {
+        self.headers
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+            .unwrap_or_default()
+    }
+}
+
+/// 唯一的底层读取：文本 helper 与二进制／方法用例都走这里。
+fn raw_request(
+    address: &str,
+    method: &str,
+    path: &str,
+    host: &str,
+    origin: Option<&str>,
+) -> RawReply {
     use std::io::Read;
     let mut stream = std::net::TcpStream::connect(address).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    write!(stream, "GET {path} HTTP/1.0\r\nHost: {host}\r\n").unwrap();
+    write!(stream, "{method} {path} HTTP/1.0\r\nHost: {host}\r\n").unwrap();
     if let Some(origin) = origin {
         write!(stream, "Origin: {origin}\r\n").unwrap();
     }
     write!(stream, "Connection: close\r\n\r\n").unwrap();
-    let mut text = String::new();
-    stream.read_to_string(&mut text).unwrap();
-    let (headers, body) = text.split_once("\r\n\r\n").unwrap();
-    (
-        headers.split_whitespace().nth(1).unwrap().parse().unwrap(),
-        body.into(),
-    )
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).unwrap();
+    let split = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("HTTP 响应必须带完整头部");
+    let head = String::from_utf8(bytes[..split].to_vec()).unwrap();
+    let mut lines = head.split("\r\n");
+    let status = lines.next().unwrap().split_whitespace().nth(1).unwrap();
+    let headers = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.to_ascii_lowercase(), value.trim_start().to_owned()))
+        .collect();
+    RawReply {
+        status: status.parse().unwrap(),
+        headers,
+        body: bytes[split + 4..].to_vec(),
+    }
 }
 
 pub(super) fn start_stats_server(dir: &std::path::Path) -> (Cli, String) {
-    stats_server_address(Cli::spawn(dir, &["stats", "--port", "0", "--no-open"], &[]))
+    stats_endpoint(Cli::spawn(dir, &["stats", "--port", "0", "--no-open"], &[]))
 }
 
-fn stats_server_address(mut cli: Cli) -> (Cli, String) {
+fn stats_endpoint(mut cli: Cli) -> (Cli, String) {
     use std::io::BufRead;
     let stdout = cli.0.as_mut().unwrap().stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1140,7 +1192,7 @@ fn stats_server_opens_actual_url_and_survives_browser_failure() {
 fn stats_server_without_terminal_skips_browser() {
     let dir = tempfile::tempdir().unwrap();
     let bin = stats_browser_fixture(dir.path());
-    let (_cli, address) = stats_server_address(Cli::spawn(
+    let (_cli, address) = stats_endpoint(Cli::spawn(
         dir.path(),
         &["stats", "--port", "0"],
         &[("PATH", bin.to_str().unwrap())],
@@ -1154,7 +1206,7 @@ fn stats_server_without_terminal_skips_browser() {
 fn stats_server_no_open_skips_browser() {
     let dir = tempfile::tempdir().unwrap();
     let bin = stats_browser_fixture(dir.path());
-    let (_cli, address) = stats_server_address(Cli::spawn(
+    let (_cli, address) = stats_endpoint(Cli::spawn(
         dir.path(),
         &["stats", "--port", "0", "--no-open"],
         &[("PATH", bin.to_str().unwrap())],
@@ -1182,7 +1234,7 @@ fn stats_server_binds_explicit_ip_and_checks_its_origin() {
         return;
     };
     let dir = tempfile::tempdir().unwrap();
-    let (_cli, address) = stats_server_address(Cli::spawn(
+    let (_cli, address) = stats_endpoint(Cli::spawn(
         dir.path(),
         &["stats", "--host", &host, "--port", "0", "--no-open"],
         &[],
@@ -1242,6 +1294,89 @@ fn stats_server_starts_without_models_and_rejects_foreign_hosts() {
 }
 
 #[test]
+fn stats_server_preserves_method_security_and_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_cli, address) = start_stats_server(dir.path());
+    let host = address.as_str();
+
+    // 未知合法 GET 仍是原来的 JSON 404。
+    let missing = raw_request(host, "GET", "/api/stats/missing", host, None);
+    assert_eq!(missing.status, 404);
+    assert_eq!(missing.body, br#"{"error":"request or page not found"}"#);
+    stats_assert_security(&missing, "application/json");
+
+    // 合法 Host 的 POST 与 HEAD 都按既有策略返回 405；HEAD 按 HTTP 语义不带正文。
+    for method in ["POST", "HEAD"] {
+        let reply = raw_request(host, method, "/api/stats/overview?range=24h", host, None);
+        assert_eq!(reply.status, 405, "{method}");
+        if method == "POST" {
+            assert_eq!(reply.body, br#"{"error":"GET required"}"#);
+        }
+        stats_assert_security(&reply, "application/json");
+    }
+
+    // Host 检查先于方法：外来 Host 的 POST 仍是 403。
+    let foreign = raw_request(
+        host,
+        "POST",
+        "/api/stats/overview",
+        "untrusted.example",
+        None,
+    );
+    assert_eq!(foreign.status, 403);
+    assert_eq!(foreign.body, br#"{"error":"allowed origin required"}"#);
+    stats_assert_security(&foreign, "application/json");
+
+    // 所有内嵌文本资源可访问，响应头保持一致。
+    for (path, kind) in [
+        ("/", "text/html"),
+        ("/index.html", "text/html"),
+        ("/stats.css", "text/css"),
+        ("/ui.css", "text/css"),
+        ("/traces.css", "text/css"),
+        ("/stats.js", "text/javascript"),
+        ("/activity.js", "text/javascript"),
+        ("/insights.js", "text/javascript"),
+        ("/traces.js", "text/javascript"),
+        ("/context.js", "text/javascript"),
+        ("/icon.svg", "image/svg+xml"),
+    ] {
+        let reply = raw_request(host, "GET", path, host, None);
+        assert_eq!(reply.status, 200, "{path}");
+        assert!(!reply.body.is_empty(), "{path}");
+        stats_assert_security(&reply, kind);
+    }
+
+    // 字体按原始二进制返回，不做 UTF-8 转码。
+    let font = raw_request(host, "GET", "/fonts/InterVariable.woff2", host, None);
+    assert_eq!(font.status, 200);
+    assert_eq!(
+        font.body,
+        include_bytes!("../../crates/pp-stats/src/fonts/InterVariable.woff2")
+    );
+    stats_assert_security(&font, "font/woff2");
+
+    // 静态资源仍是精确 request-target 匹配。
+    assert_eq!(
+        raw_request(host, "GET", "/stats.js?x=1", host, None).status,
+        404
+    );
+}
+
+fn stats_assert_security(reply: &RawReply, kind: &str) {
+    assert_eq!(
+        reply.header("content-type"),
+        format!("{kind}; charset=utf-8")
+    );
+    assert_eq!(reply.header("cache-control"), "no-store");
+    assert_eq!(reply.header("x-content-type-options"), "nosniff");
+    assert_eq!(
+        reply.header("content-security-policy"),
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+    );
+}
+
+#[test]
 fn stats_interrupted_streams_keep_metrics_without_storing_partial_output() {
     for protocol in ["completion", "response"] {
         let server = server();
@@ -1260,14 +1395,16 @@ fn stats_interrupted_streams_keep_metrics_without_storing_partial_output() {
                 "/v1/responses"
             },
         );
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         if protocol == "completion" {
-            stream.event(chat_chunk(
-                json!({"role":"assistant","content":"partial model output"}),
-                None,
-            ));
+            stream
+                .event(&chat_chunk(
+                    json!({"role":"assistant","content":"partial model output"}),
+                    None,
+                ))
+                .unwrap();
         } else {
-            stream.event(json!({"type":"response.output_text.delta","sequence_number":0,"item_id":"partial","output_index":0,"content_index":0,"delta":"partial model output","logprobs":[]}));
+            stream.event(&json!({"type":"response.output_text.delta","sequence_number":0,"item_id":"partial","output_index":0,"content_index":0,"delta":"partial model output","logprobs":[]})).unwrap();
         }
         stream.finish();
         let output = cli.finish();
@@ -1289,14 +1426,18 @@ fn stats_truncated_chat_preserves_reported_usage() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli::start(&server, dir.path(), Some("truncated response"));
     let (request, _) = receive(&server);
-    let mut stream = SseReply::new(request);
-    stream.event(chat_chunk(
-        json!({"role":"assistant","content":"truncated text"}),
-        None,
-    ));
-    stream.event(chat_chunk(json!({}), Some("length")));
-    stream.event(json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":15,"total_tokens":135,"prompt_tokens_details":{"cached_tokens":100,"cache_write_tokens":10}}}));
-    stream.frame("[DONE]");
+    let mut stream = request.start_sse().unwrap();
+    stream
+        .event(&chat_chunk(
+            json!({"role":"assistant","content":"truncated text"}),
+            None,
+        ))
+        .unwrap();
+    stream
+        .event(&chat_chunk(json!({}), Some("length")))
+        .unwrap();
+    stream.event(&json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture-model","choices":[],"usage":{"prompt_tokens":120,"completion_tokens":15,"total_tokens":135,"prompt_tokens_details":{"cached_tokens":100,"cache_write_tokens":10}}})).unwrap();
+    stream.frame("[DONE]").unwrap();
     stream.finish();
     assert!(!cli.finish().status.success());
     let records = rows(dir.path());
@@ -1334,20 +1475,24 @@ fn stats_cache_write_extensions_preserve_unknown_zero_and_failed_usage() {
                     "/v1/responses"
                 },
             );
-            let mut stream = SseReply::new(request);
+            let mut stream = request.start_sse().unwrap();
             if protocol == "completion" {
-                stream.event(chat_chunk(
-                    json!({"role":"assistant","content":"truncated"}),
-                    None,
-                ));
-                stream.event(chat_chunk(json!({}), Some("length")));
+                stream
+                    .event(&chat_chunk(
+                        json!({"role":"assistant","content":"truncated"}),
+                        None,
+                    ))
+                    .unwrap();
+                stream
+                    .event(&chat_chunk(json!({}), Some("length")))
+                    .unwrap();
                 let mut usage = json!({"prompt_tokens":50,"completion_tokens":10,"total_tokens":60,"prompt_tokens_details":{"cached_tokens":40}});
                 usage
                     .as_object_mut()
                     .unwrap()
                     .extend(extension.as_object().unwrap().clone());
-                stream.event(json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture","choices":[],"usage":usage}));
-                stream.frame("[DONE]");
+                stream.event(&json!({"id":"usage","object":"chat.completion.chunk","created":1,"model":"fixture","choices":[],"usage":usage})).unwrap();
+                stream.frame("[DONE]").unwrap();
             } else {
                 let mut body = response_body(json!([]));
                 body["status"] = json!("incomplete");
@@ -1358,9 +1503,11 @@ fn stats_cache_write_extensions_preserve_unknown_zero_and_failed_usage() {
                     .unwrap()
                     .extend(extension.as_object().unwrap().clone());
                 body["usage"] = usage;
-                stream.event(
-                    json!({"type":"response.incomplete","sequence_number":0,"response":body}),
-                );
+                stream
+                    .event(
+                        &json!({"type":"response.incomplete","sequence_number":0,"response":body}),
+                    )
+                    .unwrap();
             }
             stream.finish();
             assert!(!cli.finish().status.success());

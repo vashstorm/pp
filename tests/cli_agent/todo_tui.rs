@@ -546,7 +546,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 vt100::Color::Rgb(255, 230, 109)
             );
         }
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         let answer = (0..70)
             .map(|i| format!("    pinned-stream-{i:03}\n"))
             .collect::<String>()

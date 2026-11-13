@@ -1,12 +1,13 @@
 use super::*;
+use pp_test_support::TestServer;
+use std::sync::Arc;
 
 #[test]
 fn plan_submit_seals_batch_without_another_model_request() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         agent.workflow.mode = pp_core::plan::WorkMode::Plan;
         agent.workflow.plan = Some(pp_core::plan::PlanDocument::new().unwrap());
         agent
@@ -14,23 +15,24 @@ fn plan_submit_seals_batch_without_another_model_request() {
             .set_tools(agent.tools.all_definitions(agent.workflow.mode));
         let content = "# Create hello\n\n- [ ] Create hello.txt and read back hello.\n";
         let serving = protocol.to_owned();
-        let worker = std::thread::spawn(move || {
-            let mut request = server
+        let worker = Arc::clone(&server);
+        let handle = std::thread::spawn(move || {
+            let request = worker
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
-            let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let _: Value = request.json().unwrap();
             tool_call_for(
                 &serving,
                 request,
                 "write",
                 &json!({"path":".pp/drafts/create-canary.md","content":content}).to_string(),
             );
-            let mut request = server
+            let request = worker
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
-            let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let _: Value = request.json().unwrap();
             let calls = [
                 ("submit", "plan_submit", json!({"expected_revision":1})),
                 ("shell", "bash", json!({"command":"touch forbidden"})),
@@ -51,7 +53,6 @@ fn plan_submit_seals_batch_without_another_model_request() {
                 let calls: Vec<_> = calls.into_iter().map(|(id,name,args)| json!({"type":"function_call","id":format!("fc-{id}"),"call_id":id,"name":name,"arguments":args.to_string(),"status":"completed"})).collect();
                 response_stream(request, &calls, true);
             }
-            server
         });
         let queue = InputQueue::default();
         queue.begin_run().unwrap();
@@ -68,7 +69,7 @@ fn plan_submit_seals_batch_without_another_model_request() {
                 },
             )
             .unwrap();
-        let server = worker.join().unwrap();
+        handle.join().unwrap();
         assert_eq!(outcome, RunOutcome::AwaitingPlanReview);
         assert!(server.try_recv().unwrap().is_none());
         assert_eq!(results.len(), 4);
@@ -144,9 +145,8 @@ fn plan_protocols_deny_side_effects_and_continue_reading() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("canary"), "original\n").unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         let mut document = pp_core::plan::PlanDocument::new().unwrap();
         document.origin_prompt = "Research canary".into();
         agent.workflow.mode = pp_core::plan::WorkMode::Plan;
@@ -155,7 +155,8 @@ fn plan_protocols_deny_side_effects_and_continue_reading() {
             .session
             .set_tools(agent.tools.all_definitions(agent.workflow.mode));
         let serving = protocol.to_owned();
-        let worker = std::thread::spawn(move || {
+        let worker = Arc::clone(&server);
+        let handle = std::thread::spawn(move || {
             for (name, args) in [
                 ("write", json!({"path":"canary","content":"changed"})),
                 (
@@ -173,14 +174,14 @@ fn plan_protocols_deny_side_effects_and_continue_reading() {
                 ("mcp__unseen__write", json!({})),
                 ("read", json!({"path":"canary"})),
             ] {
-                let mut request = server
+                let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
-                let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+                let _: Value = request.json().unwrap();
                 tool_call_for(&serving, request, name, &args.to_string());
             }
-            let request = server
+            let request = worker
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap()
                 .unwrap();
@@ -198,7 +199,7 @@ fn plan_protocols_deny_side_effects_and_continue_reading() {
             },
         );
         assert_eq!(result.unwrap(), RunOutcome::Completed);
-        worker.join().unwrap();
+        handle.join().unwrap();
         assert_eq!(results.len(), 9);
         for result in &results[..8] {
             assert_eq!(

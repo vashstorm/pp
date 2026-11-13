@@ -37,7 +37,7 @@ pub(super) fn assert_live(body: &Value, protocol: &str, mode: &str) {
     assert!(text.contains(&format!("PROMPT_TOOLS={names}\n")), "{text}");
 }
 
-fn configure(server: &Server, cwd: &Path, protocol: &str) {
+fn configure(server: &TestServer, cwd: &Path, protocol: &str) {
     fs::write(config_path(cwd, "settings.yml"), fixture_settings()).unwrap();
     fs::write(
         config_path(cwd, "models.yml"),

@@ -4,7 +4,7 @@ use std::{fs, path::Path};
 
 const APIS: [&str; 2] = ["completion", "response"];
 
-pub(super) fn receive_for(server: &Server, protocol: &str) -> (Request, Value) {
+pub(super) fn receive_for(server: &TestServer, protocol: &str) -> (CapturedRequest, Value) {
     receive_at(
         server,
         if protocol == "completion" {
@@ -33,7 +33,7 @@ fn history<'a>(body: &'a Value, protocol: &str) -> &'a [Value] {
     .unwrap()
 }
 
-pub(super) fn finish_request(request: Request, protocol: &str, text: &str) {
+pub(super) fn finish_request(request: CapturedRequest, protocol: &str, text: &str) {
     if protocol == "completion" {
         final_reply(request, text);
     } else {
@@ -41,7 +41,7 @@ pub(super) fn finish_request(request: Request, protocol: &str, text: &str) {
     }
 }
 
-fn tool_call(request: Request, protocol: &str, id: &str, name: &str, args: Value) {
+fn tool_call(request: CapturedRequest, protocol: &str, id: &str, name: &str, args: Value) {
     if protocol == "completion" {
         calls_reply(request, json!([call(id, name, args)]));
     } else {
@@ -49,7 +49,7 @@ fn tool_call(request: Request, protocol: &str, id: &str, name: &str, args: Value
     }
 }
 
-pub(super) fn read_project_file(request: Request, protocol: &str, path: &str) {
+pub(super) fn read_project_file(request: CapturedRequest, protocol: &str, path: &str) {
     tool_call(
         request,
         protocol,
@@ -60,17 +60,17 @@ pub(super) fn read_project_file(request: Request, protocol: &str, path: &str) {
 }
 
 pub(super) fn activate_rules(
-    server: &Server,
+    server: &TestServer,
     protocol: &str,
-    request: Request,
-) -> (Request, Value) {
+    request: CapturedRequest,
+) -> (CapturedRequest, Value) {
     read_project_file(request, protocol, ".pp/agent/settings.yml");
     let (request, body) = receive_for(server, protocol);
     assert_tool_ok(&body, protocol, "activate-rules");
     (request, body)
 }
 
-fn tool_batch(request: Request, protocol: &str, calls: &[(&str, &str, Value)]) {
+fn tool_batch(request: CapturedRequest, protocol: &str, calls: &[(&str, &str, Value)]) {
     if protocol == "completion" {
         calls_reply(
             request,
@@ -539,7 +539,7 @@ fn assert_tool_ok(body: &Value, protocol: &str, id: &str) {
     assert_eq!(result["ok"], true, "{result}");
 }
 
-fn start(server: &Server, cwd: &Path, protocol: &str) -> LiveCli {
+fn start(server: &TestServer, cwd: &Path, protocol: &str) -> LiveCli {
     LiveCli::new(Cli::start_with(
         cwd,
         None,

@@ -93,7 +93,7 @@ fn native_tui_streaming_keeps_input_cursor_visible_both_protocols() {
         let (_home, mut pty) = context_tui_start(&provider, protocol, 100_000, 80);
         pty.input("cursor-stream-task\r");
         let (request, _) = pty.request_at(&provider, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         let mut answer = String::from("cursor-stream-start");
         streaming_delta(&mut stream, protocol, &answer);
         pty.text(&answer);
@@ -202,7 +202,7 @@ fn native_tui_long_partial_exit_preserves_uncommitted_rows_both_protocols() {
         let (_home, mut pty) = context_tui_start(&provider, protocol, 100_000, 80);
         pty.input("native-partial-task\r");
         let (request, _) = pty.request_at(&provider, api_path(protocol));
-        let mut stream = SseReply::new(request);
+        let mut stream = request.start_sse().unwrap();
         let answer = (0..90).map(|i| format!("partial-native-{i:03}\n\n"))
             .collect::<String>();
         streaming_delta(&mut stream, protocol, &answer);

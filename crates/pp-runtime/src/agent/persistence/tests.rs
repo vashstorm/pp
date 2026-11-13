@@ -1,5 +1,8 @@
 use super::*;
+use axum::{body::Body, response::Response};
 use pp_config::models::Protocol;
+use pp_test_support::TestServer;
+use std::sync::Arc;
 
 #[test]
 fn wait_native_commit_failure_does_not_acknowledge_background_delivery() {
@@ -528,9 +531,9 @@ fn context_failed_history_replacement_restores_native_memory_and_disk() {
     use serde_json::json;
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let server = Arc::new(TestServer::start().unwrap());
         let models = dir.path().join("models.yml");
-        fs::write(&models, json!({"providers":{"fixture": {"protocol":protocol,"api_key":"fixture-key","base_url":format!("http://{}/v1",server.server_addr()),"models":{"primary": {"model":"fixture-model"}}}}}).to_string()).unwrap();
+        fs::write(&models, json!({"providers":{"fixture": {"protocol":protocol,"api_key":"fixture-key","base_url":format!("http://{}/v1",server.addr()),"models":{"primary": {"model":"fixture-model"}}}}}).to_string()).unwrap();
         let catalog = ModelCatalog::from_files(&dir.path().join("settings.yml"), &models).unwrap();
         let mut agent = Agent::new(
             catalog,
@@ -588,12 +591,13 @@ fn context_failed_history_replacement_restores_native_memory_and_disk() {
         let before = fs::read(&path).unwrap();
         let native = serde_json::to_value(&agent.session).unwrap();
         agent.journal.active.as_mut().unwrap().file = File::open(&path).unwrap();
+        let worker = Arc::clone(&server);
         let responder = std::thread::spawn(move || {
-            let mut request = server
+            let request = worker
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap()
                 .expect("summary request");
-            let body: serde_json::Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let body: serde_json::Value = request.json().unwrap();
             assert!(body.get("tools").is_none_or(serde_json::Value::is_null));
             assert!(
                 !body.to_string().contains("old-2"),
@@ -611,12 +615,15 @@ fn context_failed_history_replacement_restores_native_memory_and_disk() {
                 )
             };
             request
-                .respond(tiny_http::Response::from_string(sse).with_header(
-                    tiny_http::Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
-                ))
+                .respond(
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(sse))
+                        .unwrap(),
+                )
                 .unwrap();
             assert!(
-                server
+                worker
                     .recv_timeout(std::time::Duration::from_millis(100))
                     .unwrap()
                     .is_none()
@@ -660,9 +667,9 @@ fn write_failure_preserves_settings_and_blocks_requests_until_reset() {
     use pp_config::config::ModelCatalog;
     let dir = tempfile::tempdir().unwrap();
     let models = dir.path().join("models.yml");
-    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let server = TestServer::start().unwrap();
     fs::write(&models, serde_json::json!({"providers":{
-            "a": {"protocol":"completion","api_key":"fixture", "base_url":format!("http://{}/v1", server.server_addr()),
+            "a": {"protocol":"completion","api_key":"fixture", "base_url":format!("http://{}/v1", server.addr()),
              "models":{"one": {"model":"one"},"two": {"model":"two","thinking":{"defaultLevel":"max"}}}},
             "b": {"protocol":"response","api_key":"fixture", "models":{"one": {"model":"other","thinking":{"defaultLevel":"high"}},"two": {"model":"two","thinking":{"defaultLevel":"max"}}}}}}).to_string()).unwrap();
     pp_config::agent_store::initialize(

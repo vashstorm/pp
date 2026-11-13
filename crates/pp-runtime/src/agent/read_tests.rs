@@ -3,6 +3,7 @@ use super::*;
 use crate::agent::tests::{
     completion_stream, final_for, response_stream, runtime_input_agent, seed_session,
 };
+use pp_test_support::TestServer;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 
@@ -13,9 +14,8 @@ fn read_image_tree_navigation_keeps_complete_native_attachment_without_new_user_
         image::DynamicImage::new_rgb8(1, 1)
             .save(dir.path().join("fixture.png"))
             .unwrap();
-        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         let peer = Arc::clone(&server);
         let worker = std::thread::spawn(move || {
             let request = peer.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
@@ -294,9 +294,8 @@ fn skill_read_execution_and_disablement_apply_to_every_workflow() {
 fn read_history_restores_unknown_tool_results_without_special_handling() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
-        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = TestServer::start().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         seed_session(&mut agent, "restore an archived tool result");
         let payload = json!({
             "ok": true,
@@ -390,13 +389,12 @@ fn user_image_requests_restore_navigate_and_switch_protocol_without_source() {
             &CancellationToken::new(),
         )
         .unwrap();
-        let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
-        let mut agent =
-            runtime_input_agent(dir.path(), protocol, &server.server_addr().to_string(), "");
+        let server = Arc::new(TestServer::start().unwrap());
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
         let peer = server.clone();
         let worker = std::thread::spawn(move || {
-            let mut request = peer.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
-            let body: Value = serde_json::from_reader(request.as_reader()).unwrap();
+            let request = peer.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+            let body: Value = request.json().unwrap();
             let users: Vec<_> = if protocol == "completion" {
                 body["messages"]
                     .as_array()

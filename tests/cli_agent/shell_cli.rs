@@ -23,14 +23,14 @@ const FORBIDDEN_MARKERS: [&str; 5] = [
 ];
 
 impl Protocol {
-    fn models(self, server: &Server) -> String {
+    fn models(self, server: &TestServer) -> String {
         match self {
             Self::Chat => fixture_models(server),
             Self::Responses => response_models(server, Some("response")),
         }
     }
 
-    fn start(self, server: &Server, cwd: &std::path::Path) -> LiveCli {
+    fn start(self, server: &TestServer, cwd: &std::path::Path) -> LiveCli {
         LiveCli::new(Cli::start_with(
             cwd,
             None,
@@ -39,7 +39,7 @@ impl Protocol {
         ))
     }
 
-    fn receive(self, server: &Server) -> (Request, Value) {
+    fn receive(self, server: &TestServer) -> (CapturedRequest, Value) {
         receive_at(
             server,
             match self {
@@ -49,7 +49,7 @@ impl Protocol {
         )
     }
 
-    fn final_reply(self, request: Request, text: &str) {
+    fn final_reply(self, request: CapturedRequest, text: &str) {
         match self {
             Self::Chat => final_reply(request, text),
             Self::Responses => response_final(request, text),
