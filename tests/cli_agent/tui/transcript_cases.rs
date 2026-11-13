@@ -4,6 +4,7 @@ use super::*;
 fn tui_activity_prefers_reasoning_summary_and_resets_for_the_next_task() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("summary.txt"), "summary fixture").unwrap();
     std::fs::write(
         config_path(dir.path(), "models.yml"),
         response_models(&server, Some("response")),
@@ -27,11 +28,42 @@ fn tui_activity_prefers_reasoning_summary_and_resets_for_the_next_task() {
             live_activity_labels(&screen.contents()).eq([expected])
         });
     }
-    streaming_delta(&mut stream, "response", "summary answer");
+    streaming_delta(&mut stream, "response", "summary progress");
     pty.wait_for("回答期间保留摘要标题", |screen| {
         let text = screen.contents();
-        text.contains("summary answer") && live_activity_labels(&text).eq(["验证修复"])
+        text.contains("summary progress") && live_activity_labels(&text).eq(["验证修复"])
     });
+    let call = json!({
+        "type":"function_call", "id":"fc-summary-read", "call_id":"summary-read",
+        "name":"read", "arguments":json!({"path":"summary.txt"}).to_string(),
+        "status":"completed"
+    });
+    stream
+        .event(&json!({
+            "type":"response.output_item.done", "sequence_number":2,
+            "output_index":1, "item":call
+        }))
+        .unwrap();
+    stream
+        .event(&json!({
+            "type":"response.completed", "sequence_number":3,
+            "response":response_body(json!([
+                response_message("msg-live", json!([response_text("summary progress")])),
+                call
+            ]))
+        }))
+        .unwrap();
+    drop(stream);
+    let (request, _) = receive_at(&server, "/v1/responses");
+    let mut stream = request.start_sse().unwrap();
+    streaming_delta(&mut stream, "response", "summary answer");
+    pty.wait_for(
+        "后续请求没有摘要时仍沿用最近标题",
+        |screen| {
+            let text = screen.contents();
+            text.contains("summary answer") && live_activity_labels(&text).eq(["验证修复"])
+        },
+    );
     streaming_complete(&mut stream, "response", "summary answer");
     drop(stream);
     pty.completed_after("summary answer");

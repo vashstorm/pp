@@ -36,6 +36,32 @@ fn activity_prefers_latest_reasoning_summary_until_the_run_finishes() {
     });
     transcript.progress(AgentEvent::AssistantStarted);
     assert_eq!(live_activity_label(&transcript), "修复状态");
+    for event in [
+        AgentEvent::ThinkingDelta {
+            text: "本次请求只有思考正文，没有摘要。".into(),
+        },
+        AgentEvent::ReasoningSummaryDelta { text: " \n".into() },
+        AgentEvent::AssistantDelta {
+            text: "继续检查".into(),
+            refusal: false,
+        },
+        AgentEvent::AssistantFinished {
+            text: "继续检查".into(),
+        },
+        AgentEvent::ToolStarted {
+            id: "read-without-summary".into(),
+            name: "read".into(),
+            arguments: r#"{"path":"test.txt"}"#.into(),
+        },
+        AgentEvent::ToolFinished {
+            id: "read-without-summary".into(),
+            result: json!({"ok":true,"content":"file content"}),
+        },
+        AgentEvent::AssistantStarted,
+    ] {
+        transcript.progress(event);
+        assert_eq!(live_activity_label(&transcript), "修复状态");
+    }
     transcript.progress(AgentEvent::ReasoningSummaryDelta {
         text: "确认修复结果".into(),
     });

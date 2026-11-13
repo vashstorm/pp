@@ -599,6 +599,7 @@ impl Transcript {
                 AgentEvent::ModelAttemptFailed { .. } => activity.phase("Model attempt failed"),
                 AgentEvent::ModelRouteChanged { .. } => activity.phase("Switching model"),
                 AgentEvent::AssistantStarted => {
+                    // 新请求只重置分片解析；整轮任务继续沿用最近一次摘要。
                     activity.summary_line.clear();
                     activity.summary_has_title = false;
                     activity.phase("Requesting model");
