@@ -16,6 +16,9 @@ pub use roles::{ModelRole, ModelRoles, RoleAssignment, RoleModel, RoleRoute};
 mod sections;
 pub use sections::{ApprovalMode, ApprovalPolicy, LspSettings, OutputSettings, TaskSettings};
 
+mod stats;
+pub use stats::{StatsSettings, StatsStyle};
+
 // Deliberately not Debug: this owns the API credential.
 pub struct Config {
     pub auth: Option<crate::auth::Config>,
@@ -274,6 +277,8 @@ impl ModelPreferences {
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     #[serde(default)]
+    pub stats: StatsSettings,
+    #[serde(default)]
     pub tui: TuiSettings,
     #[serde(default)]
     pub cost: CostDisplay,
@@ -429,6 +434,7 @@ pub fn global_dir() -> Result<PathBuf> {
 
 fn default_settings() -> Settings {
     Settings {
+        stats: StatsSettings::default(),
         task: Default::default(),
         rg: RgSettings::default(),
         read: ReadDisplaySettings::default(),

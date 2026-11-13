@@ -172,6 +172,15 @@ kbd {
   display: block;
   flex: none;
 }
+.topbar-wordmark {
+  display: block;
+  flex: none;
+  color: var(--ink-1);
+  font-size: 24px;
+  font-weight: 750;
+  letter-spacing: -0.06em;
+  line-height: 1;
+}
 .topbar-slash {
   color: var(--ink-4);
   font-size: 18px;

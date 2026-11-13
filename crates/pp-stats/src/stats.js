@@ -35,6 +35,8 @@ const paths = {
   sun: "M12 3v2 M12 19v2 M3 12h2 M19 12h2 m-15-6 2 2 m10 10 2 2 M6 18l2-2 M16 8l2-2 M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0",
   moon: "M21 13A9 9 0 0 1 11 3a9 9 0 1 0 10 10",
   system: "M3 3h18v13H3z M12 16v5 M8 21h8",
+  styleDefault: "M3 4h18v16H3z M3 9h18 M9 9v11",
+  styleModern: "m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z M20 2v4 M18 4h4",
   flag: "M5 21V4 M5 4h12l-3 4 3 4H5",
   refresh: "M21 12a9 9 0 1 1-2.6-6.4 M21 3v6h-6",
   alert: "M12 9v4 M12 17h.01 M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
@@ -307,6 +309,55 @@ $("theme").onclick = () => {
   applyTheme();
 };
 applyTheme();
+let style = "default", styleReady = false;
+function applyStyle() {
+  document.documentElement.dataset.style = style;
+  const label = style === "modern" ? "Modern" : "Default";
+  const next = style === "modern" ? "Default" : "Modern";
+  $("style").innerHTML = icon(style === "modern" ? "styleModern" : "styleDefault", 15);
+  $("style").setAttribute("aria-label", `${label} style (click to switch to ${next})`);
+  $("style").title = `${label} style — click to switch to ${next}. Modern appearance is coming soon.`;
+}
+async function requestStyle(next) {
+  const response = await fetch("/api/stats/style", {
+    cache: "no-store",
+    ...(next ? {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ style: next }),
+    } : {}),
+  });
+  if (!response.ok) throw new Error("Style settings are unavailable. Click Style to retry.");
+  const settings = await response.json();
+  if (!["default", "modern"].includes(settings.style))
+    throw new Error("Invalid style settings. Click Style to retry.");
+  style = settings.style;
+  styleReady = true;
+  applyStyle();
+}
+async function loadStyle() {
+  try {
+    await requestStyle();
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    $("style").disabled = false;
+  }
+}
+$("style").onclick = async () => {
+  $("style").disabled = true;
+  if (!styleReady) return loadStyle();
+  try {
+    await requestStyle(style === "default" ? "modern" : "default");
+    toast(style === "modern" ? "Modern selected. Its appearance is coming soon; using Default for now." : "Default style saved.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    $("style").disabled = false;
+  }
+};
+applyStyle();
+loadStyle();
 function navigate(next) {
   location.hash = `/${next}?range=${range}`;
 }

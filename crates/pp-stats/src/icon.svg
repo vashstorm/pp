@@ -1,10 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
-  <defs>
-    <linearGradient id="brand" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#d15aa7"/>
-      <stop offset="1" stop-color="#728ced"/>
-    </linearGradient>
-  </defs>
-  <rect width="32" height="32" rx="8" fill="url(#brand)"/>
-  <path d="M7 23V11h3a4 4 0 0 1 0 8H7m11 4V11h3a4 4 0 0 1 0 8h-3" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <title>Pager Plane</title>
+  <!-- 以矢量双翼和中央留白折线呼应 TUI welcome 页的金蓝纸飞机。 -->
+  <path fill="#d7af5f" d="M5 14.4 27 5 12 17.6 12 24.2 9.4 17Z"/>
+  <path fill="#7aa2f7" d="M15.2 18.4 27 5 21.8 26Z"/>
 </svg>

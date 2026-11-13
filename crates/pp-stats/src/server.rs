@@ -20,6 +20,7 @@ pub fn run(
         "stats host must be a specific IP address, not an unspecified address"
     );
     let mut store = Store::open(&database_path()?).context("opening statistics database")?;
+    let settings_path = pp_config::config::global_dir()?.join("settings.yml");
     // 旧库退役在服务启动时执行；失败只告警，服务照常启动并在下次重试。
     if let Err(error) = maintain(&mut store.conn) {
         tracing::warn!(event = "statistics_migration_failed", error = %error);
@@ -43,10 +44,35 @@ pub fn run(
         } else {
             Vec::new()
         };
-        let response = dispatch(&store, &query.target, &titles);
+        let response = if query.target == http::STYLE_PATH {
+            style_response(&settings_path, query.style)
+        } else {
+            dispatch(&store, &query.target, &titles)
+        };
         let _ = query.reply.send(response);
     }
     transport.join()
+}
+
+fn style_response(
+    settings_path: &std::path::Path,
+    style: Option<pp_config::config::StatsStyle>,
+) -> (u16, &'static str, String) {
+    let result = if let Some(style) = style {
+        style
+            .save(settings_path)
+            .map(|()| pp_config::config::StatsSettings { style })
+    } else {
+        pp_config::config::read_settings(settings_path).map(|settings| settings.stats)
+    };
+    match result {
+        Ok(settings) => (200, "application/json", json!(settings).to_string()),
+        Err(_) => (
+            503,
+            "application/json",
+            json!({"error":"statistics style settings unavailable"}).to_string(),
+        ),
+    }
 }
 
 fn open_browser(url: String) {

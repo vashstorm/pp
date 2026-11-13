@@ -1,7 +1,7 @@
 //! 统计服务的 Axum 传输层：监听、Host/Origin 策略、静态资源与同步工作端桥接。
 //!
-//! SQLite 只属于 `server.rs` 的调用线程；这里只把原始 request-target 交给同步
-//! 工作端并等待一次性响应。
+//! SQLite 与配置文件读写只属于 `server.rs` 的调用线程；这里只把原始
+//! request-target 与已校验的风格选择交给同步工作端并等待一次性响应。
 
 use std::{
     io,
@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use axum::{
     Router,
-    body::Body,
+    body::{Body, to_bytes},
     extract::{Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::Response,
@@ -30,9 +30,18 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; st
 /// 同步工作端不可用时的固定响应体，与 `dispatch` 共用同一份字面量。
 const UNAVAILABLE_TYPE: &str = "application/json";
 
-/// 同步工作端的一次查询：原始 request-target 与一次性响应槽。
+pub(super) const STYLE_PATH: &str = "/api/stats/style";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StyleUpdate {
+    style: pp_config::config::StatsStyle,
+}
+
+/// 同步工作端的一次请求：原始 request-target、可选风格写入与一次性响应槽。
 pub(super) struct Query {
     pub(super) target: String,
+    pub(super) style: Option<pp_config::config::StatsStyle>,
     pub(super) reply: oneshot::Sender<(u16, &'static str, String)>,
 }
 
@@ -131,7 +140,7 @@ struct Shared {
 }
 
 async fn handle(State(shared): State<Shared>, request: Request) -> Response {
-    let (parts, _body) = request.into_parts();
+    let (parts, body) = request.into_parts();
     let target = parts
         .uri
         .path_and_query()
@@ -142,7 +151,51 @@ async fn handle(State(shared): State<Shared>, request: Request) -> Response {
             json!({"error":"allowed origin required"}),
         );
     }
-    if parts.method != Method::GET {
+    let mut style = None;
+    if target == STYLE_PATH && parts.method == Method::POST {
+        // 风格偏好是唯一写入口，要求显式同源 JSON，拒绝跨站表单与无 Origin 写入。
+        if !parts.headers.contains_key(header::ORIGIN) {
+            return json(
+                StatusCode::FORBIDDEN,
+                json!({"error":"allowed origin required"}),
+            );
+        }
+        let is_json = parts
+            .headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+            });
+        if !is_json {
+            return json(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                json!({"error":"JSON required"}),
+            );
+        }
+        let bytes = match to_bytes(body, 1024).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return json(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    json!({"error":"invalid style request body"}),
+                );
+            }
+        };
+        let update = match serde_json::from_slice::<StyleUpdate>(&bytes) {
+            Ok(update) => update,
+            Err(_) => {
+                return json(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"invalid statistics style"}),
+                );
+            }
+        };
+        style = Some(update.style);
+    } else if parts.method != Method::GET {
         return json(
             StatusCode::METHOD_NOT_ALLOWED,
             json!({"error":"GET required"}),
@@ -159,7 +212,16 @@ async fn handle(State(shared): State<Shared>, request: Request) -> Response {
         return resource(StatusCode::OK, kind, Body::from(text));
     }
     let (reply, response) = oneshot::channel();
-    if shared.queries.send(Query { target, reply }).await.is_err() {
+    if shared
+        .queries
+        .send(Query {
+            target,
+            style,
+            reply,
+        })
+        .await
+        .is_err()
+    {
         return unavailable();
     }
     match response.await {

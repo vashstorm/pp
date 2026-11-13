@@ -315,6 +315,7 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
         context_window: None,
         agent_db_path: dir.path().join("agent.db"),
         settings: pp_config::config::Settings {
+            stats: Default::default(),
             tui: Default::default(),
             cost: Default::default(),
             task: Default::default(),

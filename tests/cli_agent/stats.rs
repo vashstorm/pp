@@ -966,6 +966,17 @@ fn raw_request(
     host: &str,
     origin: Option<&str>,
 ) -> RawReply {
+    raw_request_body(address, method, path, host, origin, None)
+}
+
+fn raw_request_body(
+    address: &str,
+    method: &str,
+    path: &str,
+    host: &str,
+    origin: Option<&str>,
+    body: Option<(&str, &[u8])>,
+) -> RawReply {
     use std::io::Read;
     let mut stream = std::net::TcpStream::connect(address).unwrap();
     stream
@@ -975,7 +986,18 @@ fn raw_request(
     if let Some(origin) = origin {
         write!(stream, "Origin: {origin}\r\n").unwrap();
     }
+    if let Some((kind, body)) = body {
+        write!(
+            stream,
+            "Content-Type: {kind}\r\nContent-Length: {}\r\n",
+            body.len()
+        )
+        .unwrap();
+    }
     write!(stream, "Connection: close\r\n\r\n").unwrap();
+    if let Some((_, body)) = body {
+        stream.write_all(body).unwrap();
+    }
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).unwrap();
     let split = bytes
@@ -1291,6 +1313,173 @@ fn stats_server_starts_without_models_and_rejects_foreign_hosts() {
     );
     let bad = Cli::spawn(dir.path(), &["-p", "invalid", "stats"], &[]).finish();
     assert!(!bad.status.success());
+}
+
+#[test]
+fn stats_style_persists_across_server_restart_without_models() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join(".pp/agent/settings.yml");
+    let (cli, address) = start_stats_server(dir.path());
+    let path = "/api/stats/style";
+    assert_eq!(
+        http(&address, path, &address),
+        (200, r#"{"style":"default"}"#.into())
+    );
+    assert!(!settings.exists(), "读取默认风格不应创建配置");
+    let origin = format!("http://{address}");
+    let saved = raw_request_body(
+        &address,
+        "POST",
+        path,
+        &address,
+        Some(&origin),
+        Some(("application/json", br#"{"style":"modern"}"#)),
+    );
+    assert_eq!(saved.status, 200);
+    stats_assert_security(&saved, "application/json");
+    assert_eq!(
+        pp_config::config::read_settings(&settings)
+            .unwrap()
+            .stats
+            .style,
+        pp_config::config::StatsStyle::Modern
+    );
+    assert!(!settings.with_file_name("models.yml").exists());
+    drop(cli);
+    let (_cli, address) = start_stats_server(dir.path());
+    assert_eq!(
+        http(&address, path, &address),
+        (200, r#"{"style":"modern"}"#.into())
+    );
+    let original = "# 保留配置\ndebug: true # 调试\nstats:\n  style: modern\n";
+    fs::write(&settings, original).unwrap();
+    let origin = format!("http://{address}");
+    let saved = raw_request_body(
+        &address,
+        "POST",
+        path,
+        &address,
+        Some(&origin),
+        Some(("application/json; charset=utf-8", br#"{"style":"default"}"#)),
+    );
+    assert_eq!(saved.status, 200);
+    assert!(
+        fs::read_to_string(&settings)
+            .unwrap()
+            .starts_with("# 保留配置\ndebug: true # 调试\n")
+    );
+    assert_eq!(
+        http(&address, path, &address),
+        (200, r#"{"style":"default"}"#.into())
+    );
+}
+
+#[test]
+fn stats_style_rejects_invalid_writes_and_preserves_broken_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_cli, address) = start_stats_server(dir.path());
+    let path = "/api/stats/style";
+    let origin = format!("http://{address}");
+    let settings = dir.path().join(".pp/agent/settings.yml");
+    let body = br#"{"style":"modern"}"#;
+    for (host, source, kind, expected) in [
+        (address.as_str(), None, "application/json", 403),
+        (
+            address.as_str(),
+            Some("http://untrusted.example"),
+            "application/json",
+            403,
+        ),
+        (
+            "untrusted.example",
+            Some(origin.as_str()),
+            "application/json",
+            403,
+        ),
+        (address.as_str(), Some(origin.as_str()), "text/plain", 415),
+        (
+            address.as_str(),
+            Some(origin.as_str()),
+            "application/x-www-form-urlencoded",
+            415,
+        ),
+    ] {
+        let reply = raw_request_body(&address, "POST", path, host, source, Some((kind, body)));
+        assert_eq!(reply.status, expected);
+    }
+    for body in [
+        br#"{"style":"unknown"}"#.as_slice(),
+        br#"{"style":null}"#,
+        br#"{"style":42}"#,
+        br#"{"style":"modern","debug":true}"#,
+        br#"{"style":"default","style":"modern"}"#,
+        b"{}",
+        b"[]",
+        b"invalid JSON",
+    ] {
+        let reply = raw_request_body(
+            &address,
+            "POST",
+            path,
+            &address,
+            Some(&origin),
+            Some(("application/json", body)),
+        );
+        assert_eq!(reply.status, 400);
+    }
+    let oversized = vec![b' '; 1025];
+    assert_eq!(
+        raw_request_body(
+            &address,
+            "POST",
+            path,
+            &address,
+            Some(&origin),
+            Some(("application/json", &oversized))
+        )
+        .status,
+        413
+    );
+    assert_eq!(
+        raw_request_body(
+            &address,
+            "POST",
+            "/api/stats/style?style=modern",
+            &address,
+            Some(&origin),
+            Some(("application/json", body))
+        )
+        .status,
+        405
+    );
+    assert_eq!(
+        http(&address, "/api/stats/style?style=modern", &address).0,
+        404
+    );
+    assert!(!settings.exists());
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    let broken = "unknown: secret-marker";
+    fs::write(&settings, broken).unwrap();
+    let reply = raw_request_body(
+        &address,
+        "POST",
+        path,
+        &address,
+        Some(&origin),
+        Some(("application/json", body)),
+    );
+    assert_eq!(reply.status, 503);
+    assert!(
+        !String::from_utf8(reply.body)
+            .unwrap()
+            .contains("secret-marker")
+    );
+    assert_eq!(fs::read_to_string(&settings).unwrap(), broken);
+    assert_eq!(http(&address, path, &address).0, 503);
+    assert_eq!(
+        http(&address, "/api/stats/overview?range=24h", &address).0,
+        200
+    );
 }
 
 #[test]
