@@ -8,6 +8,7 @@ use super::{Binding, Inner, Record, lock, now};
 use anyhow::{Context, Result, ensure};
 use pp_core::events::AgentEvent;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
@@ -409,6 +410,39 @@ impl Binding {
 }
 
 use std::os::unix::fs::FileExt;
+
+impl Binding {
+    /// 当前正在运行的子代理数；排队和已结束的会话不计入。
+    pub fn running_subagent_count(&self) -> usize {
+        lock(&self.inner.state)
+            .disk
+            .agents
+            .values()
+            .filter(|agent| agent.status == "running")
+            .count()
+    }
+
+    pub fn summary(&self) -> String {
+        let state = lock(&self.inner.state);
+        if state.disk.agents.is_empty() {
+            return String::new();
+        }
+        let active = state
+            .disk
+            .runs
+            .values()
+            .filter(|r| matches!(r.status.as_str(), "queued" | "running"))
+            .count();
+        format!(
+            "Subagents: {active} running/queued · {} sessions · use /subagents",
+            state.disk.agents.len()
+        )
+    }
+    /// 行模式 CLI 与既有消费者读取的 JSON 形状：agents 保持扁平的 Record 字段。
+    pub fn snapshots(&self) -> Value {
+        serde_json::to_value(self.hub_snapshot()).unwrap_or_else(|_| json!({"agents":[],"runs":[]}))
+    }
+}
 
 #[cfg(test)]
 mod tests {

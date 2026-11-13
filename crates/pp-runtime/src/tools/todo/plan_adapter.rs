@@ -3,6 +3,7 @@ use crate::tools::{plan, save};
 use pp_core::plan::PlanDocument;
 use pp_core::plan::patch_task_checks;
 use pp_core::plan::plan_tasks;
+use pp_core::todo::TodoStatus;
 
 // =============================================================================
 // Plan adapter

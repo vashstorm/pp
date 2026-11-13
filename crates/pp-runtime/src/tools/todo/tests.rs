@@ -1,5 +1,6 @@
 use super::plan_adapter::plan_task_targets;
 use super::*;
+use pp_core::todo::{TodoItem, TodoStatus};
 
 #[test]
 fn plan_todo_target_limits_apply_after_phase_filter_even_for_unique_tasks() {

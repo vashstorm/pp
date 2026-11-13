@@ -280,3 +280,223 @@ impl Store {
         Ok(Some(value))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::fixtures::*;
+    use super::*;
+    use crate::{ToolCall, ToolStatus, server};
+
+    #[test]
+    fn stats_traces_fold_subagents_and_aggregate_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let now = 10_000_000;
+        let root = dir.path().join("root.jsonl");
+        let child = dir.path().join("root.subagents/sessions/child.jsonl");
+        let root_file = root.to_string_lossy().into_owned();
+        let child_file = child.to_string_lossy().into_owned();
+        for (key, file, timestamp, duration_ms) in [
+            ("root-1", &root_file, now - 10_000, 2_000.0),
+            ("child-1", &child_file, now - 5_000, 1_000.0),
+            ("root-2", &root_file, now - 2_000, 3_000.0),
+        ] {
+            let mut record = fixture(key, timestamp);
+            record.session_file = Some(file.clone());
+            record.duration_ms = duration_ms;
+            store.insert(&record, &Value::Null).unwrap();
+        }
+        for (request_key, file, call_id, status, error, timestamp, duration_ms) in [
+            (
+                "root-1",
+                &root,
+                "call-1",
+                ToolStatus::Ok,
+                None,
+                now - 9_500,
+                500.0,
+            ),
+            (
+                "child-1",
+                &child,
+                "call-2",
+                ToolStatus::Error,
+                Some("boom"),
+                now - 4_500,
+                250.0,
+            ),
+        ] {
+            store
+                .tool(&ToolCall {
+                    request_key: Some(request_key),
+                    session_file: file,
+                    call_id,
+                    tool: "bash",
+                    status,
+                    error_message: error,
+                    timestamp,
+                    duration_ms,
+                })
+                .unwrap();
+        }
+        let titles = HashMap::from([("root", "修复 traces 会话标题")]);
+        let traces = store.traces(Range::Hour, now, 500, &titles).unwrap();
+        assert_eq!(traces["total"], 1);
+        let session = &traces["sessions"][0];
+        assert_eq!(session["session_file"], root_file);
+        assert_eq!(session["title"], "修复 traces 会话标题");
+        assert_eq!(session["requests"], 3);
+        assert_eq!(session["agents"], 1);
+        assert_eq!(session["tool_calls"], 2);
+        let untitled = store
+            .traces(Range::Hour, now, 500, &HashMap::new())
+            .unwrap();
+        assert!(untitled["sessions"][0].get("title").is_none());
+        let id = session["id"].as_i64().unwrap();
+        let trace = store.trace(id, now, &titles).unwrap().unwrap();
+        assert_eq!(trace["title"], "修复 traces 会话标题");
+        assert_eq!(trace["session_file"], root_file);
+        assert_eq!(trace["summary"]["requests"], 3);
+        assert_eq!(trace["summary"]["agents"], 1);
+        assert_eq!(trace["summary"]["tool_calls"], 2);
+        assert_eq!(trace["summary"]["model_ms"], 6_000.0);
+        assert_eq!(trace["summary"]["tool_ms"], 750.0);
+        assert_eq!(trace["summary"]["wall_ms"], 11_000.0);
+        assert_eq!(trace["summary"]["idle_ms"], 4_250.0);
+        assert_eq!(trace["requests"].as_array().unwrap().len(), 3);
+        assert_eq!(trace["tool_calls"].as_array().unwrap().len(), 2);
+        assert_eq!(trace["tool_stats"][0]["tool"], "bash");
+        assert_eq!(trace["tool_stats"][0]["calls"], 2);
+        assert_eq!(trace["tool_stats"][0]["errors"], 1);
+        assert_eq!(trace["tool_stats"][0]["total_ms"], 750.0);
+        assert_eq!(trace["tool_stats"][0]["max_ms"], 500.0);
+        assert_eq!(
+            trace["tool_calls"][1]["request_id"],
+            trace["requests"][1]["id"]
+        );
+    }
+    #[test]
+    fn stats_activity_uses_complete_ranges_and_full_session_traces() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut failed = fixture("old-failure", now - 7_200_000);
+        failed.status = "failed".into();
+        failed.error_message = Some("HTTP 429 request 0123456789abcdef after 12ms".into());
+        failed.session_file = Some("/missing/session.jsonl".into());
+        store
+            .insert(&failed, &json!({"text":"private-output"}))
+            .unwrap();
+        for n in 0..501 {
+            let mut r = fixture(&format!("failure-{n}"), now - 1000);
+            r.status = "failed".into();
+            r.error_message = Some("HTTP 429 request fedcba9876543210 after 99ms".into());
+            store.insert(&r, &Value::Null).unwrap();
+        }
+        let mut latest = fixture("latest", now);
+        latest.session_file = failed.session_file.clone();
+        store.insert(&latest, &Value::Null).unwrap();
+        store
+            .insert(&fixture("future", now + 1), &Value::Null)
+            .unwrap();
+        // 失败行按 `limit+1` 取，多出的一行只用于判断是否还有更早的失败请求。
+        let errors = store.errors(Range::Day, now, 200).unwrap();
+        assert_eq!(errors["requests"].as_array().unwrap().len(), 200);
+        assert_eq!(errors["limit"], 200);
+        assert_eq!(errors["has_more"], true);
+        assert!(!errors.to_string().contains("private-output"));
+        let all = store.errors(Range::Day, now, 1000).unwrap();
+        assert_eq!(all["requests"].as_array().unwrap().len(), 502);
+        assert_eq!(all["has_more"], false);
+        let traces = store
+            .traces(Range::Hour, now, 500, &HashMap::new())
+            .unwrap();
+        assert_eq!(traces["total"], 502);
+        assert_eq!(traces["sessions"][0]["requests"], 1);
+        let id = traces["sessions"][0]["id"].as_i64().unwrap();
+        let trace = store.trace(id, now, &HashMap::new()).unwrap().unwrap();
+        assert_eq!(trace["summary"]["requests"], 2);
+        assert_eq!(trace["requests"][0]["id"], 1);
+        assert_eq!(trace["summary"]["wall_ms"], 7_202_000.0);
+        assert_eq!(trace["summary"]["model_ms"], 4000.0);
+        assert!(!trace.to_string().contains("private-output"));
+        let detail = store.detail(1).unwrap().unwrap();
+        assert!(detail.get("output_message").is_none());
+        assert!(detail.get("session_entry").is_none());
+        assert!(detail["request_context"].is_null());
+        assert!(!detail.to_string().contains("private-output"));
+        assert!(store.trace(9999, now, &HashMap::new()).unwrap().is_none());
+        assert_eq!(
+            store.trace(2, now, &HashMap::new()).unwrap().unwrap()["summary"]["requests"],
+            1
+        );
+        let since = Range::Day.since(now);
+        for (key, timestamp, status) in [
+            ("before-range", since - 1, "failed"),
+            ("at-lower", since, "failed"),
+            ("at-upper-one", now, "failed"),
+            ("at-upper-two", now, "failed"),
+            ("after-range", now + 1, "failed"),
+            ("in-range-ok", now - 500, "ok"),
+            ("in-range-aborted", now - 500, "aborted"),
+        ] {
+            let mut record = fixture(key, timestamp);
+            record.status = status.into();
+            record.error_message = failed.error_message.clone();
+            store.insert(&record, &Value::Null).unwrap();
+        }
+        let complete = store.errors(Range::Day, now, 1000).unwrap();
+        let keys = complete["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["request_key"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        let expected = ["at-upper-two".to_owned(), "at-upper-one".to_owned()]
+            .into_iter()
+            .chain((0..501).rev().map(|n| format!("failure-{n}")))
+            .chain(["old-failure".to_owned(), "at-lower".to_owned()])
+            .collect::<Vec<_>>();
+        assert_eq!(keys, expected);
+        assert_eq!(complete["has_more"], false);
+        let limited = store.errors(Range::Day, now, 50).unwrap();
+        assert_eq!(
+            limited["requests"],
+            json!(&complete["requests"].as_array().unwrap()[..50])
+        );
+        assert_eq!(limited["has_more"], true);
+        for endpoint in ["errors", "traces"] {
+            for query in [
+                "range=bad",
+                "range=all&range=24h",
+                "limit=1",
+                "unexpected=1",
+            ] {
+                assert_eq!(
+                    server::dispatch(&store, &format!("/api/stats/{endpoint}?{query}"), &[]).0,
+                    400
+                );
+            }
+            // Errors 页按 50／200／1000 分档加载，请求日志与 Traces 用 500／2000。
+            let limit = if endpoint == "errors" { 1000 } else { 2000 };
+            assert_eq!(
+                server::dispatch(
+                    &store,
+                    &format!("/api/stats/{endpoint}?range=all&limit={limit}"),
+                    &[]
+                )
+                .0,
+                200
+            );
+        }
+        assert_eq!(
+            server::dispatch(&store, "/api/stats/traces/99999", &[]).0,
+            404
+        );
+        assert_eq!(server::dispatch(&store, "/api/stats/traces/0", &[]).0, 400);
+        assert_eq!(
+            server::dispatch(&store, "/api/stats/traces/1?file=/tmp/private", &[]).0,
+            400
+        );
+    }
+}

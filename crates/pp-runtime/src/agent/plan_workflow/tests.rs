@@ -1,12 +1,17 @@
 use super::*;
+use crate::agent::input::InputQueue;
 use crate::agent::persistence::SessionJournal;
+use crate::agent::plan_sync::sync_plan_todos;
 use crate::agent::tests::{
     EXPLORATION, ORIGIN, PLAN_CONTENT, err_message, journal_workflow, plan_workflow,
     runtime_input_agent, seed_session, write_plan_file,
 };
 use crate::tools::Tools;
+use crate::tools::plan_catalog;
 use pp_config::config::EditMode;
 use pp_config::config::ModelCatalog;
+use pp_core::plan;
+use pp_core::plan::{ExecutionContext, PlanLocation, PlanStatus, ReviewToken};
 use serde_json::json;
 
 mod handoff_cases;

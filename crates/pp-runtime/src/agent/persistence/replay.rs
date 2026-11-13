@@ -1,6 +1,7 @@
 //! 消息展示快照的共用回放器；展示数据不进入原生请求。
 use super::*;
 use pp_core::events::OutputStream;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 #[derive(Serialize, Deserialize)]

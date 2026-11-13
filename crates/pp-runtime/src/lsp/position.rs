@@ -51,3 +51,105 @@ pub(crate) fn position_offset(text: &str, position: Position) -> Option<usize> {
     }
     (units == position.character).then_some(line_end)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lsp_client_position_offsets_are_strict_utf16() {
+        let text = "a\u{1f600}b\r\nxy\n";
+        assert_eq!(
+            position_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 0
+                }
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            position_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 1
+                }
+            ),
+            Some(1)
+        );
+        // 列落在代理对中间：拒绝，不能夹到相邻字符。
+        assert_eq!(
+            position_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 2
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            position_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 3
+                }
+            ),
+            Some(5)
+        );
+        assert_eq!(
+            position_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 4
+                }
+            ),
+            Some(6)
+        );
+        // CRLF 的 \r 不属于行内容。
+        assert_eq!(
+            position_offset(
+                text,
+                Position {
+                    line: 0,
+                    character: 5
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            position_offset(
+                text,
+                Position {
+                    line: 1,
+                    character: 2
+                }
+            ),
+            Some(10)
+        );
+        assert_eq!(
+            position_offset(
+                text,
+                Position {
+                    line: 2,
+                    character: 0
+                }
+            ),
+            Some(11)
+        );
+        assert_eq!(
+            position_offset(
+                text,
+                Position {
+                    line: 3,
+                    character: 0
+                }
+            ),
+            None
+        );
+    }
+}

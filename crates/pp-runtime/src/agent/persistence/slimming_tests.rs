@@ -1,8 +1,11 @@
 //! 新格式验收使用冻结旧事件与真实 journal，覆盖物理分段和展示／原生历史隔离。
+use super::format::StateRef;
 use super::*;
+use async_openai::types::chat::ChatCompletionRequestMessage;
 use pp_config::models::Protocol;
 use pp_core::events::{FileDiff, OutputStream};
 use serde_json::{Value, json};
+use std::fs;
 
 fn metadata(dir: &Path) -> Metadata<'_> {
     Metadata {

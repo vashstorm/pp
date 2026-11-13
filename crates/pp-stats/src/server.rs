@@ -260,3 +260,24 @@ fn ensure_limit(errors: bool, limit: usize) -> Result<()> {
     ensure!(allowed, "invalid limit");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::fixtures::*;
+    use crate::server;
+
+    #[test]
+    fn stats_server_serves_traces_assets() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open_store(&dir.path().join("stats.db")).unwrap();
+        for (path, kind) in [
+            ("/traces.js", "text/javascript"),
+            ("/traces.css", "text/css"),
+        ] {
+            let (status, content_type, body) = server::dispatch(&store, path, &[]);
+            assert_eq!(status, 200, "{path}");
+            assert_eq!(content_type, kind, "{path}");
+            assert!(!body.is_empty(), "{path}");
+        }
+    }
+}

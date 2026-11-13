@@ -95,3 +95,38 @@ pub(crate) fn uri_to_path(uri: &str) -> Option<PathBuf> {
     }
     Some(PathBuf::from(text))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lsp_client_uri_paths_roundtrip_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        // `..` 必须词法弹出上一段，不能被丢弃成 `/a/b`。
+        let dotted = dir.path().join("a").join("..").join("b");
+        assert_eq!(
+            path_to_uri(&dotted),
+            format!("file://{}", dir.path().join("b").display()),
+            "`..` must pop the previous segment"
+        );
+        // 新文件不需要存在，也不做 canonicalize。
+        let missing = dir.path().join("new file?.rs");
+        let uri = path_to_uri(&missing);
+        assert!(uri.ends_with("new%20file%3F.rs"), "{uri}");
+        assert_eq!(uri_to_path(&uri).as_deref(), Some(missing.as_path()));
+
+        // 百分号编码的 `?`/`#` 是合法文件名字符。
+        assert_eq!(
+            uri_to_path("file:///tmp/a%3Fb%23c"),
+            Some(PathBuf::from("/tmp/a?b#c"))
+        );
+        // 未转义的 query/fragment、NUL 与畸形百分号都拒绝。
+        assert!(uri_to_path("file:///tmp/a?x=1").is_none());
+        assert!(uri_to_path("file:///tmp/a#frag").is_none());
+        assert!(uri_to_path("file:///tmp/a%00b").is_none());
+        assert!(uri_to_path("file:///tmp/a%2").is_none());
+        assert!(uri_to_path("http:///tmp/a").is_none());
+        assert!(uri_to_path("file://remote/tmp/a").is_none());
+    }
+}

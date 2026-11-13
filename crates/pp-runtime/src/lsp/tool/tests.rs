@@ -1,9 +1,12 @@
+use super::position::resolve_column;
+use super::suggestion::suggestion_conflicts;
 use super::*;
 use crate::lsp::config;
 use pp_config::config::EditMode;
 use pp_config::config::LspSettings;
 use serde_json::json;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 fn fixture_script() -> PathBuf {

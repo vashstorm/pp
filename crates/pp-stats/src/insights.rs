@@ -313,3 +313,100 @@ impl Store {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::fixtures::*;
+    use super::*;
+    use crate::Rates;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn stats_insights_count_both_protocols_without_double_counting_or_leaking_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("models.yml"),
+            models_with_cost(json!({"input":2.0,"cacheRead":0.2,"output":8.0})),
+        )
+        .unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let rates = Rates::load(&store.models_path);
+        let completion = json!({"tool_calls":[
+            {"function":{"name":"read","arguments":"private-arguments"}},
+            {"function":{"name":"bash","arguments":"{}"}}
+        ]});
+        let mut first = fixture("one", now - 1000);
+        first.session_file = Some("/missing/session.jsonl".into());
+        snapshot_for(&rates, &mut first);
+        store.insert(&first, &completion).unwrap();
+        store
+            .link("one", Path::new("/missing/session.jsonl"))
+            .unwrap();
+        let responses = json!([{"type":"function_call","name":"read","arguments":"{}"}]);
+        for n in 0..501 {
+            let mut r = fixture(&format!("response-{n}"), now);
+            r.api = "responses".into();
+            r.cwd = "/other/project".into();
+            r.model_reference = "other/primary".into();
+            r.input_tokens = None;
+            r.output_tokens = None;
+            r.cached_tokens = None;
+            snapshot_for(&rates, &mut r);
+            store.insert(&r, &responses).unwrap();
+        }
+        let mut failed = fixture("failed", now);
+        failed.status = "aborted".into();
+        snapshot_for(&rates, &mut failed);
+        store
+            .insert(
+                &failed,
+                &json!({"output":[{"type":"function_call","name":"rg","arguments":"中😀"}]}),
+            )
+            .unwrap();
+        store
+            .insert(&fixture("future", now + 1), &responses)
+            .unwrap();
+        store
+            .insert(&fixture("old", now - 3_600_001), &responses)
+            .unwrap();
+        let tools = store.tools(Range::Hour, now).unwrap();
+        assert_eq!(tools["summary"]["calls"], 504);
+        assert_eq!(tools["requests_with_tools"], 503);
+        assert_eq!(tools["partial_requests"], 1);
+        assert_eq!(tools["summary"]["priced"], 3);
+        assert_eq!(tools["summary"]["unpriced"], 501);
+        assert_eq!(tools["summary"]["tokens"], 240.0);
+        assert!((tools["summary"]["cost"].as_f64().unwrap() - 0.000432).abs() < 1e-12);
+        let read = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["tool"] == "read")
+            .unwrap();
+        assert_eq!(read["calls"], 502);
+        assert_eq!(read["tokens"], 60.0);
+        assert_eq!(read["models"].as_array().unwrap().len(), 2);
+        assert!(tools["summary"]["errors"].is_null());
+        assert!(!tools.to_string().contains("private-arguments"));
+        assert!(!tools.to_string().contains("private-output"));
+        let projects = store.projects(Range::Hour, now).unwrap();
+        assert_eq!(projects["summary"]["requests"], 503);
+        assert_eq!(projects["projects"].as_array().unwrap().len(), 2);
+        let p = projects["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["key"] == "/tmp/project")
+            .unwrap();
+        assert_eq!(p["sessions"], 1);
+        assert_eq!(p["requests_without_session"], 1);
+        assert_eq!(p["requests"], 2);
+        assert!(!projects.to_string().contains("private-output"));
+        let empty = store.tools(Range::Hour, now - 7_200_000).unwrap();
+        assert_eq!(empty["summary"]["cost"], 0.0);
+        assert_eq!(empty["summary"]["tokens"], 0.0);
+        assert!(empty["tools"].as_array().unwrap().is_empty());
+    }
+}

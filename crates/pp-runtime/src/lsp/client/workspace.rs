@@ -214,3 +214,58 @@ impl Client {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lsp_client_checkout_rules_follow_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "").unwrap();
+        std::fs::write(other.join("b.rs"), "").unwrap();
+
+        // 服务器不支持 changeNotifications：永不追加。
+        assert_eq!(
+            checkout_to_add(&root, false, &root.join("src/a.rs"), None),
+            None
+        );
+        // 文件与客户端根在同一个 checkout：服务器已经知道它。
+        assert_eq!(
+            checkout_to_add(&root, true, &root.join("src/a.rs"), None),
+            None
+        );
+        // 另一个 checkout：追加解析 symlink 后的根。
+        assert_eq!(
+            checkout_to_add(&root, true, &other.join("b.rs"), None),
+            Some(real_path(&other))
+        );
+        // 包含 HOME 的 checkout 不追加。
+        assert_eq!(
+            checkout_to_add(&root, true, &other.join("b.rs"), Some(&other)),
+            None
+        );
+        assert_eq!(
+            checkout_to_add(&root, true, &other.join("b.rs"), Some(&root)),
+            Some(real_path(&other))
+        );
+        // 最近的 .git 优先。
+        std::fs::create_dir_all(other.join("nested/.git")).unwrap();
+        std::fs::write(other.join("nested/c.rs"), "").unwrap();
+        assert_eq!(
+            checkout_to_add(&root, true, &other.join("nested/c.rs"), None),
+            Some(real_path(&other.join("nested")))
+        );
+        // 路径中的 symlink 先解析，再判断 checkout。
+        std::os::unix::fs::symlink(&other, dir.path().join("link")).unwrap();
+        assert_eq!(
+            checkout_to_add(&root, true, &dir.path().join("link/b.rs"), None),
+            Some(real_path(&other))
+        );
+    }
+}
