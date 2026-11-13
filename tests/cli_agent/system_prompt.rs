@@ -253,7 +253,7 @@ fn system_prompt_resume_and_continue_use_saved_sources_and_legacy_stays_readable
             assert!(cli.finish().status.success());
         }
         // 模拟新字段出现前的 v3 日志：只保留原 baseSystem。
-        let records = super::project_instructions::records(&path)
+        let text = records(&path)
             .into_iter()
             .map(|mut entry| {
                 if entry["customType"] == "pp.session_state" {
@@ -266,21 +266,7 @@ fn system_prompt_resume_and_continue_use_saved_sources_and_legacy_stays_readable
             .collect::<Vec<_>>()
             .join("\n")
             + "\n";
-        let mut storage = pp_core::session_jsonl::Storage::default();
-        let mut encoded = Vec::new();
-        for (index, line) in records.lines().enumerate() {
-            if index == 0 {
-                encoded.extend_from_slice(line.as_bytes());
-            } else {
-                encoded.extend(
-                    storage
-                        .encode(&serde_json::from_str::<Value>(line).unwrap())
-                        .unwrap(),
-                );
-            }
-            encoded.push(b'\n');
-        }
-        fs::write(&path, encoded).unwrap();
+        write_session_text(&path, &text);
         let cli = Cli::spawn(cwd.path(), &["-r", id, "-p", "legacy task"], &[]);
         let (request, body) = receive_for(&server, protocol);
         let text = system(&body, protocol);

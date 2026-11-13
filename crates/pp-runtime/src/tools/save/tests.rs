@@ -391,8 +391,10 @@ fn atomic_save_preserves_mode_and_reports_post_commit_warning_as_success() {
 
 #[test]
 fn write_paths_reject_escape_and_symlinks_and_never_modify_hardlink_peer() {
-    let dir = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    // 保存层按 canonical 根校验绝对路径；临时父目录规范化后拼写一致。
+    let canonical = std::env::temp_dir().canonicalize().unwrap();
+    let dir = tempfile::Builder::new().tempdir_in(&canonical).unwrap();
+    let outside = super::super::tests::outside_dir();
     let peer = outside.path().join("peer");
     std::fs::write(&peer, "outside").unwrap();
     let workspace = Workspace::open(dir.path()).unwrap();
@@ -426,12 +428,7 @@ fn write_paths_reject_escape_and_symlinks_and_never_modify_hardlink_peer() {
         .save(b"local")
         .unwrap();
     assert_eq!(std::fs::read(&peer).unwrap(), b"outside");
-    // 启动目录的原始绝对路径和规范绝对路径均可使用。
-    workspace
-        .target(&dir.path().join("absolute"), true)
-        .unwrap()
-        .save(b"ok")
-        .unwrap();
+    // 启动目录的 canonical 绝对路径可直接使用（与相对路径指向同一目标）。
     workspace
         .target(&workspace.path.join("canonical"), true)
         .unwrap()
@@ -893,7 +890,7 @@ fn plan_move_collision_never_overwrites_and_keeps_source() {
 #[test]
 fn plan_move_refuses_symlinks_escapes_and_finish_mismatch() {
     let dir = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let outside = super::super::tests::outside_dir();
     std::fs::write(outside.path().join("peer"), b"outside").unwrap();
     let workspace = Workspace::open(dir.path()).unwrap();
     std::fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();

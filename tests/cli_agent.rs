@@ -569,9 +569,62 @@ fn cancel_assert_no_scratch(project: &std::path::Path) {
         thread::sleep(Duration::from_millis(10));
     }
 }
-#[cfg(unix)]
-#[path = "cli_agent/tui.rs"]
-mod tui;
+
+// 会话日志按每行一个共享值表记录写盘；这些 helper 是测试侧唯一的解码与再编码
+// 入口，断言必须看逻辑记录，不能直接解析磁盘行。
+fn session_text(path: &std::path::Path) -> String {
+    let mut reader = pp_core::session_jsonl::Reader::new(std::io::BufReader::new(
+        std::fs::File::open(path).unwrap(),
+    ));
+    let mut line = Vec::new();
+    let mut result = Vec::new();
+    while reader.read_record(&mut line).unwrap() != 0 {
+        result.extend_from_slice(&line);
+    }
+    String::from_utf8(result).unwrap()
+}
+
+// 未以换行结尾的尾部记录是唯一允许忽略的损坏，读取时直接排除。
+fn records(path: &std::path::Path) -> Vec<Value> {
+    let text = session_text(path);
+    let terminated = match text.rfind('\n') {
+        Some(index) if !text.ends_with('\n') => &text[..index + 1],
+        _ => text.as_str(),
+    };
+    terminated
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("invalid record line: {error}"))
+        })
+        .collect()
+}
+
+// 重写整份日志：首行头部原样保留，其余逻辑行用新的共享值表重新编码。
+fn write_session_text(path: &std::path::Path, text: &str) {
+    let mut storage = pp_core::session_jsonl::Storage::default();
+    let mut output = Vec::new();
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        if index == 0 {
+            output.extend_from_slice(line.as_bytes());
+        } else if let Ok(value) = serde_json::from_str::<Value>(line) {
+            output.extend(storage.encode(&value).unwrap());
+            if line.ends_with('\n') {
+                output.push(b'\n');
+            }
+        } else {
+            output.extend_from_slice(line.as_bytes());
+        }
+    }
+    std::fs::write(path, output).unwrap();
+}
+
+// 工作区外夹具：受管临时根（`/tmp`）内的目录对保存层仍是可写目标，逃逸断言必须
+// 落在两个受管根之外；`/var/tmp` 在 macOS 与 Linux 上均可写且不在受管根内。
+fn outside_tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new().tempdir_in("/var/tmp").unwrap()
+}
 
 #[path = "cli_agent/context.rs"]
 mod context;
@@ -583,6 +636,9 @@ mod streaming;
 mod system_prompt;
 #[path = "cli_agent/think.rs"]
 mod think;
+#[cfg(unix)]
+#[path = "cli_agent/tui.rs"]
+mod tui;
 
 #[path = "cli_agent/skills.rs"]
 mod skills;

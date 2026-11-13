@@ -787,17 +787,15 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
         assert_eq!(history.matches("usage: /help").count(), 1);
         assert_eq!(history.matches("HTTP status 400").count(), 1);
         pty.finish();
-        let journal = std::fs::read_to_string(
-            home.path()
-                .join(".pp/agent/sessions")
-                .join(format!("{id}.jsonl")),
-        )
-        .unwrap();
+        let journal_path = home
+            .path()
+            .join(".pp/agent/sessions")
+            .join(format!("{id}.jsonl"));
+        let journal = session_text(&journal_path);
         assert!(!journal.contains("usage: /help"));
         // 既有 pp.error 失败元数据保持不变；没有新增本地消息卡片记录。
-        let error_entries: Vec<Value> = journal
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        let error_entries: Vec<Value> = records(&journal_path)
+            .into_iter()
             .filter(|entry| entry.to_string().contains("HTTP status 400"))
             .collect();
         assert_eq!(error_entries.len(), 1);

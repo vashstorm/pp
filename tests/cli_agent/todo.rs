@@ -153,10 +153,9 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
             .map(|entry| entry.unwrap().path())
             .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
             .unwrap();
-        let journal = std::fs::read_to_string(&path).unwrap();
+        let journal = records(&path);
         let workflow = journal
-            .lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .into_iter()
             .rfind(|entry| entry["customType"] == "pp.workflow")
             .unwrap();
         assert!(workflow["data"]["workflow"]["todo_plan_id"].is_null());

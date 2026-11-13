@@ -310,24 +310,6 @@ fn snapshot(home: &Path) -> Vec<(String, String)> {
     entries
 }
 
-// Full-line JSONL records; an unterminated trailing record (the only
-// ignorable corruption) is excluded here on purpose.
-fn records(path: &Path) -> Vec<Value> {
-    let text = session_text(path);
-    let terminated = match text.rfind('\n') {
-        Some(index) if !text.ends_with('\n') => &text[..index + 1],
-        _ => text.as_str(),
-    };
-    terminated
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            serde_json::from_str(line)
-                .unwrap_or_else(|error| panic!("invalid record line: {error}"))
-        })
-        .collect()
-}
-
 // Only native custom records and effort changes may rebuild model context;
 // canonical messages and display events deliberately never contribute.
 fn rebuild_request(records: &[Value]) -> Value {
@@ -618,32 +600,3 @@ mod lock_cases;
 mod restore_cases;
 #[path = "session/settings_cases.rs"]
 mod settings_cases;
-
-fn session_text(path: &Path) -> String {
-    let mut reader =
-        pp_core::session_jsonl::Reader::new(std::io::BufReader::new(fs::File::open(path).unwrap()));
-    let mut line = Vec::new();
-    let mut result = Vec::new();
-    while reader.read_record(&mut line).unwrap() != 0 {
-        result.extend_from_slice(&line);
-    }
-    String::from_utf8(result).unwrap()
-}
-
-fn write_session_text(path: &Path, text: &str) {
-    let mut storage = pp_core::session_jsonl::Storage::default();
-    let mut output = Vec::new();
-    for (index, line) in text.split_inclusive('\n').enumerate() {
-        if index == 0 {
-            output.extend_from_slice(line.as_bytes());
-        } else if let Ok(value) = serde_json::from_str::<Value>(line) {
-            output.extend(storage.encode(&value).unwrap());
-            if line.ends_with('\n') {
-                output.push(b'\n');
-            }
-        } else {
-            output.extend_from_slice(line.as_bytes());
-        }
-    }
-    fs::write(path, output).unwrap();
-}

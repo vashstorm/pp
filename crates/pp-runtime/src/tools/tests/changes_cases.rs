@@ -2,7 +2,10 @@ use super::*;
 
 #[test]
 fn changes_replace_write_edit_uses_normalized_first_to_last_baseline() {
-    let dir = tempfile::tempdir().unwrap();
+    // 保存层按 canonical 根校验绝对参数；临时父目录规范化后拼写一致。
+    let dir = tempfile::Builder::new()
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap();
     let path = dir.path().join("demo.txt");
     let original = "user-local\r\nkeep";
     fs::write(&path, original).unwrap();

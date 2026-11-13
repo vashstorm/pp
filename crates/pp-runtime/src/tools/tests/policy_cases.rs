@@ -231,7 +231,10 @@ fn execute_policy_rejects_dedicated_plan_tools() {
 
 #[test]
 fn plan_tools_report_changes_through_execute_and_seal_the_queue() {
-    let dir = tempfile::tempdir().unwrap();
+    // 保存层按 canonical 根校验绝对参数；临时父目录规范化后拼写一致。
+    let dir = tempfile::Builder::new()
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
     let content = "- [ ] task\n";
     let mut document = plan_document();

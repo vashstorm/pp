@@ -727,7 +727,8 @@ fn tree_tui_failed_navigation_preserves_branch_and_restarts_from_previous_state(
         pty.finish();
         let path = resume_boundary_journal(home.path(), &ids[0]);
         let original = std::fs::read(&path).unwrap();
-        let limit = (original.len() as u64 + 2048).div_ceil(1024);
+        // 向下取整的 block 限额不大于现有文件长度，导航时的状态追加必然失败。
+        let limit = original.len() as u64 / 1024;
         let mut pty =
             Pty::start_with_file_limit(home.path(), home.path(), limit, &["--resume", &ids[0]]);
         pty.ready();

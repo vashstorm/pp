@@ -87,7 +87,7 @@ fn read_pagination_validates_arguments_and_retains_hashline_numbers() {
 fn write_and_both_edit_modes_reject_external_and_symlink_paths() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let outside = super::outside_dir();
     let path = outside.path().join("file");
     fs::write(&path, "original\n").unwrap();
     symlink(&path, dir.path().join("link")).unwrap();

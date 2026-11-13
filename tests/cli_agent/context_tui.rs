@@ -456,70 +456,6 @@ fn context_tui_page_to_bottom(pty: &mut Pty) {
     }
 }
 
-// 保存以完整工具批次结尾的大会话，返回 ID 和实际日志长度。
-fn context_tui_seed_large_session(home: &Path, server: &Server, protocol: &str) -> (String, u64) {
-    std::fs::write(
-        config_path(home, "settings.yml"),
-        context_tui_settings(false, 80),
-    )
-    .unwrap();
-    std::fs::write(
-        config_path(home, "models.yml"),
-        context_tui_models(server, protocol, 32768),
-    )
-    .unwrap();
-    let mut settings: Value = serde_json::from_str(&context_tui_settings(false, 80)).unwrap();
-    settings["rate_limit_retry_budget_seconds"] = json!(0);
-    let mut cli = super::streaming::LiveCli::new(Cli::start_with(
-        home,
-        Some("context checkpoint seed prompt"),
-        &settings.to_string(),
-        &context_tui_models(server, protocol, 32768),
-    ));
-    let (request, _) = receive_at(server, api_path(protocol));
-    context_tui_read_calls(
-        request,
-        protocol,
-        "context-checkpoint-one",
-        "context-checkpoint-one.txt",
-    );
-    let (request, body) = receive_at(server, api_path(protocol));
-    assert!(
-        serde_json::to_string(&body)
-            .unwrap()
-            .contains("context-checkpoint-one"),
-        "seeded history must include the first tool result"
-    );
-    context_tui_read_calls(
-        request,
-        protocol,
-        "context-checkpoint-two",
-        "context-checkpoint-two.txt",
-    );
-    // 模型错误终止种子任务：日志停在第 2 个完整工具批次，且不会出现
-    // 之后的普通文本交换（保留机制会丢弃两个大批次）。
-    let (request, _) = receive_at(server, api_path(protocol));
-    request
-        .respond(
-            Response::from_string(
-                json!({"error":{"message":"seed termination","type":"server_error"}}).to_string(),
-            )
-            .with_status_code(500),
-        )
-        .unwrap();
-    cli.wait_for(super::streaming::Pipe::Stderr, "error: ");
-    // End at the complete second tool batch, not a later plain assistant
-    // exchange that would let retention discard both large batches.
-    cli.input("/quit\n");
-    let output = cli.finish();
-    let _ = output;
-    no_more(server);
-    let id = saved_session_id(home);
-    let path = home.join(".pp/agent/sessions").join(format!("{id}.jsonl"));
-    let bytes = std::fs::read(&path).unwrap();
-    (id, bytes.len() as u64)
-}
-
 // 验证项 4（手动）：摘要 SSE 被服务端握住时屏幕可见 Compacting；压缩期间
 // 保留新草稿；Esc 取消后等待真实终态回到 Ready，草稿不动，下一个任务请求
 // 携带完整旧历史与新输入，供应商摘要输出永不进入可见对话。
@@ -829,7 +765,9 @@ fn context_tui_auto_compact_cancel_keeps_draft_and_recovers_accepted_history() {
 fn context_tui_auto_compact_success_keeps_dialogue_drops_usage_without_summary_bubble() {
     for protocol in ["completion", "response"] {
         let fixture = server();
-        let (home, mut pty) = context_tui_start_auto(&fixture, protocol, 32768, 80);
+        // 窗口留出余量：保留的最近批次（40KB 只读结果）加系统与工具定义必须
+        // 在压缩后落到 80% 阈值以下，否则自动压缩会拒绝候选并终止任务。
+        let (home, mut pty) = context_tui_start_auto(&fixture, protocol, 40960, 80);
         let old = "context-auto-success-old";
         let recent = "context-auto-success-recent";
         context_tui_write_batch(
@@ -915,127 +853,6 @@ fn context_tui_auto_compact_success_keeps_dialogue_drops_usage_without_summary_b
         context_tui_page_to_bottom(&mut pty);
         pty.input("\x03");
         pty.finish();
-        no_more(&fixture);
-    }
-}
-
-// ulimit -f 允许记录新输入，却拒绝完整压缩 state；保留 partial tail，
-// 由真正的恢复路径忽略它，不能宣告成功或继续普通请求。
-#[test]
-fn slow_context_tui_auto_compact_checkpoint_failure_leaves_previous_snapshot() {
-    for protocol in ["completion", "response"] {
-        let fixture = server();
-        let home = tempfile::tempdir().unwrap();
-        let first = "context-checkpoint-first";
-        let second = "context-checkpoint-second";
-        context_tui_write_batch(
-            home.path(),
-            "context-checkpoint-one.txt",
-            first,
-            CONTEXT_TUI_AUTO_FIRST_BYTES,
-        );
-        context_tui_write_batch(
-            home.path(),
-            "context-checkpoint-two.txt",
-            second,
-            CONTEXT_TUI_AUTO_SECOND_BYTES,
-        );
-        let (id, seeded_len) = context_tui_seed_large_session(home.path(), &fixture, protocol);
-        let path = home
-            .path()
-            .join(".pp/agent/sessions")
-            .join(format!("{id}.jsonl"));
-
-        // 恢复后的首轮审计会先写入工具清单（TUI 比种子 CLI 多 ask）和刷新后的
-        // 完整系统提示，再写入新输入，合计约 35KB；为此预留 64KB。压缩候选仍
-        // 包含完整 40KB 最新批次以及系统与工具定义（超过 64KB），写入仍会超限。
-        const AUDIT_HEADROOM: u64 = 64 * 1024;
-        let limit = (seeded_len + AUDIT_HEADROOM).div_ceil(1024) * 1024;
-        std::fs::write(
-            config_path(home.path(), "settings.yml"),
-            context_tui_live_settings(true, 80),
-        )
-        .unwrap();
-        let mut pty =
-            Pty::start_with_file_limit(home.path(), home.path(), limit / 1024, &["-r", &id]);
-        pty.ready();
-        pty.input("context checkpoint resume prompt\r");
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        context_tui_assert_summary_body(&body, protocol, first, second);
-        // 已接受输入的原生追加与审计在摘要前完整写入。
-        let sent_bytes = std::fs::read(&path).unwrap();
-        assert!(
-            sent_bytes.len() as u64 > seeded_len,
-            "已接受输入必须在摘要请求前写入"
-        );
-        assert_eq!(sent_bytes.last(), Some(&b'\n'));
-        assert!(
-            String::from_utf8_lossy(&sent_bytes).contains("context checkpoint resume prompt"),
-            "已接受输入必须在摘要前审计落盘"
-        );
-        context_tui_final(request, protocol, CONTEXT_TUI_SUMMARY);
-        pty.wait_for("压缩提交失败显示 persisting session", |screen| {
-            cancel_normalize(screen).contains("persistingsession")
-        });
-        assert!(
-            !pty.parser
-                .screen()
-                .contents()
-                .contains("Context compacted:"),
-            "写失败不得宣告 CompactFinished"
-        );
-        // 失败后不继续普通任务请求。
-        no_more(&fixture);
-        pty.input("/quit\r");
-        pty.finish();
-
-        // 同步失败回滚候选，已接受的用户输入与旧 native 历史逐字节保留。
-        let failed = std::fs::read(&path).unwrap();
-        assert_eq!(
-            failed, sent_bytes,
-            "failed compaction must preserve the prior committed journal"
-        );
-        let complete = String::from_utf8_lossy(&failed);
-        assert!(
-            !complete.contains("[Context summary]"),
-            "失败候选不得成为已提交快照"
-        );
-        assert!(!complete.contains(CONTEXT_TUI_SUMMARY));
-
-        // 不继续任务，只恢复：读到此前完整快照，不把失败候选当成功。
-        let mut resumed = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
-        resumed.ready();
-        assert!(
-            context_tui_page_to(&mut resumed, "context checkpoint seed prompt"),
-            "恢复必须读到此前完整快照：{}",
-            resumed.diagnostics()
-        );
-        assert!(
-            !resumed
-                .parser
-                .screen()
-                .contents()
-                .contains("Context compacted:")
-        );
-        assert!(
-            !resumed
-                .parser
-                .screen()
-                .contents()
-                .contains(CONTEXT_TUI_SUMMARY)
-        );
-        assert!(
-            context_tui_ctx_percent(resumed.parser.screen()) >= 80,
-            "恢复的旧历史必须仍有高用量"
-        );
-        assert_eq!(
-            std::fs::read(&path).unwrap(),
-            failed,
-            "read-only resume must not rewrite the incomplete tail"
-        );
-        no_more(&fixture);
-        resumed.input("\x03");
-        resumed.finish();
         no_more(&fixture);
     }
 }

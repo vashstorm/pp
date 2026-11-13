@@ -3,7 +3,11 @@ use crate::tools::Tools;
 use pp_config::config::EditMode;
 use std::fs;
 fn fixture() -> (tempfile::TempDir, Tools) {
-    let dir = tempfile::tempdir().unwrap();
+    // 保存层按 canonical 根校验绝对路径；临时父目录规范化后 `dir.path()`
+    // 与工作区根拼写一致（macOS 默认 TMPDIR 含 /var 符号链接）。
+    let dir = tempfile::Builder::new()
+        .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+        .unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
     (dir, tools)
 }

@@ -131,7 +131,8 @@ fn tui_runtime_input_resume_replays_applied_history_once_both_protocols() {
 fn tui_runtime_input_auto_compact_excludes_held_steering_both_protocols() {
     for protocol in ["completion", "response"] {
         let fixture = server();
-        let (home, mut pty) = context_tui_start_auto(&fixture, protocol, 32768, 80);
+        // 同自动成功场景：窗口给保留批次留出阈值余量。
+        let (home, mut pty) = context_tui_start_auto(&fixture, protocol, 40960, 80);
         let old = "runtime-compact-old";
         let recent = "runtime-compact-recent";
         context_tui_write_batch(

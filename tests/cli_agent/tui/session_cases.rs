@@ -120,11 +120,7 @@ fn tui_session_resume_replays_history_without_request() {
             .join(".pp/agent/sessions")
             .join(format!("{interrupted_id}.jsonl"));
         let before = std::fs::read(&interrupted_path).unwrap();
-        let saved: Vec<Value> = String::from_utf8(before.clone())
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+        let saved = records(&interrupted_path);
         assert!(!saved.iter().any(|entry| {
             entry["type"] == "message" && entry["message"]["role"] == "assistant"
         }));
@@ -227,29 +223,11 @@ fn tui_session_effort_write_failure_keeps_status_and_shows_error() {
         .path()
         .join(".pp/agent/sessions")
         .join(format!("{id}.jsonl"));
-    // 用一条展示记录把日志补齐到恰好等于 RLIMIT_FSIZE，使首次 /effort 追加得到 EFBIG。
-    let len = std::fs::metadata(&path).unwrap().len();
-    let limit = (len + 512).div_ceil(1024) * 1024;
-    let journal = std::fs::read_to_string(&path).unwrap();
-    let last: Value = serde_json::from_str(journal.lines().last().unwrap()).unwrap();
-    let mut padding_entry = json!({
-        "type":"message", "id":"padding-entry", "parentId":last["id"],
-        "timestamp":last["timestamp"],
-        "message":{"role":"user", "content":"", "timestamp":1}
-    });
-    let overhead = serde_json::to_vec(&padding_entry).unwrap().len() as u64 + 1;
-    padding_entry["message"]["content"] = json!("p".repeat((limit - len - overhead) as usize));
-    {
-        use std::io::Write as _;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        writeln!(file, "{padding_entry}").unwrap();
-    }
-    assert_eq!(std::fs::metadata(&path).unwrap().len(), limit);
+    // 向下取整的 block 限额不大于现有文件长度，任何追加都会 EFBIG；首次
+    // /effort 设置写入因此失败。
+    let blocks = std::fs::metadata(&path).unwrap().len() / 1024;
 
-    let mut pty = Pty::start_with_file_limit(home.path(), home.path(), limit / 1024, &["-r", &id]);
+    let mut pty = Pty::start_with_file_limit(home.path(), home.path(), blocks, &["-r", &id]);
     pty.ready();
     pty.ready_effort("no think");
     pty.input("/effort high\r");

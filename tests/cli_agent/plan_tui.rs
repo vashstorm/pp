@@ -218,11 +218,7 @@ fn plan_choose(pty: &mut Pty, action: usize) {
 
 
 fn plan_journal(home: &Path, id: &str) -> Vec<Value> {
-    std::fs::read_to_string(home.join(".pp/agent/sessions").join(format!("{id}.jsonl")))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
+    records(&home.join(".pp/agent/sessions").join(format!("{id}.jsonl")))
 }
 // plan_*_cases 子模块由 cli_agent/tui.rs 注册；本文件只保留共享 helper。
 

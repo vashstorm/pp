@@ -557,17 +557,6 @@ fn journal(cwd: &Path) -> std::path::PathBuf {
     entries[0].clone()
 }
 
-pub(super) fn records(path: &Path) -> Vec<Value> {
-    let mut reader =
-        pp_core::session_jsonl::Reader::new(std::io::BufReader::new(fs::File::open(path).unwrap()));
-    let mut records = Vec::new();
-    let mut line = Vec::new();
-    while reader.read_record(&mut line).unwrap() != 0 {
-        records.push(serde_json::from_slice(&line).unwrap());
-    }
-    records
-}
-
 #[test]
 fn agents_defers_full_document_until_first_read_with_skill_summary_both_protocols() {
     for protocol in APIS {

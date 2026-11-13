@@ -375,7 +375,7 @@ fn diff_blocks_exit_scrollback(pty: &mut Pty, last_answer: &str) -> (String, Vec
 // 复制一份真实 journal 并删除全部 FileChanged 事件行，模拟缺少 diff 事件的旧日志。
 fn diff_blocks_clone_journal_without_file_changed(home: &Path, source: &str, id: &str) {
     let journal = resume_history_journal_dir(home).join(format!("{source}.jsonl"));
-    let text = std::fs::read_to_string(journal).unwrap();
+    let text = session_text(&journal);
     let mut lines = text.lines();
     let mut header: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
     header["id"] = json!(id);
@@ -408,11 +408,10 @@ fn diff_blocks_clone_journal_without_file_changed(home: &Path, source: &str, id:
         cloned.push_str(&entry.to_string());
         cloned.push('\n');
     }
-    std::fs::write(
-        resume_history_journal_dir(home).join(format!("{id}.jsonl")),
-        cloned,
-    )
-    .unwrap();
+    write_session_text(
+        &resume_history_journal_dir(home).join(format!("{id}.jsonl")),
+        &cloned,
+    );
 }
 
 // replace 模式的真实 edit old→new 与 write 新建/覆盖/同内容/空文件：屏幕红绿、

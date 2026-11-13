@@ -375,7 +375,7 @@ fn hardened_tools_recover_after_limits_timeout_and_rejected_edits_in_both_protoc
     for protocol in PROTOCOLS {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let outside = outside_tempdir();
         let external = outside.path().join("external");
         std::fs::write(&external, "keep").unwrap();
         std::fs::write(dir.path().join("demo"), "one\ntwo\nthree\n").unwrap();

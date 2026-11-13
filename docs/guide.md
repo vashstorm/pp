@@ -1183,6 +1183,13 @@ cargo test --locked --workspace --doc
 
 根包是默认成员；裸 `cargo nextest run --locked` 只覆盖根 `cli_agent`，跨库验证必须显式加 `--workspace`。
 
+测试进程的 `TMPDIR` 必须位于任何 Git 工作树之外。临时工作目录落在仓库内时，按需加载的 `AGENTS.md` 会把仓库自身规则带进被测项目，请求快照、写入门禁与系统提示断言随之改变。沙箱内运行请显式指定工作树外的临时目录：
+
+```sh
+TMPDIR=$(getconf DARWIN_USER_TEMP_DIR) cargo nextest run --locked --workspace   # macOS
+TMPDIR=/tmp cargo nextest run --locked --workspace                              # Linux
+```
+
 `slow_test` 是串行集合：满载并行下会被饿过用例内 5s／10s 栅栏的重型用例（真实 PTY、真实二进制、真实子进程）已集中在此，成员判据是测试名末级以 `slow_` 开头，由 `.config/nextest.toml` 的 `[test-groups.slow_test]`（`max-threads = 1`）与 `[profile.slow_test]`（`test-threads = 1`）保证逐个串行。默认档的 `default-filter` 排除它们，所以完整验证＝默认档＋ `--profile slow_test`；它们只能在 `--profile slow_test` 或 `--ignore-default-filter` 下被收集，默认档配 `-E` 会零匹配。新增不稳定重型用例时给测试函数加 `slow_` 前缀，不在配置里维护名字清单。
 
 `quick` 是日常快档：`.config/nextest.toml` 的 `[profile.quick]` 用 `default-filter` 跳过 `cli_agent` 中的真实 PTY 用例与 `slow_test` 成员，只保留每类冒烟；`crates/*` 单元测试与其余集成用例照旧执行。它不覆盖 TUI／PTY 行为，改动这些区域时用默认档。`default-filter` 与 `-E` 取交集，所以在 `--profile quick` 下定向跑 PTY 用例必须加 `--ignore-default-filter`，否则会得到零匹配：

@@ -964,7 +964,10 @@ mod tests {
 
     #[test]
     fn is_plan_path_matches_only_the_exact_plan_file() {
-        let dir = tempfile::tempdir().unwrap();
+        // 保存层按 canonical 根校验绝对路径；临时父目录规范化后拼写一致。
+        let dir = tempfile::Builder::new()
+            .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
+            .unwrap();
         let workspace = save::Workspace::open(dir.path()).unwrap();
         let document = plan_document(1, "Title", "");
         let relative = document.path().unwrap();
