@@ -111,8 +111,6 @@ vt100 = { workspace = true }
 opt-level = 0
 strip = "symbols"
 debug = 1
-split-debuginfo = "unpacked"
-lto = "thin"
 
 [profile.release]
 codegen-units = 16
