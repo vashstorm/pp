@@ -635,7 +635,7 @@ td.project {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--panel);
+  background: var(--raised);
   border-bottom: 1px solid var(--line);
   padding: 18px 20px;
 }
@@ -647,11 +647,35 @@ td.project {
 }
 .drawer-header h2 {
   font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.drawer-identity {
+  min-width: 0;
 }
 .drawer-actions {
   display: flex;
   align-items: center;
   gap: 18px;
+  flex-shrink: 0;
+}
+.drawer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.drawer-link:hover {
+  color: var(--ink-1);
+}
+.drawer-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: 2px;
 }
 .close {
   color: var(--muted);
@@ -746,38 +770,6 @@ pre {
   border-radius: 8px;
   font-size: 12px;
 }
-.request-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 16px;
-}
-.request-actions .outline-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  height: 32px;
-  flex-shrink: 0;
-  white-space: nowrap;
-  text-decoration: none;
-}
-.request-actions .context-button:not(:disabled) {
-  border-color: #247688;
-  background: #247688;
-  color: #fff;
-  font-weight: 600;
-  box-shadow: 0 2px 6px #24768833;
-}
-.request-actions .context-button:not(:disabled):hover {
-  border-color: #1c6373;
-  background: #1c6373;
-}
-.request-actions .context-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-.request-context-state { margin-left: auto; }
 .context-note {
   color: var(--muted);
   font-size: 11px;

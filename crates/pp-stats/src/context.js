@@ -42,15 +42,8 @@ function contextItems(snapshot) {
 }
 
 function requestContextButton(detail) {
-  return `<button class="outline-button context-button"${detail.request_context
-    ? ` data-context-id="${detail.request.id}" title="Read the full context sent with this session's first request"`
-    : ' disabled title="Context was not recorded for this request"'}>${icon("system", 14)} Context</button>`;
-}
-
-function requestContextNote(detail) {
-  return detail.request_context
-    ? '<span class="first-request-badge" title="Session first request · full context saved">First request</span>'
-    : '<span class="context-note">Context not recorded</span>';
+  if (!detail.request_context) return "";
+  return `<button class="drawer-link" data-context-id="${detail.request.id}" title="Read the full context sent with this session's first request">${icon("system", 14)} Context</button>`;
 }
 
 function highlightContext(text, json) {

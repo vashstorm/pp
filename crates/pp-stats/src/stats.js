@@ -20,6 +20,7 @@ const paths = {
   requests: "M2 12h5l3-9 4 18 3-9h5",
   errors: "M12 8v5 M12 16h.01 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
   traces: "M4 3h16v18H4z M8 7h8 M8 11h8 M8 15h5",
+  branch: "M6 3v12 M6 15a3 3 0 1 1 0 6 3 3 0 0 1 0-6 M18 3a3 3 0 1 1 0 6 3 3 0 0 1 0-6 M6 15a9 9 0 0 1 9-9",
   tools:
     "m14 7-4 4 3 3 4-4 M14 7a6 6 0 0 0 7 7L9 22l-5-5 8-10a6 6 0 0 1 7-7l-4 4z",
   frustration: "M4 12a8 8 0 0 1 16 0v7h-4v-7h4 M4 12v7h4v-7z M16 19v3h-4",
@@ -2133,7 +2134,7 @@ function drawerContent(detail) {
     s: r.session_file || "",
     request: String(r.id),
   });
-  return `<div class="drawer-header"><div class="drawer-heading"><div><h2>${h(r.model)}</h2><p class="panel-description">${h(r.provider)} · ${relative(r.timestamp)}</p></div><div class="drawer-actions">${statusBadge(r, true)}<button class="close" aria-label="Close">${icon("close", 18)}</button></div></div><div class="request-actions">${requestContextButton(detail)}<a class="outline-button" href="#/traces?${trace}">${icon("traces", 14)} Trace</a><div class="request-context-state">${requestContextNote(detail)}</div></div></div><div class="drawer-body">${r.error_message ? `<div class="detail-error">${h(r.error_message)}</div>` : ""}<div class="detail-title">Timing</div>${detailsGrid(
+  return `<div class="drawer-header"><div class="drawer-heading"><div class="drawer-identity"><h2>${h(r.model)}</h2><p class="panel-description">${h(r.provider)} · ${relative(r.timestamp)}</p></div><div class="drawer-actions">${requestContextButton(detail)}<a class="drawer-link" href="#/traces?${trace}">${icon("branch", 14)} Trace</a>${statusBadge(r, true)}<button class="close" aria-label="Close">${icon("close", 18)}</button></div></div></div><div class="drawer-body">${r.error_message ? `<div class="detail-error">${h(r.error_message)}</div>` : ""}<div class="detail-title">Timing</div>${detailsGrid(
     [
       ["Started", localTime(r.timestamp)],
       ["Duration", duration(r.duration_ms)],
@@ -2166,7 +2167,7 @@ function drawerContent(detail) {
     ["Project", r.project],
     ["Purpose", r.purpose],
     ["Model reference", r.model_reference],
-  ])}<div class="detail-title">Session file</div><div class="session-path">${h(r.session_file || "Not recorded for this request.")}</div>${payload("Output message", "output", detail.output_message, true)}${payload("Session entry", "entry", detail.session_entry)}${payload("Stats row", "stats", r)}</div>`;
+  ])}<div class="detail-title">Session file</div><div class="session-path">${h(r.session_file || "Not recorded for this request.")}</div>${payload("Stats row", "stats", r)}</div>`;
 }
 async function openDrawer(id, element) {
   hideTooltip();
