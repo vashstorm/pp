@@ -190,6 +190,9 @@ struct Activity {
     started: Option<Instant>,
     waiting_started: Option<Instant>,
     label: String,
+    summary_label: Option<String>,
+    summary_line: String,
+    summary_has_title: bool,
     seconds: Option<u64>,
     run_seconds: u64,
     running: bool,
@@ -472,7 +475,7 @@ impl Transcript {
         activity.label = label.into();
         activity.seconds = elapsed.map(|elapsed| elapsed.as_secs());
         activity.entry.text = format!(
-            "✻ {label} · done {}",
+            "✻ {label} · {}",
             finished_at
                 .map(|time| time.format("%H:%M").to_string())
                 .unwrap_or_else(|| "—".into())
@@ -595,9 +598,15 @@ impl Transcript {
             match event {
                 AgentEvent::ModelAttemptFailed { .. } => activity.phase("Model attempt failed"),
                 AgentEvent::ModelRouteChanged { .. } => activity.phase("Switching model"),
-                AgentEvent::AssistantStarted => activity.phase("Requesting model"),
-                AgentEvent::ThinkingDelta { .. } | AgentEvent::ReasoningSummaryDelta { .. } => {
-                    activity.phase("Thinking")
+                AgentEvent::AssistantStarted => {
+                    activity.summary_line.clear();
+                    activity.summary_has_title = false;
+                    activity.phase("Requesting model");
+                }
+                AgentEvent::ThinkingDelta { .. } => activity.phase("Thinking"),
+                AgentEvent::ReasoningSummaryDelta { text } => {
+                    activity.push_reasoning_summary(text);
+                    activity.phase("Thinking");
                 }
                 AgentEvent::AssistantDelta { .. } => activity.phase("Responding"),
                 AgentEvent::ToolArgumentsDelta { tool, .. } => {

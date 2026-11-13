@@ -7,7 +7,7 @@
 // Ctrl-C 退出闭环与 status/stop 生命周期展示。
 
 // 取消收尾唯一可见的状态行；取消不再向对话追加提示块。
-const CANCEL_DONE: &str = "✻ Cancelled · done";
+const CANCEL_DONE: &str = "✻ Cancelled ·";
 const CANCEL_SETTINGS: &str = "{\"default_model\":\"fixture/primary\",\"request_timeout_seconds\":120,\"notification_timeout_seconds\":2}";
 // 显式外部 sh 提供独立 shell PID（内嵌 shell 不伪造 $$）；父 sh 忽略 TERM，
 // 证明取消路径用 grace 后的 KILL 回收整个进程组。

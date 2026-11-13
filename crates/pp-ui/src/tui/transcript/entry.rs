@@ -1316,6 +1316,9 @@ impl Activity {
             started: Some(started),
             waiting_started: None,
             label: "Requesting model".into(),
+            summary_label: None,
+            summary_line: String::new(),
+            summary_has_title: false,
             seconds: Some(0),
             run_seconds: 0,
             running: true,
@@ -1353,10 +1356,48 @@ impl Activity {
     }
 
     pub(super) fn live_line(&self) -> Line<'static> {
+        let label = self.summary_label.as_deref().unwrap_or(&self.label);
         if self.waiting_started.is_some() {
-            self.sweep_line(&format!("{} · {}", self.label, self.duration_text()))
+            self.sweep_line(&format!("{label} · {}", self.duration_text()))
         } else {
-            self.sweep_line(&self.label)
+            self.sweep_line(label)
+        }
+    }
+
+    pub(super) fn push_reasoning_summary(&mut self, text: &str) {
+        if !self.running {
+            return;
+        }
+        for part in text.split_inclusive('\n') {
+            // 只保留当前行的有界前缀；摘要正文仍由 Transcript 完整管理。
+            for character in part.trim_end_matches('\n').chars() {
+                if self.summary_line.len() + character.len_utf8() > 1024 {
+                    break;
+                }
+                self.summary_line.push(character);
+            }
+            let line = pp_core::text::display_text(&self.summary_line);
+            let line = line.trim();
+            let title = line
+                .strip_prefix("**")
+                .and_then(|text| text.strip_suffix("**"))
+                .or_else(|| {
+                    let text = line.trim_start_matches('#');
+                    (line.len() - text.len() <= 6 && text.len() < line.len())
+                        .then(|| text.strip_prefix(' '))
+                        .flatten()
+                })
+                .map(str::trim)
+                .filter(|text| !text.is_empty());
+            if let Some(title) = title {
+                self.summary_label = Some(title.to_owned());
+                self.summary_has_title = true;
+            } else if !self.summary_has_title && !line.is_empty() && !line.starts_with(['*', '#']) {
+                self.summary_label = Some(line.to_owned());
+            }
+            if part.ends_with('\n') {
+                self.summary_line.clear();
+            }
         }
     }
 

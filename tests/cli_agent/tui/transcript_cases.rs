@@ -1,6 +1,58 @@
 use super::*;
 
 #[test]
+fn tui_activity_prefers_reasoning_summary_and_resets_for_the_next_task() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(dir.path(), "models.yml"),
+        response_models(&server, Some("response")),
+    )
+    .unwrap();
+    let mut pty = Pty::start_with_existing_files(dir.path());
+    pty.ready();
+    pty.input("inspect summary\r");
+    let (request, _) = receive_at(&server, "/v1/responses");
+    pty.wait_for("无摘要时显示请求阶段", |screen| {
+        live_activity_labels(&screen.contents()).eq(["Requesting model"])
+    });
+    let mut stream = request.start_sse().unwrap();
+    for (delta, expected) in [
+        ("**检查", "Thinking"),
+        ("状态**\n\n详细检查正文。", "检查状态"),
+        ("\n\n**验证修复**\n\n详细验证正文。", "验证修复"),
+    ] {
+        runtime_reasoning_delta(&mut stream, "response", delta);
+        pty.wait_for("活动栏采用最新摘要标题", |screen| {
+            live_activity_labels(&screen.contents()).eq([expected])
+        });
+    }
+    streaming_delta(&mut stream, "response", "summary answer");
+    pty.wait_for("回答期间保留摘要标题", |screen| {
+        let text = screen.contents();
+        text.contains("summary answer") && live_activity_labels(&text).eq(["验证修复"])
+    });
+    streaming_complete(&mut stream, "response", "summary answer");
+    drop(stream);
+    pty.completed_after("summary answer");
+    assert!(
+        live_activity_labels(&pty.parser.screen().contents())
+            .next()
+            .is_none()
+    );
+    pty.input("next task\r");
+    let (request, _) = receive_at(&server, "/v1/responses");
+    pty.wait_for("下一任务清空旧摘要", |screen| {
+        live_activity_labels(&screen.contents()).eq(["Requesting model"])
+    });
+    response_final(request, "next answer");
+    pty.completed_after("next answer");
+    pty.input("/quit\r");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
 fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
@@ -46,7 +98,7 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
             let text = screen.contents();
             text.matches('✻').count() == 1
                 && text.contains("✻ Completed ·")
-                && text.contains(" · done ")
+                && !text.contains(" · done ")
                 && label_color(screen, "✻ Completed ·") == vt100::Color::Rgb(190, 198, 212)
                 && (0..30).any(|row| {
                     screen
@@ -65,7 +117,10 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
             .next()
             .unwrap()
             .trim();
-        assert!(finished_at.starts_with("done "), "{text}");
+        assert!(
+            finished_at.len() == 5 && finished_at.as_bytes()[2] == b':',
+            "{text}"
+        );
         assert!(
             text.lines().any(|line| {
                 line.contains("\u{e62a} ")

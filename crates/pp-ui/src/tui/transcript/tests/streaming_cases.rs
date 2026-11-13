@@ -10,6 +10,71 @@ fn live_activity_label(transcript: &Transcript) -> String {
 }
 
 #[test]
+fn activity_prefers_latest_reasoning_summary_until_the_run_finishes() {
+    let mut transcript = Transcript::new();
+    transcript.begin_run();
+    assert_eq!(live_activity_label(&transcript), "Requesting model");
+    for (text, expected) in [
+        (" \n", "Thinking"),
+        ("**检查", "Thinking"),
+        ("状态**\n\n这里是摘要正文。", "检查状态"),
+        ("\n正文继续更新。\n\n**修复", "检查状态"),
+        ("状态**\n\n新的正文。", "修复状态"),
+    ] {
+        transcript.progress(AgentEvent::ReasoningSummaryDelta { text: text.into() });
+        assert_eq!(live_activity_label(&transcript), expected);
+    }
+    transcript.progress(AgentEvent::ToolStarted {
+        id: "read-summary".into(),
+        name: "read".into(),
+        arguments: r#"{"path":"test.txt"}"#.into(),
+    });
+    assert_eq!(live_activity_label(&transcript), "修复状态");
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "read-summary".into(),
+        result: json!({"ok":true,"content":"file content"}),
+    });
+    transcript.progress(AgentEvent::AssistantStarted);
+    assert_eq!(live_activity_label(&transcript), "修复状态");
+    transcript.progress(AgentEvent::ReasoningSummaryDelta {
+        text: "确认修复结果".into(),
+    });
+    assert_eq!(live_activity_label(&transcript), "确认修复结果");
+    transcript.progress(AgentEvent::AssistantDelta {
+        text: "修复完成".into(),
+        refusal: false,
+    });
+    assert_eq!(live_activity_label(&transcript), "确认修复结果");
+    transcript.finish_run_with_timing("Completed", None, None);
+    assert!(transcript.live_activity_line().is_none());
+    assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Completed · —"));
+    transcript.begin_run();
+    assert_eq!(live_activity_label(&transcript), "Requesting model");
+}
+
+#[test]
+fn activity_summary_handles_plain_text_headings_and_bounded_unicode_lines() {
+    let mut transcript = Transcript::new();
+    transcript.begin_run();
+    for (text, expected) in [
+        ("检查", "检查"),
+        ("输入🙂\n\n", "检查输入🙂"),
+        ("## 验证结果\n正文不替换标题。", "验证结果"),
+    ] {
+        transcript.progress(AgentEvent::ReasoningSummaryDelta { text: text.into() });
+        assert_eq!(live_activity_label(&transcript), expected);
+    }
+    transcript.progress(AgentEvent::ReasoningSummaryDelta {
+        text: format!("{}\n\n**完成验证**\n", "中🙂".repeat(4096)),
+    });
+    assert_eq!(live_activity_label(&transcript), "完成验证");
+    assert!(transcript.activity.as_ref().unwrap().summary_line.len() <= 1024);
+    transcript.fail();
+    assert!(transcript.live_activity_line().is_none());
+    assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Failed ·"));
+}
+
+#[test]
 fn bash_background_snapshot_counts_only_output_rows() {
     for name in ["bash", "bash_task"] {
         for count in [0_usize, 3, 20] {

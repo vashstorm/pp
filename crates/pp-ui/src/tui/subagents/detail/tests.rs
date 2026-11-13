@@ -606,7 +606,7 @@ fn detail_pages_wait_for_output_before_snapshot_terminal() {
     let screen = text(&mut detail.transcript);
     assert_eq!(screen.matches("first second").count(), 1);
     assert_eq!(screen.matches("task-r1").count(), 1);
-    assert!(screen.contains("Completed · done —"));
+    assert!(screen.contains("Completed · —"));
     assert!(!screen.contains("task-r2") && !screen.contains("Cancelled"));
 }
 
@@ -657,7 +657,7 @@ fn detail_queue_to_live_ignores_a_snapshot_beyond_the_read_boundary() {
         &BTreeSet::new(),
         10_000,
     );
-    assert!(text(&mut detail.transcript).contains("Completed · done —"));
+    assert!(text(&mut detail.transcript).contains("Completed · —"));
 }
 
 #[test]
@@ -683,7 +683,7 @@ fn detail_terminal_metadata_can_arrive_after_lifecycle() {
         &BTreeSet::new(),
         10_000,
     );
-    assert!(text(&mut detail.transcript).contains("Failed · done"));
+    assert!(text(&mut detail.transcript).contains("Failed ·"));
     assert_eq!(detail.transcript.task_duration(), None);
     let mut failed = run("r1", "failed");
     failed.result = Some(json!({"error":"failure explanation"}));
@@ -694,7 +694,7 @@ fn detail_terminal_metadata_can_arrive_after_lifecycle() {
         10_000,
     );
     let screen = text(&mut detail.transcript);
-    assert!(screen.contains("partial answer") && screen.contains("Failed · done"));
+    assert!(screen.contains("partial answer") && screen.contains("Failed ·"));
     assert_eq!(detail.transcript.task_duration().as_deref(), Some("12s"));
     assert!(!screen.contains("failure explanation"));
     assert_eq!(detail.notice.as_deref(), Some("failure explanation"));
@@ -745,7 +745,7 @@ fn detail_unknown_timing_and_cancel_keep_partial_output_without_duplicates() {
             10_000,
         );
         let screen = text(&mut detail.transcript);
-        assert!(screen.contains("partial tool output") && screen.contains("Cancelled · done —"));
+        assert!(screen.contains("partial tool output") && screen.contains("Cancelled · —"));
         assert!(!screen.contains("Wall:") && !screen.contains("Elapsed:"));
         assert_eq!(detail.transcript.entry_count(), 2);
     }

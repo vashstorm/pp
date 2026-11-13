@@ -192,7 +192,7 @@ fn completed_turn_uses_worker_timing_and_preserves_draft() {
             })
             .unwrap();
         app.receive();
-        let expected = "✻ Completed · done 19:06";
+        let expected = "✻ Completed · 19:06";
         let screen = draw(&mut app, 100, 30);
         assert!(screen.contains(expected), "{screen}");
         assert_eq!(app.conversation.task_duration().as_deref(), Some(duration));

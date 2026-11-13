@@ -379,7 +379,7 @@ impl Pty {
                 && live_activity_labels(&text).next().is_none()
                 && !text
                     .lines()
-                    .any(|line| line.trim_start().starts_with("✻ ") && !line.contains(" · done "))
+                    .any(|line| line.trim_start().starts_with("✻ ") && !line.contains(" · "))
         });
     }
 
