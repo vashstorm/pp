@@ -141,6 +141,9 @@ pub(super) fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
         OpenAIError::ApiError(error) => {
             anyhow::anyhow!("{api} HTTP status {}", error.status_code)
         }
+        OpenAIError::StreamError(_) => {
+            anyhow::anyhow!("{api} response stream interrupted")
+        }
         OpenAIError::JSONDeserialize(error, _) if api == "Chat Completions" => {
             let reason = match error.classify() {
                 serde_json::error::Category::Eof => "incomplete JSON",

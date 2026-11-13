@@ -433,6 +433,86 @@ fn api_error(status: u16, code: Option<&str>) -> OpenAIError {
 }
 
 #[test]
+fn broken_response_body_reports_stream_failure_and_preserves_retry_boundary() {
+    for responses in [false, true] {
+        let server = TestServer::start().unwrap();
+        let mut client =
+            test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 1);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..2 {
+                    let request = server
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        request.target(),
+                        if responses {
+                            "/responses"
+                        } else {
+                            "/chat/completions"
+                        }
+                    );
+                    request
+                        .respond(
+                            Response::builder()
+                                .header("Content-Type", "text/event-stream")
+                                .header("Content-Encoding", "gzip")
+                                .body(Body::from("private-body-invalid-gzip"))
+                                .unwrap(),
+                        )
+                        .unwrap();
+                }
+            });
+            let mut sent = 0;
+            let mut finished = Vec::new();
+            let mut retries = Vec::new();
+            let mut on_sent = || {
+                sent += 1;
+                Ok(())
+            };
+            let mut emit = |event| match event {
+                AgentEvent::ModelRequestFinished { success, .. } => finished.push(success),
+                AgentEvent::RequestRetrying { reason, .. } => retries.push(reason),
+                _ => {}
+            };
+            let token = CancellationToken::new();
+            let error = if responses {
+                client
+                    .respond(&CreateResponse::default(), &token, &mut on_sent, &mut emit)
+                    .err()
+                    .unwrap()
+            } else {
+                client
+                    .complete(
+                        &CreateChatCompletionRequest::default(),
+                        &token,
+                        &mut on_sent,
+                        &mut emit,
+                    )
+                    .err()
+                    .unwrap()
+            };
+            assert!(super::retry::model_request_failed(&error));
+            let message = error.to_string();
+            let api = if responses {
+                "Responses"
+            } else {
+                "Chat Completions"
+            };
+            assert!(
+                message.starts_with(&format!("{api} response stream interrupted")),
+                "{message}"
+            );
+            assert!(!message.contains("private-body") && !message.contains("private-key"));
+            assert_eq!(sent, 1);
+            assert_eq!(finished, [false, false]);
+            assert_eq!(retries, [pp_core::events::RequestRetryReason::ModelError]);
+        });
+    }
+}
+
+#[test]
 fn request_retry_policy_shares_attempt_cap_budget_and_error_boundary() {
     let delay = |error: anyhow::Error, waited, budget, attempt| {
         let mut state = RequestAttempts::new(budget);
