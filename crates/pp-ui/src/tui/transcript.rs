@@ -203,6 +203,8 @@ struct Activity {
     waiting_started: Option<Instant>,
     label: String,
     summary_label: Option<String>,
+    pending_summary: Option<(String, Instant)>,
+    summary_updated_at: Option<Instant>,
     summary_line: String,
     summary_has_title: bool,
     seconds: Option<u64>,

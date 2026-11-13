@@ -16,7 +16,7 @@ impl Transcript {
                 }
                 AgentEvent::ThinkingDelta { .. } => activity.phase("Thinking"),
                 AgentEvent::ReasoningSummaryDelta { text } => {
-                    activity.push_reasoning_summary(text);
+                    activity.push_reasoning_summary(text, Instant::now());
                     activity.phase("Thinking");
                 }
                 AgentEvent::AssistantDelta { .. } => activity.phase("Responding"),

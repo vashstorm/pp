@@ -1,8 +1,8 @@
 use super::DisplayContext;
 
 use super::{
-    Activity, Color, EntryBody, EntryKind, EntryStatus, Instant, Line, Modifier, Span, Style,
-    TranscriptEntry, Value, palette,
+    Activity, Color, Duration, EntryBody, EntryKind, EntryStatus, Instant, Line, Modifier, Span,
+    Style, TranscriptEntry, Value, palette,
 };
 
 impl TranscriptEntry {
@@ -67,6 +67,10 @@ impl TranscriptEntry {
 }
 
 impl Activity {
+    const SUMMARY_INTERVAL: Duration = Duration::from_secs(5);
+    const SUMMARY_SETTLE_DELAY: Duration = Duration::from_millis(500);
+    const SUMMARY_WIDTH: usize = 60;
+
     pub(super) fn summary(&self) -> Option<&TranscriptEntry> {
         (!self.running).then_some(&self.entry)
     }
@@ -84,6 +88,8 @@ impl Activity {
             waiting_started: None,
             label: "Requesting model".into(),
             summary_label: None,
+            pending_summary: None,
+            summary_updated_at: None,
             summary_line: String::new(),
             summary_has_title: false,
             seconds: Some(0),
@@ -96,6 +102,7 @@ impl Activity {
         let Some(started) = self.started else {
             return false;
         };
+        let summary_changed = self.publish_reasoning_summary(now);
         let elapsed = now.saturating_duration_since(started);
         let run_seconds = elapsed.as_secs();
         let frame = elapsed.as_millis() / 80;
@@ -108,7 +115,7 @@ impl Activity {
             && self.frame == frame
             && self.clock == clock
         {
-            return false;
+            return summary_changed;
         }
         self.frame = frame;
         self.clock = clock;
@@ -131,8 +138,8 @@ impl Activity {
         }
     }
 
-    pub(super) fn push_reasoning_summary(&mut self, text: &str) {
-        if !self.running {
+    pub(super) fn push_reasoning_summary(&mut self, text: &str, now: Instant) {
+        if !self.running || self.label == "Cancelling" {
             return;
         }
         for part in text.split_inclusive('\n') {
@@ -143,7 +150,7 @@ impl Activity {
                 }
                 self.summary_line.push(character);
             }
-            let line = pp_core::text::display_text(&self.summary_line);
+            let line = pp_core::text::display_text(&self.summary_line).into_owned();
             let line = line.trim();
             let title = line
                 .strip_prefix("**")
@@ -157,15 +164,75 @@ impl Activity {
                 .map(str::trim)
                 .filter(|text| !text.is_empty());
             if let Some(title) = title {
-                self.summary_label = Some(title.to_owned());
+                let complete = part.ends_with('\n') || line.starts_with("**");
+                self.queue_reasoning_summary(title, complete, now);
                 self.summary_has_title = true;
             } else if !self.summary_has_title && !line.is_empty() && !line.starts_with(['*', '#']) {
-                self.summary_label = Some(line.to_owned());
+                self.queue_reasoning_summary(line, part.ends_with('\n'), now);
             }
             if part.ends_with('\n') {
                 self.summary_line.clear();
             }
         }
+        self.publish_reasoning_summary(now);
+    }
+
+    fn queue_reasoning_summary(&mut self, label: &str, complete: bool, now: Instant) {
+        let label = Self::summary_excerpt(label);
+        if self.summary_label.as_deref() == Some(&label) {
+            self.pending_summary = None;
+            return;
+        }
+        let ready_at = if complete {
+            now
+        } else {
+            now + Self::SUMMARY_SETTLE_DELAY
+        };
+        // 同一候选补齐换行时可提前就绪；正文继续流入不推迟已有标题。
+        match &mut self.pending_summary {
+            Some((pending, ready)) if *pending == label => *ready = (*ready).min(ready_at),
+            _ => self.pending_summary = Some((label, ready_at)),
+        }
+    }
+
+    fn summary_excerpt(label: &str) -> String {
+        let line = Line::raw(label);
+        if line.width() <= Self::SUMMARY_WIDTH {
+            return label.to_owned();
+        }
+        let mut excerpt = String::new();
+        let mut width = 0;
+        // 按字素和显示列截断，为省略号留一列，保留组合字符与 Emoji。
+        for grapheme in line.styled_graphemes(Style::default()) {
+            width += Span::raw(grapheme.symbol).width();
+            if width >= Self::SUMMARY_WIDTH {
+                break;
+            }
+            excerpt.push_str(grapheme.symbol);
+        }
+        let mut excerpt = excerpt.trim_end().to_owned();
+        excerpt.push('…');
+        excerpt
+    }
+
+    fn publish_reasoning_summary(&mut self, now: Instant) -> bool {
+        if !self.running || self.label == "Cancelling" {
+            return false;
+        }
+        let Some((_, ready_at)) = &self.pending_summary else {
+            return false;
+        };
+        if now < *ready_at
+            || self.summary_updated_at.is_some_and(|updated| {
+                now.saturating_duration_since(updated) < Self::SUMMARY_INTERVAL
+            })
+        {
+            return false;
+        }
+        // 只发布最新候选，不轮播限流期间积压的中间摘要。
+        self.summary_label = self.pending_summary.take().map(|(label, _)| label);
+        self.summary_updated_at = Some(now);
+        true
     }
 
     fn sweep_line(&self, label: &str) -> Line<'static> {
