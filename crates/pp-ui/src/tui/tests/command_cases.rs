@@ -492,8 +492,12 @@ fn retry_notice_counts_down_in_a_fixed_box_and_expires() {
         "{screen}"
     );
     assert!(screen.contains("Esc cancels"), "{screen}");
-    // 倒计时跨桶才要求重绘，且不影响其他区域高度。
-    assert!(app.retry_tick(Instant::now() + Duration::from_secs(1)));
+    // 同一秒内保持不变，整秒递减时才要求重绘。
+    let now = Instant::now();
+    assert!(!app.retry_tick(now + Duration::from_millis(100)));
+    assert!(app.retry_tick(now + Duration::from_secs(1)));
+    assert!(draw(&mut app, 100, 30).contains("retrying in 59s"));
+    assert!(!app.retry_tick(now + Duration::from_millis(1100)));
     assert!(app.retry_visible());
     // 到期自动收起，不需要额外事件。
     assert!(app.retry_tick(Instant::now() + Duration::from_secs(61)));

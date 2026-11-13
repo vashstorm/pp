@@ -307,7 +307,7 @@ pub struct Settings {
     // 模型建连及连续无数据的闲置超时，不限制整轮生成的总耗时。
     #[serde(default = "default_request_timeout_seconds")]
     pub request_timeout_seconds: u64,
-    // Zero disables opening-phase 429 retries entirely.
+    // 每模型的累计重试等待预算，0 表示不重试。
     #[serde(default = "default_rate_limit_retry_budget_seconds")]
     pub rate_limit_retry_budget_seconds: u64,
     #[serde(default = "default_read_max_bytes")]
@@ -458,7 +458,7 @@ fn default_request_timeout_seconds() -> u64 {
 }
 
 fn default_rate_limit_retry_budget_seconds() -> u64 {
-    300
+    1022
 }
 
 fn default_auto_compact() -> bool {

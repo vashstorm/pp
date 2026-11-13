@@ -526,12 +526,22 @@ fn missing_or_empty_settings_default_to_first_provider_first_model() {
         let config = load(settings, Some(providers)).unwrap();
         assert_eq!(config.settings.edit, EditMode::Replace);
         assert_eq!(config.settings.request_timeout_seconds, 300);
+        assert_eq!(config.settings.rate_limit_retry_budget_seconds, 1022);
         assert_eq!(config.api_key, "first-key");
         assert_eq!(config.model, "first-model");
         assert_eq!(config.base_url.as_str(), "https://a.example/v1");
         assert_eq!(config.protocol, models::Protocol::Completion);
     }
     rejection(None, None);
+}
+
+#[test]
+fn explicit_retry_budget_preserves_zero_and_existing_limits() {
+    for seconds in [0, 300, 1022] {
+        let settings = format!("rate_limit_retry_budget_seconds: {seconds}");
+        let config = load(Some(&settings), Some(VALID_MODELS)).unwrap();
+        assert_eq!(config.settings.rate_limit_retry_budget_seconds, seconds);
+    }
 }
 
 #[test]

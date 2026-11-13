@@ -84,7 +84,7 @@ impl RequestAttempts {
                 let delay = error
                     .retry_after
                     .map(Duration::from_secs)
-                    .unwrap_or_else(|| Duration::from_secs(1 << (self.attempt - 1)));
+                    .unwrap_or_else(|| Duration::from_secs(1 << self.attempt));
                 Some(delay.min(self.budget - self.waited))
             });
     }

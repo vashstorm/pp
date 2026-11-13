@@ -522,7 +522,7 @@ fn request_retry_policy_shares_attempt_cap_budget_and_error_boundary() {
         state.delay
     };
     let budget = Duration::from_secs(300);
-    for (attempt, seconds) in [(1, 1), (2, 2), (4, 8)] {
+    for (attempt, seconds) in [(1, 2), (2, 4), (4, 16)] {
         assert_eq!(
             delay(
                 provider_failure(api_error(400, None), "fixture"),
@@ -590,6 +590,28 @@ fn request_retry_policy_shares_attempt_cap_budget_and_error_boundary() {
         ),
         None
     );
+}
+
+#[test]
+fn request_retry_exponential_delays_cover_all_nine_retries() {
+    let mut state = RequestAttempts::new(Duration::from_secs(1022));
+    for (index, seconds) in [2, 4, 8, 16, 32, 64, 128, 256, 512].into_iter().enumerate() {
+        state.attempt = index as u32 + 1;
+        state.finish(&Err::<(), _>(provider_failure(
+            api_error(503, None),
+            "fixture",
+        )));
+        let delay = state.delay.take().expect("预算应支持完整的九次重试");
+        assert_eq!(delay, Duration::from_secs(seconds));
+        state.waited += delay;
+    }
+    assert_eq!(state.waited, state.budget);
+    state.attempt = 10;
+    state.finish(&Err::<(), _>(provider_failure(
+        api_error(503, None),
+        "fixture",
+    )));
+    assert_eq!(state.delay, None);
 }
 
 #[test]
@@ -669,8 +691,7 @@ fn rate_limited_opening_retries_then_finishes_the_request() {
 #[test]
 fn rate_limited_opening_gives_up_when_budget_is_spent() {
     let server = TestServer::start().unwrap();
-    // A 1s budget without a Retry-After header: the first backoff of 1s
-    // spends it entirely, so the second 429 fails the request.
+    // 1 秒预算会截断首次 2 秒退避并将其耗尽，第二次 429 直接失败。
     let mut client = test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 1);
     let token = CancellationToken::new();
     std::thread::scope(|scope| {

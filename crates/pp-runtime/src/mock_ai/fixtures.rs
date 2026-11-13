@@ -444,8 +444,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(retries.len(), 2);
-        assert_eq!(retries[0], (RequestRetryReason::HttpStatus(503), 1, 1000));
-        assert_eq!(retries[1], (RequestRetryReason::RateLimited, 2, 2000));
+        assert_eq!(retries[0], (RequestRetryReason::HttpStatus(503), 1, 2000));
+        assert_eq!(retries[1], (RequestRetryReason::RateLimited, 2, 4000));
         assert!(succeeded, "third attempt must finish the request");
         assert!(reply.contains("Fail fixture complete"), "{reply}");
         assert_eq!(report.calls, 0);

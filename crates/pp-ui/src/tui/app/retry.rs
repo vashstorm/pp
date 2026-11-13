@@ -10,16 +10,13 @@ use ratatui::{
 };
 use std::time::Duration;
 
-/// 倒计时按 100ms 分桶：同一桶内不重绘，跨桶才请求下一帧。
-const TICK_MS: u64 = 100;
-
 pub(in crate::tui) struct Notice {
     reason: RequestRetryReason,
     /// 刚刚失败的尝试序号（从 1 开始）。
     attempt: u32,
     deadline: Instant,
-    /// 当前展示的剩余时间，已按 `TICK_MS` 向上取整。
-    shown_ms: u64,
+    /// 剩余秒数向上取整，同一秒内保持显示稳定。
+    shown_seconds: u64,
 }
 
 impl Notice {
@@ -28,23 +25,21 @@ impl Notice {
             reason,
             attempt,
             deadline: now + wait,
-            shown_ms: 0,
+            shown_seconds: 0,
         };
-        notice.shown_ms = notice.bucket(now);
+        notice.shown_seconds = notice.remaining_seconds(now);
         notice
     }
 
-    fn bucket(&self, now: Instant) -> u64 {
-        let remaining = self.deadline.saturating_duration_since(now).as_millis() as u64;
-        remaining.div_ceil(TICK_MS) * TICK_MS
+    fn remaining_seconds(&self, now: Instant) -> u64 {
+        let remaining = self.deadline.saturating_duration_since(now);
+        remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)
     }
 
     fn line(&self) -> String {
         format!(
-            "attempt {} failed: {}; retrying in {} · Esc cancels",
-            self.attempt,
-            self.reason,
-            crate::tui::format_wait(self.shown_ms)
+            "attempt {} failed: {}; retrying in {}s · Esc cancels",
+            self.attempt, self.reason, self.shown_seconds
         )
     }
 }
@@ -74,7 +69,7 @@ impl App {
         let Some(notice) = self.retry_notice.as_ref() else {
             return false;
         };
-        let (expired, bucket) = (now >= notice.deadline, notice.bucket(now));
+        let (expired, seconds) = (now >= notice.deadline, notice.remaining_seconds(now));
         if expired {
             self.retry_notice = None;
             return true;
@@ -82,8 +77,8 @@ impl App {
         let Some(notice) = self.retry_notice.as_mut() else {
             return false;
         };
-        let changed = notice.shown_ms != bucket;
-        notice.shown_ms = bucket;
+        let changed = notice.shown_seconds != seconds;
+        notice.shown_seconds = seconds;
         changed
     }
 
@@ -108,5 +103,28 @@ impl App {
             Style::default().fg(transcript_style::TEXT),
         );
         frame.render_widget(Paragraph::new(text).block(block), area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_countdown_uses_stable_whole_seconds_at_boundaries() {
+        let now = Instant::now();
+        let notice = Notice::new(RequestRetryReason::Timeout, 1, Duration::from_secs(2), now);
+        assert!(notice.line().contains("retrying in 2s"));
+        for (elapsed, seconds) in [
+            (Duration::ZERO, 2),
+            (Duration::from_millis(100), 2),
+            (Duration::from_secs(1) - Duration::from_nanos(1), 2),
+            (Duration::from_secs(1), 1),
+            (Duration::from_secs(2) - Duration::from_nanos(1), 1),
+            (Duration::from_secs(2), 0),
+            (Duration::from_secs(3), 0),
+        ] {
+            assert_eq!(notice.remaining_seconds(now + elapsed), seconds);
+        }
     }
 }

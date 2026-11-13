@@ -128,7 +128,7 @@ auto_compact_threshold_percent: 80 # 严格限制 1..=99
 # 模型建连及连续无数据的闲置超时（秒），不限制整轮生成总耗时
 request_timeout_seconds: 300
 # 每个模型请求失败后的总重试等待预算（秒）；0 表示仅尝试一次
-rate_limit_retry_budget_seconds: 300
+rate_limit_retry_budget_seconds: 1022
 read_max_bytes: 65536
 read_max_lines: 2000
 read:
@@ -174,7 +174,7 @@ cost:
 
 每个 Agent 独立保留原生历史，只转换已提交内容。不兼容历史、目标不可用或 checkpoint 失败时保留原模型，不自动摘要；某个 Agent 的失败不影响其他 Agent 应用角色配置，界面区分配置已保存、等待边界、生效和失败。子 Agent 的实际模型、恢复快照及新请求计价一起更新，过去的请求统计不改写。配置传播仅覆盖当前 pp 进程及其子 Agent。
 
-模型请求失败（包括供应商 HTTP 错误、流中断和响应解析错误）后，只从本轮请求前的安全消息边界重发，保留此前完整的工具调用和结果，不重跑工具。每个模型最多发送 10 次（含首次），同时受 `rate_limit_retry_budget_seconds` 累计等待预算限制；任一上限耗尽后，使用该角色配置的 fallback，其次数和等待预算独立计算。预算为 0 时主备各发送一次。整数秒 `Retry-After` 优先，否则从 1 秒开始指数退避；单次等待截断到剩余预算。取消、本地配置错误、持久化失败与进程清理失败不会触发重试或 fallback。
+模型请求失败（包括供应商 HTTP 错误、流中断和响应解析错误）后，只从本轮请求前的安全消息边界重发，保留此前完整的工具调用和结果，不重跑工具。每个模型最多发送 10 次（含首次），同时受 `rate_limit_retry_budget_seconds` 累计等待预算限制；任一上限耗尽后，使用该角色配置的 fallback，其次数和等待预算独立计算。预算为 0 时主备各发送一次。整数秒 `Retry-After` 优先，否则按 2、4、8、16、32、64、128、256、512 秒指数退避；默认累计等待预算为 1022 秒；单次等待截断到剩余预算。取消、本地配置错误、持久化失败与进程清理失败不会触发重试或 fallback。
 
 备用模型用于当前任务剩余轮次和 Steering；下一独立任务或 FollowUp 恢复主模型。手动 `/model` 解除角色 fallback 绑定，单独调整 thinking 保留绑定。角色来源和基准模型随会话保存，旧会话没有来源字段时不反推绑定。跨协议切换继续使用严格历史转换，不兼容时安全停止。独立计划审阅和摘要请求也支持备用模型，保留临时请求隔离及压缩事务约束。已显示的失败残片保留失败标记，但不进入有效模型历史；已开始流式响应的失败尝试独立计入统计，纯建连重试仍合并计数，首次请求上下文只保存一次。
 
@@ -1016,7 +1016,7 @@ Bash／bash_task 的模型工具结果在存在 artifact 或保存失败时附�
 
 ## HTTP 协议
 
-以下请求结构适用于普通任务；专用摘要请求不带工具和 tool choice。`async-openai` 以类型化 SSE 流消费两种协议，仅提供流式执行路径。Tokio runtime 连接同步 Agent 与 SDK，不在 TUI 绘制线程执行请求。模型请求不设总耗时上限；`request_timeout_seconds`（默认 300）限制建连和连续无响应数据的闲置等待，收到数据后重新计时，正文、思考及 SSE 心跳均可保活。保留原配置名，已显式配置的数值仍生效；修改后需重启。禁止自动重定向。建连阶段的 HTTP 408／409／429／5xx、连接故障和超时会自动重试；400／401／403 等永久错误、请求构造错误以及流开始后的任何失败（含流内限流、畸形数据和截断）不重试。沿用兼容配置名 `rate_limit_retry_budget_seconds`（默认 300，0 关闭全部建连重试）作为累计退避等待预算，每次尝试仍受上述建连及闲置超时限制，总耗时可能超过等待预算。优先遵循整数秒 `Retry-After`（0 立即重试），否则从 1 秒起指数退避，等待截断至剩余预算，含首次请求最多十次尝试；等待和重新建连均可取消。CLI stderr 显示脱敏原因、重试次数及等待时长；TUI 自动重试保持静默，最终失败显示红框错误，不写入会话或重复采集统计。建连超时并不保证上游未处理原请求，重试可能产生额外模型费用；已执行的本地工具不会重放。显式覆盖 SDK 从环境派生的凭据、API 地址、organization 和 project，仍只用文件配置。
+以下请求结构适用于普通任务；专用摘要请求不带工具和 tool choice。`async-openai` 以类型化 SSE 流消费两种协议，仅提供流式执行路径。Tokio runtime 连接同步 Agent 与 SDK，不在 TUI 绘制线程执行请求。模型请求不设总耗时上限；`request_timeout_seconds`（默认 300）限制建连和连续无响应数据的闲置等待，收到数据后重新计时，正文、思考及 SSE 心跳均可保活。保留原配置名，已显式配置的数值仍生效；修改后需重启。禁止自动重定向。供应商 HTTP 错误、连接故障、超时、流中断和响应解析错误共享重试额度；取消、本地配置、持久化和清理错误直接停止。沿用兼容配置名 `rate_limit_retry_budget_seconds`（默认 1022，0 关闭重试）作为累计退避等待预算，每次尝试仍受上述建连及闲置超时限制，总耗时可能超过等待预算。优先遵循整数秒 `Retry-After`（0 立即重试），否则按 2、4、8、16、32、64、128、256、512 秒指数退避，等待截断至剩余预算，含首次请求最多十次尝试；等待和重新建连均可取消。CLI stderr 显示脱敏原因、重试次数及等待时长；TUI 在输入框上方显示固定重试信息框，剩余时间向上取整并按整秒递减，最终失败显示红框错误，不写入会话或重复采集统计。建连超时并不保证上游未处理原请求，重试可能产生额外模型费用；已执行的本地工具不会重放。显式覆盖 SDK 从环境派生的凭据、API 地址、organization 和 project，仍只用文件配置。
 
 - **`response`（默认）**：发送 `model`、`instructions`、本地 `input` 历史、function `tools`、`tool_choice: auto`、`stream: true`、`store: false` 和 `include: ["reasoning.encrypted_content"]`，不使用 `previous_response_id` 或服务端 conversations。正文和拒绝按输出项及内容顺序显示；可读思考单独展示，不重复 delta／done／completed，不显示参数分片和加密思考。仅以 `response.completed.response` 提交输出和调用，收到后立即结束轮次，不等待 HTTP EOF 或 `[DONE]`。response／message／reasoning／function-call 状态须通过完成校验；原生保留消息、思考及调用顺序，结果匹配 `call_id`。`/new` 清空 input，保留 instructions。
 - **`completion`**：发送 `model`、`messages`、function `tools`、`tool_choice: auto`、`stream: true` 和 `stream_options.include_usage: true`。chunk 使用 SDK schema，只消费 choice 0；保留最后一次非空 usage，包括 choices 为空的 usage-only chunk，缺 usage 不重试或回退。必须有实际 assistant role 和 `stop`／`tool_calls` finish reason。工具片段按 index 累积，无错误结束后才校验；截断、过滤和 finish 前 EOF 均失败。SDK 内部消费 `[DONE]`，服务端省略时仍接受合法 finish 加正常结束。`/new` 只保留 system 消息。

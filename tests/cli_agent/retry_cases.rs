@@ -5,6 +5,53 @@ use std::{
 };
 
 #[test]
+fn request_retry_exponential_waits_match_cli_display_on_either_protocol() {
+    for responses in [false, true] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let models = if responses {
+            response_models(&server, Some("response"))
+        } else {
+            fixture_models(&server)
+        };
+        let cli = Cli::start_with(dir.path(), Some("retry twice"), "{}", &models);
+        let path = if responses {
+            "/v1/responses"
+        } else {
+            "/v1/chat/completions"
+        };
+        let mut bodies = Vec::new();
+        for _ in 0..2 {
+            let (request, body) = receive_at(&server, path);
+            bodies.push(body);
+            request
+                .respond(
+                    Response::builder()
+                        .status(503)
+                        .body(Body::from("private-error-body fixture-key"))
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+        let (request, body) = receive_at(&server, path);
+        assert!(bodies.iter().all(|previous| previous == &body));
+        if responses {
+            response_final(request, "recovered");
+        } else {
+            final_reply(request, "recovered");
+        }
+        let output = cli.finish();
+        assert!(output.status.success(), "responses={responses}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        for expected in ["retrying in 2s (attempt 1)", "retrying in 4s (attempt 2)"] {
+            assert!(error.contains(expected), "responses={responses}, {error}");
+        }
+        assert!(!error.contains("fixture-key"), "{error}");
+        no_more(&server);
+    }
+}
+
+#[test]
 fn configured_request_timeout_stops_unresponsive_provider() {
     for responses in [false, true] {
         let server = server();
@@ -257,7 +304,7 @@ fn request_retry_recovers_timeout_on_either_protocol() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("request timed out; retrying in 1s (attempt 1)"),
+            stderr.contains("request timed out; retrying in 2s (attempt 1)"),
             "{stderr}"
         );
         assert!(!stderr.contains("fixture-key"), "{stderr}");
@@ -315,7 +362,7 @@ fn request_retry_recovers_transport_failure_on_either_protocol() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("connection failed; retrying in 1s (attempt 1)"),
+            stderr.contains("connection failed; retrying in 2s (attempt 1)"),
             "{stderr}"
         );
         assert!(!stderr.contains("fixture-key"), "{stderr}");
@@ -384,8 +431,7 @@ fn rate_limited_opening_fails_once_budget_is_spent_on_either_protocol() {
         } else {
             fixture_models(&server)
         };
-        // Without a Retry-After header the first backoff of 1s spends a 1s
-        // budget, so the second 429 fails the task.
+        // 1 秒预算截断首次 2 秒退避并将其耗尽，第二次 429 直接失败。
         let cli = Cli::start_with(
             dir.path(),
             Some("will not recover"),
