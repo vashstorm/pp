@@ -13,6 +13,7 @@ use std::{
 };
 
 mod args;
+mod budget;
 mod paths;
 mod pattern;
 mod render;
@@ -20,6 +21,7 @@ mod scan;
 
 pub(super) use args::definition;
 use args::{Args, Many, OutputMode, count, file_types};
+use budget::Budget;
 use paths::parse_paths;
 use pattern::{Compiled, compile};
 use render::grouped_header;
@@ -45,6 +47,7 @@ pub(super) fn run(
     artifacts: Option<&super::output::Store>,
 ) -> Result<Value> {
     let mut args: Args = serde_json::from_str(arguments).context("invalid rg arguments")?;
+    let mut budget = Budget::new(args.max_output_tokens)?;
     let settings = args.settings(settings)?;
     let insensitive = args.insensitive()?;
     let output_mode = args.output_mode;
@@ -217,6 +220,9 @@ pub(super) fn run(
                 byte_cut = true;
                 break;
             }
+            if !budget.allows(&content, &text)? {
+                break;
+            }
             content.push_str(&text);
             if output_mode == OutputMode::Count {
                 visible_matches += file.matches;
@@ -272,6 +278,9 @@ pub(super) fn run(
             byte_cut = true;
             break;
         }
+        if !budget.allows(&content, &header)? {
+            break;
+        }
         content.push_str(&header);
         let mut seen = Vec::new();
         let mut last = None;
@@ -295,6 +304,9 @@ pub(super) fn run(
                 byte_cut = true;
                 break;
             }
+            if !budget.allows(&content, &text)? {
+                break;
+            }
             content.push_str(&text);
             if !row.truncated {
                 seen.push(row.number..row.number + 1);
@@ -309,7 +321,7 @@ pub(super) fn run(
             let _ = snapshots.record(key, raw, seen);
         }
         file_details.push(json!({"path":file.target.display,"count":file.matches}));
-        if byte_cut {
+        if byte_cut || budget.reached {
             break;
         }
     }
@@ -347,20 +359,41 @@ pub(super) fn run(
         notes.push("Counts are partial: some files or bytes were not searched.".into());
     }
     notes.extend(warnings.into_iter().take(10));
-    if content.is_empty() {
-        content = if skip > 0 && count > 0 {
-            "No more results".into()
+    if content.is_empty() && !budget.reached {
+        let text = if skip > 0 && count > 0 {
+            "No more results"
         } else {
-            "No matches found".into()
+            "No matches found"
         };
+        if budget.allows(&content, text)? {
+            content.push_str(text);
+        }
     }
     if output_mode == OutputMode::Count {
-        content.push_str(&format!(
+        let text = format!(
             "\nTotal{}: {total}",
             if count_complete { "" } else { " (partial)" }
-        ));
+        );
+        if budget.allows(&content, &text)? {
+            content.push_str(&text);
+        }
     }
-    if !notes.is_empty() {
+    if budget.enabled() {
+        for (index, note) in notes.iter().enumerate() {
+            let separator = if content.is_empty() {
+                ""
+            } else if index == 0 {
+                "\n\n"
+            } else {
+                "\n"
+            };
+            let text = format!("{separator}{note}");
+            if content.len() + text.len() > MAX_OUTPUT || !budget.allows(&content, &text)? {
+                break;
+            }
+            content.push_str(&text);
+        }
+    } else if !notes.is_empty() {
         content.push_str("\n\n");
         let mut notice = notes.join("\n");
         let remaining = MAX_OUTPUT.saturating_sub(content.len());
@@ -374,6 +407,7 @@ pub(super) fn run(
         }
         content.push_str(&notice);
     }
+    budget.finish(&mut content)?;
     let mut result = json!({"ok":true,"content":content,"details":{"matchCount":visible_matches,"fileCount":file_details.len(),"fileMatches":file_details,"fileLimitReached":file_limit,"perFileLimitReached":page.iter().any(|f|f.capped),"linesTruncated":line_cut,"truncated":file_limit || internal_limit || byte_cut || line_cut || page.iter().any(|f|f.capped),"scopePath":uri.or(args.path).unwrap_or_else(||".".into())}});
     if output_mode != OutputMode::Content {
         result["details"]["outputMode"] = json!(output_mode.as_str());
@@ -388,6 +422,12 @@ pub(super) fn run(
         result["details"]["countComplete"] = json!(count_complete);
         result["details"]["truncated"] = json!(file_limit || byte_cut || !count_complete);
     }
+    if budget.enabled() {
+        result["details"]["tokenLimitReached"] = json!(budget.reached);
+        if budget.reached {
+            result["details"]["truncated"] = json!(true);
+        }
+    }
     if let Some(snapshot) = artifact {
         result["artifact"] = snapshot.metadata;
     }
@@ -396,6 +436,9 @@ pub(super) fn run(
 
 #[cfg(test)]
 mod compat_tests;
+
+#[cfg(test)]
+mod budget_tests;
 
 #[cfg(test)]
 mod tests {

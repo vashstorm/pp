@@ -100,6 +100,12 @@ fn rg_compat_rejects_conflicts_invalid_types_and_unknown_modes() {
         json!({"-i":"true"}),
         json!({"-n":"true"}),
         json!({"unexpected":true}),
+        json!({"max_output_tokens":0}),
+        json!({"max_output_tokens":-1}),
+        json!({"max_output_tokens":1.5}),
+        json!({"max_output_tokens":1e100}),
+        json!({"max_output_tokens":"100"}),
+        json!({"max_output_tokens":true}),
     ]
     .into_iter()
     .chain(
