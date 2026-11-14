@@ -16,15 +16,14 @@ fn hook_script(dir: &Path, name: &str, body: &str) -> String {
     path.display().to_string()
 }
 
+/// 用户级 `hooks.yml` 正文：只有事件顶层键。
 fn hook_yaml(event: &str, script: &str) -> String {
-    format!(
-        "hooks:\n  {event}:\n    - hooks:\n        - type: command\n          command: '{script}'\n"
-    )
+    format!("{event}:\n  - hooks:\n      - type: command\n        command: '{script}'\n")
 }
 
 fn two_hook_yaml(first: &str, first_script: &str, second: &str, second_script: &str) -> String {
     format!(
-        "hooks:\n  {first}:\n    - hooks:\n        - type: command\n          command: '{first_script}'\n  {second}:\n    - hooks:\n        - type: command\n          command: '{second_script}'\n"
+        "{first}:\n  - hooks:\n      - type: command\n        command: '{first_script}'\n{second}:\n  - hooks:\n      - type: command\n        command: '{second_script}'\n"
     )
 }
 
@@ -456,7 +455,7 @@ fn hooks_pre_tool_use_rewrite_reaches_disk_events_and_native_call() {
             protocol,
             &server.addr().to_string(),
             &format!(
-                "hooks:\n  PreToolUse:\n    - matcher: read\n      hooks:\n        - type: command\n          command: '{read_script}'\n    - matcher: write\n      hooks:\n        - type: command\n          command: '{write_script}'\n"
+                "PreToolUse:\n  - matcher: read\n    hooks:\n      - type: command\n        command: '{read_script}'\n  - matcher: write\n    hooks:\n      - type: command\n        command: '{write_script}'\n"
             ),
         );
         let serving = protocol.to_owned();
@@ -628,14 +627,12 @@ fn hooks_pre_tool_use_allow_keeps_the_original_approval_denial() {
             "cat > /dev/null\nprintf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}'",
         );
         let server = Arc::new(TestServer::start().unwrap());
-        let mut agent = runtime_input_agent(
+        let mut agent = runtime_agent(
             dir.path(),
             protocol,
             &server.addr().to_string(),
-            &format!(
-                "tools:\n  approvalMode: write\n{}",
-                hook_yaml("PreToolUse", &script)
-            ),
+            "tools:\n  approvalMode: write\n",
+            Some(&hook_yaml("PreToolUse", &script)),
         );
         agent.set_approval_handler(Box::new(|_request, _cancellation| {
             Ok(crate::tools::approval::ApprovalDecision::Deny)
@@ -843,7 +840,7 @@ fn hooks_post_tool_use_transforms_only_the_model_result() {
             protocol,
             &server.addr().to_string(),
             &format!(
-                "hooks:\n  PostToolUse:\n    - hooks:\n        - type: command\n          command: '{script}'\n        - type: command\n          command: '{bad}'\n",
+                "PostToolUse:\n  - hooks:\n      - type: command\n        command: '{script}'\n      - type: command\n        command: '{bad}'\n",
             ),
         );
         let serving = protocol.to_owned();
@@ -993,7 +990,7 @@ fn hooks_post_tool_use_preserves_image_attachment_across_model_switch() {
 }
 
 #[test]
-fn hooks_do_not_run_for_human_shell_or_project_hook_files() {
+fn hooks_do_not_run_for_human_shell_or_foreign_configs() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("ran");
     let script = hook_script(
@@ -1001,13 +998,7 @@ fn hooks_do_not_run_for_human_shell_or_project_hook_files() {
         "mark.sh",
         &format!("cat > /dev/null\necho ran >> {}", marker.display()),
     );
-    // 项目目录里的 hooks 配置不是来源：只读用户级 settings。
-    std::fs::create_dir_all(dir.path().join(".pp")).unwrap();
-    std::fs::write(
-        dir.path().join(".pp/settings.yml"),
-        hook_yaml("PreToolUse", &script),
-    )
-    .unwrap();
+    // Claude 的项目配置文件不是来源：pp 只读自己的 hooks.yml 与 .pp/hooks.yml。
     std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
     std::fs::write(
         dir.path().join(".claude/settings.json"),
@@ -1026,7 +1017,7 @@ fn hooks_do_not_run_for_human_shell_or_project_hook_files() {
         .unwrap();
     assert!(
         !marker.exists(),
-        "人工 shell 与项目 hooks 文件都不得启动脚本"
+        "人工 shell 与外来的 .claude 配置都不得启动脚本"
     );
 }
 

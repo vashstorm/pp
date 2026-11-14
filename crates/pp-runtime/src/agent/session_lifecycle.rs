@@ -70,8 +70,8 @@ impl Agent {
             replay.push(persistence::ReplayRecord::Event(snapshot));
         }
         let client = OpenAiClient::new(&config)?;
-        // hook 配置不从 checkpoint 恢复：始终使用当前进程的 settings。
-        let hooks = std::sync::Arc::new(crate::hooks::Runner::compile(&config.settings.hooks)?);
+        // hook 配置不从 checkpoint 恢复：始终重新读取用户级与项目级 hooks 文件。
+        let hooks = Self::compile_hooks(&catalog, tools.cwd())?;
         tools.limits = checkpoint.tool_limits;
         // 恢复不承诺旧进程的临时管道正文：显式换一个空 registry。
         tools.reset_pipe_store();

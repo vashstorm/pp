@@ -17,6 +17,11 @@ pub fn parse<T: serde::de::DeserializeOwned>(text: &str, kind: &str) -> Result<T
                 "settings.yml.tui.cost was removed. Move currency and exchange_rate to the top-level cost section and remove the old block"
             );
         }
+        if value.get("hooks").is_some() {
+            anyhow::bail!(
+                "settings.yml.hooks was removed. Move the hooks block to ~/.pp/agent/hooks.yml (user level) or .pp/hooks.yml (project level) and delete the old field"
+            );
+        }
     }
     if !value.is_mapping() {
         return Err(invalid_config(kind));

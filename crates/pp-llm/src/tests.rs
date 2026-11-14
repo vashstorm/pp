@@ -323,7 +323,6 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
             read: Default::default(),
             tools: Default::default(),
             lsp: Default::default(),
-            hooks: Default::default(),
             debug: false,
             notification_show_countdown: true,
             notification_timeout_seconds: 10,

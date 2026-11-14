@@ -13,6 +13,21 @@ use pp_llm::OpenAiClient;
 use std::path::PathBuf;
 
 impl Agent {
+    /// 用户级 `~/.pp/agent/hooks.yml` 与启动目录 `.pp/hooks.yml` 合并编译。
+    ///
+    /// 配置在 Agent 构造时冻结：文件缺失视为无 hooks，格式、结构或正则错误
+    /// 不静默忽略。脚本本身只在匹配时启动。
+    pub(in crate::agent) fn compile_hooks(
+        catalog: &ModelCatalog,
+        cwd: &std::path::Path,
+    ) -> Result<std::sync::Arc<crate::hooks::Runner>> {
+        let user = catalog.hooks_path();
+        let project = cwd.join(".pp/hooks.yml");
+        Ok(std::sync::Arc::new(crate::hooks::Runner::load(
+            &user, &project,
+        )?))
+    }
+
     /// 按当前 settings 安装一次共享 Registry；配置无效只让 LSP 不可用，
     /// 不阻止 Agent 启动。
     pub(in crate::agent) fn install_lsp(tools: &mut Tools, catalog: &ModelCatalog) {
@@ -125,7 +140,7 @@ impl Agent {
             )
             .context(crate::system_prompt::PromptFailure)?;
         // 无效正则或结构错误阻止 Agent 构造；脚本本身只在匹配时启动。
-        let hooks = std::sync::Arc::new(crate::hooks::Runner::compile(&config.settings.hooks)?);
+        let hooks = Self::compile_hooks(&catalog, tools.cwd())?;
         let initial_system = system.clone();
         let mut session = Session::new(config.model, config.protocol, initial_system, edit_mode);
         session.set_tools(tools.all_definitions(pp_core::plan::WorkMode::Execute));

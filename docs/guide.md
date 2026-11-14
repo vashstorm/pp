@@ -988,21 +988,23 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 
 ### 生命周期 hooks
 
-`hooks` 只从用户级 `~/.pp/agent/settings.yml` 读取，不读取项目 `.pp`、`.claude`、插件或 frontmatter；配置在进程内冻结，修改后需重启 pp。只支持 `type: command` 的外部命令，支持 `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop` 五个事件。
+`hooks` 从两个独立文件读取：用户级 `~/.pp/agent/hooks.yml` 与项目级 `<启动目录>/.pp/hooks.yml`。两者的文件形状相同，同一事件的组先执行用户级、再执行项目级，互不覆盖；两个文件都缺失时没有任何 hooks。`settings.yml` 不再承载 `hooks`，旧字段会在加载时被明确拒绝并提示迁移。配置在 Agent 构造时冻结，修改后需重启 pp。只支持 `type: command` 的外部命令，支持 `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop` 五个事件。
 
 ```yaml
-hooks:
-  PreToolUse:
-    - matcher: '^(bash|write|edit)$'
-      hooks:
-        - type: command
-          command: '/absolute/path/check-tool.sh'
-          timeout: 30
-  Stop:
-    - hooks:
-        - type: command
-          command: '/absolute/path/check-completion.sh'
+# ~/.pp/agent/hooks.yml 或 <项目>/.pp/hooks.yml，直接以事件名开头
+PreToolUse:
+  - matcher: '^(bash|write|edit)$'
+    hooks:
+      - type: command
+        command: '/absolute/path/check-tool.sh'
+        timeout: 30
+Stop:
+  - hooks:
+      - type: command
+        command: '/absolute/path/check-completion.sh'
 ```
+
+- 项目级文件只认启动目录下的 `.pp/hooks.yml`，不向上层目录搜索；不读取 `.claude`、插件或 frontmatter。文件缺失、为空或只有注释都表示没有 hooks；其余情况必须是合法 YAML 映射，未知事件、未知字段、无效正则与无法读取的文件都会阻止 Agent 构造，错误带来源路径但不回显文件内容。
 
 - `command` 不得为空白；给出 `args` 时直接 exec（不经 shell，空格不被拆分），否则执行 `bash --noprofile --norc -c`。子进程工作目录是事件 `cwd`，继承环境但移除 `BASH_ENV`；宿主 cwd 与环境不变，不注入 `CLAUDE_*`。`timeout` 默认 30 秒，允许 1–3600；`onFailure` 只接受 `block`／`continue`。
 - `matcher` 只对三个工具事件生效，按 pp 原生工具名匹配：缺省、空串与 `*` 匹配全部；只含字母数字、`_`、`-`、空格、逗号、`|` 的写法是逗号／`|` 分割的精确名称列表；其余按 Rust `regex`（区分大小写、未锚定）编译。不要在 `UserPromptSubmit`／`Stop` 上写名称或正则。无效正则阻止 Agent 构造，错误只报事件名与下标。
@@ -1010,7 +1012,7 @@ hooks:
 - stdin 是一个 JSON 对象，公共字段为 `session_id`、`transcript_path`（pp 自己的共享值表 JSONL，不是 Claude transcript）、`cwd`、`permission_mode`（`bypassPermissions`／`acceptEdits`／`default`）与 `hook_event_name`；`UserPromptSubmit` 带 `prompt`，工具事件带 `tool_name`、`tool_input`、`tool_use_id`（子 Agent 另带 `agent_id`、`agent_type`），post 事件另带 pp 原生 JSON `tool_response` 或 `error`，`Stop` 带 `stop_hook_active` 与 `last_assistant_message`。
 - stdout 为空表示没有决定；`{`／`[` 开头的输出按 JSON 对象解析，损坏、尾部多余文本或非对象都是协议错误。普通文本只有 `UserPromptSubmit` 会作为额外上下文注入。决定字段为顶层 `continue`、`stopReason`、`systemMessage`、`decision`、`reason`，以及 `hookSpecificOutput` 内的 `hookEventName`、`permissionDecision`、`permissionDecisionReason`、`updatedInput`、`additionalContext`、`updatedToolOutput`。未知或不适用于该事件的字段、非对象 `updatedInput`／`updatedToolOutput`、`updatedMCPToolOutput` 与 `defer` 都被明确拒绝。顶层 `decision:"block"` 缺少 `reason` 时仍按默认拒绝理由阻止执行（`PostToolUse` 作为模型反馈注入）。`stopReason` 只作为 `continue:false` 的停止理由，单独出现不停止任务；空白理由回落到固定默认理由。
 - 退出码 `0` 表示按 JSON 决定；`2` 表示拒绝（`UserPromptSubmit` 拒绝输入、`PreToolUse` 拒绝工具、`Stop` 用 stderr 理由续跑、post 只注入 stderr 反馈）；其他退出码、启动失败、超时、输出超限与协议错误在控制点默认阻止任务，post 默认告警并保留原结果，`onFailure` 可显式改判。取消与无法确认回收的进程组错误永远停止任务。
-- 同一事件按配置顺序串行执行：`PreToolUse` 各 handler 看到同一份原始调用，最后一个有效 `updatedInput` 生效；`PostToolUse` 看到上一个 handler 修订后的结果，`updatedToolOutput` 只能改模型所见 JSON，`ok`／`cancelled` 必须保持原值且不能凭空新增，图片结果的 `kind:"image"` 必须保留（缺失补回、改值拒绝），真实工具状态、卡片与文件不变；统计的 `result_chars` 按改写后的模型文本采集。`additionalContext` 按顺序累计，在整批工具结果之后作为 developer 消息追加；`UserPromptSubmit` 的上下文跟随该条输入一起提交。
+- 同一事件按配置顺序串行执行（用户级在前、项目级在后）：`PreToolUse` 各 handler 看到同一份原始调用，最后一个有效 `updatedInput` 生效；`PostToolUse` 看到上一个 handler 修订后的结果，`updatedToolOutput` 只能改模型所见 JSON，`ok`／`cancelled` 必须保持原值且不能凭空新增，图片结果的 `kind:"image"` 必须保留（缺失补回、改值拒绝），真实工具状态、卡片与文件不变；统计的 `result_chars` 按改写后的模型文本采集。`additionalContext` 按顺序累计，在整批工具结果之后作为 developer 消息追加；`UserPromptSubmit` 的上下文跟随该条输入一起提交。
 - `permissionDecision: allow` 只表示 hook 不拦截，不跳过 pp 原有的审批与会话授权；`deny` 在审批门之前生效，YOLO 也不能绕过；`ask` 强制一次审批（无交互界面时工具失败），YOLO 与已有会话授权都不能跳过它，非 YOLO 下用户的显式 `deny` 仍然优先。
 - `Stop` 只在根 Execute 的自然完成候选上执行：等待用户答复、错误、取消与子 Agent 最终结果都不触发。`decision:"block"`、非空 `additionalContext` 或 exit 2 请求再跑一轮，理由进入原生 developer 历史；脚本执行期间队列保持开放，新到的用户输入优先于旧的续跑请求。`continue:false` 是任务级停止，先于补充输入生效：输入保持待处理，不再请求模型。每次任务最多 8 次 hook 续跑，超限以 `Stop hook continuation limit reached (8).` 失败而不伪报完成。
 - 注入文本每条上限 10,000 字符（按字符边界截断），诊断先遮蔽凭据再净化控制字符；日志只记录事件、handler 下标、状态、耗时与有界诊断，不记录命令原文与完整 stdin/stdout。脚本以当前用户权限运行，不是沙箱；它造成的文件改动不进入 edit/write 的原子提交或撤销保证，显式脱离进程组的 daemon 也不在回收保证内。

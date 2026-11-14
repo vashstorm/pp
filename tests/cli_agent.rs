@@ -60,6 +60,11 @@ fn write_settings(home: &std::path::Path, text: impl AsRef<str>) -> std::io::Res
     std::fs::write(config_path(home, "settings.yml"), text)
 }
 
+// 用户级 hooks 与 settings.yml 同在 `~/.pp/agent`，JSON 也是合法 YAML。
+fn write_hooks(home: &std::path::Path, text: impl AsRef<str>) -> std::io::Result<()> {
+    std::fs::write(config_path(home, "hooks.yml"), text.as_ref())
+}
+
 // A user Markdown command under the isolated HOME's commands directory.
 fn install_command(home: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
     let dir = config_path(home, "commands");

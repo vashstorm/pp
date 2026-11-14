@@ -11,11 +11,34 @@ mod session_task_cases;
 mod tree_todo_cases;
 mod turn_input_cases;
 
+/// 第四个参数是用户级 `hooks.yml` 的正文；空串表示不写该文件。
 pub(super) fn runtime_input_agent(
     dir: &std::path::Path,
     protocol: &str,
     address: &str,
+    hooks: &str,
+) -> Agent {
+    let hooks = (!hooks.is_empty()).then_some(hooks);
+    runtime_agent(dir, protocol, address, "", hooks)
+}
+
+/// 在 `settings.yml` 里追加正文的变体：测旧配置迁移与普通设置字段。
+pub(super) fn runtime_settings_agent(
+    dir: &std::path::Path,
+    protocol: &str,
+    address: &str,
     settings_extra: &str,
+) -> Agent {
+    runtime_agent(dir, protocol, address, settings_extra, None)
+}
+
+/// 同时需要 settings 正文与 hooks 正文的构造入口（如同时配审批与 hooks）。
+pub(super) fn runtime_agent(
+    dir: &std::path::Path,
+    protocol: &str,
+    address: &str,
+    settings_extra: &str,
+    hooks: Option<&str>,
 ) -> Agent {
     let settings = dir.join("settings.yml");
     let models = dir.join("models.yml");
@@ -24,6 +47,9 @@ pub(super) fn runtime_input_agent(
         format!("# 测试设置\nrate_limit_retry_budget_seconds: 0\n{settings_extra}"),
     )
     .unwrap();
+    if let Some(hooks) = hooks {
+        std::fs::write(dir.join("hooks.yml"), hooks).unwrap();
+    }
     let model = json!({"model":"one"});
     std::fs::write(
         &models,

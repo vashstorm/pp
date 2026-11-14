@@ -1,4 +1,5 @@
-//! `settings.yml` 的 `hooks:` 小节：用户级 command hooks 的值类型。
+//! 生命周期 command hooks 的值类型：用户级 `~/.pp/agent/hooks.yml` 与
+//! 项目级 `<启动目录>/.pp/hooks.yml` 共用同一形状。
 //!
 //! 只描述配置形状与结构校验；正则编译、事件匹配与进程执行都在 runtime。
 //! 严格解析：未知事件名、未知 handler 字段一律拒绝，不为了兼容 Claude
@@ -124,6 +125,24 @@ impl HooksSettings {
         }
     }
 
+    fn groups_mut(&mut self, event: HookEvent) -> &mut Vec<HookMatcherGroup> {
+        match event {
+            HookEvent::UserPromptSubmit => &mut self.user_prompt_submit,
+            HookEvent::PreToolUse => &mut self.pre_tool_use,
+            HookEvent::PostToolUse => &mut self.post_tool_use,
+            HookEvent::PostToolUseFailure => &mut self.post_tool_use_failure,
+            HookEvent::Stop => &mut self.stop,
+        }
+    }
+
+    /// 追加另一个来源的组：项目级组接在用户级组之后，同一事件内按添加顺序匹配。
+    pub fn extend(&mut self, other: &Self) {
+        for event in HookEvent::ALL {
+            self.groups_mut(event)
+                .extend_from_slice(other.groups(event));
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         HookEvent::ALL
             .iter()
@@ -221,5 +240,26 @@ mod tests {
             parse("PostToolUse:\n  - matcher: '^(bash|write)$'\n    hooks: []\n").unwrap();
         tool_matcher.validate().unwrap();
         assert!(parse("PostToolUse:\n  - hooks: {}\n").is_err());
+    }
+
+    #[test]
+    fn hooks_merge_appends_project_groups_after_user_groups_per_event() {
+        let mut user = parse(
+            "PreToolUse:\n  - matcher: read\n    hooks:\n      - type: command\n        command: /bin/user\n",
+        )
+        .unwrap();
+        let project = parse(
+            "PreToolUse:\n  - matcher: write\n    hooks:\n      - type: command\n        command: /bin/project\nStop:\n  - hooks:\n      - type: command\n        command: /bin/stop\n",
+        )
+        .unwrap();
+        user.extend(&project);
+        let matchers: Vec<_> = user
+            .pre_tool_use
+            .iter()
+            .map(|group| group.matcher.as_deref())
+            .collect();
+        assert_eq!(matchers, [Some("read"), Some("write")]);
+        assert_eq!(user.stop.len(), 1);
+        assert!(user.post_tool_use.is_empty());
     }
 }

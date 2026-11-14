@@ -1,4 +1,4 @@
-//! 用户级 command hooks 的真实 CLI 表面：输入拒绝、参数改写与 stderr 诊断。
+//! 命令 hooks 的真实 CLI 表面：用户级与项目级来源、输入拒绝、参数改写与 stderr 诊断。
 
 use super::*;
 
@@ -22,12 +22,14 @@ fn hooks_cli_rejected_prompt_exits_without_a_model_request() {
     );
     write_settings(
         dir.path(),
-        json!({
-            "rate_limit_retry_budget_seconds": 0,
-            "hooks": {"UserPromptSubmit": [{"hooks": [
-                {"type": "command", "command": script}
-            ]}]}
-        })
+        json!({"rate_limit_retry_budget_seconds": 0}).to_string(),
+    )
+    .unwrap();
+    write_hooks(
+        dir.path(),
+        json!({"UserPromptSubmit": [{"hooks": [
+            {"type": "command", "command": script}
+        ]}]})
         .to_string(),
     )
     .unwrap();
@@ -40,6 +42,44 @@ fn hooks_cli_rejected_prompt_exits_without_a_model_request() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("blocked by policy"), "{stderr}");
+    assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
+    no_more(&server);
+}
+
+#[test]
+fn hooks_cli_project_file_applies_alongside_the_user_file() {
+    let server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let script = hook_script(
+        dir.path(),
+        "deny.sh",
+        "cat > /dev/null\nprintf 'blocked by project policy' >&2\nexit 2",
+    );
+    write_settings(
+        dir.path(),
+        json!({"rate_limit_retry_budget_seconds": 0}).to_string(),
+    )
+    .unwrap();
+    // 用户级文件在 `~/.pp/agent/hooks.yml`，项目级在启动目录的 `.pp/hooks.yml`。
+    write_hooks(dir.path(), json!({"Stop": []}).to_string()).unwrap();
+    std::fs::create_dir_all(dir.path().join(".pp")).unwrap();
+    std::fs::write(
+        dir.path().join(".pp/hooks.yml"),
+        json!({"UserPromptSubmit": [{"hooks": [
+            {"type": "command", "command": script}
+        ]}]})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        config_path(dir.path(), "models.yml"),
+        fixture_models(&server),
+    )
+    .unwrap();
+    let output = Cli::spawn(dir.path(), &["-p", "hello"], &[]).finish();
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("blocked by project policy"), "{stderr}");
     assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
     no_more(&server);
 }
@@ -65,16 +105,18 @@ printf '{"systemMessage":"hook\\u001b[2Jnotice"}'"#,
         );
         write_settings(
             dir.path(),
+            json!({"rate_limit_retry_budget_seconds": 0}).to_string(),
+        )
+        .unwrap();
+        write_hooks(
+            dir.path(),
             json!({
-                "rate_limit_retry_budget_seconds": 0,
-                "hooks": {
-                    "PreToolUse": [{"matcher": "write", "hooks": [
-                        {"type": "command", "command": rewrite}
-                    ]}],
-                    "PostToolUse": [{"hooks": [
-                        {"type": "command", "command": notice}
-                    ]}],
-                }
+                "PreToolUse": [{"matcher": "write", "hooks": [
+                    {"type": "command", "command": rewrite}
+                ]}],
+                "PostToolUse": [{"hooks": [
+                    {"type": "command", "command": notice}
+                ]}],
             })
             .to_string(),
         )

@@ -50,7 +50,7 @@ fn model_roles_plan_applies_once_and_manual_model_and_effort_survive_continuatio
 #[test]
 fn model_roles_unavailable_plan_fails_before_changing_workflow_or_history() {
     let dir = tempfile::tempdir().unwrap();
-    let mut agent = runtime_input_agent(
+    let mut agent = runtime_settings_agent(
         dir.path(),
         "completion",
         "127.0.0.1:1",

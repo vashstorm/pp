@@ -933,6 +933,53 @@ fn anthropic_is_rejected_whether_selected_or_not() {
 }
 
 #[test]
+fn hooks_load_merges_user_then_project_and_reports_source_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let user = dir.path().join("hooks.yml");
+    let project = dir.path().join(".pp/hooks.yml");
+    // 两个文件都缺失时是空配置；读取不创建任何文件。
+    let hooks = load_hooks(&user, &project).unwrap();
+    assert!(hooks.is_empty());
+    assert!(!project.exists());
+    fs::create_dir_all(project.parent().unwrap()).unwrap();
+    fs::write(
+        &user,
+        "PreToolUse:\n  - matcher: read\n    hooks:\n      - type: command\n        command: /bin/user\n",
+    )
+    .unwrap();
+    fs::write(
+        &project,
+        "PreToolUse:\n  - matcher: write\n    hooks:\n      - type: command\n        command: /bin/project\nStop:\n  - hooks:\n      - type: command\n        command: /bin/stop\n",
+    )
+    .unwrap();
+    // 项目级组追加在用户级之后，两个来源都不被覆盖。
+    let hooks = load_hooks(&user, &project).unwrap();
+    let commands: Vec<&str> = hooks
+        .pre_tool_use
+        .iter()
+        .flat_map(|group| group.hooks.iter().map(|hook| hook.command.as_str()))
+        .collect();
+    assert_eq!(commands, ["/bin/user", "/bin/project"]);
+    assert_eq!(hooks.stop.len(), 1);
+    // 结构错误带来源路径，且不回显文件内容；空文件不是合法映射。
+    fs::write(
+        &project,
+        "PreToolUse:\n  - hooks:\n      - type: prompt\n        command: secret-marker\n",
+    )
+    .unwrap();
+    let message = format!("{:#}", load_hooks(&user, &project).unwrap_err());
+    assert!(message.contains(".pp/hooks.yml"), "{message}");
+    assert!(!message.contains("secret-marker"), "{message}");
+    // 空文件、只有注释的文件与“不存在”等同：都按未配置处理，不影响另一来源。
+    for blank in ["", "\n\n", "# hooks disabled\n"] {
+        fs::write(&project, blank).unwrap();
+        let hooks = load_hooks(&user, &project).unwrap();
+        assert_eq!(hooks.pre_tool_use.len(), 1);
+        assert!(hooks.stop.is_empty());
+    }
+}
+
+#[test]
 fn missing_and_unparseable_files_are_reported_per_file() {
     rejection(Some(VALID_SETTINGS), None);
     for settings in ["{", "{\"default_model\" \"secret-marker\"}", ""] {

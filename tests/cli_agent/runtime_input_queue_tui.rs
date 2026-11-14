@@ -577,8 +577,13 @@ fn slow_hooks_tui_note_card_is_sanitized() {
         std::fs::set_permissions(&note, permissions).unwrap();
         std::fs::write(
             config_path(home.path(), "settings.yml"),
+            "default_model: fixture/primary\nnotification_timeout_seconds: 2\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "hooks.yml"),
             format!(
-                "default_model: fixture/primary\nnotification_timeout_seconds: 2\nhooks:\n  PostToolUse:\n    - hooks:\n        - type: command\n          command: '{note}'\n",
+                "PostToolUse:\n  - hooks:\n      - type: command\n        command: '{note}'\n",
                 note = note.display()
             ),
         )
@@ -647,8 +652,13 @@ fn slow_hooks_tui_rejected_steering_card_needs_no_extra_request() {
         std::fs::set_permissions(&reject, permissions).unwrap();
         std::fs::write(
             config_path(home.path(), "settings.yml"),
+            "default_model: fixture/primary\nnotification_timeout_seconds: 2\n",
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "hooks.yml"),
             format!(
-                "default_model: fixture/primary\nnotification_timeout_seconds: 2\nhooks:\n  UserPromptSubmit:\n    - hooks:\n        - type: command\n          command: '{reject}'\n",
+                "UserPromptSubmit:\n  - hooks:\n      - type: command\n        command: '{reject}'\n",
                 reject = reject.display()
             ),
         )

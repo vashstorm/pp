@@ -299,8 +299,6 @@ pub struct Settings {
     #[serde(default)]
     pub lsp: crate::config::LspSettings,
     #[serde(default)]
-    pub hooks: crate::config::HooksSettings,
-    #[serde(default)]
     pub debug: bool,
     /// 已弃用：仅为旧配置保留类型校验，不再控制 TUI 显示。
     #[allow(dead_code)]
@@ -348,7 +346,6 @@ impl Settings {
 
     pub(crate) fn validate(&self) -> Result<()> {
         self.lsp.validate()?;
-        self.hooks.validate()?;
         ensure!(
             self.cost.icon().is_some(),
             "cost.currency must be one of {}",
@@ -451,7 +448,6 @@ fn default_settings() -> Settings {
         cost: CostDisplay::default(),
         tools: ToolsSettings::default(),
         lsp: Default::default(),
-        hooks: Default::default(),
         debug: false,
         notification_show_countdown: default_notification_show_countdown(),
         notification_timeout_seconds: default_notification_timeout_seconds(),
@@ -514,6 +510,11 @@ impl ModelCatalog {
 
     pub fn lsp_settings(&self) -> crate::config::LspSettings {
         self.settings.lsp
+    }
+
+    /// 用户级 hooks 配置与 settings.yml 放在同一配置目录。
+    pub fn hooks_path(&self) -> PathBuf {
+        self.settings_path.with_file_name("hooks.yml")
     }
 
     pub fn read_tool_result_preview(&self) -> bool {
@@ -969,6 +970,36 @@ pub fn read_settings(path: &Path) -> Result<Settings> {
                 .with_context(|| format!("loading YAML settings config {}", path.display()))
         }
     }
+}
+
+/// 读取一个 hooks YAML 文件：文件缺失、空文件或只有注释都视为空配置；
+/// 其他读取错误、格式错误与结构校验失败都带来源路径返回，不泄露文件内容。
+pub fn read_hooks(path: &Path) -> Result<HooksSettings> {
+    match fs::read_to_string(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HooksSettings::default()),
+        result => {
+            let text =
+                result.with_context(|| format!("reading YAML hooks config {}", path.display()))?;
+            // 空文件与只有注释的文件解析为 null 文档，等同未配置，不要求写成 `{}`。
+            if serde_yaml::from_str::<serde_yaml::Value>(&text).is_ok_and(|value| value.is_null()) {
+                return Ok(HooksSettings::default());
+            }
+            yaml::parse::<HooksSettings>(&text, "hooks")
+                .and_then(|hooks| {
+                    hooks.validate()?;
+                    Ok(hooks)
+                })
+                .with_context(|| format!("loading YAML hooks config {}", path.display()))
+        }
+    }
+}
+
+/// 用户级 `hooks.yml` 与项目级 `.pp/hooks.yml` 合并：项目级组追加在用户级之后，
+/// 同事件内按该顺序匹配；两个来源互不覆盖。
+pub fn load_hooks(user: &Path, project: &Path) -> Result<HooksSettings> {
+    let mut hooks = read_hooks(user)?;
+    hooks.extend(&read_hooks(project)?);
+    Ok(hooks)
 }
 
 #[cfg(test)]

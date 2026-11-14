@@ -1,5 +1,6 @@
-//! 用户级 command hooks：配置编译、事件匹配、串行执行与决定合并。
+//! 生命周期 command hooks：配置编译、事件匹配、串行执行与决定合并。
 //!
+//! 配置来自用户级 `~/.pp/agent/hooks.yml` 与启动目录 `.pp/hooks.yml`。
 //! 只有 command handler；脚本通过 stdin 收到 JSON 信封，用 stdout JSON 与
 //! 退出码表达决定。任何无法确认回收的进程都升级为 `CleanupError`，调用方
 //! 必须停止任务。
@@ -102,6 +103,11 @@ pub(crate) struct Runner {
 }
 
 impl Runner {
+    /// 读取用户级与项目级 hooks 文件后编译；项目级组追加在用户级之后。
+    pub(crate) fn load(user: &Path, project: &Path) -> Result<Self> {
+        Self::compile(&pp_config::config::load_hooks(user, project)?)
+    }
+
     pub(crate) fn compile(settings: &HooksSettings) -> Result<Self> {
         let mut events: [Vec<Group>; HookEvent::ALL.len()] = std::array::from_fn(|_| Vec::new());
         for (index, event) in HookEvent::ALL.iter().enumerate() {
