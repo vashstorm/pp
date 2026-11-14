@@ -633,6 +633,12 @@ mod tests {
     #[test]
     fn discovery_defaults_metadata_duplicates_nested_roots_and_errors() {
         let (_home, dir) = fixture();
+        // 默认根不存在：静默为空，不产生诊断。
+        let mut skills = Skills::from_dir(&dir);
+        assert!(skills.entries.is_empty());
+        assert!(skills.diagnostics.is_empty());
+        assert!(!dir.join("skills").exists());
+
         let first = skill(
             &dir.join("skills"),
             "a",
@@ -648,7 +654,8 @@ mod tests {
         );
         fs::create_dir_all(dir.join("skills/bad")).unwrap();
         fs::write(dir.join("skills/bad/SKILL.md"), "---\nname: bad\n---").unwrap();
-        let skills = Skills::from_dir(&dir);
+        // reload 发现新增技能：保留首个定义、忽略嵌套目录、坏 frontmatter 只记诊断。
+        skills.reload().unwrap();
         assert_eq!(skills.entries.len(), 1);
         assert_eq!(skills.entries[0].name, "rust");
         assert!(skills.entries[0].enabled);
@@ -660,32 +667,13 @@ mod tests {
             first.canonicalize().unwrap()
         );
         assert!(skills.resolve_uri("skill://../rust").is_err());
-    }
-    #[test]
-    fn missing_default_root_is_silent_and_reload_discovers_new_skills() {
-        let (_home, dir) = fixture();
-        let mut skills = Skills::from_dir(&dir);
-        assert!(skills.entries.is_empty());
-        assert!(skills.diagnostics.is_empty());
-        assert!(!dir.join("skills").exists());
 
-        skill(&dir.join("skills"), "rust", "rust", "body");
-        skills.reload().unwrap();
-        assert_eq!(skills.entries.len(), 1);
-        assert!(skills.diagnostics.is_empty());
-
-        fs::remove_dir_all(dir.join("skills")).unwrap();
-        skills.reload().unwrap();
-        assert!(skills.entries.is_empty());
-        assert!(skills.diagnostics.is_empty());
-    }
-    #[test]
-    fn non_directory_root_still_reports_a_diagnostic() {
-        let (_home, dir) = fixture();
-        fs::write(dir.join("skills"), "not a directory").unwrap();
-        let skills = Skills::from_dir(&dir);
-        assert!(skills.entries.is_empty());
-        assert_eq!(skills.diagnostics.len(), 1);
+        // 根存在但不是目录：仍然告警，不静默当成空目录。
+        let (_home, other) = fixture();
+        fs::write(other.join("skills"), "not a directory").unwrap();
+        let broken = Skills::from_dir(&other);
+        assert!(broken.entries.is_empty());
+        assert_eq!(broken.diagnostics.len(), 1);
     }
     #[test]
     fn configurable_roots_order_relative_absolute_tilde_and_disabled() {

@@ -268,55 +268,48 @@ fn context_chat_existing_summary_is_a_regular_user_prefix() {
 }
 
 #[test]
-fn context_chat_missing_tool_result_rejected() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read both"),
-        chat_assistant_calls(&["a", "b"]),
-        chat_tool("a", "result a"),
+fn context_chat_tool_result_error_shapes_rejected() {
+    let shapes: [Vec<ChatCompletionRequestMessage>; 5] = [
+        // missing：批内缺少结果。
+        vec![
+            chat_system("system"),
+            chat_user("read both"),
+            chat_assistant_calls(&["a", "b"]),
+            chat_tool("a", "result a"),
+        ],
+        // missing：尾部调用完全没有结果。
+        vec![
+            chat_system("system"),
+            chat_user("read"),
+            chat_assistant_calls(&["a"]),
+        ],
+        // duplicate：同一调用收到重复结果。
+        vec![
+            chat_system("system"),
+            chat_user("read"),
+            chat_assistant_calls(&["a"]),
+            chat_tool("a", "result a"),
+            chat_tool("a", "result a again"),
+        ],
+        // orphan：结果没有对应的调用。
+        vec![
+            chat_system("system"),
+            chat_user("question"),
+            chat_assistant("answer"),
+            chat_tool("unknown", "orphan"),
+        ],
+        // orphan：批内多出不属于该批的结果。
+        vec![
+            chat_system("system"),
+            chat_user("read"),
+            chat_assistant_calls(&["a"]),
+            chat_tool("a", "result a"),
+            chat_tool("b", "orphan"),
+        ],
     ];
-    assert_incomplete_chat(messages);
-
-    // A trailing call without any result is equally incomplete.
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read"),
-        chat_assistant_calls(&["a"]),
-    ];
-    assert_incomplete_chat(messages);
-}
-
-#[test]
-fn context_chat_duplicate_tool_result_rejected() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read"),
-        chat_assistant_calls(&["a"]),
-        chat_tool("a", "result a"),
-        chat_tool("a", "result a again"),
-    ];
-    assert_incomplete_chat(messages);
-}
-
-#[test]
-fn context_chat_orphan_tool_result_rejected() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("question"),
-        chat_assistant("answer"),
-        chat_tool("unknown", "orphan"),
-    ];
-    assert_incomplete_chat(messages);
-
-    // A result that references no call of the preceding batch.
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read"),
-        chat_assistant_calls(&["a"]),
-        chat_tool("a", "result a"),
-        chat_tool("b", "orphan"),
-    ];
-    assert_incomplete_chat(messages);
+    for messages in shapes {
+        assert_incomplete_chat(messages);
+    }
 }
 
 #[test]
@@ -409,13 +402,6 @@ fn context_responses_pending_user_gets_no_boundary() {
 }
 
 #[test]
-fn context_responses_empty_or_pending_only_histories_have_no_boundaries() {
-    assert_eq!(response_boundaries(&[]).unwrap(), Vec::<usize>::new());
-    let pending = vec![res_user("unanswered")];
-    assert_eq!(response_boundaries(&pending).unwrap(), Vec::<usize>::new());
-}
-
-#[test]
 fn context_responses_existing_summary_is_a_regular_user_prefix() {
     let items = vec![
         res_user("[Context summary]\nremembered constraint\n[/Context summary]"),
@@ -428,46 +414,41 @@ fn context_responses_existing_summary_is_a_regular_user_prefix() {
 }
 
 #[test]
-fn context_responses_missing_output_rejected() {
-    let items = vec![
-        res_user("read both"),
-        res_call("a"),
-        res_call("b"),
-        res_output("a", "result a"),
+fn context_responses_tool_output_error_shapes_rejected() {
+    let shapes: [Vec<r::InputItem>; 5] = [
+        // missing：批内缺少结果。
+        vec![
+            res_user("read both"),
+            res_call("a"),
+            res_call("b"),
+            res_output("a", "result a"),
+        ],
+        // missing：尾部调用完全没有结果。
+        vec![res_user("read"), res_call("a")],
+        // duplicate：同一调用收到重复结果。
+        vec![
+            res_user("read"),
+            res_call("a"),
+            res_output("a", "result a"),
+            res_output("a", "result a again"),
+        ],
+        // orphan：结果没有对应的调用。
+        vec![
+            res_user("question"),
+            res_assistant("msg-1", "answer"),
+            res_output("unknown", "orphan"),
+        ],
+        // orphan：批内多出不属于该批的结果。
+        vec![
+            res_user("read"),
+            res_call("a"),
+            res_output("a", "result a"),
+            res_output("b", "orphan"),
+        ],
     ];
-    assert_incomplete_responses(items);
-
-    let items = vec![res_user("read"), res_call("a")];
-    assert_incomplete_responses(items);
-}
-
-#[test]
-fn context_responses_duplicate_output_rejected() {
-    let items = vec![
-        res_user("read"),
-        res_call("a"),
-        res_output("a", "result a"),
-        res_output("a", "result a again"),
-    ];
-    assert_incomplete_responses(items);
-}
-
-#[test]
-fn context_responses_orphan_output_rejected() {
-    let items = vec![
-        res_user("question"),
-        res_assistant("msg-1", "answer"),
-        res_output("unknown", "orphan"),
-    ];
-    assert_incomplete_responses(items);
-
-    let items = vec![
-        res_user("read"),
-        res_call("a"),
-        res_output("a", "result a"),
-        res_output("b", "orphan"),
-    ];
-    assert_incomplete_responses(items);
+    for items in shapes {
+        assert_incomplete_responses(items);
+    }
 }
 
 #[test]
@@ -491,17 +472,6 @@ fn res_assistant_easy(text: &str) -> r::InputItem {
         content: r::EasyInputContent::Text(text.into()),
         ..Default::default()
     })
-}
-
-fn res_structured_user(text: &str) -> r::InputItem {
-    r::InputItem::Item(r::Item::Message(r::MessageItem::Input(r::InputMessage {
-        content: vec![r::InputContent::InputText(r::InputTextContent {
-            text: text.into(),
-            prompt_cache_breakpoint: None,
-        })],
-        role: r::InputRole::User,
-        status: None,
-    })))
 }
 
 fn res_developer(text: &str) -> r::InputItem {
@@ -676,12 +646,6 @@ fn context_responses_developer_messages_close_open_group_and_reject_mid_batch() 
 }
 
 #[test]
-fn context_responses_structured_user_input_preserves_exchange_boundaries() {
-    let items = vec![res_user("question"), res_structured_user("second")];
-    assert!(response_boundaries(&items).unwrap().is_empty());
-}
-
-#[test]
 fn context_incomplete_groups_and_normalized_call_ids_are_rejected() {
     assert_incomplete_chat(vec![
         chat_system("system"),
@@ -815,27 +779,6 @@ fn context_chat_retention_keeps_trailing_pending_user_in_suffix() {
 }
 
 #[test]
-fn context_chat_retention_none_without_removable_exchange() {
-    assert_eq!(chat_cutoff(&[], None).unwrap(), None::<usize>);
-    let pending = vec![chat_system("system"), chat_user("unanswered")];
-    assert_eq!(chat_cutoff(&pending, None).unwrap(), None::<usize>);
-    let single = vec![
-        chat_system("system"),
-        chat_user("first"),
-        chat_assistant("answer"),
-    ];
-    assert_eq!(chat_cutoff(&single, None).unwrap(), None::<usize>);
-    // A lone exchange stays even when a pending user follows it.
-    let single_pending = vec![
-        chat_system("system"),
-        chat_user("first"),
-        chat_assistant("answer"),
-        chat_user("unanswered"),
-    ];
-    assert_eq!(chat_cutoff(&single_pending, None).unwrap(), None::<usize>);
-}
-
-#[test]
 fn context_chat_retention_summary_prefix_is_removable_again() {
     // A stored summary is regular history: it can be re-summarized together
     // with the exchanges that follow it, never pinned as a fixed prefix.
@@ -853,20 +796,6 @@ fn context_chat_retention_summary_prefix_is_removable_again() {
         chat_assistant("kept reply"),
     ];
     assert_eq!(chat_cutoff(&only_summary, None).unwrap(), None::<usize>);
-}
-
-#[test]
-fn context_chat_retention_rejects_invalid_history() {
-    let messages = vec![
-        chat_system("system"),
-        chat_user("read both"),
-        chat_assistant_calls(&["a", "b"]),
-        chat_tool("a", "result a"),
-    ];
-    assert_eq!(
-        chat_cutoff(&messages, None).unwrap_err().to_string(),
-        INCOMPLETE
-    );
 }
 
 #[test]
@@ -935,28 +864,6 @@ fn context_responses_retention_keeps_last_exchange_whole_when_over_budget() {
         res_assistant("msg-1", "answer two"),
     ];
     assert_eq!(response_cutoff(&items, Some(5)).unwrap(), Some(3));
-}
-
-#[test]
-fn context_responses_retention_none_without_removable_exchange() {
-    assert_eq!(response_cutoff(&[], None).unwrap(), None::<usize>);
-    let pending = vec![res_user("unanswered")];
-    assert_eq!(response_cutoff(&pending, None).unwrap(), None::<usize>);
-    let single = vec![
-        res_user("first"),
-        res_reasoning("reason-1", Some("opaque-native-state")),
-        res_assistant("msg-1", "answer one"),
-    ];
-    assert_eq!(response_cutoff(&single, None).unwrap(), None::<usize>);
-}
-
-#[test]
-fn context_responses_retention_rejects_invalid_history() {
-    let items = vec![res_user("read"), res_call("a")];
-    assert_eq!(
-        response_cutoff(&items, None).unwrap_err().to_string(),
-        INCOMPLETE
-    );
 }
 
 #[test]

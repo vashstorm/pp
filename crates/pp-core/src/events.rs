@@ -257,7 +257,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lsp_diagnostics_event_round_trips_inline_and_late() {
+    fn lsp_diagnostics_report_flags_issues() {
         let report = crate::lsp_report::DiagnosticReport {
             path: "src/a.rs".into(),
             origin: "write".into(),
@@ -283,28 +283,15 @@ mod tests {
             omitted: 0,
             at_ms: 7,
         };
-        let value = serde_json::to_value(AgentEvent::LspDiagnostics {
+        let event = AgentEvent::LspDiagnostics {
             id: Some("call-1".into()),
-            report: report.clone(),
-        })
-        .unwrap();
-        let restored: AgentEvent = serde_json::from_value(value).unwrap();
-        match restored {
-            AgentEvent::LspDiagnostics {
-                id: Some(id),
-                report: restored,
-            } => {
-                assert_eq!(id, "call-1");
-                assert_eq!(restored.path, "src/a.rs");
-                assert!(restored.has_issues());
-            }
-            _ => panic!("inline LSP diagnostics must round trip"),
-        }
-        let value = serde_json::to_value(AgentEvent::LspDiagnostics { id: None, report }).unwrap();
-        assert!(matches!(
-            serde_json::from_value::<AgentEvent>(value).unwrap(),
-            AgentEvent::LspDiagnostics { id: None, .. }
-        ));
+            report,
+        };
+        let AgentEvent::LspDiagnostics { report, .. } = event else {
+            unreachable!("刚构造的事件必定是 LspDiagnostics");
+        };
+        assert_eq!(report.path, "src/a.rs");
+        assert!(report.has_issues());
     }
 
     #[test]

@@ -56,30 +56,6 @@ impl ContextUsage {
     }
 }
 
-#[cfg(test)]
-#[derive(Default)]
-struct ByteCount(u64);
-
-#[cfg(test)]
-impl Write for ByteCount {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0 = self.0.saturating_add(bytes.len() as u64);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Byte length of a value's JSON encoding, without allocating the encoding.
-#[cfg(test)]
-pub fn serialized_len(value: &impl Serialize) -> Result<usize> {
-    let mut count = ByteCount::default();
-    serde_json::to_writer(&mut count, value)
-        .map_err(|_| anyhow::anyhow!("estimating context usage failed"))?;
-    Ok(count.0 as usize)
-}
-
 /// 原生 JSON 文本按三字节估一 token，内嵌图片每张估 4096 token。
 /// 这只是容量启发式，既不是计费依据，也不分配完整历史的序列化副本。
 pub fn estimate_tokens(value: &impl Serialize) -> Result<u64> {
@@ -159,11 +135,6 @@ mod tests {
 
     #[test]
     fn context_read_image_estimate_excludes_base64_without_copying_history() {
-        let text = serde_json::json!({"text":"ordinary 中文 text with \\\"quotes\\\""});
-        assert_eq!(
-            estimate_tokens(&text).unwrap(),
-            (serialized_len(&text).unwrap() as u64).div_ceil(3)
-        );
         let small = serde_json::json!({"image_url":"data:image/png;base64,AAAA"});
         let large = serde_json::json!({"image_url":format!("data:image/png;base64,{}", "A".repeat(100_000))});
         assert_eq!(

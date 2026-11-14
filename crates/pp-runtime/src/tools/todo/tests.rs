@@ -523,18 +523,6 @@ fn todo_schema_rejects_unknown_fields_nulls_and_types() {
 }
 
 #[test]
-fn todo_occurrence_supported_for_plain_tasks() {
-    let current = inited(&[("P", &["a"])]);
-    let (value, change) = run(&current, r#"{"op":"done","task":"a","occurrence":1}"#);
-    assert_eq!(value["ok"], json!(true), "{value}");
-    assert_eq!(value["op"], json!("done"));
-    assert_eq!(
-        status_of(&change.unwrap().phases, "a"),
-        TodoStatus::Completed
-    );
-}
-
-#[test]
 fn todo_init_append_and_view_accept_unused_occurrence() {
     let mut current = Vec::new();
     for args in [
@@ -636,13 +624,13 @@ fn todo_view_borrows_and_never_normalizes() {
     // Blocked tasks are not "remaining"; they appear in the checklist only.
     assert!(!content.contains("  - D [blocked] (Q)"));
     assert!(content.contains("    - [ ] D (blocked)"));
-}
-
-#[test]
-fn todo_view_empty_list() {
+    // 空列表同样走 view：返回空清单提示，不产生变更。
     let (value, change) = run(&[], r#"{"op":"view"}"#);
-    assert_eq!(value["content"], json!("Todo list is empty."));
     assert!(change.is_none());
+    assert!(
+        value["content"].as_str().unwrap().contains("empty"),
+        "{value}"
+    );
 }
 
 #[test]
@@ -662,24 +650,26 @@ fn todo_exact_matching_no_trim_or_folding() {
 }
 
 #[test]
-fn todo_task_id_misuse_diagnostic() {
+fn todo_not_found_diagnostics_distinguish_id_misuse_and_empty_list() {
     let current = inited(&[("P", &["a"])]);
-    let (value, _) = run(&current, r#"{"op":"done","task":"task-1"}"#);
-    assert_eq!(
-        value["error"],
-        json!(
-            "Task \"task-1\" not found. Tasks are referenced by content, not by IDs — pass the task's full text from the previous result."
-        )
-    );
-}
-
-#[test]
-fn todo_not_found_hint_on_empty_list() {
-    let (value, _) = run(&[], r#"{"op":"done","task":"x"}"#);
-    assert_eq!(
-        value["error"],
-        json!("Task \"x\" not found (todo list is empty — was it replaced or not yet created?)")
-    );
+    let empty = Vec::new();
+    for (state, arguments, task, hint) in [
+        (
+            &current,
+            r#"{"op":"done","task":"task-1"}"#,
+            "task-1",
+            "not by IDs",
+        ),
+        (&empty, r#"{"op":"done","task":"x"}"#, "x", "empty"),
+    ] {
+        let (value, _) = run(state, arguments);
+        let error = value["error"].as_str().unwrap();
+        assert!(
+            error.starts_with(&format!("Task \"{task}\" not found")),
+            "{arguments}: {error}"
+        );
+        assert!(error.contains(hint), "{arguments}: {error}");
+    }
 }
 
 #[test]

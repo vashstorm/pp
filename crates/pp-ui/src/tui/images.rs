@@ -714,7 +714,6 @@ mod tests {
                 ProtocolType::Sixel => assert!(text.contains("\x1bP")),
             }
             assert_eq!(rendered.graphics, protocol != ProtocolType::Halfblocks);
-            assert_eq!(rendered.buffer, rendered.buffer.clone());
         }
     }
 

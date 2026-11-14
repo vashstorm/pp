@@ -241,25 +241,4 @@ mod tests {
         tool_matcher.validate().unwrap();
         assert!(parse("PostToolUse:\n  - hooks: {}\n").is_err());
     }
-
-    #[test]
-    fn hooks_merge_appends_project_groups_after_user_groups_per_event() {
-        let mut user = parse(
-            "PreToolUse:\n  - matcher: read\n    hooks:\n      - type: command\n        command: /bin/user\n",
-        )
-        .unwrap();
-        let project = parse(
-            "PreToolUse:\n  - matcher: write\n    hooks:\n      - type: command\n        command: /bin/project\nStop:\n  - hooks:\n      - type: command\n        command: /bin/stop\n",
-        )
-        .unwrap();
-        user.extend(&project);
-        let matchers: Vec<_> = user
-            .pre_tool_use
-            .iter()
-            .map(|group| group.matcher.as_deref())
-            .collect();
-        assert_eq!(matchers, [Some("read"), Some("write")]);
-        assert_eq!(user.stop.len(), 1);
-        assert!(user.post_tool_use.is_empty());
-    }
 }

@@ -264,15 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_accepts_empty_options() {
-        let args = AskArgs::parse(
-            r#"{"questions":[{"id":"free","question":"Anything to add?","options":[]}]}"#,
-        )
-        .expect("empty options must be valid");
-        assert!(args.questions[0].options.is_empty());
-    }
-
-    #[test]
     fn parse_rejects_invalid_json_without_echo() {
         for input in ["", "not json", "{}", "[]", r#"{"questions":{}}"#] {
             let message = AskArgs::parse(input).expect_err("must fail").to_string();
@@ -421,6 +412,36 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_valid_shapes() {
+        let cases = [
+            (
+                r#"{"questions":[{"id":"free","question":"Anything to add?","options":[]}]}"#,
+                vec![Vec::new()],
+            ),
+            (
+                r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x"}]},
+                                  {"id":"b","question":"u","options":[{"label":"x"}]}]}"#,
+                vec![vec!["x"], vec!["x"]],
+            ),
+        ];
+        for (input, expected) in cases {
+            let args = AskArgs::parse(input).expect("valid ask arguments");
+            let labels = args
+                .questions
+                .iter()
+                .map(|question| {
+                    question
+                        .options
+                        .iter()
+                        .map(|option| option.label.as_str())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(labels, expected, "input: {input}");
+        }
+    }
+
+    #[test]
     fn parse_rejects_semantic_violations() {
         let cases: [(&str, &str); 9] = [
             (r#"{"questions":[]}"#, "ask requires at least one question"),
@@ -464,17 +485,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_allows_same_label_across_questions() {
-        AskArgs::parse(
-            r#"{"questions":[{"id":"a","question":"t","options":[{"label":"x"}]},
-                              {"id":"b","question":"u","options":[{"label":"x"}]}]}"#,
-        )
-        .expect("identical labels in different questions are valid");
-    }
-
-    #[test]
-    fn validate_answers_accepts_happy_paths() {
-        let mut args = AskArgs {
+    fn validate_answers_accepts_valid_shapes() {
+        let mut empty_multi = AskArgs {
+            questions: vec![question("checks", "Run what?", vec![option("unit")])],
+        };
+        empty_multi.questions[0].multi = true;
+        let custom_only = AskArgs {
+            questions: vec![question("free", "Notes?", vec![option("x")])],
+        };
+        let mut out_of_order = AskArgs {
             questions: vec![
                 question(
                     "storage",
@@ -485,53 +504,31 @@ mod tests {
                 question("free", "Notes?", vec![]),
             ],
         };
-        args.questions[1].multi = true;
-        let answers = vec![
-            answer("storage", &["Postgres"], None),
-            answer("checks", &["unit", "lint"], Some("再检查中文")),
-            answer("free", &[], Some("user text")),
+        out_of_order.questions[1].multi = true;
+        let cases: [(AskArgs, Vec<AskAnswer>, &str); 3] = [
+            (
+                empty_multi,
+                vec![answer("checks", &[], None)],
+                "empty multi",
+            ),
+            (
+                custom_only,
+                vec![answer("free", &[], Some("my own"))],
+                "custom-only single",
+            ),
+            (
+                out_of_order,
+                vec![
+                    answer("checks", &["lint", "unit"], Some("再检查中文")),
+                    answer("storage", &["Postgres"], None),
+                    answer("free", &[], Some("user text")),
+                ],
+                "out-of-order content",
+            ),
         ];
-        args.validate_answers(&answers).expect("valid answers");
-    }
-
-    #[test]
-    fn validate_answers_accepts_empty_multiselect() {
-        let mut args = AskArgs {
-            questions: vec![question("checks", "Run what?", vec![option("unit")])],
-        };
-        args.questions[0].multi = true;
-        args.validate_answers(&[answer("checks", &[], None)])
-            .expect("empty multi is valid");
-    }
-
-    #[test]
-    fn validate_answers_accepts_single_custom_only() {
-        let args = AskArgs {
-            questions: vec![question("free", "Notes?", vec![option("x")])],
-        };
-        args.validate_answers(&[answer("free", &[], Some("my own"))])
-            .expect("custom-only single");
-    }
-
-    #[test]
-    fn validate_answers_is_order_agnostic_for_valid_content() {
-        let mut args = AskArgs {
-            questions: vec![
-                question(
-                    "storage",
-                    "Which?",
-                    vec![option("SQLite"), option("Postgres")],
-                ),
-                question("checks", "Run?", vec![option("unit"), option("lint")]),
-            ],
-        };
-        args.questions[1].multi = true;
-        let answers = vec![
-            answer("checks", &["lint", "unit"], None),
-            answer("storage", &["Postgres"], None),
-        ];
-        args.validate_answers(&answers)
-            .expect("out-of-order content is valid");
+        for (args, answers, shape) in cases {
+            args.validate_answers(&answers).expect(shape);
+        }
     }
 
     #[test]
@@ -602,7 +599,6 @@ mod tests {
         for (args, answers, expected) in cases {
             let message = err(args.validate_answers(&answers));
             assert_eq!(message, expected);
-            assert_eq!(message, "invalid ask response");
         }
     }
 
@@ -621,10 +617,17 @@ mod tests {
                     "Run?",
                     vec![option("lint"), option("unit"), option("docs")],
                 ),
+                question(
+                    "labels",
+                    "Which label?",
+                    vec![option("  spaced  "), option("中文 label")],
+                ),
             ],
         };
         args.questions[2].multi = true;
+        args.questions[3].multi = true;
         let answers = vec![
+            answer("labels", &["中文 label", "  spaced  "], None),
             answer("checks", &["docs", "unit", "lint"], None),
             answer("storage", &["Postgres"], None),
             answer("free", &[], Some("再检查中文")),
@@ -640,24 +643,10 @@ mod tests {
             ordered[2].selected_options,
             vec!["lint".to_string(), "unit".to_string(), "docs".to_string()]
         );
-    }
-
-    #[test]
-    fn canonicalize_answers_keeps_labels_and_count() {
-        let mut args = AskArgs {
-            questions: vec![question(
-                "q",
-                "t",
-                vec![option("  spaced  "), option("中文 label")],
-            )],
-        };
-        args.questions[0].multi = true;
-        let answers = vec![answer("q", &["中文 label", "  spaced  "], None)];
-        args.validate_answers(&answers).expect("valid");
-        let ordered = args.canonicalize_answers(answers);
-        assert_eq!(ordered.len(), 1);
+        // 前后空格与中文 label 原样保留，只按选项声明顺序重排。
+        assert_eq!(ordered[3].id, "labels");
         assert_eq!(
-            ordered[0].selected_options,
+            ordered[3].selected_options,
             vec!["  spaced  ".to_string(), "中文 label".to_string()]
         );
     }

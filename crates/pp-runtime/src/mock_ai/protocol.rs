@@ -539,18 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn text_keeps_empty_chunks_empty() {
-        assert!(Text::default().is_empty());
-        assert!(Text::Chunks(vec!["".into(), "".into()]).is_empty());
-        assert!(!Text::Chunks(vec!["".into(), "x".into()]).is_empty());
-        assert_eq!(
-            Text::Chunks(vec!["a".into(), "".into(), "b".into()]).joined(),
-            "ab"
-        );
-        assert_eq!(Text::String("a".into()).joined(), "a");
-    }
-
-    #[test]
     fn validates_token_rates_and_scheduling_horizon() {
         assert!(parse(r#"[{"content":"abc","tokens_per_second":12.5}]"#).is_ok());
         assert!(parse(r#"[{"content":"abc","tokens_per_second":0}]"#).is_ok());

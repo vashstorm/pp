@@ -254,7 +254,8 @@ mod tests {
     }
 
     #[test]
-    fn yaml_updates_preserve_unrelated_blocks_and_comments() {
+    fn update_and_remove_preserve_comments_and_unrelated_values() {
+        // update：只替换目标字段，注释、字面块正文与其他字段保持原样。
         let text = "# 配置说明\nthink_level: high # 思考等级\nmcp_servers:\n  local:\n    env:\n      TEXT: |-\n        think_level: high\n        # 字符串内容\n    command: python3\ndisabled_skills:\n- old\n# 结尾说明\n";
         let updated = update_field(text, "think_level", Value::String("low".into())).unwrap();
         assert_eq!(
@@ -273,13 +274,11 @@ mod tests {
         let updated = update_field(&updated, "default_model", Value::String("a/b".into())).unwrap();
         assert!(updated.contains("# 配置说明"));
         assert!(updated.contains("default_model: a/b"));
-    }
 
-    #[test]
-    fn sqlite_migrated_empty_settings_preserve_comments_on_skill_save() {
-        let text = remove_fields("# 保留说明\nthink_level: high\n", &["think_level"]).unwrap();
+        // remove 后再 update：只删除目标字段，注释与后续写入都保留。
+        let migrated = remove_fields("# 保留说明\nthink_level: high\n", &["think_level"]).unwrap();
         let updated = update_field(
-            &text,
+            &migrated,
             "disabled_skills",
             Value::Sequence(vec![Value::String("keep".into())]),
         )
@@ -288,10 +287,8 @@ mod tests {
         let parsed: Mapping = parse(&updated, "settings").unwrap();
         assert_eq!(parsed["disabled_skills"][0], "keep");
         assert!(!parsed.contains_key(Value::String("think_level".into())));
-    }
 
-    #[test]
-    fn sqlite_remove_fields_preserves_unrelated_yaml_values() {
+        // remove：注释、字面块正文、流式映射与锚点之外的字段均原样保留。
         for text in [
             "# 保留说明\nthink_level: high\nmcp_servers:\n  local:\n    command: fixture\n    env:\n      BODY: |-\n        think_level: high\n        # 正文不是注释\ndisabled_skills: [keep]\n",
             "{think_level: high, mcp_servers: {local: {command: fixture}}, disabled_skills: [keep]}",

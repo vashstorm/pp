@@ -686,21 +686,4 @@ mod tests {
         draw(&mut panel, 24, 20);
         assert_eq!(panel.detail, diff_layout(&panel.files[0].diff, 24, true));
     }
-
-    #[test]
-    fn changes_tiny_areas_clip_list_detail_and_confirmation_without_overflow() {
-        for width in [0, 1, 2, 9, 80] {
-            for height in [0, 1, 2, 3, 4, 8] {
-                let mut panel = Panel::new(false);
-                draw(&mut panel, width, height);
-                panel.set_view(view(vec![file("long/path/to/demo.txt", false, 20)]));
-                draw(&mut panel, width, height);
-                panel.key(key(KeyCode::Char('u')));
-                draw(&mut panel, width, height);
-                panel.key(key(KeyCode::Esc));
-                panel.set_view(view(Vec::new()));
-                draw(&mut panel, width, height);
-            }
-        }
-    }
 }

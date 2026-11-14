@@ -568,25 +568,6 @@ fn layout_block(block: &Block, width: usize, out: &mut Vec<Line<'static>>) {
 mod cache_tests {
     use super::*;
     #[test]
-    fn markdown_block_cache_reduces_layout_work() {
-        let prefix = "Stable paragraph with **bold** and 中文🙂.\n\n".repeat(100);
-        let mut document = parse(&format!("{prefix}tail"));
-        document.layout_cached(80);
-        let mut cached_builds = 0;
-        let mut full_builds = 0;
-        for i in 0..20 {
-            let source = format!("{prefix}tail{}", "x".repeat(i + 1));
-            document.update(&source, false);
-            cached_builds += document.cached.iter().filter(|slot| slot.is_none()).count();
-            full_builds += document.blocks.len();
-            assert_eq!(document.layout_cached(80), parse(&source).layout(80));
-        }
-        assert_eq!(cached_builds, 20);
-        assert_eq!(full_builds, 2020);
-        println!("METRIC cached_block_builds={cached_builds} full_block_builds={full_builds}");
-    }
-
-    #[test]
     fn markdown_block_cache_matches_full_semantics_after_updates_and_resize() {
         let mut document = parse("稳定段落中文🙂\n\n[link][id]\n\ntitle");
         document.layout_cached(40);

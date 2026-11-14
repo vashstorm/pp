@@ -135,6 +135,7 @@ impl Access {
 
 /// 进程级 MCP 管理器：根 `main` 构造唯一实例，经 `Arc` 注入 Agent、子 Agent 与 UI。
 /// 只保存配置路径与工作目录，首次使用时加载配置；`empty()` 为测试与 mock 的内存实例。
+// 进程级单例必须 `Send + Sync`：由 `Arc` 跨线程投递点强制（Agent、子 Agent、UI worker）。
 pub struct McpManager {
     // `None` 表示无配置文件的内存实例：绝不读取 HOME 下的 Claude/Codex 来源。
     config: Option<PathBuf>,
@@ -327,12 +328,6 @@ mod tests {
 
     use super::fixtures::{plan_server_config, plan_spawn_client};
 
-    #[test]
-    fn mcp_manager_is_send_and_sync() {
-        // 单例经 `Arc` 注入 Agent、子 Agent 与 UI worker 线程。
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<McpManager>();
-    }
     #[test]
     fn mcp_spawn_refuses_after_cleanup_marks_slot_closing() {
         let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {

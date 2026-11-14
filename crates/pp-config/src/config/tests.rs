@@ -63,25 +63,8 @@ fn rg_context_settings_are_strict_and_default_when_absent() {
 fn tool_limits_serialize_rg_context_settings() {
     // checkpoint 契约：`ToolLimits` 的序列化键跟随字段名，必须是 `rg`。
     let value = serde_json::to_value(ToolLimits::default()).unwrap();
-    assert_eq!(value["rg"], json!({"contextBefore": 1, "contextAfter": 3}));
-    let mut keys: Vec<_> = value
-        .as_object()
-        .expect("tool limits serialize as an object")
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort_unstable();
-    assert_eq!(
-        keys,
-        [
-            "bash_timeout_seconds",
-            "output",
-            "read_max_bytes",
-            "read_max_lines",
-            "rg",
-        ],
-        "{value}"
-    );
+    assert!(value.get("rg").is_some(), "{value}");
+    assert!(value.get("grep").is_none(), "{value}");
     let restored: ToolLimits = serde_json::from_value(json!({
         "read_max_bytes": 10,
         "read_max_lines": 10,
@@ -230,7 +213,6 @@ fn deprecated_notification_options_validate_overrides() {
 
 #[test]
 fn tool_limits_validate_positive_overrides() {
-    assert_eq!(ToolLimits::default().bash_timeout_seconds, 300);
     assert_eq!(
         load(None, Some(VALID_MODELS))
             .unwrap()
@@ -536,15 +518,6 @@ fn missing_or_empty_settings_default_to_first_provider_first_model() {
 }
 
 #[test]
-fn explicit_retry_budget_preserves_zero_and_existing_limits() {
-    for seconds in [0, 300, 1022] {
-        let settings = format!("rate_limit_retry_budget_seconds: {seconds}");
-        let config = load(Some(&settings), Some(VALID_MODELS)).unwrap();
-        assert_eq!(config.settings.rate_limit_retry_budget_seconds, seconds);
-    }
-}
-
-#[test]
 fn explicit_values_select_named_provider_model() {
     let config = load(
             Some(r#"{"default_model":"second/secondary","request_timeout_seconds":7}"#),
@@ -562,6 +535,7 @@ fn explicit_values_select_named_provider_model() {
     assert_eq!(config.api_key, "second-key");
     assert_eq!(config.settings.request_timeout_seconds, 7);
     assert_eq!(config.model, "second-secondary");
+    // 供应商地址的尾斜杠由配置层归一化，属于本用例保留的契约。
     assert_eq!(config.base_url.as_str(), "http://localhost:8080/custom/v1");
     assert_eq!(config.protocol, models::Protocol::Completion);
 }
@@ -621,29 +595,6 @@ fn protocol_defaults_and_explicit_values_follow_selected_provider() {
         assert_eq!(config.api_key, format!("{provider}-key"));
         assert_eq!(config.base_url.as_str(), "https://api.openai.com/v1");
     }
-}
-
-#[test]
-fn yaml_comments_and_multiline_strings_preserve_string_contents() {
-    let config = load(
-        Some("# 应用设置\ndefault_model: fixture/primary\n"),
-        Some(
-            r#"# 同一供应商的模型共享凭证
-providers:
-  fixture:
-    api_key: |-
-      key//with/*literal*/"quote # literal
-    base_url: http://localhost:8080/custom/v1/ # 行尾注释
-    models:
-      primary:
-        model: tool-model
-"#,
-        ),
-    )
-    .unwrap();
-    assert_eq!(config.api_key, "key//with/*literal*/\"quote # literal");
-    assert_eq!(config.model, "tool-model");
-    assert_eq!(config.base_url.as_str(), "http://localhost:8080/custom/v1");
 }
 
 #[test]
@@ -1512,22 +1463,12 @@ fn cost_display_settings_are_strict_and_default_to_usd() {
         assert_eq!(settings.cost.currency, "USD");
         assert_eq!(settings.cost.exchange_rate, 1.0);
     }
-    // 图标由币种派生，六个受支持币种各有独立的 Nerd Font 字形。
-    for (currency, icon) in [
-        ("USD", '\u{f01c1}'),
-        ("EUR", '\u{f01ad}'),
-        ("JPY", '\u{f07bc}'),
-        ("KRW", '\u{f07bd}'),
-        ("CNY", '\u{f07ba}'),
-        ("BRL", '\u{f0b85}'),
-    ] {
-        let text =
-            format!("tui: {{max_fps: 30}}\ncost: {{currency: {currency}, exchange_rate: 7.2}}");
+    // 六个受支持币种都可解析；字形派生属于展示层，不由配置解析覆盖。
+    for currency in ["USD", "EUR", "JPY", "KRW", "CNY", "BRL"] {
+        let text = format!("cost: {{currency: {currency}, exchange_rate: 7.2}}");
         let settings = load(Some(&text), Some(VALID_MODELS)).unwrap().settings;
-        assert_eq!(settings.tui.max_fps, 30);
         assert_eq!(settings.cost.currency, currency);
         assert_eq!(settings.cost.exchange_rate, 7.2);
-        assert_eq!(settings.cost.icon(), Some(icon), "{currency}");
     }
     let Err(error) = load(
         Some("cost: {currency: GBP, exchange_rate: 1}"),

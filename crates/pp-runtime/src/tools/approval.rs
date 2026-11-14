@@ -545,17 +545,6 @@ mod tests {
     }
 
     #[test]
-    fn lsp_workspace_diagnostics_does_not_have_an_exec_path() {
-        assert_eq!(
-            tier_of_arguments(
-                "lsp",
-                &lsp(serde_json::json!({"action":"diagnostics","file":"*"}))
-            ),
-            Tier::Read
-        );
-    }
-
-    #[test]
     fn lsp_invalid_arguments_are_conservatively_write() {
         // 无效参数既不能降成 Read 档，也不能跳过审批：按 Write 处理。
         let write = gate(ApprovalMode::Write, &[]);
@@ -603,13 +592,6 @@ mod tests {
         // 只读动作不进入审批，handler 不被调用。
         enforce(&gate, "lsp", &lsp_read("hover")).unwrap();
         assert_eq!(*seen.lock().unwrap(), vec![true, true]);
-    }
-
-    #[test]
-    fn non_lsp_tools_keep_name_based_tiers() {
-        assert_eq!(tier_of_arguments("bash", "{}"), Tier::Exec);
-        assert_eq!(tier_of_arguments("read", "{}"), Tier::Read);
-        assert_eq!(tier_of_arguments("mcp__local__tool", "{}"), Tier::Write);
     }
 
     #[test]

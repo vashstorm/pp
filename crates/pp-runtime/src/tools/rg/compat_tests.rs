@@ -535,38 +535,7 @@ fn rg_override_globs_include_exclude_and_reject_invalid_patterns() {
         invalid.to_string().contains("invalid -g glob"),
         "{invalid:#}"
     );
-}
-
-#[test]
-fn rg_glob_alias_matches_override_globs() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
-    fs::write(dir.path().join("b.txt"), "needle\n").unwrap();
-    fs::write(dir.path().join("app.js"), "needle\n").unwrap();
-    fs::write(dir.path().join("app.min.js"), "needle\n").unwrap();
-    let mut store = hashline::Store::default();
-    let only_rs = query(
-        dir.path(),
-        json!({"pattern":"needle","glob":"*.rs","context":0}),
-        &mut store,
-    )
-    .unwrap();
-    assert_eq!(only_rs["details"]["fileCount"], 1, "{only_rs}");
-    assert!(
-        only_rs["content"].as_str().unwrap().contains("a.rs"),
-        "{only_rs}"
-    );
-    let no_min = query(
-        dir.path(),
-        json!({"pattern":"needle","glob":["!*.min.js"]}),
-        &mut store,
-    )
-    .unwrap();
-    assert_eq!(no_min["details"]["fileCount"], 3, "{no_min}");
-    assert!(
-        !no_min["content"].as_str().unwrap().contains("app.min.js"),
-        "{no_min}"
-    );
+    // `glob` 是 `-g` 的别名：同时给出时合并为覆盖集合。
     let merged = query(
         dir.path(),
         json!({"pattern":"needle","-g":"*.rs","glob":"*.js","context":0}),

@@ -580,6 +580,23 @@ mod tests {
         );
         assert_eq!(fs::read(state.file.path(date(), 2)).unwrap(), before);
         assert_eq!(records(&state.file.dir).len(), 3);
+
+        // Debug 文本日志共用同一体积上限：超限记录整条拒绝，文件保持原样。
+        let mut debug = DebugLog {
+            file: RotatingFile::for_namespace(Namespace::Debug, dir.path().join("debug-logs"))
+                .unwrap(),
+        };
+        debug.record(&serde_json::json!({"turn": 1})).unwrap();
+        let path = debug
+            .file
+            .path_for(Namespace::Debug, Local::now().date_naive(), 1);
+        let before = fs::read(&path).unwrap();
+        let oversize = serde_json::json!({"pad": "x".repeat(MAX_LOG_BYTES as usize)});
+        assert_eq!(
+            debug.record(&oversize).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
     }
 
     #[test]
@@ -737,26 +754,46 @@ mod tests {
     #[test]
     fn cached_writer_follows_successors_and_resets_date_volume() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("logs");
-        let mut first = RotatingFile::new(path.clone()).unwrap();
-        let mut second = RotatingFile::new(path).unwrap();
-        append(&mut first, b"{\"first\":1}\n", date()).unwrap();
-        append(&mut second, b"{\"second\":1}\n", date()).unwrap();
-        fs::write(first.path(date(), 1), padded_record(MAX_LOG_BYTES as usize)).unwrap();
-        append(&mut first, b"{\"first\":2}\n", date()).unwrap();
-        append(&mut second, b"{\"second\":2}\n", date()).unwrap();
-        assert_eq!(
-            fs::read(first.path(date(), 2)).unwrap(),
-            b"{\"first\":2}\n{\"second\":2}\n"
-        );
-        let tomorrow = date().succ_opt().unwrap();
-        fs::write(first.path(tomorrow, 10), b"{}\n").unwrap();
-        append(&mut first, b"{\"next\":true}\n", tomorrow).unwrap();
-        assert_eq!(
-            fs::read(first.path(tomorrow, 10)).unwrap(),
-            b"{}\n{\"next\":true}\n"
-        );
-        assert!(!first.path(tomorrow, 2).exists());
+        let logs = dir.path().join("logs");
+        let write =
+            |file: &mut RotatingFile, namespace: Namespace, record: &[u8], day: NaiveDate| {
+                match namespace {
+                    Namespace::Pp => append(file, record, day),
+                    Namespace::Debug => debug_append(file, record, day),
+                }
+            };
+        for (namespace, label) in [(Namespace::Pp, "pp"), (Namespace::Debug, "debug")] {
+            let mut first = RotatingFile::for_namespace(namespace, logs.clone()).unwrap();
+            let mut second = RotatingFile::for_namespace(namespace, logs.clone()).unwrap();
+            write(&mut first, namespace, b"{\"first\":1}\n", date()).unwrap();
+            write(&mut second, namespace, b"{\"second\":1}\n", date()).unwrap();
+            assert_eq!(
+                fs::read(first.path_for(namespace, date(), 1)).unwrap(),
+                b"{\"first\":1}\n{\"second\":1}\n",
+                "{label} namespace"
+            );
+            fs::write(
+                first.path_for(namespace, date(), 1),
+                padded_record(MAX_LOG_BYTES as usize),
+            )
+            .unwrap();
+            write(&mut first, namespace, b"{\"first\":2}\n", date()).unwrap();
+            write(&mut second, namespace, b"{\"second\":2}\n", date()).unwrap();
+            assert_eq!(
+                fs::read(first.path_for(namespace, date(), 2)).unwrap(),
+                b"{\"first\":2}\n{\"second\":2}\n",
+                "{label} namespace"
+            );
+            let tomorrow = date().succ_opt().unwrap();
+            fs::write(first.path_for(namespace, tomorrow, 10), b"{}\n").unwrap();
+            write(&mut first, namespace, b"{\"next\":true}\n", tomorrow).unwrap();
+            assert_eq!(
+                fs::read(first.path_for(namespace, tomorrow, 10)).unwrap(),
+                b"{}\n{\"next\":true}\n",
+                "{label} namespace"
+            );
+            assert!(!first.path_for(namespace, tomorrow, 2).exists());
+        }
     }
 
     #[test]
@@ -895,48 +932,6 @@ mod tests {
             .map(String::from)
             .collect()
         );
-    }
-
-    #[test]
-    fn debug_reopen_follows_successors_and_rolls_dates() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("logs");
-        let mut first = RotatingFile::for_namespace(Namespace::Debug, path.clone()).unwrap();
-        let mut second = RotatingFile::for_namespace(Namespace::Debug, path).unwrap();
-        debug_append(&mut first, b"{\"one\":1}\n", date()).unwrap();
-        debug_append(&mut second, b"{\"two\":2}\n", date()).unwrap();
-        assert_eq!(
-            fs::read(first.path_for(Namespace::Debug, date(), 1)).unwrap(),
-            b"{\"one\":1}\n{\"two\":2}\n"
-        );
-        let tomorrow = date().succ_opt().unwrap();
-        debug_append(&mut first, b"{\"next\":true}\n", tomorrow).unwrap();
-        assert_eq!(
-            fs::read(first.path_for(Namespace::Debug, tomorrow, 1)).unwrap(),
-            b"{\"next\":true}\n"
-        );
-        assert!(!first.path_for(Namespace::Debug, tomorrow, 2).exists());
-    }
-
-    #[test]
-    fn debug_record_rejects_oversize_without_partial_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut log = DebugLog {
-            file: RotatingFile::for_namespace(Namespace::Debug, dir.path().join("logs")).unwrap(),
-        };
-        log.record(&serde_json::json!({"turn": 1, "note": "a\nb"}))
-            .unwrap();
-        log.record(&serde_json::json!({"turn": 2})).unwrap();
-        let today = Local::now().date_naive();
-        let path = log.file.path_for(Namespace::Debug, today, 1);
-        let bytes = fs::read(&path).unwrap();
-        // Oversize records are rejected whole, leaving the file unchanged.
-        let oversize = serde_json::json!({"pad": "x".repeat(MAX_LOG_BYTES as usize)});
-        assert_eq!(
-            log.record(&oversize).unwrap_err().kind(),
-            io::ErrorKind::InvalidInput
-        );
-        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 
     #[test]

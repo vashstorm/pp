@@ -481,21 +481,28 @@ mod tests {
     fn concurrent_readers_observe_consistent_snapshots() {
         let (_dir, state) = fixture();
         let writer = Arc::clone(&state);
+        // 写侧只在两个候选之间切换：覆盖 fixture/two@low，或回到配置默认 fixture/one@none。
+        let overridden = selection("fixture/two", ThinkLevel::Low);
+        let default = selection("fixture/one", ThinkLevel::None);
         let workers: Vec<_> = (0..4)
             .map(|_| {
                 let state = Arc::clone(&state);
+                let (overridden, default) = (overridden.clone(), default.clone());
                 std::thread::spawn(move || {
                     for _ in 0..64 {
-                        let _ = state.resolve().unwrap();
-                        let _ = state.catalog_snapshot().default_reference().to_owned();
+                        let resolved = state.resolve().unwrap();
+                        assert!(
+                            resolved == overridden || resolved == default,
+                            "{resolved:?} 不是写侧发布的候选快照"
+                        );
+                        // 覆盖只写 `a`，配置快照 `b` 始终指向配置默认。
+                        assert_eq!(state.catalog_snapshot().default_reference(), "fixture/one");
                     }
                 })
             })
             .collect();
         for _ in 0..16 {
-            writer
-                .set_override(selection("fixture/two", ThinkLevel::Low))
-                .unwrap();
+            writer.set_override(overridden.clone()).unwrap();
             writer.clear_override().unwrap();
         }
         for worker in workers {

@@ -885,18 +885,14 @@ fn session_continue_selects_latest_and_restores_original_cwd() {
 fn session_resume_prompt_conflicts_and_reset_boundaries() {
     let server = server();
 
-    // clap rejects -p over -c, -r together with -c, and -r without a value;
-    // none of them may silently drop the resume arguments.
+    // clap rejects -p over -c and -r together with -c; neither may silently
+    // drop the resume arguments. 裸 -r 的拒绝由 resume_cli 的用例覆盖。
     {
         let home = tempfile::tempdir().unwrap();
         let cwd = tempfile::tempdir().unwrap();
         configure(home.path(), fixture_settings(), &fixture_models(&server));
         let valid = "2026-10-17T01-02-03-00000000000000000000000000000000";
-        for args in [
-            vec!["-c", "-p", "text"],
-            vec!["-r", valid, "-c"],
-            vec!["-r"],
-        ] {
+        for args in [vec!["-c", "-p", "text"], vec!["-r", valid, "-c"]] {
             let cli = start(home.path(), cwd.path(), &args);
             let output = cli.finish();
             assert!(

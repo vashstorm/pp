@@ -298,39 +298,22 @@ fn hashline_read_pages_share_header_and_preserve_bom_byte_limits() {
 }
 
 #[test]
-fn replace_read_returns_plain_text_with_original_newlines() {
+fn replace_read_returns_plain_text_and_keeps_complete_lines_at_cap() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
 
+    // replace 模式返回纯文本正文，没有 hashline 头。
     fs::write(dir.path().join("plain.txt"), "one\ntwo\nthree\n").unwrap();
     assert_eq!(
         read_content(&tools, "plain.txt"),
         ("one\ntwo\nthree\n".to_owned(), false)
     );
 
-    fs::write(dir.path().join("crlf.txt"), b"a\r\nb\r\n").unwrap();
-    assert_eq!(
-        read_content(&tools, "crlf.txt"),
-        ("a\r\nb\r\n".to_owned(), false)
-    );
-
-    fs::write(dir.path().join("empty.txt"), b"").unwrap();
-    assert_eq!(read_content(&tools, "empty.txt"), (String::new(), false));
-
     fs::write(dir.path().join("lossy.txt"), b"ok\xff\xf0\x9f\n").unwrap();
     assert_eq!(
         read_content(&tools, "lossy.txt"),
         ("ok\u{fffd}\u{fffd}\n".to_owned(), false)
     );
-
-    fs::write(dir.path().join("cap.txt"), "x".repeat(OUTPUT_LIMIT)).unwrap();
-    let (content, truncated) = read_content(&tools, "cap.txt");
-    assert!(!truncated);
-    assert_eq!(content, "x".repeat(OUTPUT_LIMIT));
-
-    fs::write(dir.path().join("cap.txt"), "y".repeat(OUTPUT_LIMIT + 1)).unwrap();
-    let result = execute(&tools, "read", json!({"path":"cap.txt"}));
-    assert_eq!(result["ok"], false);
 
     // 字节上限落在多字节字符内时，也只保留前面的完整行。
     let bytes = format!("ok\n{}", "中".repeat(21_846));

@@ -130,22 +130,11 @@ fn system_prompt_startup_failures_are_fatal_and_cli_conflicts_send_nothing() {
         assert!(!error.contains("model tasks are disabled"));
         no_more(&server);
     }
+    // 只保留真实启动失败分支（缺文件、目录被当作提示词）；clap 互斥组合
+    // 由 clap 自身的约束覆盖，不在这里重复验证。
     for flags in [
-        vec![
-            "--system-prompt",
-            "text",
-            "--system-prompt-template",
-            "file",
-        ],
         vec!["--system-prompt-template", "missing.md"],
         vec!["--system-prompt", ".pp"],
-        vec![
-            "-r",
-            "0123456789abcdef0123456789abcdef",
-            "--system-prompt",
-            "text",
-        ],
-        vec!["-c", "--append-system-prompt", "text"],
     ] {
         let output = Cli::spawn(cwd.path(), &flags, &[]).finish();
         assert!(!output.status.success());

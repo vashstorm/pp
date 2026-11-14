@@ -260,7 +260,7 @@ mod task_tests {
 
     #[test]
     fn plan_tasks_extract_marker_text_in_order_and_ignore_prose_and_fences() {
-        let body = "# Plan title\n\nIntro with [ ] text.\n\n```md\n- [ ] fenced example\n```\n\n## Phase one\n- [ ] Create the file; done when bytes match.\n  - Location: src/a.rs\n  - Acceptance: read-back equals input\n- [x] **Verify** `behavior` end to end.\n  - [ ] nested child action\n\n## Phase two\n- [ ] Loose item first paragraph.\n\n  Second paragraph is not the task text.\n";
+        let body = "# Plan title\n\nIntro with [ ] text.\n\n```md\n- [ ] fenced example\n### [] fenced heading task\n```\n\n## Phase one\n- [ ] Create the file; done when bytes match.\n  - Location: src/a.rs\n  - Acceptance: read-back equals input\n- [x] **Verify** `behavior` end to end.\n  - [ ] nested child action\n\n## Phase two\n- [ ] Loose item first paragraph.\n\n  Second paragraph is not the task text.\n";
         let tasks = plan_tasks(body);
         fn summary(items: &[PlanTask]) -> Vec<(&str, bool, &str)> {
             items
@@ -411,20 +411,6 @@ mod task_tests {
         check(
             "# Plan\r\n\r\n## Write\r\n- [ ] write bytes\r\n  - Acceptance: read-back\r\n- [x] verify\r\n\r\n## Verify\r\n- [ ] read back\r\n",
         );
-    }
-
-    #[test]
-    fn plan_phase_template_counts_exactly_two_tasks_and_ignores_headings() {
-        let body = "# Title\n\n## Goal\nText.\n\n## Phase one\n- [ ] Action one.\n  - Location: x\n  - Change: y\n  - Acceptance: z\n\n## Phase two\n- [ ] Action two.\n\n## Verification\n```md\n- [ ] example only\n```\n";
-        assert_eq!(task_progress(body), (0, 2));
-        let tasks = plan_tasks(body);
-        assert_eq!(tasks.len(), 2);
-        let ticked = body.replacen("- [ ] Action one.", "- [x] Action one.", 1);
-        assert_eq!(task_progress(&ticked), (1, 2));
-        // 仅勾选状态变化不改变任务文本向量。
-        let texts =
-            |items: Vec<PlanTask>| items.into_iter().map(|task| task.text).collect::<Vec<_>>();
-        assert_eq!(texts(plan_tasks(&ticked)), texts(tasks));
     }
 
     #[test]

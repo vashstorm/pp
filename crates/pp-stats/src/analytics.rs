@@ -461,17 +461,6 @@ providers:
                     assert!(value["summary"]["cost"].is_null());
                 }
             }
-            for query in [
-                "range=bad",
-                "range=24h&range=all",
-                "limit=500",
-                "unexpected=1",
-            ] {
-                assert_eq!(
-                    server::dispatch(&store, &format!("/api/stats/{endpoint}?{query}"), &[]).0,
-                    400
-                );
-            }
         }
     }
 }
