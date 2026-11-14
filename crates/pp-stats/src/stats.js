@@ -23,6 +23,7 @@ const paths = {
   branch: "M6 3v12 M6 15a3 3 0 1 1 0 6 3 3 0 0 1 0-6 M18 3a3 3 0 1 1 0 6 3 3 0 0 1 0-6 M6 15a9 9 0 0 1 9-9",
   tools:
     "m14 7-4 4 3 3 4-4 M14 7a6 6 0 0 0 7 7L9 22l-5-5 8-10a6 6 0 0 1 7-7l-4 4z",
+  hooks: "M12 6v15 M5 13H2a10 10 0 0 0 20 0h-3 M12 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4",
   frustration: "M4 12a8 8 0 0 1 16 0v7h-4v-7h4 M4 12v7h4v-7z M16 19v3h-4",
   projects: "M3 7V4h6l2 3h10v8 M3 7v13h7 M16 14v8 m-4-4h8",
   gain: "m3 17 5-6 4 3 8-10 M16 4h4v4 M5 3v4 M3 5h4 M17 17v4 M15 19h4",
@@ -67,6 +68,7 @@ const groups = [
     "Insights",
     [
       ["tools", "Tools", "L"],
+      ["hooks", "Hooks", "H"],
       ["frustration", "Frustration", "F"],
       ["projects", "Projects", "J"],
       ["gain", "Gain", "G"],
@@ -455,6 +457,7 @@ async function refresh() {
       "errors",
       "traces",
       "tools",
+      "hooks",
       "projects",
     ].includes(page)
   ) {
@@ -2015,6 +2018,7 @@ function render() {
   const focusedStatus = focused?.dataset?.status;
   const focusedExpand = focused?.closest("[data-expand]")?.dataset.expand;
   const toolsFocus = focused?.dataset?.toolsFocus;
+  const hooksFocus = focused?.dataset?.hooksFocus;
   const providerFocus = focused?.dataset?.providerFocus;
   const modelsFocus = focused?.dataset?.modelsFocus;
   const errorsFocus = focused?.dataset?.errorsFocus;
@@ -2037,18 +2041,19 @@ function render() {
           ? errorsPage()
           : page === "traces"
             ? tracesPage()
-            : ["models", "providers", "costs", "tools", "projects"].includes(page)
+            : ["models", "providers", "costs", "tools", "hooks", "projects"].includes(page)
               ? {
                   models: modelsPage,
                   providers: providersPage,
                   costs: costsPage,
                   tools: toolsPage,
+                  hooks: hooksPage,
                   projects: projectsPage,
                 }[page]()
               : `<h1>${h(label)}</h1><p class="subtitle">${h(label)} across your sessions in the ${descriptions[range]}.</p><section class="panel placeholder"><div class="empty">${h(label)} is coming soon.</div></section>`;
-  if (page !== "tools") prepareDetails();
+  if (page !== "tools" && page !== "hooks") prepareDetails();
   syncSegmented();
-  if (["tools", "providers", "models"].includes(page)) {
+  if (["tools", "hooks", "providers", "models"].includes(page)) {
     if (typeof wireToolsCharts === "function") wireToolsCharts();
   }
   if (cellPosition) {
@@ -2058,6 +2063,10 @@ function render() {
   } else if (toolsFocus) {
     $("page")
       .querySelector(`[data-tools-focus="${CSS.escape(toolsFocus)}"]`)
+      ?.focus({ preventScroll: true });
+  } else if (hooksFocus) {
+    $("page")
+      .querySelector(`[data-hooks-focus="${CSS.escape(hooksFocus)}"]`)
       ?.focus({ preventScroll: true });
   } else if (providerFocus) {
     $("page")
@@ -2170,7 +2179,7 @@ $("page").addEventListener("click", (e) => {
   }
 });
 $("page").addEventListener("keydown", (e) => {
-  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],th[data-errorsort],tr[data-trace],th[data-toolsort],tr[data-toolselect],th[data-provider-sort],tr[data-provider-row],tr[data-model-row]");
+  const action = e.target.closest("th[data-sort],tr[data-id],tr[data-expand],tr[data-error-signature],th[data-errorsort],tr[data-trace],th[data-toolsort],tr[data-toolselect],th[data-hooksort],tr[data-hookevent],th[data-provider-sort],tr[data-provider-row],tr[data-model-row]");
   if (
     (e.key === "Enter" || e.key === " ") &&
     action && !e.target.closest("button,a,input,select,textarea")

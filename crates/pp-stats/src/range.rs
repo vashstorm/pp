@@ -1,4 +1,5 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use chrono::{Local, TimeZone};
 
 #[derive(Clone, Copy)]
 pub(crate) enum Range {
@@ -41,6 +42,19 @@ impl Range {
             Self::All => return 0,
         };
         now.saturating_sub(hours * 3600000)
+    }
+    pub(crate) fn bucket(self, timestamp: i64) -> Result<i64> {
+        Ok(match self {
+            Self::Hour => timestamp.div_euclid(300_000) * 300_000,
+            Self::Day => timestamp.div_euclid(3_600_000) * 3_600_000,
+            _ => Local
+                .timestamp_millis_opt(timestamp)
+                .single()
+                .and_then(|d| d.date_naive().and_hms_opt(0, 0, 0))
+                .and_then(|d| d.and_local_timezone(Local).earliest())
+                .context("invalid local date")?
+                .timestamp_millis(),
+        })
     }
 }
 

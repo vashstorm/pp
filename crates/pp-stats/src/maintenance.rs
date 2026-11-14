@@ -138,8 +138,9 @@ pub fn gc(cutoff: i64) -> Result<(u64, u64)> {
         [cutoff],
     )?;
     let removed = tx.execute("DELETE FROM requests WHERE timestamp < ?1", [cutoff])? as u64;
+    let hooks_removed = tx.execute("DELETE FROM hook_runs WHERE timestamp < ?1", [cutoff])? as u64;
     tx.commit()?;
-    if removed > 0 {
+    if removed > 0 || hooks_removed > 0 {
         store.conn.execute_batch("VACUUM;")?;
     }
     Ok((total, removed))

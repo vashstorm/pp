@@ -192,6 +192,7 @@ fn api(
             | "/api/stats/errors"
             | "/api/stats/traces"
             | "/api/stats/tools"
+            | "/api/stats/hooks"
             | "/api/stats/projects"
     ) {
         return Ok(None);
@@ -229,11 +230,14 @@ fn api(
             .map(Some)
             .map_err(|_| ApiError::Database);
     }
-    if matches!(url.path(), "/api/stats/tools" | "/api/stats/projects") {
-        let result = if url.path() == "/api/stats/tools" {
-            store.tools(range, now)
-        } else {
-            store.projects(range, now)
+    if matches!(
+        url.path(),
+        "/api/stats/tools" | "/api/stats/hooks" | "/api/stats/projects"
+    ) {
+        let result = match url.path() {
+            "/api/stats/tools" => store.tools(range, now),
+            "/api/stats/hooks" => store.hooks(range, now),
+            _ => store.projects(range, now),
         };
         return result.map(Some).map_err(|_| ApiError::Database);
     }

@@ -1,23 +1,8 @@
 use super::{COLUMNS, CostSnapshot, Range, RequestRow, Store, analytics::Aggregate, row};
 use anyhow::{Context, Result};
-use chrono::{Local, TimeZone};
 use rusqlite::params;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-
-fn bucket(timestamp: i64, range: Range) -> Result<i64> {
-    Ok(match range {
-        Range::Hour => timestamp.div_euclid(300_000) * 300_000,
-        Range::Day => timestamp.div_euclid(3_600_000) * 3_600_000,
-        _ => Local
-            .timestamp_millis_opt(timestamp)
-            .single()
-            .and_then(|d| d.date_naive().and_hms_opt(0, 0, 0))
-            .and_then(|d| d.and_local_timezone(Local).earliest())
-            .context("invalid local date")?
-            .timestamp_millis(),
-    })
-}
 
 #[derive(Default)]
 struct Project {
@@ -190,7 +175,7 @@ impl Store {
             projects.entry(r.cwd.clone()).or_default().push(
                 &r,
                 cost.as_ref(),
-                bucket(r.timestamp, range)?,
+                range.bucket(r.timestamp)?,
             )?;
         }
         Ok(
@@ -221,7 +206,7 @@ impl Store {
             requests += 1;
             requests_by_key.insert(r.request_key.clone(), r.model_reference.clone());
             partial += u64::from(r.status != "ok");
-            let timestamp = bucket(r.timestamp, range)?;
+            let timestamp = range.bucket(r.timestamp)?;
             let cost = r.cost().map(|c| c.total());
             for (name, args_chars) in calls {
                 all.push(&r, *args_chars, count, timestamp, cost);
@@ -270,7 +255,7 @@ impl Store {
             let key: Option<String> = tool_row.get(1)?;
             let status: String = tool_row.get(2)?;
             let duration: f64 = tool_row.get(3)?;
-            let slot = bucket(tool_row.get(4)?, range)?;
+            let slot = range.bucket(tool_row.get(4)?)?;
             let result_chars = tool_row
                 .get::<_, Option<i64>>(5)?
                 .map(u64::try_from)

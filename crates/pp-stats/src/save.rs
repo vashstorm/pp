@@ -3,6 +3,10 @@ use anyhow::Result;
 use std::path::Path;
 use std::time::Instant;
 
+pub(crate) fn project_name(cwd: &Path) -> String {
+    cwd.file_name().unwrap_or_default().to_string_lossy().into()
+}
+
 pub fn save(
     context: &RequestContext,
     model: &str,
@@ -40,12 +44,7 @@ pub fn save(
                 .into(),
             model_reference: context.model_reference.clone(),
             api: api.into(),
-            project: context
-                .cwd
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into(),
+            project: project_name(&context.cwd),
             cwd: context.cwd.to_string_lossy().into(),
             purpose: context.purpose.into(),
             session_file: context

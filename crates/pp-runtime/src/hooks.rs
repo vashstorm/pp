@@ -141,6 +141,7 @@ impl Runner {
     /// 返回 `Err` 表示该事件必须让任务失败（控制点默认 fail-closed、
     /// `onFailure: block`，或无法确认回收的 `CleanupError`）；被取消时保留
     /// `Cancelled` 类型。
+    #[cfg(test)]
     pub(crate) fn run(
         &self,
         event: HookEvent,
@@ -148,8 +149,23 @@ impl Runner {
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<HookEffect> {
+        self.run_with_stats(event, input, None, cancellation, emit)
+    }
+
+    pub(crate) fn run_with_stats(
+        &self,
+        event: HookEvent,
+        input: &Value,
+        stats_db: Option<&Path>,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<HookEffect> {
         let mut effect = HookEffect::default();
         let tool = input.get("tool_name").and_then(Value::as_str);
+        let session_file = input
+            .get("transcript_path")
+            .and_then(Value::as_str)
+            .map(Path::new);
         let cwd = input
             .get("cwd")
             .and_then(Value::as_str)
@@ -193,13 +209,25 @@ impl Runner {
                         envelope.get("tool_response"),
                     )
                 });
-                let elapsed_ms = started.elapsed().as_millis() as u64;
+                let duration = started.elapsed();
+                let elapsed_ms = duration.as_millis() as u64;
+                let duration_ms = duration.as_secs_f64() * 1000.0;
                 let output = match outcome {
                     Ok(output) => output,
                     Err(error) => {
                         if error.is::<Cancelled>() || error.is::<CleanupError>() {
                             return Err(error);
                         }
+                        record_stat(
+                            stats_db,
+                            session_file,
+                            cwd,
+                            event,
+                            tool,
+                            pp_stats::HookStatus::Error,
+                            false,
+                            duration_ms,
+                        );
                         let policy = handler.on_failure.unwrap_or(if event.is_control_point() {
                             HookFailurePolicy::Block
                         } else {
@@ -231,15 +259,30 @@ impl Runner {
                         continue;
                     }
                 };
+                let blocked = output.deny.is_some() || output.stop.is_some();
+                let modified = !blocked
+                    && (output.updated_input.is_some()
+                        || output.updated_output.is_some()
+                        || !output.context.is_empty());
+                record_stat(
+                    stats_db,
+                    session_file,
+                    cwd,
+                    event,
+                    tool,
+                    if blocked {
+                        pp_stats::HookStatus::Blocked
+                    } else {
+                        pp_stats::HookStatus::Ok
+                    },
+                    modified,
+                    duration_ms,
+                );
                 tracing::info!(
                     event = "hook_handler_finished",
                     hook = event.as_str(),
                     handler = index,
-                    status = if output.deny.is_some() || output.stop.is_some() {
-                        "blocked"
-                    } else {
-                        "ok"
-                    },
+                    status = if blocked { "blocked" } else { "ok" },
                     elapsed_ms
                 );
                 if let Some(message) = output.system_message.clone() {
@@ -293,6 +336,38 @@ fn merge(event: HookEvent, effect: &mut HookEffect, output: Output) {
         effect.updated_output = Some(output);
     }
     effect.additional_context.extend(output.context);
+}
+
+#[expect(clippy::too_many_arguments)]
+fn record_stat(
+    stats_db: Option<&Path>,
+    session_file: Option<&Path>,
+    cwd: &Path,
+    event: HookEvent,
+    tool: Option<&str>,
+    status: pp_stats::HookStatus,
+    modified: bool,
+    duration_ms: f64,
+) {
+    let Some(database) = stats_db else {
+        return;
+    };
+    let Some(session_file) = session_file.filter(|path| !path.as_os_str().is_empty()) else {
+        return;
+    };
+    pp_stats::hook(
+        database,
+        &pp_stats::HookRun {
+            session_file,
+            cwd,
+            event,
+            tool,
+            status,
+            modified,
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            duration_ms,
+        },
+    );
 }
 
 fn event_index(event: HookEvent) -> usize {

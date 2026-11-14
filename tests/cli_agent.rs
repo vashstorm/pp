@@ -15,6 +15,8 @@ mod auth;
 mod shell_cli;
 #[path = "cli_agent/stats.rs"]
 mod stats;
+#[path = "cli_agent/stats_hooks.rs"]
+mod stats_hooks;
 
 #[path = "cli_agent/approval.rs"]
 mod approval;

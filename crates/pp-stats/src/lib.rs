@@ -2,6 +2,7 @@
 mod activity;
 mod analytics;
 mod cost;
+mod hook;
 mod insights;
 mod maintenance;
 mod range;
@@ -14,6 +15,7 @@ mod store;
 mod tool;
 
 pub(crate) use cost::{CostSnapshot, RateSnapshot, Rates};
+pub use hook::{HookRun, HookStatus, hook};
 pub use maintenance::gc;
 pub(crate) use maintenance::maintain;
 pub(crate) use range::Range;

@@ -30,6 +30,18 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
             tool TEXT NOT NULL, timestamp INTEGER NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('ok','error','cancelled')),
             error_message TEXT, duration_ms REAL NOT NULL, result_chars INTEGER, UNIQUE(session_file, call_id)
+        );
+        CREATE TABLE IF NOT EXISTS hook_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            session_file TEXT NOT NULL,
+            project TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            event TEXT NOT NULL CHECK(event IN ('UserPromptSubmit','PreToolUse','PostToolUse','PostToolUseFailure','Stop')),
+            tool TEXT,
+            status TEXT NOT NULL CHECK(status IN ('ok','blocked','error')),
+            modified INTEGER NOT NULL DEFAULT 0,
+            duration_ms REAL NOT NULL
         );",
     )?;
     let mut changed = false;
@@ -53,6 +65,14 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
         (
             "request_tools_request",
             "CREATE INDEX IF NOT EXISTS request_tools_request ON request_tools(request_id)",
+        ),
+        (
+            "hook_runs_time",
+            "CREATE INDEX IF NOT EXISTS hook_runs_time ON hook_runs(timestamp DESC,id DESC)",
+        ),
+        (
+            "hook_runs_event",
+            "CREATE INDEX IF NOT EXISTS hook_runs_event ON hook_runs(event,timestamp DESC)",
         ),
     ] {
         changed |= !index_exists(&tx, name)?;
@@ -84,7 +104,7 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
     )?;
     if changed {
         // 只在新结构第一次出现时给 planner 补统计，之后每次打开不写库。
-        tx.execute_batch("ANALYZE requests; ANALYZE tool_calls;")?;
+        tx.execute_batch("ANALYZE requests; ANALYZE tool_calls; ANALYZE hook_runs;")?;
     }
     tx.commit()?;
     Ok(())
@@ -235,11 +255,24 @@ mod tests {
                 result_chars: Some(12),
             })
             .unwrap();
+        store
+            .hook(&crate::HookRun {
+                session_file: &session,
+                cwd: dir.path(),
+                event: pp_config::config::HookEvent::PreToolUse,
+                tool: Some("bash"),
+                status: crate::HookStatus::Ok,
+                modified: false,
+                timestamp: 1000,
+                duration_ms: 4.0,
+            })
+            .unwrap();
         // 模拟旧库：新索引、废弃索引与费用快照列都不在预期状态。
         store
             .conn
             .execute_batch(
                 "DROP INDEX requests_session;
+                 DROP INDEX hook_runs_time;
                  CREATE INDEX tool_calls_error_time ON tool_calls(timestamp DESC,id DESC) WHERE status='error';
                  ALTER TABLE requests DROP COLUMN cost_json; ALTER TABLE requests DROP COLUMN rate_json;
                  ALTER TABLE tool_calls DROP COLUMN result_chars;",
@@ -283,6 +316,8 @@ mod tests {
             "旧库里的废弃索引必须被删除"
         );
         assert!(indexes("tool_calls").contains(&"tool_calls_time".to_owned()));
+        assert!(indexes("hook_runs").contains(&"hook_runs_time".to_owned()));
+        assert!(indexes("hook_runs").contains(&"hook_runs_event".to_owned()));
         let columns = table_columns(&store.conn, "requests").unwrap();
         assert!(columns.iter().any(|name| name == "cost_json"));
         assert!(columns.iter().any(|name| name == "rate_json"));
@@ -320,7 +355,7 @@ mod tests {
         assert_eq!(summary["summary"]["unpriced"], 2);
         assert!(summary["summary"]["cost"].is_null());
         // 补齐结构的那次 open 会给 planner 补统计。
-        for table in ["requests", "tool_calls"] {
+        for table in ["requests", "tool_calls", "hook_runs"] {
             assert!(
                 store
                     .conn

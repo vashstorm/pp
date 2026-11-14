@@ -91,6 +91,7 @@ pub(crate) struct HookSession {
     session_id: String,
     transcript: PathBuf,
     cwd: PathBuf,
+    stats_db: PathBuf,
 }
 
 impl HookSession {
@@ -103,12 +104,14 @@ impl HookSession {
         workflow: &pp_core::plan::WorkflowState,
         cwd: &Path,
     ) -> Result<Self> {
+        let stats_db = journal.stats_database().to_path_buf();
         let (session_id, transcript) = journal.prepare_hooks(metadata, session, workflow)?;
         Ok(Self {
             scope,
             session_id,
             transcript,
             cwd: cwd.to_owned(),
+            stats_db,
         })
     }
 
@@ -132,7 +135,9 @@ impl HookSession {
             agent_type: self.scope.agent_type.as_deref(),
         };
         let input = crate::hooks::protocol::input(event, &context, payload);
-        self.scope.runner.run(event, &input, cancellation, emit)
+        self.scope
+            .runner
+            .run_with_stats(event, &input, Some(&self.stats_db), cancellation, emit)
     }
 }
 
@@ -319,5 +324,231 @@ impl super::Agent {
             self.tools.cwd(),
         )?;
         Ok(Some(session))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_openai::types::chat::CreateChatCompletionRequest;
+    use pp_config::config::{
+        CommandHook, EditMode, HookFailurePolicy, HookHandlerType, HookMatcherGroup, HooksSettings,
+        ToolLimits,
+    };
+    use pp_core::model::ThinkLevel;
+    use pp_core::plan::WorkflowState;
+    use serde_json::json;
+
+    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/bash\n{body}\n")).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    #[test]
+    fn hook_session_records_events_statuses_modifications_and_tool_names_to_stats_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        let workdir = dir.path().join("workspace");
+        std::fs::create_dir_all(&workdir).unwrap();
+
+        let prompt_ctx = script(
+            dir.path(),
+            "prompt.sh",
+            r#"printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"secret-context"}}'"#,
+        );
+        let pre_allow_rewrite = script(
+            dir.path(),
+            "pre-allow.sh",
+            r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"path":"rewritten.txt"}}}'"#,
+        );
+        let pre_deny = script(
+            dir.path(),
+            "pre-deny.sh",
+            r#"printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"nope"}}'"#,
+        );
+        let post_err = script(dir.path(), "post-err.sh", "echo private-stderr >&2; exit 1");
+
+        let mut settings = HooksSettings::default();
+        settings.user_prompt_submit.push(HookMatcherGroup {
+            matcher: None,
+            hooks: vec![CommandHook {
+                kind: HookHandlerType::Command,
+                command: prompt_ctx.display().to_string(),
+                args: None,
+                timeout: 10,
+                on_failure: None,
+            }],
+        });
+        settings.pre_tool_use.push(HookMatcherGroup {
+            matcher: Some("read".into()),
+            hooks: vec![CommandHook {
+                kind: HookHandlerType::Command,
+                command: pre_allow_rewrite.display().to_string(),
+                args: None,
+                timeout: 10,
+                on_failure: None,
+            }],
+        });
+        settings.pre_tool_use.push(HookMatcherGroup {
+            matcher: Some("bash".into()),
+            hooks: vec![CommandHook {
+                kind: HookHandlerType::Command,
+                command: pre_deny.display().to_string(),
+                args: None,
+                timeout: 10,
+                on_failure: None,
+            }],
+        });
+        settings.post_tool_use.push(HookMatcherGroup {
+            matcher: None,
+            hooks: vec![CommandHook {
+                kind: HookHandlerType::Command,
+                command: post_err.display().to_string(),
+                args: None,
+                timeout: 10,
+                on_failure: Some(HookFailurePolicy::Continue),
+            }],
+        });
+
+        let runner = std::sync::Arc::new(Runner::compile(&settings).unwrap());
+        let hook_scope = HookScope {
+            runner,
+            role: Some(HookRole::Root),
+            permission_mode: "default",
+            agent_id: None,
+            agent_type: None,
+        };
+        let mut journal = SessionJournal::new(sessions.clone());
+        let request = CreateChatCompletionRequest::default();
+        let metadata = Metadata {
+            role_route: None,
+            cwd: &workdir,
+            model_reference: "test/model",
+            think_level: ThinkLevel::None,
+            edit_mode: EditMode::Replace,
+            tool_limits: ToolLimits::default(),
+            base_system: "",
+            prompt_source: None,
+        };
+        let workflow = WorkflowState::default();
+        let session = HookSession::prepare(
+            hook_scope,
+            &mut journal,
+            &metadata,
+            SessionRef::Completion(&request),
+            &workflow,
+            &workdir,
+        )
+        .unwrap();
+
+        let cancel = CancellationToken::new();
+        let mut emit = |_| {};
+        let prompt_effect = session
+            .run(
+                HookEvent::UserPromptSubmit,
+                &Payload::UserPrompt { prompt: "hello" },
+                &cancel,
+                &mut emit,
+            )
+            .unwrap();
+        assert_eq!(prompt_effect.additional_context, vec!["secret-context"]);
+
+        let read_input = json!({"path": "a.txt"});
+        let pre_read = session
+            .run(
+                HookEvent::PreToolUse,
+                &Payload::PreTool {
+                    name: "read",
+                    input: Some(&read_input),
+                    call_id: "c-1",
+                },
+                &cancel,
+                &mut emit,
+            )
+            .unwrap();
+        assert!(pre_read.updated_input.is_some());
+
+        let bash_input = json!({"command": "ls"});
+        let pre_bash = session
+            .run(
+                HookEvent::PreToolUse,
+                &Payload::PreTool {
+                    name: "bash",
+                    input: Some(&bash_input),
+                    call_id: "c-2",
+                },
+                &cancel,
+                &mut emit,
+            )
+            .unwrap();
+        assert_eq!(pre_bash.deny_reason.as_deref(), Some("nope"));
+
+        let post_resp = json!({"ok": true});
+        session
+            .run(
+                HookEvent::PostToolUse,
+                &Payload::PostTool {
+                    name: "read",
+                    input: Some(&read_input),
+                    call_id: "c-1",
+                    response: &post_resp,
+                },
+                &cancel,
+                &mut emit,
+            )
+            .unwrap();
+
+        let conn = rusqlite::Connection::open(sessions.join(".stats/stats.db")).unwrap();
+        let rows: Vec<(String, Option<String>, String, i64, String, String)> = conn
+            .prepare(
+                "SELECT event,tool,status,modified,cwd,session_file FROM hook_runs ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].0, "UserPromptSubmit");
+        assert_eq!(rows[0].1, None);
+        assert_eq!(rows[0].2, "ok");
+        assert_eq!(rows[0].3, 1);
+        assert_eq!(rows[1].0, "PreToolUse");
+        assert_eq!(rows[1].1.as_deref(), Some("read"));
+        assert_eq!(rows[1].2, "ok");
+        assert_eq!(rows[1].3, 1);
+        assert_eq!(rows[2].0, "PreToolUse");
+        assert_eq!(rows[2].1.as_deref(), Some("bash"));
+        assert_eq!(rows[2].2, "blocked");
+        assert_eq!(rows[2].3, 0);
+        assert_eq!(rows[3].0, "PostToolUse");
+        assert_eq!(rows[3].1.as_deref(), Some("read"));
+        assert_eq!(rows[3].2, "error");
+        assert_eq!(rows[3].3, 0);
+        for row in &rows {
+            assert_eq!(row.4, workdir.to_string_lossy());
+            assert!(row.5.ends_with(".jsonl"));
+        }
+        // 不记录脚本路径与 stderr 正文。
+        let dump: String = rows
+            .iter()
+            .map(|r| format!("{r:?}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!dump.contains("private-stderr"));
+        assert!(!dump.contains("post-err.sh"));
     }
 }

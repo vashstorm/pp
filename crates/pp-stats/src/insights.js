@@ -5,7 +5,10 @@ let toolFilter = "",
   toolSort = { key: "calls", dir: "desc" },
   toolModelSort = { key: "calls", dir: "desc" },
   toolShown = 20,
-  toolModelShown = 25;
+  toolModelShown = 25,
+  hookEventSort = { key: "runs", dir: "desc" },
+  hookProjectSort = { key: "runs", dir: "desc" },
+  hookExpandedEvents = new Set();
 
 function resetInsights() {
   toolFilter = "";
@@ -15,6 +18,9 @@ function resetInsights() {
   toolModelSort = { key: "calls", dir: "desc" };
   toolShown = 20;
   toolModelShown = 25;
+  hookEventSort = { key: "runs", dir: "desc" };
+  hookProjectSort = { key: "runs", dir: "desc" };
+  hookExpandedEvents = new Set();
 }
 
 const TOOL_SERIES_COLORS = [
@@ -1054,6 +1060,313 @@ function toolsPage() {
   </div>`;
 }
 
+function hookDuration(ms) {
+  if (ms == null) return "—";
+  if (ms < 1000) return `${ms < 10 ? ms.toFixed(1) : Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)}s`;
+}
+
+function hookRateBadge(count, total, warnThreshold, badThreshold) {
+  if (!(total > 0)) return '<span class="x-num x-dim">0</span>';
+  const rate = count / total;
+  const tone =
+    count === 0
+      ? "neutral"
+      : rate >= badThreshold
+        ? "bad"
+        : rate >= warnThreshold
+          ? "warn"
+          : "ok";
+  return `<span class="x-row" style="gap:8px;justify-content:flex-end"><span class="x-num x-dim">${toolInteger(count)}</span><span class="x-badge" data-tone="${tone}" data-mono="true">${toolErrorRate(rate)}</span></span>`;
+}
+
+function hookSortHeader(column, sort, table) {
+  const sorted = sort.key === column.key ? sort.dir : undefined;
+  const arrow = sorted === "asc" ? TOOL_ARROW_UP : sorted === "desc" ? TOOL_ARROW_DOWN : "";
+  return `<th data-align="${column.align || "left"}" data-sortable="${Boolean(column.sort)}"${sorted ? ` data-sorted="${sorted}" aria-sort="${sorted === "asc" ? "ascending" : "descending"}"` : ""}${column.title ? ` title="${h(column.title)}"` : ""}${column.sort ? ` data-hooksort="${column.key}" data-hooktable="${table}" data-hookalign="${column.align || "left"}" data-hooks-focus="sort-${table}-${column.key}"` : ""}>${h(column.header)}${arrow ? `<span class="x-sort-arrow">${arrow}</span>` : ""}</th>`;
+}
+
+function hookEventToolsDetail(eventRow) {
+  const tools = eventRow.tools || [];
+  const maxRuns = tools.reduce((m, t) => Math.max(m, t.runs || 0), 0);
+  const body = tools
+    .map(
+      (tool) => `<tr>
+        <td><span class="x-mono">${h(tool.tool)}</span></td>
+        <td data-align="right">${toolMeter(tool.runs, maxRuns, `${toolInteger(tool.runs)}<span class="x-dim x-tools-share">${toolPercent(eventRow.runs > 0 ? tool.runs / eventRow.runs : 0, 0)}</span>`)}</td>
+        <td data-align="right"><span class="x-num">${toolInteger(tool.ok)}</span></td>
+        <td data-align="right">${hookRateBadge(tool.blocked, tool.runs, 0.01, 0.25)}</td>
+        <td data-align="right">${hookRateBadge(tool.errors, tool.runs, 0.01, 0.05)}</td>
+        <td data-align="right"><span class="x-num">${toolInteger(tool.modified)}</span></td>
+        <td data-align="right"><span class="x-num">${hookDuration(tool.avg_duration_ms)}</span></td>
+        <td data-align="right"><span class="x-num x-muted">${hookDuration(tool.max_duration_ms)}</span></td>
+        <td data-align="right"><span class="x-num x-muted">${hookDuration(tool.total_duration_ms)}</span></td>
+      </tr>`,
+    )
+    .join("");
+  return `<div class="x-providers-mix" style="padding:10px 16px 12px 38px">
+    <div class="x-section-label">By matched tool (${toolInteger(tools.length)})</div>
+    <div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>
+      <th>Tool</th><th data-align="right">Runs</th><th data-align="right">Allowed</th><th data-align="right">Blocked</th><th data-align="right">Errors</th><th data-align="right">Modified</th><th data-align="right">Avg</th><th data-align="right">Max</th><th data-align="right">Total</th>
+    </tr></thead><tbody>${body}</tbody></table></div>
+  </div>`;
+}
+
+function hookEventTable(events, totalRuns) {
+  if (!events.length) return toolEmpty("No hook executions in this range", "Hook runs appear here once configured command hooks execute.");
+  const maxRuns = events.reduce((m, e) => Math.max(m, e.runs || 0), 0);
+  const columns = [
+    {
+      key: "event",
+      header: "Event",
+      sort: (row) => row.event,
+      render: (row) => {
+        const hasTools = (row.tools?.length || 0) > 0;
+        const open = hasTools && hookExpandedEvents.has(row.event);
+        const chev = hasTools
+          ? `<span class="x-models-chevron" data-open="${open}">${icon("chevron", 12)}</span>`
+          : `<span style="display:inline-block;width:12px"></span>`;
+        const badge = hasTools
+          ? `<span class="x-badge">${toolInteger(row.tools.length)} tools</span>`
+          : "";
+        return `<span class="x-row" style="gap:8px">${chev}<span class="x-mono x-cell-primary">${h(row.event)}</span>${badge}</span>`;
+      },
+    },
+    {
+      key: "runs",
+      header: "Runs",
+      align: "right",
+      sort: (row) => row.runs || 0,
+      render: (row) =>
+        toolMeter(
+          row.runs,
+          maxRuns,
+          `${toolInteger(row.runs)}<span class="x-dim x-tools-share">${toolPercent(totalRuns > 0 ? row.runs / totalRuns : 0, 0)}</span>`,
+        ),
+    },
+    {
+      key: "ok",
+      header: "Allowed",
+      align: "right",
+      sort: (row) => row.ok || 0,
+      render: (row) => `<span class="x-num">${toolInteger(row.ok)}</span>`,
+    },
+    {
+      key: "blocked",
+      header: "Blocked",
+      title: "Handlers that returned deny, block, continue:false, or exit code 2",
+      align: "right",
+      sort: (row) => row.blocked || 0,
+      render: (row) => hookRateBadge(row.blocked, row.runs, 0.01, 0.25),
+    },
+    {
+      key: "errors",
+      header: "Errors",
+      title: "Handlers that timed out, exited abnormally, or produced invalid JSON",
+      align: "right",
+      sort: (row) => row.errors || 0,
+      render: (row) => hookRateBadge(row.errors, row.runs, 0.01, 0.05),
+    },
+    {
+      key: "modified",
+      header: "Modified",
+      title: "Runs that rewrote tool input/output or injected context",
+      align: "right",
+      sort: (row) => row.modified || 0,
+      render: (row) => `<span class="x-num">${toolInteger(row.modified)}</span>`,
+    },
+    {
+      key: "avg",
+      header: "Avg time",
+      align: "right",
+      sort: (row) => row.avg_duration_ms ?? -1,
+      render: (row) => `<span class="x-num">${hookDuration(row.avg_duration_ms)}</span>`,
+    },
+    {
+      key: "max",
+      header: "Max time",
+      align: "right",
+      sort: (row) => row.max_duration_ms ?? -1,
+      render: (row) => `<span class="x-num x-muted">${hookDuration(row.max_duration_ms)}</span>`,
+    },
+    {
+      key: "total",
+      header: "Total time",
+      align: "right",
+      sort: (row) => row.total_duration_ms || 0,
+      render: (row) => `<span class="x-num x-muted">${hookDuration(row.total_duration_ms)}</span>`,
+    },
+  ];
+  const sorted = toolSorted(events, columns, hookEventSort);
+  const head = columns.map((column) => hookSortHeader(column, hookEventSort, "event")).join("");
+  const body = sorted
+    .map((row) => {
+      const hasTools = (row.tools?.length || 0) > 0;
+      const open = hasTools && hookExpandedEvents.has(row.event);
+      const attrs = hasTools
+        ? ` data-clickable="true" data-selected="${open}" data-hookevent="${h(row.event)}" data-hooks-focus="event-${h(row.event)}" tabindex="0"`
+        : "";
+      const cells = columns
+        .map((column) => `<td data-align="${column.align || "left"}">${column.render(row)}</td>`)
+        .join("");
+      const detail = open
+        ? `<tr><td colspan="${columns.length}" data-wrap="true" style="padding:0">${hookEventToolsDetail(row)}</td></tr>`
+        : "";
+      return `<tr${attrs}>${cells}</tr>${detail}`;
+    })
+    .join("");
+  return `<div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function hookProjectTable(projects) {
+  if (!projects.length) return toolEmpty("No project hook activity in this range");
+  const maxRuns = projects.reduce((m, p) => Math.max(m, p.runs || 0), 0);
+  const columns = [
+    {
+      key: "project",
+      header: "Project",
+      sort: (row) => row.project || row.key || "",
+      render: (row) =>
+        `<div class="x-stack" style="gap:0"><span class="x-cell-primary x-truncate">${h(row.project || row.key || "Unknown directory")}</span><span class="x-cell-secondary x-mono x-truncate" title="${h(row.key)}">${h(row.key)}</span></div>`,
+    },
+    {
+      key: "runs",
+      header: "Runs",
+      align: "right",
+      sort: (row) => row.runs || 0,
+      render: (row) => toolMeter(row.runs, maxRuns, toolInteger(row.runs)),
+    },
+    {
+      key: "blocked",
+      header: "Blocked",
+      align: "right",
+      sort: (row) => row.blocked || 0,
+      render: (row) => hookRateBadge(row.blocked, row.runs, 0.01, 0.25),
+    },
+    {
+      key: "errors",
+      header: "Errors",
+      align: "right",
+      sort: (row) => row.errors || 0,
+      render: (row) => hookRateBadge(row.errors, row.runs, 0.01, 0.05),
+    },
+    {
+      key: "modified",
+      header: "Modified",
+      align: "right",
+      sort: (row) => row.modified || 0,
+      render: (row) => `<span class="x-num">${toolInteger(row.modified)}</span>`,
+    },
+    {
+      key: "events",
+      header: "Events",
+      align: "right",
+      sort: (row) => row.events || 0,
+      render: (row) => `<span class="x-num">${toolInteger(row.events)}</span>`,
+    },
+    {
+      key: "sessions",
+      header: "Sessions",
+      align: "right",
+      sort: (row) => row.sessions || 0,
+      render: (row) => `<span class="x-num">${toolInteger(row.sessions)}</span>`,
+    },
+    {
+      key: "avg",
+      header: "Avg time",
+      align: "right",
+      sort: (row) => row.avg_duration_ms ?? -1,
+      render: (row) => `<span class="x-num">${hookDuration(row.avg_duration_ms)}</span>`,
+    },
+    {
+      key: "lastSeen",
+      header: "Last run",
+      align: "right",
+      sort: (row) => row.last_seen ?? -1,
+      render: (row) =>
+        `<span class="x-muted" title="${h(localTime(row.last_seen))}">${toolRelative(row.last_seen)}</span>`,
+    },
+  ];
+  const sorted = toolSorted(projects, columns, hookProjectSort);
+  const head = columns.map((column) => hookSortHeader(column, hookProjectSort, "project")).join("");
+  const body = sorted
+    .map(
+      (row) =>
+        `<tr>${columns.map((column) => `<td data-align="${column.align || "left"}">${column.render(row)}</td>`).join("")}</tr>`,
+    )
+    .join("");
+  return `<div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+function hooksPage() {
+  if (!data) return '<div class="loading">Loading hooks…</div>';
+  toolChartModels = new Map();
+  toolChartSeq = 0;
+  const s = data.summary || {};
+  const meta = toolRangeMeta();
+  const buckets = toolBucketAxis((data.buckets || []).map((b) => b.timestamp));
+  const byTime = new Map((data.buckets || []).map((b) => [b.timestamp, b]));
+  const totalRuns = buckets.map((t) => byTime.get(t)?.runs ?? 0);
+  const totalBlocked = buckets.map((t) => byTime.get(t)?.blocked ?? 0);
+  const totalErrors = buckets.map((t) => byTime.get(t)?.errors ?? 0);
+  const totalOk = buckets.map((t) => byTime.get(t)?.ok ?? 0);
+  const series = [
+    { key: "ok", label: "Allowed", color: "var(--ok)", values: totalOk.map((v) => v || null) },
+    {
+      key: "blocked",
+      label: "Blocked",
+      color: "var(--warn)",
+      values: totalBlocked.map((v) => v || null),
+    },
+    {
+      key: "errors",
+      label: "Errors",
+      color: "var(--bad)",
+      values: totalErrors.map((v) => v || null),
+    },
+  ];
+  const runs = s.runs || 0;
+  const blockRate = runs > 0 ? toolErrorRate((s.blocked || 0) / runs) : "—";
+  const errRate = runs > 0 ? toolErrorRate((s.errors || 0) / runs) : "—";
+  const modRate = runs > 0 ? toolErrorRate((s.modified || 0) / runs) : "—";
+  const statGrid = `<div class="x-stat-grid x-rise" style="--stat-min:175px">
+    ${toolStat("Hook runs", toolInteger(runs), `${toolInteger(s.ok || 0)} allowed · ${toolInteger(s.sessions || 0)} sessions`, {
+      spark: totalRuns,
+    })}
+    ${toolStat("Blocked", toolInteger(s.blocked || 0), `${blockRate} block rate`, {
+      title: "Handlers that returned deny, block, continue:false, or exit code 2",
+      spark: totalBlocked,
+      sparkColor: "var(--warn)",
+    })}
+    ${toolStat("Handler errors", errRate, `${toolInteger(s.errors || 0)} errors · ${toolInteger(runs - (s.errors || 0))} completed`, {
+      title: "Handlers that failed due to timeout, abnormal exit code, or invalid protocol output",
+      spark: totalErrors,
+      sparkColor: "var(--bad)",
+    })}
+    ${toolStat("Modified", toolInteger(s.modified || 0), `${modRate} rewrite / context`, {
+      title: "Handler runs that rewrote tool input/output or injected additionalContext",
+    })}
+    ${toolStat("Avg duration", hookDuration(s.avg_duration_ms), `${hookDuration(s.total_duration_ms)} total · max ${hookDuration(s.max_duration_ms)}`, {
+      title: "Elapsed wall-clock time per handler execution",
+    })}
+  </div>`;
+  const chart = toolChart({ buckets, bucketMs: meta.bucketMs }, series, "No hook runs in this range", {
+    extraRows: (index) => {
+      const b = byTime.get(buckets[index]);
+      if (!b?.runs) return "";
+      return `<div class="x-chart-tooltip-row"><span class="x-chart-tooltip-label">Modified</span><span class="x-chart-tooltip-value">${toolInteger(b.modified)}</span></div><div class="x-chart-tooltip-row"><span class="x-chart-tooltip-label">Avg time</span><span class="x-chart-tooltip-value">${hookDuration(b.avg_duration_ms)}</span></div>`;
+    },
+  });
+  const chartBody = `<div class="x-stack" style="gap:12px">${chart}${toolLegend(series, toolInteger, { focusAttribute: "data-hooks-focus" })}</div>`;
+  return `<div class="x-page">
+    <header class="x-page-header x-rise"><div><h1 class="x-page-title">Hooks</h1><p class="x-page-description">Lifecycle command hook executions, decisions, rewrites, and latency in ${h(meta.windowLabel)}.</p></div></header>
+    ${statGrid}
+    ${toolCard(1, "Hook activity over time", `Per ${toolBucketWord(meta.bucketMs)}, stacked by handler outcome`, "", chartBody)}
+    ${toolCard(2, "By hook event", "Select a tool event row to break executions down by matched tool", "", hookEventTable(data.events || [], runs), true)}
+    ${toolCard(3, "By project", "Directories where hooks ran", "", hookProjectTable(data.projects || []), true)}
+  </div>`;
+}
+
 function projectRank(projects, field, title, color) {
   const rows = [...projects]
     .filter((g) => g[field] != null)
@@ -1229,6 +1542,32 @@ function insightsClick(e) {
   }
   if (e.target.closest("[data-clear-tool]")) {
     toolFilter = "";
+    render();
+    return true;
+  }
+  const hookSortHeader = e.target.closest("[data-hooksort]");
+  if (hookSortHeader) {
+    const table = hookSortHeader.dataset.hooktable;
+    const key = hookSortHeader.dataset.hooksort;
+    const state = table === "project" ? hookProjectSort : hookEventSort;
+    const direction =
+      state.key === key
+        ? state.dir === "asc"
+          ? "desc"
+          : "asc"
+        : hookSortHeader.dataset.hookalign === "right"
+          ? "desc"
+          : "asc";
+    if (table === "project") hookProjectSort = { key, dir: direction };
+    else hookEventSort = { key, dir: direction };
+    render();
+    return true;
+  }
+  const hookEventRow = e.target.closest("[data-hookevent]");
+  if (hookEventRow) {
+    const name = hookEventRow.dataset.hookevent;
+    if (hookExpandedEvents.has(name)) hookExpandedEvents.delete(name);
+    else hookExpandedEvents.add(name);
     render();
     return true;
   }
