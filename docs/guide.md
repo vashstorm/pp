@@ -1016,6 +1016,9 @@ Stop:
 - `permissionDecision: allow` 只表示 hook 不拦截，不跳过 pp 原有的审批与会话授权；`deny` 在审批门之前生效，YOLO 也不能绕过；`ask` 强制一次审批（无交互界面时工具失败），YOLO 与已有会话授权都不能跳过它，非 YOLO 下用户的显式 `deny` 仍然优先。
 - `Stop` 只在根 Execute 的自然完成候选上执行：等待用户答复、错误、取消与子 Agent 最终结果都不触发。`decision:"block"`、非空 `additionalContext` 或 exit 2 请求再跑一轮，理由进入原生 developer 历史；脚本执行期间队列保持开放，新到的用户输入优先于旧的续跑请求。`continue:false` 是任务级停止，先于补充输入生效：输入保持待处理，不再请求模型。每次任务最多 8 次 hook 续跑，超限以 `Stop hook continuation limit reached (8).` 失败而不伪报完成。
 - 注入文本每条上限 10,000 字符（按字符边界截断），诊断先遮蔽凭据再净化控制字符；日志只记录事件、handler 下标、状态、耗时与有界诊断，不记录命令原文与完整 stdin/stdout。脚本以当前用户权限运行，不是沙箱；它造成的文件改动不进入 edit/write 的原子提交或撤销保证，显式脱离进程组的 daemon 也不在回收保证内。
+- 示例（TODO 更新及时性提醒）：在 `~/.pp/agent/hooks.yml` 中同时绑定 `UserPromptSubmit` 与 `PostToolUse`（均配置 `args: []`、`timeout: 5`、`onFailure: continue`），脚本按 `session_id` 在 `~/.pp/agent/cache/todo-freshness/<session_id>.json` 维护每个会话的未完成项（`pending`／`in_progress`）、连续未更新轮数与单任务提醒计数：
+  1. `UserPromptSubmit`：重置当前任务的 `stale_rounds` 与 `reminders` 预算（保留已有的 open 清单）。
+  2. `PostToolUse`：忽略携带 `agent_id` 的子 Agent 调用；`tool_name == "todo"` 且 `tool_response.ok == true` 时从 `tool_response.phases` 同步 open 项，并在非 `view` 操作时清零 `stale_rounds`；其他工具调用（若尚未建立状态文件则可从 `transcript_path` 的最新 `pp.workflow`／`pp.session_state` 种子化 open 项）按 `transcript_path` 行数去重同一模型响应批次内的并行调用，每累计连续 3 个未更新工具轮次且 `reminders < 3` 时，通过 `hookSpecificOutput.additionalContext` 注入 `<system-reminder>` 提醒模型在下一响应中同步 `done`／`start`／`block`。
 
 ### Bash 输出与 artifact 资源
 
