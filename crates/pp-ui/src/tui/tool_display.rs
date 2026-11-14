@@ -1,5 +1,5 @@
 //! 工具显示策略，基准为 Oh My Pi 0b5c27ab 的 ANSI 渲染路径。
-//! 所有限制仅用于交互预览，完整回放始终使用保留的原始正文。
+//! read 始终隐藏正文，其余工具在完整回放时使用保留的原始正文。
 
 use super::transcript::{block_line, visit_wrapped_rows, wrap_block};
 use super::transcript_style as palette;
@@ -27,7 +27,6 @@ pub(super) use todo::{
 };
 pub(super) use write::write_body;
 
-const READ_LINES: usize = 3;
 const RG_LINES: usize = 6;
 const SEARCH_EXPANDED_LINES: usize = 24;
 const FIND_ITEMS: usize = 8;
@@ -157,6 +156,20 @@ pub(super) fn command(text: &str, expanded: bool, context: Context) -> Vec<Strin
 }
 
 pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static>> {
+    // read 的完整查看、预览配置和全局展开均只保留错误诊断。
+    if view.name == "read" {
+        return view
+            .result
+            .and_then(|result| result.get("error"))
+            .filter(|error| !error.is_null())
+            .map(|error| {
+                let text = error
+                    .as_str()
+                    .map_or_else(|| error.to_string(), str::to_owned);
+                wrap(logical(&text).into_iter().map(str::to_owned), width, style)
+            })
+            .unwrap_or_default();
+    }
     let expanded = view.expanded || view.context.full;
     let text = view.text;
     if view.name == "todo" {
@@ -187,20 +200,6 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         return wrap(logical(text).into_iter().map(str::to_owned), width, style);
     }
     match view.name {
-        "read" => {
-            if !expanded && !view.context.read_preview {
-                return Vec::new();
-            }
-            head(
-                text,
-                if expanded { usize::MAX } else { READ_LINES },
-                false,
-                false,
-                width,
-                style,
-                MoreHint::Expand("lines"),
-            )
-        }
         "find" => head(
             text,
             if expanded { usize::MAX } else { FIND_ITEMS },
@@ -769,28 +768,39 @@ mod tests {
     }
 
     #[test]
-    fn instruction_reads_obey_normal_preview_settings() {
+    fn reads_hide_content_in_all_display_modes() {
         let content = "first\nsecond\nthird\nfourth";
         for path in ["AGENTS.md", "skill://rust", "file.rs"] {
             let args = json!({"path": path});
-            let view = |expanded, read_preview| View {
-                name: "read",
-                text: content,
-                arguments: &args,
-                result: None,
-                running: false,
-                failed: false,
-                expanded,
-                context: Context {
-                    read_preview,
-                    ..Context::default()
-                },
-            };
-            assert!(body(view(false, false), 100, Style::default()).is_empty());
-            let preview = text(body(view(false, true), 100, Style::default()));
-            assert!(preview.contains("third") && !preview.contains("fourth"));
-            assert!(preview.contains("1 more lines (Ctrl + O to expand)"));
-            assert!(text(body(view(true, false), 100, Style::default())).contains("fourth"));
+            for (expanded, read_preview, full) in [
+                (false, false, false),
+                (false, true, false),
+                (true, true, false),
+                (true, true, true),
+            ] {
+                for failed in [false, true] {
+                    let result = json!({"ok":!failed,"content":content,"error":if failed { Value::from("read failed") } else { Value::Null }});
+                    let rows = text(body(
+                        View {
+                            name: "read",
+                            text: content,
+                            arguments: &args,
+                            result: Some(&result),
+                            running: false,
+                            failed,
+                            expanded,
+                            context: Context {
+                                read_preview,
+                                full,
+                                ..Context::default()
+                            },
+                        },
+                        100,
+                        Style::default(),
+                    ));
+                    assert_eq!(rows, if failed { "read failed" } else { "" });
+                }
+            }
         }
     }
 

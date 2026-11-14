@@ -346,7 +346,8 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.text("Timeout: 37s");
         assert!(!pty.contents().contains("Wall:"));
         pty.input("\x1b[1;5H");
-        pty.text("hub-probe-body");
+        pty.text("Read · probe.txt");
+        assert!(!pty.contents().contains("hub-probe-body"));
         // Esc 回到原 scope/search/选中活动。
         hub_escape(&mut pty, "Errors");
         assert_eq!(hub_count(&pty.contents(), "\u{f00d}"), 1);

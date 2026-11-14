@@ -18,6 +18,7 @@ use serde_json::Value;
 
 /// 折叠时最多展示的诊断正文行数（摘要行也在其中）。
 pub(super) const COLLAPSED_LINES: usize = 10;
+const CONTENT_PREVIEW_LINES: usize = 4;
 
 /// LSP 卡片累积的多文件变更；普通 write/edit 仍只保留单文件 diff。
 #[derive(Default)]
@@ -68,15 +69,19 @@ pub(super) fn late_title() -> String {
     "LSP diagnostics (late)".into()
 }
 
-pub(super) fn body(block: &Block, width: u16, expanded: bool) -> Vec<Line<'static>> {
+pub(super) fn body(block: &Block, action: &str, width: u16, expanded: bool) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
     if let Some(content) = &block.content
         && !content.trim().is_empty()
     {
-        let mut content = super::markdown::parse(content).layout(width);
-        if !expanded && content.len() > COLLAPSED_LINES {
-            let hidden = content.len() - (COLLAPSED_LINES - 1);
-            content.truncate(COLLAPSED_LINES - 1);
+        let mut content = if action == "symbols" {
+            symbol_lines(content, width, expanded)
+        } else {
+            super::markdown::parse(content).layout(width)
+        };
+        if action != "symbols" && !expanded && content.len() > CONTENT_PREVIEW_LINES {
+            let hidden = content.len() - CONTENT_PREVIEW_LINES;
+            content.truncate(CONTENT_PREVIEW_LINES);
             content.extend(wrap_block(
                 block_line(
                     format!("… {hidden} more lines (Ctrl + O to expand)"),
@@ -90,6 +95,52 @@ pub(super) fn body(block: &Block, width: u16, expanded: bool) -> Vec<Line<'stati
     }
     for change in &block.changes {
         rows.extend(change_lines(change, width, expanded));
+    }
+    rows
+}
+
+fn symbol_lines(content: &str, width: u16, expanded: bool) -> Vec<Line<'static>> {
+    let mut lines = content.lines().peekable();
+    // 文件已在卡片标题显示；符号正文按原始行渲染，避免 Markdown 合并换行。
+    if lines
+        .peek()
+        .is_some_and(|line| line.starts_with("Symbols in ") && line.ends_with(':'))
+    {
+        lines.next();
+    }
+    let lines: Vec<_> = lines.collect();
+    let shown = if expanded {
+        lines.len()
+    } else {
+        lines.len().min(CONTENT_PREVIEW_LINES)
+    };
+    let style = Style::default().fg(palette::TEXT);
+    let mut rows = Vec::new();
+    let mut clipped = false;
+    for line in &lines[..shown] {
+        let safe = pp_core::text::display_text(line);
+        let line = if expanded {
+            safe.into_owned()
+        } else {
+            let preview = super::tool_display::clip(&safe, usize::from(width), true);
+            clipped |= preview != safe.as_ref();
+            preview
+        };
+        rows.extend(wrap_block(block_line(line, style), width, ""));
+    }
+    let hint = if shown < lines.len() {
+        Some(format!("… {} more · Ctrl + O", lines.len() - shown))
+    } else if clipped {
+        Some("Ctrl + O to expand".into())
+    } else {
+        None
+    };
+    if let Some(hint) = hint {
+        rows.extend(wrap_block(
+            block_line(hint, Style::default().fg(palette::DIM)),
+            width,
+            "",
+        ));
     }
     rows
 }
@@ -537,7 +588,7 @@ mod tests {
             },
         );
         assert_eq!(block.changes.len(), 2);
-        let rendered = text(&body(&block, 120, true));
+        let rendered = text(&body(&block, "rename", 120, true));
         assert!(rendered.contains("Deleted · old/name.rs"), "{rendered}");
         assert!(rendered.contains("Created · new/name.rs"), "{rendered}");
     }

@@ -55,31 +55,31 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
             ask_call_json(protocol, "fold-ask", ask_single_arguments())
         ]));
         ask_wait_panel(&mut pty, "Which database should the project use?");
-        pty.wait_for("read 三行预览和 bash 十行尾部", |screen| {
+        pty.wait_for("read 摘要和 bash 十行尾部", |screen| {
             let text = screen.contents();
-            text.matches("Ctrl + O to expand").count() == 3
-                && text.contains("fold-first-02") && text.contains("fold-second-02")
+            text.matches("Ctrl + O to expand").count() == 1
+                && text.contains("Read (2)")
                 && text.contains("fold-bash-10") && !text.contains("fold-bash-00")
-                && !text.contains("fold-first-19") && !text.contains("fold-second-19")
+                && !text.contains("fold-first-") && !text.contains("fold-second-")
         });
         pty.input("\x1b[B ");
         pty.wait_for("选择答案后保持面板", |screen| screen.contents().contains("󰐾 Postgres"));
         pty.input("\x0f");
         pty.wait_for("ask 焦点下全局展开", |screen| {
             let text = screen.contents();
-            text.contains("fold-first-19") && text.contains("fold-second-19")
+            !text.contains("fold-first-") && !text.contains("fold-second-")
                 && text.contains("fold-bash-00") && !text.contains("to expand")
                 && text.contains("󰐾 Postgres") && text.contains("保留草稿")
         });
         pty.input("\x0f");
         pty.wait_for("ask 焦点下全局收起", |screen| {
             let text = screen.contents();
-            text.matches("Ctrl + O to expand").count() == 3
+            text.matches("Ctrl + O to expand").count() == 1
                 && !text.contains("fold-first-19") && !text.contains("fold-second-19")
                 && !text.contains("fold-bash-00") && text.contains("󰐾 Postgres")
         });
         pty.input("\x0f");
-        pty.text("fold-first-19");
+        pty.text("fold-bash-00");
         pty.input("\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
         let outputs = cancel_tool_outputs(&body, protocol);
@@ -92,9 +92,9 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
             mk_call("third", "read", json!({"path":"third"}))
         ]));
         let (request, _) = pty.request_at(&server, api_path(protocol));
-        pty.wait_for("后续工具继承展开状态", |screen| {
+        pty.wait_for("后续 read 仍只显示摘要", |screen| {
             let text = screen.contents();
-            text.contains("fold-third-19") && !text.contains("to expand")
+            text.contains("Read · third") && !text.contains("fold-third-") && !text.contains("to expand")
         });
         ask_final_reply(request, protocol, "global folding done");
         pty.text("global folding done");
@@ -103,7 +103,7 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
         ask_assert_cursor_at_draft_end(&pty);
         pty.input("\x0f");
         pty.wait_for("任务结束后仍可全局折叠", |screen| {
-            screen.contents().matches("Ctrl + O to expand").count() == 4
+            screen.contents().matches("Ctrl + O to expand").count() == 1
         });
         pty.input("\x03");
         pty.finish();
@@ -111,7 +111,7 @@ fn tool_folding_ctrl_o_globally_toggles_during_ask_and_new_tools_inherit() {
     }
 }
 
-// 默认摘要不影响模型正文；恢复采用当前配置，原生历史保留提交时的摘要。
+// 摘要不影响模型正文；恢复、预览配置和原生历史均不显示 read 正文。
 #[test]
 fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
     for protocol in ["completion", "response"] {
@@ -155,7 +155,7 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
                 let (row, col) = ask_panel_find(screen, label);
                 let cell = screen.cell(row, col).unwrap();
                 assert_eq!(cell.fgcolor(), color, "{label}");
-                assert_eq!(cell.bgcolor(), vt100::Color::Rgb(22, 26, 31), "{label}");
+                assert_eq!(cell.bgcolor(), vt100::Color::Default, "{label}");
                 assert!(!cell.bold(), "{label}");
             }
             assert!(!screen.contents().contains(" · ok"));
@@ -174,12 +174,13 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
         let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
         resumed.resize(80, 100);
         resumed.ready();
-        resumed.wait_for("恢复后采用当前 read 预览配置", |screen| {
+        resumed.wait_for("恢复后仍只显示 read 摘要", |screen| {
             let text = screen.contents();
-            text.contains("body-one-02") && !text.contains("body-one-03") && text.contains("Ctrl + O to expand")
+            text.contains("Read (2)") && !text.contains("body-one-") && !text.contains("Ctrl + O to expand")
         });
-        resumed.input("\x0f");
-        resumed.text("body-one-19");
+        resumed.input("\x0fa");
+        resumed.draft("a");
+        assert!(!resumed.parser.screen().contents().contains("body-one-"));
         resumed.input("\x03");
         resumed.finish();
         no_more(&provider);

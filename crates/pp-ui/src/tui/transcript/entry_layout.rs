@@ -316,7 +316,7 @@ impl TranscriptEntry {
         if bash {
             lines.push(border(Source::Divider));
         }
-        let tool_body = self.is_collapsible_tool()
+        let tool_body = (self.is_collapsible_tool() || self.is_file_read())
             && !self.is_argument_preview()
             && !(self.tool.as_deref() == Some("edit") && matches!(self.body, EntryBody::Diff(_)))
             && !matches!(self.body, EntryBody::Lsp(_));
@@ -466,12 +466,17 @@ impl TranscriptEntry {
             }
         } else if let EntryBody::Lsp(block) = &self.body {
             lines.extend(
-                crate::tui::lsp::body(block, width, self.expanded || self.display.full)
-                    .into_iter()
-                    .map(|line| LayoutLine {
-                        content: LayoutContent::Styled(line),
-                        height: 1,
-                    }),
+                crate::tui::lsp::body(
+                    block,
+                    self.arguments["action"].as_str().unwrap_or_default(),
+                    width,
+                    self.expanded || self.display.full,
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
             );
         } else if !self.visible_text().is_empty() {
             if self.kind == EntryKind::Ask {

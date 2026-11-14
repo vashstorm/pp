@@ -258,9 +258,6 @@ fn tui_skill_read_preview_busy_rejection_and_resize_for_both_apis() {
             let (request, body) = receive_at(&server, path);
             assert!(body.to_string().contains("secret-skill-line-19"));
             pty.text("skill://");
-            if preview {
-                pty.text("name: 中文技能");
-            }
             pty.drain();
             let screen = pty.parser.screen();
             let text = screen.contents();
@@ -269,9 +266,17 @@ fn tui_skill_read_preview_busy_rejection_and_resize_for_both_apis() {
                 "旧技能卡片标题不应再出现: {text}"
             );
             assert!(!text.contains("secret-skill-line-19"));
-            assert_eq!(text.contains("name: 中文技能"), preview, "{text}");
+            assert!(!text.contains("name: 中文技能"), "{text}");
             pty.function_key('o');
-            pty.text("secret-skill-line-19");
+            pty.input("!");
+            pty.draft("/skills!");
+            assert!(
+                !pty.parser
+                    .screen()
+                    .contents()
+                    .contains("secret-skill-line-19")
+            );
+            pty.input("\x7f");
             pty.resize(4, 20);
             pty.resize(30, 100);
             pty.draft("/skills");

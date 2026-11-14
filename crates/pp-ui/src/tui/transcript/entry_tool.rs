@@ -35,7 +35,8 @@ impl TranscriptEntry {
 
     pub(super) fn is_collapsible_tool(&self) -> bool {
         // 迟到诊断没有工具调用 ID，但同样可以用 Ctrl + O 展开完整报告。
-        self.kind == EntryKind::Lsp || (self.tool.is_some() && self.kind != EntryKind::Ask)
+        self.kind == EntryKind::Lsp
+            || (self.tool.is_some() && self.kind != EntryKind::Ask && !self.is_file_read())
     }
 
     pub(super) fn update_bash_footer(&mut self, elapsed: Option<std::time::Duration>) -> bool {

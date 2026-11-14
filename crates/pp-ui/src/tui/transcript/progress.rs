@@ -100,7 +100,7 @@ impl Transcript {
                 );
                 entry.arguments = serde_json::json!({"path": path});
                 entry.display = self.display;
-                entry.expanded = self.tools_expanded;
+                entry.expanded = self.tools_expanded && entry.is_collapsible_tool();
                 self.read_groups_key = None;
                 self.entries.push(entry);
             }
@@ -374,7 +374,7 @@ impl Transcript {
                     );
                 }
                 entry.display = self.display;
-                entry.expanded = self.tools_expanded;
+                entry.expanded = self.tools_expanded && entry.is_collapsible_tool();
                 if let Some(args) = ask_args {
                     entry.body = EntryBody::Ask(AskBlock::new(args));
                 }

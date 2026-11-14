@@ -125,7 +125,12 @@ fn read_files_images_web_and_resume_send_real_content_both_protocols() {
         let output = cli.finish();
         assert!(output.status.success(), "{output:?}");
         assert!(!String::from_utf8_lossy(&output.stderr).contains("base64"));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("Dimensions: 2 x 3"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("one\r\nthree") && !stderr.contains("third\nfourth"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("Dimensions: 2 x 3"), "{stderr}");
         let sessions = dir.path().join(".pp/agent/sessions");
         let file = std::fs::read_dir(sessions)
             .unwrap()

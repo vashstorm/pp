@@ -16,7 +16,7 @@ fn tree_blocks_preserve_markdown_tool_batch_and_geometry_when_selection_moves() 
             }),
             ReplayRecord::Event(AgentEvent::ToolStarted {
                 id: "a".into(),
-                name: "read".into(),
+                name: "custom".into(),
                 arguments: "{}".into(),
             }),
             ReplayRecord::Event(AgentEvent::ToolFinished {

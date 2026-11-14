@@ -100,8 +100,12 @@ fn tool_folding_is_global_without_layout_and_future_output_inherits_it() {
     transcript.toggle_tool_output();
     for entry in &mut transcript.entries {
         let name = entry.tool.clone().unwrap();
-        assert!(entry.expanded);
+        assert_eq!(entry.expanded, name != "read");
         let text = entry_text(entry, 100);
+        if name == "read" {
+            assert!(!text.contains("read-00") && !text.contains("read-19"));
+            continue;
+        }
         assert!(text.contains(&format!("{name}-00")));
         assert_eq!(
             text.contains(&format!("{name}-19")),
@@ -203,14 +207,10 @@ fn read_group_cache_refreshes_status_and_failure_boundaries() {
     assert!(screen(&render(&mut transcript, 100, 30)).contains("Read (2)"));
     transcript.fail();
     let text = screen(&render(&mut transcript, 100, 30));
-    for expected in [
-        "first · failed",
-        "second · failed",
-        "first-partial-output",
-        "second-partial-output",
-    ] {
+    for expected in ["first · failed", "second · failed"] {
         assert!(text.contains(expected), "{expected}: {text}");
     }
+    assert!(!text.contains("partial-output"), "{text}");
     assert!(
         !text.contains("Read (3)") && !text.contains("Read (2)"),
         "{text}"
@@ -400,7 +400,10 @@ fn read_summary_groups_preserve_entries_results_and_full_replay() {
     parser.process(&output);
     let full = parser.screen().contents();
     assert!(
-        full.contains("one-body") && full.contains("two-body"),
+        full.contains("one:1-1")
+            && full.contains("two:20-20")
+            && !full.contains("one-body")
+            && !full.contains("two-body"),
         "{full}"
     );
 }
@@ -412,8 +415,7 @@ fn tool_preview_counts_logical_lines_and_keeps_other_messages_complete() {
         tool(&mut transcript, "read", "read", json!({"path":"file"}));
         transcript.progress(AgentEvent::ToolFinished { id:"read".into(), result:json!({"ok":true,"content":(0..count).map(|i|format!("line-{i:02}")).collect::<Vec<_>>().join("\n")}) });
         let text = entry_text(&mut transcript.entries[0], 80);
-        assert_eq!(text.contains("to expand"), count > 3);
-        assert!(text.contains("line-02") && !text.contains("line-03"));
+        assert!(!text.contains("to expand") && !text.contains("line-"));
     }
     let mut transcript = Transcript::with_read_preview(true);
     tool(&mut transcript, "long", "read", json!({}));
@@ -454,7 +456,7 @@ fn tool_toggle_anchors_history_and_exit_scrollback_expands_all_tools() {
         tool(
             &mut transcript,
             &format!("r{i}"),
-            "read",
+            "custom",
             json!({"path":format!("file{i}")}),
         );
         transcript.progress(AgentEvent::ToolFinished {
@@ -466,10 +468,10 @@ fn tool_toggle_anchors_history_and_exit_scrollback_expands_all_tools() {
     let first_height = transcript.entries[0].layout.as_ref().unwrap().height;
     transcript.follow_bottom = false;
     transcript.offset = first_height + 1;
-    assert!(screen(&render(&mut transcript, 100, 10)).contains("Read · file1"));
+    assert!(screen(&render(&mut transcript, 100, 10)).contains("custom · file1"));
     transcript.toggle_tool_output();
     assert!(!transcript.follow_bottom);
-    assert!(screen(&render(&mut transcript, 100, 10)).contains("Read · file1"));
+    assert!(screen(&render(&mut transcript, 100, 10)).contains("custom · file1"));
     // 收起时锚点位于隐藏内容内，也必须留在同一卡片。
     transcript.offset += 30;
     transcript.toggle_tool_output();

@@ -313,7 +313,10 @@ mod tests {
         // 历史可在首帧取得宽度前读完；此后没有新事件也必须定位。
         let mut drafts = Drafts::default();
         let screen = render(&mut panel, &mut drafts, 100, 12).join("\n");
-        assert!(screen.contains("body of first.rs"), "{screen}");
+        assert!(
+            screen.contains("first.rs") && !screen.contains("body of first.rs"),
+            "{screen}"
+        );
         assert!(!screen.contains("tail-39"), "{screen}");
         panel.apply(Reply::Detail {
             epoch: 1,
@@ -350,7 +353,10 @@ mod tests {
             },
         });
         let screen = render(&mut panel, &mut drafts, 100, 18).join("\n");
-        assert!(screen.contains("replacement body"), "{screen}");
+        assert!(
+            screen.contains("replacement.rs") && !screen.contains("replacement body"),
+            "{screen}"
+        );
         assert!(
             !screen.contains("first.rs") && !screen.contains("tail-39"),
             "{screen}"

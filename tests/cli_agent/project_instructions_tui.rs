@@ -29,12 +29,15 @@ fn instruction_reads_defer_rules_and_share_normal_preview_both_protocols() {
         assert!(text.contains("AGENTS.md"), "{text}");
         assert!(!text.contains("agents-first-line") && !text.contains("secret-skill-line-00"), "{text}");
         assert!(!text.contains("Resolved path"), "{text}");
-        pty.function_key('o');
-        pty.text("secret-skill-line-19");
-        pty.function_key('o');
-        pty.wait_for("收起技能正文并恢复摘要", |screen| {
-            screen.contents().contains("skill://rust") && !screen.contents().contains("secret-skill-line-19")
-        });
+        for (input, draft) in [("a", "a"), ("b", "ab")] {
+            pty.function_key('o');
+            pty.input(input);
+            pty.draft(draft);
+            let text = pty.parser.screen().contents();
+            assert!(text.contains("skill://rust") && !text.contains("secret-skill-line-19"), "{text}");
+        }
+        pty.input("\x01\x0b");
+        pty.draft("");
         pty.input("/new\r");
         pty.wait_for("新会话清理旧对话", |screen| {
             input_is_ready(screen) && !screen.contents().contains("normal-read-done")

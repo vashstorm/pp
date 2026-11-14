@@ -83,7 +83,7 @@ fn tui_mock_ui_escape_keeps_draft_and_a_rerun_starts_from_the_first_step() {
 }
 
 #[test]
-fn tui_mock_read_card_expands_and_collapses_real_content() {
+fn tui_mock_read_card_never_displays_real_content() {
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();
     let mut pty = mock_tui_empty_start(home.path(), project.path());
@@ -95,12 +95,13 @@ fn tui_mock_read_card_expands_and_collapses_real_content() {
         "{}",
         pty.parser.screen().contents()
     );
-    pty.input("\x0f");
-    pty.text("sixth-tail-marker");
-    pty.input("\x0f");
-    pty.wait_for("read card collapses to its local summary", |screen| {
-        !screen.contents().contains("sixth-tail-marker") && screen.contents().contains("main.rs")
-    });
+    for (input, draft) in [("a", "a"), ("b", "ab")] {
+        pty.input("\x0f");
+        pty.input(input);
+        pty.draft(draft);
+        let text = pty.parser.screen().contents();
+        assert!(text.contains("main.rs") && !text.contains("sixth-tail-marker"), "{text}");
+    }
     pty.input("\x03");
     pty.finish();
     assert!(mock_tui_session_jsonl(home.path()).is_empty());

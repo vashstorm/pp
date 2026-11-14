@@ -113,7 +113,7 @@ fn folding_fixture(app: &mut App) {
     for id in ["first", "second"] {
         app.conversation.progress(AgentEvent::ToolStarted {
             id: id.into(),
-            name: "read".into(),
+            name: "custom".into(),
             arguments: format!(r#"{{"path":"{id}"}}"#),
         });
         app.conversation.progress(AgentEvent::ToolFinished {

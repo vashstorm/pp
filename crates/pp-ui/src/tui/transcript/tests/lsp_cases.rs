@@ -199,6 +199,54 @@ fn lsp_terminal_tool_content_is_readable_not_json() {
 }
 
 #[test]
+fn lsp_terminal_symbols_keep_rows_compact_and_expand_full_signatures() {
+    let content = format!(
+        "Symbols in src/a.rs:\n  Module activity @ line 2\n    Field nested_item Vec<{}> signature_end @ line 3\n  Struct RequestContext @ line 4\n  Function capture @ line 5\n  Function hidden_item @ line 6\n  Function last_item @ line 7",
+        "类型_".repeat(80),
+    );
+    for width in [40, 120] {
+        let mut transcript = Transcript::new();
+        tool(
+            &mut transcript,
+            "symbols",
+            "lsp",
+            json!({"action":"symbols","file":"src/a.rs"}),
+        );
+        transcript.progress(AgentEvent::ToolFinished {
+            id: "symbols".into(),
+            result: json!({"ok":true,"content":content}),
+        });
+        let collapsed = entry_text(&mut transcript.entries[0], width);
+        assert_eq!(collapsed.lines().count(), 6, "{collapsed}");
+        assert!(collapsed.contains("2 more · Ctrl + O"), "{collapsed}");
+        assert!(!collapsed.contains("Symbols in"), "{collapsed}");
+        assert!(!collapsed.contains("hidden_item"), "{collapsed}");
+        assert!(!collapsed.contains("signature_end"), "{collapsed}");
+        assert!(
+            collapsed
+                .lines()
+                .any(|line| line == "  Module activity @ line 2"),
+            "{collapsed}",
+        );
+        assert!(
+            collapsed.contains("    Field nested_item Vec<"),
+            "{collapsed}"
+        );
+
+        transcript.toggle_tool_output();
+        let expanded = entry_text(&mut transcript.entries[0], width);
+        assert!(
+            expanded
+                .replace('\n', "")
+                .contains(&format!("Vec<{}> signature_end", "类型_".repeat(80))),
+            "{expanded}",
+        );
+        assert!(expanded.contains("last_item"), "{expanded}");
+        assert!(!expanded.contains("Ctrl + O"), "{expanded}");
+    }
+}
+
+#[test]
 fn lsp_terminal_replay_rebuilds_frozen_reports_without_new_queries() {
     let report = report("src/a.rs", vec![diagnostic(1, 4, "expected i32")]);
     let mut transcript = Transcript::new();

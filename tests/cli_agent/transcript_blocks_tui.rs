@@ -433,9 +433,9 @@ fn transcript_blocks_markdown_tool_output_stays_literal() {
                 ("mb-read", "read", json!({"path":"literal.md"})),
             ],
         );
-        pty.wait_for("bash 与 read 的字面输出上屏", |s| {
+        pty.wait_for("bash 字面输出与 read 摘要上屏", |s| {
             s.contents().contains("**literal** # not a heading")
-                && s.contents().contains("# From File Heading")
+                && s.contents().contains("Read · literal.md")
         });
         {
             let screen = pty.parser.screen();
@@ -445,7 +445,7 @@ fn transcript_blocks_markdown_tool_output_stays_literal() {
                 !markdown_blocks_bold(screen, "**literal** # not a heading"),
                 "{text}"
             );
-            assert!(!markdown_blocks_bold(screen, "# From File Heading"), "{text}");
+            assert!(!text.contains("# From File Heading"), "{text}");
             assert!(!text.contains(" rust "), "{text}");
             assert!(!text.contains("• "), "{text}");
         }
@@ -459,7 +459,7 @@ fn transcript_blocks_markdown_tool_output_stays_literal() {
             assert!(markdown_blocks_bold(screen, "styled"));
             // bash 标题与 stdout 各出现一次，字面输出未被重复解释。
             assert_eq!(screen.contents().matches("**literal**").count(), 2);
-            assert_eq!(screen.contents().matches("**file bold**").count(), 1);
+            assert!(!screen.contents().contains("**file bold**"));
         }
         no_more(&fixture);
     }

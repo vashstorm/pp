@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn instruction_reads_share_normal_groups_and_expansion() {
+fn instruction_reads_share_normal_groups_without_showing_bodies() {
     let mut transcript = Transcript::new();
     transcript.progress(AgentEvent::ProjectInstructionsLoaded {
         path: "/project/AGENTS.md".into(),
@@ -31,15 +31,27 @@ fn instruction_reads_share_normal_groups_and_expansion() {
             .all(|entry| entry.kind == EntryKind::Data)
     );
     transcript.toggle_tool_output();
-    let text = screen(&render(&mut transcript, 100, 40));
-    for body in ["# Rules", "**literal guidance**", "file-tail", "skill-tail"] {
-        assert!(text.contains(body), "{text}");
-    }
-    assert!(!text.contains("Read (3)"), "{text}");
+    assert_eq!(screen(&render(&mut transcript, 100, 30)), text);
+    tool(
+        &mut transcript,
+        "future",
+        "read",
+        json!({"path":"future.rs"}),
+    );
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "future".into(),
+        result: json!({"ok":true,"content":"future-body"}),
+    });
+    let text = screen(&render(&mut transcript, 100, 30));
+    assert!(
+        text.contains("Read (4)") && text.contains("future.rs"),
+        "{text}"
+    );
+    assert!(!text.contains("future-body"), "{text}");
 }
 
 #[test]
-fn instruction_reads_obey_three_line_preview_setting() {
+fn instruction_reads_ignore_body_preview_setting() {
     let mut transcript = Transcript::new();
     transcript.display.read_preview = true;
     let content = "first\nsecond\nthird\nfourth\nfifth";
@@ -58,20 +70,13 @@ fn instruction_reads_obey_three_line_preview_setting() {
         result: json!({"ok":true,"content":content}),
     });
     let text = screen(&render(&mut transcript, 100, 30));
-    assert_eq!(text.matches("third").count(), 2, "{text}");
-    assert!(!text.contains("fourth"), "{text}");
-    assert_eq!(
-        text.matches("2 more lines (Ctrl + O to expand)").count(),
-        2,
+    assert!(text.contains("Read (2)"), "{text}");
+    assert!(
+        !text.contains("first") && !text.contains("Ctrl + O"),
         "{text}"
     );
     transcript.toggle_tool_output();
-    assert_eq!(
-        screen(&render(&mut transcript, 100, 40))
-            .matches("fifth")
-            .count(),
-        2
-    );
+    assert_eq!(screen(&render(&mut transcript, 100, 30)), text);
 }
 
 #[test]
@@ -101,7 +106,7 @@ fn failed_skill_reads_keep_errors_and_normal_read_style() {
 fn instruction_reads_neutralize_controls_at_narrow_widths() {
     let mut transcript = Transcript::new();
     transcript.progress(AgentEvent::ProjectInstructionsLoaded {
-        path: "/project/AGENTS.md".into(),
+        path: "/project/\u{1b}[31mAGENTS.md".into(),
         content: "plain\n\u{1b}[31mred\u{1b}[0m\nlast".into(),
     });
     transcript.toggle_tool_output();
@@ -128,7 +133,7 @@ fn instruction_reads_replay_tree_and_native_boundaries() {
         "{text}"
     );
     transcript.toggle_tool_output();
-    assert!(screen(&render(&mut transcript, 100, 30)).contains("recorded-body"));
+    assert_eq!(screen(&render(&mut transcript, 100, 30)), text);
 
     let mut transcript = Transcript::new();
     let range = transcript.append_tree_node(vec![ReplayRecord::Event(event())], "");
@@ -146,7 +151,10 @@ fn instruction_reads_replay_tree_and_native_boundaries() {
         60,
         12,
     ));
-    assert!(text.contains("recorded-body"), "{text}");
+    assert!(
+        text.contains("/old/AGENTS.md") && !text.contains("recorded-body"),
+        "{text}"
+    );
 
     let mut transcript = Transcript::new();
     transcript.append("You", "run");

@@ -173,10 +173,9 @@ fn run_cli_execution(
             }
             AgentEvent::FileChanged { .. } => {}
             AgentEvent::ToolOutputSnapshot { id, output } => {
-                if !current_tool
-                    .as_ref()
-                    .is_some_and(|(current_id, name)| current_id == &id && name == "wait")
-                {
+                if !current_tool.as_ref().is_some_and(|(current_id, name)| {
+                    current_id == &id && matches!(name.as_str(), "wait" | "read")
+                }) {
                     let delta = cli_output_text(&output, &mut streamed_output, false, "bash");
                     cli_write(stderr, &delta, &mut err_broken, &mut first_error);
                 }
@@ -186,6 +185,9 @@ fn run_cli_execution(
                     .as_ref()
                     .filter(|(current_id, _)| current_id == &id)
                     .map_or("tool", |(_, name)| name.as_str());
+                if name == "read" {
+                    return;
+                }
                 let label = match stream {
                     OutputStream::Stdout => "stdout",
                     OutputStream::Stderr => "stderr",
@@ -198,6 +200,9 @@ fn run_cli_execution(
                 );
             }
             AgentEvent::ToolFinished { id, result } => {
+                let is_read = current_tool
+                    .as_ref()
+                    .is_some_and(|(current_id, name)| current_id == &id && name == "read");
                 if current_tool
                     .as_ref()
                     .is_some_and(|(current_id, name)| current_id == &id && name == "wait")
@@ -224,7 +229,7 @@ fn run_cli_execution(
                         &mut first_error,
                     );
                 }
-                if result["output"].is_string() {
+                if !is_read && result["output"].is_string() {
                     cli_write(
                         stderr,
                         &cli_output_result(&result, &mut streamed_output, "bash"),
@@ -233,29 +238,31 @@ fn run_cli_execution(
                     );
                 }
                 if current_tool.as_ref().is_some_and(|(current_id, name)| {
-                    current_id == &id
-                        && (matches!(name.as_str(), "rg" | "glob" | "todo")
-                            || name == "read"
-                                && result["kind"] != "image"
-                                && result.get("pipe").is_none())
-                }) && let Some(content) = result["content"]
-                    .as_str()
-                    .or_else(|| result["error"].as_str())
-                {
-                    let content = if current_tool
-                        .as_ref()
-                        .is_some_and(|(_, name)| matches!(name.as_str(), "read" | "todo"))
-                    {
-                        pp_core::text::display_text(content)
+                    current_id == &id && matches!(name.as_str(), "rg" | "glob" | "todo" | "read")
+                }) {
+                    let content = if is_read {
+                        result["error"].as_str()
                     } else {
-                        std::borrow::Cow::Borrowed(content)
+                        result["content"]
+                            .as_str()
+                            .or_else(|| result["error"].as_str())
                     };
-                    cli_write(
-                        stderr,
-                        &format!("{content}\n"),
-                        &mut err_broken,
-                        &mut first_error,
-                    );
+                    if let Some(content) = content {
+                        let content = if current_tool
+                            .as_ref()
+                            .is_some_and(|(_, name)| matches!(name.as_str(), "read" | "todo"))
+                        {
+                            pp_core::text::display_text(content)
+                        } else {
+                            std::borrow::Cow::Borrowed(content)
+                        };
+                        cli_write(
+                            stderr,
+                            &format!("{content}\n"),
+                            &mut err_broken,
+                            &mut first_error,
+                        );
+                    }
                     if let Some(warnings) = result["warnings"].as_array() {
                         for warning in warnings.iter().filter_map(serde_json::Value::as_str) {
                             cli_write(
@@ -267,7 +274,8 @@ fn run_cli_execution(
                         }
                     }
                 }
-                if result["kind"] == "image"
+                if !is_read
+                    && result["kind"] == "image"
                     && let Some(content) = result["content"].as_str()
                 {
                     cli_write(
