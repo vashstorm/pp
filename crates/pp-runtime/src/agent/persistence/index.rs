@@ -19,7 +19,7 @@ use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{BufReader, Read},
@@ -51,6 +51,7 @@ pub(crate) fn sync(
         }
         Err(error) => return Err(error).context("reading session directory"),
     };
+    let fingerprints = load_fingerprints(conn)?;
     let mut diagnostics = Vec::new();
     let mut seen = HashSet::new();
     for entry in entries {
@@ -60,7 +61,17 @@ pub(crate) fn sync(
             continue;
         };
         cancellation::check(cancellation)?;
-        index_file(conn, &entry.path(), &id, cancellation, &mut diagnostics)?;
+        let path = entry.path();
+        if let Some(expected) = fingerprints.get(&id)
+            && fs::symlink_metadata(&path)
+                .ok()
+                .filter(|metadata| metadata.is_file())
+                .is_some_and(|metadata| Fingerprint::of(&metadata) == *expected)
+        {
+            seen.insert(id);
+            continue;
+        }
+        index_file(conn, &path, &id, cancellation, &mut diagnostics)?;
         seen.insert(id);
     }
     cancellation::check(cancellation)?;
@@ -111,6 +122,34 @@ impl Fingerprint {
 /// 重新 fstat 打开的 fd；失败视为变化（无法验证稳定性时不提交）。
 fn refstat(file: &File) -> Option<Fingerprint> {
     file.metadata().ok().map(|stat| Fingerprint::of(&stat))
+}
+
+fn load_fingerprints(conn: &Connection) -> Result<HashMap<String, Fingerprint>> {
+    let mut statement = conn
+        .prepare(
+            "SELECT session_id,device,inode,bytes,updated_at_secs,updated_at_nanos FROM sessions",
+        )
+        .map_err(unavailable)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Fingerprint {
+                    device: row.get(1)?,
+                    inode: row.get(2)?,
+                    bytes: row.get(3)?,
+                    secs: row.get(4)?,
+                    nanos: row.get(5)?,
+                },
+            ))
+        })
+        .map_err(unavailable)?;
+    let mut fingerprints = HashMap::new();
+    for row in rows {
+        let (id, fingerprint) = row.map_err(unavailable)?;
+        fingerprints.insert(id, fingerprint);
+    }
+    Ok(fingerprints)
 }
 
 fn recorded_fingerprint(tx: &Transaction<'_>, id: &str) -> Result<Option<Fingerprint>> {
@@ -842,5 +881,38 @@ mod tests {
         assert!(error.is::<Cancelled>());
         assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 1);
         assert_eq!(fixture.search("needle_locked"), vec![id.clone()]);
+    }
+
+    #[test]
+    fn sqlite_index_rejects_indexed_session_replaced_with_symlink() {
+        let mut fixture = Fixture::new();
+        let target = session(11);
+        let replaced = session(12);
+        let content = format!(
+            "{}{}{}",
+            header_text(&target, "/project"),
+            user("目标 needle_target"),
+            stopped()
+        );
+        fixture.write_session(11, &content);
+        fixture.write_session(
+            12,
+            &format!(
+                "{}{}{}",
+                header_text(&replaced, "/project"),
+                user("待替换 needle_replaced"),
+                stopped()
+            ),
+        );
+        assert!(fixture.sync().is_empty());
+        assert_eq!(fixture.search("needle_replaced"), vec![replaced.clone()]);
+
+        fs::remove_file(fixture.path(12)).unwrap();
+        std::os::unix::fs::symlink(fixture.path(11), fixture.path(12)).unwrap();
+
+        let diagnostics = fixture.sync();
+        assert!(diagnostics.iter().any(|d| d.starts_with(&replaced)));
+        assert!(fixture.search("needle_replaced").is_empty());
+        assert_eq!(fixture.search("needle_target"), vec![target]);
     }
 }

@@ -178,7 +178,10 @@ impl OpenAiClient {
         let accounting_id = attempts.accounting_id;
         let accounting_rate = attempts.accounting_rate;
         let prompt_tokens = if accounting_rate.is_some() {
-            pp_core::context::estimate_tokens(&wire).ok()
+            if attempts.prompt_tokens.is_none() {
+                attempts.prompt_tokens = pp_core::context::estimate_tokens(&wire).ok();
+            }
+            attempts.prompt_tokens
         } else {
             None
         };

@@ -46,10 +46,10 @@ impl Agent {
     pub(super) fn receive_lsp_diagnostics(
         &mut self,
         emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<()> {
+    ) -> Result<bool> {
         self.poll_lsp_diagnostics(emit)?;
         let Some(registry) = self.tools.lsp_registry() else {
-            return Ok(());
+            return Ok(false);
         };
         let pending: Vec<_> = self
             .tools
@@ -59,7 +59,7 @@ impl Agent {
             .filter(|delivery| !delivery.model_consumed)
             .collect();
         if pending.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let mut ids = Vec::with_capacity(pending.len());
         let mut text = String::from("LSP diagnostics (late):\n");
@@ -74,15 +74,17 @@ impl Agent {
                 text.push('\n');
             }
         }
+        let mut injected = false;
         if text != "LSP diagnostics (late):\n" {
             append_developer_to(&mut self.session, text);
+            injected = true;
         }
         self.journal.commit((&self.session).into())?;
         self.tools.lsp_owner.consumed(&ids);
         for id in ids {
             self.lsp_injected.remove(&id);
         }
-        Ok(())
+        Ok(injected)
     }
 
     pub(super) fn reset_lsp_diagnostics(&mut self) {

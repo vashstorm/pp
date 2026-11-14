@@ -242,6 +242,11 @@ impl Agent {
     }
 
     pub(in crate::agent) fn refresh_instructions(&mut self) -> Result<()> {
+        let _ = self.refresh_instructions_changed()?;
+        Ok(())
+    }
+
+    pub(in crate::agent) fn refresh_instructions_changed(&mut self) -> Result<bool> {
         let definitions = if self.tools.subagent.is_some() {
             Some(self.tools.all_definitions(self.workflow.mode))
         } else {
@@ -257,13 +262,12 @@ impl Agent {
             &self.current_model.model,
             names,
         )?;
-        if let Some(definitions) = definitions {
-            let before = serde_json::to_value(&self.session)?["request"]["tools"].clone();
-            self.session.set_tools(definitions);
-            let after = serde_json::to_value(&self.session)?["request"]["tools"].clone();
-            if before != after {
-                self.journal.tools_changed();
-            }
+        let mut session_changed = false;
+        if let Some(definitions) = definitions
+            && self.session.update_tools(definitions)
+        {
+            self.journal.tools_changed();
+            session_changed = true;
         }
         self.request_skills = skills;
         self.reported_project_load.retain(|path, _| {
@@ -286,7 +290,7 @@ impl Agent {
             Session::Response(request) => request.instructions.as_deref() == Some(system.as_str()),
         };
         if unchanged {
-            return Ok(());
+            return Ok(session_changed);
         }
         match &mut self.session {
             Session::Completion(request) => {
@@ -299,6 +303,6 @@ impl Agent {
             Session::Response(request) => request.instructions = Some(system.clone()),
         }
         self.pending_instructions = Some(system);
-        Ok(())
+        Ok(true)
     }
 }

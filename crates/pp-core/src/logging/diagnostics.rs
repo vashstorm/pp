@@ -66,7 +66,13 @@ pub struct FailureContext {
 impl FailureContext {
     pub fn push(&mut self, raw: &str) {
         self.count += 1;
-        let text = bounded(diagnostic_text(raw), 16 * 1024);
+        // 常规 SSE 分片延迟到失败落盘时再脱敏；超过单条上限的超大文本就地脱敏并截断，
+        // 避免直接截断原始串导致凭据跨边界漏出或占用过多内存。
+        let text = if raw.len() > 16 * 1024 {
+            bounded(diagnostic_text(raw), 16 * 1024)
+        } else {
+            raw.to_owned()
+        };
         while self.bytes + text.len() > MAX_DETAIL_BYTES || self.events.len() >= 32 {
             let Some(old) = self.events.pop_front() else {
                 break;
@@ -78,15 +84,31 @@ impl FailureContext {
         self.events.push_back(text);
     }
 
+    fn redacted_events(&self) -> Vec<String> {
+        let mut total = 0usize;
+        let mut recent = Vec::with_capacity(self.events.len());
+        for raw in self.events.iter().rev() {
+            let redacted = bounded(diagnostic_text(raw), 16 * 1024);
+            if !recent.is_empty() && total + redacted.len() > MAX_DETAIL_BYTES {
+                break;
+            }
+            total += redacted.len();
+            recent.push(redacted);
+        }
+        recent.reverse();
+        recent
+    }
+
     pub fn log<T>(&self, api: &str, model: &str, result: &anyhow::Result<T>, elapsed_ms: u64) {
         if let Err(error) = result
             && !error.is::<crate::cancellation::Cancelled>()
         {
+            let recent_events = self.redacted_events();
             tracing::error!(
                 event = "ai_request_failed", pid = std::process::id(), api, model,
                 elapsed_ms, error = diagnostic_text(&format!("{error:#}")),
                 received_events = self.count, dropped_events = self.dropped,
-                recent_events = ?self.events,
+                recent_events = ?recent_events,
             );
         }
     }
@@ -162,5 +184,23 @@ mod tests {
                 .unwrap()
                 .contains("diagnostics_panic_hook_records_context")
         );
+    }
+
+    #[test]
+    fn failure_context_lazy_redaction_masks_all_recent_events() {
+        register_secret("lazy-secret-xyz");
+        let mut context = FailureContext::default();
+        context.push(r#"{"token":"lazy-secret-xyz","authorization":"Bearer secret.tok"}"#);
+        context.push(&format!(
+            "{}access_token\":\"inline-tok\"",
+            "a".repeat(20 * 1024)
+        ));
+        let redacted = context.redacted_events();
+        assert_eq!(redacted.len(), 2);
+        for entry in &redacted {
+            assert!(!entry.contains("lazy-secret-xyz"), "{entry}");
+            assert!(!entry.contains("secret.tok"), "{entry}");
+        }
+        assert!(redacted[0].contains("[REDACTED]"));
     }
 }

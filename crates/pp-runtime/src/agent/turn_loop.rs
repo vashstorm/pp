@@ -42,10 +42,13 @@ impl Agent {
         );
         let mut stop_hook_active = false;
         let mut stop_continues = 0u8;
+        let mut cached_usage: Option<pp_core::context::ContextUsage> = None;
         loop {
             self.journal.check()?;
             self.ensure_subagents()?;
-            self.receive_subagents()?;
+            if self.receive_subagents()? {
+                cached_usage = None;
+            }
             if cancellation.is_cancelled() {
                 self.persist_pending_input(user.take())?;
                 return Err(Cancelled.into());
@@ -57,7 +60,9 @@ impl Agent {
             {
                 self.persist_pending_input(user.take())?;
             }
-            self.apply_runtime_models()?;
+            if self.apply_runtime_models_changed()? {
+                cached_usage = None;
+            }
             plan_sync::sync_plan_todos(
                 &self.tools,
                 &mut self.journal,
@@ -65,8 +70,12 @@ impl Agent {
                 emit,
                 true,
             )?;
-            self.refresh_instructions()?;
-            self.receive_lsp_diagnostics(emit)?;
+            if self.refresh_instructions_changed()? {
+                cached_usage = None;
+            }
+            if self.receive_lsp_diagnostics(emit)? {
+                cached_usage = None;
+            }
             // 补充边界：仅首次普通请求前，以及上一轮完整回复/整批工具结果成功提交之后。
             let claimed = match (input, claim_boundary) {
                 (Some(queue), true) => queue.claim_steering(false)?,
@@ -74,9 +83,13 @@ impl Agent {
             };
             claim_boundary = true;
             if !claimed.is_empty() {
+                cached_usage = None;
                 self.apply_pending(claimed, input, &mut user, cancellation, emit)?;
             }
-            let usage = self.context_usage()?;
+            let usage = match cached_usage.take() {
+                Some(usage) => usage,
+                None => self.context_usage()?,
+            };
             emit(AgentEvent::ContextUpdated { usage });
             let should_compact = usage.auto_compact
                 && usage.context_window.is_some_and(|window| {
@@ -175,11 +188,14 @@ impl Agent {
             if plan_dirty {
                 self.refresh_plan_progress(emit)?;
             }
-            self.publish_context(emit)?;
+            let usage = self.context_usage()?;
+            emit(AgentEvent::ContextUpdated { usage });
+            cached_usage = Some(usage);
             if self.tools.yielded.borrow().is_some() {
                 if let Some(binding) = self.tools.subagent.clone()
                     && binding.pending()
                 {
+                    cached_usage = None;
                     self.tools.yielded.borrow_mut().take();
                     self.wait_owned_subagents(cancellation)?;
                     append_developer_to(&mut self.session,"Owned background work completed after your submitted result. Review the new results and submit a fresh final yield.".into());
@@ -209,6 +225,7 @@ impl Agent {
                 text,
             } = finished
             {
+                cached_usage = None;
                 plan_sync::sync_plan_todos(
                     &self.tools,
                     &mut self.journal,

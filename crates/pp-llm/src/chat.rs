@@ -156,7 +156,10 @@ impl OpenAiClient {
         let accounting_id = attempts.accounting_id;
         let accounting_rate = attempts.accounting_rate;
         let prompt_tokens = if accounting_rate.is_some() {
-            pp_core::context::estimate_tokens(&wire).ok()
+            if attempts.prompt_tokens.is_none() {
+                attempts.prompt_tokens = pp_core::context::estimate_tokens(&wire).ok();
+            }
+            attempts.prompt_tokens
         } else {
             None
         };
@@ -214,6 +217,7 @@ impl OpenAiClient {
             };
             let mut stream = opened.map_err(|error| provider_failure(error, "Chat Completions"))?;
             stream_opened = true;
+            let mut chunk_buf = Vec::new();
             loop {
                 match cancellation.run_until_cancelled(stream.next()).await {
                     None => return Err(Cancelled.into()),
@@ -221,7 +225,12 @@ impl OpenAiClient {
                     Some(Some(chunk)) => {
                         let chunk =
                             chunk.map_err(|error| provider_failure(error, "Chat Completions"))?;
-                        failure_context.push(&chunk.to_string());
+                        chunk_buf.clear();
+                        if serde_json::to_writer(&mut chunk_buf, &chunk).is_ok()
+                            && let Ok(raw) = std::str::from_utf8(&chunk_buf)
+                        {
+                            failure_context.push(raw);
+                        }
                         output.push(ChatChunk::decode(chunk)?, &mut progress)?;
                     }
                 }

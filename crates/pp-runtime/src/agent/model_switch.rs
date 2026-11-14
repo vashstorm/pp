@@ -10,6 +10,11 @@ use pp_llm::OpenAiClient;
 
 impl Agent {
     pub fn apply_runtime_models(&mut self) -> Result<()> {
+        let _ = self.apply_runtime_models_changed()?;
+        Ok(())
+    }
+
+    pub(in crate::agent) fn apply_runtime_models_changed(&mut self) -> Result<bool> {
         if let Some(catalog) = self
             .runtime_models
             .as_ref()
@@ -36,26 +41,27 @@ impl Agent {
             .as_mut()
             .map(|binding| binding.take_targets())
         else {
-            return Ok(());
+            return Ok(false);
         };
         // 两次意图是独立提交，按 revision 顺序应用（旧者先、新者后），高 revision 的 effort 胜出。
         match (model, think) {
             (Some(model), Some(think)) if think.revision < model.revision => {
                 self.apply_think_target(&think);
-                self.apply_model_target(model)
+                self.apply_model_target(model)?;
+                Ok(true)
             }
             (Some(model), think) => {
                 self.apply_model_target(model)?;
                 if let Some(think) = &think {
                     self.apply_think_target(think);
                 }
-                Ok(())
+                Ok(true)
             }
             (None, Some(think)) => {
                 self.apply_think_target(&think);
-                Ok(())
+                Ok(true)
             }
-            (None, None) => Ok(()),
+            (None, None) => Ok(false),
         }
     }
 

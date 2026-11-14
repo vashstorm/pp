@@ -77,29 +77,57 @@ struct EstimateCount {
 
 impl Write for EstimateCount {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        for &b in bytes {
+        let mut i = 0;
+        while i < bytes.len() {
             if self.image {
-                if b == b'"' {
+                if let Some(rel) = bytes[i..].iter().position(|&b| b == b'"') {
                     self.image = false;
                     self.string = false;
                     self.bytes = self.bytes.saturating_add(1);
+                    i += rel + 1;
+                } else {
+                    break;
                 }
                 continue;
             }
-            self.bytes = self.bytes.saturating_add(1);
             if !self.string {
-                if b == b'"' {
+                if let Some(rel) = bytes[i..].iter().position(|&b| b == b'"') {
+                    self.bytes = self.bytes.saturating_add((rel + 1) as u64);
                     self.string = true;
                     self.candidate = true;
                     self.prefix.clear();
+                    i += rel + 1;
+                } else {
+                    self.bytes = self.bytes.saturating_add((bytes.len() - i) as u64);
+                    break;
                 }
                 continue;
             }
             if self.escaped {
                 self.escaped = false;
                 self.candidate = false;
+                self.bytes = self.bytes.saturating_add(1);
+                i += 1;
                 continue;
             }
+            if !self.candidate {
+                if let Some(rel) = bytes[i..].iter().position(|&b| b == b'"' || b == b'\\') {
+                    self.bytes = self.bytes.saturating_add((rel + 1) as u64);
+                    if bytes[i + rel] == b'\\' {
+                        self.escaped = true;
+                    } else {
+                        self.string = false;
+                    }
+                    i += rel + 1;
+                } else {
+                    self.bytes = self.bytes.saturating_add((bytes.len() - i) as u64);
+                    break;
+                }
+                continue;
+            }
+            let b = bytes[i];
+            i += 1;
+            self.bytes = self.bytes.saturating_add(1);
             if b == b'\\' {
                 self.escaped = true;
                 self.candidate = false;
@@ -109,17 +137,15 @@ impl Write for EstimateCount {
                 self.string = false;
                 continue;
             }
-            if self.candidate {
-                self.prefix.push(b);
-                let initial = b"data:image/";
-                if self.prefix.len() <= initial.len() {
-                    self.candidate = initial.starts_with(&self.prefix);
-                } else if self.prefix.ends_with(b";base64,") {
-                    self.image = true;
-                    self.bytes = self.bytes.saturating_add(4096 * 3);
-                } else if self.prefix.len() > 80 {
-                    self.candidate = false;
-                }
+            self.prefix.push(b);
+            let initial = b"data:image/";
+            if self.prefix.len() <= initial.len() {
+                self.candidate = initial.starts_with(&self.prefix);
+            } else if self.prefix.ends_with(b";base64,") {
+                self.image = true;
+                self.bytes = self.bytes.saturating_add(4096 * 3);
+            } else if self.prefix.len() > 80 {
+                self.candidate = false;
             }
         }
         Ok(bytes.len())
@@ -176,5 +202,23 @@ mod tests {
             estimate_tokens(&Invalid).unwrap_err().to_string(),
             "estimating context usage failed"
         );
+    }
+
+    #[test]
+    fn estimate_count_matches_across_chunk_boundaries() {
+        let payload = serde_json::json!([
+            {"text": "hello \"escaped\" \\n \\\"data:image/png;base64,not_an_image\\\""},
+            {"image_url": format!("data:image/jpeg;base64,{}", "B".repeat(512))},
+            {"tail": "data:image/not_base64_prefix_then_long_text"}
+        ]);
+        let serialized = serde_json::to_vec(&payload).unwrap();
+        let baseline = estimate_tokens(&payload).unwrap();
+        for chunk_size in [1usize, 3, 7, 32] {
+            let mut count = EstimateCount::default();
+            for chunk in serialized.chunks(chunk_size) {
+                count.write_all(chunk).unwrap();
+            }
+            assert_eq!(count.bytes.div_ceil(3), baseline, "chunk_size={chunk_size}");
+        }
     }
 }

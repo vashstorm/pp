@@ -54,6 +54,7 @@ pub(super) struct RequestAttempts {
     pub(super) summary: bool,
     pub(super) accounting_id: u64,
     pub(super) accounting_rate: Option<pp_config::models::ModelCost>,
+    pub(super) prompt_tokens: Option<u64>,
 }
 impl RequestAttempts {
     pub(super) fn new(budget: Duration) -> Self {
@@ -70,6 +71,7 @@ impl RequestAttempts {
             summary: false,
             accounting_id: 0,
             accounting_rate: None,
+            prompt_tokens: None,
         }
     }
     pub(super) fn finish<T>(&mut self, result: &Result<T>) {

@@ -252,32 +252,44 @@ impl Session {
     }
 
     fn set_tools(&mut self, definitions: Vec<async_openai::types::chat::FunctionObject>) {
+        let _ = self.update_tools(definitions);
+    }
+
+    /// 更新工具列表并返回是否发生实质变更；仅比较工具定义自身，避免序列化整段会话历史。
+    fn update_tools(
+        &mut self,
+        definitions: Vec<async_openai::types::chat::FunctionObject>,
+    ) -> bool {
         match self {
             Self::Completion(request) => {
-                request.tools = Some(
-                    definitions
-                        .into_iter()
-                        .map(|function| {
-                            ChatCompletionTools::Function(ChatCompletionTool { function })
-                        })
-                        .collect(),
-                );
+                let next: Vec<ChatCompletionTools> = definitions
+                    .into_iter()
+                    .map(|function| ChatCompletionTools::Function(ChatCompletionTool { function }))
+                    .collect();
+                let changed = request.tools.as_ref() != Some(&next);
+                if changed {
+                    request.tools = Some(next);
+                }
+                changed
             }
             Self::Response(request) => {
-                request.tools = Some(
-                    definitions
-                        .into_iter()
-                        .map(|function| {
-                            Tool::Function(FunctionTool {
-                                name: function.name,
-                                description: function.description,
-                                parameters: function.parameters,
-                                strict: function.strict,
-                                ..Default::default()
-                            })
+                let next: Vec<Tool> = definitions
+                    .into_iter()
+                    .map(|function| {
+                        Tool::Function(FunctionTool {
+                            name: function.name,
+                            description: function.description,
+                            parameters: function.parameters,
+                            strict: function.strict,
+                            ..Default::default()
                         })
-                        .collect(),
-                );
+                    })
+                    .collect();
+                let changed = request.tools.as_ref() != Some(&next);
+                if changed {
+                    request.tools = Some(next);
+                }
+                changed
             }
         }
     }
