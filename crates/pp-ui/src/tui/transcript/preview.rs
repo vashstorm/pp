@@ -26,6 +26,7 @@ impl Transcript {
                 Some(tool.to_owned()),
             );
             entry.body = EntryBody::ArgumentsPreview { truncated: false };
+            entry.cwd = self.cwd.clone();
             entry.status = EntryStatus::Running;
             entry.expanded = self.tools_expanded;
             self.read_groups_key = None;

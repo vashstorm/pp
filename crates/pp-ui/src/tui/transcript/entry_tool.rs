@@ -2,6 +2,32 @@
 
 use super::*;
 
+/// 只缩短工作目录内的路径；不访问磁盘，也不改变工具调用的原始参数。
+pub(super) fn display_path<'a>(cwd: Option<&std::path::Path>, path: &'a str) -> &'a str {
+    let Some(cwd) = cwd else { return path };
+    let Ok(relative) = std::path::Path::new(path).strip_prefix(cwd) else {
+        return path;
+    };
+    // 保留可能越出工作目录的路径，避免把外部文件显示为项目内文件。
+    let mut depth = 0usize;
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(_) => depth += 1,
+            std::path::Component::ParentDir => {
+                let Some(parent) = depth.checked_sub(1) else {
+                    return path;
+                };
+                depth = parent;
+            }
+            _ => {}
+        }
+    }
+    relative
+        .to_str()
+        .filter(|path| !path.is_empty())
+        .unwrap_or(path)
+}
+
 impl TranscriptEntry {
     pub(super) fn tool_accent(&self) -> Color {
         palette::tool_accent(self.tool.as_deref().unwrap_or_default())
@@ -150,6 +176,7 @@ impl TranscriptEntry {
         } else {
             self.edit_path()
         };
+        let path = display_path(self.cwd.as_deref(), path);
         let mut spans = vec![
             Span::styled(format!("{} {label}: ", palette::tool_icon(tool)), style),
             Span::styled(
@@ -198,6 +225,7 @@ impl TranscriptEntry {
             .and_then(|r| r["source"].as_str())
             .or_else(|| self.arguments["path"].as_str())
             .unwrap_or_default();
+        let path = display_path(self.cwd.as_deref(), path);
         let start = self.arguments["offset"].as_u64().unwrap_or(1);
         let count = self
             .result

@@ -19,6 +19,7 @@ impl TranscriptEntry {
             stdout: String::new(),
             stderr: String::new(),
             tool,
+            cwd: None,
             layout: None,
             expanded: false,
             footer: String::new(),

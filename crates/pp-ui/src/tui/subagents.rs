@@ -213,8 +213,11 @@ impl Panel {
         agent: &str,
         view: u64,
         anchor: Option<Anchor>,
-        transcript: super::Transcript,
+        mut transcript: super::Transcript,
     ) {
+        if let Some(agent) = self.projection.agent(agent) {
+            transcript = transcript.with_cwd(&agent.cwd);
+        }
         let mut detail = Detail::new(agent, view, transcript);
         if let Some(message) = self.agent_notices.remove(agent) {
             detail.notice = Some(message);

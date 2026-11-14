@@ -343,6 +343,10 @@ impl Transcript {
                     let label = palette::mcp_label(&name).unwrap_or_else(|| name.clone());
                     match detail {
                         Some(command) if name == "bash" => format!("$ {command}"),
+                        Some(path) if matches!(name.as_str(), "read" | "write" | "edit") => {
+                            let path = super::entry_tool::display_path(self.cwd.as_deref(), path);
+                            format!("{label} · {path}")
+                        }
                         Some(path) => format!("{label} · {path}"),
                         None => label,
                     }
@@ -358,6 +362,7 @@ impl Transcript {
                     format!("{} {title}", palette::tool_icon(&name))
                 };
                 let mut entry = TranscriptEntry::new(kind, title, String::new(), Some(name));
+                entry.cwd = self.cwd.clone();
                 entry.arguments = arguments.unwrap_or(Value::Null);
                 if entry.tool.as_deref() == Some("bash") && entry.arguments["mode"] != "background"
                 {

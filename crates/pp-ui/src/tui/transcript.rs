@@ -165,6 +165,7 @@ struct TranscriptEntry {
     stdout: String,
     stderr: String,
     tool: Option<String>,
+    cwd: Option<Arc<std::path::Path>>,
     layout: Option<Arc<EntryLayout>>,
     expanded: bool,
     footer: String,
@@ -236,6 +237,7 @@ struct BrowseAnchor {
 
 #[derive(Default)]
 pub(super) struct Transcript {
+    cwd: Option<Arc<std::path::Path>>,
     native_generation: u64,
     native: NativeState,
     native_preview: Option<NativeState>,
@@ -269,6 +271,7 @@ pub(super) struct Transcript {
 impl Transcript {
     pub(super) fn new() -> Self {
         Self {
+            cwd: std::env::current_dir().ok().map(Arc::from),
             native_generation: NEXT_NATIVE_GENERATION.fetch_add(1, Ordering::Relaxed),
             follow_bottom: true,
             bash_timeout_seconds: pp_config::config::ToolLimits::default().bash_timeout_seconds,
@@ -286,8 +289,14 @@ impl Transcript {
         }
     }
 
+    pub(super) fn with_cwd(mut self, cwd: &std::path::Path) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
+
     pub(super) fn fresh(&self) -> Self {
         Self {
+            cwd: self.cwd.clone(),
             bash_timeout_seconds: self.bash_timeout_seconds,
             ..Self::with_read_preview(self.display.read_preview)
         }

@@ -54,7 +54,8 @@ impl App {
             history_browser: false,
             conversation: Transcript::with_read_preview(
                 agent.as_ref().is_ok_and(Agent::read_tool_result_preview),
-            ),
+            )
+            .with_cwd(cwd),
             show_welcome: true,
             input: editor(),
             resources: Default::default(),

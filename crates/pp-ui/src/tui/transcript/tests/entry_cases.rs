@@ -610,3 +610,91 @@ fn ask_details_stay_in_messages_after_answering_and_resize() {
         }
     }
 }
+#[test]
+fn file_tool_paths_are_relative_inside_workspace_and_preserve_arguments() {
+    for (path, expected) in [
+        ("/project/AGENTS.md", "AGENTS.md"),
+        ("/project/src/中文 file.rs", "src/中文 file.rs"),
+        ("src/main.rs", "src/main.rs"),
+        ("/project-other/main.rs", "/project-other/main.rs"),
+        ("/external/main.rs", "/external/main.rs"),
+        (
+            "/project/../external/main.rs",
+            "/project/../external/main.rs",
+        ),
+    ] {
+        for name in ["read", "write", "edit"] {
+            let mut transcript = Transcript::new().with_cwd(std::path::Path::new("/project"));
+            let arguments = json!({"path": path});
+            tool(&mut transcript, "file", name, arguments.clone());
+            for finished in [false, true] {
+                if finished {
+                    transcript.progress(AgentEvent::ToolFinished {
+                        id: "file".into(),
+                        result: json!({"ok": true, "source": path, "content": "body", "bytes_written": 4}),
+                    });
+                }
+                let entry = &mut transcript.entries[0];
+                let header = if name == "read" {
+                    TranscriptEntry::read_summary(std::slice::from_ref(entry))[0].to_string()
+                } else if name == "edit" {
+                    entry.file_header().to_string()
+                } else {
+                    entry_text(entry, 200)
+                };
+                assert!(header.contains(expected), "{name}: {header}");
+                if expected != path {
+                    assert!(!header.contains(path), "{name}: {header}");
+                }
+                assert_eq!(entry.arguments, arguments);
+            }
+        }
+    }
+}
+
+#[test]
+fn file_tool_paths_shorten_result_sources_hashline_edits_and_previews() {
+    let mut transcript = Transcript::new().with_cwd(std::path::Path::new("/project"));
+    tool(
+        &mut transcript,
+        "read",
+        "read",
+        json!({"path": "AGENTS.md"}),
+    );
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "read".into(),
+        result: json!({"ok": true, "source": "/project/AGENTS.md", "content": "rules"}),
+    });
+    let header = TranscriptEntry::read_summary(&transcript.entries)[0].to_string();
+    assert!(header.contains("AGENTS.md"));
+    assert!(!header.contains("/project/"));
+    tool(
+        &mut transcript,
+        "edit",
+        "edit",
+        json!({"input": "[/project/src/main.rs#ABCD]\nPUT 1.=1:\n+new"}),
+    );
+    let header = transcript.entries[1].file_header().to_string();
+    assert!(header.contains("src/main.rs"));
+    assert!(!header.contains("/project/"));
+    for (index, name) in ["edit", "write"].into_iter().enumerate() {
+        transcript.preview_arguments(
+            index as u32,
+            name,
+            r#"{"path":"/project/src/预览.rs","content":"body"}"#,
+        );
+        let header = transcript.entries.last().unwrap().file_header().to_string();
+        assert!(header.contains("src/预览.rs"));
+        assert!(!header.contains("/project/"));
+    }
+    let mut fresh = transcript.fresh();
+    tool(
+        &mut fresh,
+        "read",
+        "read",
+        json!({"path": "/project/AGENTS.md"}),
+    );
+    let header = TranscriptEntry::read_summary(&fresh.entries)[0].to_string();
+    assert!(header.contains("AGENTS.md"));
+    assert!(!header.contains("/project/"));
+}
