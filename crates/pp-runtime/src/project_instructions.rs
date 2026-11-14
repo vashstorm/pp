@@ -36,7 +36,8 @@ impl State {
     pub(crate) fn new(cwd: &Path) -> Self {
         Self {
             cwd: cwd.to_owned(),
-            directories: BTreeSet::new(),
+            // 启动目录的祖先规则在首个请求前加载，后代目录仍按访问激活。
+            directories: BTreeSet::from([cwd.to_owned()]),
             current: Vec::new(),
             sent: Vec::new(),
             roots: BTreeSet::new(),

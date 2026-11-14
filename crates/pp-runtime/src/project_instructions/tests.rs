@@ -18,8 +18,6 @@ fn project_instructions_git_ancestor_chain_and_ignored_rules() {
     fs::write(root.join("crates/AGENTS.md"), "   ").unwrap();
     fs::write(root.join("crates/runtime/AGENTS.md"), "runtime-rule").unwrap();
     let mut state = State::new(&cwd);
-    assert!(state.refresh().unwrap().is_empty());
-    state.activate(cwd.clone()).unwrap();
     let documents = state.refresh().unwrap();
     assert_eq!(
         documents
@@ -119,17 +117,16 @@ fn project_instructions_rule_failures_never_become_empty_rules() {
     let path = root.join("AGENTS.md");
     fs::write(&path, [0xff]).unwrap();
     let mut state = State::new(&root);
-    assert!(state.activate(root.clone()).is_err());
+    assert!(state.refresh().is_err());
     fs::remove_file(&path).unwrap();
     fs::create_dir(&path).unwrap();
-    assert!(state.activate(root.clone()).is_err());
+    assert!(state.refresh().is_err());
     fs::remove_dir(&path).unwrap();
     fs::write(root.join("source"), "must-not-follow").unwrap();
     symlink(root.join("source"), &path).unwrap();
-    assert!(state.activate(root.clone()).is_err());
+    assert!(state.refresh().is_err());
     fs::remove_file(&path).unwrap();
     fs::write(path, "repaired").unwrap();
-    state.activate(root).unwrap();
     assert_eq!(state.refresh().unwrap()[0].content, "repaired");
 }
 

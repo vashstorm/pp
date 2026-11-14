@@ -1,7 +1,7 @@
-// 通过真实 PTY 验证规则按访问加载、普通 read 展示、展开和恢复。
+// 通过真实 PTY 验证启动规则加载、普通 read 展示、展开和恢复。
 
 #[test]
-fn instruction_reads_defer_rules_and_share_normal_preview_both_protocols() {
+fn instruction_reads_load_startup_rules_and_share_normal_preview_both_protocols() {
     for protocol in ["completion", "response"] {
         let fixture = server();
         let home = tempfile::tempdir().unwrap();
@@ -15,7 +15,7 @@ fn instruction_reads_defer_rules_and_share_normal_preview_both_protocols() {
         pty.ready();
         pty.input("read-rules-task\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(!project_instructions::system(&body, protocol).contains("agents-first-line"));
+        assert!(project_instructions::system(&body, protocol).contains("agents-first-line"));
         project_instructions::read_project_file(request, protocol, "AGENTS.md");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(project_instructions::system(&body, protocol).contains("agents-last-line"));
@@ -45,7 +45,7 @@ fn instruction_reads_defer_rules_and_share_normal_preview_both_protocols() {
         pty.ready();
         pty.input("after-new-task\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(!project_instructions::system(&body, protocol).contains("agents-first-line"));
+        assert!(project_instructions::system(&body, protocol).contains("agents-first-line"));
         project_instructions::finish_request(request, protocol, "new-read-done");
         pty.completed_after("new-read-done");
         pty.input("\x03");
@@ -78,9 +78,6 @@ fn agents_tui_init_submit_cancel_then_run_with_latest_rules_both_protocols() {
         no_more(&fixture);
         std::fs::write(cwd.path().join("AGENTS.md"), "tui-latest-project-rule").unwrap();
         pty.input("after-init-cancellation\r");
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
-        assert!(!project_instructions::system(&body, protocol).contains("tui-latest-project-rule"));
-        project_instructions::read_project_file(request, protocol, "AGENTS.md");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(project_instructions::system(&body, protocol).contains("tui-latest-project-rule"));
         project_instructions::finish_request(request, protocol, "agents-tui-done");
@@ -127,9 +124,6 @@ fn agents_tui_resume_history_keeps_current_directory_rules_both_protocols() {
         let system = project_instructions::system(&body, protocol);
         assert!(system.contains("current-append-only"));
         assert!(!system.contains("saved-source-only"));
-        assert!(!system.contains("current-directory-rule-refreshed"));
-        project_instructions::read_project_file(request, protocol, "AGENTS.md");
-        let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert_eq!(project_instructions::system(&body, protocol).matches("current-directory-rule-refreshed").count(), 1);
         assert!(!system.contains("saved-directory-rule"));
         assert!(body.to_string().contains("agents-saved-task"));

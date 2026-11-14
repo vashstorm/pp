@@ -88,9 +88,6 @@ fn system_prompt_cli_and_discovery_keep_literal_and_required_blocks_both_protoco
             args.extend(flags);
             let cli = Cli::spawn(cwd.path(), &args, &[]);
             let (request, body) = receive_for(&server, protocol);
-            assert!(!system(&body, protocol).contains("project rule {{unknown}}"));
-            let (request, body) =
-                super::project_instructions::activate_rules(&server, protocol, request);
             let text = system(&body, protocol);
             assert!(text.starts_with(base), "{text}");
             assert!(text.contains("project rule {{unknown}}"));
