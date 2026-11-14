@@ -70,6 +70,8 @@ impl Agent {
             replay.push(persistence::ReplayRecord::Event(snapshot));
         }
         let client = OpenAiClient::new(&config)?;
+        // hook 配置不从 checkpoint 恢复：始终使用当前进程的 settings。
+        let hooks = std::sync::Arc::new(crate::hooks::Runner::compile(&config.settings.hooks)?);
         tools.limits = checkpoint.tool_limits;
         // 恢复不承诺旧进程的临时管道正文：显式换一个空 registry。
         tools.reset_pipe_store();
@@ -131,6 +133,8 @@ impl Agent {
             plan_cleanup_error: None,
             plan_lease: None,
             lsp_injected: Default::default(),
+            hooks,
+            hook_agent_type: None,
         };
         if let Some(source) = &agent.prompt_source {
             let context = crate::system_prompt::RenderContext::new(

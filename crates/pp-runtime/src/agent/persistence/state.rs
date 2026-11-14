@@ -227,6 +227,34 @@ impl SessionJournal {
         Ok(())
     }
 
+    /// 第一次 hook 前建立有效 session：header 与 state 都是完整日志的前提。
+    /// 返回真实 session ID 与共享值表 transcript 路径。
+    pub(in crate::agent) fn prepare_hooks(
+        &mut self,
+        metadata: &Metadata<'_>,
+        session: SessionRef<'_>,
+        workflow: &WorkflowState,
+    ) -> Result<(String, std::path::PathBuf)> {
+        self.check()?;
+        self.ensure_active()?;
+        let first = !self
+            .active
+            .as_ref()
+            .expect("active journal after ensure_active")
+            .header_written;
+        if first {
+            self.checkpoint(metadata, session, workflow)?;
+        }
+        let id = self
+            .active
+            .as_ref()
+            .expect("active journal after ensure_active")
+            .id
+            .clone();
+        let transcript = self.dir.join(format!("{id}.jsonl"));
+        Ok((id, transcript))
+    }
+
     pub(super) fn ensure_active(&mut self) -> Result<()> {
         if self.active.is_some() {
             return Ok(());

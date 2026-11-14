@@ -125,7 +125,7 @@ impl Tool {
         json!({"calls":self.calls,"args_chars":self.args,"tokens":if self.calls == 0 {Some(0.0)} else {self.tokens},"output_tokens":if self.calls == 0 {Some(0.0)} else {self.output},
             "usage_known":self.usage_known,"cost":if self.priced > 0 || self.calls == 0 {Some(self.cost)} else {None},
             "priced":self.priced,"unpriced":self.calls-self.priced,"last_seen":self.last,
-            "errors":null,"cancelled":null,"executions":null,"result_chars":null,"avg_duration_ms":null,
+            "errors":null,"cancelled":null,"executions":null,"result_chars":null,"result_calls":0,"avg_duration_ms":null,
             "buckets":self.buckets.iter().map(|(t, c)| json!({"timestamp":t,"requests":c})).collect::<Vec<_>>(),
             "recent":self.recent})
     }
@@ -138,12 +138,18 @@ struct Execution {
     errors: u64,
     cancelled: u64,
     duration: f64,
+    result_chars: u64,
+    result_calls: u64,
     error_buckets: BTreeMap<i64, u64>,
 }
 impl Execution {
-    fn push(&mut self, status: &str, duration: f64, bucket: i64) {
+    fn push(&mut self, status: &str, duration: f64, bucket: i64, result_chars: Option<u64>) {
         self.recorded += 1;
         self.duration += duration;
+        if let Some(chars) = result_chars {
+            self.result_chars += chars;
+            self.result_calls += 1;
+        }
         match status {
             "error" => {
                 self.errors += 1;
@@ -161,6 +167,8 @@ impl Execution {
         value["errors"] = json!(self.errors);
         value["cancelled"] = json!(self.cancelled);
         value["avg_duration_ms"] = json!(self.duration / self.recorded as f64);
+        value["result_calls"] = json!(self.result_calls);
+        value["result_chars"] = json!((self.result_calls > 0).then_some(self.result_chars));
         value["error_buckets"] = json!(
             self.error_buckets
                 .iter()
@@ -254,7 +262,7 @@ impl Store {
         let mut model_executions = BTreeMap::<(String, String), Execution>::new();
         let mut execution_summary = Execution::default();
         let mut tool_statement = self.conn.prepare(
-            "SELECT tool,request_key,status,duration_ms,timestamp FROM tool_calls WHERE timestamp>=?1 AND timestamp<=?2",
+            "SELECT tool,request_key,status,duration_ms,timestamp,result_chars FROM tool_calls WHERE timestamp>=?1 AND timestamp<=?2",
         )?;
         let mut tool_rows = tool_statement.query(params![range.since(now), now])?;
         while let Some(tool_row) = tool_rows.next()? {
@@ -263,16 +271,21 @@ impl Store {
             let status: String = tool_row.get(2)?;
             let duration: f64 = tool_row.get(3)?;
             let slot = bucket(tool_row.get(4)?, range)?;
-            execution_summary.push(&status, duration, slot);
+            let result_chars = tool_row
+                .get::<_, Option<i64>>(5)?
+                .map(u64::try_from)
+                .transpose()
+                .context("tool result length is negative")?;
+            execution_summary.push(&status, duration, slot, result_chars);
             executions
                 .entry(tool.clone())
                 .or_default()
-                .push(&status, duration, slot);
+                .push(&status, duration, slot, result_chars);
             if let Some(reference) = key.as_ref().and_then(|key| requests_by_key.get(key)) {
                 model_executions
                     .entry((tool, reference.clone()))
                     .or_default()
-                    .push(&status, duration, slot);
+                    .push(&status, duration, slot, result_chars);
             }
         }
         let tools: Vec<_> = tools
@@ -321,6 +334,81 @@ mod tests {
     use crate::Rates;
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn stats_tool_result_totals_keep_unknown_and_zero_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let session = dir.path().join("session.jsonl");
+        for (key, model) in [("one", "first"), ("two", "second")] {
+            let mut request = fixture(key, now - 1000);
+            request.model_reference = model.into();
+            store
+                .insert(
+                    &request,
+                    &json!({"tool_calls":[
+                        {"function":{"name":"read","arguments":"{}"}},
+                        {"function":{"name":"read","arguments":"{}"}}
+                    ]}),
+                )
+                .unwrap();
+        }
+        for (id, key, chars) in [
+            ("zero", "one", Some(0)),
+            ("updated", "one", Some(99)),
+            ("updated", "one", Some(12)),
+            ("legacy", "two", None),
+            ("error", "two", Some(18)),
+        ] {
+            let mut call = tool_call(
+                &session,
+                id,
+                "read",
+                crate::ToolStatus::Error,
+                None,
+                now,
+                1.0,
+            );
+            call.request_key = Some(key);
+            call.result_chars = chars;
+            store.tool(&call).unwrap();
+        }
+        let mut old = tool_call(
+            &session,
+            "old",
+            "read",
+            crate::ToolStatus::Ok,
+            None,
+            now - 3_600_001,
+            1.0,
+        );
+        old.result_chars = Some(999);
+        store.tool(&old).unwrap();
+        let data = store.tools(Range::Hour, now).unwrap();
+        assert_eq!(data["summary"]["result_chars"], 30);
+        assert_eq!(data["summary"]["result_calls"], 3);
+        let read = &data["tools"][0];
+        assert_eq!(read["calls"], 4);
+        assert_eq!(read["executions"], 4);
+        assert_eq!(read["result_chars"], 30);
+        assert_eq!(read["result_calls"], 3);
+        assert_eq!(read["models"][0]["result_chars"], 12);
+        assert_eq!(read["models"][0]["result_calls"], 2);
+        assert_eq!(read["models"][1]["result_chars"], 18);
+        assert_eq!(read["models"][1]["result_calls"], 1);
+        store
+            .conn
+            .execute("UPDATE tool_calls SET result_chars=NULL", [])
+            .unwrap();
+        let legacy = store.tools(Range::Hour, now).unwrap();
+        assert!(legacy["summary"]["result_chars"].is_null());
+        assert_eq!(legacy["tools"][0]["result_calls"], 0);
+        assert!(legacy["tools"][0]["models"][0]["result_chars"].is_null());
+        let empty = store.tools(Range::Hour, now - 7_200_000).unwrap();
+        assert!(empty["summary"]["result_chars"].is_null());
+        assert_eq!(empty["summary"]["result_calls"], 0);
+    }
 
     #[test]
     fn stats_insights_count_both_protocols_without_double_counting_or_leaking_payloads() {

@@ -717,6 +717,90 @@ fn stats_chat_captures_metrics_first_request_context_and_tool_calls() {
 }
 
 #[test]
+fn stats_tool_result_text_matches_model_context_in_both_protocols() {
+    for responses in [false, true] {
+        let server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let models = if responses {
+            response_models(&server, Some("response"))
+        } else {
+            fixture_models(&server)
+        };
+        let cli = Cli::start_with(
+            dir.path(),
+            Some("tool result text"),
+            fixture_settings(),
+            &models,
+        );
+        let endpoint = if responses {
+            "/v1/responses"
+        } else {
+            "/v1/chat/completions"
+        };
+        let (request, _) = receive_at(&server, endpoint);
+        let args = json!({"command":"printf '中😀'"});
+        if responses {
+            response_reply(
+                request,
+                json!([response_call("stats-result", "bash", args)]),
+            );
+        } else {
+            calls_reply(request, json!([call("stats-result", "bash", args)]));
+        }
+        let (request, body) = receive_at(&server, endpoint);
+        let result = if responses {
+            body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["type"] == "function_call_output")
+                .unwrap()["output"]
+                .as_str()
+                .unwrap()
+        } else {
+            body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["role"] == "tool")
+                .unwrap()["content"]
+                .as_str()
+                .unwrap()
+        };
+        let chars = result.chars().count() as u64;
+        assert!(result.len() > chars as usize);
+        let value: Value = serde_json::from_str(result).unwrap();
+        assert!(value.get("shell").is_none());
+        if responses {
+            response_final(request, "done");
+        } else {
+            final_reply(request, "done");
+        }
+        let output = cli.finish();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stored = database(dir.path())
+            .query_row(
+                "SELECT result_chars FROM tool_calls WHERE call_id='stats-result'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(stored as u64, chars);
+        let (_stats, address) = start_stats_server(dir.path());
+        let (status, body) = http(&address, "/api/stats/tools?range=all", &address);
+        assert_eq!(status, 200);
+        let data: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(data["summary"]["result_chars"], chars);
+        assert_eq!(data["summary"]["result_calls"], 1);
+        assert_eq!(data["tools"][0]["models"][0]["result_chars"], chars);
+    }
+}
+
+#[test]
 fn stats_tool_failures_are_recorded_and_served_by_tools() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
@@ -731,7 +815,17 @@ fn stats_tool_failures_are_recorded_and_served_by_tools() {
         request,
         json!([call("read-missing", "read", json!({"path":"missing.txt"}))]),
     );
-    let (request, _) = receive(&server);
+    let (request, body) = receive(&server);
+    let result_chars = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .chars()
+        .count() as u64;
     final_reply(request, "recovered after tool failure");
     let output = cli.finish();
     assert!(
@@ -742,7 +836,7 @@ fn stats_tool_failures_are_recorded_and_served_by_tools() {
     let db = database(dir.path());
     let records: Vec<Value> = db
         .prepare(
-            "SELECT tool,call_id,status,error_message,session_file,request_key FROM tool_calls",
+            "SELECT tool,call_id,status,error_message,session_file,request_key,result_chars FROM tool_calls",
         )
         .unwrap()
         .query_map([], |row| {
@@ -753,6 +847,7 @@ fn stats_tool_failures_are_recorded_and_served_by_tools() {
                 "error": row.get::<_, Option<String>>(3)?,
                 "session": row.get::<_, Option<String>>(4)?,
                 "request_key": row.get::<_, String>(5)?,
+                "result_chars": row.get::<_, i64>(6)?,
             }))
         })
         .unwrap()
@@ -763,6 +858,7 @@ fn stats_tool_failures_are_recorded_and_served_by_tools() {
     assert_eq!(record["tool"], "read");
     assert_eq!(record["call_id"], "read-missing");
     assert_eq!(record["status"], "error");
+    assert_eq!(record["result_chars"], result_chars);
     assert!(record["error"].as_str().unwrap().contains("missing.txt"));
     assert!(record["session"].as_str().unwrap().ends_with(".jsonl"));
     assert!(!record["request_key"].as_str().unwrap().is_empty());
@@ -789,6 +885,8 @@ fn stats_tool_failures_are_recorded_and_served_by_tools() {
     let tools: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(tools["summary"]["errors"], 1);
     assert_eq!(tools["summary"]["executions"], 1);
+    assert_eq!(tools["summary"]["result_chars"], result_chars);
+    assert_eq!(tools["summary"]["result_calls"], 1);
     let read = tools["tools"]
         .as_array()
         .unwrap()
@@ -799,6 +897,8 @@ fn stats_tool_failures_are_recorded_and_served_by_tools() {
     assert_eq!(read["errors"], 1);
     assert_eq!(read["executions"], 1);
     assert_eq!(read["models"][0]["errors"], 1);
+    assert_eq!(read["result_chars"], result_chars);
+    assert_eq!(read["models"][0]["result_chars"], result_chars);
     assert!(read["avg_duration_ms"].as_f64().is_some());
 }
 
@@ -1523,6 +1623,7 @@ fn stats_server_preserves_method_security_and_headers() {
         ("/stats.css", "text/css"),
         ("/ui.css", "text/css"),
         ("/traces.css", "text/css"),
+        ("/modern.css", "text/css"),
         ("/stats.js", "text/javascript"),
         ("/activity.js", "text/javascript"),
         ("/insights.js", "text/javascript"),

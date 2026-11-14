@@ -336,6 +336,7 @@ mod tests {
                     error_message: error,
                     timestamp,
                     duration_ms,
+                    result_chars: None,
                 })
                 .unwrap();
         }

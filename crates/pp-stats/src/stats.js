@@ -295,6 +295,14 @@ function applyTheme() {
     `${theme[0].toUpperCase() + theme.slice(1)} theme (click to switch)`,
   );
   $("theme").title = `${theme[0].toUpperCase() + theme.slice(1)} theme — click to switch`;
+  if (typeof traceRedraw === "function") traceRedraw();
+  if (
+    document.documentElement.dataset.style === "modern" &&
+    (data || requestData) &&
+    !(page === "traces" && traceRequest)
+  ) {
+    render();
+  }
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   if (theme === "system") applyTheme();
@@ -316,7 +324,9 @@ function applyStyle() {
   const next = style === "modern" ? "Default" : "Modern";
   $("style").innerHTML = icon(style === "modern" ? "styleModern" : "styleDefault", 15);
   $("style").setAttribute("aria-label", `${label} style (click to switch to ${next})`);
-  $("style").title = `${label} style — click to switch to ${next}. Modern appearance is coming soon.`;
+  $("style").title = `${label} style — click to switch to ${next}`;
+  if (typeof traceRedraw === "function") traceRedraw();
+  if ((data || requestData) && !(page === "traces" && traceRequest)) render();
 }
 async function requestStyle(next) {
   const response = await fetch("/api/stats/style", {
@@ -349,7 +359,7 @@ $("style").onclick = async () => {
   if (!styleReady) return loadStyle();
   try {
     await requestStyle(style === "default" ? "modern" : "default");
-    toast(style === "modern" ? "Modern selected. Its appearance is coming soon; using Default for now." : "Default style saved.");
+    toast(style === "modern" ? "Modern style saved." : "Default style saved.");
   } catch (error) {
     toast(error.message);
   } finally {
@@ -711,7 +721,14 @@ const PROVIDER_TOP = 6,
     ["cached_tokens", "Cache read", "var(--chart-primary)"],
     ["cache_write_tokens", "Cache write", "#f5b54a"],
     ["output_tokens", "Output", "var(--chart-secondary)"],
+  ],
+  PROVIDER_MIX_MODERN = [
+    ["uncached_tokens", "Uncached input", "var(--chart-primary)"],
+    ["cached_tokens", "Cache read", "var(--ok)"],
+    ["cache_write_tokens", "Cache write", "var(--chart-secondary)"],
+    ["output_tokens", "Output", "var(--pink)"],
   ];
+const providerMixSeries = () => (style === "modern" ? PROVIDER_MIX_MODERN : PROVIDER_MIX);
 const MODEL_SHARE_LIMIT = 6,
   MODEL_LIMIT = 25;
 let expandedGroups = new Set(),
@@ -934,12 +951,13 @@ function resetModels() {
 }
 /** 颜色按总请求数降序固定分配，排序与筛选不改变色带。 */
 function modelColors(groups) {
+  const palette = toolSeriesColors();
   return new Map(
     [...groups]
       .sort((a, b) => (b.requests ?? 0) - (a.requests ?? 0) || modelKeyOf(a).localeCompare(modelKeyOf(b)))
       .map((group, index) => [
         modelKeyOf(group),
-        TOOL_SERIES_COLORS[index % TOOL_SERIES_COLORS.length],
+        palette[index % palette.length],
       ]),
   );
 }
@@ -1435,12 +1453,13 @@ const providerBucketUnit = () =>
   range === "1h" ? "5 minutes" : range === "24h" ? "hour" : "day";
 /** 颜色按总 tokens 降序固定分配，排序与筛选不改变色带。 */
 function providerColors(groups) {
+  const palette = toolSeriesColors();
   return new Map(
     [...groups]
       .sort((a, b) => (b.tokens ?? 0) - (a.tokens ?? 0) || a.provider.localeCompare(b.provider))
       .map((group, index) => [
         group.provider,
-        TOOL_SERIES_COLORS[index % TOOL_SERIES_COLORS.length],
+        palette[index % palette.length],
       ]),
   );
 }
@@ -1591,14 +1610,15 @@ function providerSortedRows(rows, columns) {
   });
 }
 function providerMix(group) {
-  const known = sum(PROVIDER_MIX.map(([key]) => group[key] ?? 0)) ?? 0;
-  const segments = PROVIDER_MIX.filter(([key]) => (group[key] ?? 0) > 0)
+  const mix = providerMixSeries();
+  const known = sum(mix.map(([key]) => group[key] ?? 0)) ?? 0;
+  const segments = mix.filter(([key]) => (group[key] ?? 0) > 0)
     .map(
       ([key, label, color]) =>
         `<div class="x-share-bar-seg" style="flex-grow:${(group[key] ?? 0) / known};background:${color}" title="${h(label)}: ${((100 * (group[key] ?? 0)) / known).toFixed(1)}%"></div>`,
     )
     .join("");
-  const items = PROVIDER_MIX.map(
+  const items = mix.map(
     ([key, label, color]) =>
       `<span class="x-legend-item" title="${h(label)}"><span class="x-swatch" style="background:${color}"></span><span class="x-truncate">${h(label)}</span><span class="x-legend-value">${short(group[key])} · ${(group.tokens ?? 0) > 0 ? toolPercent((group[key] ?? 0) / group.tokens, 0) : "–"}</span></span>`,
   ).join("");

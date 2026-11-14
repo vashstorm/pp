@@ -143,6 +143,8 @@ impl SessionJournal {
                 | AgentEvent::CompactionStarted { .. }
                 | AgentEvent::CompactionFinished { .. }
                 | AgentEvent::UserInputAccepted { .. }
+                | AgentEvent::UserInputRejected { .. }
+                | AgentEvent::HookDiagnostic { .. }
                 | AgentEvent::ModelRequestStarted
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }
@@ -172,7 +174,7 @@ impl SessionJournal {
             }
             AgentEvent::ToolFinished { id, result } => {
                 if let Some((tool, started)) = self.tool_started.remove(id) {
-                    self.record_tool(&tool, id, result, started.elapsed().as_secs_f64() * 1000.0);
+                    self.tool_finished(&tool, id, result, started.elapsed());
                 }
             }
             _ => {}

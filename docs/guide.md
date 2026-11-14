@@ -115,7 +115,7 @@ debug: false
 edit: replace
 # 统计页面风格，也可通过页面顶部 Style 按钮保存
 stats:
-  style: default # default 或 modern；modern 暂沿用现有外观
+  style: default # default 或 modern
 # 所有正常画面的最大帧率，整数 1..=120；修改后重启生效
 tui:
   max_fps: 60
@@ -986,6 +986,35 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 取消回归通过真实 loopback HTTP、PTY 和进程组验证：两协议 headers 前／SSE 空闲取消在下一任务前关闭旧连接，write→bash→write 保留已完成结果并补齐未执行调用，MCP 仅在下一任务调用时重建并拒绝 schema 变化，重建中 Ctrl + C 仍回收替换进程；取消终态可恢复为 aborted，后续完成可变为 done，持久化失败不误报取消。独立 100×30 实际 TUI smoke 使用临时 Python loopback fixture：TERM-resistant bash 两个受控 PID 均停止，中文草稿和光标保留，下一任务收到 `cancelled:true, timed_out:false` 与原 stdout 并回复 `smoke recovered`，共两次 HTTP，最后 Ctrl + C 以 0 退出并恢复终端属性。未使用真实供应商，Linux 未在本次环境实机验证。
 
 
+### 生命周期 hooks
+
+`hooks` 只从用户级 `~/.pp/agent/settings.yml` 读取，不读取项目 `.pp`、`.claude`、插件或 frontmatter；配置在进程内冻结，修改后需重启 pp。只支持 `type: command` 的外部命令，支持 `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop` 五个事件。
+
+```yaml
+hooks:
+  PreToolUse:
+    - matcher: '^(bash|write|edit)$'
+      hooks:
+        - type: command
+          command: '/absolute/path/check-tool.sh'
+          timeout: 30
+  Stop:
+    - hooks:
+        - type: command
+          command: '/absolute/path/check-completion.sh'
+```
+
+- `command` 不得为空白；给出 `args` 时直接 exec（不经 shell，空格不被拆分），否则执行 `bash --noprofile --norc -c`。子进程工作目录是事件 `cwd`，继承环境但移除 `BASH_ENV`；宿主 cwd 与环境不变，不注入 `CLAUDE_*`。`timeout` 默认 30 秒，允许 1–3600；`onFailure` 只接受 `block`／`continue`。
+- `matcher` 只对三个工具事件生效，按 pp 原生工具名匹配：缺省、空串与 `*` 匹配全部；只含字母数字、`_`、`-`、空格、逗号、`|` 的写法是逗号／`|` 分割的精确名称列表；其余按 Rust `regex`（区分大小写、未锚定）编译。不要在 `UserPromptSubmit`／`Stop` 上写名称或正则。无效正则阻止 Agent 构造，错误只报事件名与下标。
+- 资格：根 Agent 的 Execute 拿到全部五个事件，可写子 Agent 只有三个工具事件；Plan、Review、只读子 Agent、人工 `run_shell`、任务标题与压缩请求都不启动任何 hook 进程。`bash` 等人工命令不会命中工具事件。
+- stdin 是一个 JSON 对象，公共字段为 `session_id`、`transcript_path`（pp 自己的共享值表 JSONL，不是 Claude transcript）、`cwd`、`permission_mode`（`bypassPermissions`／`acceptEdits`／`default`）与 `hook_event_name`；`UserPromptSubmit` 带 `prompt`，工具事件带 `tool_name`、`tool_input`、`tool_use_id`（子 Agent 另带 `agent_id`、`agent_type`），post 事件另带 pp 原生 JSON `tool_response` 或 `error`，`Stop` 带 `stop_hook_active` 与 `last_assistant_message`。
+- stdout 为空表示没有决定；`{`／`[` 开头的输出按 JSON 对象解析，损坏、尾部多余文本或非对象都是协议错误。普通文本只有 `UserPromptSubmit` 会作为额外上下文注入。决定字段为顶层 `continue`、`stopReason`、`systemMessage`、`decision`、`reason`，以及 `hookSpecificOutput` 内的 `hookEventName`、`permissionDecision`、`permissionDecisionReason`、`updatedInput`、`additionalContext`、`updatedToolOutput`。未知或不适用于该事件的字段、非对象 `updatedInput`／`updatedToolOutput`、`updatedMCPToolOutput` 与 `defer` 都被明确拒绝。顶层 `decision:"block"` 缺少 `reason` 时仍按默认拒绝理由阻止执行（`PostToolUse` 作为模型反馈注入）。`stopReason` 只作为 `continue:false` 的停止理由，单独出现不停止任务；空白理由回落到固定默认理由。
+- 退出码 `0` 表示按 JSON 决定；`2` 表示拒绝（`UserPromptSubmit` 拒绝输入、`PreToolUse` 拒绝工具、`Stop` 用 stderr 理由续跑、post 只注入 stderr 反馈）；其他退出码、启动失败、超时、输出超限与协议错误在控制点默认阻止任务，post 默认告警并保留原结果，`onFailure` 可显式改判。取消与无法确认回收的进程组错误永远停止任务。
+- 同一事件按配置顺序串行执行：`PreToolUse` 各 handler 看到同一份原始调用，最后一个有效 `updatedInput` 生效；`PostToolUse` 看到上一个 handler 修订后的结果，`updatedToolOutput` 只能改模型所见 JSON，`ok`／`cancelled` 必须保持原值且不能凭空新增，图片结果的 `kind:"image"` 必须保留（缺失补回、改值拒绝），真实工具状态、卡片与文件不变；统计的 `result_chars` 按改写后的模型文本采集。`additionalContext` 按顺序累计，在整批工具结果之后作为 developer 消息追加；`UserPromptSubmit` 的上下文跟随该条输入一起提交。
+- `permissionDecision: allow` 只表示 hook 不拦截，不跳过 pp 原有的审批与会话授权；`deny` 在审批门之前生效，YOLO 也不能绕过；`ask` 强制一次审批（无交互界面时工具失败），YOLO 与已有会话授权都不能跳过它，非 YOLO 下用户的显式 `deny` 仍然优先。
+- `Stop` 只在根 Execute 的自然完成候选上执行：等待用户答复、错误、取消与子 Agent 最终结果都不触发。`decision:"block"`、非空 `additionalContext` 或 exit 2 请求再跑一轮，理由进入原生 developer 历史；脚本执行期间队列保持开放，新到的用户输入优先于旧的续跑请求。`continue:false` 是任务级停止，先于补充输入生效：输入保持待处理，不再请求模型。每次任务最多 8 次 hook 续跑，超限以 `Stop hook continuation limit reached (8).` 失败而不伪报完成。
+- 注入文本每条上限 10,000 字符（按字符边界截断），诊断先遮蔽凭据再净化控制字符；日志只记录事件、handler 下标、状态、耗时与有界诊断，不记录命令原文与完整 stdin/stdout。脚本以当前用户权限运行，不是沙箱；它造成的文件改动不进入 edit/write 的原子提交或撤销保证，显式脱离进程组的 daemon 也不在回收保证内。
+
 ### Bash 输出与 artifact 资源
 
 测试、构建和检查直接执行原命令。不要为了缩短输出追加 `head`／`tail`／`grep` 管道或重定向；确有功能需要的管道仍应使用 `set -o pipefail` 并检查退出码。
@@ -1051,9 +1080,9 @@ Errors 按归一化的错误签名聚合失败请求：签名把 UUID、带前�
 
 各页表格、趋势线、柱状／堆叠图、Token／费用构成及会话时间线支持悬停详情；表格单元格和图表时间桶也可通过键盘聚焦查看，Esc 隐藏提示。详情保留完整数值、时间或路径，堆叠图展示当前可见系列及合计，零值时间桶也可查看；切换页面、滚动或刷新会关闭旧提示。
 
-Traces 按会话展示会话摘要标题（没有摘要时回落会话 ID）、请求数量、模型、失败数、Token 和费用，点击会话查看完整已记录会话的请求时间线；时间线色块与请求项均可点击展开，支持全部展开／收起；正文、思考与工具参数不采集，原始请求 JSON 仅在首次请求快照中提供。请求详情的 Trace 链接可直接定位并展开对应请求。Errors 的签名分组、模型分布与四个指标都按已加载的行计算，默认加载最新 50 条失败，页脚可按 200／1000 递增加载；Traces 列表指标覆盖范围内请求并默认加载最新 500 个会话、可扩大为 2,000，搜索只作用于已加载列表。单个会话详情不受列表范围限制，自动刷新保留展开状态。无会话记录的请求独立展示，不合并为同一会话。Traces 仅使用统计库快照，不读取原始会话文件；新 session 的首次请求上下文包含当次输入，其余请求不额外保存完整输入。工具执行状态与耗时由运行时在工具完成边界采集，工具结果正文／字符数及子代理跨度未独立采集，页面不推算这些数据。Tools 和 Projects 提供独立统计页面（见下）；Frustration 和 Gain 暂为占位。顶部 Style 按钮在 `default`（现有风格，默认）与 `modern` 之间切换，选择通过同源接口原子保存到 `~/.pp/agent/settings.yml` 的 `stats.style`，刷新页面或重启服务后恢复；Modern 暂未实现独立外观，仍沿用 Default，并在切换时提示。其他配置保持不变，损坏配置不会被覆盖，保存失败时保留当前选择。明暗／系统主题独立于风格。支持数字 1–6 切换范围、G 加导航字母跳转。页面每 5 秒刷新，点击 Live 立即刷新。
+Traces 按会话展示会话摘要标题（没有摘要时回落会话 ID）、请求数量、模型、失败数、Token 和费用，点击会话查看完整已记录会话的请求时间线；时间线色块与请求项均可点击展开，支持全部展开／收起；正文、思考与工具参数不采集，原始请求 JSON 仅在首次请求快照中提供。请求详情的 Trace 链接可直接定位并展开对应请求。Errors 的签名分组、模型分布与四个指标都按已加载的行计算，默认加载最新 50 条失败，页脚可按 200／1000 递增加载；Traces 列表指标覆盖范围内请求并默认加载最新 500 个会话、可扩大为 2,000，搜索只作用于已加载列表。单个会话详情不受列表范围限制，自动刷新保留展开状态。无会话记录的请求独立展示，不合并为同一会话。Traces 仅使用统计库快照，不读取原始会话文件；新 session 的首次请求上下文包含当次输入，其余请求不额外保存完整输入。工具执行状态、耗时与结果文本字符数由运行时在工具完成边界采集；工具结果正文及子代理跨度未独立采集，页面不推算这些数据。Tools 和 Projects 提供独立统计页面（见下）；Frustration 和 Gain 暂为占位。顶部 Style 按钮在 `default`（默认）与 `modern`（Precision Telemetry 风格，含浅色/深色适配与协调图表色板）之间切换，选择通过同源接口原子保存到 `~/.pp/agent/settings.yml` 的 `stats.style`，刷新页面或重启服务后恢复。其他配置保持不变，损坏配置不会被覆盖，保存失败时保留当前选择。明暗／系统主题独立于风格。支持数字 1–6 切换范围、G 加导航字母跳转。页面每 5 秒刷新，点击 Live 立即刷新。
 
-Tools 展示模型发出的工具调用数量、趋势、参数字符数及归属 Token／费用；工具行和模型行可逐层展开，最近调用请求可打开原有详情，也支持搜索、按工具筛选和图例开关。调用在请求边界随指标一起写入统计库，只记录工具名与参数字符数，不从正文反推，同一请求不重复计数。每次模型请求的 Token／费用均分到该请求发出的全部工具调用，仅表示归属估算，不是工具独立费用。失败／取消请求的已保存调用可能不完整或未执行；工具错误数与平均耗时来自运行时实际执行记录，取消单独计数，旧记录没有执行数据时显示为空而不是 0。
+Tools 展示模型发出的工具调用数量、趋势、参数字符数及归属 Token／费用；工具行和模型行可逐层展开，最近调用请求可打开原有详情，也支持搜索、按工具筛选和图例开关。调用在请求边界随指标一起写入统计库，只记录工具名与参数字符数，不从正文反推，同一请求不重复计数。每次模型请求的 Token／费用均分到该请求发出的全部工具调用，仅表示归属估算，不是工具独立费用。失败／取消请求的已保存调用可能不完整或未执行；工具错误数与平均耗时来自运行时实际执行记录，取消单独计数，旧记录没有执行数据时显示为空而不是 0。Result text 汇总已采集的工具结果文本字符数，按实际回填给模型的 JSON 文本计算 Unicode 字符，排除 Bash 的 shell 展示字段和独立图片附件，不保存结果正文。Avg result per call 仅以有结果字符数的调用为分母，两个指标都标明已采集的调用数；旧记录不回填，未知保持为空，未执行的调用不计入平均值。
 
 Projects 按完整 cwd 聚合，保留同名不同路径的独立目录，展示费用／请求排行、搜索和排序；点击目录行或排行可展开 Token、会话计数、模型用量和范围内最近 10 条请求，模型行还可继续展开延迟和 Token 明细。两个页面的汇总覆盖范围内全部请求，自动刷新保留搜索、筛选及展开状态，行支持 Enter／空格展开；请求正文不保存，工具参数只记录字符数，两者都不在页面展示。
 

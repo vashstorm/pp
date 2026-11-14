@@ -1,7 +1,9 @@
+use crate::agent::hooks::{HookHalt, ToolHookCall};
 use crate::agent::input::InputQueue;
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
 use pp_config::config::EditMode;
+use pp_config::config::HookEvent;
 use pp_config::config::ToolLimits;
 use pp_core::cancellation::CancellationToken;
 use pp_core::cancellation::Cancelled;
@@ -114,6 +116,10 @@ pub(crate) struct ToolExecution {
     /// Outcome of the dedicated plan tools for this single call; the caller
     /// applies it to the shared workflow state at the batch commit boundary.
     pub(crate) plan_change: Option<PlanChange>,
+    /// 该调用收集到的 hook 上下文，按产生顺序进入批次末尾的 developer 消息。
+    pub(crate) hook_context: Vec<String>,
+    /// pre 的拒绝已用完这块上下文；post 决定让整批停止或失败时不再执行后续调用。
+    pub(crate) hook_halt: Option<HookHalt>,
     /// Outcome of one todo call (standalone list or plan projection); the
     /// caller installs it on the workflow at the batch commit boundary via
     /// `apply_todo_change`. `None` for every non-todo tool and for `view`.
@@ -377,6 +383,7 @@ impl Tools {
             arguments,
             call_id,
             policy,
+            None,
             cancellation,
             emit,
             &mut |_, _| anyhow::bail!("HTTP fetch handler unavailable"),
@@ -390,6 +397,7 @@ impl Tools {
         arguments: &str,
         call_id: &str,
         policy: ToolPolicy<'_>,
+        hook: Option<ToolHookCall<'_>>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
         fetch: &mut read::Fetch<'_>,
@@ -423,14 +431,24 @@ impl Tools {
         let mut stop_error = None;
         let mut plan_change = None;
         let mut todo_change = None;
+        // hook deny 在进入审批门与参数解析之前生效，YOLO 也不能绕过。
+        let denied_by_hook = hook
+            .as_ref()
+            .and_then(|hook| hook.call.deny_reason.as_deref());
+        let hook_ask = hook
+            .as_ref()
+            .and_then(|hook| hook.call.ask_reason.as_deref());
         let mut value = if cancellation.is_cancelled() {
             json!({"ok":false,"cancelled":true,"error":"Not executed: task cancelled."})
+        } else if let Some(reason) = denied_by_hook {
+            json!({"ok":false,"error": format!("Not executed: {reason}")})
         } else {
             match self.execute_inner(
                 name,
                 arguments,
                 call_id,
                 policy,
+                hook_ask,
                 cancellation,
                 emit,
                 fetch,
@@ -492,7 +510,66 @@ impl Tools {
         } else {
             Vec::new()
         };
-        let serialized = value.to_string();
+        // post hook 在模型输出序列化前、shell 展示字段已剥离时运行；
+        // `value` 始终保留真实结果，只有序列化文本可被替换。
+        let mut hook_context = hook
+            .as_ref()
+            .map_or_else(Vec::new, |hook| hook.call.context.clone());
+        let mut hook_halt = None;
+        let mut model_value = None;
+        let cancelled = value.get("cancelled").and_then(Value::as_bool) == Some(true);
+        if let Some(hook) = &hook
+            && denied_by_hook.is_none()
+            && stop_error.is_none()
+            && !cancelled
+        {
+            // 以工具结果本身判断成败，不根据 stderr 猜测。
+            let event = if status == "error" {
+                HookEvent::PostToolUseFailure
+            } else {
+                HookEvent::PostToolUse
+            };
+            if hook.session.enabled(event) {
+                let error = value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                // 参数不是 JSON 对象时 tool_input 为 null，不回显原文。
+                let input: Option<Value> = serde_json::from_str(arguments)
+                    .ok()
+                    .filter(Value::is_object);
+                let payload = if event == HookEvent::PostToolUse {
+                    crate::hooks::protocol::Payload::PostTool {
+                        name,
+                        input: input.as_ref(),
+                        call_id,
+                        response: &value,
+                    }
+                } else {
+                    crate::hooks::protocol::Payload::PostToolFailure {
+                        name,
+                        input: input.as_ref(),
+                        call_id,
+                        error,
+                    }
+                };
+                match hook.session.run(event, &payload, cancellation, emit) {
+                    Ok(effect) => {
+                        hook_context.extend(effect.additional_context);
+                        model_value = effect.updated_output;
+                        if let Some(reason) = effect.stop_reason {
+                            hook_halt = Some(HookHalt::Stop(reason));
+                        }
+                    }
+                    // 取消与无法回收的进程直接停止任务，不能降级为工具失败。
+                    Err(error) => hook_halt = Some(HookHalt::Failure(error)),
+                }
+            }
+        }
+        let serialized = match model_value {
+            Some(updated) => updated.to_string(),
+            None => value.to_string(),
+        };
         for (path, shell) in shell_display {
             restore_shell_display(&mut value, &path, shell);
         }
@@ -506,6 +583,8 @@ impl Tools {
             stop_error,
             plan_change,
             todo_change,
+            hook_context,
+            hook_halt,
         }
     }
 
@@ -516,6 +595,7 @@ impl Tools {
         arguments: &str,
         call_id: &str,
         policy: ToolPolicy<'_>,
+        hook_ask: Option<&str>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
         fetch: &mut read::Fetch<'_>,
@@ -620,7 +700,8 @@ impl Tools {
             } else {
                 approval::tier_of_arguments(name, arguments)
             };
-            self.approval.enforce(name, arguments, tier, cancellation)?;
+            self.approval
+                .enforce(name, arguments, tier, hook_ask, cancellation)?;
         }
         if name == "wait" {
             return self

@@ -136,12 +136,12 @@ impl Store {
     /// 幂等写入一次工具执行：同一会话内同一个 call ID 只保留最后一次结果。
     pub(crate) fn tool(&mut self, call: &ToolCall<'_>) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO tool_calls (request_key,session_file,call_id,tool,timestamp,status,error_message,duration_ms)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+            "INSERT INTO tool_calls (request_key,session_file,call_id,tool,timestamp,status,error_message,duration_ms,result_chars)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
              ON CONFLICT(session_file,call_id) DO UPDATE SET
              request_key=COALESCE(excluded.request_key,tool_calls.request_key),tool=excluded.tool,
              timestamp=excluded.timestamp,status=excluded.status,
-             error_message=excluded.error_message,duration_ms=excluded.duration_ms",
+             error_message=excluded.error_message,duration_ms=excluded.duration_ms,result_chars=excluded.result_chars",
             params![
                 call.request_key,
                 call.session_file.to_string_lossy(),
@@ -150,7 +150,8 @@ impl Store {
                 call.timestamp,
                 call.status.as_str(),
                 call.error_message,
-                call.duration_ms
+                call.duration_ms,
+                call.result_chars.map(i64::try_from).transpose()?
             ],
         )?;
         Ok(())

@@ -558,3 +558,134 @@ fn tui_runtime_input_esc_committed_reply_race_keeps_queue_paused() {
         no_more(&server);
     }
 }
+
+// 场景 8a：PostToolUse 诊断作为 Note 卡片显示在真实 TUI：控制字符被净化成普通
+// 文本（`[2J` 可见，且屏幕从不出现 ESC），后续请求仍携带完整历史。
+#[test]
+fn slow_hooks_tui_note_card_is_sanitized() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let note = home.path().join("note.sh");
+        std::fs::write(
+            &note,
+            "#!/bin/bash\ncat > /dev/null\nprintf '{\"systemMessage\":\"pty-hook-note\\\\u001b[2J\"}'\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&note).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&note, permissions).unwrap();
+        std::fs::write(
+            config_path(home.path(), "settings.yml"),
+            format!(
+                "default_model: fixture/primary\nnotification_timeout_seconds: 2\nhooks:\n  PostToolUse:\n    - hooks:\n        - type: command\n          command: '{note}'\n",
+                note = note.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&server, Some(protocol)),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_args(home.path(), home.path(), &[]);
+        pty.ready();
+
+        pty.input("hook-task-U\r");
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        assert_eq!(
+            cancel_user_messages(&body, protocol).last().unwrap(),
+            "hook-task-U"
+        );
+        runtime_input_calls(
+            request,
+            protocol,
+            &[("hook-call", "bash", json!({"command": "printf hook-tool-output"}))],
+        );
+        // ESC 被净化后 `[2J` 只能作为普通文本出现：若原样透传，终端会清屏。
+        pty.wait_for("hook note card", |screen| {
+            let text = screen.contents();
+            assert!(
+                !text.contains('\u{1b}'),
+                "{protocol}: hook 诊断不得注入原始终端转义：{text:?}"
+            );
+            text.contains("PostToolUse hook: pty-hook-note") && text.contains("[2J")
+        });
+
+        let (request, body) = pty.request_at(&server, api_path(protocol));
+        assert_eq!(
+            cancel_user_messages(&body, protocol),
+            ["hook-task-U"].map(str::to_string)
+        );
+        runtime_input_final(request, protocol, "hook-final-live");
+        pty.text("hook-final-live");
+        pty.wait_for("hook task completed", |screen| {
+            screen.contents().contains("hook-final-live") && input_is_ready(screen)
+        });
+
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+}
+
+// 场景 8b：被 UserPromptSubmit 拒绝的补充输入显示拒绝原因与原文（不是成功的 You
+// 卡片）；全部被拒绝时没有新增输入，不得再发一次模型请求。
+#[test]
+fn slow_hooks_tui_rejected_steering_card_needs_no_extra_request() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        let reject = home.path().join("reject.sh");
+        std::fs::write(
+            &reject,
+            "#!/bin/bash\npayload=$(cat)\nif [[ $payload == *\"reject-me\"* ]]; then\n  printf 'policy says no' >&2\n  exit 2\nfi\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&reject).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&reject, permissions).unwrap();
+        std::fs::write(
+            config_path(home.path(), "settings.yml"),
+            format!(
+                "default_model: fixture/primary\nnotification_timeout_seconds: 2\nhooks:\n  UserPromptSubmit:\n    - hooks:\n        - type: command\n          command: '{reject}'\n",
+                reject = reject.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&server, Some(protocol)),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_args(home.path(), home.path(), &[]);
+        pty.ready();
+
+        let stream = runtime_input_live(&mut pty, &server, protocol, "hook-task-U");
+        // 完成边界前入队：必须在提交边界被拒绝，绝不进入原生历史。
+        pty.input("reject-me\r");
+        runtime_input_counts(&mut pty, 1, 0, false);
+        cancel_assert_no_request(&server);
+        runtime_input_end_live(stream, protocol);
+        pty.wait_for("rejected steering card", |screen| {
+            let text = screen.contents();
+            // 终端解析器不会保留原始 escape：出现 ESC 说明脚本正文漏进了屏幕。
+            assert!(
+                !text.contains('\u{1b}'),
+                "{protocol}: hook 诊断不得注入原始终端转义：{text:?}"
+            );
+            text.contains("Rejected")
+                && text.contains("Input rejected: policy says no")
+                && text.contains("reject-me")
+        });
+        // 全部补充输入被拒绝：没有新增用户输入，不得再请求模型。
+        pty.wait_for("task finished after rejected steering", |screen| {
+            screen.contents().contains("Completed ·") && input_is_ready(screen)
+        });
+        cancel_assert_no_request(&server);
+
+        pty.input("\x03");
+        pty.finish();
+        no_more(&server);
+    }
+}

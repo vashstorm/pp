@@ -189,6 +189,7 @@ pub fn load(
             pending_stats: None,
             last_stats: None,
             tool_started: HashMap::new(),
+            pending_tool_stats: HashMap::new(),
             unlinked_stats: Default::default(),
             first_request: Arc::new(AtomicBool::new(false)),
         },

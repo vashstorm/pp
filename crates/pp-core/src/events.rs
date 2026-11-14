@@ -143,6 +143,17 @@ pub enum AgentEvent {
         id: u64,
         text: String,
     },
+    /// 提交前的输入 hook 明确拒绝：不进入历史、不请求模型，`text` 仅供展示原文。
+    UserInputRejected {
+        id: u64,
+        text: String,
+        reason: String,
+    },
+    /// hook 诊断：只用于展示与日志，不进入模型上下文，不持久化。
+    HookDiagnostic {
+        event: String,
+        message: String,
+    },
     ModelRequestStarted,
     RequestRetrying {
         reason: RequestRetryReason,

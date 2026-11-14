@@ -85,6 +85,8 @@ impl Agent {
         let root_dir = self.journal.directory().join(format!("{id}.subagents"));
         // 子 Agent 的请求与工具记录写入父级同一个统计库。
         let stats_db = self.journal.stats_database().to_owned();
+        // 配置在进程内冻结：子 Agent 复用父级编译结果，不重读 settings。
+        let hooks = self.hooks.clone();
 
         let plan = self
             .workflow
@@ -259,6 +261,8 @@ impl Agent {
                 plan_cleanup_error: None,
                 plan_lease: None,
                 lsp_injected: Default::default(),
+                hooks: hooks.clone(),
+                hook_agent_type: Some(record.spec.definition.clone()),
             };
             #[cfg(debug_assertions)]
             if let Some(scripts) = &mock_scripts {

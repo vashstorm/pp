@@ -1,0 +1,1010 @@
+/*
+ * Pager Plane Modern Style（「精密遥测」设计体系）
+ * 严格限定于 html[data-style="modern"]，在保留 Default 布局与交互不变的前提下，
+ * 为外壳、共享 x- 组件、Traces 画布、旧统计页面及抽屉/上下文阅读器提供代际一致的视觉外观。
+ */
+
+:root {
+  color-scheme: light dark;
+}
+
+html[data-style="modern"],
+html[data-style="modern"][data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f5fa;
+  --panel: #fafbfe;
+  --card: #ffffff;
+  --raised: #edf0f7;
+  --overlay: rgba(255, 255, 255, 0.88);
+  --hover: rgba(24, 39, 75, 0.045);
+  --selected: rgba(46, 107, 230, 0.09);
+  --press: rgba(16, 24, 48, 0.08);
+  --line-1: rgba(24, 39, 75, 0.085);
+  --line-2: rgba(24, 39, 75, 0.145);
+  --line-3: rgba(24, 39, 75, 0.24);
+  --line-4: rgba(24, 39, 75, 0.36);
+  --ink-1: #101420;
+  --ink-2: #444d63;
+  --ink-3: #636d86;
+  --ink-4: #9aa3b8;
+  --ink-inverse: #ffffff;
+  --accent-a: #2e6be6;
+  --accent-b: #b88418;
+  --brand: #2e6be6;
+  --accent-soft: rgba(46, 107, 230, 0.12);
+  --accent-line: rgba(46, 107, 230, 0.34);
+  --accent-gradient: linear-gradient(110deg, #2e6be6 0%, #5b7ef0 52%, #c9972c 100%);
+  --focus: #2e6be6;
+  --ok: #0e885d;
+  --ok-soft: rgba(14, 136, 93, 0.12);
+  --warn: #b46e08;
+  --warn-soft: rgba(180, 110, 8, 0.12);
+  --bad: #cf333a;
+  --bad-soft: rgba(207, 51, 58, 0.11);
+  --live: #0e885d;
+  --chart-grid: rgba(24, 39, 75, 0.075);
+  --chart-axis: #6b758e;
+  --chart-primary: #2e6be6;
+  --chart-secondary: #b88418;
+  --chart-cursor: rgba(46, 107, 230, 0.06);
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.03);
+  --shadow-2: 0 10px 28px rgba(15, 23, 42, 0.12), 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-3: 0 24px 64px rgba(15, 23, 42, 0.18), 0 2px 8px rgba(15, 23, 42, 0.06);
+
+  /* 桥接 stats.css 旧页面变量 */
+  --text: var(--ink-1);
+  --muted: var(--ink-3);
+  --line: var(--line-1);
+  --accent: #2e6be6;
+  --pink: #c04878;
+  --blue: #2e6be6;
+  --yellow: #b88418;
+  --green: #0e885d;
+  --red: #cf333a;
+  --shadow: var(--shadow-1);
+  --veil: rgba(15, 23, 42, 0.32);
+
+  --modern-ambient-a: rgba(46, 107, 230, 0.085);
+  --modern-ambient-b: rgba(215, 175, 95, 0.11);
+  --modern-grid-dot: rgba(24, 39, 75, 0.055);
+  --modern-card-edge: rgba(255, 255, 255, 0.9);
+  --modern-nav-active-bg: linear-gradient(90deg, rgba(46, 107, 230, 0.12), rgba(215, 175, 95, 0.06));
+  --modern-code-bg: #f6f8fc;
+  accent-color: var(--accent-a);
+}
+
+html[data-style="modern"][data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #07090e;
+  --panel: #0c1018;
+  --card: #111622;
+  --raised: #171e2d;
+  --overlay: rgba(17, 22, 34, 0.84);
+  --hover: rgba(148, 173, 235, 0.06);
+  --selected: rgba(122, 162, 247, 0.13);
+  --press: rgba(255, 255, 255, 0.09);
+  --line-1: rgba(164, 186, 235, 0.095);
+  --line-2: rgba(164, 186, 235, 0.16);
+  --line-3: rgba(164, 186, 235, 0.25);
+  --line-4: rgba(164, 186, 235, 0.38);
+  --ink-1: #edf1fa;
+  --ink-2: #a5b0c7;
+  --ink-3: #74809b;
+  --ink-4: #465066;
+  --ink-inverse: #090c12;
+  --accent-a: #7aa2f7;
+  --accent-b: #d7af5f;
+  --brand: #7aa2f7;
+  --accent-soft: rgba(122, 162, 247, 0.15);
+  --accent-line: rgba(122, 162, 247, 0.38);
+  --accent-gradient: linear-gradient(110deg, #7aa2f7 0%, #99b8fb 52%, #d7af5f 100%);
+  --focus: #7aa2f7;
+  --ok: #3dd69b;
+  --ok-soft: rgba(61, 214, 155, 0.14);
+  --warn: #e8b048;
+  --warn-soft: rgba(232, 176, 72, 0.15);
+  --bad: #f26d78;
+  --bad-soft: rgba(242, 109, 120, 0.14);
+  --live: #3dd69b;
+  --chart-grid: rgba(164, 186, 235, 0.075);
+  --chart-axis: #6f7c97;
+  --chart-primary: #7aa2f7;
+  --chart-secondary: #d7af5f;
+  --chart-cursor: rgba(122, 162, 247, 0.08);
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 4px 14px rgba(0, 0, 0, 0.48);
+  --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.6), 0 1px 0 rgba(255, 255, 255, 0.06) inset;
+  --shadow-3: 0 28px 72px rgba(0, 0, 0, 0.72), 0 1px 0 rgba(255, 255, 255, 0.08) inset;
+
+  /* 桥接 stats.css 旧页面变量 */
+  --text: var(--ink-1);
+  --muted: var(--ink-3);
+  --line: var(--line-1);
+  --accent: #7aa2f7;
+  --pink: #d7af5f;
+  --blue: #7aa2f7;
+  --yellow: #e8b048;
+  --green: #3dd69b;
+  --red: #f26d78;
+  --shadow: var(--shadow-1);
+  --veil: rgba(4, 6, 12, 0.65);
+
+  --modern-ambient-a: rgba(122, 162, 247, 0.11);
+  --modern-ambient-b: rgba(215, 175, 95, 0.09);
+  --modern-grid-dot: rgba(164, 186, 235, 0.055);
+  --modern-card-edge: rgba(255, 255, 255, 0.06);
+  --modern-nav-active-bg: linear-gradient(90deg, rgba(122, 162, 247, 0.16), rgba(215, 175, 95, 0.07));
+  --modern-code-bg: #0c1018;
+  accent-color: var(--accent-a);
+}
+
+html[data-style="modern"] {
+  --r-chip: 7px;
+  --r-control: 9px;
+  --r-card: 14px;
+  --r-panel: 18px;
+  --topbar-h: 56px;
+  --sidebar-w: 228px;
+  --gutter: 32px;
+  --stagger: 35ms;
+}
+
+html[data-style="modern"] * {
+  scrollbar-color: var(--line-3) transparent;
+}
+
+/* 环境光晕与精密点阵底纹 */
+html[data-style="modern"] .shell-ambient {
+  background:
+    radial-gradient(64rem 30rem at 8% -10%, var(--modern-ambient-a), transparent 70%),
+    radial-gradient(52rem 28rem at 92% -12%, var(--modern-ambient-b), transparent 70%),
+    radial-gradient(var(--modern-grid-dot) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 22px 22px;
+}
+
+/* 顶栏 */
+html[data-style="modern"] .topbar {
+  background: color-mix(in srgb, var(--bg) 76%, transparent);
+  backdrop-filter: blur(18px) saturate(165%);
+  -webkit-backdrop-filter: blur(18px) saturate(165%);
+  padding: 0 18px 0 20px;
+  gap: 12px;
+}
+
+html[data-style="modern"] .topbar[data-scrolled="true"] {
+  border-bottom-color: var(--line-2);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+html[data-style="modern"] .topbar-mark {
+  filter: drop-shadow(0 2px 8px color-mix(in srgb, var(--accent-a) 28%, transparent));
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+html[data-style="modern"] .topbar-brand:hover .topbar-mark {
+  transform: translate(1px, -1px);
+}
+
+html[data-style="modern"] .topbar-wordmark {
+  font-size: 22px;
+  font-weight: 760;
+  letter-spacing: -0.055em;
+}
+
+html[data-style="modern"] .topbar-slash {
+  color: var(--ink-4);
+  font-weight: 300;
+}
+
+html[data-style="modern"] .topbar-title {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--card) 75%, transparent);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+}
+
+html[data-style="modern"] .live-chip {
+  background: color-mix(in srgb, var(--card) 85%, transparent);
+  border-color: var(--line-2);
+  box-shadow: var(--shadow-1);
+  height: 32px;
+  padding: 0 12px;
+}
+
+html[data-style="modern"] .live-chip:hover {
+  border-color: var(--accent-line);
+}
+
+html[data-style="modern"] #style {
+  color: var(--accent-b);
+  background: color-mix(in srgb, var(--accent-b) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent-b) 28%, transparent);
+}
+
+html[data-style="modern"] #style:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-b) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent-b) 42%, transparent);
+}
+
+/* 侧边栏与胶囊导航 */
+html[data-style="modern"] .sidebar {
+  padding: 12px 12px 16px;
+  gap: 20px;
+}
+
+html[data-style="modern"] .nav-group {
+  gap: 3px;
+}
+
+html[data-style="modern"] .nav-heading {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 0 10px 6px;
+}
+
+html[data-style="modern"] .nav-row {
+  position: relative;
+  height: 34px;
+  padding: 0 11px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid transparent;
+}
+
+html[data-style="modern"] .nav-row:hover {
+  background: var(--hover);
+  border-color: var(--line-1);
+}
+
+html[data-style="modern"] .nav-row[data-active="true"] {
+  background: var(--modern-nav-active-bg);
+  border-color: var(--accent-line);
+  color: var(--ink-1);
+  font-weight: 580;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+html[data-style="modern"] .nav-row[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent-gradient);
+}
+
+html[data-style="modern"] .nav-row[data-active="true"] svg {
+  color: var(--accent-a);
+}
+
+html[data-style="modern"] .sidebar-foot {
+  background: color-mix(in srgb, var(--card) 82%, transparent);
+  border-color: var(--line-2);
+  border-radius: 12px;
+  padding: 11px 12px;
+  box-shadow: var(--shadow-1);
+}
+
+/* 主悬浮工作区 */
+html[data-style="modern"] .shell-panel {
+  margin: var(--topbar-h) 12px 12px var(--sidebar-w);
+  min-height: calc(100dvh - var(--topbar-h) - 12px);
+  border-radius: var(--r-panel);
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+}
+
+html[data-style="modern"] .shell-content {
+  max-width: 1520px;
+  padding: 28px var(--gutter) 56px;
+}
+
+/* 页头与进场编排（仅切页或切范围时播放一次） */
+html[data-style="modern"] .x-page {
+  gap: 22px;
+}
+
+html[data-style="modern"] .x-page-title,
+html[data-style="modern"] #page > h1 {
+  font-size: 24px;
+  font-weight: 640;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  color: var(--ink-1);
+}
+
+html[data-style="modern"] .x-page-description,
+html[data-style="modern"] #page > .subtitle {
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.5;
+  margin-top: 5px;
+}
+
+html[data-style="modern"] #page > .subtitle {
+  margin-bottom: 22px;
+}
+
+html[data-style="modern"] #page[data-enter="true"] > :is(.metrics, .small-metrics, .graphs, .panel, .load-note, .pricing-note) {
+  animation: x-rise var(--dur-3) var(--ease-out) backwards;
+}
+
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(3) { animation-delay: 0ms; }
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(4) { animation-delay: 35ms; }
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(5) { animation-delay: 70ms; }
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(6) { animation-delay: 105ms; }
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(7) { animation-delay: 140ms; }
+
+/* 卡片与统计指标统一（x-stat-grid / x-card 与旧 .panel / .metrics） */
+html[data-style="modern"] .x-card,
+html[data-style="modern"] .x-stat-grid,
+html[data-style="modern"] .panel {
+  border-radius: var(--r-card);
+  border: 1px solid var(--line-2);
+  background:
+    linear-gradient(180deg, var(--modern-card-edge), transparent 44px),
+    var(--card);
+  box-shadow: var(--shadow-1);
+}
+
+html[data-style="modern"] .x-stat-grid,
+html[data-style="modern"] .panel.metrics {
+  position: relative;
+  overflow: hidden;
+}
+
+html[data-style="modern"] .x-stat-grid::before,
+html[data-style="modern"] .panel.metrics:not(.small-metrics)::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent-gradient);
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+html[data-style="modern"] .x-stat,
+html[data-style="modern"] .metric {
+  padding: 16px 18px 14px;
+  transition: background var(--dur-1) var(--ease);
+}
+
+html[data-style="modern"] .x-stat:hover,
+html[data-style="modern"] .metric:hover {
+  background: color-mix(in srgb, var(--hover) 70%, transparent);
+}
+
+html[data-style="modern"] .metric {
+  border-right-color: var(--line-1);
+}
+
+html[data-style="modern"] .x-stat-label,
+html[data-style="modern"] .metric-label {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+html[data-style="modern"] .x-stat-value,
+html[data-style="modern"] .metric-value {
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.18;
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-style="modern"] .small-metrics .metric {
+  padding: 13px 16px;
+}
+
+html[data-style="modern"] .small-metrics .metric-value,
+html[data-style="modern"] .x-stat[data-size="sm"] .x-stat-value {
+  font-size: 18px;
+  font-weight: 580;
+  letter-spacing: -0.02em;
+}
+
+html[data-style="modern"] .x-stat-foot,
+html[data-style="modern"] .metric-note {
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+/* 面板头部 */
+html[data-style="modern"] .x-card-header {
+  padding: 15px 18px 12px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+html[data-style="modern"] .x-card-body[data-flush="true"] {
+  padding: 0;
+}
+
+html[data-style="modern"] .x-card-title,
+html[data-style="modern"] .panel h2 {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink-1);
+}
+
+html[data-style="modern"] .x-card-description,
+html[data-style="modern"] .panel-description {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+html[data-style="modern"] .requests-heading {
+  padding: 15px 18px 13px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+html[data-style="modern"] .graph {
+  padding: 16px 18px 18px;
+}
+
+html[data-style="modern"] .graphs {
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+html[data-style="modern"] .metrics,
+html[data-style="modern"] .analytics-panel {
+  margin-bottom: 20px;
+}
+
+html[data-style="modern"] .all-requests {
+  padding: 5px 10px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-2);
+  background: var(--raised);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+html[data-style="modern"] .all-requests:hover {
+  text-decoration: none;
+  color: var(--ink-1);
+  border-color: var(--accent-line);
+}
+
+/* 控件：按钮、输入框、分段控制器 */
+html[data-style="modern"] .x-btn,
+html[data-style="modern"] .outline-button {
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-2);
+  background: var(--raised);
+  color: var(--ink-1);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease),
+    transform var(--dur-1) var(--ease);
+}
+
+html[data-style="modern"] .outline-button {
+  height: 30px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+html[data-style="modern"] .x-btn:hover:not(:disabled),
+html[data-style="modern"] .outline-button:hover:not(:disabled) {
+  border-color: var(--line-3);
+  background: color-mix(in srgb, var(--raised) 78%, var(--accent-a) 8%);
+}
+
+html[data-style="modern"] .x-btn[data-variant="ghost"] {
+  background: transparent;
+  border-color: transparent;
+}
+
+html[data-style="modern"] .x-btn[data-variant="ghost"]:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--line-1);
+}
+
+html[data-style="modern"] .x-input,
+html[data-style="modern"] input[type="search"]:not(.x-input),
+html[data-style="modern"] .insight-select {
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-2);
+  background: var(--card);
+  color: var(--ink-1);
+  height: 31px;
+}
+
+html[data-style="modern"] input[type="search"]:not(.x-input) {
+  padding: 0 10px 0 30px;
+  font-size: 12.5px;
+}
+
+html[data-style="modern"] .x-input:focus,
+html[data-style="modern"] input[type="search"]:not(.x-input):focus,
+html[data-style="modern"] .insight-select:focus {
+  outline: none;
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 20%, transparent);
+}
+
+html[data-style="modern"] .x-segmented,
+html[data-style="modern"] .segmented {
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-2);
+  background: var(--raised);
+  padding: 2px;
+  gap: 2px;
+}
+
+html[data-style="modern"] .x-segmented-thumb {
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: 7px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
+}
+
+html[data-style="modern"] .segmented button {
+  padding: 4px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-3);
+  transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+
+html[data-style="modern"] .segmented button:hover {
+  color: var(--ink-1);
+}
+
+html[data-style="modern"] .segmented button[aria-checked="true"] {
+  background: var(--card);
+  color: var(--ink-1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14), 0 0 0 1px var(--line-2);
+}
+
+/* 表格体系统一（x-table 与旧 table） */
+html[data-style="modern"] .x-table th,
+html[data-style="modern"] table:not(.x-table) th {
+  background: color-mix(in srgb, var(--raised) 55%, var(--card));
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid var(--line-2);
+  padding: 9px 14px;
+}
+
+html[data-style="modern"] table:not(.x-table) th:first-child,
+html[data-style="modern"] table:not(.x-table) td:first-child {
+  padding-left: 18px;
+}
+
+html[data-style="modern"] table:not(.x-table) th:last-child,
+html[data-style="modern"] table:not(.x-table) td:last-child {
+  padding-right: 18px;
+}
+
+html[data-style="modern"] table:not(.x-table) {
+  font-size: 13px;
+}
+
+html[data-style="modern"] table:not(.x-table) td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-1);
+  color: var(--ink-1);
+}
+
+html[data-style="modern"] table:not(.x-table) tbody tr {
+  transition: background var(--dur-1) var(--ease);
+}
+
+html[data-style="modern"] table:not(.x-table) tbody tr:hover {
+  background: var(--hover);
+}
+
+html[data-style="modern"] .first-request-row {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-a) 10%, transparent), transparent 48%);
+}
+
+html[data-style="modern"] .first-request-row td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent-a);
+}
+
+html[data-style="modern"] .first-request-mark,
+html[data-style="modern"] .first-request-badge {
+  border-color: var(--accent-line);
+  color: var(--accent-a);
+  background: var(--accent-soft);
+}
+
+html[data-style="modern"] .badge {
+  display: inline-flex;
+  align-items: center;
+  height: 21px;
+  padding: 0 9px;
+  border-radius: var(--r-pill);
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+html[data-style="modern"] .badge.failed {
+  color: var(--bad);
+  background: var(--bad-soft);
+}
+
+html[data-style="modern"] .badge.aborted {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+html[data-style="modern"] .table-footer {
+  border-top: 1px solid var(--line-1);
+  padding: 12px 16px;
+  color: var(--ink-3);
+}
+
+html[data-style="modern"] .group-details {
+  padding: 20px 24px;
+  background: color-mix(in srgb, var(--raised) 55%, var(--panel));
+  border-top: 1px solid var(--line-1);
+}
+
+/* 比例条、组件列表与 Projects 排行 */
+html[data-style="modern"] .token-bar,
+html[data-style="modern"] .cost-split {
+  height: 9px;
+  gap: 2px;
+  border-radius: var(--r-pill);
+  background: var(--line-1);
+  padding: 1px;
+}
+
+html[data-style="modern"] .token-bar span,
+html[data-style="modern"] .cost-split span {
+  border-radius: var(--r-pill);
+}
+
+html[data-style="modern"] .component-list > div {
+  border-bottom-color: var(--line-1);
+  padding: 11px 4px;
+}
+
+html[data-style="modern"] .insight-ranking button {
+  border-radius: 9px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+
+html[data-style="modern"] .insight-ranking button:hover {
+  border-color: var(--line-1);
+}
+
+/* 图表与悬浮提示统一 */
+html[data-style="modern"] .chart line {
+  stroke: var(--chart-grid);
+}
+
+html[data-style="modern"] .chart text {
+  fill: var(--chart-axis);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+html[data-style="modern"] .chart rect:not(.chart-hit) {
+  rx: 2px;
+}
+
+html[data-style="modern"] .x-chart-bar {
+  rx: 2px;
+}
+
+html[data-style="modern"] .chart-hit:hover,
+html[data-style="modern"] .chart-hit:focus-visible {
+  fill: var(--chart-cursor);
+}
+
+html[data-style="modern"] #stats-tooltip,
+html[data-style="modern"] .x-chart-tooltip {
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-2);
+  background: var(--overlay);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  color: var(--ink-1);
+  box-shadow: var(--shadow-2);
+}
+
+/* Traces 页面精致化 */
+html[data-style="modern"] .traces-minimap {
+  border-radius: 10px;
+  border-color: var(--line-2);
+  background: color-mix(in srgb, var(--panel) 80%, var(--card));
+}
+
+html[data-style="modern"] .traces-timeline {
+  border-top-color: var(--line-2);
+}
+
+html[data-style="modern"] .traces-row[data-selected="true"] {
+  background: var(--selected);
+  box-shadow: inset 3px 0 0 var(--accent-a);
+}
+
+html[data-style="modern"] .traces-kind {
+  border-radius: 6px;
+}
+
+html[data-style="modern"] .trace-sheet {
+  border-radius: var(--r-panel);
+  border: 1px solid var(--line-2);
+  background: var(--overlay);
+  box-shadow: var(--shadow-3);
+}
+
+html[data-style="modern"] .trace-sheet-header {
+  background: color-mix(in srgb, var(--raised) 65%, transparent);
+  border-bottom-color: var(--line-2);
+}
+
+/* 请求详情抽屉 (#drawer) 与 .trace-sheet 同源毛玻璃语言 */
+html[data-style="modern"] #overlay {
+  z-index: 60;
+  background: var(--veil);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+html[data-style="modern"] #drawer {
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  width: min(640px, calc(100vw - 20px));
+  border-radius: var(--r-panel);
+  border: 1px solid var(--line-2);
+  background: var(--overlay);
+  backdrop-filter: blur(20px) saturate(170%);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  box-shadow: var(--shadow-3);
+}
+
+html[data-style="modern"] .drawer-header {
+  background: color-mix(in srgb, var(--raised) 72%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line-2);
+  padding: 18px 22px;
+}
+
+html[data-style="modern"] .drawer-header h2 {
+  font-size: 15.5px;
+  font-weight: 620;
+  letter-spacing: -0.015em;
+}
+
+html[data-style="modern"] .drawer-link {
+  padding: 5px 10px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-2);
+  background: var(--card);
+  color: var(--ink-1);
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+
+html[data-style="modern"] .drawer-link:hover {
+  text-decoration: none;
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+html[data-style="modern"] .drawer-actions {
+  gap: 10px;
+}
+
+html[data-style="modern"] .drawer-body {
+  padding: 20px 22px 26px;
+}
+
+html[data-style="modern"] .detail-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 22px 0 10px;
+}
+
+html[data-style="modern"] .detail-grid {
+  gap: 10px;
+}
+
+html[data-style="modern"] .detail-grid > div {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--card) 78%, transparent);
+}
+
+html[data-style="modern"] .detail-grid dt {
+  color: var(--ink-3);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+html[data-style="modern"] .detail-grid dd {
+  color: var(--ink-1);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+html[data-style="modern"] .session-path {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-1);
+  background: var(--modern-code-bg);
+  color: var(--ink-2);
+}
+
+html[data-style="modern"] .payload pre {
+  padding: 12px 14px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line-1);
+  background: var(--modern-code-bg);
+  color: var(--ink-2);
+}
+
+/* 上下文阅读器 (#context-reader) */
+html[data-style="modern"] #context-overlay {
+  background: var(--veil);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+html[data-style="modern"] #context-reader {
+  border-radius: var(--r-panel);
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  box-shadow: var(--shadow-3);
+}
+
+html[data-style="modern"] .context-reader-heading {
+  background: color-mix(in srgb, var(--raised) 55%, var(--card));
+  border-bottom-color: var(--line-2);
+}
+
+html[data-style="modern"] .context-sidebar {
+  background: color-mix(in srgb, var(--bg) 65%, var(--panel));
+  border-right-color: var(--line-2);
+}
+
+html[data-style="modern"] #context-search {
+  border-radius: var(--r-control);
+  border-color: var(--line-2);
+  background: var(--card);
+  color: var(--ink-1);
+}
+
+html[data-style="modern"] #context-tabs button {
+  border-radius: 7px;
+  font-weight: 500;
+}
+
+html[data-style="modern"] #context-tabs button[aria-selected="true"] {
+  background: var(--card);
+  color: var(--ink-1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--line-2);
+}
+
+html[data-style="modern"] .context-item {
+  border-radius: 9px;
+  border: 1px solid transparent;
+}
+
+html[data-style="modern"] .context-item.selected {
+  background: var(--card);
+  border-color: var(--accent-line);
+  box-shadow: inset 3px 0 0 var(--accent-a), var(--shadow-1);
+}
+
+html[data-style="modern"] .context-code,
+html[data-style="modern"] .x-code-block,
+html[data-style="modern"] .code-block {
+  border-radius: 10px;
+  border-color: var(--line-2);
+  background: var(--modern-code-bg);
+}
+
+html[data-style="modern"] .context-token-key,
+html[data-style="modern"] .context-token-marker { color: var(--accent-a); }
+html[data-style="modern"] .context-token-string { color: var(--ok); }
+html[data-style="modern"] .context-token-literal { color: var(--accent-b); }
+html[data-style="modern"] .context-token-tag { color: var(--bad); }
+
+html[data-style="modern"] #toast {
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-2);
+  background: var(--ink-1);
+  color: var(--ink-inverse);
+  box-shadow: var(--shadow-2);
+  padding: 9px 18px;
+  font-weight: 500;
+}
+
+html[data-style="modern"] .pricing-note,
+html[data-style="modern"] .load-note {
+  color: var(--ink-3);
+}
+
+@media (max-width: 1360px) {
+  html[data-style="modern"] {
+    --sidebar-w: 208px;
+    --gutter: 24px;
+  }
+}
+
+@media (max-width: 900px) {
+  html[data-style="modern"] {
+    --gutter: 16px;
+  }
+  html[data-style="modern"] .shell-panel {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+}
+
+/* 高对比度 / 强制色彩模式兜底：确保边界与激活状态不依赖纯阴影或渐变 */
+@media (forced-colors: active) {
+  html[data-style="modern"] .x-card,
+  html[data-style="modern"] .x-stat-grid,
+  html[data-style="modern"] .panel,
+  html[data-style="modern"] .shell-panel,
+  html[data-style="modern"] .detail-grid > div,
+  html[data-style="modern"] #drawer,
+  html[data-style="modern"] #context-reader {
+    border: 1px solid ButtonBorder;
+    background: Canvas;
+  }
+  html[data-style="modern"] .nav-row[data-active="true"] {
+    border: 2px solid Highlight;
+    background: Canvas;
+    color: CanvasText;
+  }
+  html[data-style="modern"] .nav-row[data-active="true"]::before,
+  html[data-style="modern"] .x-stat-grid::before,
+  html[data-style="modern"] .panel.metrics::before {
+    background: Highlight;
+  }
+  html[data-style="modern"] :focus-visible {
+    outline: 2px solid Highlight;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-style="modern"] #page[data-enter="true"] > * {
+    animation: none !important;
+  }
+}

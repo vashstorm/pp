@@ -152,7 +152,15 @@ impl Inner {
         event: Option<&AgentEvent>,
         hub: Option<HubEvent>,
     ) {
-        let event = if matches!(event, Some(AgentEvent::ModelOutputProgress { .. })) {
+        // 瞬时诊断与拒绝只用于根会话展示，不写子 Agent 事件流，也不新增 Hub 状态。
+        let event = if matches!(
+            event,
+            Some(
+                AgentEvent::ModelOutputProgress { .. }
+                    | AgentEvent::HookDiagnostic { .. }
+                    | AgentEvent::UserInputRejected { .. }
+            )
+        ) {
             if hub.is_none() {
                 return;
             }

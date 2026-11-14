@@ -31,6 +31,8 @@ pub struct ToolCall<'a> {
     pub error_message: Option<&'a str>,
     pub timestamp: i64,
     pub duration_ms: f64,
+    /// 回填模型的结果文本字符数；历史或未采集结果为 None，不保存正文。
+    pub result_chars: Option<u64>,
 }
 
 /// 工具调用参数的字符数：字符串按字符、null 为 0、其余按 JSON 文本，与旧聚合口径一致。

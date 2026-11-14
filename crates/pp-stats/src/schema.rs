@@ -29,7 +29,7 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
             id INTEGER PRIMARY KEY, request_key TEXT, session_file TEXT NOT NULL, call_id TEXT NOT NULL,
             tool TEXT NOT NULL, timestamp INTEGER NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('ok','error','cancelled')),
-            error_message TEXT, duration_ms REAL NOT NULL, UNIQUE(session_file, call_id)
+            error_message TEXT, duration_ms REAL NOT NULL, result_chars INTEGER, UNIQUE(session_file, call_id)
         );",
     )?;
     let mut changed = false;
@@ -74,6 +74,14 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
     )?;
     changed |= ensure_column(&tx, "requests", &mut requests, "cost_json", "TEXT")?;
     changed |= ensure_column(&tx, "requests", &mut requests, "rate_json", "TEXT")?;
+    let mut tool_calls = table_columns(&tx, "tool_calls")?;
+    changed |= ensure_column(
+        &tx,
+        "tool_calls",
+        &mut tool_calls,
+        "result_chars",
+        "INTEGER",
+    )?;
     if changed {
         // 只在新结构第一次出现时给 planner 补统计，之后每次打开不写库。
         tx.execute_batch("ANALYZE requests; ANALYZE tool_calls;")?;
@@ -224,6 +232,7 @@ mod tests {
                 error_message: Some("boom"),
                 timestamp: 1000,
                 duration_ms: 5.0,
+                result_chars: Some(12),
             })
             .unwrap();
         // 模拟旧库：新索引、废弃索引与费用快照列都不在预期状态。
@@ -232,12 +241,29 @@ mod tests {
             .execute_batch(
                 "DROP INDEX requests_session;
                  CREATE INDEX tool_calls_error_time ON tool_calls(timestamp DESC,id DESC) WHERE status='error';
-                 ALTER TABLE requests DROP COLUMN cost_json; ALTER TABLE requests DROP COLUMN rate_json;",
+                 ALTER TABLE requests DROP COLUMN cost_json; ALTER TABLE requests DROP COLUMN rate_json;
+                 ALTER TABLE tool_calls DROP COLUMN result_chars;",
             )
             .unwrap();
         drop(store);
 
         let store = open_store(&path).unwrap();
+        assert!(
+            table_columns(&store.conn, "tool_calls")
+                .unwrap()
+                .contains(&"result_chars".to_owned())
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT result_chars FROM tool_calls WHERE call_id='call-1'",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0)
+                )
+                .unwrap(),
+            None
+        );
         let indexes = |table: &str| -> Vec<String> {
             let mut statement = store
                 .conn
@@ -394,6 +420,7 @@ mod tests {
                     error_message: None,
                     timestamp: now - n * 60_000,
                     duration_ms: 12.0,
+                    result_chars: None,
                 })
                 .unwrap();
         }

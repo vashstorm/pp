@@ -131,7 +131,8 @@ impl Gate {
         self.handler = Some(Arc::from(handler));
     }
 
-    fn effective_mode(&self) -> ApprovalMode {
+    /// 生效审批档位（flag 覆盖优先）；只读查询，不另存权限状态。
+    pub(crate) fn effective_mode(&self) -> ApprovalMode {
         self.override_mode.unwrap_or(self.config.mode)
     }
 
@@ -147,9 +148,28 @@ impl Gate {
         name: &str,
         arguments: &str,
         tier: Tier,
+        hook_ask: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         let mode = self.effective_mode();
+        if let Some(reason) = hook_ask {
+            // hook 的 ask 强制一次审批：YOLO 与已有会话授权都不能跳过，
+            // 但非 YOLO 下用户的显式 deny 仍然优先。
+            if mode != ApprovalMode::Yolo
+                && matches!(self.config.policy.get(name), Some(ApprovalPolicy::Deny))
+            {
+                bail!("{name} is blocked by tools.approval policy.")
+            }
+            return self.prompt(
+                ApprovalRequest {
+                    tool: name.to_owned(),
+                    agent: None,
+                    reason: reason.to_owned(),
+                    session_grant: false,
+                },
+                cancellation,
+            );
+        }
         if mode == ApprovalMode::Yolo {
             return Ok(());
         }
@@ -384,6 +404,7 @@ mod tests {
                 "bash",
                 r#"{"command":"pwd"}"#,
                 Tier::Exec,
+                None,
                 &CancellationToken::new(),
             )
             .unwrap();
@@ -394,6 +415,7 @@ mod tests {
                 "bash",
                 r#"{"command":"pwd"}"#,
                 Tier::Exec,
+                None,
                 &CancellationToken::new(),
             )
             .unwrap();
@@ -403,6 +425,7 @@ mod tests {
             "bash",
             r#"{"command":"pwd"}"#,
             Tier::Exec,
+            None,
             &CancellationToken::new(),
         )
         .unwrap();
@@ -424,6 +447,17 @@ mod tests {
             name,
             arguments,
             tier_of_arguments(name, arguments),
+            None,
+            &CancellationToken::new(),
+        )
+    }
+
+    fn enforce_with_ask(gate: &Gate, name: &str, ask: &str) -> Result<()> {
+        gate.enforce(
+            name,
+            r#"{"command":"pwd"}"#,
+            tier_of_arguments(name, "{}"),
+            Some(ask),
             &CancellationToken::new(),
         )
     }
@@ -587,7 +621,9 @@ mod tests {
             (ApprovalPolicy::Prompt, "approval"),
         ] {
             let gate = gate(ApprovalMode::AlwaysAsk, &[(name, policy)]);
-            let error = gate.enforce(name, "{}", Tier::Read, &token).unwrap_err();
+            let error = gate
+                .enforce(name, "{}", Tier::Read, None, &token)
+                .unwrap_err();
             assert!(error.to_string().contains(expected), "{error}");
         }
     }
@@ -606,6 +642,32 @@ mod tests {
         assert_eq!(tier_of("mcp__anything__tool"), Tier::Write);
         assert_eq!(tier_of("mcp__"), Tier::Write);
         assert_eq!(tier_of("unknown_tool"), Tier::Exec);
+    }
+
+    #[test]
+    fn hook_ask_forces_one_prompt_and_keeps_explicit_deny() {
+        // YOLO 也不能绕过 hook 的 ask。
+        let mut yolo = gate(ApprovalMode::Yolo, &[]);
+        yolo.set_handler(approve_handler());
+        enforce_with_ask(&yolo, "write", "confirm the write").unwrap();
+        let mut prompted = gate(ApprovalMode::Write, &[]);
+        prompted.set_handler(deny_handler());
+        let error = enforce_with_ask(&prompted, "write", "confirm the write").unwrap_err();
+        assert!(error.to_string().contains("denied by the user"), "{error}");
+        // 非 YOLO 下用户的显式 deny 优先于 hook 的 ask。
+        let mut denied = gate(ApprovalMode::Write, &[("write", ApprovalPolicy::Deny)]);
+        denied.set_handler(approve_handler());
+        let error = enforce_with_ask(&denied, "write", "confirm the write").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("blocked by tools.approval policy"),
+            "{error}"
+        );
+        // 没有交互 handler 时 ask 失败，不静默放行。
+        let bare = gate(ApprovalMode::Yolo, &[]);
+        let error = enforce_with_ask(&bare, "write", "confirm the write").unwrap_err();
+        assert!(error.to_string().contains("no interactive UI"), "{error}");
     }
 
     #[test]

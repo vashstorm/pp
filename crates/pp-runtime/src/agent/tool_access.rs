@@ -79,6 +79,8 @@ impl Agent {
             crate::tools::ToolPolicy::Execute {
                 workflow: &self.workflow,
             },
+            // 人工 shell 不是模型工具调用，永不触发 hook。
+            None,
             cancellation,
             emit,
             &mut |url, token| self.client.fetch_read_url(url, token),

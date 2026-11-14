@@ -120,6 +120,26 @@ impl Agent {
         self.run_user(prompt, None, cancellation, input, emit)
     }
 
+    /// UserPromptSubmit 的结论：拒绝或 `continue:false` 直接失败，允许时返回
+    /// 待注入的上下文。子 Agent 的任务文本不是人类输入，不经过这里。
+    fn user_prompt_hook(
+        &mut self,
+        prompt: &str,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<Vec<String>> {
+        let Some(effect) = self.hook_user_input(prompt, cancellation, emit)? else {
+            return Ok(Vec::new());
+        };
+        if let Some(reason) = effect.stop_reason {
+            bail!("{reason}");
+        }
+        if let Some(reason) = effect.deny_reason {
+            bail!("{reason}");
+        }
+        Ok(effect.additional_context)
+    }
+
     pub fn input_limits(&self) -> pp_config::config::ToolLimits {
         self.tools.limits
     }
@@ -154,6 +174,8 @@ impl Agent {
                 bail!("{error}");
             }
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
+            // 先检查后提交：拒绝或故障时不追加 user、不准备计划、不请求模型。
+            let hook_context = self.user_prompt_hook(prompt, cancellation, emit)?;
             self.connect_pending_plan_mcp(cancellation)?;
             self.apply_runtime_models()?;
             self.restore_resolved(emit)?;
@@ -168,6 +190,10 @@ impl Agent {
                 turn::append_input_to(&mut self.session, prepared);
             } else {
                 self.append_user(prompt);
+            }
+            if !hook_context.is_empty() {
+                // 上下文跟随这条输入一起提交，恢复时只重放已保存的历史。
+                turn::append_developer_to(&mut self.session, hook_context.join("\n\n"));
             }
             self.run_loop(Some(prompt), input, cancellation, emit)
         })();

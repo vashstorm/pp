@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod history;
+mod hooks;
 pub mod host_defaults;
 pub mod lsp;
 pub mod mcp;

@@ -20,6 +20,8 @@ mod stats;
 mod approval;
 #[path = "cli_agent/ask.rs"]
 mod ask;
+#[path = "cli_agent/hooks.rs"]
+mod hooks;
 #[path = "cli_agent/lsp.rs"]
 mod lsp;
 #[path = "cli_agent/mcp.rs"]

@@ -3,6 +3,7 @@ use super::*;
 use pp_test_support::CapturedRequest;
 use serde_json::{Value, json};
 
+mod hook_cases;
 mod model_role_cases;
 mod plan_model_cases;
 mod runtime_model_cases;
@@ -267,7 +268,7 @@ pub(super) fn final_for(
     }
 }
 
-fn tool_call_for(protocol: &str, request: CapturedRequest, name: &str, arguments: &str) {
+pub(super) fn tool_call_for(protocol: &str, request: CapturedRequest, name: &str, arguments: &str) {
     match protocol {
         "completion" => completion_stream(
             request,
@@ -288,6 +289,38 @@ fn tool_call_for(protocol: &str, request: CapturedRequest, name: &str, arguments
     }
 }
 
+/// 一轮多个工具调用：call ID 依次为 call-1..call-N。
+pub(super) fn tool_batch_for(protocol: &str, request: CapturedRequest, calls: &[(&str, &str)]) {
+    match protocol {
+        "completion" => completion_stream(
+            request,
+            json!({"role":"assistant","content":null,"tool_calls":calls.iter().enumerate().map(
+                |(index, (name, arguments))| json!({
+                    "id": format!("call-{index}", index = index + 1),
+                    "type":"function", "index": index,
+                    "function":{"name":name,"arguments":arguments}
+                })
+            ).collect::<Vec<_>>()}),
+            "tool_calls",
+        ),
+        _ => response_stream(
+            request,
+            &calls
+                .iter()
+                .enumerate()
+                .map(|(index, (name, arguments))| {
+                    json!({
+                        "type": "function_call", "id": format!("fc-{index}", index = index + 1),
+                        "call_id": format!("call-{index}", index = index + 1),
+                        "name": name, "arguments": arguments, "status": "completed"
+                    })
+                })
+                .collect::<Vec<_>>(),
+            true,
+        ),
+    }
+}
+
 fn message_text(item: &Value) -> String {
     match &item["content"] {
         Value::String(text) => text.clone(),
@@ -302,7 +335,7 @@ fn message_text(item: &Value) -> String {
     }
 }
 
-fn user_messages(protocol: &str, body: &Value) -> Vec<String> {
+pub(super) fn user_messages(protocol: &str, body: &Value) -> Vec<String> {
     let entries = match protocol {
         "completion" => body["messages"].as_array().unwrap(),
         _ => body["input"].as_array().unwrap(),

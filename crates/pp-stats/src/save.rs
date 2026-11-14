@@ -577,6 +577,7 @@ mod tests {
                 error_message: Some("old failure"),
                 timestamp: Range::Day.since(now) - 1,
                 duration_ms: 1.0,
+                result_chars: Some(999),
             })
             .unwrap();
 

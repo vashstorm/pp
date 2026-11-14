@@ -75,6 +75,7 @@ fn run_cli_execution(
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }
                 | AgentEvent::UserInputAccepted { .. }
+                | AgentEvent::UserInputRejected { .. }
                 | AgentEvent::PlanProgressUpdated { .. }
                 | AgentEvent::ProjectInstructionsLoaded { .. }
         ) {
@@ -396,11 +397,25 @@ fn run_cli_execution(
                     &mut first_error,
                 );
             }
+            // hook 诊断只写 stderr：stdout 仍是模型正文，也不是模型上下文。
+            AgentEvent::HookDiagnostic { event, message } => {
+                cli_write(
+                    stderr,
+                    &format!(
+                        "{} hook: {}\n",
+                        pp_core::text::display_text(&event),
+                        pp_core::text::display_text(&message)
+                    ),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
             AgentEvent::ModelRequestStarted
             | AgentEvent::ToolArgumentsDelta { .. }
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::ModelRequestFinished { .. }
             | AgentEvent::UserInputAccepted { .. }
+            | AgentEvent::UserInputRejected { .. }
             | AgentEvent::ProjectInstructionsLoaded { .. }
             | AgentEvent::PlanProgressUpdated { .. }
             | AgentEvent::ToolPipelineSnapshot { .. }

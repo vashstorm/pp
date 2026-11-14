@@ -16,6 +16,9 @@ use pp_core::cancellation::{self, CancellationToken, Cancelled, RunOutcome};
 use pp_core::events::AgentEvent;
 use std::collections::VecDeque;
 
+/// 每次 `run_loop` 最多 8 次 hook 续跑；工具调用与 steering 不清零。
+const STOP_HOOK_LIMIT: u8 = 8;
+
 impl Agent {
     pub(in crate::agent) fn run_loop(
         &mut self,
@@ -29,6 +32,16 @@ impl Agent {
         let mut request_count = 0usize;
         let mut claim_boundary = true;
         let mut reminder = todo::TodoReminderState::default();
+        // 只借用 `hooks` 字段；identity 与资格在进入循环时固定。
+        let hooks = super::hooks::scope(
+            &self.hooks,
+            self.tools.subagent.as_ref(),
+            &self.workflow,
+            &self.tools.approval,
+            self.hook_agent_type.as_deref(),
+        );
+        let mut stop_hook_active = false;
+        let mut stop_continues = 0u8;
         loop {
             self.journal.check()?;
             self.ensure_subagents()?;
@@ -131,6 +144,7 @@ impl Agent {
                 input,
                 plan_dirty: &mut plan_dirty,
                 reminder: &mut reminder,
+                hooks: hooks.clone(),
             };
             let finished = match &mut self.session {
                 Session::Completion(request) => {
@@ -192,6 +206,7 @@ impl Agent {
             }
             if let TurnOutcome::Completed {
                 awaiting_user_answer,
+                text,
             } = finished
             {
                 plan_sync::sync_plan_todos(
@@ -213,11 +228,16 @@ impl Agent {
                     );
                 }
                 let remind = todo::eligible(&self.workflow, &reminder, awaiting_user_answer);
+                // 待用户答复、错误的完成候选都不跑 Stop；只有根 Execute 有资格。
+                let stop_hooks =
+                    !awaiting_user_answer && hooks.enabled(pp_config::config::HookEvent::Stop);
                 // 原子“领取或关闭”：最终回复与新补充仅在这个短锁内仲裁。
+                // 有 Stop handler 时先不关闭队列，脚本执行期间用户仍可补输入。
                 if let Some(queue) = input {
-                    let batch = queue.claim_steering(!remind)?;
-                    if !batch.is_empty() {
-                        self.apply_pending(batch, input, &mut user, cancellation, emit)?;
+                    let batch = queue.claim_steering(!remind && !stop_hooks)?;
+                    if !batch.is_empty()
+                        && self.apply_pending(batch, input, &mut user, cancellation, emit)? > 0
+                    {
                         // 本边界只消费固定批次；确认期间新到达的消息等下一边界。
                         claim_boundary = false;
                         continue;
@@ -241,6 +261,50 @@ impl Agent {
                     emit(event);
                     continue;
                 }
+                if stop_hooks {
+                    // 脚本执行期间不持队列锁；返回后重新仲裁停止决定与输入。
+                    let effect = self.hook_stop(&text, stop_hook_active, cancellation, emit)?;
+                    cancellation::check(cancellation)?;
+                    // `continue:false` 是任务级停止：先于补充输入生效，
+                    // 队列保持原样，待处理项留给下一次 run 处理。
+                    if let Some(effect) = &effect
+                        && let Some(reason) = &effect.stop_reason
+                    {
+                        bail!("{reason}");
+                    }
+                    if let Some(queue) = input {
+                        let batch = queue.claim_steering(false)?;
+                        if !batch.is_empty()
+                            && self.apply_pending(batch, input, &mut user, cancellation, emit)? > 0
+                        {
+                            claim_boundary = false;
+                            continue;
+                        }
+                    }
+                    if let Some(effect) = effect
+                        && let Some(reason) = effect.deny_reason
+                    {
+                        if stop_continues >= STOP_HOOK_LIMIT {
+                            bail!("Stop hook continuation limit reached ({STOP_HOOK_LIMIT}).");
+                        }
+                        stop_continues += 1;
+                        stop_hook_active = true;
+                        // 反馈走原生 developer 历史：恢复后不重跑脚本。
+                        append_developer_to(&mut self.session, reason);
+                        self.journal.commit((&self.session).into())?;
+                        continue;
+                    }
+                }
+                // 最终仲裁：原子领取或关闭队列；晚到的批次仍会在下一边界被应用。
+                if let Some(queue) = input {
+                    let batch = queue.claim_steering(true)?;
+                    if !batch.is_empty()
+                        && self.apply_pending(batch, input, &mut user, cancellation, emit)? > 0
+                    {
+                        claim_boundary = false;
+                        continue;
+                    }
+                }
                 return Ok(RunOutcome::Completed);
             }
             cancellation::check(cancellation)?;
@@ -250,6 +314,7 @@ impl Agent {
     // 在提交边界应用一批补充：先记账尚未持久化的初始输入，再逐条 append、
     // 持久化并确认。已确认项永不归还；取消或持久化失败时归还未应用项——
     // 归还只在唯一出口执行，失败路径不必各自维护 push_front 配对。
+    // 返回实际接受的条数：全被 hook 拒绝时调用方不能当作有新输入继续请求模型。
     pub(in crate::agent) fn apply_pending(
         &mut self,
         mut batch: VecDeque<PendingInput>,
@@ -257,34 +322,60 @@ impl Agent {
         user: &mut Option<&str>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
-    ) -> Result<()> {
-        let result = (|| -> Result<()> {
+    ) -> Result<usize> {
+        let result = (|| -> Result<usize> {
             if user.is_some()
                 && let Err(error) = self.persist_pending_input(user.take())
             {
                 return Err(error);
             }
+            let mut accepted = 0usize;
             while !batch.is_empty() {
                 if cancellation.is_cancelled() {
                     return Err(Cancelled.into());
                 }
                 let item = batch.front().expect("batch is non-empty");
+                // 补充分同样要先过 UserPromptSubmit：拒绝只丢这一项，故障才停任务。
+                let effect = self.hook_user_input(item.prompt(), cancellation, emit)?;
+                if let Some(effect) = &effect {
+                    if let Some(reason) = &effect.deny_reason {
+                        let item = batch.pop_front().expect("batch is non-empty");
+                        emit(AgentEvent::UserInputRejected {
+                            id: item.id,
+                            text: item.into_display(),
+                            reason: reason.clone(),
+                        });
+                        continue;
+                    }
+                    if let Some(reason) = &effect.stop_reason {
+                        bail!("{reason}");
+                    }
+                }
                 if let Some(prepared) = &item.prepared {
                     turn::append_input_to(&mut self.session, prepared);
                 } else {
                     self.append_user(item.prompt());
+                }
+                if let Some(effect) = &effect
+                    && !effect.additional_context.is_empty()
+                {
+                    turn::append_developer_to(
+                        &mut self.session,
+                        effect.additional_context.join("\n\n"),
+                    );
                 }
                 if let Err(error) = self.persist_pending_input(Some(item.prompt())) {
                     self.remove_last_user();
                     return Err(error);
                 }
                 let item = batch.pop_front().expect("batch is non-empty");
+                accepted += 1;
                 emit(AgentEvent::UserInputAccepted {
                     id: item.id,
                     text: item.into_display(),
                 });
             }
-            Ok(())
+            Ok(accepted)
         })();
         if result.is_err() {
             self.restore_pending(input, batch);

@@ -43,6 +43,7 @@ pub(in crate::agent::persistence) use listing::{
     compact_summary, create, latest, now_ms, parse_timestamp, timestamp,
 };
 pub use load::load;
+use stats::PendingToolStat;
 
 pub enum ReplayRecord {
     User(String),
@@ -157,6 +158,8 @@ pub(super) struct SessionJournal {
     last_stats: Option<String>,
     /// 工具调用 ID → (工具名, 开始时刻)，用于在 ToolFinished 时计算耗时。
     tool_started: HashMap<String, (String, Instant)>,
+    /// 已冻结状态与耗时、等待最终回填模型文本的工具统计。
+    pending_tool_stats: HashMap<String, PendingToolStat>,
     unlinked_stats: Arc<Mutex<Vec<String>>>,
     first_request: Arc<AtomicBool>,
 }
@@ -193,6 +196,7 @@ impl SessionJournal {
             pending_stats: None,
             last_stats: None,
             tool_started: HashMap::new(),
+            pending_tool_stats: HashMap::new(),
             unlinked_stats: Default::default(),
             first_request: Arc::new(AtomicBool::new(true)),
         }

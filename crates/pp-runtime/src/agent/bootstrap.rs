@@ -124,6 +124,8 @@ impl Agent {
                 "",
             )
             .context(crate::system_prompt::PromptFailure)?;
+        // 无效正则或结构错误阻止 Agent 构造；脚本本身只在匹配时启动。
+        let hooks = std::sync::Arc::new(crate::hooks::Runner::compile(&config.settings.hooks)?);
         let initial_system = system.clone();
         let mut session = Session::new(config.model, config.protocol, initial_system, edit_mode);
         session.set_tools(tools.all_definitions(pp_core::plan::WorkMode::Execute));
@@ -158,6 +160,8 @@ impl Agent {
             plan_cleanup_error: None,
             plan_lease: None,
             lsp_injected: Default::default(),
+            hooks,
+            hook_agent_type: None,
         })
     }
 

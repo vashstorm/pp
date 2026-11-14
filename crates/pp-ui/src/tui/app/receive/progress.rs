@@ -95,6 +95,15 @@ impl App {
             AgentEvent::UserInputAccepted { text, .. } => {
                 self.append("You", &text);
             }
+            // 被 hook 拒绝的补充分只展示原因与原文，不伪装成成功的 You 输入。
+            AgentEvent::UserInputRejected { text, reason, .. } => {
+                let mut body = format!("Input rejected: {reason}");
+                if !text.trim().is_empty() {
+                    body.push_str("\n\n");
+                    body.push_str(&pp_core::text::display_text(&text));
+                }
+                self.append("Rejected", &body);
+            }
             // 执行期计划进度：只更新缓存与只读面板，不追加整篇正文到 Transcript。
             AgentEvent::PlanProgressUpdated {
                 plan_id,

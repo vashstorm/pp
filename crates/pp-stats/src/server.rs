@@ -134,6 +134,7 @@ pub(super) fn static_text(target: &str) -> Option<(&'static str, &'static str)> 
         "/stats.css" => ("text/css", include_str!("stats.css")),
         "/ui.css" => ("text/css", include_str!("ui.css")),
         "/traces.css" => ("text/css", include_str!("traces.css")),
+        "/modern.css" => ("text/css", include_str!("modern.css")),
         "/stats.js" => ("text/javascript", include_str!("stats.js")),
         "/activity.js" => ("text/javascript", include_str!("activity.js")),
         "/insights.js" => ("text/javascript", include_str!("insights.js")),
@@ -299,6 +300,7 @@ mod tests {
         for (path, kind) in [
             ("/traces.js", "text/javascript"),
             ("/traces.css", "text/css"),
+            ("/modern.css", "text/css"),
         ] {
             let (status, content_type, body) = server::dispatch(&store, path, &[]);
             assert_eq!(status, 200, "{path}");

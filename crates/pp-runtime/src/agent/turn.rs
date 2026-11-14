@@ -1,4 +1,6 @@
+use super::hooks::{BatchCall, HookHalt, HookScope, HookSession, PreparedBatch, prepare_batch};
 use super::*;
+
 pub(super) type ReportedProjectLoads = std::collections::BTreeMap<String, String>;
 
 pub(super) fn reported_project_load(replay: &[persistence::ReplayRecord]) -> ReportedProjectLoads {
@@ -139,6 +141,7 @@ pub(super) struct TurnResources<'a> {
     pub(super) input: Option<&'a InputQueue>,
     pub(super) plan_dirty: &'a mut bool,
     pub(super) reminder: &'a mut todo::TodoReminderState,
+    pub(super) hooks: HookScope,
 }
 
 fn tool_policy<'a>(
@@ -161,8 +164,81 @@ fn tool_policy<'a>(
 
 pub(super) enum TurnOutcome {
     Continue,
-    Completed { awaiting_user_answer: bool },
+    Completed {
+        awaiting_user_answer: bool,
+        /// 本次最终助手文本；Stop hook 的 `last_assistant_message` 直接用它。
+        text: String,
+    },
     PlanSubmitted,
+}
+
+/// 未执行的调用仍然要产生一条 `ok:false` 结果与成对的工具事件；
+/// 合成事件同样进入展示捕获边界，使恢复与会话树能看到这些卡片。
+/// 取消导致的跳过保留 `cancelled` 标记，这样工具统计与卡片按取消归类，
+/// 不会因为 `HookHalt::Failure` 而变成错误。
+fn not_executed(
+    journal: &mut SessionJournal,
+    emit: &mut dyn FnMut(AgentEvent),
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+    halt: &HookHalt,
+) -> String {
+    let started = AgentEvent::ToolStarted {
+        id: call_id.to_owned(),
+        name: name.to_owned(),
+        arguments: arguments.to_owned(),
+    };
+    journal.event(&started);
+    emit(started);
+    let result = match halt {
+        HookHalt::Stop(reason) => {
+            serde_json::json!({"ok": false, "error": format!("Not executed: {reason}")})
+        }
+        HookHalt::Failure(error) if error.chain().any(|cause| cause.is::<Cancelled>()) => {
+            serde_json::json!({"ok": false, "cancelled": true, "error": "Not executed: task cancelled."})
+        }
+        HookHalt::Failure(error) => {
+            serde_json::json!({"ok": false, "error": format!("Not executed: {error:#}")})
+        }
+    };
+    let finished = AgentEvent::ToolFinished {
+        id: call_id.to_owned(),
+        result: result.clone(),
+    };
+    journal.event(&finished);
+    emit(finished);
+    let serialized = result.to_string();
+    journal.record_tool_output(call_id, &serialized);
+    serialized
+}
+
+/// CleanupError 优先：既不能让 hook 反馈掩盖回收失败，也不能反过来。
+fn batch_failure(
+    hook: Option<anyhow::Error>,
+    tool: Option<anyhow::Error>,
+) -> Option<anyhow::Error> {
+    match (hook, tool) {
+        (Some(hook), Some(tool)) => Some(if hook.is::<pp_core::cancellation::CleanupError>() {
+            hook
+        } else if tool.is::<pp_core::cancellation::CleanupError>() {
+            tool
+        } else {
+            hook
+        }),
+        (hook, tool) => hook.or(tool),
+    }
+}
+
+fn push_developer(request: &mut CreateChatCompletionRequest, text: String) {
+    request
+        .messages
+        .push(ChatCompletionRequestMessage::Developer(
+            async_openai::types::chat::ChatCompletionRequestDeveloperMessage {
+                content: text.into(),
+                ..Default::default()
+            },
+        ));
 }
 
 /// 记录一次普通请求的用量：`last_request` 只保存最近一次，会话累计只增不减。
@@ -370,6 +446,7 @@ pub(super) fn completion_turn(
         input: queue,
         plan_dirty,
         reminder,
+        hooks,
     } = resources;
     tracing::info!(
         event = "model_request_started",
@@ -437,13 +514,13 @@ pub(super) fn completion_turn(
     };
     cancellation::check(cancellation)?;
     let usage = response.usage;
-    let response = response.message;
+    let mut response = response.message;
     let text = match &response.content {
         Some(ChatCompletionRequestAssistantMessageContent::Text(text)) => text.clone(),
         _ => String::new(),
     };
     let awaiting_user_answer = todo::is_awaiting_user_answer(&text);
-    let event = AgentEvent::AssistantFinished { text };
+    let event = AgentEvent::AssistantFinished { text: text.clone() };
     journal.event(&event);
     emit(event);
     let calls = response.tool_calls.as_deref().unwrap_or_default();
@@ -454,8 +531,50 @@ pub(super) fn completion_turn(
         record_usage(last_request, session_output_tokens, usage);
         return Ok(TurnOutcome::Completed {
             awaiting_user_answer,
+            text,
         });
     }
+    // 整批 PreToolUse 先于项目指令预检与任何执行；参数改写要写回原生调用，
+    // 这样预检、审批、ToolStarted 与已提交历史看到同一份有效参数。
+    let mut hook_session = None;
+    let mut prepared: Option<PreparedBatch> = None;
+    if hooks.tool_events() {
+        let session = HookSession::prepare(
+            hooks.clone(),
+            journal,
+            metadata,
+            SessionRef::Completion(request),
+            workflow,
+            tools.cwd(),
+        )?;
+        let batch: Vec<BatchCall<'_>> = response
+            .tool_calls
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|call| match call {
+                ChatCompletionMessageToolCalls::Function(call) => Some(BatchCall {
+                    name: call.function.name.as_str(),
+                    call_id: call.id.as_str(),
+                    arguments: call.function.arguments.as_str(),
+                }),
+                _ => None,
+            })
+            .collect();
+        prepared = Some(prepare_batch(&session, &batch, cancellation, emit)?);
+        drop(batch);
+        if let (Some(calls), Some(prepared)) = (response.tool_calls.as_mut(), &prepared) {
+            for (call, prepared) in calls.iter_mut().zip(&prepared.calls) {
+                if let ChatCompletionMessageToolCalls::Function(call) = call
+                    && let Some(arguments) = &prepared.updated_arguments
+                {
+                    call.function.arguments.clone_from(arguments);
+                }
+            }
+        }
+        hook_session = Some(session);
+    }
+    let calls = response.tool_calls.as_deref().unwrap_or_default();
     tools.prepare_instruction_batch(
         calls.iter().filter_map(|call| match call {
             ChatCompletionMessageToolCalls::Function(call) => Some((
@@ -474,6 +593,8 @@ pub(super) fn completion_turn(
     let mut stop_error = None;
     let mut sealed = false;
     let mut attachments = Vec::new();
+    let mut hook_context: Vec<String> = Vec::new();
+    let mut hook_halt = prepared.as_mut().and_then(|batch| batch.halt.take());
     let batch_result = (|| -> Result<()> {
         for index in 0..count {
             let ChatCompletionRequestMessage::Assistant(response) =
@@ -488,6 +609,23 @@ pub(super) fn completion_turn(
             else {
                 bail!("agent invariant: missing function call");
             };
+            if let Some(halt) = &hook_halt {
+                let serialized = not_executed(
+                    journal,
+                    &mut *emit,
+                    &call.id,
+                    &call.function.name,
+                    &call.function.arguments,
+                    halt,
+                );
+                request.messages.push(ChatCompletionRequestMessage::Tool(
+                    ChatCompletionRequestToolMessage {
+                        tool_call_id: call.id.clone(),
+                        content: serialized.into(),
+                    },
+                ));
+                continue;
+            }
             if !sealed
                 && tools.instruction_batch_blocked().is_none()
                 && call.function.name == "todo"
@@ -504,17 +642,32 @@ pub(super) fn completion_turn(
                     journal.event(&event);
                     emit(event);
                 };
+                let hook = hook_session.as_ref().and_then(|session| {
+                    let prepared = prepared.as_ref()?.calls.get(index)?;
+                    Some(crate::agent::hooks::ToolHookCall {
+                        session,
+                        call: prepared,
+                    })
+                });
                 tools.execute_with_fetch(
                     &call.function.name,
                     &call.function.arguments,
                     &call.id,
                     tool_policy(workflow, sealed, queue)?,
+                    hook,
                     cancellation,
                     &mut progress,
                     &mut |url, token| client.fetch_read_url(url, token),
                 )
             };
+            // 结果字符数取最终回填模型的文本：post hook 可能已改写正文。
+            journal.record_tool_output(&call.id, &content.output);
             reminder.awaiting_progress = false;
+            // 前置 hook 的上下文已在工具执行器里随 `hook_context` 返回，不重复追加。
+            hook_context.extend(content.hook_context);
+            if hook_halt.is_none() {
+                hook_halt = content.hook_halt;
+            }
             if stop_error.is_none() {
                 stop_error = content.stop_error;
             }
@@ -552,8 +705,15 @@ pub(super) fn completion_turn(
         return Err(error);
     }
     tool_images::append_chat(&mut request.messages, attachments);
+    if !hook_context.is_empty() {
+        push_developer(request, hook_context.join("\n\n"));
+    }
     record_usage(last_request, session_output_tokens, usage);
-    if let Some(error) = stop_error {
+    let hook_error = hook_halt.map(|halt| match halt {
+        HookHalt::Stop(reason) => anyhow::anyhow!("{reason}"),
+        HookHalt::Failure(error) => error,
+    });
+    if let Some(error) = batch_failure(hook_error, stop_error) {
         journal.commit(SessionRef::Completion(request))?;
         return Err(error);
     }
@@ -583,6 +743,7 @@ pub(super) fn response_turn(
         input: queue,
         plan_dirty,
         reminder,
+        hooks,
     } = resources;
     tracing::info!(
         event = "model_request_started",
@@ -650,35 +811,121 @@ pub(super) fn response_turn(
     };
     cancellation::check(cancellation)?;
     let awaiting_user_answer = todo::is_awaiting_user_answer(&turn.text);
-    let event = AgentEvent::AssistantFinished { text: turn.text };
+    let text = turn.text;
+    let event = AgentEvent::AssistantFinished { text: text.clone() };
     journal.event(&event);
     emit(event);
-    let input = response_input(request);
-    let start = input.len();
-    input.extend(turn.output.into_iter().map(InputItem::from));
+    // 先按短借用追加本轮输出，参数改写后再拿长借用执行。
+    let start = response_input(request).len();
+    let appended: Vec<InputItem> = turn.output.into_iter().map(InputItem::from).collect();
+    response_input(request).extend(appended);
     if !turn.has_calls {
         record_usage(last_request, session_output_tokens, turn.usage);
         return Ok(TurnOutcome::Completed {
             awaiting_user_answer,
+            text,
         });
     }
-    let end = input.len();
-    tools.prepare_instruction_batch(
-        input[start..end].iter().filter_map(|item| match item {
-            InputItem::Item(Item::FunctionCall(call)) => {
-                Some((call.name.as_str(), call.arguments.as_str()))
+    let end = response_input(request).len();
+    // Responses 在本轮调用段确定后、执行前准备参数；改写结果写回原生调用对象。
+    // 任何准备失败（含取消）都要回到 `start`：残留的 function_call 没有对应结果，
+    // 下一次任务的原生历史会被供应商拒绝。
+    let hook_prep = (|| -> Result<(Option<HookSession>, Option<PreparedBatch>)> {
+        let mut hook_session = None;
+        let mut prepared = None;
+        if hooks.tool_events() {
+            let session = HookSession::prepare(
+                hooks.clone(),
+                journal,
+                metadata,
+                SessionRef::Response(request),
+                workflow,
+                tools.cwd(),
+            )?;
+            let batch: Vec<BatchCall<'_>> = response_input(request)[start..end]
+                .iter()
+                .filter_map(|item| match item {
+                    InputItem::Item(Item::FunctionCall(call)) => Some(BatchCall {
+                        name: call.name.as_str(),
+                        call_id: call.call_id.as_str(),
+                        arguments: call.arguments.as_str(),
+                    }),
+                    _ => None,
+                })
+                .collect();
+            prepared = Some(prepare_batch(&session, &batch, cancellation, emit)?);
+            drop(batch);
+            if let Some(prepared) = &prepared {
+                let mut updated = prepared.calls.iter();
+                for item in response_input(request)[start..end].iter_mut() {
+                    let InputItem::Item(Item::FunctionCall(call)) = item else {
+                        continue;
+                    };
+                    let Some(prepared) = updated.next() else {
+                        break;
+                    };
+                    if let Some(arguments) = &prepared.updated_arguments {
+                        call.arguments.clone_from(arguments);
+                    }
+                }
             }
-            _ => None,
-        }),
+            hook_session = Some(session);
+        }
+        Ok((hook_session, prepared))
+    })();
+    let (hook_session, mut prepared) = match hook_prep {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            response_input(request).truncate(start);
+            return Err(error);
+        }
+    };
+    tools.prepare_instruction_batch(
+        response_input(request)[start..end]
+            .iter()
+            .filter_map(|item| match item {
+                InputItem::Item(Item::FunctionCall(call)) => {
+                    Some((call.name.as_str(), call.arguments.as_str()))
+                }
+                _ => None,
+            }),
         workflow.mode,
     );
+    let input = response_input(request);
     let mut stop_error = None;
     let mut sealed = false;
+    let mut hook_context: Vec<String> = Vec::new();
+    let mut hook_halt = prepared.as_mut().and_then(|batch| batch.halt.take());
+    let mut call_index = 0usize;
     let batch_result = (|| -> Result<()> {
         for index in start..end {
             let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
                 continue;
             };
+            let position = call_index;
+            call_index += 1;
+            if let Some(halt) = &hook_halt {
+                let serialized = not_executed(
+                    journal,
+                    &mut *emit,
+                    &call.call_id,
+                    &call.name,
+                    &call.arguments,
+                    halt,
+                );
+                input.push(InputItem::Item(Item::FunctionCallOutput(
+                    FunctionCallOutputItemParam {
+                        call_id: Some(call.call_id.clone()),
+                        output: serialized.into(),
+                        id: None,
+                        status: None,
+                        name: None,
+                        namespace: None,
+                        caller: None,
+                    },
+                )));
+                continue;
+            }
             if !sealed && tools.instruction_batch_blocked().is_none() && call.name == "todo" {
                 plan_sync::sync_plan_todos(tools, journal, workflow, emit, false)?;
                 *plan_dirty = false;
@@ -692,17 +939,32 @@ pub(super) fn response_turn(
                     journal.event(&event);
                     emit(event);
                 };
+                let hook = hook_session.as_ref().and_then(|session| {
+                    let prepared = prepared.as_ref()?.calls.get(position)?;
+                    Some(crate::agent::hooks::ToolHookCall {
+                        session,
+                        call: prepared,
+                    })
+                });
                 tools.execute_with_fetch(
                     &call.name,
                     &call.arguments,
                     &call.call_id,
                     tool_policy(workflow, sealed, queue)?,
+                    hook,
                     cancellation,
                     &mut progress,
                     &mut |url, token| client.fetch_read_url(url, token),
                 )
             };
+            // 结果字符数取最终回填模型的文本：post hook 可能已改写正文。
+            journal.record_tool_output(&call.call_id, &output.output);
             reminder.awaiting_progress = false;
+            // 前置 hook 的上下文已在工具执行器里随 `hook_context` 返回，不重复追加。
+            hook_context.extend(output.hook_context);
+            if hook_halt.is_none() {
+                hook_halt = output.hook_halt;
+            }
             if stop_error.is_none() {
                 stop_error = output.stop_error;
             }
@@ -743,8 +1005,19 @@ pub(super) fn response_turn(
         response_input(request).truncate(start);
         return Err(error);
     }
+    if !hook_context.is_empty() {
+        response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
+            role: Role::Developer,
+            content: hook_context.join("\n\n").into(),
+            ..Default::default()
+        }));
+    }
     record_usage(last_request, session_output_tokens, turn.usage);
-    if let Some(error) = stop_error {
+    let hook_error = hook_halt.map(|halt| match halt {
+        HookHalt::Stop(reason) => anyhow::anyhow!("{reason}"),
+        HookHalt::Failure(error) => error,
+    });
+    if let Some(error) = batch_failure(hook_error, stop_error) {
         journal.commit(SessionRef::Response(request))?;
         return Err(error);
     }

@@ -29,6 +29,36 @@ const TOOL_SERIES_COLORS = [
   "#c3e94f",
   "#fb7185",
 ];
+const TOOL_MODERN_DARK_COLORS = [
+  "#7aa2f7",
+  "#d7af5f",
+  "#3dd69b",
+  "#2ac3de",
+  "#bb9af7",
+  "#f7768e",
+  "#ff9e64",
+  "#73daca",
+  "#9ece6a",
+  "#7dcfff",
+];
+const TOOL_MODERN_LIGHT_COLORS = [
+  "#2e6be6",
+  "#b88418",
+  "#0e885d",
+  "#0891b2",
+  "#7c3aed",
+  "#cf333a",
+  "#d96b1f",
+  "#0d9488",
+  "#65a30d",
+  "#0284c7",
+];
+const toolSeriesColors = () =>
+  document.documentElement.dataset.style === "modern"
+    ? document.documentElement.dataset.theme === "dark"
+      ? TOOL_MODERN_DARK_COLORS
+      : TOOL_MODERN_LIGHT_COLORS
+    : TOOL_SERIES_COLORS;
 const TOOL_OTHER_COLOR = "#6c6c74";
 const TOOL_TOP_TOOLS = 6;
 const TOOL_ATTRIBUTION =
@@ -106,9 +136,10 @@ function toolBucketAxis(timestamps) {
 }
 
 function toolColorLookup(rows) {
+  const palette = toolSeriesColors();
   const ranked = [...rows].sort((a, b) => b.calls - a.calls || a.tool.localeCompare(b.tool));
   return new Map(
-    ranked.map((row, index) => [row.tool, TOOL_SERIES_COLORS[index % TOOL_SERIES_COLORS.length]]),
+    ranked.map((row, index) => [row.tool, palette[index % palette.length]]),
   );
 }
 
@@ -136,10 +167,11 @@ function toolPivot(points, buckets, limit, colors, keyOf = (point) => point.tool
     .sort((a, b) => b.total - a.total || a.key.localeCompare(b.key));
   const head = ranked.slice(0, limit);
   const tail = ranked.slice(limit);
+  const palette = toolSeriesColors();
   const series = head.map((entry, rank) => ({
     key: entry.key,
     label: entry.key,
-    color: colors.get(entry.key) ?? TOOL_SERIES_COLORS[rank % TOOL_SERIES_COLORS.length],
+    color: colors.get(entry.key) ?? palette[rank % palette.length],
     values: entry.values,
   }));
   if (tail.length) {
@@ -172,6 +204,7 @@ function toolNormalize(tool) {
     errors: tool.errors,
     argsChars: tool.args_chars ?? 0,
     resultChars: tool.result_chars,
+    resultCalls: tool.result_calls ?? 0,
     totalTokensShare: tool.tokens ?? 0,
     outputTokensShare: tool.output_tokens ?? 0,
     costShare: tool.cost,
@@ -195,7 +228,7 @@ function toolView() {
         errorRate,
         resultKnown: row.resultChars != null,
         avgResultChars:
-          row.resultChars == null || row.calls === 0 ? null : row.resultChars / row.calls,
+          row.resultChars == null || row.resultCalls === 0 ? null : row.resultChars / row.resultCalls,
       };
     })
     .sort((a, b) => b.calls - a.calls);
@@ -209,6 +242,7 @@ function toolView() {
   const resultChars = resultKnown
     ? rows.reduce((sum, row) => sum + (row.resultChars ?? 0), 0)
     : null;
+  const resultCalls = rows.reduce((sum, row) => sum + row.resultCalls, 0);
   const argsChars = rows.reduce((sum, row) => sum + row.argsChars, 0);
   for (const row of rows) {
     row.callFraction = calls > 0 ? row.calls / calls : 0;
@@ -261,6 +295,7 @@ function toolView() {
     unpriced: rows.reduce((sum, row) => sum + row.unpricedRequestsShare, 0),
     resultChars,
     resultKnown,
+    resultCalls,
     argsChars,
   };
   return {
@@ -357,11 +392,11 @@ function toolStatGrids(view) {
     toolStat(
       "Result text",
       totals.resultChars == null ? "—" : `${toolCompact(totals.resultChars)} chars`,
-      undefined,
+      totals.resultKnown ? `${toolInteger(totals.resultCalls)} recorded calls` : "No result data",
       {
         size: "sm",
         title:
-          "Characters of tool-result text fed back into context; not recorded by this pp version",
+          "Characters of tool-result text fed back into context; totals include recorded results only",
       },
     ),
     toolStat("Call arguments", `${toolCompact(totals.argsChars)} chars`, undefined, {
@@ -370,13 +405,13 @@ function toolStatGrids(view) {
     }),
     toolStat(
       "Avg result per call",
-      totals.resultChars == null || totals.calls === 0
+      totals.resultChars == null || totals.resultCalls === 0
         ? "—"
-        : `${toolCompact(Math.round(totals.resultChars / totals.calls))} chars`,
-      undefined,
+        : `${toolCompact(Math.round(totals.resultChars / totals.resultCalls))} chars`,
+      totals.resultKnown ? `${toolInteger(totals.resultCalls)} recorded calls` : "No result data",
       {
         size: "sm",
-        title: "Mean tool-result characters per call; not recorded by this pp version",
+        title: "Mean tool-result characters per recorded result; historical and unexecuted calls are excluded",
       },
     ),
     toolStat(
@@ -567,12 +602,12 @@ function toolColumns(view) {
       align: "right",
       sort: (row) => row.resultChars ?? -1,
       render: (row) =>
-        `<span class="x-num"${row.resultKnown ? "" : ' title="Not recorded by this pp version"'}>${toolCompact(row.resultChars)}</span>`,
+        `<span class="x-num" title="${row.resultKnown ? `${toolInteger(row.resultCalls)} recorded calls` : "No result data"}">${toolCompact(row.resultChars)}</span>`,
     },
     {
       key: "avgResult",
       header: "Result / call",
-      title: "Mean tool-result characters per call",
+      title: "Mean tool-result characters per recorded result",
       align: "right",
       sort: (row) => row.avgResultChars ?? -1,
       render: (row) =>

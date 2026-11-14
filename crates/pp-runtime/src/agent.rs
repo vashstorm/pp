@@ -2,6 +2,7 @@ pub mod context;
 mod debug;
 mod fallback;
 mod history;
+pub(crate) mod hooks;
 pub mod input;
 mod lsp;
 mod mcp_management;
@@ -157,6 +158,10 @@ pub struct Agent {
     plan_lease: Option<crate::tools::plan_catalog::PlanLease>,
     /// 本次运行已追加但尚未完成 native commit 的迟到报告，避免错误重试复制正文。
     lsp_injected: std::collections::HashSet<u64>,
+    /// 进程内冻结的用户级 hook 配置；子 Agent 克隆同一份。
+    hooks: std::sync::Arc<crate::hooks::Runner>,
+    /// 子 Agent 的角色定义名（`agent_type`）；根 Agent 为 `None`。
+    hook_agent_type: Option<String>,
 }
 
 /// Everything the UI must adopt after a mode transition: the worker publishes

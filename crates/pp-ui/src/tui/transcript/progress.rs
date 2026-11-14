@@ -49,7 +49,9 @@ impl Transcript {
                 AgentEvent::CompactionStarted { .. } => activity.phase("Compacting context"),
                 AgentEvent::CompactionFinished { .. } => {}
                 // 用户输入确认由 App 消费；不重置活动阶段、不产生重复卡片。
-                AgentEvent::UserInputAccepted { .. } => {}
+                AgentEvent::UserInputAccepted { .. } | AgentEvent::UserInputRejected { .. } => {}
+                // hook 诊断只是提示，不改变活动阶段。
+                AgentEvent::HookDiagnostic { .. } => {}
             }
         }
     }
@@ -79,6 +81,12 @@ impl Transcript {
             | AgentEvent::ModelRequestFinished { .. } => {}
             // 已接受的补充输入由 App 直接追加，不生成重复用户卡。
             AgentEvent::UserInputAccepted { .. } => {}
+            // 被拒绝的补充输入由 App 追加拒绝卡，不进普通对话流。
+            AgentEvent::UserInputRejected { .. } => {}
+            // hook 诊断沿用 Note 样式：只展示，不进入模型上下文。
+            AgentEvent::HookDiagnostic { event, message } => {
+                self.append("Note", &format!("{event} hook: {message}"));
+            }
             AgentEvent::CompactionStarted { .. } => {}
             // 完整任务只在固定区展示，旧日志的快照同样不生成历史卡片。
             AgentEvent::TodoSnapshot { .. } | AgentEvent::TodoStateUpdated { .. } => {}
