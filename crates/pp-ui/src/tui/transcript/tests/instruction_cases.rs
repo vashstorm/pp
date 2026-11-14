@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn instruction_reads_share_normal_groups_without_showing_bodies() {
-    let mut transcript = Transcript::new();
+    let mut transcript = Transcript::new().with_cwd(std::path::Path::new("/project"));
     transcript.progress(AgentEvent::ProjectInstructionsLoaded {
-        path: "/project/AGENTS.md".into(),
+        path: "/project/crates/pp-runtime/AGENTS.md".into(),
         content: "# Rules\n**literal guidance**\nlast-rule".into(),
     });
     for (id, path) in [("file", "file.rs"), ("skill", "skill://rust")] {
@@ -16,9 +16,14 @@ fn instruction_reads_share_normal_groups_without_showing_bodies() {
     }
     let text = screen(&render(&mut transcript, 100, 30));
     assert!(text.contains("Read (3)"), "{text}");
-    for path in ["/project/AGENTS.md", "file.rs", "skill://rust"] {
+    for path in ["crates/pp-runtime/AGENTS.md", "file.rs", "skill://rust"] {
         assert!(text.contains(path), "{text}");
     }
+    assert!(!text.contains("/project/"), "{text}");
+    assert_eq!(
+        transcript.entries[0].arguments["path"],
+        "/project/crates/pp-runtime/AGENTS.md"
+    );
     assert!(
         !text.contains("Rules") && !text.contains("skill-body"),
         "{text}"
@@ -118,10 +123,10 @@ fn instruction_reads_neutralize_controls_at_narrow_widths() {
 #[test]
 fn instruction_reads_replay_tree_and_native_boundaries() {
     let event = || AgentEvent::ProjectInstructionsLoaded {
-        path: "/old/AGENTS.md".into(),
+        path: "/project/crates/pp-runtime/AGENTS.md".into(),
         content: "recorded-body\n".into(),
     };
-    let mut transcript = Transcript::new();
+    let mut transcript = Transcript::new().with_cwd(std::path::Path::new("/project"));
     assert!(
         transcript
             .replay(vec![ReplayRecord::Event(event())])
@@ -129,13 +134,15 @@ fn instruction_reads_replay_tree_and_native_boundaries() {
     );
     let text = screen(&render(&mut transcript, 100, 30));
     assert!(
-        text.contains("/old/AGENTS.md") && !text.contains("recorded-body"),
+        text.contains("crates/pp-runtime/AGENTS.md")
+            && !text.contains("/project/")
+            && !text.contains("recorded-body"),
         "{text}"
     );
     transcript.toggle_tool_output();
     assert_eq!(screen(&render(&mut transcript, 100, 30)), text);
 
-    let mut transcript = Transcript::new();
+    let mut transcript = Transcript::new().with_cwd(std::path::Path::new("/project"));
     let range = transcript.append_tree_node(vec![ReplayRecord::Event(event())], "");
     assert_eq!(range, 0..1);
     let blocks = [TreeBlock {
@@ -152,16 +159,23 @@ fn instruction_reads_replay_tree_and_native_boundaries() {
         12,
     ));
     assert!(
-        text.contains("/old/AGENTS.md") && !text.contains("recorded-body"),
+        text.contains("crates/pp-runtime/AGENTS.md")
+            && !text.contains("/project/")
+            && !text.contains("recorded-body"),
         "{text}"
     );
 
-    let mut transcript = Transcript::new();
+    let mut transcript = Transcript::new().with_cwd(std::path::Path::new("/project"));
     transcript.append("You", "run");
     transcript.progress(event());
     transcript.append("Assistant", &"tail-line\n\n".repeat(40));
     let output = retire_native(&mut transcript, 60, 30, false);
-    assert_eq!(output.matches("/old/AGENTS.md").count(), 1, "{output}");
+    assert_eq!(
+        output.matches("crates/pp-runtime/AGENTS.md").count(),
+        1,
+        "{output}"
+    );
+    assert!(!output.contains("/project/"), "{output}");
     assert!(!output.contains("recorded-body"), "{output}");
     assert!(
         retire_native(&mut transcript, 60, 30, false)

@@ -98,6 +98,7 @@ impl Transcript {
                     content,
                     Some("read".into()),
                 );
+                entry.cwd = self.cwd.clone();
                 entry.arguments = serde_json::json!({"path": path});
                 entry.display = self.display;
                 entry.expanded = self.tools_expanded && entry.is_collapsible_tool();
