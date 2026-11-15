@@ -259,6 +259,39 @@ fn resource_clipboard_pending_blocks_submit_and_image_summary_is_visible() {
 }
 
 #[test]
+fn resource_empty_clipboard_preserves_selected_draft_without_error() {
+    let (mut app, commands, _dir) = resource_app();
+    app.insert_input("draft".into());
+    app.insert_images(vec![image()]);
+    app.input.move_cursor(CursorMove::Head);
+    app.input.start_selection();
+    app.input.move_cursor(CursorMove::End);
+    let source = app.input_text();
+    let selection = app.input.selection_range();
+    let cursor = app.input.cursor();
+    let screen = draw(&mut app, 120, 30);
+    let (sender, receiver) = mpsc::channel();
+    app.resources.job = Some(resources::Job {
+        reply: receiver,
+        cancellation: CancellationToken::new(),
+        source: source.clone(),
+        kind: PendingKind::Steering,
+        cursor,
+        replace_paste: false,
+        prepare_after: None,
+    });
+    sender.send(Ok(resources::Output::Empty)).unwrap();
+    assert!(app.receive_resources());
+    assert!(app.resources.job.is_none());
+    assert_eq!(app.input_text(), source);
+    assert_eq!(app.input.selection_range(), selection);
+    assert_eq!(app.input.cursor(), cursor);
+    assert_eq!(app.resources.active_images(&source).len(), 1);
+    assert!(commands.try_recv().is_err());
+    assert_eq!(draw(&mut app, 120, 30), screen);
+}
+
+#[test]
 fn resource_edit_during_possible_image_paste_keeps_original_text() {
     let (mut app, _, _) = resource_app();
     app.handle(Event::Paste("explain image.png".into()), &mut false);

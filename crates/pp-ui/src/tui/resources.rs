@@ -27,6 +27,7 @@ pub(super) enum Operation {
 }
 
 pub(super) enum Output {
+    Empty,
     Prepared(UserInput),
     Images(Vec<Image>),
     Text(String),
@@ -423,7 +424,11 @@ fn read_clipboard(
             )?]))
         }
         Err(arboard::Error::ContentNotAvailable) => {
-            let text = clipboard.text().context("剪贴板没有可用图片或文本")?;
+            let text = match clipboard.text() {
+                Ok(text) => text,
+                Err(arboard::Error::ContentNotAvailable) => return Ok(Output::Empty),
+                Err(error) => return Err(error).context("读取剪贴板文本失败"),
+            };
             if let Some(paths) = user_input::pasted_paths(&text, cwd) {
                 Ok(Output::Images(load_paths(paths, token)?))
             } else {
@@ -440,7 +445,7 @@ mod tests {
     struct Clipboard {
         files: Vec<PathBuf>,
         bitmap: bool,
-        text: String,
+        text: std::result::Result<String, arboard::Error>,
         image_reads: usize,
     }
     impl ClipboardSource for Clipboard {
@@ -460,7 +465,7 @@ mod tests {
             }
         }
         fn text(&mut self) -> std::result::Result<String, arboard::Error> {
-            Ok(self.text.clone())
+            std::mem::replace(&mut self.text, Err(arboard::Error::ContentNotAvailable))
         }
     }
 
@@ -478,7 +483,7 @@ mod tests {
         let mut source = Clipboard {
             files: paths,
             bitmap: true,
-            text: String::new(),
+            text: Ok(String::new()),
             image_reads: 0,
         };
         let Output::Images(images) =
@@ -497,7 +502,7 @@ mod tests {
         let mut source = Clipboard {
             files: Vec::new(),
             bitmap: true,
-            text: "unused".into(),
+            text: Ok("unused".into()),
             image_reads: 0,
         };
         let Output::Images(images) =
@@ -514,5 +519,34 @@ mod tests {
             panic!()
         };
         assert_eq!(text, "unused");
+    }
+
+    #[test]
+    fn resource_clipboard_unavailable_content_is_empty_but_other_errors_propagate() {
+        let dir = tempfile::tempdir().unwrap();
+        for error in [
+            arboard::Error::ContentNotAvailable,
+            arboard::Error::ClipboardOccupied,
+            arboard::Error::ConversionFailure,
+        ] {
+            let unavailable = matches!(error, arboard::Error::ContentNotAvailable);
+            let expected = std::mem::discriminant(&error);
+            let mut source = Clipboard {
+                files: Vec::new(),
+                bitmap: false,
+                text: Err(error),
+                image_reads: 0,
+            };
+            let result = read_clipboard(&mut source, dir.path(), &CancellationToken::new());
+            if unavailable {
+                assert!(matches!(result, Ok(Output::Empty)));
+            } else {
+                let actual = result.err().expect("剪贴板故障应继续上报");
+                assert_eq!(
+                    std::mem::discriminant(actual.downcast_ref::<arboard::Error>().unwrap()),
+                    expected
+                );
+            }
+        }
     }
 }

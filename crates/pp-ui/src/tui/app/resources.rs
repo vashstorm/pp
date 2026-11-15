@@ -93,6 +93,7 @@ impl App {
         };
         let job = self.resources.job.take().expect("当前输入资源任务");
         match result {
+            Ok(resources::Output::Empty) => {}
             Ok(resources::Output::Prepared(input)) => {
                 let discussion = std::mem::take(&mut self.resources.plan_discussion);
                 let display = input.display.clone();
