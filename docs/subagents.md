@@ -8,8 +8,8 @@ pp 可以把独立工作交给多个子 Agent，并在主会话继续工作。�
 
 > 并行调查运行循环与持久化，分别报告证据，再汇总实现建议。
 
-- `/agents` 和 `/subagents`：都打开 Agent Hub 的 Agents 页，行模式下输出子 Agent 快照。主输入框上方显示子任务摘要。
-- `/Roles`：打开独立的模型角色配置页。
+- `/agents`：打开 Agent Hub 的 Agents 页，行模式下输出子 Agent 快照。主输入框上方显示子任务摘要。
+- `/roles`（或 `/setting roles`）：打开统一设置面板的模型角色配置页。
 - `⌥ + A`（macOS）／`Alt + A`（Linux）：在主视图与 Agent Hub 之间切换，补全菜单展开时也可使用；保留主输入草稿，其他模态面板仍独占输入。未获得子 Agent 绑定时显示空态而不是报错。
 - Hub 使用青色圆角外框。宽屏左栏显示 Roster 与全局用量，右栏显示所选 Agent 的概要，底栏横跨两栏。窄屏用 Tab 在列表和概要间切换。
 - `/test-task`：dev/test 构建专用的固定自检（其他构建由 `#[cfg(debug_assertions)]` 编译排除，命令名不注册，按未注册命令静默忽略），使用独立的本地 mock 配置派发 FAST、SLOW、REVIEW 三个只读子 Agent 并等待结果；详见[常用命令](guide.md#常用命令与快捷键)。
@@ -46,9 +46,9 @@ task:
 
 空闲 7 分钟后进入 `parked`，保留身份、结果、历史与隔离工作区；`idle_ttl_ms: 0` 关闭正常的空闲驻留计时。`request_budget: 0` 关闭请求预算；默认在 200 次请求时提示收尾，达到 300 次停止运行并保留已保存成果。
 
-通过 `/Roles` 配置并启用内置角色，可设置主模型、effort 和备用模型。任务项示例为 `{"role":"fast","readonly":true,"task":"定位实现"}`。工具只列已启用的内置角色和已加载的自定义角色。整批任务会在启动前校验，省略 `role` 或使用未知、停用、保留的名称都会导致整批被拒绝。没有可用角色时，`task` 工具会隐藏。
+通过 `/roles` 配置并启用内置角色，可设置主模型、effort 和备用模型。任务项示例为 `{"role":"fast","readonly":true,"task":"定位实现"}`。工具只列已启用的内置角色和已加载的自定义角色。整批任务会在启动前校验，省略 `role` 或使用未知、停用、保留的名称都会导致整批被拒绝。没有可用角色时，`task` 工具会隐藏。
 
-内置角色在派发时确定主备路由。之后通过 `/Roles` 修改模型或 effort，会在绑定该角色的子 Agent 下一次请求前生效。自定义角色使用派发时选定的模型和 effort。详见[模型 Roles](guide.md#模型-roles)。
+内置角色在派发时确定主备路由。之后通过 `/roles` 修改模型或 effort，会在绑定该角色的子 Agent 下一次请求前生效。自定义角色使用派发时选定的模型和 effort。详见[模型 Roles](guide.md#模型-roles)。
 
 ## 自定义 Role
 
@@ -71,7 +71,7 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 普通 child 不复制父对话，只接收系统 Role 对应的任务约束、任务、共享背景、适用的 `AGENTS.md`、可用 Skill 与相关批准计划；不注入 Main 的 Plan／批准执行委托规则。父 TODO 和计划状态仍由 Main 管理。 每个 child 独立加载工作目录的祖先规则及按需访问的目录规则；本地修改前使用自己的模型请求快照检查，不继承 Main 的放行状态。独立 worktree 按自身路径和实际文件解析，规则语义见[分层 AGENTS.md](guide.md#项目级-agentsmd)。自定义提示词、任务背景、项目规则和批准计划中的原文不会被字符串清洗，普通任务说明、结果约定及 `yield` 提示保持不变。
 
-内置 Role 采用相同的 Markdown 格式，随二进制打包，修改后重新构建生效。模型绑定和启用状态通过 `/Roles` 保存在 `agent.db`。
+内置 Role 采用相同的 Markdown 格式，随二进制打包，修改后重新构建生效。模型绑定和启用状态通过 `/roles` 保存在 `agent.db`。
 
 - DEFAULT 提供主 Agent 的默认提示词。[system.md](../crates/pp-runtime/src/prompts/system.md)
 - PLAN 提供 Plan 模式的规划规则。[plan.md](../crates/pp-runtime/src/prompts/roles/plan.md)
@@ -120,7 +120,7 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 返回值保留 `ok`、`results` 和 `pending`，并增加 `background_results`、`jobs`、`timed_out`、`interrupted`。`results` 保留子 Agent 的 `delivery_marker`／`run` 信封；`background_results` 保存后台 Bash 终态、退出码、有限输出及 artifact 元数据；`jobs` 为本次目标的 ID、类型、标题、状态、耗时与交付状态。`ok` 表示等待调用成功，任务自身仍可能失败或取消。已交付目标再次等待只返回状态，查看正文使用不消费结果的读取接口。后台 Bash 仍只在显式等待时交付，不增加自动注入。
 
-Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功提交后才按原规则领取。某个目标提前成功、失败或取消都不会放行其余目标。120 分钟期限到达后，先取消本批未完成目标及其派生工作，并等待真实回收，再返回 `ok:false, timed_out:true, pending:false`，保留已完成结果和可用的部分输出；清理失败升级 `CleanupError` 并停止父 Agent。Esc 取消整个当前任务，回收后恢复输入，取消不提前确认结果消费。TUI 每 500ms 更新同一个框中的运行标识、耗时和任务状态，进度条表示已结束数量／目标总数，不表示任务内部的完成百分比。默认显示 8 项，Ctrl + O 展开全部目标；等待框始终只显示任务概况，不显示 Result 正文，子 Agent 完整结果在 Agent Hub（`/agents` 或 `/subagents`）查看，后台 Bash 输出保留在原 Bash 卡片。整批结束后冻结最终快照，后续 wait 新建框。历史恢复展示持久化的最终快照，不重新查询当前任务。参见 [OMP wait 调研与适配](wait-research.md)。
+Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功提交后才按原规则领取。某个目标提前成功、失败或取消都不会放行其余目标。120 分钟期限到达后，先取消本批未完成目标及其派生工作，并等待真实回收，再返回 `ok:false, timed_out:true, pending:false`，保留已完成结果和可用的部分输出；清理失败升级 `CleanupError` 并停止父 Agent。Esc 取消整个当前任务，回收后恢复输入，取消不提前确认结果消费。TUI 每 500ms 更新同一个框中的运行标识、耗时和任务状态，进度条表示已结束数量／目标总数，不表示任务内部的完成百分比。默认显示 8 项，Ctrl + O 展开全部目标；等待框始终只显示任务概况，不显示 Result 正文，子 Agent 完整结果在 Agent Hub（`/agents`）查看，后台 Bash 输出保留在原 Bash 卡片。整批结束后冻结最终快照，后续 wait 新建框。历史恢复展示持久化的最终快照，不重新查询当前任务。参见 [OMP wait 调研与适配](wait-research.md)。
 
 默认使用最后一条 assistant 消息作为结果。任务项可以提供 `output_schema`，也可采用自定义定义中的 `output`；任务项优先。结构化 child 获得 `yield`，必须以 `{"data": ...}` 提交符合 JSON Schema 的结果；无效结果不会被标成成功。Schema 外部 HTTP/文件引用解析未开启。
 

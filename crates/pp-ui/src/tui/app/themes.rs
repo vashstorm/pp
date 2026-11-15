@@ -1,8 +1,33 @@
-use crate::tui::{App, Level, Style, commands, themes, transcript_style};
+use crate::tui::{App, Level, PendingKind, Style, commands, editor, themes, transcript_style};
 use pp_config::config::{IconMode, Theme};
 
 impl App {
+    pub(in crate::tui) fn complete_theme_argument(&mut self, value: &str, confirm: bool) -> bool {
+        let mut words: Vec<String> = self.input.lines()[0]
+            .split_whitespace()
+            .skip(1)
+            .map(str::to_owned)
+            .collect();
+        let trailing = self.input.lines()[0]
+            .chars()
+            .last()
+            .is_some_and(char::is_whitespace);
+        if !trailing && !words.is_empty() {
+            words.pop();
+        }
+        let next = if words.is_empty() {
+            format!("/themes {value}")
+        } else {
+            format!("/themes {} {value}", words.join(" "))
+        };
+        self.input = editor();
+        self.input.insert_str(next);
+        self.refresh_candidates(true);
+        confirm && self.submit(PendingKind::Steering)
+    }
+
     pub(in crate::tui) fn open_themes(&mut self) {
+        self.clear_other_settings_tabs(Some(super::super::settings::Tab::Themes));
         self.themes_panel = Some(themes::Panel::new(self.theme, self.icons));
         self.menu = None;
         self.file_query = None;

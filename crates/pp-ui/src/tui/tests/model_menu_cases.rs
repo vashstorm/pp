@@ -70,7 +70,7 @@ fn command_menu_matches_fuzzy_case_insensitively_and_prioritizes_prefixes() {
     let mut app = app();
     let mut dirty = false;
     for (query, first, completed) in [
-        ("/roles", "/Roles", "/Roles"),
+        ("/roles", "/roles", "/roles"),
         ("/MDL", "/model", "/model"),
         ("/PLS", "/plan-list", "/plan-list"),
         ("/LIST", "/plan-list", "/plan-list"),

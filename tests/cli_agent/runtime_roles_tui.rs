@@ -1,5 +1,5 @@
 fn runtime_role_save(pty: &mut Pty, role: usize, model: &str) {
-    pty.input("/Roles\r");
+    pty.input("/roles\r");
     pty.text("Model roles");
     pty.input("\x1b[C");
     for _ in 0..role {
@@ -85,7 +85,7 @@ fn slow_tui_runtime_role_changes_switch_children_at_their_own_committed_boundary
         pty.text("parent complete safely");
         pty.completed();
         pty.ready_model("fixture/one");
-        pty.input("/subagents\r");
+        pty.input("/agents\r");
         pty.text("parked");
         pty.input("e");
         // 详情异步加载完成后才输入，避免把正文按键发送给 roster。

@@ -164,18 +164,20 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
         .unwrap();
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready();
-        // 两个命令打开同一 Hub，角色配置入口独立。
-        for command in ["/agents", "/subagents"] {
-            pty.input(&format!("{command}\r"));
-            pty.text("Agent Hub");
-            pty.text("Roster");
-            pty.input("\x1b");
-            pty.ready();
-        }
-        pty.input("/Roles\r");
+        // `/agents` 打开 Hub，已移除的 `/subagents` 保留草稿且不打开 Hub，`/roles` 独立入口保留。
+        pty.input("/agents\r");
+        pty.text("Agent Hub");
+        pty.text("Roster");
+        pty.input("\x1b");
+        pty.ready();
+        pty.input("/roles\r");
         pty.text("DEFAULT");
         pty.input("\x1b");
         pty.ready();
+        pty.input("/subagents\r");
+        pty.text("/subagents");
+        assert!(!pty.contents().contains("Agent Hub"));
+        pty.input("\x01\x0b");
         pty.input("delegate terminal task\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let task = json!({"context":"terminal context","tasks":[{"role":"fast","task":"child terminal work"}]});
@@ -196,7 +198,7 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
                 parent = true;
             }
         }
-        pty.input("/subagents\r");
+        pty.input("/agents\r");
         pty.text("a1");
         pty.input("c");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
@@ -205,7 +207,7 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
         pty.input("\x1b");
         ask_final_reply(request, protocol, "child-cancelled");
         pty.text("child-cancelled");
-        pty.input("/subagents\r");
+        pty.input("/agents\r");
         pty.text("a1");
         pty.input("r");
         pty.input("e/model hidden\r");
@@ -222,7 +224,7 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
         pty.input("\x1b");
         pty.ready();
         pty.text("parent-followup-answer");
-        pty.input("/subagents\r");
+        pty.input("/agents\r");
         pty.text("a1");
         pty.input("x");
         pty.text("aborted");
@@ -292,7 +294,7 @@ fn agent_hub_streams_and_anchors_activity() {
         cancel_assert_no_request(&fixture);
         // 先发第一段，再进入详情：无需额外按键即可看到。
         streaming_delta(&mut live, protocol, "hub-stream-first");
-        pty.input("/subagents\r");
+        pty.input("/agents\r");
         pty.wait_for("运行中的子 Agent 名称前显示时钟", |screen| {
             let text = screen.contents();
             WAIT_CLOCKS
@@ -487,7 +489,7 @@ fn agent_hub_controls_do_not_revive_on_inspect() {
     let before = hub_registry(home.path());
     let generation = before["agents"]["a1"]["generation"].as_u64().unwrap();
     // 打开详情不 revive、不发模型请求。
-    pty.input("/subagents\r");
+    pty.input("/agents\r");
     pty.text("a1");
     pty.input("\r");
     pty.text("Agent Hub");
@@ -735,7 +737,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
             "event": {"user_input_accepted": {"id": 900, "text": "hub-legacy-row"}}
         })],
     );
-    pty.input("/subagents\r");
+    pty.input("/agents\r");
     pty.input("\x1b[15~");
     pty.text("a1");
     // Activity 中旧记录没有时间戳，显示占位符。
@@ -777,7 +779,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
     let id = saved_session_id(home.path());
     let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
     resumed.ready();
-    resumed.input("/subagents\r");
+    resumed.input("/agents\r");
     resumed.text("a1");
     resumed.input("\r");
     resumed.text("legacy child work");
@@ -836,7 +838,7 @@ fn slow_agent_hub_rebinds_after_slash_resume_without_a_turn() {
     pty.input("\r");
     pty.text("rebind resume task");
     pty.ready();
-    pty.input("/subagents\r");
+    pty.input("/agents\r");
     pty.text("Agent Hub");
     // Roster 与 inspector 必须回到已停靠的子 Agent，而不是绑定缺失提示。
     pty.text("rebind child work");
@@ -854,7 +856,7 @@ fn slow_agent_hub_rebinds_after_slash_resume_without_a_turn() {
     // `/new` 同样会停掉旧根：新会话 Hub 也要能重新绑定，而不是只能等下一条消息。
     pty.input("/new\r");
     pty.ready();
-    pty.input("/subagents\r");
+    pty.input("/agents\r");
     pty.wait_for("hub binds a fresh session without a notice", |screen| {
         let text = screen.contents();
         text.contains("Roster ·") && !text.contains("unavailable")

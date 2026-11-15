@@ -19,6 +19,13 @@ pub struct StatsSettings {
 }
 
 impl StatsStyle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Modern => "modern",
+        }
+    }
+
     /// 复用配置的严格校验与原子更新，只改统计页面偏好。
     pub fn save(self, path: &Path) -> Result<()> {
         super::update_settings(path, |mut settings| {

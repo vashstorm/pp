@@ -147,7 +147,7 @@ fn slow_tui_model_switch_survives_panels_and_tree_without_saving_default() {
             tree_tui_open(&mut pty, "original answer");
             pty.input("\x1b");
             pty.ready_model(reference);
-            pty.input("/Roles\r");
+            pty.input("/roles\r");
             pty.text("Model roles");
             pty.input("\x1b");
             pty.ready_model(reference);

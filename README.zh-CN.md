@@ -87,7 +87,7 @@ providers:
 <details>
 <summary><strong>可选：应用设置、多模型与思考档位</strong></summary>
 
-创建 `~/.pp/agent/settings.yml`；省略此文件即可使用默认设置。默认模型、思考档位、收藏和七个模型 Role 由终端界面管理（`/model`、`/effort` 菜单的保存快捷键、Ctrl + F、`/Roles`），保存在 `~/.pp/agent/agent.db`，不再写入 YAML；其余设置仍为 `settings.yml` 中的声明式 YAML。
+创建 `~/.pp/agent/settings.yml`；省略此文件即可使用默认设置（也可在终端界面通过 `/setting` 或 `/config` 可视化修改常用配置）。默认模型、思考档位、收藏和七个模型 Role 由终端界面管理（`/model`、`/effort` 菜单的保存快捷键、Ctrl + F、`/roles` 或 `/setting roles`），保存在 `~/.pp/agent/agent.db`，不再写入 YAML；其余设置仍为 `settings.yml` 中的声明式 YAML。
 
 ```yaml
 edit: replace
@@ -135,7 +135,7 @@ pp --model deepseek/deepseek-flash:high /commit
 
 主输入框可编辑时，补全始终可用，包括模型输出、上下文压缩、取消收尾和模型切换期间。斜杠命令、已支持的参数和文件引用均可补全，补全不会发送草稿。Esc 收起候选后可用 Tab 重新唤起。Tab 在只有一个候选时补全完整值，有多个候选时只延长共同前缀；要求空闲的命令仍须等任务结束后才能执行。Markdown 解析、语法高亮与正文排版在后台线程完成，样式就绪前可能短暂显示纯文本预览。切换模型保留已提交上下文，不取消当前请求、不重复已完成任务，也不重启后台工作；历史内容无法兼容目标协议时拒绝切换并保留当前模型。
 
-通过 `/Roles` 保存模型与思考档位后，绑定该角色的子 Agent 会在各自的下一次请求前应用最新配置。自定义角色使用派发时选定的模型与 thinking。禁用或清除角色后，正在运行的子 Agent 沿用最后一次应用的模型。角色变更在当前 pp 进程内生效。只改 effort 会保留请求前缀，改 model 会让绑定该角色的会话重新建立前缀缓存。
+通过 `/roles`（或 `/setting roles`）保存模型与思考档位后，绑定该角色的子 Agent 会在各自的下一次请求前应用最新配置。自定义角色使用派发时选定的模型与 thinking。禁用或清除角色后，正在运行的子 Agent 沿用最后一次应用的模型。角色变更在当前 pp 进程内生效。只改 effort 会保留请求前缀，改 model 会让绑定该角色的会话重新建立前缀缓存。
 
 全部 13 个 `/test-*` 命令在 dev/test 构建中使用内嵌、仅监听 loopback 的 Mock AI Server，由 `#[cfg(debug_assertions)]` 编译隔离，与 `debug` 设置无关。命令通过编译内嵌 JSON 脚本驱动真实 Responses client、Agent、工具和子 Agent，不依赖真实 provider 或用户模型 Role；空 HOME、无 models 或无效配置 YAML 也能运行。每个场景使用全新的系统临时 workspace/config/sessions/locks 目录，不改变正常会话、模型、Role、cwd 或真实统计。预期工具失败继续，取消、初始化或清理失败则中止。
 
@@ -143,8 +143,10 @@ pp --model deepseek/deepseek-flash:high /commit
 
 | 命令 | 用途 |
 | --- | --- |
+| `/setting [general\|roles\|themes\|skills]` | 打开统一设置面板（`1 General · 2 Roles · 3 Themes · 4 Skills`，支持 `[` / `]`、`Ctrl + ←/→`、数字 `1`–`4` 与顶部点击切换；`/config` 和 `/settings` 为别名） |
+| `/roles`、`/agents` | 打开模型角色设置页，或打开 Agent Hub（也可用 `⌥ + A / Alt + A`） |
 | `/stats [--host IP] [--port PORT] [--no-open]` | 打开本地统计页面，复用 `pp stats` 的服务 |
-| `/themes [nerd\|ascii] [THEME]` | 打开两步独立设置面板（先选 `nerd` / `ascii` 图标风格，再选 7 套配色主题），或直接传参应用并保存到 `settings.yml`（`/theme` 别名） |
+| `/themes [nerd\|ascii] [THEME]` | 打开设置面板的 Themes 页（先选 `nerd` / `ascii` 图标风格，再选 7 套配色主题），或直接传参应用并保存到 `settings.yml`（`/theme` 别名） |
 | `/model`（`/models`）、`/effort` | 切换模型与思考档位，保留历史 |
 | `/init` | 创建或更新当前项目的 `AGENTS.md` |
 | `/plan [prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，批准后执行（仅终端界面） |
@@ -225,9 +227,9 @@ pp stats
 
 ## 扩展能力
 
-输入 `/Roles` 配置模型和 effort。主 Agent 用 DEFAULT 和 PLAN 分别选择启动模型和规划模型，计划审阅采用已启用的 REVIEW。派发子 Agent 时，每个任务都必须显式传入 `role`，可选已启用的 `fast`、`slow`、`vision`、`review`、`explorer` 或已加载的自定义名称。旧调用中的 `agent` 改为 `role`。缺失、未知或停用的角色会使整批任务在启动前被拒绝。`role: "review"` 用于只读审查，`role: "explorer"` 用于只读快速探索。[配置与使用 →](docs/subagents.md)
+输入 `/roles` 配置模型和 effort。主 Agent 用 DEFAULT 和 PLAN 分别选择启动模型和规划模型，计划审阅采用已启用的 REVIEW。派发子 Agent 时，每个任务都必须显式传入 `role`，可选已启用的 `fast`、`slow`、`vision`、`review`、`explorer` 或已加载的自定义名称。旧调用中的 `agent` 改为 `role`。缺失、未知或停用的角色会使整批任务在启动前被拒绝。`role: "review"` 用于只读审查，`role: "explorer"` 用于只读快速探索。[配置与使用 →](docs/subagents.md)
 
-每个角色可配置一个 fallback，并独立设置 thinking；主模型和 fallback 可以使用相同模型。在 `/Roles` 中用 ↑/↓ 选择主模型或备用行，Enter 选模，`f` 设置备用，`x` 清除当前行，`t`（兼容 `e`）调整 thinking。清空主模型会禁用角色并保留 fallback；补齐后仍需手动启用。Delete／Backspace 删除整个角色配置。
+每个角色可配置一个 fallback，并独立设置 thinking；主模型和 fallback 可以使用相同模型。在 `/roles` 中用 ↑/↓ 选择主模型或备用行，Enter 选模，`f` 设置备用，`x` 清除当前行，`t`（兼容 `e`）调整 thinking。清空主模型会禁用角色并保留 fallback；补齐后仍需手动启用。Delete／Backspace 删除整个角色配置。
 
 模型错误（含流中断）从本轮请求的安全消息边界重试，不重复已完成的工具。每个模型最多发送 10 次，同时受 `rate_limit_retry_budget_seconds` 等待预算限制（默认 1022 秒）；整数秒 `Retry-After` 优先，否则依次等待 2、4、8、16、32、64、128、256、512 秒；fallback 独立获得相同额度。预算为 0 时不重试，仍允许发送一次备用请求。取消、本地配置、持久化和清理错误直接停止。备用模型沿用至本任务结束，下一独立任务恢复主模型；手动 `/model` 解除角色 fallback 绑定。失败输出保留可见标记，但不进入有效模型历史。已有角色配置通过事务迁移至 `agent.db` schema v4。
 
@@ -280,4 +282,4 @@ cargo fmt --all --check
 
 有子 Agent 正在运行时，终端界面会在 `tok/s` 前以金色图标显示实际数量。一个用单人图标，两个用双人图标，三个及以上用三人图标；没有正在运行的子 Agent 时隐藏。
 
-使用 `/Roles` 配置模型角色，`/agents` 和 `/subagents`（也可用 `⌥ + A / Alt + A`）都能打开 Agent Hub，查看 Agents、完整 Activity、消耗与独立详情，并追问、取消或恢复任务。支持 Main 批量异步派发、独立上下文、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。运行中子 Agent 数量上限默认 4，通过 `~/.pp/agent/settings.yml` 的 `task.max_concurrency` 配置为 1–32，重启生效；每个 Run 在初始化前获取名额，跨模型请求、工具和等待持续持有，结果收尾结束才释放，未获得名额时保持排队；Main 不占名额。所有 child 均无 `task` 工具和自动委托使用提示，不能递归派发。详见[子 Agent 使用说明](docs/subagents.md)。
+使用 `/roles` 配置模型角色，`/agents`（也可用 `⌥ + A / Alt + A`）打开 Agent Hub，查看 Agents、完整 Activity、消耗与独立详情，并追问、取消或恢复任务。支持 Main 批量异步派发、独立上下文、结构化结果及可选 worktree 隔离，子任务沿用父审批规则。运行中子 Agent 数量上限默认 4，通过 `~/.pp/agent/settings.yml` 的 `task.max_concurrency` 配置为 1–32，重启生效；每个 Run 在初始化前获取名额，跨模型请求、工具和等待持续持有，结果收尾结束才释放，未获得名额时保持排队；Main 不占名额。所有 child 均无 `task` 工具和自动委托使用提示，不能递归派发。详见[子 Agent 使用说明](docs/subagents.md)。

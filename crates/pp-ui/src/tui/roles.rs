@@ -143,7 +143,7 @@ pub(super) struct Panel {
     selected: usize,
     query: String,
     pending: Option<RoleAssignment>,
-    area: Rect,
+    pub(super) area: Rect,
     body: Rect,
     sidebar_area: Rect,
     sidebar_scroll: usize,
@@ -191,6 +191,10 @@ impl Panel {
 
     pub(super) fn update_override(&mut self, selection: Option<Selection>) {
         self.override_selection = selection;
+    }
+
+    pub(super) fn is_typing_input(&self) -> bool {
+        self.view == View::Models && !self.sidebar_focus
     }
 
     pub(super) fn update_choices(&mut self, choices: Vec<ModelChoice>) {
@@ -368,7 +372,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         for label in [
-            "Models",
+            "Model roles",
             "Roles",
             "All models",
             "DEFAULT",

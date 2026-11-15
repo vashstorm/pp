@@ -29,6 +29,7 @@ mod resources;
 mod roles;
 mod scrollback;
 mod sessions;
+mod settings;
 mod skills;
 mod statusline;
 mod stream_buffer;
@@ -197,6 +198,9 @@ pub fn run(
     loop {
         // 先采纳已经到达的后台结果，再用最新状态解释下一批按键。
         dirty |= app.receive();
+        if let Some(fps) = app.pending_max_fps.take() {
+            clock = frame_clock::FrameClock::new(fps);
+        }
         let mut quit = initial_quit;
         for event in initial_events.drain(..) {
             quit |= app.handle(event, &mut dirty);
@@ -217,6 +221,9 @@ pub fn run(
         }
         dirty |= input_changed;
         dirty |= app.receive();
+        if let Some(fps) = app.pending_max_fps.take() {
+            clock = frame_clock::FrameClock::new(fps);
+        }
         dirty |= app
             .renderer
             .as_ref()
@@ -414,6 +421,7 @@ enum MenuAction {
     FileCommand(usize),
     Model(usize),
     Effort(ThinkLevel),
+    SettingTab(settings::Tab),
     ThemeIcon(pp_config::config::IconMode),
     ThemeColor(pp_config::config::Theme),
     File(usize),
@@ -463,7 +471,7 @@ struct App {
     pending_model: Option<(u64, String)>,
     // 当前生效模型的来源；`Default` 不增加状态栏噪声。
     current_source: Option<ModelSource>,
-    // `a` 的手动覆盖快照；只用于 `/Roles` 只读展示与清除，不参与决议。
+    // `a` 的手动覆盖快照；只用于 `/roles` 只读展示与清除，不参与决议。
     override_selection: Option<Selection>,
     // 期望档位：`0` 表示已提交但控制线程尚未确认，其余为 `ThinkQueued` 的 revision。
     // 切档不是 worker 命令，因此这里的变化绝不同步改写 `state`。
@@ -548,6 +556,9 @@ struct App {
     theme: pp_config::config::Theme,
     icons: pp_config::config::IconMode,
     settings_path: Option<std::path::PathBuf>,
+    settings_worker: settings::Worker,
+    settings_panel: Option<settings::Panel>,
+    pending_max_fps: Option<u16>,
     themes_worker: themes::Worker,
     themes_panel: Option<themes::Panel>,
     session_panel: Option<sessions::Panel>,

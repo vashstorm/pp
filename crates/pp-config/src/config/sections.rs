@@ -1,7 +1,7 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct OutputSettings {
     pub artifact_spill_threshold: usize,
@@ -31,7 +31,7 @@ impl OutputSettings {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApprovalMode {
     #[default]
@@ -51,7 +51,7 @@ impl ApprovalMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApprovalPolicy {
     Allow,
@@ -59,14 +59,16 @@ pub enum ApprovalPolicy {
     Deny,
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TaskSettings {
     pub max_concurrency: usize,
     pub max_recursion_depth: usize,
     pub idle_ttl_ms: u64,
     pub request_budget: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub disabled_agents: Vec<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub agent_models: std::collections::BTreeMap<String, String>,
 }
 impl Default for TaskSettings {
@@ -83,7 +85,7 @@ impl Default for TaskSettings {
 }
 
 /// `settings.yml` 的 `lsp:` 小节；字段名沿用 oh-my-pi 的 camelCase。
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct LspSettings {
     /// 总开关：false 时不发现、不预热、不调用自动钩子、不投递迟到诊断、不暴露工具。
@@ -138,9 +140,18 @@ pub enum EditMode {
     Hashline,
 }
 
+impl EditMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Replace => "replace",
+            Self::Hashline => "hashline",
+        }
+    }
+}
+
 /// `settings.yml` 的 `cost` 定义显示币种与 1 USD 的兑换金额。
 /// 图标由 `currency` 派生，配置不再接受手写图标。
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CostDisplay {
     pub currency: String,
@@ -173,7 +184,7 @@ impl CostDisplay {
             .find_map(|(code, _, ascii)| (*code == self.currency).then_some(*ascii))
     }
 
-    pub(crate) fn currency_codes() -> impl Iterator<Item = &'static str> {
+    pub fn currency_codes() -> impl Iterator<Item = &'static str> {
         Self::CURRENCY_ICONS.iter().map(|(code, _, _)| *code)
     }
 }
@@ -187,7 +198,7 @@ impl Default for CostDisplay {
     }
 }
 
-#[derive(Clone, Copy, Default, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadDisplaySettings {
     #[serde(default, rename = "toolResultPreview")]

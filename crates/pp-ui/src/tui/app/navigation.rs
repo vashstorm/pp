@@ -24,7 +24,7 @@ impl App {
         }
         if !matches!(self.state, State::Ready)
             || self.skills_pending
-            || self.skill_panel.is_some()
+            || self.active_settings_tab().is_some()
             || self.session_panel.is_some()
             || self.ask_panel.is_some()
             || self.tree_panel.is_some()
@@ -42,7 +42,7 @@ impl App {
         self.escape_tap.reset();
         if !matches!(self.state, State::Ready)
             || self.skills_pending
-            || self.skill_panel.is_some()
+            || self.active_settings_tab().is_some()
             || self.session_panel.is_some()
             || self.ask_panel.is_some()
             || self.tree_panel.is_some()
@@ -98,7 +98,7 @@ impl App {
             return false;
         }
         if self.ask_panel.is_some()
-            || self.skill_panel.is_some()
+            || self.active_settings_tab().is_some()
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()

@@ -18,7 +18,7 @@ fn tui_roles_favorites_sort_persist_across_restart_and_can_be_removed() {
 
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_model("fixture/one");
-    pty.input("/Roles\r");
+    pty.input("/roles\r");
     pty.text("Model roles");
     pty.input("\x1b[B\x1b[C\x1b[B\x06");
     pty.wait_for("收藏已保存、置顶且保留选中模型", |screen| {
@@ -32,7 +32,7 @@ fn tui_roles_favorites_sort_persist_across_restart_and_can_be_removed() {
 
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_model("fixture/one");
-    pty.input("/Roles\r");
+    pty.input("/roles\r");
     pty.text("Model roles");
     pty.input("\x1b[B\x1b[C");
     pty.text("❯ fixture/two ");
@@ -76,7 +76,7 @@ fn slow_tui_roles_configures_explorer_after_fallback_row_without_switching_curre
     std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
     let mut pty = Pty::start_with_existing_files(dir.path());
     pty.ready_model("fixture/one");
-    pty.input("/Roles\r");
+    pty.input("/roles\r");
     pty.wait_for("独立 Roles 双栏面板", |screen| {
         let text = screen.contents();
         screen.alternate_screen()
@@ -433,7 +433,7 @@ fn fallback_tui_row_shortcuts_persist_primary_and_backup_independently() {
     std::fs::write(config_path(dir.path(), "models.yml"), models.to_string()).unwrap();
     let mut pty = Pty::start_with_existing_files(dir.path());
     pty.ready_model("fixture/one");
-    pty.input("/Roles\r");
+    pty.input("/roles\r");
     pty.text("Model roles");
     pty.input("\x1b[C\r");
     pty.text("Select a model for DEFAULT");

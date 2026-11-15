@@ -23,10 +23,9 @@ impl App {
 
     pub(in crate::tui) fn shortcut_ready(&mut self) -> bool {
         if self.skills_pending
-            || self.themes_panel.is_some()
+            || self.active_settings_tab().is_some()
             || self.changes_panel.is_some()
             || self.plan_list_panel.is_some()
-            || self.roles_panel.is_some()
         {
             return false;
         }
@@ -202,6 +201,10 @@ impl App {
                     self.open_roles();
                     return false;
                 }
+                Some(Command::Setting(tab)) => {
+                    self.submit_setting_command(tab);
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -255,10 +258,14 @@ impl App {
         {
             return false;
         }
-        if matches!(command, Some(Command::Subagents)) {
+        if matches!(command, Some(Command::Agents)) {
             self.remember_input();
             self.clear_input();
             self.open_hub();
+            return false;
+        }
+        if let Some(Command::Setting(tab)) = command {
+            self.submit_setting_command(tab);
             return false;
         }
         if let Some(Command::Themes(themes_command)) = command {
@@ -514,7 +521,7 @@ impl App {
                     self.clear_input();
                     self.open_roles();
                 }
-                Some(Command::Subagents) => unreachable!("handled above"),
+                Some(Command::Agents | Command::Setting(_)) => unreachable!("handled above"),
                 Some(Command::Pipes(_)) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 #[cfg(debug_assertions)]
@@ -642,6 +649,9 @@ impl App {
     }
 
     pub(in crate::tui) fn request_skills(&mut self, request: skills::Request) {
+        if matches!(request, skills::Request::Open | skills::Request::Sources) {
+            self.clear_other_settings_tabs(Some(super::super::settings::Tab::Skills));
+        }
         match self.skill_worker.requests.send(request) {
             Ok(()) => {
                 self.skills_pending = true;
@@ -839,51 +849,12 @@ impl App {
                 self.refresh_candidates(true);
                 return confirm && self.submit(PendingKind::Steering);
             }
+            MenuAction::SettingTab(tab) => return self.complete_setting_tab(tab, confirm),
             MenuAction::ThemeIcon(mode) => {
-                let mut words: Vec<String> = self.input.lines()[0]
-                    .split_whitespace()
-                    .skip(1)
-                    .map(str::to_owned)
-                    .collect();
-                let trailing = self.input.lines()[0]
-                    .chars()
-                    .last()
-                    .is_some_and(char::is_whitespace);
-                if !trailing && !words.is_empty() {
-                    words.pop();
-                }
-                let next = if words.is_empty() {
-                    format!("/themes {}", mode.as_str())
-                } else {
-                    format!("/themes {} {}", words.join(" "), mode.as_str())
-                };
-                self.input = editor();
-                self.input.insert_str(next);
-                self.refresh_candidates(true);
-                return confirm && self.submit(PendingKind::Steering);
+                return self.complete_theme_argument(mode.as_str(), confirm);
             }
             MenuAction::ThemeColor(theme) => {
-                let mut words: Vec<String> = self.input.lines()[0]
-                    .split_whitespace()
-                    .skip(1)
-                    .map(str::to_owned)
-                    .collect();
-                let trailing = self.input.lines()[0]
-                    .chars()
-                    .last()
-                    .is_some_and(char::is_whitespace);
-                if !trailing && !words.is_empty() {
-                    words.pop();
-                }
-                let next = if words.is_empty() {
-                    format!("/themes {}", theme.as_str())
-                } else {
-                    format!("/themes {} {}", words.join(" "), theme.as_str())
-                };
-                self.input = editor();
-                self.input.insert_str(next);
-                self.refresh_candidates(true);
-                return confirm && self.submit(PendingKind::Steering);
+                return self.complete_theme_argument(theme.as_str(), confirm);
             }
         }
         false

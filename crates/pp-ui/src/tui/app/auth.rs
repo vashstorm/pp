@@ -8,13 +8,12 @@ impl App {
         if !matches!(self.state, State::Ready | State::Unavailable)
             || self.has_pending()
             || self.auth_pending
-            || self.skill_panel.is_some()
+            || self.active_settings_tab().is_some()
             || self.skills_pending
             || self.ask_panel.is_some()
             || self.plan_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.model_panel.is_some()
-            || self.roles_panel.is_some()
             || self.changes_panel.is_some()
             || self.session_panel.is_some()
             || self.tree_panel.is_some()

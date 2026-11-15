@@ -59,17 +59,20 @@ fn roles_command_opens_separate_hub_and_model_command_keeps_existing_picker() {
     let (mut app, requests, _) = plan_app();
     app.choices = favorite_model_choices();
     app.current_model = Some(app.choices[0].clone());
-    for command in ["/Roles", "/roles"] {
-        app.input = editor();
-        app.input.insert_str(command);
-        app.submit(PendingKind::Steering);
-        assert!(app.roles_panel.is_some());
-        assert!(app.model_panel.is_none());
-        assert!(app.needs_alternate());
-        assert!(draw(&mut app, 130, 30).contains("DEFAULT"));
-        app.handle(key(KeyCode::Esc), &mut false);
-        assert!(app.roles_panel.is_none());
-    }
+    app.input = editor();
+    app.input.insert_str("/Roles");
+    app.submit(PendingKind::Steering);
+    assert!(app.roles_panel.is_none());
+
+    app.input = editor();
+    app.input.insert_str("/roles");
+    app.submit(PendingKind::Steering);
+    assert!(app.roles_panel.is_some());
+    assert!(app.model_panel.is_none());
+    assert!(app.needs_alternate());
+    assert!(draw(&mut app, 130, 30).contains("DEFAULT"));
+    app.handle(key(KeyCode::Esc), &mut false);
+    assert!(app.roles_panel.is_none());
     assert!(requests.try_recv().is_err());
     app.open_model_picker();
     assert!(app.model_panel.is_some());

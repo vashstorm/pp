@@ -13,5 +13,6 @@ mod receive;
 mod resources;
 pub(super) mod retry;
 mod roles;
+mod settings;
 mod state;
 mod themes;

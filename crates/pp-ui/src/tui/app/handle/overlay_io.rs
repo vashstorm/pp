@@ -136,8 +136,6 @@ impl App {
                     *dirty = true;
                 }
             }
-            Event::Paste(_) if self.skill_panel.is_some() => {}
-            Event::Mouse(_) if self.skill_panel.is_some() => {}
             Event::Paste(text) if self.session_panel.is_some() => {
                 if let Some(panel) = &mut self.session_panel {
                     panel.paste(&text);

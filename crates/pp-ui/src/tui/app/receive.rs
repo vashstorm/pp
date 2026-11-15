@@ -79,6 +79,7 @@ impl App {
         changed |= self.poll_history();
         changed |= self.poll_model_control();
         changed |= self.receive_auth();
+        changed |= self.receive_settings();
         changed |= self.receive_themes();
         while let Some(reply) = self
             .stats_worker
@@ -92,6 +93,7 @@ impl App {
             changed = true;
         }
         while let Ok(reply) = self.skill_worker.replies.try_recv() {
+            let still_skills = self.skills_pending || self.skill_panel.is_some();
             self.skills_pending = false;
             match reply.result {
                 Ok(snapshot) if !reply.saved => {
@@ -99,7 +101,11 @@ impl App {
                         && let Some(panel) = &mut self.skill_panel
                     {
                         panel.apply_preview(snapshot);
-                    } else {
+                    } else if still_skills
+                        && self.settings_panel.is_none()
+                        && self.roles_panel.is_none()
+                        && self.themes_panel.is_none()
+                    {
                         self.skill_panel = Some(skills::Panel::new(snapshot));
                         if reply.open_sources
                             && let Some(panel) = &mut self.skill_panel

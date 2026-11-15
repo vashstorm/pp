@@ -423,6 +423,7 @@ mod model_menu_cases;
 mod pipes_cases;
 mod plan_cases;
 mod roles_cases;
+mod setting_cases;
 mod streaming_panel_cases;
 mod tree_session_cases;
 

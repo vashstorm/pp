@@ -345,7 +345,7 @@ pub(super) struct ModelListing {
     pub(super) default_reference: String,
     pub(super) favorites: Vec<String>,
     pub(super) usage: BTreeMap<String, u64>,
-    /// `a`：手动覆盖快照，供 `/Roles` 只读行与来源标记恢复。
+    /// `a`：手动覆盖快照，供 `/roles` 只读行与来源标记恢复。
     pub(super) override_selection: Option<Selection>,
     /// 当前生效模型来源；重新加载目录后覆盖可能被 `ModelState` 校正。
     pub(super) source: ModelSource,

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn agent_hub_shortcut_opens_over_completion_and_preserves_draft() {
     let mut app = app();
-    app.input.insert_str("/sub");
+    app.input.insert_str("/ag");
     app.refresh_candidates(true);
     assert!(app.menu.is_some());
     let toggle = Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT));
@@ -11,10 +11,10 @@ fn agent_hub_shortcut_opens_over_completion_and_preserves_draft() {
     assert!(app.subagent_panel.is_some());
     assert!(app.menu.is_none());
     assert!(draw(&mut app, 120, 30).contains("Agent Hub"));
-    assert_eq!(app.input_text(), "/sub");
+    assert_eq!(app.input_text(), "/ag");
     app.handle(toggle, &mut false);
     assert!(app.subagent_panel.is_none());
-    assert_eq!(app.input_text(), "/sub");
+    assert_eq!(app.input_text(), "/ag");
 }
 
 #[test]

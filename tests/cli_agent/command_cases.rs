@@ -1,19 +1,19 @@
 use super::*;
 
 #[test]
-fn subagent_hub_aliases_list_same_snapshots_in_line_mode() {
+fn agents_lists_snapshots_and_removed_aliases_are_unknown_in_line_mode() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     let mut cli = Cli::start(&server, home.path(), None);
-    cli.input("/agents\n/subagents\n/agents extra\n/subagents extra\n/quit\n");
+    cli.input("/agents\n/subagents\n/Roles\n/agents extra\n/quit\n");
     let output = cli.finish();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(stderr.matches("\"agents\": []").count(), 2, "{stderr}");
-    assert_eq!(stderr.matches("\"runs\": []").count(), 2, "{stderr}");
+    assert_eq!(stderr.matches("\"agents\": []").count(), 1, "{stderr}");
+    assert_eq!(stderr.matches("\"runs\": []").count(), 1, "{stderr}");
     assert!(stderr.contains("usage: /agents"), "{stderr}");
-    assert!(stderr.contains("usage: /subagents"), "{stderr}");
+    assert!(!stderr.contains("usage: /subagents"), "{stderr}");
     no_more(&server);
 }
 

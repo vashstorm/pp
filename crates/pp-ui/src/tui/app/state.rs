@@ -29,6 +29,9 @@ impl App {
         if let Some(panel) = &mut self.tree_panel {
             panel.set_error(message.clone());
         }
+        if let Some(panel) = &mut self.settings_panel {
+            panel.set_error(message.clone());
+        }
         if let Some(panel) = &mut self.roles_panel {
             panel.runtime_status(message.clone());
         }
@@ -89,6 +92,7 @@ impl App {
         self.history_waiting_up = false;
         self.model_picker_draft = None;
         self.model_panel = None;
+        self.settings_panel = None;
         self.roles_panel = None;
         self.file_paths.clear();
         self.file_directory.clear();
@@ -295,7 +299,9 @@ impl App {
             || self.changes_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.model_panel.is_some()
+            || self.settings_panel.is_some()
             || self.roles_panel.is_some()
+            || self.themes_panel.is_some()
             || self.queue_menu
             || self.plan_leave_confirmation.is_some()
         {
@@ -584,6 +590,7 @@ impl App {
     pub(in crate::tui) fn needs_alternate(&self) -> bool {
         self.mcp_panel.is_some()
             || self.auth_panel.is_some()
+            || self.settings_panel.is_some()
             || self.roles_panel.is_some()
             || self.subagent_panel.is_some()
             || self.history_browser

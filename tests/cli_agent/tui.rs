@@ -913,6 +913,8 @@ mod plan_mode_cases;
 mod plan_validation_cases;
 #[path = "tui/session_cases.rs"]
 mod session_cases;
+#[path = "tui/setting_cases.rs"]
+mod setting_cases;
 #[path = "tui/skill_cases.rs"]
 mod skill_cases;
 #[path = "tui/startup_cases.rs"]

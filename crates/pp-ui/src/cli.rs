@@ -153,7 +153,7 @@ pub fn run_line_mode(
             }
             continue;
         }
-        if matches!(command, Some(commands::Command::Subagents)) {
+        if matches!(command, Some(commands::Command::Agents)) {
             if let Ok(agent) = agent.as_mut() {
                 agent.ensure_subagents()?;
                 if let Some(binding) = agent.subagents() {
@@ -165,17 +165,39 @@ pub fn run_line_mode(
                 } else {
                     writeln!(
                         stderr,
-                        "No subagents; use /Roles or configured .pp/agents and ~/.pp/agent/agents definitions."
+                        "No subagents; use /roles or configured .pp/agents and ~/.pp/agent/agents definitions."
                     )?;
                 }
             }
             continue;
         }
+        let command = match command {
+            Some(commands::Command::Setting(commands::SettingTab::Themes)) => {
+                Some(commands::Command::Themes(commands::ThemeCommand {
+                    theme: None,
+                    icons: None,
+                }))
+            }
+            Some(commands::Command::Setting(commands::SettingTab::Skills)) => {
+                Some(commands::Command::Skills(commands::SkillCommand::List))
+            }
+            Some(commands::Command::Setting(commands::SettingTab::Roles)) => {
+                Some(commands::Command::Roles)
+            }
+            other => other,
+        };
         match command {
+            Some(commands::Command::Setting(commands::SettingTab::General)) => {
+                writeln!(
+                    stderr,
+                    "/setting requires an interactive terminal; edit settings.yml directly instead."
+                )?;
+                continue;
+            }
             Some(commands::Command::Roles) => {
                 writeln!(
                     stderr,
-                    "/Roles requires an interactive terminal; configure model_roles in settings.yml instead."
+                    "/roles requires an interactive terminal; configure model_roles in settings.yml instead."
                 )?;
                 continue;
             }
@@ -430,7 +452,8 @@ pub fn run_line_mode(
                 | commands::Command::Tree
                 | commands::Command::Changes
                 | commands::Command::Roles
-                | commands::Command::Subagents
+                | commands::Command::Agents
+                | commands::Command::Setting(_)
                 | commands::Command::PlanList
                 | commands::Command::Login
                 | commands::Command::Logout

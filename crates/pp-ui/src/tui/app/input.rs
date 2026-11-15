@@ -9,7 +9,7 @@ impl App {
     /// 补全跟随主输入框焦点，不以后台任务状态作为开关。
     pub(in crate::tui) fn completion_input_focused(&self) -> bool {
         self.auth_panel.is_none()
-            && self.roles_panel.is_none()
+            && self.active_settings_tab().is_none()
             && self.ask_panel.is_none()
             && self.subagent_panel.is_none()
             && self.model_panel.is_none()
@@ -17,8 +17,6 @@ impl App {
                 .mcp_panel
                 .as_ref()
                 .is_none_or(|panel| panel.allows_input())
-            && self.themes_panel.is_none()
-            && self.skill_panel.is_none()
             && self.session_panel.is_none()
             && self.tree_panel.is_none()
             && self.changes_panel.is_none()
@@ -157,6 +155,24 @@ impl App {
                     .collect();
                 preferred = items.iter().position(|item| item.current).unwrap_or(0);
                 items
+            }
+            Some(("/setting" | "/settings" | "/config", argument)) => {
+                if argument.split_whitespace().count() > 1 {
+                    Vec::new()
+                } else {
+                    let prefix = argument.trim().to_ascii_lowercase();
+                    super::super::settings::Tab::ALL
+                        .into_iter()
+                        .filter(|tab| tab.slug().starts_with(&prefix))
+                        .map(|tab| MenuItem {
+                            value: MenuAction::SettingTab(tab),
+                            label: tab.slug().into(),
+                            description: format!("Open {} tab in Settings TUI", tab.label()),
+                            icon: None,
+                            current: tab == super::super::settings::Tab::General,
+                        })
+                        .collect()
+                }
             }
             Some(("/themes" | "/theme", argument)) => {
                 use pp_config::config::{IconMode, Theme};
@@ -696,8 +712,7 @@ impl App {
             || self.queue_paused
             || self.mcp_panel.is_some()
             || self.ask_panel.is_some()
-            || self.themes_panel.is_some()
-            || self.skill_panel.is_some()
+            || self.active_settings_tab().is_some()
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
@@ -838,6 +853,7 @@ fn completion_text(item: &MenuItem<MenuAction>) -> &str {
     match item.value {
         MenuAction::File(_) | MenuAction::FileDirectory(_) => &item.description,
         MenuAction::Effort(level) => level.as_str(),
+        MenuAction::SettingTab(tab) => tab.slug(),
         MenuAction::ThemeIcon(mode) => mode.as_str(),
         MenuAction::ThemeColor(theme) => theme.as_str(),
         _ => &item.label,

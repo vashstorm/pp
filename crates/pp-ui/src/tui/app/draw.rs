@@ -129,6 +129,12 @@ impl App {
             return;
         }
         if !self.native_render
+            && let Some(panel) = &mut self.settings_panel
+        {
+            panel.draw(frame, area);
+            return;
+        }
+        if !self.native_render
             && let Some(panel) = &mut self.roles_panel
         {
             panel.update_roles(

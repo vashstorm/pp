@@ -4,8 +4,7 @@ mod plan_keys;
 
 use crate::tui::{
     App, CancellationToken, CursorMove, Event, FUNCTION_MODIFIER, Instant, KeyCode, KeyEventKind,
-    KeyModifiers, Level, MenuAction, MenuEvent, PendingKind, State, WorkerCommand, sessions,
-    skills, tree,
+    KeyModifiers, Level, MenuAction, MenuEvent, PendingKind, State, WorkerCommand, sessions, tree,
 };
 
 impl App {
@@ -189,25 +188,8 @@ impl App {
             *dirty = true;
             return false;
         }
-        if let Some(panel) = &mut self.roles_panel {
-            if matches!(&event, Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
-            {
-                return matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press);
-            }
-            let action = panel.handle(event);
-            self.apply_roles_action(action);
-            *dirty = true;
-            return false;
-        }
-        if let Some(panel) = &mut self.themes_panel {
-            if matches!(&event, Event::Key(key) if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
-            {
-                return matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press);
-            }
-            let action = panel.handle(event);
-            self.apply_themes_action(action);
-            *dirty = true;
-            return false;
+        if self.active_settings_tab().is_some() {
+            return self.handle_settings_event(event, dirty);
         }
         // 放弃确认独占输入；粘贴、鼠标和全局快捷键不能绕过确认。
         if let Some(panel) = &mut self.plan_leave_confirmation {
@@ -369,7 +351,6 @@ impl App {
                     return false;
                 }
                 if self.ask_panel.is_some()
-                    || self.skill_panel.is_some()
                     || self.session_panel.is_some()
                     || self.menu.is_some()
                     || self.model_panel.is_some()
@@ -380,7 +361,6 @@ impl App {
                 // 显示切换先于普通菜单和 ask，但不穿透全屏面板。
                 if key.code == KeyCode::Char('o')
                     && key.modifiers == KeyModifiers::CONTROL
-                    && self.skill_panel.is_none()
                     && self.session_panel.is_none()
                 {
                     if key.kind == KeyEventKind::Press {
@@ -405,23 +385,6 @@ impl App {
                 if let Some(panel) = &mut self.ask_panel {
                     let action = panel.key(key);
                     self.apply_ask_action(action);
-                    return false;
-                }
-                if let Some(panel) = &mut self.skill_panel {
-                    match panel.key(key) {
-                        skills::Action::None => {}
-                        skills::Action::Cancel => {
-                            self.skill_panel = None;
-                            self.menu_dismissed = true;
-                        }
-                        skills::Action::Save(selection) => {
-                            self.request_skills(skills::Request::Save(selection))
-                        }
-                        skills::Action::Reload => self.request_skills(skills::Request::Reload),
-                        skills::Action::Preview(selection) => {
-                            self.request_skills(skills::Request::Preview(selection))
-                        }
-                    }
                     return false;
                 }
                 // 会话面板打开时优先消费键盘输入，编辑器、历史翻阅与快捷操作不穿透。

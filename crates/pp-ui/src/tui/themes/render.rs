@@ -29,21 +29,18 @@ impl Panel {
             return;
         }
 
-        let step_label = match self.step {
-            Step::IconMode => "Step 1/2: Icon Style",
-            Step::Theme => "Step 2/2: Color Theme",
-        };
+        let step_label = self.step_label();
         let outer = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(p.panel_border))
-            .title(Line::from(vec![
-                Span::styled(
-                    " Themes ",
-                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("· ", Style::default().fg(p.muted)),
-                Span::styled(format!("{step_label} "), Style::default().fg(p.text)),
-            ]));
+            .title(super::super::settings::render::tabs_title(
+                super::super::settings::Tab::Themes,
+                Some(step_label),
+                area,
+                p.accent,
+                p.text,
+                p.muted,
+            ));
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
         if inner.width < 6 || inner.height < 4 {

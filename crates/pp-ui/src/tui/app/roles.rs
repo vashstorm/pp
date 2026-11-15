@@ -3,10 +3,26 @@ use pp_core::model::ModelSource;
 
 impl App {
     pub(in crate::tui) fn open_roles(&mut self) {
-        if !self.model_selection_ready() {
+        let allowed = if self.active_settings_tab().is_some() {
+            !self.skills_pending
+                && self.changes_panel.is_none()
+                && self.plan_list_panel.is_none()
+                && matches!(
+                    self.state,
+                    State::Ready
+                        | State::Running
+                        | State::Cancelling
+                        | State::ReviewingPlan
+                        | State::Unavailable
+                )
+        } else {
+            self.model_selection_ready()
+        };
+        if !allowed {
             return;
         }
-        self.roles_panel = Some(roles::Panel::new(
+        self.clear_other_settings_tabs(Some(super::super::settings::Tab::Roles));
+        let mut panel = roles::Panel::new(
             self.choices.clone(),
             self.favorite_models.clone(),
             self.model_roles.clone(),
@@ -16,7 +32,13 @@ impl App {
                 .unwrap_or_default(),
             self.think_level,
             self.override_selection.clone(),
-        ));
+        );
+        if matches!(self.state, State::Unavailable)
+            && let Some(error) = &self.unavailable
+        {
+            panel.runtime_status(error.clone());
+        }
+        self.roles_panel = Some(panel);
         self.menu = None;
         self.menu_dismissed = true;
 
@@ -190,7 +212,7 @@ impl App {
             match report {
                 Report::Cleared { role, revision: _ } => {
                     if role == pp_config::config::ModelRole::Default {
-                        // 清除覆盖：待应用目标、来源与 `/Roles` 只读行一起回到默认值。
+                        // 清除覆盖：待应用目标、来源与 `/roles` 只读行一起回到默认值。
                         self.pending_model = None;
                         self.current_source = None;
                         self.override_selection = None;
@@ -246,7 +268,7 @@ impl App {
                     self.default_model_reference = Some(default.clone());
                     self.default_think_level = effort;
                     // 保存默认模型时 `ModelState` 会在 `a == b` 时丢弃覆盖；
-                    // UI 同步这一步，避免 `/Roles` 显示已不存在的 Override。
+                    // UI 同步这一步，避免 `/roles` 显示已不存在的 Override。
                     let cleared_override = self.override_selection.as_ref().is_some_and(|s| {
                         s.reference == default
                             && self

@@ -442,7 +442,7 @@ impl Binding {
             .filter(|r| matches!(r.status.as_str(), "queued" | "running"))
             .count();
         format!(
-            "Subagents: {active} running/queued · {} sessions · use /subagents",
+            "Subagents: {active} running/queued · {} sessions · use /agents",
             state.disk.agents.len()
         )
     }

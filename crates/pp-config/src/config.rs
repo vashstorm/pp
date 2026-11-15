@@ -31,6 +31,9 @@ pub use stats::{StatsSettings, StatsStyle};
 mod theme;
 pub use theme::{IconMode, Theme, TuiSettings};
 
+mod general;
+pub use general::{SettingPatch, update_general_setting};
+
 // Deliberately not Debug: this owns the API credential.
 pub struct Config {
     pub auth: Option<crate::auth::Config>,
@@ -86,7 +89,7 @@ pub struct ToolLimits {
     pub rg: RgSettings,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RgSettings {
     #[serde(rename = "contextBefore")]
@@ -105,13 +108,14 @@ impl Default for RgSettings {
 }
 
 /// settings.yml 的 `tools:` 小节；字段语义由 `crate::tools::approval` 解释。
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolsSettings {
     #[serde(flatten)]
     pub output: crate::config::OutputSettings,
     #[serde(rename = "approvalMode")]
     pub approval_mode: crate::config::ApprovalMode,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub approval: std::collections::BTreeMap<String, crate::config::ApprovalPolicy>,
 }
 
@@ -216,7 +220,7 @@ impl ModelPreferences {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     #[serde(default)]
@@ -373,6 +377,12 @@ pub fn global_dir() -> Result<PathBuf> {
     let home = PathBuf::from(home);
     ensure!(home.is_absolute(), "HOME must be an absolute path");
     Ok(home.join(".pp/agent"))
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        default_settings()
+    }
 }
 
 fn default_settings() -> Settings {
@@ -850,6 +860,13 @@ pub(crate) fn update_settings_fields(
     path: &Path,
     update: impl FnOnce(Settings) -> Result<Vec<(&'static str, serde_yaml::Value)>>,
 ) -> Result<()> {
+    update_settings_fields_returning(path, update).map(|_| ())
+}
+
+pub(crate) fn update_settings_fields_returning(
+    path: &Path,
+    update: impl FnOnce(Settings) -> Result<Vec<(&'static str, serde_yaml::Value)>>,
+) -> Result<Settings> {
     let read = || match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -889,7 +906,7 @@ pub(crate) fn update_settings_fields(
         .persist(path)
         .map_err(|error| error.error)
         .context("Failed to commit configuration")?;
-    Ok(())
+    Ok(settings)
 }
 
 pub fn read_settings(path: &Path) -> Result<Settings> {

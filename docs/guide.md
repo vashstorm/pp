@@ -46,7 +46,7 @@ printf '说明当前项目的构建方式\n' | ./target/debug/pp
 
 ## 配置
 
-声明式应用设置保存在 `~/.pp/agent/settings.yml`，手动模型保存在 `models.yml`，发现模型保存在 `models-sub.yml`。默认模型、TUI 收藏、七项模型 Role、全局默认 effort、模型请求次数与订阅授权统一保存在 `~/.pp/agent/agent.db`；持久输入历史、会话置顶偏好与会话搜索索引保存在 `~/.pp/agent/history.db`。这两个库由 TUI 菜单、`/effort`、`/Roles`、`/login` 和 `/resume` 维护，不通过编辑 YAML 修改。YAML 配置使用块映射、列表和 `#` 注释，启动目录中的同名文件不读取。`models.yml` 内同一供应商的模型共享凭证、接口地址和协议；发现的 Copilot 模型按各自支持的接口选择协议。跨文件同名供应商按完整模型引用合并，保留各模型所属来源的配置。`settings.yml` 可省略；未指定有效默认模型时使用目录中的首个模型。[系统提示词](#系统提示词)独立支持项目 `.pp/` 文件，不改变这些配置的加载规则。
+声明式应用设置保存在 `~/.pp/agent/settings.yml`（可通过 `/setting` 或 `/config` 面板可视化修改常用配置），手动模型保存在 `models.yml`，发现模型保存在 `models-sub.yml`。默认模型、TUI 收藏、七项模型 Role、全局默认 effort、模型请求次数与订阅授权统一保存在 `~/.pp/agent/agent.db`；持久输入历史、会话置顶偏好与会话搜索索引保存在 `~/.pp/agent/history.db`。这两个库由 TUI 菜单、`/effort`、`/roles`、`/login` 和 `/resume` 维护，不通过编辑 YAML 修改。YAML 配置使用块映射、列表和 `#` 注释，启动目录中的同名文件不读取。`models.yml` 内同一供应商的模型共享凭证、接口地址和协议；发现的 Copilot 模型按各自支持的接口选择协议。跨文件同名供应商按完整模型引用合并，保留各模型所属来源的配置。`settings.yml` 可省略；未指定有效默认模型时使用目录中的首个模型。[系统提示词](#系统提示词)独立支持项目 `.pp/` 文件，不改变这些配置的加载规则。
 
 ### 本地数据库
 
@@ -143,7 +143,7 @@ rg:
   contextAfter: 3
 ```
 
-`default_model`、`favorite_models`、`model_roles` 与 `think_level` 已不再是 `settings.yml` 字段：首次迁移会移除它们，之后重新写入会作为未知字段被拒绝，配置也不会被静默忽略。默认模型与收藏通过 `/model` 的 Ctrl + S、Ctrl + F 保存；全局默认 effort 在 `/effort ` 菜单中用 ⌥ + S / Ctrl + S 保存，单独执行 `/effort LEVEL` 只切换当前会话档位。七项 Role 通过 `/Roles` 配置。这些偏好保存到 `agent.db`；模型 Role 的运行时应用遵循下述安全边界规则，菜单的默认值保存仍不切换当前会话；其余 YAML 字段仍按原规则严格校验。
+`default_model`、`favorite_models`、`model_roles` 与 `think_level` 已不再是 `settings.yml` 字段：首次迁移会移除它们，之后重新写入会作为未知字段被拒绝，配置也不会被静默忽略。默认模型与收藏通过 `/model` 的 Ctrl + S、Ctrl + F 保存；全局默认 effort 在 `/effort ` 菜单中用 ⌥ + S / Ctrl + S 保存，单独执行 `/effort LEVEL` 只切换当前会话档位。七项 Role 通过 `/roles` 配置。这些偏好保存到 `agent.db`；模型 Role 的运行时应用遵循下述安全边界规则，菜单的默认值保存仍不切换当前会话；其余 YAML 字段仍按原规则严格校验。
 
 会话费用默认以 USD 显示。可在 `settings.yml` 的顶层 `cost` 段设置 `currency` 和 `exchange_rate`，重启后生效。配置该段时两个字段均必填。`currency` 支持 `USD`、`EUR`、`JPY`、`KRW`、`CNY`、`BRL`，自动选用 Nerd Font Material Design 系列图标，依次为 `f01c1`、`f01ad`、`f07bc`、`f07bd`、`f07ba`、`f0b85`。`exchange_rate` 必须为正有限数，表示 1 USD 对应的目标货币金额。下面的汇率仅作示例。
 
@@ -157,11 +157,11 @@ cost:
 
 ### 模型 Roles
 
-在 TUI 输入 `/Roles`（也接受 `/roles`），打开独立的模型角色配置页；`/model` 仍只切换当前会话的模型。配置页采用深色双栏布局：左侧为 Roles、全部模型和供应商导航，右侧为角色、模型或 effort 选择区。
+在 TUI 输入 `/roles`（或 `/setting roles`），打开统一设置面板的 Roles 配置页；`/model` 仍只切换当前会话的模型。配置页采用深色双栏布局：左侧为 Roles、全部模型和供应商导航，右侧为角色、模型或 effort 选择区。
 
 角色为 `DEFAULT`、`FAST`、`SLOW`、`VISION`、`PLAN`、`REVIEW`、`EXPLORER`，直接列出全部七项，暂不分类。每项可保存一个主模型和一个 fallback，各自使用独立的 `provider/model` 与 effort；`FAST` 对应参考界面中的 SMOL。启用状态用角色行前的 Nerd Font Material Design 圆形图标表示（实心圆启用／空心圆停用）；方向箭头仅表示键盘焦点。已启用的 Role 主备模型均高亮，禁用时整行灰显，光标移动不会改变启用状态。Space 或点击圆形图标切换启用状态，取消选中会保留 model/effort。Enter 配置模型及受支持的 effort；首次配置默认启用，修改已取消选中的配置不会重新启用。主模型和备用模型名后紧跟各自的 effort，备用行只显示缩进箭头。`↑/↓` 在主模型行与备用模型行之间选择，Enter 修改当前行；`f` 设置当前角色的 fallback，`t`（兼容 `e`）单独调整当前行 thinking，`x` 清除当前行，Delete／Backspace 删除整个角色配置，Esc 逐级返回。主备模型允许相同，effort 仍独立保存；清空主模型会禁用角色并保留 fallback，补齐后仍需手动启用。修改已启用角色的模型或 effort 后，配置提交到 `agent.db` 才发布待生效修订。绑定内置角色的子 Agent 在各自的下一次请求前应用最新模型和 effort。自定义角色的子 Agent 使用派发时选定的模型和 effort。仅 Main 可以派发子 Agent；所有 child 均无 `task` 工具及其自动委托提示，恢复旧任务或配置 `spawns: ["*"]` 也不能开启递归。已有的无角色子 Agent 保持创建时的配置；禁用或清除角色不取消、也不重新绑定正在运行的 child，它保留最后一次已应用的模型。运行中子 Agent 数量上限默认为 4，每个 Run 从初始化到结果收尾持续占用名额，等待名额时保持 queued；可在 `~/.pp/agent/settings.yml` 设置 `task.max_concurrency: 1` 至 `32`，重启生效，Main 不占名额；详见[子 Agent 使用说明](subagents.md)。
 
-内置 Role 的模型绑定和启用状态保存在 `~/.pp/agent/agent.db`，通过 TUI 的 `/Roles` 面板修改；面板的每次启用、选模和 effort 修改都在数据库事务中提交，提交成功才更新目录快照。取消选中与重新选中都会保留已配置的 model/effort，`settings.yml` 中的旧 `model_roles` 只在首次迁移时读取。
+内置 Role 的模型绑定和启用状态保存在 `~/.pp/agent/agent.db`，通过 TUI 的 `/roles` 面板修改；面板的每次启用、选模和 effort 修改都在数据库事务中提交，提交成功才更新目录快照。取消选中与重新选中都会保留已配置的 model/effort，`settings.yml` 中的旧 `model_roles` 只在首次迁移时读取。
 
 已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。DEFAULT 供主 Agent 默认选模，PLAN 仅用于主 Agent 的 Plan 模式。子任务的内置角色包括 FAST、SLOW、VISION、REVIEW、EXPLORER，启用后进入 `task` 的可选列表。没有可用内置角色或已加载的自定义角色时，`task` 工具会隐藏。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
 
@@ -171,7 +171,7 @@ cost:
 - `VISION` 是可选模型角色，不改变模型自身的图像输入能力。
 - `EXPLORER` 始终只读：内置工具仅保留 read、rg、glob、lsp 与已授权的只读 MCP，不提供写入、shell 或继续委托，用于快速探索代码结构和定位实现。
 
-运行时 `/model` 与别名 `/models` 只修改主 Agent 的会话模型；`/Roles` 修改角色配置并保存。控制线程负责读取、校验和持久化，UI 不做这些 I/O。安全边界是当前回复及整批工具调用／结果已经提交，且尚未领取下一批 Steering、检查新模型容量和发送下一请求；空闲 Agent 立即应用，任务已完成则只更新模型，不额外请求模型。压缩和 Plan 审批交接期间延后，待事务完成再应用。切换在构造并发送下一次请求之前领取；轮询之后到 socket 写出之间到达的变更落到下一轮。只改 effort 时下一请求仅替换 `reasoning_effort`／`reasoning` 参数，不重写消息、工具或指令前缀；改 model 会让主 Agent 与绑定该角色的运行中子 Agent 各自冷启动前缀缓存，运行中优先只调 effort。切换复用同一 Agent 和任务，不重置预算、TODO 或文件变更快照；后台进程与其他角色的子 Agent 继续运行。
+运行时 `/model` 与别名 `/models` 只修改主 Agent 的会话模型；`/roles` 修改角色配置并保存。控制线程负责读取、校验和持久化，UI 不做这些 I/O。安全边界是当前回复及整批工具调用／结果已经提交，且尚未领取下一批 Steering、检查新模型容量和发送下一请求；空闲 Agent 立即应用，任务已完成则只更新模型，不额外请求模型。压缩和 Plan 审批交接期间延后，待事务完成再应用。切换在构造并发送下一次请求之前领取；轮询之后到 socket 写出之间到达的变更落到下一轮。只改 effort 时下一请求仅替换 `reasoning_effort`／`reasoning` 参数，不重写消息、工具或指令前缀；改 model 会让主 Agent 与绑定该角色的运行中子 Agent 各自冷启动前缀缓存，运行中优先只调 effort。切换复用同一 Agent 和任务，不重置预算、TODO 或文件变更快照；后台进程与其他角色的子 Agent 继续运行。
 
 通过 ⌥ + P / Ctrl + P 或 `/model` 确认的模型是当前会话的持续选择，直到再次切换；进入并退出会话树、回退历史或关闭其他 TUI 面板都不会恢复启动默认模型。模型状态按切换版本更新，迟到的旧 worker 快照不会覆盖已生效的选择。普通切换不修改 `agent.db` 中的默认模型偏好；只有在模型菜单显式按 Ctrl + S 才保存下次启动的默认值。
 
@@ -257,7 +257,9 @@ chmod 600 ~/.pp/agent/models.yml
 | `/help`、`/tips` | 查看完整帮助或全部操作提示 | TUI / 行模式 |
 | `/stats [--host IP] [--port PORT] [--no-open]` | 后台启动本地统计服务并打开浏览器，等同于 `pp stats` | TUI / 行模式 |
 | `/model [provider/model]` | 选择模型，保留历史 | TUI / 行模式 |
-| `/Roles`（或 `/roles`） | 独立配置七个模型 Role 的 model 和 effort，不改变当前模型 | 仅 TUI |
+| `/setting [general\|roles\|themes\|skills]` | 打开统一设置面板（`1 General · 2 Roles · 3 Themes · 4 Skills`，`/config`、`/settings` 别名）；行模式按子页提示或复用 themes/skills 列表 | TUI（部分行模式） |
+| `/roles` | 打开统一设置面板的 Roles 页配置七个模型 Role 的 model 和 effort，不改变当前模型 | 仅 TUI |
+| `/agents` | 打开 Agent Hub 查看、跟随和控制子 Agent（`⌥ + A / Alt + A`），行模式输出快照 | TUI / 行模式 |
 | `/effort [none\|low\|medium\|high\|xhigh\|max]` | 查看或切换当前模型允许的思考档位，`/think` 为别名 | TUI / 行模式 |
 | `/new` | 清空当前会话，保留模型和思考档位 | TUI / 行模式 |
 | `/init` | 使用当前模型创建或更新项目 `AGENTS.md` | TUI / 行模式 |
@@ -856,7 +858,7 @@ cargo nextest run --locked --workspace -E 'test(lsp_)'
 ## 上下文用量与压缩
 
 - **用量可见，不增加查询命令。** TUI 输入栏上沿右对齐，依次显示速度、任务短标题、上下文、输入/输出、缓存读/写、费用、耗时，各组使用 Nerd Font 图标并以 ` · ` 分隔，不显示 In/Out/CRead/CWrite 等文字标签。上下文图标（Nerd Font `U+E62A`）和数值均为白色，已知容量显示 ` 81.6%/500K`，容量未知时显示当前估算量和 `?`。数量达到千/百万使用 K/M，保留一位小数并去掉无意义的 `.0`（如 `999`、`1K`、`12.3K`、`1M`）；速度始终保留一位小数（如 `30.2 tok/s`、`1.0K tok/s`）。CLI 的完整整数用量与输出协议保持不变。读取用量快照不发送网络请求。
-- **子 Agent 详情速度。** `/agents` 或 `/subagents` 的详情页在 `subagent` 标识后显示 speed，复用主会话的速度图标、配色和计算方式；按事件时间戳回放采样，成功请求完成后用服务端用量校正，缺少数据时显示 `— tok/s`。窄屏按缓存、I/O、速度、费用、耗时、上下文的顺序整组隐藏指标，保留 `subagent` 标识。
+- **子 Agent 详情速度。** `/agents` 的详情页在 `subagent` 标识后显示 speed，复用主会话的速度图标、配色和计算方式；按事件时间戳回放采样，成功请求完成后用服务端用量校正，缺少数据时显示 `— tok/s`。窄屏按缓存、I/O、速度、费用、耗时、上下文的顺序整组隐藏指标，保留 `subagent` 标识。
 - **实时请求指标。** 速度为粉色，图标按速度分三档：低于 60 tok/s 为低速档 `f0f86`，60 到 120 为中速档 `f0f85`，120 及以上为高速档 `f04c5`，缺少速率数据时用低速档；输入/输出两侧分别蓝色/绿色，缓存读/写两侧分别紫色/橙色，末尾耗时图标与数值为白色。速度保留现有约 2 秒窗口、250ms 刷新的 UTF-8 字节除以 3 估算，首个输出开始计时；成功完成后使用服务端 output tokens / 完整请求耗时校正。工具执行、请求间隙和下一请求等待期间保留上一笔速度。`out` 累计整个会话所有已完成普通请求的服务端 output tokens：生成中的本次请求还没有 usage 时，在累计值上叠加已接收输出字节除以 3 的实时估算，请求完成后随服务端 usage 一起刷新（失败或取消只丢弃本次估算），所以该数字只会增长；`in` 和缓存量仍只表示最近一次完成的普通请求，始终不是本次请求的估算值。input 包含缓存读写，缓存只是明细。未知显示 `—`，明确的零显示 `0`。失败或取消清除速度、保留最近成功计数；新会话、切模型/effort、恢复、树导航和成功压缩清空最近请求指标，其中切模型/effort 与成功压缩保留本会话累计 `out`，新会话、恢复、树导航和 Plan 交接连累计一起归零。标题与压缩流不会覆盖这些指标。空间不足先缩短或隐藏标题，再依次整组隐藏缓存、I/O、速度、费用、耗时，最后保留 Ctx；按显示列计算，不拆开图标。队列与临时状态保留上下文字段所需空间。
 - **任务短标题。** 仅 TUI 主 Agent 在每次独立用户任务开始时后台请求一次短标题，优先使用已启用 FAST Role 及其 fallback；FAST 未启用时沿用当前主模型。使用独立无工具上下文，语言跟随用户输入，显示最多 32 列；生成前或失败时隐藏，不阻塞主请求、不进入主对话或主请求速度。Steering 和继续任务沿用标题，独立 FollowUp 重新生成。任务结束取消并回收尚未完成的标题请求；已经生成的标题保留到下次独立任务，新建、恢复或树导航时清空。标题请求以 `task_title` 用途写统计，不采集首次上下文，也不消费主会话的首次采集标记。
 - **会话费用。** 状态栏显示主模型、备用模型、子 Agent、压缩、计划审阅与标题请求的已结算金额之和。跨任务、切模型、切档位、Shell 命令和同一会话的树导航保留费用，新会话重新累计。请求落定后按服务端 usage 累加可计价金额，即使统计库写入失败也会累计。费用字段只显示 `cost.currency` 对应的图标和按 `cost.exchange_rate` 换算后的金额。金额大于 10 时保留两位小数，其余保留三位。没有可显示的小计时隐藏费用字段。
@@ -1277,6 +1279,6 @@ nextest 不运行 doctest；六个内部库都是 library target，须另行运�
 
 ## 子 Agent
 
-pp 支持批量异步委托、持续追问、驻留恢复、结构化结果和可选 worktree 隔离。用 `/Roles` 配置模型角色，`/agents` 和 `/subagents`（也可用 `⌥ + A / Alt + A`）都能打开 Agent Hub 查看和控制运行实例；输入框上方显示子任务摘要。子 Agent 沿用父会话审批规则，并保留适用的项目指令。
+pp 支持批量异步委托、持续追问、驻留恢复、结构化结果和可选 worktree 隔离。用 `/roles` 配置模型角色，`/agents`（也可用 `⌥ + A / Alt + A`）打开 Agent Hub 查看和控制运行实例；输入框上方显示子任务摘要。子 Agent 沿用父会话审批规则，并保留适用的项目指令。
 
 完整配置、工具协议、权限与恢复行为见[子 Agent 使用说明](subagents.md)。

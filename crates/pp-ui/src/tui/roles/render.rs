@@ -15,7 +15,14 @@ impl Panel {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border()))
-            .title(Line::styled(" Models ", Style::default().fg(gold())));
+            .title(super::super::settings::render::tabs_title(
+                super::super::settings::Tab::Roles,
+                None,
+                area,
+                gold(),
+                text_fg(),
+                muted(),
+            ));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let sidebar_width = if inner.width >= 54 {

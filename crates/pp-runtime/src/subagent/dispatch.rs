@@ -64,7 +64,7 @@ impl Binding {
                         .is_some_and(|assignment| assignment.enabled)
                 {
                     return format!(
-                        "model role {} is not selected; enable it in /Roles first",
+                        "model role {} is not selected; enable it in /roles first",
                         role.name()
                     );
                 }

@@ -130,7 +130,7 @@ pub(super) struct Panel {
     step: Step,
     icon_index: usize,
     theme_index: usize,
-    area: Rect,
+    pub(super) area: Rect,
     list_area: Rect,
     step_icon_area: Rect,
     step_theme_area: Rect,
@@ -140,6 +140,17 @@ pub(super) struct Panel {
 }
 
 impl Panel {
+    pub(super) fn step_label(&self) -> &'static str {
+        match self.step {
+            Step::IconMode => "Step 1/2: Icon Style",
+            Step::Theme => "Step 2/2: Color Theme",
+        }
+    }
+
+    pub(super) fn saved_appearance(&self) -> (Theme, IconMode) {
+        (self.saved_theme, self.saved_icons)
+    }
+
     pub(super) fn new(saved_theme: Theme, saved_icons: IconMode) -> Self {
         let icon_index = IconMode::ALL
             .iter()

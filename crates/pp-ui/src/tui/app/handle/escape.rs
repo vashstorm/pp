@@ -75,6 +75,7 @@ impl App {
         } else if key.kind == KeyEventKind::Press
             && matches!(self.state, State::Ready)
             && !self.skills_pending
+            && self.active_settings_tab().is_none()
             && self.input.lines().iter().all(String::is_empty)
         {
             if self.escape_tap.press(Instant::now()) {

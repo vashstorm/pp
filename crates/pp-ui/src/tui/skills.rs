@@ -95,6 +95,7 @@ pub(super) struct Panel {
     sources_tab: bool,
     choices: BTreeMap<String, bool>,
     detail_scroll: u16,
+    pub(super) area: Rect,
     pub(super) busy: bool,
     error: Option<String>,
 }
@@ -117,6 +118,7 @@ impl Panel {
             choices: BTreeMap::new(),
             entries: skills.entries,
             diagnostics: skills.diagnostics,
+            area: Rect::default(),
             busy: false,
             error: None,
         }
@@ -208,15 +210,20 @@ impl Panel {
         Action::None
     }
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        self.area = area;
         frame.render_widget(Clear, area);
-        let title = if self.busy {
-            " Skills · Working "
-        } else {
-            " Skills "
-        };
+        let p = super::themes::palette();
+        let suffix = self.busy.then_some("Working");
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(title)
+            .title(super::settings::render::tabs_title(
+                super::settings::Tab::Skills,
+                suffix,
+                area,
+                Color::Magenta,
+                p.text,
+                Color::DarkGray,
+            ))
             .border_style(Style::default().fg(Color::Magenta));
         let inner = block.inner(area);
         frame.render_widget(block, area);
