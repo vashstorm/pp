@@ -11,7 +11,6 @@ use async_openai::types::chat::ChatCompletionRequestMessage;
 use pp_config::config::ModelChoice;
 use pp_config::model_state::ModelState;
 use pp_config::models::Protocol;
-use pp_core::cancellation::CancellationToken;
 use pp_core::model::ModelSource;
 use pp_llm::OpenAiClient;
 use std::path::PathBuf;
@@ -81,12 +80,11 @@ impl Agent {
         // 审批配置沿用当前 settings.yml，不恢复 checkpoint 中的旧值；
         // 会话级授权本来就不序列化。
         tools.approval.set_config(config.settings.tools.clone());
-        // 复用进程级单例：跨 `/resume` 不重连也不重读 `mcp.json`，只按目标
-        // 模式补连尚未连接的服务。
-        tools.mcp.connect_enabled(
-            &CancellationToken::new(),
-            crate::mcp::Access::for_mode(checkpoint.workflow.mode),
-        )?;
+        // 复用进程级单例：启动期后台建连可能仍在进行，这里只登记目标 access，
+        // 首个任务入口统一等待并刷新工具，切换会话不阻塞界面。
+        tools
+            .mcp
+            .start_connect(crate::mcp::Access::for_mode(checkpoint.workflow.mode));
         Self::install_lsp(&mut tools, &catalog);
         checkpoint
             .session

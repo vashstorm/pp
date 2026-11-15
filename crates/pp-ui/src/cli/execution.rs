@@ -5,6 +5,7 @@ use std::io::Write;
 
 use super::banner::cli_lsp_report;
 use super::events::{cli_context_event, cli_output_result, cli_output_text, cli_write};
+use super::mcp_status;
 use pp_core::cancellation;
 use pp_core::events;
 use pp_runtime::agent;
@@ -52,6 +53,8 @@ fn run_cli_execution(
     use events::{AgentEvent, OutputStream};
     match &execution {
         CliExecution::Agent { agent, .. } => {
+            // 启动期建连可能仍在后台进行：首个任务前滚动输出逐服务结果与总状态。
+            mcp_status::wait(agent, stderr);
             for warning in agent.mcp_view().warnings() {
                 writeln!(stderr, "{warning}")?;
             }

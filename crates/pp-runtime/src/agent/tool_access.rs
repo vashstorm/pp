@@ -60,6 +60,11 @@ impl Agent {
         self.tools.undo_file(token)
     }
 
+    /// 进程级 MCP 单例的只读句柄：UI 只看建连进度与 `/mcp` 快照，不拥有回收权。
+    pub fn mcp(&self) -> std::sync::Arc<crate::mcp::McpManager> {
+        std::sync::Arc::clone(&self.tools.mcp)
+    }
+
     pub fn run_shell(
         &mut self,
         command: &str,

@@ -131,6 +131,8 @@ impl App {
             usage: None,
             token_speed: statusline::TokenSpeed::default(),
             retry_notice: None,
+            mcp_tip: Vec::new(),
+            mcp_tip_dismissed: false,
             task_status_view: Default::default(),
             task_status: None,
             cost_display: Default::default(),
@@ -215,7 +217,9 @@ impl App {
         let lsp_cleanup = agent.lsp_cleanup();
         let lsp_registry = agent.lsp_registry();
         self.mcp_view = agent.mcp_view();
-        let mut startup_errors = self.mcp_view.warnings();
+        // 后台建连失败由欢迎页多行 MCP tip 统一展示，不因竞态弹窗覆盖欢迎页；
+        // 配置诊断（如非法条目）仍作为启动错误提示。
+        let mut startup_errors = self.mcp_view.diagnostics.clone();
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
         self.favorite_models = agent.favorite_models();

@@ -5,6 +5,7 @@ mod history;
 pub(super) mod hub;
 mod init;
 mod input;
+mod mcp_tip;
 mod navigation;
 mod panels;
 mod pipes;

@@ -429,6 +429,7 @@ mod tree_session_cases;
 mod todo_cases;
 
 mod mcp_cases;
+mod mcp_tip_cases;
 
 mod resource_cases;
 mod theme_cases;

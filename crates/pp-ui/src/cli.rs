@@ -3,6 +3,7 @@
 mod banner;
 mod events;
 mod execution;
+mod mcp_status;
 mod pipes;
 
 pub(crate) use banner::cli_lsp_report;

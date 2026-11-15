@@ -41,15 +41,32 @@ impl McpManager {
     }
 
     pub(super) fn stop_tracked(&self) -> Result<()> {
-        let _control = self.lock_control();
-        let tracked = self.take_tracked();
-        // 先释放服务句柄：空闲的 stdio 服务在 `Client::drop` 中关闭 stdin 并得到
-        // 有界宽限，服务端可自行收尾（退出后仍能观察到 fixture 的 `.closed`）。
-        // 正被占用的服务仍由 worker 持有句柄，这里不会等待它。
-        drop(tracked.servers);
-        // 再按槽位急停剩余连接：不等待 `ServerState` 锁，能打断活动请求，
-        // 并在槽级标记 closing，禁止清理完成后由 worker 复活进程。
-        stop_slots(&tracked.slots)
+        // 先取消启动期建连：worker 在服务之间检查 token，control 随后能尽快释放。
+        let token = self.lock_state().connect_token.clone();
+        if let Some(token) = token {
+            token.cancel();
+        }
+        let result = {
+            let _control = self.lock_control();
+            let tracked = self.take_tracked();
+            // 先释放服务句柄：空闲的 stdio 服务在 `Client::drop` 中关闭 stdin 并得到
+            // 有界宽限，服务端可自行收尾（退出后仍能观察到 fixture 的 `.closed`）。
+            // 正被占用的服务仍由 worker 持有句柄，这里不会等待它。
+            drop(tracked.servers);
+            // 再按槽位急停剩余连接：不等待 `ServerState` 锁，能打断活动请求，
+            // 并在槽级标记 closing，禁止清理完成后由 worker 复活进程。
+            stop_slots(&tracked.slots)
+        };
+        // 控制锁释放后再 join：worker 起手需要 control，先 join 会死锁。
+        let thread = self
+            .connect_thread
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        if let Some(thread) = thread {
+            let _ = thread.join();
+        }
+        result
     }
 
     // 在 state 下标记关闭并摘出全部槽与服务句柄；实际停止在锁外完成。

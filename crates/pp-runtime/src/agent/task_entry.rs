@@ -174,6 +174,9 @@ impl Agent {
                 bail!("{error}");
             }
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
+            // 启动期后台建连的收口：任务真正开始时才等，界面与提示行先渲染。
+            // 等待期间被取消不在这里上报：交给下面的取消边界保存已接受输入。
+            let _ = self.tools.mcp.await_connect(cancellation);
             // 先检查后提交：拒绝或故障时不追加 user、不准备计划、不请求模型。
             let hook_context = self.user_prompt_hook(prompt, cancellation, emit)?;
             self.connect_pending_plan_mcp(cancellation)?;
@@ -217,6 +220,9 @@ impl Agent {
             if let Some(error) = &self.plan_cleanup_error {
                 bail!("{error}");
             }
+            // 续跑同样走任务入口屏障：启动期后台建连未完成时先等它结束；
+            // 等待期间取消交给轮次循环的取消边界处理。
+            let _ = self.tools.mcp.await_connect(cancellation);
             self.connect_pending_plan_mcp(cancellation)?;
             self.ensure_task_plan_lease()?;
             self.prepare_plan_task("")?;

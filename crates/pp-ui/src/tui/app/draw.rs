@@ -12,7 +12,7 @@ pub(in crate::tui) struct MainLayout {
     activity: Rect,
     // 自动重试固定信息框；始终位于输入框上方，不进入对话区。
     retry: Rect,
-    input: Rect,
+    pub(in crate::tui) input: Rect,
     attachments: Rect,
     status: Rect,
     bordered: bool,
@@ -383,7 +383,7 @@ impl App {
         let preview_area = conversation;
         let conversation =
             if self.show_welcome && self.plan_panel.is_none() && self.mcp_panel.is_none() {
-                welcome::draw(frame, conversation)
+                welcome::draw(frame, conversation, &self.mcp_tip)
             } else {
                 conversation
             };

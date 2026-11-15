@@ -3,6 +3,7 @@ mod client;
 mod command;
 mod config;
 mod connect;
+mod connect_status;
 mod lifecycle;
 mod manage;
 mod remote;
@@ -11,10 +12,12 @@ mod remote_tests;
 mod view;
 pub use command::{Action, SUBCOMMANDS, help};
 pub use config::{EntryView, View};
+pub use connect_status::{ConnectPhase, ConnectSnapshot, ServerConnect};
 
 use anyhow::{Result, ensure};
 use async_openai::types::chat::FunctionObject;
 use client::{Client, SharedConnection};
+use pp_core::cancellation::CancellationToken;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
@@ -25,7 +28,7 @@ use std::{
 #[cfg(test)]
 use connect::exposed_name;
 #[cfg(test)]
-use pp_core::cancellation::{CancellationToken, Cancelled};
+use pp_core::cancellation::Cancelled;
 #[cfg(test)]
 use serde_json::json;
 #[cfg(test)]
@@ -143,6 +146,8 @@ pub struct McpManager {
     // 串行化配置加载、连接集合变更与退出停止；单次工具调用不经过它。
     control: Mutex<()>,
     state: Mutex<State>,
+    // 启动期后台建连线程：退出时先取消再回收，避免 shutdown 后重新拉起服务。
+    connect_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 /// 内存态：临界区只做内存读写，绝不跨网络请求或进程 spawn 持锁。
@@ -155,6 +160,10 @@ pub(crate) struct State {
     connections: Vec<SharedConnection>,
     loaded: bool,
     closing: bool,
+    // 启动期后台建连进度；快照读取不触网，`await_connect` 只轮询 `finished`。
+    connect: connect_status::Progress,
+    // 当前后台建连的取消句柄：退出与测试收尾用它尽快结束等待。
+    connect_token: Option<CancellationToken>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -216,6 +225,7 @@ impl McpManager {
                 loaded,
                 ..State::default()
             }),
+            connect_thread: Mutex::new(None),
         }
     }
 

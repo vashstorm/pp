@@ -108,3 +108,85 @@ fn mcp_tui_list_is_read_only_and_core_completion_updates_runtime() {
     pty.finish();
     super::mcp::assert_stopped(home.path());
 }
+
+#[test]
+fn mcp_tui_startup_tips_render_multiline_inside_welcome_area() {
+    let provider = server();
+    let home = tempfile::tempdir().unwrap();
+    let mut config = super::mcp::settings("");
+    config["mcpServers"]["broken"] = json!({"command": "/nonexistent/pp-mcp-fixture"});
+    crate::write_settings(home.path(), config.to_string()).unwrap();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        fixture_models(&provider),
+    )
+    .unwrap();
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.ready();
+    pty.wait_for("多行 MCP 启动提示显示在欢迎页快捷入口下方", |screen| {
+        let text = screen.contents();
+        text.contains("Connected to MCP servers: 1 succeeded, 1 failed (")
+            && text.contains("MCP: local connected (")
+            && text.contains("✓")
+            && text.contains("MCP: broken failed (")
+            && text.contains("✗")
+            && text.contains("starting MCP process failed")
+    });
+    let text = pty.contents();
+    let lines: Vec<&str> = text.lines().collect();
+    let hints_row = lines
+        .iter()
+        .position(|line| line.contains("/tips  All shortcuts"))
+        .expect("welcome hints row");
+    let broken_row = lines
+        .iter()
+        .position(|line| line.contains("MCP: broken failed ("))
+        .expect("broken line");
+    let reason_row = lines
+        .iter()
+        .position(|line| line.contains("starting MCP process failed"))
+        .expect("broken reason line");
+    let local_row = lines
+        .iter()
+        .position(|line| line.contains("MCP: local connected ("))
+        .expect("local line");
+    let summary_row = lines
+        .iter()
+        .position(|line| line.contains("Connected to MCP servers: 1 succeeded, 1 failed ("))
+        .expect("summary line");
+    let input_prompt_row = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with('❯'))
+        .expect("input prompt row");
+
+    assert!(lines[local_row].trim_end().ends_with('✓'), "{text}");
+    assert!(lines[broken_row].trim_end().ends_with('✗'), "{text}");
+    assert_eq!(reason_row, broken_row + 1, "{text}");
+    assert!(broken_row >= hints_row + 2, "{text}");
+    assert!(local_row >= hints_row + 2, "{text}");
+    assert_eq!(summary_row, reason_row.max(local_row) + 1, "{text}");
+    // 输入栏上方不再保留 tip 行，总状态位于欢迎区内、输入上边框之上。
+    assert!(summary_row + 1 < input_prompt_row, "{text}");
+    assert_eq!(
+        lines[hints_row].find("/tips"),
+        lines[local_row].find("MCP:"),
+        "{text}"
+    );
+    assert_eq!(
+        lines[reason_row].find("starting MCP process failed"),
+        lines[broken_row].find("MCP:").map(|x| x + 2),
+        "{text}"
+    );
+
+    pty.input("hello\r");
+    let (request, _) = receive(&provider);
+    final_reply(request, "done");
+    pty.text("done");
+    pty.ready();
+    let after_task = pty.contents();
+    assert!(!after_task.contains("Connected to MCP servers:"), "{after_task}");
+    assert!(!after_task.contains("MCP: local connected"), "{after_task}");
+    pty.input("/quit\r");
+    pty.finish();
+    super::mcp::assert_stopped(home.path());
+}

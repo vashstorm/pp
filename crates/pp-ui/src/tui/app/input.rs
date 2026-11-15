@@ -778,6 +778,8 @@ impl App {
         if self.send(command, State::Running) {
             self.active_cancellation = Some(cancellation);
             self.conversation.begin_run();
+            // 启动期建连提示只服务启动阶段；首个任务开始后不再占用对话高度。
+            self.dismiss_mcp_tip();
             true
         } else {
             let _ = self.input_queue.close();

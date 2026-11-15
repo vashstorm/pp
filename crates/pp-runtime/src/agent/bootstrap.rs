@@ -8,7 +8,6 @@ use pp_config::config::ModelChoice;
 use pp_config::model_state::{ModelState, Selection};
 #[cfg(debug_assertions)]
 use pp_core::cancellation;
-use pp_core::cancellation::CancellationToken;
 use pp_llm::OpenAiClient;
 use std::path::PathBuf;
 
@@ -100,11 +99,9 @@ impl Agent {
         tools.limits = config.settings.tool_limits();
         tools.approval.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
-        // 进程级单例：首次连接失败即启动失败；管理器保留未加载状态，
-        // 下次构造（如登录后重建 Agent）自动重试，这里不手动回收。
-        tools
-            .mcp
-            .connect_enabled(&CancellationToken::new(), crate::mcp::Access::Full)?;
+        // 进程级单例：启动期后台建连，不再阻塞首个界面；首个任务入口等它结束。
+        // 连接失败不是启动失败：失败只落到 `/mcp list` 与提示行。
+        tools.mcp.start_connect(crate::mcp::Access::Full);
         Self::install_lsp(&mut tools, &catalog);
         let current_model = ModelChoice {
             reference: selection.reference.clone(),

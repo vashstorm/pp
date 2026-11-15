@@ -131,6 +131,8 @@ fn mcp_roundtrip_both_protocols_preserves_schema_results_order_and_events() {
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("mcp__local__echo"));
+        assert!(stderr.contains("MCP: local connected (") && stderr.contains(") ✓"));
+        assert!(stderr.contains("Connected to MCP servers: 1 succeeded ("));
         assert!(!stderr.contains("secret-"));
         assert_eq!(
             std::fs::read_to_string(dir.path().join("written")).unwrap(),
@@ -181,6 +183,21 @@ fn mcp_startup_failures_are_bounded_redacted_and_reap_processes() {
         let output = cli.finish();
         assert!(output.status.success(), "{mode}");
         let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<&str> = stderr.lines().collect();
+        let failed_idx = lines
+            .iter()
+            .position(|line| line.starts_with("MCP: local failed (") && line.ends_with(") ✗"))
+            .unwrap_or_else(|| panic!("{mode}: {stderr}"));
+        assert!(
+            lines
+                .get(failed_idx + 1)
+                .is_some_and(|line| line.starts_with("  ") && !line.trim().is_empty()),
+            "{mode}: {stderr}"
+        );
+        assert!(
+            stderr.contains("Connected to MCP servers: 0 succeeded, 1 failed ("),
+            "{mode}: {stderr}"
+        );
         assert!(!stderr.contains("secret-"), "{mode}: {stderr}");
         no_more(&provider);
         assert_stopped(dir.path());

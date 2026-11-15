@@ -16,9 +16,10 @@ use super::client::{Client, ConnectionSlot, SharedConnection};
 #[cfg(test)]
 use super::validate_config;
 use super::{
-    Access, McpManager, RemoteTool, ServerConfig, ServerState, SharedServer, TOOL_LIMIT, VERSIONS,
-    config, safe_name,
+    Access, ConnectSnapshot, McpManager, POLL, RemoteTool, ServerConfig, ServerState, SharedServer,
+    TOOL_LIMIT, VERSIONS, config, safe_name,
 };
+use std::time::Instant;
 
 impl McpManager {
     // 首次需要时加载配置；失败保持未加载，下一次调用重试。
@@ -40,9 +41,156 @@ impl McpManager {
     }
 
     pub(crate) fn connect_enabled(&self, token: &CancellationToken, access: Access) -> Result<()> {
+        // 启动期建连可能仍在进行：先等它结束，再补齐当前 access 缺的服务。
+        self.await_connect(token)?;
         let _control = self.lock_control();
         self.ensure_loaded()?;
         self.connect_enabled_locked(token, access)
+    }
+
+    /// 启动期入口：登记后台建连并立即返回。重复调用只在上一轮结束后重新开始。
+    pub(crate) fn start_connect(self: &Arc<Self>, access: Access) {
+        // 无配置文件的内存实例（测试与 mock）没有可连的服务，也不留空线程。
+        if self.config.is_none() {
+            return;
+        }
+        let token = CancellationToken::new();
+        {
+            let mut state = self.lock_state();
+            if state.closing || !state.connect.is_finished() {
+                return;
+            }
+            // 先登记本轮进行中，再起线程：屏障与快照都不能看到“未开始”的空窗。
+            state.connect.reserve();
+            state.connect_token = Some(token.clone());
+        }
+        let manager = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("pp-mcp-connect".into())
+            .spawn(move || manager.run_connect(token, access));
+        match spawned {
+            Ok(thread) => {
+                let mut slot = self
+                    .connect_thread
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                // 上一轮已 join 或在 stop_tracked 中取走；覆盖不会泄漏线程。
+                *slot = Some(thread);
+            }
+            Err(error) => {
+                tracing::warn!(event = "mcp_connect_thread_failed", error = %error);
+                self.lock_state()
+                    .connect
+                    .fail("failed to start the MCP connect worker");
+            }
+        }
+    }
+
+    /// 启动期建连的只读快照；UI 与 CLI 只读这个，不在绘制或事件循环里触网。
+    pub fn connect_snapshot(&self) -> ConnectSnapshot {
+        self.lock_state().connect.snapshot()
+    }
+
+    /// 行模式一次性取走建连总状态：同一进程的后续任务不重复输出。
+    pub fn take_connect_report(&self) -> Option<String> {
+        self.lock_state().connect.take_report()
+    }
+
+    /// 任务入口屏障：等启动期建连结束。未启动过的实例（测试、mock）立即返回。
+    pub(crate) fn await_connect(&self, cancellation: &CancellationToken) -> Result<()> {
+        loop {
+            cancellation::check(cancellation)?;
+            if self.lock_state().connect.is_finished() {
+                return Ok(());
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    // 后台线程主体：全程持 control，与 `/mcp` 变更和退出停止串行。
+    fn run_connect(self: Arc<Self>, token: CancellationToken, access: Access) {
+        let _control = self.lock_control();
+        let prepared = (|| -> Result<Vec<String>> {
+            self.ensure_loaded()?;
+            let mut state = self.lock_state();
+            let names: Vec<String> = state
+                .directory
+                .entries
+                .iter()
+                .filter(|(_, entry)| {
+                    Self::eligible_entry(entry, access) && entry.status == "not connected"
+                })
+                .map(|(name, _)| name.clone())
+                .collect();
+            state.connect.begin(names.clone());
+            for name in &names {
+                if let Some(entry) = state.directory.entries.get_mut(name) {
+                    entry.status = "connecting";
+                }
+            }
+            Ok(names)
+        })();
+        let names = match prepared {
+            Ok(names) => names,
+            Err(error) => {
+                // 配置不可用不是启动失败：提示行给出脱敏原因，首个任务照常进行。
+                let mut state = self.lock_state();
+                state.connect.fail(&format!("{error:#}"));
+                state.connect_token = None;
+                return;
+            }
+        };
+        for name in names {
+            if token.is_cancelled() {
+                break;
+            }
+            self.lock_state().connect.connecting(&name);
+            let started = Instant::now();
+            // 普通连接故障只落到条目状态；取消与回收失败结束本轮并记诊断。
+            match self.connect_one_outcome(&name, &token) {
+                Ok(reason) => {
+                    let connected = self
+                        .lock_state()
+                        .directory
+                        .entries
+                        .get(&name)
+                        .is_some_and(|entry| entry.status == "connected");
+                    self.lock_state().connect.complete(
+                        &name,
+                        connected,
+                        started.elapsed(),
+                        if connected { None } else { reason.as_deref() },
+                    );
+                }
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    tracing::error!(
+                        event = "mcp_connect_aborted",
+                        server = %name,
+                        kind = if error.is::<Cancelled>() { "cancelled" } else { "cleanup" },
+                        error = %pp_core::text::display_text(&message)
+                    );
+                    self.lock_state().connect.complete(
+                        &name,
+                        false,
+                        started.elapsed(),
+                        Some(&message),
+                    );
+                    break;
+                }
+            }
+        }
+        let mut state = self.lock_state();
+        // 取消或退出时未建连的目标恢复为可重试状态，`/mcp reconnect` 不会误判。
+        for name in state.connect.unfinished() {
+            if let Some(entry) = state.directory.entries.get_mut(&name)
+                && entry.status == "connecting"
+            {
+                entry.status = "not connected";
+            }
+        }
+        state.connect.finish();
+        state.connect_token = None;
     }
 
     // 调用方必须已持有 control。
@@ -88,6 +236,10 @@ impl McpManager {
 
     // 单服务连接：普通故障只落到条目状态，取消与清理失败才向上传播。
     pub(super) fn connect_one(&self, name: &str, token: &CancellationToken) -> Result<()> {
+        self.connect_one_outcome(name, token).map(|_| ())
+    }
+
+    fn connect_one_outcome(&self, name: &str, token: &CancellationToken) -> Result<Option<String>> {
         let Some(config) = self
             .lock_state()
             .directory
@@ -95,7 +247,7 @@ impl McpManager {
             .get(name)
             .and_then(|entry| entry.config.clone())
         else {
-            return Ok(());
+            return Ok(None);
         };
         let result = self.add_server(name, &config, token);
         let status = if result.is_ok() {
@@ -121,8 +273,9 @@ impl McpManager {
             entry.status = status;
         }
         match result {
+            Ok(()) => Ok(None),
             Err(error) if error.is::<CleanupError>() || error.is::<Cancelled>() => Err(error),
-            _ => Ok(()),
+            Err(error) => Ok(Some(format!("{error:#}"))),
         }
     }
 
@@ -429,5 +582,71 @@ mod tests {
         // discovery 取消且显式回收成功：错误保持 Cancelled，
         // 若停止失败会被升级为 CleanupError 而非 Cancelled。
         assert!(error.downcast_ref::<Cancelled>().is_some());
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+    use crate::mcp::{Access, ConnectPhase, McpManager};
+    use std::time::Duration;
+
+    fn write_config(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join("mcp.json");
+        let log = dir.join("server-log");
+        let script = format!(
+            "{}/../../tests/fixtures/mcp_server.sh",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "mcpServers": {name: {"command": "bash", "args": [script], "env": {"MCP_LOG": log.to_str().unwrap()}}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn background_connect_returns_immediately_and_registers_tools_before_await() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path(), "local");
+        let manager = Arc::new(McpManager::new(path, dir.path().to_path_buf()));
+        let started = Instant::now();
+        manager.start_connect(Access::Full);
+        // 启动不等握手：起线程与登记进度立即返回，工具表由后台补齐。
+        assert!(started.elapsed() < Duration::from_secs(1));
+        manager.await_connect(&CancellationToken::new()).unwrap();
+        let snapshot = manager.connect_snapshot();
+        assert!(snapshot.finished);
+        assert_eq!(snapshot.servers.len(), 1);
+        assert_eq!(snapshot.servers[0].name, "local");
+        assert_eq!(snapshot.servers[0].phase, ConnectPhase::Connected);
+        assert!(snapshot.servers[0].elapsed.is_some());
+        let tip = snapshot.tip().expect("已配置服务必须有总状态");
+        assert!(
+            tip.starts_with("Connected to MCP servers: 1 succeeded ("),
+            "{tip}"
+        );
+        assert!(!tip.contains("failed"), "{tip}");
+        assert!(tip.ends_with(')'), "{tip}");
+        // 首个任务前的屏障保证模型请求能看到 MCP 工具。
+        assert!(
+            !manager.definitions(Access::Full).is_empty(),
+            "{}",
+            manager.view(Access::Full).text()
+        );
+        manager.shutdown().unwrap();
+    }
+
+    #[test]
+    fn await_connect_on_a_manager_that_never_started_returns_at_once() {
+        let manager = McpManager::empty();
+        let started = Instant::now();
+        manager.await_connect(&CancellationToken::new()).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(manager.connect_snapshot().tip().is_none());
     }
 }

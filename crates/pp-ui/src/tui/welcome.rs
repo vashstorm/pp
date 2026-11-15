@@ -22,8 +22,31 @@ fn muted() -> Color {
     super::themes::palette().welcome_muted
 }
 
+fn success() -> Color {
+    super::themes::palette().added
+}
+
+fn failed() -> Color {
+    super::themes::palette().removed
+}
+
 fn wordmark_color() -> Color {
     super::themes::palette().welcome_wordmark
+}
+
+fn mcp_tip_line(line: &str) -> Line<'static> {
+    let base = Style::default().fg(muted());
+    if line.starts_with("MCP: ") {
+        for (marker, color) in [("✓", success()), ("✗", failed())] {
+            if let Some(prefix) = line.strip_suffix(marker) {
+                return Line::from(vec![
+                    Span::styled(prefix.to_owned(), base),
+                    Span::styled(marker, Style::default().fg(color)),
+                ]);
+            }
+        }
+    }
+    Line::styled(line.to_owned(), base)
 }
 
 const SESSION_TIPS: [(&str, &str); 4] = [
@@ -145,7 +168,7 @@ fn hint_lines(width: u16, height: u16) -> Vec<Line<'static>> {
     compact
 }
 
-pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
+pub(super) fn draw(frame: &mut Frame, area: Rect, mcp_tips: &[String]) -> Rect {
     if area.width == 0 || area.height == 0 {
         return area;
     }
@@ -203,9 +226,25 @@ pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
     let tips_height = u16::try_from(tips.line_count(tips_width))
         .unwrap_or(u16::MAX)
         .min(area.height.saturating_sub(brand_height));
-    let height = brand_height + tips_height;
+
+    let mcp_lines: Vec<Line<'static>> = mcp_tips.iter().map(|line| mcp_tip_line(line)).collect();
+    let mcp = (!mcp_lines.is_empty()).then(|| Paragraph::new(mcp_lines).wrap(Wrap { trim: false }));
+    let mcp_raw_height = mcp.as_ref().map_or(0, |paragraph| {
+        u16::try_from(paragraph.line_count(tips_width)).unwrap_or(u16::MAX)
+    });
+    let after_tips = area.height.saturating_sub(brand_height + tips_height);
+    let (mcp_gap, mcp_height) = if mcp_raw_height == 0 || after_tips == 0 {
+        (0, 0)
+    } else if after_tips == 1 {
+        (0, 1)
+    } else {
+        (1, mcp_raw_height.min(after_tips - 1))
+    };
+
+    let height = brand_height + tips_height + mcp_gap + mcp_height;
     let top = if compact { 0 } else { (area.height / 8).min(2) };
     let top = top.min(area.height.saturating_sub(height));
+    let content_x = area.x + (area.width - content_width) / 2 + inset;
     frame.render_widget(
         brand,
         Rect::new(
@@ -218,12 +257,25 @@ pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
     frame.render_widget(
         tips,
         Rect::new(
-            area.x + (area.width - content_width) / 2 + inset,
+            content_x,
             area.y + top + brand_height,
             tips_width,
             tips_height,
         ),
     );
+    if let Some(mcp) = mcp
+        && mcp_height > 0
+    {
+        frame.render_widget(
+            mcp,
+            Rect::new(
+                content_x,
+                area.y + top + brand_height + tips_height + mcp_gap,
+                tips_width,
+                mcp_height,
+            ),
+        );
+    }
 
     // 欢迎内容下方仍可显示重置提示，输入区始终由主布局固定在底部。
     let used = (top + height + 1).min(area.height);

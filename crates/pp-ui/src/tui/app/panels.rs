@@ -339,6 +339,8 @@ impl App {
                     self.active_cancellation = Some(cancellation);
                     self.clear_input();
                     self.secondary_status = Some("Managing MCP servers…".into());
+                    // 启动期总状态只描述那一轮建连；变更后不再展示旧结果。
+                    self.dismiss_mcp_tip();
                 }
             }
             return false;
