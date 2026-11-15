@@ -61,7 +61,7 @@ fn bang_shell_input_consumes_only_mode_prefix() {
         draw_buffer(&mut app, 100, 30)
             .content
             .iter()
-            .any(|cell| { cell.symbol() == "─" && cell.fg == statusline::SHELL_MODE })
+            .any(|cell| { cell.symbol() == "─" && cell.fg == statusline::shell_mode() })
     );
     app.submit(PendingKind::Steering);
     assert!(requests.try_recv().is_err());

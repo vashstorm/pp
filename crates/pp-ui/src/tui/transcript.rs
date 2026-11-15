@@ -68,11 +68,21 @@ pub(super) struct NativeBatch {
     pub rows: Vec<Vec<ratatui::buffer::Cell>>,
 }
 
-const BASH_BACKGROUND: Color = palette::TOOL_BG;
-const BASH_BORDER: Color = palette::TOOL_BORDER;
-const MUTED_TEXT: Color = Color::Rgb(110, 117, 129);
-const USER_BACKGROUND: Color = Color::Rgb(48, 42, 63);
-const ASSISTANT_BACKGROUND: Color = palette::MD_BG;
+fn bash_background() -> Color {
+    palette::tool_bg()
+}
+fn bash_border() -> Color {
+    palette::tool_border()
+}
+fn muted_text() -> Color {
+    super::themes::palette().welcome_muted
+}
+fn user_background() -> Color {
+    super::themes::palette().user_bg
+}
+fn assistant_background() -> Color {
+    palette::md_bg()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EntryKind {
@@ -776,6 +786,38 @@ impl Transcript {
         self.prepare_layout(width);
         self.resolve_browse_anchor();
         self.remember_heights();
+    }
+
+    pub(super) fn invalidate_theme(&mut self) {
+        let current_icons = super::themes::current_icons();
+        for entry in &mut self.entries {
+            entry.layout = None;
+            entry.display_title = None;
+            entry.markdown_dirty = matches!(entry.kind, EntryKind::Assistant | EntryKind::Think);
+            entry.render.invalidate(true);
+            entry.read_clock = palette::waiting_clock(0);
+            if let Some(tool) = entry.tool.as_deref() {
+                let target_icon = palette::tool_icon_for(tool, current_icons);
+                let other_icons = match current_icons {
+                    pp_config::config::IconMode::Nerd => pp_config::config::IconMode::Ascii,
+                    pp_config::config::IconMode::Ascii => pp_config::config::IconMode::Nerd,
+                };
+                let old_icon = palette::tool_icon_for(tool, other_icons);
+                let old_prefix = format!("{old_icon} ");
+                if let Some(rest) = entry.title.strip_prefix(&old_prefix) {
+                    entry.title = format!("{target_icon} {rest}");
+                }
+            }
+        }
+        if let Some(activity) = &mut self.activity {
+            activity.entry.layout = None;
+            activity.entry.render.invalidate(true);
+            activity.clock = palette::waiting_clock(0);
+        }
+        self.read_groups_key = None;
+        self.tree_layout = None;
+        self.native_generation = NEXT_NATIVE_GENERATION.fetch_add(1, Ordering::Relaxed);
+        self.native_preview = None;
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {

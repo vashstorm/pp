@@ -26,7 +26,7 @@ impl Panel {
         }
         if let Some(error) = error {
             frame.render_widget(
-                Line::styled(error, Style::default().fg(REMOVED)),
+                Line::styled(error, Style::default().fg(removed())),
                 Rect {
                     y: inner.y + content_h,
                     height: error_h,
@@ -77,7 +77,7 @@ impl Panel {
                 .unwrap_or(&question.id);
             lines.push(Line::from(vec![Span::styled(
                 display_text(chip).into_owned(),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             )]));
             let state = &self.states[index];
             let mut parts: Vec<String> = state
@@ -102,7 +102,7 @@ impl Panel {
                 if answered {
                     Style::default()
                 } else {
-                    Style::default().fg(DIM)
+                    Style::default().fg(dim())
                 },
             )));
         }

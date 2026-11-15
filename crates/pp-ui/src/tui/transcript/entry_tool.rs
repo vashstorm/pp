@@ -167,8 +167,8 @@ impl TranscriptEntry {
         let tool = self.tool.as_deref().unwrap_or_default();
         let style = Style::default()
             .fg(palette::tool_accent(tool))
-            .bg(palette::EDIT_BG);
-        let meta = style.fg(palette::EDIT_META);
+            .bg(palette::edit_bg());
+        let meta = style.fg(palette::edit_meta());
         let label = if tool == "write" { "Write" } else { "Edit" };
         let preview_path;
         let path = if self.is_argument_preview() {
@@ -178,24 +178,18 @@ impl TranscriptEntry {
             self.edit_path()
         };
         let path = display_path(self.cwd.as_deref(), path);
+        let icons = crate::tui::themes::current_icons();
         let mut spans = vec![
             Span::styled(format!("{} {label}: ", palette::tool_icon(tool)), style),
-            Span::styled(
-                if path.ends_with(".rs") {
-                    "\u{f1617} "
-                } else {
-                    "\u{f022e} "
-                },
-                meta,
-            ),
+            Span::styled(palette::file_icon(path, icons), meta),
             Span::styled(pp_core::text::display_text(path).into_owned(), style),
         ];
         if let EntryBody::Diff(FileDiff::Text { added, removed, .. }) = &self.body {
             spans.extend([
                 Span::styled(" ⟨", meta),
-                Span::styled(format!("+{added}"), style.fg(palette::EDIT_ADDED)),
+                Span::styled(format!("+{added}"), style.fg(palette::edit_added())),
                 Span::styled("/", meta),
-                Span::styled(format!("-{removed}"), style.fg(palette::EDIT_REMOVED)),
+                Span::styled(format!("-{removed}"), style.fg(palette::edit_removed())),
                 Span::styled("⟩ ", meta),
             ]);
         } else if self.status != EntryStatus::Complete {
@@ -208,7 +202,7 @@ impl TranscriptEntry {
                     " · running "
                 },
                 if self.status == EntryStatus::Failed {
-                    style.fg(palette::EDIT_REMOVED)
+                    style.fg(palette::edit_removed())
                 } else {
                     meta
                 },
@@ -283,30 +277,31 @@ impl TranscriptEntry {
         vec![
             Span::styled(
                 pp_core::text::display_text(path).into_owned(),
-                Style::default().fg(palette::READ_SUMMARY_PATH),
+                Style::default().fg(palette::read_summary_path()),
             ),
             Span::styled(
                 format!("{range}{image}{status}{truncated}"),
-                Style::default().fg(palette::ACTIVITY),
+                Style::default().fg(palette::activity()),
             ),
         ]
     }
 
     fn read_header(&self, count: usize) -> Line<'static> {
+        let icons = crate::tui::themes::current_icons();
         let (icon, color) = match self.status {
-            EntryStatus::Running => (self.read_clock, palette::ACCENT),
-            EntryStatus::Complete => ("\u{f00c}", palette::ADDED),
-            EntryStatus::Failed => ("\u{f00d}", palette::REMOVED),
+            EntryStatus::Running => (self.read_clock, palette::accent()),
+            EntryStatus::Complete => (palette::done_icon(icons), palette::added()),
+            EntryStatus::Failed => (palette::fail_icon(icons), palette::removed()),
         };
         let mut header = Line::from(vec![
             Span::raw("  "),
             Span::styled(icon, Style::default().fg(color)),
-            Span::styled(" Read", Style::default().fg(palette::READ_SUMMARY_TITLE)),
+            Span::styled(" Read", Style::default().fg(palette::read_summary_title())),
         ]);
         if count > 1 {
             header.spans.push(Span::styled(
                 format!(" ({count})"),
-                Style::default().fg(palette::READ_SUMMARY_META),
+                Style::default().fg(palette::read_summary_meta()),
             ));
         }
         header
@@ -323,7 +318,7 @@ impl TranscriptEntry {
         if entries.len() == 1 {
             header.spans.push(Span::styled(
                 " · ",
-                Style::default().fg(palette::READ_SUMMARY_META),
+                Style::default().fg(palette::read_summary_meta()),
             ));
             header.spans.extend(entries[0].read_path_spans());
             rows.push(header);
@@ -336,7 +331,7 @@ impl TranscriptEntry {
                     } else {
                         "    ├─ "
                     },
-                    Style::default().fg(palette::READ_SUMMARY_META),
+                    Style::default().fg(palette::read_summary_meta()),
                 )];
                 spans.extend(entry.read_path_spans());
                 rows.push(Line::from(spans));

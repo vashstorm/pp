@@ -11,10 +11,10 @@ impl Panel {
         frame.render_widget(
             Block::default()
                 .borders(Borders::TOP)
-                .border_style(Style::default().fg(MUTED))
+                .border_style(Style::default().fg(muted()))
                 .title(Line::styled(
                     " Plan list ",
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent()).add_modifier(Modifier::BOLD),
                 )),
             area,
         );
@@ -31,7 +31,7 @@ impl Panel {
                     format!(" {} ", tab.label()),
                     if tab == self.tab {
                         Style::default()
-                            .fg(if tab == Tab::All { CODE } else { tab.color() })
+                            .fg(if tab == Tab::All { code() } else { tab.color() })
                             .add_modifier(Modifier::BOLD | Modifier::REVERSED)
                     } else {
                         Style::default().fg(tab.color())
@@ -48,7 +48,7 @@ impl Panel {
             if let Some(name) = &self.rename {
                 let line = format!("rename> {name}");
                 frame.render_widget(
-                    Line::styled(line.clone(), Style::default().fg(ACCENT)),
+                    Line::styled(line.clone(), Style::default().fg(accent())),
                     Rect::new(area.x, y, area.width, 1),
                 );
                 cursor = Some((area.x + 8 + Line::from(name.as_str()).width() as u16, y));
@@ -62,7 +62,7 @@ impl Panel {
             && let Some(error) = &self.error
         {
             frame.render_widget(
-                Line::styled(error.clone(), Style::default().fg(REMOVED)),
+                Line::styled(error.clone(), Style::default().fg(removed())),
                 Rect::new(area.x, y, area.width, 1),
             );
             y += 1;
@@ -80,7 +80,7 @@ impl Panel {
             frame.render_widget(
                 Line::styled(
                     display_text(diagnostic).into_owned(),
-                    Style::default().fg(DIM),
+                    Style::default().fg(dim()),
                 ),
                 Rect::new(area.x, y, area.width, 1),
             );
@@ -95,7 +95,7 @@ impl Panel {
             HINT
         };
         frame.render_widget(
-            Line::styled(format!(" {hint}"), Style::default().fg(DIM)),
+            Line::styled(format!(" {hint}"), Style::default().fg(dim())),
             Rect::new(area.x, bottom - 1, area.width, 1),
         );
         if self.confirm.is_some() {
@@ -112,13 +112,13 @@ impl Panel {
         let prefix_width =
             (prefix.len() as u16).min(area.width.saturating_sub(u16::from(self.searching)));
         frame.render_widget(
-            Line::styled(prefix, Style::default().fg(MUTED)),
+            Line::styled(prefix, Style::default().fg(muted())),
             Rect::new(area.x, area.y, prefix_width, 1),
         );
         let input = Rect::new(area.x + prefix_width, area.y, area.width - prefix_width, 1);
         if !self.searching && self.query.is_empty() {
             frame.render_widget(
-                Line::styled("Press / to search", Style::default().fg(DIM)),
+                Line::styled("Press / to search", Style::default().fg(dim())),
                 input,
             );
             return None;
@@ -136,7 +136,7 @@ impl Panel {
             width = next_width;
         }
         frame.render_widget(
-            Line::styled(&self.query[start..], Style::default().fg(ACCENT)),
+            Line::styled(&self.query[start..], Style::default().fg(accent())),
             input,
         );
         self.searching.then_some((input.x + width as u16, input.y))
@@ -161,10 +161,10 @@ impl Panel {
         frame.render_widget(Clear, area);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(REMOVED))
+            .border_style(Style::default().fg(removed()))
             .title(Span::styled(
                 " Delete plan? ",
-                Style::default().fg(REMOVED).add_modifier(Modifier::BOLD),
+                Style::default().fg(removed()).add_modifier(Modifier::BOLD),
             ));
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -200,10 +200,10 @@ impl Panel {
                 format!(" {label} "),
                 if selected {
                     Style::default()
-                        .fg(ACCENT)
+                        .fg(accent())
                         .add_modifier(Modifier::BOLD | Modifier::REVERSED)
                 } else {
-                    Style::default().fg(MUTED)
+                    Style::default().fg(muted())
                 },
             )
         };
@@ -221,7 +221,7 @@ impl Panel {
         let phase = self.phase;
         if let Some(label) = phase.busy_label() {
             frame.render_widget(
-                Paragraph::new(label).style(Style::default().fg(ACCENT)),
+                Paragraph::new(label).style(Style::default().fg(accent())),
                 area,
             );
             return;
@@ -235,7 +235,7 @@ impl Panel {
                 EMPTY_NEW_PLAN
             };
             frame.render_widget(
-                Paragraph::new(message).style(Style::default().fg(MUTED)),
+                Paragraph::new(message).style(Style::default().fg(muted())),
                 area,
             );
             return;
@@ -266,12 +266,12 @@ impl Panel {
             let selected = row == self.selected;
             let marker = if selected { "❯ " } else { "  " };
             let row_style = if selected {
-                Style::default().fg(SELECTED_FG).bg(SELECTED_BG)
+                Style::default().fg(selected_fg()).bg(selected_bg())
             } else {
                 Style::default().bg(if row % 2 == 0 {
-                    ROW_BG
+                    row_bg()
                 } else {
-                    ALTERNATE_ROW_BG
+                    alternate_row_bg()
                 })
             };
             // 选中行统一使用深色文字，保证时间、标题与状态在浅蓝底上清晰可读。
@@ -284,15 +284,15 @@ impl Panel {
             };
             let age = format!("{:<10}  ", format_age(entry.modified, now));
             let prefix_width = 2 + age.len();
-            let mut spans = vec![Span::raw(marker), Span::styled(age, text_style(AGE_FG))];
+            let mut spans = vec![Span::raw(marker), Span::styled(age, text_style(age_fg()))];
             if let Some(error) = &entry.error {
                 spans.push(Span::styled(
                     display_text(&entry.file_name).into_owned(),
-                    text_style(REMOVED),
+                    text_style(removed()),
                 ));
                 spans.push(Span::styled(
                     format!("  {}", display_text(error)),
-                    text_style(REMOVED),
+                    text_style(removed()),
                 ));
             } else {
                 let badge = if self.tab == Tab::All {
@@ -336,9 +336,9 @@ pub(super) fn category_label(location: PlanLocation) -> &'static str {
 
 pub(super) fn category_color(location: PlanLocation) -> Color {
     match location {
-        PlanLocation::Drafts => ACCENT,
-        PlanLocation::Plans => LINK,
-        PlanLocation::Done => ADDED,
+        PlanLocation::Drafts => accent(),
+        PlanLocation::Plans => link(),
+        PlanLocation::Done => added(),
     }
 }
 

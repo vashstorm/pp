@@ -59,19 +59,23 @@ impl Panel {
             Paragraph::new(Line::from(vec![
                 Span::styled(
                     self.activity.category.label().to_owned(),
-                    Style::default().fg(ACCENT),
+                    Style::default().fg(accent()),
                 ),
-                Span::styled("  ·  ", Style::default().fg(DIM)),
+                Span::styled("  ·  ", Style::default().fg(dim())),
                 Span::styled(
                     self.activity.scope.label().to_owned(),
-                    Style::default().fg(ACCENT),
+                    Style::default().fg(accent()),
                 ),
-                Span::styled("  ·  ", Style::default().fg(DIM)),
+                Span::styled("  ·  ", Style::default().fg(dim())),
                 Span::styled(
                     search,
-                    Style::default().fg(if self.activity.editing { ACCENT } else { MUTED }),
+                    Style::default().fg(if self.activity.editing {
+                        accent()
+                    } else {
+                        muted()
+                    }),
                 ),
-                Span::styled("  ·  ", Style::default().fg(DIM)),
+                Span::styled("  ·  ", Style::default().fg(dim())),
                 Span::styled(
                     if self.activity.follow {
                         "follow latest"
@@ -79,7 +83,11 @@ impl Panel {
                         "paused"
                     }
                     .to_owned(),
-                    Style::default().fg(if self.activity.follow { ADDED } else { ACCENT }),
+                    Style::default().fg(if self.activity.follow {
+                        added()
+                    } else {
+                        accent()
+                    }),
                 ),
             ])),
             header,
@@ -96,7 +104,7 @@ impl Panel {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     message,
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ))),
                 body,
             );
@@ -147,30 +155,31 @@ impl Panel {
         vec![Line::from(vec![
             Span::styled(
                 format!("{} ", detail::format_clock(row.timestamp)),
-                Style::default().fg(DIM),
+                Style::default().fg(dim()),
             ),
             Span::styled(
                 format!("{} ", activity_icon(row.status, self.clock)),
                 Style::default().fg(row_color(row.status)),
             ),
-            Span::styled(name, Style::default().fg(ACCENT)),
+            Span::styled(name, Style::default().fg(accent())),
             Span::styled(
                 format!(" {category} · {}", row.title),
-                Style::default().fg(ACTIVITY),
+                Style::default().fg(activity()),
             ),
             Span::styled(
                 format!("  {}", summary_line(&row.summary)),
-                Style::default().fg(MUTED),
+                Style::default().fg(muted()),
             ),
         ])]
     }
 }
 
 pub(super) fn activity_icon(status: RowStatus, clock: u64) -> &'static str {
+    let icons = super::super::themes::current_icons();
     match status {
         RowStatus::Pending => status_icon(AgentStatus::Running, clock),
-        RowStatus::Success => "\u{f00c}",
-        RowStatus::Error => "\u{f00d}",
+        RowStatus::Success => done_icon(icons),
+        RowStatus::Error => fail_icon(icons),
         RowStatus::Aborted => "■",
     }
 }

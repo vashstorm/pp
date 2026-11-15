@@ -10,15 +10,54 @@ use ratatui::{
 };
 use std::{path::PathBuf, time::SystemTime};
 
-const ACCENT: Color = Color::Rgb(229, 177, 64);
-const BORDER: Color = Color::Rgb(57, 151, 192);
-const MUTED: Color = Color::Rgb(99, 105, 119);
-const SUCCESS: Color = Color::Rgb(133, 192, 117);
-const ROW_BG: Color = Color::Rgb(38, 40, 51);
-const STRIPE_BG: Color = Color::Rgb(48, 50, 62);
-const SELECTED_BG: Color = Color::Rgb(97, 163, 245);
-const SELECTED_FG: Color = Color::Rgb(38, 40, 51);
-const TIME_FG: Color = Color::Rgb(156, 158, 165);
+fn accent() -> Color {
+    super::themes::palette().accent
+}
+
+fn border() -> Color {
+    super::themes::palette().panel_border
+}
+
+fn muted() -> Color {
+    super::themes::palette().muted
+}
+
+fn success() -> Color {
+    super::themes::palette().added
+}
+
+fn row_bg() -> Color {
+    if super::themes::current_theme() == pp_config::config::Theme::Default {
+        Color::Rgb(38, 40, 51)
+    } else {
+        super::themes::palette().panel_bg
+    }
+}
+
+fn stripe_bg() -> Color {
+    if super::themes::current_theme() == pp_config::config::Theme::Default {
+        Color::Rgb(48, 50, 62)
+    } else {
+        super::themes::palette().panel_alt_bg
+    }
+}
+
+fn selected_bg() -> Color {
+    super::themes::palette().panel_selected_bg
+}
+
+fn selected_fg() -> Color {
+    if super::themes::current_theme() == pp_config::config::Theme::Default {
+        Color::Rgb(38, 40, 51)
+    } else {
+        super::themes::palette().panel_selected_fg
+    }
+}
+
+fn time_fg() -> Color {
+    super::themes::palette().welcome_muted
+}
+
 const TITLE_COLORS: [Color; 8] = [
     Color::Rgb(139, 180, 250),
     Color::Rgb(244, 174, 185),
@@ -339,10 +378,10 @@ impl Panel {
         frame.render_widget(
             Block::default()
                 .borders(Borders::TOP)
-                .border_style(Style::default().fg(BORDER))
+                .border_style(Style::default().fg(border()))
                 .title(Line::styled(
                     format!(" Resume session ({scope}) "),
-                    Style::default().fg(ACCENT),
+                    Style::default().fg(accent()),
                 )),
             area,
         );
@@ -379,11 +418,11 @@ impl Panel {
             Line::styled(
                 self.feedback.as_deref().unwrap_or(hint),
                 Style::default().fg(if self.feedback.is_some() {
-                    super::transcript_style::ERROR_BORDER
+                    super::transcript_style::error_border()
                 } else if matches!(self.phase, Phase::ConfirmDelete(_)) {
-                    ACCENT
+                    accent()
                 } else {
-                    MUTED
+                    muted()
                 }),
             ),
             Rect::new(area.x, footer_y, area.width, 1),
@@ -413,7 +452,7 @@ impl Panel {
         };
         if let Some(message) = message {
             frame.render_widget(
-                Paragraph::new(message).style(Style::default().fg(MUTED)),
+                Paragraph::new(message).style(Style::default().fg(muted())),
                 list_area,
             );
             return;
@@ -436,6 +475,14 @@ impl Panel {
             .max()
             .unwrap_or(0)
             .max(8);
+        let ascii = super::themes::is_ascii();
+        let pin_icon = if ascii { "* " } else { " " };
+        let pinned_badge = if ascii {
+            "* pinned · "
+        } else {
+            " pinned · "
+        };
+        let done_badge = if ascii { "+ done" } else { "\u{f00c} done" };
         for (row, session) in self
             .sessions
             .iter()
@@ -450,14 +497,14 @@ impl Panel {
             };
             let selected = row == self.selected;
             let background = if selected {
-                SELECTED_BG
+                selected_bg()
             } else if row % 2 == 0 {
-                STRIPE_BG
+                stripe_bg()
             } else {
-                ROW_BG
+                row_bg()
             };
             let foreground = if selected {
-                SELECTED_FG
+                selected_fg()
             } else {
                 title_color(&session.id)
             };
@@ -465,11 +512,11 @@ impl Panel {
                 Span::raw(if selected { "› " } else { "  " }),
                 Span::styled(
                     format!("{:<time_width$}  ", format_age(session.updated_at, now)),
-                    Style::default().fg(if selected { SELECTED_FG } else { TIME_FG }),
+                    Style::default().fg(if selected { selected_fg() } else { time_fg() }),
                 ),
                 Span::styled(
-                    if session.pinned { " " } else { "  " },
-                    Style::default().fg(if selected { SELECTED_FG } else { ACCENT }),
+                    if session.pinned { pin_icon } else { "  " },
+                    Style::default().fg(if selected { selected_fg() } else { accent() }),
                 ),
                 Span::raw(pp_core::text::display_text(title).into_owned()),
             ]);
@@ -486,18 +533,18 @@ impl Panel {
         if let Some(session) = self.sessions.get(self.selected) {
             let mut metadata = Vec::new();
             if session.pinned {
-                metadata.push(Span::styled(" pinned · ", Style::default().fg(ACCENT)));
+                metadata.push(Span::styled(pinned_badge, Style::default().fg(accent())));
             }
             if Some(session.id.as_str()) == self.current_id.as_deref() {
-                metadata.push(Span::styled("current · ", Style::default().fg(ACCENT)));
+                metadata.push(Span::styled("current · ", Style::default().fg(accent())));
             }
             metadata.push(Span::styled(
                 if session.done {
-                    "\u{f00c} done"
+                    done_badge
                 } else {
                     "■ aborted"
                 },
-                Style::default().fg(if session.done { SUCCESS } else { MUTED }),
+                Style::default().fg(if session.done { success() } else { muted() }),
             ));
             metadata.push(Span::raw(format!(
                 " · {} · {} · {} · {}",
@@ -507,7 +554,7 @@ impl Panel {
                 session.id
             )));
             frame.render_widget(
-                Paragraph::new(Line::from(metadata)).style(Style::default().fg(MUTED)),
+                Paragraph::new(Line::from(metadata)).style(Style::default().fg(muted())),
                 Rect::new(area.x, details_y, area.width, 1),
             );
         }
@@ -636,10 +683,10 @@ mod tests {
         assert!(lines[5].contains("修复 Rust 测试"));
         assert!(!lines[4..6].iter().any(|line| line.contains("answer for")));
         assert!(lines[28].contains("current · \u{f00c} done · 1.5KB"));
-        assert_eq!(terminal.backend().buffer()[(0, 4)].fg, SELECTED_FG);
-        assert_eq!(terminal.backend().buffer()[(99, 4)].bg, SELECTED_BG);
-        assert_eq!(terminal.backend().buffer()[(2, 5)].fg, TIME_FG);
-        assert_eq!(terminal.backend().buffer()[(99, 5)].bg, ROW_BG);
+        assert_eq!(terminal.backend().buffer()[(0, 4)].fg, selected_fg());
+        assert_eq!(terminal.backend().buffer()[(99, 4)].bg, selected_bg());
+        assert_eq!(terminal.backend().buffer()[(2, 5)].fg, time_fg());
+        assert_eq!(terminal.backend().buffer()[(99, 5)].bg, row_bg());
         assert_eq!(
             terminal.backend().buffer()[(14, 5)].fg,
             title_color("alpha")
@@ -728,7 +775,7 @@ mod tests {
         assert_eq!(terminal.backend().buffer()[(12, 4)].symbol(), "");
         assert_eq!(terminal.backend().buffer()[(14, 4)].symbol(), "修");
         assert!(screen.contains(" pinned"));
-        assert_eq!(terminal.backend().buffer()[(99, 4)].bg, SELECTED_BG);
+        assert_eq!(terminal.backend().buffer()[(99, 4)].bg, selected_bg());
         assert!(matches!(panel.key(pin), Action::Pin(0)));
         let (request_id, id, pinned) = panel.pin_request(0).unwrap();
         assert_eq!(id, "alpha");
@@ -766,15 +813,15 @@ mod tests {
         let buffer = completed.buffer;
         assert_eq!(buffer[(14, 4)].symbol(), "长");
         assert_eq!(buffer[(14, 5)].symbol(), "第");
-        assert_eq!(buffer[(39, 5)].bg, ROW_BG);
-        assert_eq!(buffer[(39, 6)].bg, STRIPE_BG);
+        assert_eq!(buffer[(39, 5)].bg, row_bg());
+        assert_eq!(buffer[(39, 6)].bg, stripe_bg());
         assert_eq!(buffer[(14, 6)].fg, title_color("three"));
         panel.key(key(KeyCode::Down));
         let completed = terminal
             .draw(|frame| panel.draw(frame, frame.area()))
             .unwrap();
-        assert_eq!(completed.buffer[(39, 4)].bg, STRIPE_BG);
-        assert_eq!(completed.buffer[(39, 5)].bg, SELECTED_BG);
+        assert_eq!(completed.buffer[(39, 4)].bg, stripe_bg());
+        assert_eq!(completed.buffer[(39, 5)].bg, selected_bg());
     }
 
     #[test]

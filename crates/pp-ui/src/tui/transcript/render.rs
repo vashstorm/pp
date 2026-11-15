@@ -1,6 +1,6 @@
 use super::{
-    Activity, BASH_BACKGROUND, BASH_BORDER, Buffer, DisplayContext, EntryKind, EntryStatus,
-    LayoutContent, Paragraph, Rect, Source, Span, Style, Transcript, TranscriptEntry, Widget, Wrap,
+    Activity, Buffer, DisplayContext, EntryKind, EntryStatus, LayoutContent, Paragraph, Rect,
+    Source, Span, Style, Transcript, TranscriptEntry, Widget, Wrap, bash_background, bash_border,
     palette, tool_display,
 };
 
@@ -172,18 +172,18 @@ impl Transcript {
                 let search = entry.is_search();
                 let think = entry.kind == EntryKind::Think;
                 let background = if bash {
-                    Some(BASH_BACKGROUND)
+                    Some(bash_background())
                 } else if edit {
-                    Some(palette::EDIT_BG)
+                    Some(palette::edit_bg())
                 } else if search {
-                    Some(palette::RG_BG)
+                    Some(palette::rg_bg())
                 } else if file_read {
                     None
                 } else if matches!(entry.kind, EntryKind::Diff | EntryKind::Ask) {
                     Some(match entry.status {
-                        EntryStatus::Running => palette::TOOL_PENDING_BG,
-                        EntryStatus::Complete => palette::TOOL_SUCCESS_BG,
-                        EntryStatus::Failed => palette::TOOL_ERROR_BG,
+                        EntryStatus::Running => palette::tool_pending_bg(),
+                        EntryStatus::Complete => palette::tool_success_bg(),
+                        EntryStatus::Failed => palette::tool_error_bg(),
                     })
                 } else {
                     entry.kind.conversation_background()
@@ -206,16 +206,16 @@ impl Transcript {
                             _ => ("│", "│", ""),
                         };
                         let card_bg = if bash {
-                            BASH_BACKGROUND
+                            bash_background()
                         } else {
-                            palette::RG_BG
+                            palette::rg_bg()
                         };
                         let border_color = if entry.status == EntryStatus::Failed {
-                            palette::REMOVED
+                            palette::removed()
                         } else if bash {
-                            BASH_BORDER
+                            bash_border()
                         } else {
-                            palette::RG_BORDER
+                            palette::rg_border()
                         };
                         let style = Style::default().fg(border_color).bg(card_bg);
                         let horizontal = matches!(
@@ -232,7 +232,11 @@ impl Transcript {
                                 .render(Rect::new(area.right() - 1, row, 1, 1), buffer);
                         }
                         if !label.is_empty() && area.width > 4 {
-                            let label_color = if bash { palette::TEXT } else { palette::MUTED };
+                            let label_color = if bash {
+                                palette::text()
+                            } else {
+                                palette::muted()
+                            };
                             Span::styled(label, Style::default().fg(label_color).bg(card_bg))
                                 .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
@@ -262,23 +266,23 @@ impl Transcript {
                             };
                             let mut spans = vec![Span::styled(
                                 format!(" {footer}"),
-                                Style::default().fg(palette::MUTED).bg(card_bg),
+                                Style::default().fg(palette::muted()).bg(card_bg),
                             )];
                             if !warning.is_empty() {
                                 if !separator.is_empty() {
                                     spans.push(Span::styled(
                                         separator.to_owned(),
-                                        Style::default().fg(palette::MUTED).bg(card_bg),
+                                        Style::default().fg(palette::muted()).bg(card_bg),
                                     ));
                                 }
                                 spans.push(Span::styled(
                                     format!("{warning} "),
-                                    Style::default().fg(palette::ACCENT).bg(card_bg),
+                                    Style::default().fg(palette::accent()).bg(card_bg),
                                 ));
                             } else if !footer.is_empty() {
                                 spans.push(Span::styled(
                                     " ",
-                                    Style::default().fg(palette::MUTED).bg(card_bg),
+                                    Style::default().fg(palette::muted()).bg(card_bg),
                                 ));
                             }
                             ratatui::text::Line::from(spans)
@@ -286,9 +290,9 @@ impl Transcript {
                         }
                         if bash && matches!(line.source(), Some(Source::Top)) && area.width > 4 {
                             let (status, color) = match entry.status {
-                                EntryStatus::Running => ("running", palette::ACCENT),
-                                EntryStatus::Complete => ("done", palette::ADDED),
-                                EntryStatus::Failed => ("failed", palette::REMOVED),
+                                EntryStatus::Running => ("running", palette::accent()),
+                                EntryStatus::Complete => ("done", palette::added()),
+                                EntryStatus::Failed => ("failed", palette::removed()),
                             };
                             let title = if entry.tool.as_deref() == Some("bash_task") {
                                 "Bash task"
@@ -298,7 +302,7 @@ impl Transcript {
                             ratatui::text::Line::from(vec![
                                 Span::styled(
                                     format!(" {title} "),
-                                    Style::default().fg(palette::BASH_TITLE).bg(card_bg),
+                                    Style::default().fg(palette::bash_title()).bg(card_bg),
                                 ),
                                 Span::styled(
                                     format!("· {status} "),
@@ -315,8 +319,8 @@ impl Transcript {
                             _ => ("│", "│", false, ""),
                         };
                         let style = Style::default()
-                            .fg(palette::EDIT_BORDER)
-                            .bg(palette::EDIT_BG);
+                            .fg(palette::edit_border())
+                            .bg(palette::edit_bg());
                         if horizontal {
                             Span::styled("─".repeat(usize::from(area.width)), style)
                                 .render(Rect::new(area.x, row, area.width, 1), buffer);
@@ -329,7 +333,9 @@ impl Transcript {
                         if !label.is_empty() && area.width > 4 {
                             Span::styled(
                                 label,
-                                Style::default().fg(palette::READ_TEXT).bg(palette::READ_BG),
+                                Style::default()
+                                    .fg(palette::read_text())
+                                    .bg(palette::read_bg()),
                             )
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
@@ -341,7 +347,7 @@ impl Transcript {
                         && !entry.is_wait_card()
                     {
                         let color = if entry.tool.is_some() {
-                            palette::TOOL_BORDER
+                            palette::tool_border()
                         } else {
                             entry.kind.color()
                         };
@@ -379,9 +385,9 @@ impl Transcript {
                         height,
                     );
                     let text_color = if entry.kind == EntryKind::Assistant {
-                        palette::MD_TEXT
+                        palette::md_text()
                     } else {
-                        palette::TEXT
+                        palette::text()
                     };
                     let paragraph =
                         Paragraph::new(entry.line(line)).style(Style::default().fg(text_color));

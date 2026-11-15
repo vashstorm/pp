@@ -9,23 +9,50 @@ use ratatui::{
     },
 };
 
-pub(super) const SEPARATOR: Color = Color::DarkGray;
-pub(super) const SELECTED: Color = Color::Rgb(153, 194, 232);
+pub(super) fn separator() -> Color {
+    super::themes::palette().menu_separator
+}
+
+pub(super) fn selected() -> Color {
+    super::themes::palette().menu_selected
+}
+
 const MAX_ROWS: usize = 8;
-const MODEL_LABEL: Color = Color::Rgb(224, 230, 240);
-const MODEL_DETAIL: Color = Color::Rgb(170, 182, 200);
-const MODEL_SELECTED: Color = Color::Rgb(130, 200, 255);
-const FILE_SELECTED: Color = Color::Rgb(255, 190, 55);
-const FAVORITE: Color = Color::Rgb(254, 188, 56);
-const DEFAULT_MODEL: Color = Color::Rgb(187, 154, 247);
-const CURRENT_MODEL: Color = Color::Rgb(158, 206, 106);
+
+fn model_label() -> Color {
+    super::themes::palette().menu_model_label
+}
+
+fn model_detail() -> Color {
+    super::themes::palette().menu_model_detail
+}
+
+fn model_selected() -> Color {
+    super::themes::palette().menu_model_selected
+}
+
+fn file_selected() -> Color {
+    super::themes::palette().menu_file_selected
+}
+
+fn favorite() -> Color {
+    super::themes::palette().menu_favorite
+}
+
+fn default_model() -> Color {
+    super::themes::palette().menu_default_model
+}
+
+fn current_model() -> Color {
+    super::themes::palette().menu_current_model
+}
 
 pub(super) fn model_icon_style(icon: &str) -> Style {
     let color = match icon {
-        "" => FAVORITE,
-        "" => DEFAULT_MODEL,
-        "" => CURRENT_MODEL,
-        _ => MODEL_DETAIL,
+        "" | "*" => favorite(),
+        "" | "#" => default_model(),
+        "" | "+" => current_model(),
+        _ => model_detail(),
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
@@ -82,13 +109,13 @@ pub(super) enum MenuEvent<T> {
 
 impl<T: Copy> SelectionMenu<T> {
     pub(super) fn new(items: Vec<MenuItem<T>>, selected: usize) -> Self {
-        let selected = (!items.is_empty()).then(|| selected.min(items.len() - 1));
+        let initial = (!items.is_empty()).then(|| selected.min(items.len() - 1));
         Self {
             items,
-            selection: TableState::default().with_selected(selected),
+            selection: TableState::default().with_selected(initial),
             page_size: 1,
             hint: None,
-            accent: SELECTED,
+            accent: self::selected(),
             style: MenuStyle::default(),
             label_suffixes: Vec::new(),
             empty_message: None,
@@ -126,10 +153,10 @@ impl<T: Copy> SelectionMenu<T> {
     }
 
     pub(super) fn with_model_style(mut self) -> Self {
-        self.accent = MODEL_SELECTED;
+        self.accent = model_selected();
         self.style = MenuStyle {
-            label: MODEL_LABEL,
-            detail: MODEL_DETAIL,
+            label: model_label(),
+            detail: model_detail(),
             selected: Modifier::BOLD,
             current_suffix: "",
         };
@@ -137,7 +164,7 @@ impl<T: Copy> SelectionMenu<T> {
     }
 
     pub(super) fn with_file_style(mut self) -> Self {
-        self.accent = FILE_SELECTED;
+        self.accent = file_selected();
         self.style = MenuStyle {
             label: Color::White,
             detail: Color::White,
@@ -405,7 +432,7 @@ impl<T: Copy> SelectionMenu<T> {
         area: Rect,
         editor_height: Option<u16>,
     ) -> Option<Rect> {
-        use super::transcript_style::{ACCENT, ADDED, DIM};
+        use super::transcript_style::{accent, added, dim};
 
         if area.is_empty() {
             return None;
@@ -422,7 +449,7 @@ impl<T: Copy> SelectionMenu<T> {
             .map(|(index, item)| {
                 let active = focused == Some(index);
                 let label_style = if active {
-                    Style::default().fg(ACCENT)
+                    Style::default().fg(accent())
                 } else {
                     Style::default()
                 };
@@ -441,10 +468,10 @@ impl<T: Copy> SelectionMenu<T> {
                 }
                 heights.push(height);
                 Row::new([
-                    Cell::from(if active { "❯" } else { " " }).style(Style::default().fg(ACCENT)),
+                    Cell::from(if active { "❯" } else { " " }).style(Style::default().fg(accent())),
                     Cell::from(item.icon.unwrap_or_default()).style(
                         Style::default()
-                            .fg(if item.current { ADDED } else { DIM })
+                            .fg(if item.current { added() } else { dim() })
                             .add_modifier(ratatui::style::Modifier::BOLD),
                     ),
                     Cell::from(Text::from(lines)),
@@ -490,7 +517,7 @@ fn fit_label(text: &str, width: usize) -> &str {
 
 fn choice_lines<T>(item: &MenuItem<T>, width: u16, label_style: Style) -> Vec<Line<'static>> {
     use super::transcript::{block_line, wrap_block};
-    use super::transcript_style::MUTED;
+    use super::transcript_style::muted;
 
     let mut lines: Vec<_> = wrap_block(block_line(item.label.clone(), label_style), width, "")
         .into_iter()
@@ -502,7 +529,7 @@ fn choice_lines<T>(item: &MenuItem<T>, width: u16, label_style: Style) -> Vec<Li
     if !item.description.is_empty() {
         lines.extend(
             wrap_block(
-                block_line(item.description.clone(), Style::default().fg(MUTED)),
+                block_line(item.description.clone(), Style::default().fg(muted())),
                 width.saturating_sub(2),
                 "",
             )
@@ -589,9 +616,9 @@ mod tests {
         assert_eq!(buffer[(2, 0)].symbol(), "◆");
         assert_eq!(buffer[(4, 0)].symbol(), "i");
         assert_eq!(buffer[(0, 1)].symbol(), "❯");
-        assert_eq!(buffer[(2, 1)].fg, SELECTED);
+        assert_eq!(buffer[(2, 1)].fg, selected());
         assert_eq!(buffer[(18, 1)].symbol(), "d");
-        assert_eq!(buffer[(18, 1)].fg, SELECTED);
+        assert_eq!(buffer[(18, 1)].fg, selected());
         assert_eq!(buffer[(18, 0)].fg, Color::DarkGray);
         let row: String = (0..100).map(|x| buffer[(x, 1)].symbol()).collect();
         assert!(row.replace(' ', "").contains("detail-1(current)"));
@@ -630,8 +657,8 @@ mod tests {
         }
         assert_eq!(buffer[(6, 0)].fg, Color::White);
         assert_eq!(buffer[(4, 1)].symbol(), "❯");
-        assert_eq!(buffer[(4, 1)].fg, FILE_SELECTED);
-        assert_eq!(buffer[(6, 1)].fg, FILE_SELECTED);
+        assert_eq!(buffer[(4, 1)].fg, file_selected());
+        assert_eq!(buffer[(6, 1)].fg, file_selected());
         assert!(buffer[(6, 1)].modifier.contains(Modifier::BOLD));
         assert!(row(2).trim().is_empty());
         menu.handle_key(press(KeyCode::Up));
@@ -640,7 +667,7 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(4, 0)].symbol(), "❯");
-        assert_eq!(buffer[(6, 0)].fg, FILE_SELECTED);
+        assert_eq!(buffer[(6, 0)].fg, file_selected());
         assert_eq!(buffer[(6, 1)].fg, Color::White);
         for width in [1, 2, 4, 5, 20] {
             let mut narrow = Terminal::new(TestBackend::new(width, 1)).unwrap();
@@ -660,8 +687,8 @@ mod tests {
             .draw(|frame| menu.draw(frame, frame.area()))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(4, 0)].fg, MODEL_LABEL);
-        assert_eq!(buffer[(4, 1)].fg, MODEL_SELECTED);
+        assert_eq!(buffer[(4, 0)].fg, model_label());
+        assert_eq!(buffer[(4, 1)].fg, model_selected());
         assert!(buffer[(4, 1)].modifier.contains(Modifier::BOLD));
         for y in 0..2 {
             for (icon, color) in [
@@ -678,7 +705,7 @@ mod tests {
         assert!(row.contains("item-0   "));
         let row: String = (0..100).map(|x| buffer[(x, 1)].symbol()).collect();
         assert!(!row.contains("(current)"));
-        assert_eq!(buffer[(0, 2)].fg, MODEL_DETAIL);
+        assert_eq!(buffer[(0, 2)].fg, model_detail());
         menu.items_mut()[0].label = "模型名称很长-long-model-name".into();
         menu.items_mut()[0].icon = None;
         for width in [1, 2, 10, 20, 100] {

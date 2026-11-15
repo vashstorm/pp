@@ -61,12 +61,12 @@ impl TranscriptEntry {
             // 错误与运行时提示共用同一幅框卡：只有边框色、标题与正文色不同。
             let notice = self.kind == EntryKind::Notice;
             let border_style = Style::default().fg(if notice {
-                palette::ACCENT
+                palette::accent()
             } else {
-                palette::ERROR_BORDER
+                palette::error_border()
             });
             let text_style = if notice {
-                Style::default().fg(palette::TEXT)
+                Style::default().fg(palette::text())
             } else {
                 Style::default()
             };
@@ -173,9 +173,9 @@ impl TranscriptEntry {
             lines.push(border(Source::Title));
         } else if self.kind == EntryKind::Lsp {
             let (status, color) = match self.status {
-                EntryStatus::Running => ("running", palette::ACCENT),
-                EntryStatus::Complete => ("ok", palette::ADDED),
-                EntryStatus::Failed => ("failed", palette::REMOVED),
+                EntryStatus::Running => ("running", palette::accent()),
+                EntryStatus::Complete => ("ok", palette::added()),
+                EntryStatus::Failed => ("failed", palette::removed()),
             };
             let mut header = self.tool_title(&self.title);
             header.spans.push(Span::styled(
@@ -192,9 +192,9 @@ impl TranscriptEntry {
             );
         } else if matches!(self.kind, EntryKind::Diff | EntryKind::Ask) {
             let (status, color) = match self.status {
-                EntryStatus::Running => ("running", palette::ACCENT),
-                EntryStatus::Complete => ("ok", palette::ADDED),
-                EntryStatus::Failed => ("failed", palette::REMOVED),
+                EntryStatus::Running => ("running", palette::accent()),
+                EntryStatus::Complete => ("ok", palette::added()),
+                EntryStatus::Failed => ("failed", palette::removed()),
             };
             let mut header = self.tool_title(&self.title);
             header.spans.push(Span::styled(
@@ -221,8 +221,8 @@ impl TranscriptEntry {
                 );
             } else {
                 let style = Style::default()
-                    .fg(palette::TOOL_COMMAND)
-                    .bg(BASH_BACKGROUND);
+                    .fg(palette::tool_command())
+                    .bg(bash_background());
                 let mut command = tool_display::command(&self.title, self.expanded, self.display);
                 if self.tool.as_deref() != Some("bash")
                     && !self.expanded
@@ -247,9 +247,9 @@ impl TranscriptEntry {
                                 .style(style)
                             } else {
                                 let color = if command.starts_with('…') {
-                                    palette::MUTED
+                                    palette::muted()
                                 } else {
-                                    palette::TOOL_COMMAND
+                                    palette::tool_command()
                                 };
                                 Line::styled(command, style.fg(color))
                             };
@@ -339,7 +339,7 @@ impl TranscriptEntry {
                 text.clone_from(preview);
             }
             let style = if bash {
-                Style::default().fg(MUTED_TEXT).bg(BASH_BACKGROUND)
+                Style::default().fg(muted_text()).bg(bash_background())
             } else {
                 Style::default().add_modifier(Modifier::DIM)
             };
@@ -392,7 +392,7 @@ impl TranscriptEntry {
         } else if let EntryBody::Markdown(document) = &self.body {
             // 思考普通文本继承灰色，保留语义 span 的颜色与粗体等修饰。
             let base_style =
-                (self.kind == EntryKind::Think).then(|| Style::default().fg(MUTED_TEXT));
+                (self.kind == EntryKind::Think).then(|| Style::default().fg(muted_text()));
             lines.extend(document.layout(width).into_iter().map(|mut line| {
                 if let Some(style) = base_style {
                     line = line.style(style);
@@ -433,7 +433,7 @@ impl TranscriptEntry {
                     wrap_block(
                         block_line(
                             format!("Warning: {warning}"),
-                            Style::default().fg(palette::MUTED),
+                            Style::default().fg(palette::muted()),
                         ),
                         width,
                         "",
@@ -453,7 +453,7 @@ impl TranscriptEntry {
             if !self.text.is_empty() {
                 lines.extend(
                     wrap_block(
-                        block_line(self.text.clone(), Style::default().fg(palette::MUTED)),
+                        block_line(self.text.clone(), Style::default().fg(palette::muted())),
                         width,
                         "",
                     )
@@ -484,7 +484,7 @@ impl TranscriptEntry {
                     wrap_block(
                         block_line(
                             self.visible_text().to_owned(),
-                            Style::default().fg(palette::MUTED),
+                            Style::default().fg(palette::muted()),
                         ),
                         width,
                         "",

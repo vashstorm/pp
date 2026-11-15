@@ -242,9 +242,9 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                         stderr = true;
                     }
                     let color = if stderr {
-                        palette::REMOVED
+                        palette::removed()
                     } else {
-                        palette::MUTED
+                        palette::muted()
                     };
                     wrap([line.to_owned()], width, style.fg(color))
                 })
@@ -260,7 +260,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
                 let mut prefix = wrap(
                     [clip(&marker, usize::from(width), true)],
                     width,
-                    style.fg(palette::MUTED),
+                    style.fg(palette::muted()),
                 );
                 prefix.append(&mut rows);
                 rows = prefix;

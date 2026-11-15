@@ -12,7 +12,8 @@ mod roster;
 mod worker;
 
 use super::transcript_style::{
-    ACCENT, ACTIVITY, ADDED, ASK_BORDER, DIM, MUTED, REMOVED, think_icon, waiting_clock,
+    accent, activity, added, ask_border, dim, done_icon, fail_icon, muted, removed, think_icon,
+    waiting_clock,
 };
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
@@ -36,10 +37,21 @@ pub(super) use worker::{Action as Control, Reply, Request, Worker};
 
 const TITLE: &str = "Agent Hub";
 const NARROW: u16 = 96;
-const HUB_BG: Color = Color::Rgb(37, 40, 51);
-const SELECTED_BG: Color = Color::Rgb(48, 53, 63);
-const COST: Color = Color::Rgb(241, 96, 174);
-const EFFORT: Color = Color::Rgb(183, 131, 207);
+fn hub_bg() -> Color {
+    super::themes::palette().ask_bg
+}
+
+fn selected_bg() -> Color {
+    super::themes::palette().panel_alt_bg
+}
+
+fn cost_color() -> Color {
+    super::themes::palette().status_cost
+}
+
+fn effort_color() -> Color {
+    super::themes::palette().menu_default_model
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
@@ -344,19 +356,19 @@ impl Panel {
 
 fn status_color(status: AgentStatus) -> ratatui::style::Color {
     match status {
-        AgentStatus::Running => ACCENT,
-        AgentStatus::Idle => ADDED,
-        AgentStatus::Parked => MUTED,
-        AgentStatus::Aborted => REMOVED,
+        AgentStatus::Running => accent(),
+        AgentStatus::Idle => added(),
+        AgentStatus::Parked => muted(),
+        AgentStatus::Aborted => removed(),
     }
 }
 
 fn row_color(status: RowStatus) -> ratatui::style::Color {
     match status {
-        RowStatus::Pending => ACCENT,
-        RowStatus::Success => ADDED,
-        RowStatus::Error => REMOVED,
-        RowStatus::Aborted => MUTED,
+        RowStatus::Pending => accent(),
+        RowStatus::Success => added(),
+        RowStatus::Error => removed(),
+        RowStatus::Aborted => muted(),
     }
 }
 
@@ -389,7 +401,7 @@ fn fit_line(mut line: Line<'static>, width: usize) -> Line<'static> {
     }
     let mut remaining = width.saturating_sub(1);
     let mut spans = Vec::new();
-    let mut style = Style::default().fg(MUTED);
+    let mut style = Style::default().fg(muted());
     for span in line.spans.drain(..) {
         style = span.style;
         let clipped = super::tool_display::clip(&span.content, remaining, false);
@@ -431,7 +443,7 @@ fn below(area: Rect, rows: u16) -> Rect {
 
 fn section(lines: &mut Vec<Line<'static>>, title: &'static str) {
     lines.push(Line::default());
-    lines.push(Line::from(colored(title, ACCENT)));
+    lines.push(Line::from(colored(title, accent())));
 }
 
 fn indented(text: &str, indent: usize, width: usize, color: Color) -> Line<'static> {
@@ -458,7 +470,7 @@ fn style_row(lines: Vec<Line<'static>>, selected: bool) -> Vec<Line<'static>> {
     }
     lines
         .into_iter()
-        .map(|line| line.patch_style(Style::default().bg(SELECTED_BG)))
+        .map(|line| line.patch_style(Style::default().bg(selected_bg())))
         .collect()
 }
 

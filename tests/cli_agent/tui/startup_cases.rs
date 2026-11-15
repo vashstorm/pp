@@ -435,6 +435,7 @@ const TIPS_COMMANDS: &[&str] = &[
     "/test-ui",
     "/test-wait",
     "/test-write",
+    "/themes",
     "/tips",
     "/tree",
 ];

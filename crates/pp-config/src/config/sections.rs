@@ -129,3 +129,67 @@ impl LspSettings {
         std::time::Duration::from_secs(self.request_timeout)
     }
 }
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EditMode {
+    #[default]
+    Replace,
+    Hashline,
+}
+
+/// `settings.yml` 的 `cost` 定义显示币种与 1 USD 的兑换金额。
+/// 图标由 `currency` 派生，配置不再接受手写图标。
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CostDisplay {
+    pub currency: String,
+    pub exchange_rate: f64,
+}
+
+impl CostDisplay {
+    /// 受支持的显示币种及对应的 Nerd Font / ASCII 图标：
+    /// 美国 `f01c1` (`$`)、欧洲 `f01ad` (`E`)、日本 `f07bc` (`Y`)、韩国 `f07bd` (`W`)、中国 `f07ba` (`Y`)、巴西 `f0b85` (`$`)。
+    const CURRENCY_ICONS: [(&'static str, char, char); 6] = [
+        ("USD", '\u{f01c1}', '$'),
+        ("EUR", '\u{f01ad}', 'E'),
+        ("JPY", '\u{f07bc}', 'Y'),
+        ("KRW", '\u{f07bd}', 'W'),
+        ("CNY", '\u{f07ba}', 'Y'),
+        ("BRL", '\u{f0b85}', '$'),
+    ];
+
+    /// 币种 Nerd Font 图标；不受支持的币种返回 `None`（配置校验已拒绝该取值）。
+    pub fn icon(&self) -> Option<char> {
+        Self::CURRENCY_ICONS
+            .iter()
+            .find_map(|(code, icon, _)| (*code == self.currency).then_some(*icon))
+    }
+
+    /// 币种纯 ASCII 图标；不受支持的币种返回 `None`。
+    pub fn ascii_icon(&self) -> Option<char> {
+        Self::CURRENCY_ICONS
+            .iter()
+            .find_map(|(code, _, ascii)| (*code == self.currency).then_some(*ascii))
+    }
+
+    pub(crate) fn currency_codes() -> impl Iterator<Item = &'static str> {
+        Self::CURRENCY_ICONS.iter().map(|(code, _, _)| *code)
+    }
+}
+
+impl Default for CostDisplay {
+    fn default() -> Self {
+        Self {
+            currency: "USD".into(),
+            exchange_rate: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadDisplaySettings {
+    #[serde(default, rename = "toolResultPreview")]
+    pub(crate) tool_result_preview: bool,
+}

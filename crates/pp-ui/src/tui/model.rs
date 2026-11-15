@@ -20,11 +20,14 @@ const LIST_ROWS: usize = 11;
 const HINT: &str = "Enter select · Esc cancel · ↑↓/PgUp/PgDn/Wheel · Tab complete · Ctrl + F favorite · Ctrl + S default";
 
 fn hint(width: u16) -> Line<'static> {
+    let ascii = super::themes::is_ascii();
+    let icons = if ascii {
+        [("*", "favorite"), ("#", "default"), ("+", "current")]
+    } else {
+        [("", "favorite"), ("", "default"), ("", "current")]
+    };
     let mut legend = Vec::new();
-    for (index, (icon, description)) in [("", "favorite"), ("", "default"), ("", "current")]
-        .into_iter()
-        .enumerate()
-    {
+    for (index, (icon, description)) in icons.into_iter().enumerate() {
         if index > 0 {
             legend.push(Span::raw(" · "));
         }
@@ -114,6 +117,7 @@ impl Panel {
             }
             _ => (true, Reverse(0)),
         });
+        let ascii = super::themes::is_ascii();
         let suffixes: Vec<_> = items
             .iter()
             .map(|item| match item.value {
@@ -122,13 +126,13 @@ impl Panel {
                     default == Some(choices[index].reference.as_str()),
                     item.current,
                 ) {
-                    (true, true, true) => Some("   "),
-                    (true, true, false) => Some("  "),
-                    (true, false, true) => Some("  "),
-                    (true, false, false) => Some(" "),
-                    (false, true, true) => Some("  "),
-                    (false, true, false) => Some(" "),
-                    (false, false, true) => Some(" "),
+                    (true, true, true) => Some(if ascii { " * # +" } else { "   " }),
+                    (true, true, false) => Some(if ascii { " * #" } else { "  " }),
+                    (true, false, true) => Some(if ascii { " * +" } else { "  " }),
+                    (true, false, false) => Some(if ascii { " *" } else { " " }),
+                    (false, true, true) => Some(if ascii { " # +" } else { "  " }),
+                    (false, true, false) => Some(if ascii { " #" } else { " " }),
+                    (false, false, true) => Some(if ascii { " +" } else { " " }),
                     (false, false, false) => None,
                 },
                 _ => None,
@@ -263,14 +267,18 @@ impl Panel {
         let inner = if search_height == 3 {
             let block = Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)
-                .border_style(Style::default().fg(super::menu::SELECTED));
+                .border_style(Style::default().fg(super::menu::selected()));
             let inner = block.inner(search);
             frame.render_widget(block, search);
             inner
         } else {
             search
         };
-        let search_icon = Line::from(" ");
+        let search_icon = Line::from(if super::themes::is_ascii() {
+            "/ "
+        } else {
+            " "
+        });
         let prefix = (search_icon.width() as u16).min(inner.width.saturating_sub(1));
         frame.render_widget(search_icon, Rect::new(inner.x, inner.y, prefix, 1));
         let input = Rect::new(inner.x + prefix, inner.y, inner.width - prefix, 1);

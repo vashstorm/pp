@@ -91,6 +91,9 @@ Create `~/.pp/agent/settings.yml`, or omit it to use the defaults. The default m
 edit: replace
 auto_compact: true
 auto_compact_threshold_percent: 80
+tui:
+  theme: default # default | tokyonight | catppuccin | dracula | nord | gruvbox | solarized-light
+  icons: nerd    # nerd | ascii
 ```
 
 Model requests have no total time limit. `request_timeout_seconds` defaults to 300 seconds and limits connection setup and idle reads; incoming text, reasoning, and SSE heartbeats reset the idle timer. Explicitly configured values still apply.
@@ -147,6 +150,7 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 | Command | Purpose |
 | --- | --- |
 | `/stats [--host IP] [--port PORT] [--no-open]` | Open the local statistics page, using the same server as `pp stats` |
+| `/themes [nerd\|ascii] [THEME]` | Open the two-step icon style (`nerd` / `ascii`) and color theme picker (7 built-in themes), or apply directly and save to `settings.yml` (`/theme` alias) |
 | `/model` (`/models`), `/effort` | Switch models and reasoning levels while keeping history |
 | `/init` | Create or update the current project's `AGENTS.md` |
 | `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |

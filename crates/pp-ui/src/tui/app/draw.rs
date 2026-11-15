@@ -158,6 +158,12 @@ impl App {
             return;
         }
         if !self.native_render
+            && let Some(panel) = &mut self.themes_panel
+        {
+            panel.draw(frame, area);
+            return;
+        }
+        if !self.native_render
             && let Some(panel) = &mut self.plan_leave_confirmation
         {
             panel.draw(frame, area);
@@ -185,7 +191,10 @@ impl App {
             panel.draw(frame, Rect::new(area.x, area.y, area.width, height));
             if available > 0 {
                 frame.render_widget(
-                    Line::styled(changes::HINT, Style::default().fg(transcript_style::MUTED)),
+                    Line::styled(
+                        changes::HINT,
+                        Style::default().fg(transcript_style::muted()),
+                    ),
                     Rect::new(area.x, area.y + height, area.width, 1),
                 );
             }
@@ -210,7 +219,7 @@ impl App {
             panel.draw(frame, Rect::new(area.x, area.y, area.width, height));
             if available > 0 {
                 frame.render_widget(
-                    Line::styled(pipes::HINT, Style::default().fg(transcript_style::MUTED)),
+                    Line::styled(pipes::HINT, Style::default().fg(transcript_style::muted())),
                     Rect::new(area.x, area.y + height, area.width, 1),
                 );
             }
@@ -236,7 +245,7 @@ impl App {
             panel.draw(frame, Rect::new(area.x, area.y, area.width, height));
             if available > 0 {
                 frame.render_widget(
-                    Line::styled(tree::HINT, Style::default().fg(transcript_style::MUTED)),
+                    Line::styled(tree::hint(), Style::default().fg(transcript_style::muted())),
                     Rect::new(area.x, area.y + height, area.width, 1),
                 );
             }
@@ -272,7 +281,7 @@ impl App {
                 frame.render_widget(
                     Line::styled(
                         format!(" {}", plan_list::DETAIL_HINT),
-                        Style::default().fg(transcript_style::MUTED),
+                        Style::default().fg(transcript_style::muted()),
                     ),
                     Rect::new(area.x, area.y + panel_height, area.width, 1),
                 );
@@ -332,7 +341,7 @@ impl App {
             frame.render_widget(
                 Line::styled(
                     "正在准备输入资源… Esc 取消",
-                    Style::default().fg(statusline::ACCENT),
+                    Style::default().fg(statusline::accent()),
                 ),
                 Rect::new(attachments.x, attachments.y, attachments.width, 1),
             );
@@ -406,14 +415,14 @@ impl App {
                             .as_ref()
                             .is_some_and(|panel| !panel.input_focused())
                         {
-                            transcript_style::MUTED
+                            transcript_style::muted()
                         } else if self.menu.is_some() {
-                            menu::SEPARATOR
+                            menu::separator()
                         } else if self.shell_mode {
                             // 模式独立于正文，首个切换用的 `!` 不在输入框显示。
-                            statusline::SHELL_MODE
+                            statusline::shell_mode()
                         } else {
-                            statusline::ACCENT
+                            statusline::accent()
                         },
                     ),
                 );
@@ -455,7 +464,7 @@ impl App {
                             .any(|range| range.contains(&byte))
                         {
                             frame.buffer_mut()[(editor_area.x + col, editor_area.y + row)]
-                                .set_fg(crate::tui::attachment_edit::COLOR);
+                                .set_fg(crate::tui::attachment_edit::color());
                         }
                     }
                 }
@@ -520,7 +529,7 @@ impl App {
     }
 
     pub(in crate::tui) fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
-        let usage_style = Style::default().bg(statusline::INPUT_STATUS_BG);
+        let usage_style = Style::default().bg(statusline::input_status_bg());
         let mut right = area.right();
         let context_width = self.usage.as_ref().map_or(0, |usage| {
             u16::try_from(statusline::context_field(usage).width() + 2).unwrap_or(u16::MAX)

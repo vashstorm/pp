@@ -23,13 +23,13 @@ impl Panel {
         }
         let title = Line::from(Span::styled(
             format!(" {} ", self.title()),
-            Style::default().fg(ACCENT),
+            Style::default().fg(accent()),
         ));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .style(Style::default().bg(ASK_BG))
-            .border_style(Style::default().fg(ASK_BORDER))
+            .style(Style::default().bg(ask_bg()))
+            .border_style(Style::default().fg(ask_border()))
             .padding(Padding::new(
                 u16::from(area.width > 6),
                 u16::from(area.width > 6),
@@ -61,7 +61,7 @@ impl Panel {
         frame.render_widget(
             Line::from(Span::styled(
                 self.title(),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             )),
             Rect { height: 1, ..area },
         );
@@ -94,7 +94,7 @@ impl Panel {
                 COMPACT_SINGLE_PAGE_HINT
             };
             frame.render_widget(
-                Line::styled(hint, Style::default().fg(DIM)),
+                Line::styled(hint, Style::default().fg(dim())),
                 Rect {
                     y: area.y + 2,
                     height: 1,
@@ -184,7 +184,7 @@ impl Panel {
 
         if let Some(error) = error {
             frame.render_widget(
-                Line::styled(error, Style::default().fg(REMOVED)),
+                Line::styled(error, Style::default().fg(removed())),
                 error_area,
             );
         }

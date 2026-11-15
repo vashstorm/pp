@@ -6,7 +6,7 @@ impl Panel {
     pub(in crate::tui) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.area = area;
         frame.render_widget(
-            Block::default().style(Style::default().bg(BG).fg(TEXT)),
+            Block::default().style(Style::default().bg(bg()).fg(text_fg())),
             area,
         );
         if area.width < 4 || area.height < 4 {
@@ -14,8 +14,8 @@ impl Panel {
         }
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(BORDER))
-            .title(Line::styled(" Models ", Style::default().fg(GOLD)));
+            .border_style(Style::default().fg(border()))
+            .title(Line::styled(" Models ", Style::default().fg(gold())));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let sidebar_width = if inner.width >= 54 {
@@ -35,14 +35,14 @@ impl Panel {
                 if index == 2 {
                     lines.push(Line::styled(
                         "─".repeat(usize::from(sidebar_width.saturating_sub(2))),
-                        Style::default().fg(BORDER),
+                        Style::default().fg(border()),
                     ));
                 }
                 let active = self.sidebar == index;
                 let (icon, icon_color, name, count) = match index {
                     0 => (
-                        ROLES_ICON,
-                        if active { GOLD } else { TEXT },
+                        roles_icon(),
+                        if active { gold() } else { text_fg() },
                         "Roles".to_owned(),
                         format!(
                             "{}/{}",
@@ -54,16 +54,16 @@ impl Panel {
                         ),
                     ),
                     1 => (
-                        MODELS_ICON,
-                        if active { GOLD } else { TEXT },
+                        models_icon(),
+                        if active { gold() } else { text_fg() },
                         "All models".to_owned(),
                         self.choices.len().to_string(),
                     ),
                     _ => {
                         let provider = &self.providers[index - 2];
                         (
-                            PROVIDER_ICON,
-                            GREEN,
+                            provider_icon(),
+                            green(),
                             pp_core::text::display_text(provider).into_owned(),
                             self.choices
                                 .iter()
@@ -88,13 +88,16 @@ impl Panel {
                     .saturating_sub(used)
                     .max(1);
                 let mut spans = vec![
-                    Span::styled(prefix, Style::default().fg(GOLD)),
+                    Span::styled(prefix, Style::default().fg(gold())),
                     Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
-                    Span::styled(name, Style::default().fg(if active { GOLD } else { TEXT })),
+                    Span::styled(
+                        name,
+                        Style::default().fg(if active { gold() } else { text_fg() }),
+                    ),
                 ];
                 spans.push(Span::styled(
                     format!("{}{count}", " ".repeat(gap)),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ));
                 lines.push(Line::from(spans));
             }
@@ -108,7 +111,7 @@ impl Panel {
             );
             frame.render_widget(
                 Paragraph::new(vec![Line::from("│"); usize::from(inner.height)])
-                    .style(Style::default().fg(BORDER)),
+                    .style(Style::default().fg(border())),
                 Rect::new(inner.x + sidebar_width - 1, inner.y, 1, inner.height),
             );
         }
@@ -139,7 +142,7 @@ impl Panel {
         frame.render_widget(
             Line::styled(
                 pp_core::text::display_text(&header).into_owned(),
-                Style::default().fg(MUTED),
+                Style::default().fg(muted()),
             ),
             Rect::new(self.body.x, self.body.y, self.body.width, 1),
         );
@@ -158,26 +161,26 @@ impl Panel {
                 // 只读 Override 行固定在角色列表上方；无覆盖时显示 none。
                 let override_y = self.body.y + 1;
                 let mut spans = vec![
-                    Span::styled("  ", Style::default().fg(MUTED)),
+                    Span::styled("  ", Style::default().fg(muted())),
                     Span::styled(
-                        format!("{MODELS_ICON} {:<8} ", "Override"),
+                        format!("{} {:<8} ", models_icon(), "Override"),
                         Style::default().fg(if self.override_selection.is_some() {
-                            GOLD
+                            gold()
                         } else {
-                            MUTED
+                            muted()
                         }),
                     ),
                 ];
                 match &self.override_selection {
                     Some(selection) => {
-                        spans.extend(model_spans(&selection.reference, GOLD));
+                        spans.extend(model_spans(&selection.reference, gold()));
                         let effort_line = Line::styled(
                             format!(
                                 "{} {}",
                                 palette::think_icon(selection.effort),
                                 selection.effort.as_str()
                             ),
-                            Style::default().fg(GOLD),
+                            Style::default().fg(gold()),
                         );
                         let effort_width =
                             effort_line.width().min(usize::from(self.body.width)) as u16;
@@ -196,7 +199,7 @@ impl Panel {
                         );
                     }
                     None => {
-                        spans.push(Span::styled("none", Style::default().fg(MUTED)));
+                        spans.push(Span::styled("none", Style::default().fg(muted())));
                         frame.render_widget(
                             Line::from(spans),
                             Rect::new(self.body.x, override_y, self.body.width, 1),
@@ -229,12 +232,12 @@ impl Panel {
                     };
                     let selected = !self.sidebar_focus && self.role_index == row + self.scroll;
                     let color = if !enabled {
-                        MUTED
+                        muted()
                     } else {
                         match role {
-                            ModelRole::Default => GREEN,
+                            ModelRole::Default => green(),
                             ModelRole::Fast => Color::Rgb(222, 200, 26),
-                            ModelRole::Slow => GOLD,
+                            ModelRole::Slow => gold(),
                             ModelRole::Vision => Color::Rgb(255, 64, 85),
                             ModelRole::Plan => Color::Rgb(153, 194, 232),
                             ModelRole::Review => Color::Rgb(187, 154, 247),
@@ -242,11 +245,11 @@ impl Panel {
                         }
                     };
                     let marker = if is_fallback {
-                        FALLBACK_ICON
+                        fallback_icon()
                     } else if enabled {
-                        ENABLED_ICON
+                        enabled_icon()
                     } else {
-                        DISABLED_ICON
+                        disabled_icon()
                     };
                     let label = if is_fallback {
                         format!("         {marker} ")
@@ -256,15 +259,15 @@ impl Panel {
                     let mut spans = vec![
                         Span::styled(
                             if selected { "❯ " } else { "  " },
-                            Style::default().fg(if enabled { GOLD } else { MUTED }),
+                            Style::default().fg(if enabled { gold() } else { muted() }),
                         ),
                         Span::styled(
                             label,
-                            Style::default().fg(if is_fallback { MUTED } else { color }),
+                            Style::default().fg(if is_fallback { muted() } else { color }),
                         ),
                     ];
                     if configured.is_none() && !is_fallback {
-                        spans.push(Span::styled("auto → ", Style::default().fg(MUTED)));
+                        spans.push(Span::styled("auto → ", Style::default().fg(muted())));
                     }
                     spans.extend(model_spans(
                         if model.is_empty() { "(not set)" } else { model },
@@ -287,8 +290,8 @@ impl Panel {
             View::Models => {
                 frame.render_widget(
                     Line::styled(
-                        format!("{SEARCH_ICON} {}", self.query),
-                        Style::default().fg(GOLD),
+                        format!("{} {}", search_icon(), self.query),
+                        Style::default().fg(gold()),
                     ),
                     Rect::new(self.body.x, self.body.y + 1, self.body.width, 1),
                 );
@@ -309,16 +312,21 @@ impl Panel {
                     let selected = !self.sidebar_focus && row + self.scroll == self.selected;
                     let mut spans = vec![Span::styled(
                         if selected { "❯ " } else { "  " },
-                        Style::default().fg(GOLD),
+                        Style::default().fg(gold()),
                     )];
                     spans.extend(model_spans(
                         &self.choices[index].reference,
-                        if selected { GOLD } else { TEXT },
+                        if selected { gold() } else { text_fg() },
                     ));
                     if self.favorites.contains(&self.choices[index].reference) {
+                        let (fav_label, fav_icon) = if super::super::themes::is_ascii() {
+                            (" *", "*")
+                        } else {
+                            (" \u{f005}", "\u{f005}")
+                        };
                         spans.push(Span::styled(
-                            " \u{f005}",
-                            super::super::menu::model_icon_style("\u{f005}"),
+                            fav_label,
+                            super::super::menu::model_icon_style(fav_icon),
                         ));
                     }
                     frame.render_widget(
@@ -341,11 +349,11 @@ impl Panel {
                             format!(" {} ", level.as_str()),
                             if index == self.selected {
                                 Style::default()
-                                    .fg(BG)
-                                    .bg(GOLD)
+                                    .fg(bg())
+                                    .bg(gold())
                                     .add_modifier(Modifier::BOLD)
                             } else {
-                                Style::default().fg(TEXT)
+                                Style::default().fg(text_fg())
                             },
                         )
                     })
@@ -366,7 +374,7 @@ impl Panel {
             "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · Space toggle · Delete remove · Backspace clear override · Esc back"
         };
         frame.render_widget(
-            Line::styled(hint, Style::default().fg(MUTED)),
+            Line::styled(hint, Style::default().fg(muted())),
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
     }
@@ -376,9 +384,9 @@ fn model_spans(reference: &str, color: Color) -> Vec<Span<'static>> {
     let safe = pp_core::text::display_text(reference).into_owned();
     match safe.split_once('/') {
         Some((provider, model)) => vec![
-            Span::styled(format!("{provider}/"), Style::default().fg(MUTED)),
+            Span::styled(format!("{provider}/"), Style::default().fg(muted())),
             Span::styled(model.to_owned(), Style::default().fg(color)),
         ],
-        None => vec![Span::styled(safe, Style::default().fg(MUTED))],
+        None => vec![Span::styled(safe, Style::default().fg(muted()))],
     }
 }

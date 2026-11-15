@@ -131,7 +131,7 @@ impl Panel {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     message,
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ))),
                 area,
             );
@@ -140,9 +140,9 @@ impl Panel {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .style(Style::default().bg(HUB_BG))
-            .border_style(Style::default().fg(ASK_BORDER))
-            .title(Line::from(colored(format!(" {TITLE} "), ACCENT)));
+            .style(Style::default().bg(hub_bg()))
+            .border_style(Style::default().fg(ask_border()))
+            .title(Line::from(colored(format!(" {TITLE} "), accent())));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.width == 0 || inner.height == 0 {
@@ -153,7 +153,7 @@ impl Panel {
         if footer == 2 {
             frame.render_widget(
                 Paragraph::new(format!("├{}┤", "─".repeat(inner.width as usize)))
-                    .style(Style::default().fg(ASK_BORDER)),
+                    .style(Style::default().fg(ask_border())),
                 Rect::new(area.x, body.bottom(), area.width, 1),
             );
         }
@@ -212,7 +212,7 @@ impl Panel {
                 text.push_str(hint);
             }
         }
-        draw_line(frame, area, Line::from(colored(text, DIM)));
+        draw_line(frame, area, Line::from(colored(text, dim())));
     }
 
     fn alert(&self) -> Option<Line<'static>> {
@@ -221,21 +221,21 @@ impl Panel {
             .as_ref()
             .or_else(|| self.projection.snapshot()?.warnings.first())
         {
-            Some(Line::from(colored(projection::truncate(error), REMOVED)))
+            Some(Line::from(colored(projection::truncate(error), removed())))
         } else {
             self.notice
                 .as_ref()
-                .map(|notice| Line::from(colored(projection::truncate(notice), ACCENT)))
+                .map(|notice| Line::from(colored(projection::truncate(notice), accent())))
         }
     }
 
     fn draw_roster_header(&self, frame: &mut Frame, mut area: Rect) -> Rect {
         let agents = self.projection.agents();
         let mut spans = vec![
-            colored("Roster · ", ACTIVITY),
-            colored("Flat", if self.tree { MUTED } else { ACCENT }),
-            colored(" / ", DIM),
-            colored("By parent", if self.tree { ACCENT } else { MUTED }),
+            colored("Roster · ", activity()),
+            colored("Flat", if self.tree { muted() } else { accent() }),
+            colored(" / ", dim()),
+            colored("By parent", if self.tree { accent() } else { muted() }),
         ];
         for status in [
             AgentStatus::Running,
@@ -245,7 +245,7 @@ impl Panel {
         ] {
             let count = agents.iter().filter(|agent| agent.status == status).count();
             if count > 0 || matches!(status, AgentStatus::Running | AgentStatus::Parked) {
-                spans.push(colored(" · ", DIM));
+                spans.push(colored(" · ", dim()));
                 spans.push(colored(
                     format!(
                         "{} {count} {}",
@@ -288,9 +288,9 @@ impl Panel {
         } else {
             compact
         };
-        let mut stats = vec![colored(cost, COST), colored(metrics, DIM)];
+        let mut stats = vec![colored(cost, cost_color()), colored(metrics, dim())];
         if agents.iter().any(|agent| agent.loading) {
-            stats.push(colored(" · loading", ACCENT));
+            stats.push(colored(" · loading", accent()));
         }
         draw_line(frame, area, Line::from(stats));
         area = below(area, 2);
@@ -311,13 +311,13 @@ impl Panel {
             frame.render_widget(
                 Block::default()
                     .borders(Borders::LEFT)
-                    .border_style(Style::default().fg(ASK_BORDER)),
+                    .border_style(Style::default().fg(ask_border())),
                 Rect::new(divider, area.y, 1, area.height),
             );
             for (y, symbol) in [(area.y.saturating_sub(1), "┬"), (area.bottom(), "┴")] {
                 if symbol == "┬" || footer_separator {
                     frame.render_widget(
-                        Paragraph::new(symbol).style(Style::default().fg(ASK_BORDER)),
+                        Paragraph::new(symbol).style(Style::default().fg(ask_border())),
                         Rect::new(divider, y, 1, 1),
                     );
                 }
@@ -362,7 +362,7 @@ impl Panel {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     message,
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ))),
                 area,
             );
@@ -392,7 +392,7 @@ impl Panel {
             let lines = self.row_lines(row, area.width);
             let mut content = Paragraph::new(lines);
             if is_selected {
-                content = content.style(Style::default().bg(SELECTED_BG));
+                content = content.style(Style::default().bg(selected_bg()));
             }
             frame.render_widget(content, rect);
             let agent = self.projection.agents()[row.agent].id.clone();
@@ -414,10 +414,10 @@ impl Panel {
         let model_column = width.div_ceil(2);
         let model = model_line(agent, width - model_column);
         let left = vec![
-            colored(marker, ACCENT),
-            colored(row.prefix.clone(), MUTED),
+            colored(marker, accent()),
+            colored(row.prefix.clone(), muted()),
             colored(format!("{icon} "), status_color(agent.status)),
-            colored(name, if row.muted { MUTED } else { ACTIVITY }),
+            colored(name, if row.muted { muted() } else { activity() }),
         ];
         let mut first = fit_line(Line::from(left), model_column.saturating_sub(1));
         first
@@ -431,14 +431,14 @@ impl Panel {
                 agent.task.as_deref().unwrap_or("—"),
                 indent,
                 width,
-                MUTED,
+                muted(),
             ));
         }
         lines.push(indented(
             &format!("{}   {}", usage(agent, "   "), self.age(agent)),
             indent,
             width,
-            DIM,
+            dim(),
         ));
         lines
     }
@@ -493,18 +493,18 @@ mod tests {
         ] {
             let cell = &buffer[position];
             assert_eq!(cell.symbol(), symbol, "{position:?}");
-            assert_eq!(cell.fg, ASK_BORDER, "{position:?}");
+            assert_eq!(cell.fg, ask_border(), "{position:?}");
         }
         let marker = &buffer[(2, 4)];
         assert_eq!(marker.symbol(), "›");
-        assert_eq!(marker.fg, ACCENT);
+        assert_eq!(marker.fg, accent());
         assert_eq!(
             buffer[(4, 4)].symbol(),
             waiting_clock(u128::from(panel.clock))
         );
         assert_eq!(buffer[(5, 4)].symbol(), " ");
-        assert_eq!(buffer[(6, 4)].fg, ACTIVITY);
-        assert_eq!(buffer[(81, 5)].bg, SELECTED_BG);
+        assert_eq!(buffer[(6, 4)].fg, activity());
+        assert_eq!(buffer[(81, 5)].bg, selected_bg());
     }
 
     #[test]

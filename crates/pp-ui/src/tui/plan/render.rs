@@ -12,7 +12,7 @@ use ratatui::{
 
 use crate::tui::markdown;
 use crate::tui::statusline::abbreviate_tokens;
-use crate::tui::transcript_style::{ACCENT, DIM, MUTED};
+use crate::tui::transcript_style::{accent, dim, error_border, muted};
 
 use super::{ACTIONS, BodyLayout, Focus, HINT, Panel, READONLY_HINT, Tab};
 
@@ -23,10 +23,10 @@ fn choice_span(label: &str, selected: bool) -> Span<'static> {
         format!(" {label} "),
         if selected {
             Style::default()
-                .fg(ACCENT)
+                .fg(accent())
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
-            Style::default().fg(MUTED)
+            Style::default().fg(muted())
         },
     )
 }
@@ -45,15 +45,19 @@ impl Panel {
         if let Some(error) = &self.error {
             Line::styled(
                 error.rsplit(": ").next().unwrap_or(error).to_owned(),
-                Style::default().fg(crate::tui::transcript_style::ERROR_BORDER),
+                Style::default().fg(error_border()),
             )
         } else {
-            Line::styled(format!(" {fallback}"), Style::default().fg(MUTED))
+            Line::styled(format!(" {fallback}"), Style::default().fg(muted()))
         }
     }
 
     fn border_color(&self, focus: Focus) -> Color {
-        if self.focus == focus { ACCENT } else { MUTED }
+        if self.focus == focus {
+            accent()
+        } else {
+            muted()
+        }
     }
 
     fn layout(&mut self, tab: Tab, width: u16) -> &BodyLayout {
@@ -78,11 +82,11 @@ impl Panel {
 
     fn status_label(&self) -> (&'static str, Color) {
         match self.document.status {
-            PlanStatus::Draft => ("Draft", DIM),
-            PlanStatus::Ready => ("Ready", ACCENT),
-            PlanStatus::Executed => ("Executed", MUTED),
-            PlanStatus::Completed => ("Completed", MUTED),
-            PlanStatus::Abandoned => ("Abandoned", MUTED),
+            PlanStatus::Draft => ("Draft", dim()),
+            PlanStatus::Ready => ("Ready", accent()),
+            PlanStatus::Executed => ("Executed", muted()),
+            PlanStatus::Completed => ("Completed", muted()),
+            PlanStatus::Abandoned => ("Abandoned", muted()),
         }
     }
 
@@ -163,16 +167,16 @@ impl Panel {
                     let suffix_len = usize::from(outdated) * " · outdated".len();
                     let budget = (body.width as usize)
                         .saturating_sub(prefix.chars().count() + 3 + suffix_len);
-                    spans.push(Span::styled(prefix, Style::default().fg(MUTED)));
+                    spans.push(Span::styled(prefix, Style::default().fg(muted())));
                     spans.push(Span::raw(" · "));
                     spans.push(Span::styled(
                         fit_chars(&report.model_reference, budget),
-                        Style::default().fg(MUTED),
+                        Style::default().fg(muted()),
                     ));
                     if outdated {
                         spans.push(Span::styled(
                             " · outdated",
-                            Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+                            Style::default().fg(dim()).add_modifier(Modifier::BOLD),
                         ));
                     }
                 }
@@ -182,7 +186,10 @@ impl Panel {
                         .document
                         .path()
                         .unwrap_or_else(|| "Not saved yet".to_owned());
-                    spans.push(Span::styled(format!(" {path}"), Style::default().fg(MUTED)));
+                    spans.push(Span::styled(
+                        format!(" {path}"),
+                        Style::default().fg(muted()),
+                    ));
                 }
             }
             spans.push(Span::raw(" · "));
@@ -231,7 +238,7 @@ impl Panel {
         if body.height > 0 {
             if total == 0 && tab == Tab::Plan && empty_plan {
                 frame.render_widget(
-                    Line::styled("No plan content yet.", Style::default().fg(MUTED)),
+                    Line::styled("No plan content yet.", Style::default().fg(muted())),
                     body,
                 );
             } else {
@@ -275,7 +282,7 @@ impl Panel {
                 self.focus = Focus::Body;
             }
             frame.render_widget(
-                Line::styled("No headings", Style::default().fg(MUTED)),
+                Line::styled("No headings", Style::default().fg(muted())),
                 inner,
             );
             return;
@@ -306,14 +313,14 @@ impl Panel {
             .enumerate()
         {
             let style = if position == selected {
-                let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+                let style = Style::default().fg(accent()).add_modifier(Modifier::BOLD);
                 if self.focus == Focus::Toc {
                     style.add_modifier(Modifier::REVERSED)
                 } else {
                     style
                 }
             } else {
-                Style::default().fg(MUTED)
+                Style::default().fg(muted())
             };
             let prefix = if position == selected { "❯ " } else { "  " };
             let indent = "  ".repeat(usize::from(heading.level.saturating_sub(base_level)));
@@ -350,9 +357,9 @@ impl Panel {
         {
             let selected = self.action == index && self.action_enabled(index);
             let style = if !self.action_enabled(index) {
-                Style::default().fg(DIM)
+                Style::default().fg(dim())
             } else if selected {
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };

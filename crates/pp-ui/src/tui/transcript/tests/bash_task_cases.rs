@@ -98,7 +98,7 @@ fn bash_task_failure_preserves_logs_and_next_snapshot_recovers_in_place() {
         text.contains("saved-log") && text.contains("query failed"),
         "{text}"
     );
-    assert_eq!(buffer[(0, 0)].fg, palette::REMOVED);
+    assert_eq!(buffer[(0, 0)].fg, palette::removed());
     tool(
         &mut transcript,
         "retry",

@@ -6,10 +6,26 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-const FIRST: Color = Color::Rgb(215, 175, 95);
-const SECOND: Color = Color::Rgb(122, 162, 247);
-const SEPARATOR: Color = Color::Rgb(62, 68, 80);
-const MUTED: Color = Color::Rgb(110, 117, 129);
+fn first() -> Color {
+    super::themes::palette().welcome_first
+}
+
+fn second() -> Color {
+    super::themes::palette().welcome_second
+}
+
+fn separator() -> Color {
+    super::themes::palette().welcome_separator
+}
+
+fn muted() -> Color {
+    super::themes::palette().welcome_muted
+}
+
+fn wordmark_color() -> Color {
+    super::themes::palette().welcome_wordmark
+}
+
 const SESSION_TIPS: [(&str, &str); 4] = [
     ("/model", "switch model, keep chat"),
     ("/new", "clear chat, keep model"),
@@ -22,7 +38,6 @@ const KEYBOARD_TIPS: [(&str, &str); 4] = [
     ("Esc", "cancel the running task"),
     ("Shift + Tab", "cycle thinking levels"),
 ];
-const WORDMARK_COLOR: Color = Color::Rgb(235, 235, 235);
 const WORDMARK: [&str; 5] = [
     "██████    ██████  ",
     "██    ██  ██    ██",
@@ -49,7 +64,7 @@ fn tip_spans((key, description): (&str, &str), width: u16) -> Vec<Span<'static>>
             } else {
                 format!("{key}  ")
             },
-            Style::default().fg(SECOND).add_modifier(Modifier::BOLD),
+            Style::default().fg(second()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(description.to_owned(), Style::default().fg(Color::Gray)),
     ]
@@ -63,13 +78,13 @@ fn help_lines(width: u16) -> Vec<Line<'static>> {
     };
     hints
         .into_iter()
-        .map(|hint| Line::styled(hint, Style::default().fg(MUTED)))
+        .map(|hint| Line::styled(hint, Style::default().fg(muted())))
         .collect()
 }
 
 fn hint_lines(width: u16, height: u16) -> Vec<Line<'static>> {
-    let title_style = Style::default().fg(FIRST);
-    let rule_style = Style::default().fg(SEPARATOR);
+    let title_style = Style::default().fg(first());
+    let rule_style = Style::default().fg(separator());
     let mut lines = Vec::new();
     if width >= 76 {
         let column_width = usize::from((width - 4) / 2);
@@ -135,28 +150,36 @@ pub(super) fn draw(frame: &mut Frame, area: Rect) -> Rect {
         return area;
     }
     let compact = area.width < 40 || area.height < 11;
+    let first = first();
+    let second = second();
+    let wordmark_color = wordmark_color();
+    let app_glyph = if super::themes::is_ascii() {
+        ">"
+    } else {
+        ""
+    };
     let mut lines = if compact {
         vec![
             Line::from(vec![
-                Span::styled("", Style::default().fg(FIRST)),
+                Span::styled(app_glyph, Style::default().fg(first)),
                 Span::raw("  "),
-                Span::styled("PP", Style::default().fg(WORDMARK_COLOR)),
+                Span::styled("PP", Style::default().fg(wordmark_color)),
             ]),
             Line::styled(VERSION, Style::default().fg(Color::DarkGray)),
         ]
     } else {
         LOGO.into_iter()
             .enumerate()
-            .map(|(row, (first, second))| {
+            .map(|(row, (left, right))| {
                 let (label, color) = if row == LOGO.len() - 1 {
                     (VERSION, Color::DarkGray)
                 } else {
-                    (WORDMARK.get(row).copied().unwrap_or(""), WORDMARK_COLOR)
+                    (WORDMARK.get(row).copied().unwrap_or(""), wordmark_color)
                 };
                 Line::from(vec![
-                    Span::styled(first, Style::default().fg(FIRST)),
-                    Span::styled(second, Style::default().fg(SECOND)),
-                    Span::raw(" ".repeat(22 - first.chars().count() - second.chars().count())),
+                    Span::styled(left, Style::default().fg(first)),
+                    Span::styled(right, Style::default().fg(second)),
+                    Span::raw(" ".repeat(22 - left.chars().count() - right.chars().count())),
                     Span::styled(label, Style::default().fg(color)),
                     Span::raw(" ".repeat(18_usize.saturating_sub(label.chars().count()))),
                 ])

@@ -38,7 +38,7 @@ pub(in crate::tui) fn write_body(
                 usize::from(width),
                 true,
             ),
-            style.fg(palette::MUTED),
+            style.fg(palette::muted()),
         );
     }
     rows

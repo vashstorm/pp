@@ -6,22 +6,22 @@ impl EntryKind {
     pub(super) fn color(self) -> Color {
         match self {
             Self::User => Color::Blue,
-            Self::Assistant => palette::MD_TEXT,
+            Self::Assistant => palette::md_text(),
             Self::Bash => Color::Yellow,
-            Self::Think | Self::Activity => MUTED_TEXT,
+            Self::Think | Self::Activity => muted_text(),
             Self::Rg => Color::Cyan,
-            Self::Diff | Self::Ask => palette::ACCENT,
-            Self::Lsp => palette::ACCENT,
+            Self::Diff | Self::Ask => palette::accent(),
+            Self::Lsp => palette::accent(),
             Self::Data => Color::Reset,
-            Self::Error => palette::ERROR_BORDER,
-            Self::Notice => palette::ACCENT,
+            Self::Error => palette::error_border(),
+            Self::Notice => palette::accent(),
         }
     }
 
     pub(super) fn conversation_background(self) -> Option<Color> {
         match self {
-            Self::User => Some(USER_BACKGROUND),
-            Self::Assistant | Self::Think => Some(ASSISTANT_BACKGROUND),
+            Self::User => Some(user_background()),
+            Self::Assistant | Self::Think => Some(assistant_background()),
             _ => None,
         }
     }
@@ -58,7 +58,7 @@ impl TranscriptEntry {
                     .fg(self.tool_accent())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(detail.to_owned(), Style::default().fg(palette::ACTIVITY)),
+            Span::styled(detail.to_owned(), Style::default().fg(palette::activity())),
         ])
     }
 
@@ -79,10 +79,10 @@ impl TranscriptEntry {
         }
         let title = Style::default().add_modifier(Modifier::BOLD);
         Some(Line::from(vec![
-            Span::styled(format!("{icon} mcp"), title.fg(palette::MCP_TITLE)),
-            Span::styled(format!(" {server}"), title.fg(palette::MCP_SERVER)),
-            Span::styled(format!(" {tool}"), title.fg(palette::MCP_TOOL)),
-            Span::styled(detail.to_owned(), Style::default().fg(palette::ACTIVITY)),
+            Span::styled(format!("{icon} mcp"), title.fg(palette::mcp_title())),
+            Span::styled(format!(" {server}"), title.fg(palette::mcp_server())),
+            Span::styled(format!(" {tool}"), title.fg(palette::mcp_tool())),
+            Span::styled(detail.to_owned(), Style::default().fg(palette::activity())),
         ]))
     }
 
@@ -133,28 +133,28 @@ impl TranscriptEntry {
             return Line::styled(
                 text,
                 Style::default()
-                    .fg(palette::ACTIVITY)
+                    .fg(palette::activity())
                     .add_modifier(Modifier::BOLD),
             );
         }
         if self.kind == EntryKind::Bash {
             let color = if matches!(source, Source::Title) {
-                palette::TOOL_COMMAND
+                palette::tool_command()
             } else if matches!(source, Source::Footer) && self.status == EntryStatus::Failed {
-                palette::REMOVED
+                palette::removed()
             } else if matches!(source, Source::Footer) && self.status == EntryStatus::Complete {
-                palette::ADDED
+                palette::added()
             } else {
-                MUTED_TEXT
+                muted_text()
             };
-            return Line::styled(text, Style::default().fg(color).bg(BASH_BACKGROUND));
+            return Line::styled(text, Style::default().fg(color).bg(bash_background()));
         }
         if matches!(source, Source::Title) {
             let mut spans = if self.tool.is_some() {
                 if range.start == 0 {
                     self.tool_title(text.as_ref()).spans
                 } else {
-                    vec![Span::styled(text, Style::default().fg(palette::ACTIVITY))]
+                    vec![Span::styled(text, Style::default().fg(palette::activity()))]
                 }
             } else {
                 vec![Span::styled(
@@ -166,16 +166,16 @@ impl TranscriptEntry {
             };
             if self.tool.is_some() && title_end && self.display_title.is_none() {
                 let (status, color) = match self.status {
-                    EntryStatus::Running => (" · running", palette::ACCENT),
-                    EntryStatus::Complete => (" · ok", palette::ADDED),
-                    EntryStatus::Failed => (" · failed", palette::REMOVED),
+                    EntryStatus::Running => (" · running", palette::accent()),
+                    EntryStatus::Complete => (" · ok", palette::added()),
+                    EntryStatus::Failed => (" · failed", palette::removed()),
                 };
                 spans.push(Span::styled(status, Style::default().fg(color)));
             }
             Line::from(spans)
         } else {
             let style = if matches!((self.kind, source), (EntryKind::Diff, _)) {
-                Style::default().fg(palette::MUTED)
+                Style::default().fg(palette::muted())
             } else if self.tool.is_some() {
                 Style::default().add_modifier(Modifier::DIM)
             } else {

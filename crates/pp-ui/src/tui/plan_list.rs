@@ -1,13 +1,7 @@
 //! 项目级 /plan-list 管理面板：只渲染 worker 发布的快照，磁盘/登记 I/O 全部留在 worker。
 //! 键盘与绘制路径不做任何 IO；操作只携带 ID，worker 按 ID 重查登记并核对当前路径与精确正文。
 use super::transcript::wrap_block;
-use super::transcript_style::ACCENT;
-use super::transcript_style::ADDED;
-use super::transcript_style::CODE;
-use super::transcript_style::DIM;
-use super::transcript_style::LINK;
-use super::transcript_style::MUTED;
-use super::transcript_style::REMOVED;
+use super::transcript_style::{accent, added, code, dim, link, muted, removed};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use pp_core::plan::PlanLocation;
 use pp_core::text::display_text;
@@ -38,11 +32,26 @@ const CONFIRM_HINT: &str = "Tab/arrows select · Enter confirm · Esc cancel";
 const DELETE_NOTICE: &str = "Delete the plan file only; code and sessions are not rolled back.";
 /// 空列表仍提供新建入口；其余空态说明当前分类/过滤。
 const EMPTY_NEW_PLAN: &str = "No saved plans. Press n to start a new plan.";
-const ROW_BG: Color = Color::Rgb(40, 42, 54);
-const ALTERNATE_ROW_BG: Color = Color::Rgb(49, 51, 63);
-const SELECTED_BG: Color = Color::Rgb(98, 164, 245);
-const SELECTED_FG: Color = Color::Rgb(35, 38, 49);
-const AGE_FG: Color = Color::Rgb(158, 161, 168);
+fn row_bg() -> Color {
+    super::themes::palette().panel_bg
+}
+
+fn alternate_row_bg() -> Color {
+    super::themes::palette().panel_alt_bg
+}
+
+fn selected_bg() -> Color {
+    super::themes::palette().panel_selected_bg
+}
+
+fn selected_fg() -> Color {
+    super::themes::palette().panel_selected_fg
+}
+
+fn age_fg() -> Color {
+    super::themes::palette().welcome_muted
+}
+
 const TITLE_COLORS: [Color; 8] = [
     Color::Rgb(137, 180, 250),
     Color::Rgb(137, 220, 235),
@@ -114,7 +123,7 @@ enum Tab {
 impl Tab {
     fn color(self) -> Color {
         match self {
-            Tab::All => MUTED,
+            Tab::All => muted(),
             Tab::Drafts => category_color(PlanLocation::Drafts),
             Tab::Plans => category_color(PlanLocation::Plans),
             Tab::Done => category_color(PlanLocation::Done),
@@ -379,21 +388,21 @@ mod tests {
         let terminal = draw(&mut panel, 100);
         let buffer = terminal.backend().buffer();
         for (row, label, color) in [
-            (3, "[Draft]", ACCENT),
-            (4, "[Plan]", LINK),
-            (5, "[Done]", ADDED),
+            (3, "[Draft]", accent()),
+            (4, "[Plan]", link()),
+            (5, "[Done]", added()),
         ] {
             assert!(row_text(buffer, row).contains(label));
             let cell = (0..100)
                 .map(|x| &buffer[(x, row)])
                 .find(|cell| cell.symbol() == "[")
                 .expect("分类标记应可见");
-            assert_eq!(cell.fg, if row == 3 { SELECTED_FG } else { color });
+            assert_eq!(cell.fg, if row == 3 { selected_fg() } else { color });
         }
         for selected in 0..4 {
             let terminal = draw(&mut panel, 100);
             let buffer = terminal.backend().buffer();
-            for (index, (x, color)) in [(1, MUTED), (7, ACCENT), (16, LINK), (24, ADDED)]
+            for (index, (x, color)) in [(1, muted()), (7, accent()), (16, link()), (24, added())]
                 .into_iter()
                 .enumerate()
             {
@@ -401,7 +410,7 @@ mod tests {
                 assert_eq!(
                     cell.fg,
                     if index == 0 && selected == 0 {
-                        CODE
+                        code()
                     } else {
                         color
                     }
@@ -430,9 +439,9 @@ mod tests {
         let terminal = draw(&mut panel, 70);
         let buffer = terminal.backend().buffer();
         for (row, age, title, bg) in [
-            (3, "23m ago", "修", SELECTED_BG),
-            (4, "1h ago", "R", ALTERNATE_ROW_BG),
-            (5, "1d ago", "F", ROW_BG),
+            (3, "23m ago", "修", selected_bg()),
+            (4, "1h ago", "R", alternate_row_bg()),
+            (5, "1d ago", "F", row_bg()),
         ] {
             let text = row_text(buffer, row);
             assert!(text.contains(age), "{text}");
@@ -448,8 +457,8 @@ mod tests {
         }
         panel.key(key(KeyCode::Down));
         let terminal = draw(&mut panel, 70);
-        assert_eq!(terminal.backend().buffer()[(69, 3)].bg, ROW_BG);
-        assert_eq!(terminal.backend().buffer()[(69, 4)].bg, SELECTED_BG);
+        assert_eq!(terminal.backend().buffer()[(69, 3)].bg, row_bg());
+        assert_eq!(terminal.backend().buffer()[(69, 4)].bg, selected_bg());
         for title in ["修复配置", "Ready", "Finished"] {
             panel.key(key(KeyCode::Right));
             let terminal = draw(&mut panel, 70);
@@ -492,7 +501,7 @@ mod tests {
         let terminal = draw(&mut panel, 70);
         let buffer = terminal.backend().buffer();
         assert!(row_text(buffer, 2).starts_with("Search: Press / to search"));
-        assert_eq!(buffer[(8, 2)].fg, DIM);
+        assert_eq!(buffer[(8, 2)].fg, dim());
         assert!(!panel.searching);
 
         panel.key(key(KeyCode::Char('/')));

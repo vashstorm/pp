@@ -1,6 +1,6 @@
 //! Inline current-history selection; history I/O and navigation remain on the worker.
 use super::transcript::{Transcript, TreeBlock};
-use super::transcript_style::{ACCENT, ADDED, MUTED};
+use super::transcript_style::{accent, added, error_border, muted};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use pp_runtime::agent::persistence::tree::Kind;
 use pp_runtime::agent::persistence::tree::Tree;
@@ -12,7 +12,13 @@ use ratatui::{
     text::{Line, Span},
 };
 
-pub(super) const HINT: &str = "↑/↓ step  ←/→ user turns  f filter  󰌑 rewind  󱊷 cancel";
+pub(super) fn hint() -> &'static str {
+    if super::themes::is_ascii() {
+        "↑/↓ step  ←/→ user turns  f filter  Enter rewind  Esc cancel"
+    } else {
+        "↑/↓ step  ←/→ user turns  f filter  󰌑 rewind  󱊷 cancel"
+    }
+}
 
 pub(super) enum Action {
     None,
@@ -72,13 +78,13 @@ impl Panel {
                     entries,
                     label: Line::from(vec![
                         Span::raw(" "),
-                        Span::styled("• ", Style::default().fg(ACCENT)),
+                        Span::styled("• ", Style::default().fg(accent())),
                         Span::styled(
                             role(node.kind),
                             Style::default().fg(match node.kind {
-                                Kind::User => ACCENT,
-                                Kind::Assistant => ADDED,
-                                Kind::Tools => MUTED,
+                                Kind::User => accent(),
+                                Kind::Assistant => added(),
+                                Kind::Tools => muted(),
                             }),
                         ),
                         Span::raw(" "),
@@ -219,9 +225,9 @@ impl Panel {
             Line::styled(
                 status,
                 Style::default().fg(if self.error.is_some() {
-                    super::transcript_style::ERROR_BORDER
+                    error_border()
                 } else {
-                    MUTED
+                    muted()
                 }),
             ),
             area,
@@ -238,7 +244,7 @@ impl Panel {
             frame.render_widget(
                 Line::styled(
                     "No messages in current history.",
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ),
                 body,
             );

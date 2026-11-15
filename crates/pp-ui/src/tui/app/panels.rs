@@ -23,6 +23,7 @@ impl App {
 
     pub(in crate::tui) fn shortcut_ready(&mut self) -> bool {
         if self.skills_pending
+            || self.themes_panel.is_some()
             || self.changes_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.roles_panel.is_some()
@@ -258,6 +259,10 @@ impl App {
             self.remember_input();
             self.clear_input();
             self.open_hub();
+            return false;
+        }
+        if let Some(Command::Themes(themes_command)) = command {
+            self.submit_themes_command(themes_command);
             return false;
         }
         if matches!(command, Some(Command::Login | Command::Logout)) {
@@ -592,6 +597,7 @@ impl App {
                     | Command::Tips
                     | Command::Stats(_)
                     | Command::Quit
+                    | Command::Themes(_)
                     | Command::Skills(_)
                     | Command::Mcp(_)
                     | Command::Login
@@ -828,6 +834,52 @@ impl App {
             MenuAction::Effort(level) => {
                 self.input = editor();
                 self.input.insert_str(format!("/effort {}", level.as_str()));
+                self.refresh_candidates(true);
+                return confirm && self.submit(PendingKind::Steering);
+            }
+            MenuAction::ThemeIcon(mode) => {
+                let mut words: Vec<String> = self.input.lines()[0]
+                    .split_whitespace()
+                    .skip(1)
+                    .map(str::to_owned)
+                    .collect();
+                let trailing = self.input.lines()[0]
+                    .chars()
+                    .last()
+                    .is_some_and(char::is_whitespace);
+                if !trailing && !words.is_empty() {
+                    words.pop();
+                }
+                let next = if words.is_empty() {
+                    format!("/themes {}", mode.as_str())
+                } else {
+                    format!("/themes {} {}", words.join(" "), mode.as_str())
+                };
+                self.input = editor();
+                self.input.insert_str(next);
+                self.refresh_candidates(true);
+                return confirm && self.submit(PendingKind::Steering);
+            }
+            MenuAction::ThemeColor(theme) => {
+                let mut words: Vec<String> = self.input.lines()[0]
+                    .split_whitespace()
+                    .skip(1)
+                    .map(str::to_owned)
+                    .collect();
+                let trailing = self.input.lines()[0]
+                    .chars()
+                    .last()
+                    .is_some_and(char::is_whitespace);
+                if !trailing && !words.is_empty() {
+                    words.pop();
+                }
+                let next = if words.is_empty() {
+                    format!("/themes {}", theme.as_str())
+                } else {
+                    format!("/themes {} {}", words.join(" "), theme.as_str())
+                };
+                self.input = editor();
+                self.input.insert_str(next);
                 self.refresh_candidates(true);
                 return confirm && self.submit(PendingKind::Steering);
             }

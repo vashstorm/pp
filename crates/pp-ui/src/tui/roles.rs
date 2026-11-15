@@ -21,21 +21,94 @@ mod picker;
 mod render;
 mod rows;
 
-const BG: Color = Color::Rgb(40, 42, 54);
-const BORDER: Color = Color::Rgb(36, 126, 155);
-const GOLD: Color = Color::Rgb(255, 191, 51);
-const TEXT: Color = Color::Rgb(205, 207, 214);
-const MUTED: Color = Color::Rgb(98, 104, 118);
-const GREEN: Color = Color::Rgb(131, 207, 126);
-// 与状态栏／transcript 一致：Nerd Font Material Design 图标占一列，其后保留一列空白。
-const ROLES_ICON: &str = "\u{f000e}";
-const MODELS_ICON: &str = "\u{f0279}";
-const PROVIDER_ICON: &str = "\u{f048d}";
-// 角色行前使用全尺寸实心圆／空心圆，保持单列占位与点击位置不变。
-const ENABLED_ICON: &str = "\u{f0765}";
-const DISABLED_ICON: &str = "\u{f0766}";
-const FALLBACK_ICON: &str = "\u{f060d}";
-const SEARCH_ICON: &str = "\u{f0349}";
+fn bg() -> Color {
+    super::themes::palette().panel_bg
+}
+
+fn border() -> Color {
+    super::themes::palette().panel_border
+}
+
+fn gold() -> Color {
+    super::themes::palette().accent
+}
+
+fn text_fg() -> Color {
+    super::themes::palette().text
+}
+
+fn muted() -> Color {
+    if super::themes::current_theme() == pp_config::config::Theme::Default {
+        Color::Rgb(98, 104, 118)
+    } else {
+        super::themes::palette().muted
+    }
+}
+
+fn green() -> Color {
+    if super::themes::current_theme() == pp_config::config::Theme::Default {
+        Color::Rgb(131, 207, 126)
+    } else {
+        super::themes::palette().added
+    }
+}
+
+// 与状态栏／transcript 一致：Nerd Font Material Design 图标与 ASCII 占位均为 1 列宽。
+fn roles_icon() -> &'static str {
+    if super::themes::is_ascii() {
+        "R"
+    } else {
+        "\u{f000e}"
+    }
+}
+
+fn models_icon() -> &'static str {
+    if super::themes::is_ascii() {
+        "M"
+    } else {
+        "\u{f0279}"
+    }
+}
+
+fn provider_icon() -> &'static str {
+    if super::themes::is_ascii() {
+        "P"
+    } else {
+        "\u{f048d}"
+    }
+}
+
+fn enabled_icon() -> &'static str {
+    if super::themes::is_ascii() {
+        "*"
+    } else {
+        "\u{f0765}"
+    }
+}
+
+fn disabled_icon() -> &'static str {
+    if super::themes::is_ascii() {
+        "o"
+    } else {
+        "\u{f0766}"
+    }
+}
+
+fn fallback_icon() -> &'static str {
+    if super::themes::is_ascii() {
+        ">"
+    } else {
+        "\u{f060d}"
+    }
+}
+
+fn search_icon() -> &'static str {
+    if super::themes::is_ascii() {
+        "/"
+    } else {
+        "\u{f0349}"
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
@@ -312,8 +385,8 @@ mod tests {
             assert!(text.contains(label), "{label}: {text}");
         }
         assert!(!text.contains("SMOL"));
-        assert_eq!(buffer[(50, 20)].bg, BG);
-        assert_eq!(buffer[(0, 5)].fg, BORDER);
+        assert_eq!(buffer[(50, 20)].bg, bg());
+        assert_eq!(buffer[(0, 5)].fg, border());
         for (width, height) in [(80, 12), (42, 8), (12, 4), (1, 1), (140, 24)] {
             draw(&mut panel, width, height);
         }
@@ -342,12 +415,12 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         for icon in [
-            ROLES_ICON,
-            MODELS_ICON,
-            PROVIDER_ICON,
-            ENABLED_ICON,
-            DISABLED_ICON,
-            FALLBACK_ICON,
+            roles_icon(),
+            models_icon(),
+            provider_icon(),
+            enabled_icon(),
+            disabled_icon(),
+            fallback_icon(),
         ] {
             assert!(text.contains(icon), "面板应显示 Nerd Font 图标：{icon}");
             assert!(
@@ -365,18 +438,18 @@ mod tests {
         let y = panel.body.y + panel.content_offset();
         assert_eq!(
             buffer[(x + 2, y)].symbol(),
-            ENABLED_ICON,
+            enabled_icon(),
             "启用图标必须落在鼠标点击列"
         );
-        assert_eq!(buffer[(x + 11, y + 1)].symbol(), FALLBACK_ICON);
-        assert_eq!(buffer[(x + 11, y + 1)].fg, MUTED);
+        assert_eq!(buffer[(x + 11, y + 1)].symbol(), fallback_icon());
+        assert_eq!(buffer[(x + 11, y + 1)].fg, muted());
         assert!(!text.contains("FALLBACK"), "备用行只显示缩进箭头");
         for (row, model, effort) in [
             (y, "fixture/one", ThinkLevel::High),
             (y + 1, "fixture/two", ThinkLevel::None),
         ] {
             let model_x = x + 13;
-            assert_eq!(buffer[(model_x + 8, row)].fg, GREEN);
+            assert_eq!(buffer[(model_x + 8, row)].fg, green());
             let effort_x = model_x + model.len() as u16 + 1;
             assert_eq!(
                 buffer[(effort_x, row)].symbol(),
@@ -489,11 +562,11 @@ mod tests {
             for col in x..panel.body.right() {
                 let cell = &buffer[(col, y + row)];
                 if !cell.symbol().trim().is_empty() {
-                    assert_eq!(cell.fg, MUTED, "未选中的行不能因光标高亮变彩色");
+                    assert_eq!(cell.fg, muted(), "未选中的行不能因光标高亮变彩色");
                 }
             }
         }
-        assert_ne!(buffer[(x + 2, y + 1)].fg, MUTED);
+        assert_ne!(buffer[(x + 2, y + 1)].fg, muted());
         key(&mut panel, KeyCode::Up);
         let Action::Save(ModelRole::Fast, Some(off)) = key(&mut panel, KeyCode::Char(' ')) else {
             panic!("空格应切换启用状态");

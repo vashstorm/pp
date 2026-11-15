@@ -20,10 +20,16 @@ pub use hooks::{
 };
 
 mod sections;
-pub use sections::{ApprovalMode, ApprovalPolicy, LspSettings, OutputSettings, TaskSettings};
+pub use sections::{
+    ApprovalMode, ApprovalPolicy, CostDisplay, EditMode, LspSettings, OutputSettings,
+    ReadDisplaySettings, TaskSettings,
+};
 
 mod stats;
 pub use stats::{StatsSettings, StatsStyle};
+
+mod theme;
+pub use theme::{IconMode, Theme, TuiSettings};
 
 // Deliberately not Debug: this owns the API credential.
 pub struct Config {
@@ -67,14 +73,6 @@ pub struct ModelChoice {
 pub struct ModelSelection {
     pub reference: String,
     pub effort: ThinkLevel,
-}
-
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum EditMode {
-    #[default]
-    Replace,
-    Hashline,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -170,67 +168,6 @@ fn default_notification_show_countdown() -> bool {
 
 fn default_notification_timeout_seconds() -> u64 {
     10
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct TuiSettings {
-    pub max_fps: u16,
-}
-
-impl Default for TuiSettings {
-    fn default() -> Self {
-        Self { max_fps: 60 }
-    }
-}
-
-/// `settings.yml` 的 `cost` 定义显示币种与 1 USD 的兑换金额。
-/// 图标由 `currency` 派生，配置不再接受手写图标。
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CostDisplay {
-    pub currency: String,
-    pub exchange_rate: f64,
-}
-
-impl CostDisplay {
-    /// 受支持的显示币种及对应的 Nerd Font 图标（Material Design `currency_*` 系列）：
-    /// 美国 `f01c1`、欧洲 `f01ad`、日本 `f07bc`、韩国 `f07bd`、中国 `f07ba`、巴西 `f0b85`。
-    const CURRENCY_ICONS: [(&'static str, char); 6] = [
-        ("USD", '\u{f01c1}'),
-        ("EUR", '\u{f01ad}'),
-        ("JPY", '\u{f07bc}'),
-        ("KRW", '\u{f07bd}'),
-        ("CNY", '\u{f07ba}'),
-        ("BRL", '\u{f0b85}'),
-    ];
-
-    /// 币种图标；不受支持的币种返回 `None`（配置校验已拒绝该取值）。
-    pub fn icon(&self) -> Option<char> {
-        Self::CURRENCY_ICONS
-            .iter()
-            .find_map(|(code, icon)| (*code == self.currency).then_some(*icon))
-    }
-
-    fn currency_codes() -> impl Iterator<Item = &'static str> {
-        Self::CURRENCY_ICONS.iter().map(|(code, _)| *code)
-    }
-}
-
-impl Default for CostDisplay {
-    fn default() -> Self {
-        Self {
-            currency: "USD".into(),
-            exchange_rate: 1.0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReadDisplaySettings {
-    #[serde(default, rename = "toolResultPreview")]
-    pub(crate) tool_result_preview: bool,
 }
 
 /// 默认/收藏/Role/effort 的持久化权威，本批自 settings.yml 四字段迁入 agent.db。

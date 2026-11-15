@@ -5,12 +5,7 @@
 //! `Binding::control`，不在 UI 线程做 I/O。
 
 use super::super::statusline;
-use super::super::transcript_style::ACCENT;
-use super::super::transcript_style::ACTIVITY;
-use super::super::transcript_style::ADDED;
-use super::super::transcript_style::DIM;
-use super::super::transcript_style::MUTED;
-use super::super::transcript_style::REMOVED;
+use super::super::transcript_style::{accent, activity, added, dim, muted, removed};
 use super::Drafts;
 use super::projection::AgentView;
 use crate::tui::Transcript;
@@ -527,10 +522,10 @@ impl Detail {
             input_space.saturating_sub(input_height + activity_height + activity_spacing);
         // 单行身份与真实状态；模型、effort 与用量由输入框指标行及底部状态栏承载。
         let status_color = match view.status {
-            super::projection::AgentStatus::Running => ACCENT,
-            super::projection::AgentStatus::Idle => ADDED,
-            super::projection::AgentStatus::Parked => MUTED,
-            super::projection::AgentStatus::Aborted => REMOVED,
+            super::projection::AgentStatus::Running => accent(),
+            super::projection::AgentStatus::Idle => added(),
+            super::projection::AgentStatus::Parked => muted(),
+            super::projection::AgentStatus::Aborted => removed(),
         };
         let model_change = view
             .model_change
@@ -543,10 +538,10 @@ impl Detail {
             .unwrap_or_else(|| "—".into());
         let header = super::fit_line(
             Line::from(vec![
-                Span::styled("Agent Hub", Style::default().fg(ACCENT)),
+                Span::styled("Agent Hub", Style::default().fg(accent())),
                 Span::styled(
                     format!(" · {} / {}", display_text(&view.name), view.id),
-                    Style::default().fg(ACTIVITY),
+                    Style::default().fg(activity()),
                 ),
                 Span::styled(
                     format!(
@@ -562,7 +557,7 @@ impl Detail {
                         " · active {age}{}",
                         if view.loading { " · loading" } else { "" }
                     ),
-                    Style::default().fg(DIM),
+                    Style::default().fg(dim()),
                 ),
             ]),
             usize::from(area.width),
@@ -596,7 +591,7 @@ impl Detail {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     display_text(&hint).into_owned(),
-                    Style::default().fg(if notice { REMOVED } else { DIM }),
+                    Style::default().fg(if notice { removed() } else { dim() }),
                 ))),
                 hint_area,
             );
@@ -604,7 +599,7 @@ impl Detail {
         let editor_area = if bordered {
             let block = Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)
-                .border_style(Style::default().fg(statusline::ACCENT));
+                .border_style(Style::default().fg(statusline::accent()));
             let inner = block.inner(input_area);
             frame.render_widget(block, input_area);
             // 指标行写在顶边框行右侧，必须在边框之后覆盖，左侧边框字符保留。
@@ -621,7 +616,7 @@ impl Detail {
                 cost,
                 area.width,
             )
-            .style(Style::default().bg(statusline::INPUT_STATUS_BG));
+            .style(Style::default().bg(statusline::input_status_bg()));
             let metrics_width = u16::try_from(metrics.width())
                 .unwrap_or(u16::MAX)
                 .min(area.width);

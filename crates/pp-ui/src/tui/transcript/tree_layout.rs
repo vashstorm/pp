@@ -80,7 +80,7 @@ impl Transcript {
             frame.render_widget(
                 Line::styled(
                     "Entries hidden by the current filter",
-                    Style::default().fg(palette::MUTED),
+                    Style::default().fg(palette::muted()),
                 ),
                 Rect::new(area.x, area.y, area.width, 1),
             );
@@ -95,7 +95,7 @@ impl Transcript {
                 continue;
             }
             let chosen = framed && Some(group.index) == selected;
-            let style = Style::default().fg(palette::ACCENT);
+            let style = Style::default().fg(palette::accent());
             if chosen {
                 for row in start..end {
                     let y = area.y + (row - self.offset) as u16;

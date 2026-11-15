@@ -5,7 +5,7 @@ fn styled_blocks_expand_tabs_and_keep_explicit_line_boundaries() {
     let rows = wrap_block(
         block_line(
             "ab\t中\nsecond\n\nthird\n",
-            Style::default().fg(palette::ADDED),
+            Style::default().fg(palette::added()),
         ),
         12,
         "",
@@ -23,14 +23,18 @@ fn styled_blocks_expand_tabs_and_keep_explicit_line_boundaries() {
     assert!(
         rows.iter()
             .flat_map(|line| &line.spans)
-            .all(|span| span.style.fg == Some(palette::ADDED))
+            .all(|span| span.style.fg == Some(palette::added()))
     );
 }
 
 #[test]
 fn styled_rows_preserve_graphemes_and_neutralize_terminal_controls() {
     let text = "中e\u{301}🙂\t\u{1b}[31m";
-    let rows = wrap_block(block_line(text, Style::default().fg(palette::ADDED)), 3, "");
+    let rows = wrap_block(
+        block_line(text, Style::default().fg(palette::added())),
+        3,
+        "",
+    );
     let visible: String = rows
         .iter()
         .flat_map(|line| &line.spans)
@@ -43,7 +47,7 @@ fn styled_rows_preserve_graphemes_and_neutralize_terminal_controls() {
     assert!(
         rows.iter()
             .flat_map(|line| &line.spans)
-            .all(|span| span.style.fg == Some(palette::ADDED))
+            .all(|span| span.style.fg == Some(palette::added()))
     );
 }
 
@@ -73,11 +77,11 @@ fn model_attempt_errors_render_details_in_red_cards_and_replay_legacy_events() {
             .lines()
             .position(|row| row.starts_with("╭ Error "))
             .unwrap() as u16;
-        assert_eq!(buffer[(0, top)].fg, palette::ERROR_BORDER);
+        assert_eq!(buffer[(0, top)].fg, palette::error_border());
         let bottom = top + transcript.entries[2].layout.as_ref().unwrap().height as u16 - 1;
         for y in top..=bottom {
-            assert_eq!(buffer[(0, y)].fg, palette::ERROR_BORDER);
-            assert_eq!(buffer[(width - 1, y)].fg, palette::ERROR_BORDER);
+            assert_eq!(buffer[(0, y)].fg, palette::error_border());
+            assert_eq!(buffer[(width - 1, y)].fg, palette::error_border());
         }
         let unwrapped = rows.replace([' ', '\n', '│'], "");
         assert!(unwrapped.contains("Model:deepseek/deepseek-v4.1-flash"));
@@ -110,7 +114,7 @@ fn notification_error_card_wraps_full_plain_text_and_survives_resize_and_folding
             assert!(rows.contains("Error"));
             assert_eq!(buffer[(0, 0)].symbol(), "╭");
             assert_eq!(buffer[(width - 1, 0)].symbol(), "╮");
-            assert_eq!(buffer[(0, 0)].fg, palette::ERROR_BORDER);
+            assert_eq!(buffer[(0, 0)].fg, palette::error_border());
             let bottom = transcript.entries[0].layout.as_ref().unwrap().height as u16 - 1;
             assert_eq!(buffer[(0, bottom)].symbol(), "╰");
             assert_eq!(buffer[(width - 1, bottom)].symbol(), "╯");

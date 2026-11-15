@@ -39,21 +39,37 @@ pub(in crate::tui) fn todo_task_styles(
 ) -> (&'static str, Style, Style) {
     use pp_core::todo::TodoStatus;
     let (symbol, marker, text) = match status {
-        TodoStatus::Pending => ("[ ]", palette::MUTED, Style::default().fg(palette::MUTED)),
+        TodoStatus::Pending => (
+            "[ ]",
+            palette::muted(),
+            Style::default().fg(palette::muted()),
+        ),
         TodoStatus::InProgress => (
             "[ ]",
-            palette::TODO_ACTIVE,
+            palette::todo_active(),
             Style::default()
-                .fg(palette::TODO_ACTIVE)
+                .fg(palette::todo_active())
                 .add_modifier(Modifier::BOLD),
         ),
         TodoStatus::Completed => (
-            "[\u{f00c}]",
-            palette::ADDED,
-            Style::default().fg(palette::ADDED),
+            if crate::tui::themes::is_ascii() {
+                "[+]"
+            } else {
+                "[\u{f00c}]"
+            },
+            palette::added(),
+            Style::default().fg(palette::added()),
         ),
-        TodoStatus::Abandoned => ("[ ]", palette::MUTED, Style::default().fg(palette::MUTED)),
-        TodoStatus::Blocked => ("[!]", palette::ACCENT, Style::default().fg(palette::ACCENT)),
+        TodoStatus::Abandoned => (
+            "[ ]",
+            palette::muted(),
+            Style::default().fg(palette::muted()),
+        ),
+        TodoStatus::Blocked => (
+            "[!]",
+            palette::accent(),
+            Style::default().fg(palette::accent()),
+        ),
     };
     (symbol, Style::default().fg(marker), text)
 }
@@ -78,11 +94,11 @@ pub(in crate::tui) fn todo_phase_line(
         .iter()
         .all(|task| task.status == TodoStatus::Completed)
     {
-        palette::ADDED
+        palette::added()
     } else if active {
-        palette::TODO_ACTIVE
+        palette::todo_active()
     } else {
-        palette::MUTED
+        palette::muted()
     };
     Line::from(vec![
         Span::styled(
@@ -95,7 +111,7 @@ pub(in crate::tui) fn todo_phase_line(
         ),
         Span::styled(
             format!(" ({closed}/{})", phase.tasks.len()),
-            Style::default().fg(palette::MUTED),
+            Style::default().fg(palette::muted()),
         ),
     ])
 }
@@ -147,7 +163,7 @@ fn todo_tree_rows(
             let mut prefix = if index == 0 {
                 first.clone()
             } else {
-                Line::styled(continuation.to_owned(), Style::default().fg(palette::DIM))
+                Line::styled(continuation.to_owned(), Style::default().fg(palette::dim()))
             };
             prefix.spans.extend(row.spans);
             prefix
@@ -183,7 +199,10 @@ pub(in crate::tui) fn todo_checklist(
         rows.extend(todo_tree_rows(
             todo_phase_line(phase, index),
             width,
-            Line::styled(todo_phase_prefix(width), Style::default().fg(palette::DIM)),
+            Line::styled(
+                todo_phase_prefix(width),
+                Style::default().fg(palette::dim()),
+            ),
             if width >= 5 { "│  " } else { "│" },
         ));
         for (task_index, task) in phase.tasks.iter().enumerate() {
@@ -218,14 +237,14 @@ pub(in crate::tui) fn todo_checklist(
                         " · phase \"{}\" occurrence {ordinal}",
                         pp_core::text::display_text(&phase.name)
                     ),
-                    Style::default().fg(palette::MUTED),
+                    Style::default().fg(palette::muted()),
                 ));
             }
             let last = task_index + 1 == phase.tasks.len();
             // 缩短窄窗口的树枝，至少为中文正文保留两列。
             let mut prefix = Line::styled(
                 todo_task_prefix(width, last),
-                Style::default().fg(palette::DIM),
+                Style::default().fg(palette::dim()),
             );
             if width >= 6 {
                 prefix
@@ -261,6 +280,6 @@ pub(super) fn todo_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     wrap(
         logical(error).into_iter().map(str::to_owned),
         width,
-        Style::default().fg(palette::REMOVED),
+        Style::default().fg(palette::removed()),
     )
 }

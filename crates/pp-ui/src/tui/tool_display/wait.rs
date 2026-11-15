@@ -20,13 +20,13 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
     let settled = jobs.len() - running;
     let done = settled.saturating_sub(failed + cancelled);
     let color = if view.failed || failed > 0 {
-        palette::REMOVED
+        palette::removed()
     } else if view.running {
-        palette::ACCENT
+        palette::accent()
     } else {
-        palette::ADDED
+        palette::added()
     };
-    let style = Style::default().fg(palette::READ_TEXT);
+    let style = Style::default().fg(palette::read_text());
     let border = Style::default().fg(color);
     let framed = width >= 8;
     let inner = if framed { width - 4 } else { width };
@@ -79,15 +79,16 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
         let duration_ms = job["duration_ms"].as_u64().unwrap_or(0);
         let status = job["status"].as_str().unwrap_or("unknown");
         let active = matches!(status, "queued" | "running");
+        let icons = crate::tui::themes::current_icons();
         let (icon, tone) = match status {
             "queued" | "running" if view.running => (
                 palette::waiting_clock(u128::from(duration_ms)),
-                palette::ACCENT,
+                palette::accent(),
             ),
-            "queued" | "running" => ("○", palette::ACCENT),
-            "failed" => ("\u{f00d}", palette::REMOVED),
-            "cancelled" | "stopped" | "interrupted" => ("■", palette::MUTED),
-            _ => ("\u{f00c}", palette::ADDED),
+            "queued" | "running" => ("○", palette::accent()),
+            "failed" => (palette::fail_icon(icons), palette::removed()),
+            "cancelled" | "stopped" | "interrupted" => ("■", palette::muted()),
+            _ => (palette::done_icon(icons), palette::added()),
         };
         let seconds = duration_ms / 1000;
         let delivered = if job["delivered"] == true && !active {
@@ -113,7 +114,7 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
     if shown < jobs.len() {
         body.push(Line::styled(
             format!("… {} more jobs (Ctrl + O to expand)", jobs.len() - shown),
-            style.fg(palette::MUTED),
+            style.fg(palette::muted()),
         ));
     }
     let mut rows = Vec::new();

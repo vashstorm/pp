@@ -431,3 +431,4 @@ mod todo_cases;
 mod mcp_cases;
 
 mod resource_cases;
+mod theme_cases;

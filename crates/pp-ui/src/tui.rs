@@ -34,6 +34,7 @@ mod statusline;
 mod stream_buffer;
 mod subagents;
 mod surface;
+mod themes;
 mod tips;
 mod todo;
 mod tool_display;
@@ -144,13 +145,21 @@ pub fn run(
     // tmux 默认以 xterm modifyOtherKeys 编码回报扩展按键，这里接管 fd 0 把它
     // 翻译成 crossterm 支持的 CSI-u；探测结束后安装，避免争抢原始终端。
     input_shim::install(pending_reply).context("installing input translator")?;
+    themes::set_active(options.theme, options.icons);
     let mut surface = surface::Surface::new(io::stdout());
     let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
     // 持久输入历史与 agent 配置目录同级；无可定位目录时明确只保留进程内回忆。
     let history_path = bootstrap
         .as_ref()
         .map(|bootstrap| bootstrap.dir.join("history.db"));
+    let settings_path = bootstrap
+        .as_ref()
+        .map(|bootstrap| bootstrap.dir.join("settings.yml"));
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, history_path)?;
+    app.apply_appearance(options.theme, options.icons);
+    app.theme = options.theme;
+    app.icons = options.icons;
+    app.settings_path = settings_path;
     app.image_view.configure(picker);
     app.cost_display = cost_display;
     app.bootstrap = bootstrap;
@@ -404,6 +413,8 @@ enum MenuAction {
     FileCommand(usize),
     Model(usize),
     Effort(ThinkLevel),
+    ThemeIcon(pp_config::config::IconMode),
+    ThemeColor(pp_config::config::Theme),
     File(usize),
     FileDirectory(usize),
     FileParent,
@@ -533,6 +544,11 @@ struct App {
     skill_worker: skills::Worker,
     skill_panel: Option<skills::Panel>,
     skills_pending: bool,
+    theme: pp_config::config::Theme,
+    icons: pp_config::config::IconMode,
+    settings_path: Option<std::path::PathBuf>,
+    themes_worker: themes::Worker,
+    themes_panel: Option<themes::Panel>,
     session_panel: Option<sessions::Panel>,
     tree_panel: Option<tree::Panel>,
     changes_panel: Option<changes::Panel>,
@@ -611,7 +627,7 @@ enum PlanEnterAction {
 
 fn editor() -> TextArea<'static> {
     let mut editor = TextArea::default();
-    editor.set_style(Style::default().fg(transcript_style::TEXT));
+    editor.set_style(Style::default().fg(transcript_style::text()));
     editor.set_wrap_mode(WrapMode::WordOrGlyph);
     editor.set_cursor_line_style(Style::default());
     editor.set_cursor_style(Style::default());

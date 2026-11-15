@@ -94,13 +94,13 @@ impl App {
         if area.width < 4 || area.height == 0 {
             return;
         }
-        let accent = Style::default().fg(transcript_style::ACCENT);
+        let accent = Style::default().fg(transcript_style::accent());
         let block = Block::bordered()
             .border_style(accent)
             .title(Line::styled(" Retrying ", accent));
         let text = Line::styled(
             format!(" {}", notice.line()),
-            Style::default().fg(transcript_style::TEXT),
+            Style::default().fg(transcript_style::text()),
         );
         frame.render_widget(Paragraph::new(text).block(block), area);
     }

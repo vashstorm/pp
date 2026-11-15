@@ -3,8 +3,8 @@
 use super::*;
 
 pub(in crate::tui) fn rg_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let text = Style::default().fg(palette::RG_TEXT).bg(palette::RG_BG);
-    let meta = text.fg(palette::RG_META);
+    let text = Style::default().fg(palette::rg_text()).bg(palette::rg_bg());
+    let meta = text.fg(palette::rg_meta());
     let pattern = view.arguments["pattern"]
         .as_str()
         .map(str::to_owned)
@@ -30,7 +30,7 @@ pub(in crate::tui) fn rg_header(view: &View<'_>, width: u16) -> Vec<Line<'static
         spans.push(Span::styled(format!(" · {output_mode}"), meta));
     }
     if view.failed {
-        spans.push(Span::styled(" · failed", text.fg(palette::REMOVED)));
+        spans.push(Span::styled(" · failed", text.fg(palette::removed())));
     } else if output_mode == "files_with_matches"
         && let Some(files) = details.and_then(|d| d["fileCount"].as_u64())
     {
@@ -101,13 +101,13 @@ pub(in crate::tui) fn rg_header(view: &View<'_>, width: u16) -> Vec<Line<'static
 }
 
 pub(in crate::tui) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().fg(palette::RG_TEXT).bg(palette::RG_BG);
+    let style = Style::default().fg(palette::rg_text()).bg(palette::rg_bg());
     let (status, color) = if view.failed {
-        (" · failed", palette::REMOVED)
+        (" · failed", palette::removed())
     } else if view.running {
-        (" · running", palette::ACCENT)
+        (" · running", palette::accent())
     } else {
-        ("", palette::RG_META)
+        ("", palette::rg_meta())
     };
     wrap_block(
         Line::from(vec![
@@ -133,10 +133,10 @@ pub(in crate::tui) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'stat
 }
 
 fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
-    let style = Style::default().fg(palette::RG_TEXT).bg(palette::RG_BG);
-    let meta = style.fg(palette::RG_META);
+    let style = Style::default().fg(palette::rg_text()).bg(palette::rg_bg());
+    let meta = style.fg(palette::rg_meta());
     if view.failed {
-        return Line::styled(line.to_owned(), style.fg(palette::REMOVED));
+        return Line::styled(line.to_owned(), style.fg(palette::removed()));
     }
     if line.starts_with('…') || line.starts_with('[') || line.starts_with("No ") {
         return Line::styled(line.to_owned(), meta);
@@ -161,7 +161,7 @@ fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
                 Span::styled(
                     gutter.to_owned(),
                     if matched {
-                        style.fg(palette::RG_TITLE)
+                        style.fg(palette::rg_title())
                     } else {
                         meta
                     },
@@ -176,11 +176,11 @@ fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
                 .as_array()
                 .is_some_and(|files| files.iter().any(|file| file["path"].as_str() == Some(line)))
         }) {
-            return Line::styled(line.to_owned(), style.fg(palette::READ_SUMMARY_PATH));
+            return Line::styled(line.to_owned(), style.fg(palette::read_summary_path()));
         }
     } else if view.name == "glob" {
         if line.starts_with("Warning:") {
-            return Line::styled(line.to_owned(), style.fg(palette::ACCENT));
+            return Line::styled(line.to_owned(), style.fg(palette::accent()));
         }
         let split = line.trim_end_matches('/').rfind('/').map_or(0, |i| i + 1);
         return Line::from(vec![
@@ -188,9 +188,9 @@ fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
             Span::styled(
                 line[split..].to_owned(),
                 style.fg(if line.ends_with('/') {
-                    palette::RG_TITLE
+                    palette::rg_title()
                 } else {
-                    palette::READ_SUMMARY_PATH
+                    palette::read_summary_path()
                 }),
             ),
         ])
@@ -206,7 +206,7 @@ fn search_rows(rows: Vec<Line<'static>>, view: &View<'_>) -> Vec<Line<'static>> 
 }
 
 pub(super) fn glob_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().fg(palette::RG_TEXT).bg(palette::RG_BG);
+    let style = Style::default().fg(palette::rg_text()).bg(palette::rg_bg());
     let mut depth = 0;
     let grouped = view.result.is_some_and(|r| r["content"].is_string()) && !view.failed;
     let lines = logical(view.text)
@@ -251,11 +251,11 @@ pub(super) fn glob_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
 pub(super) fn rg_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     let style = Style::default()
         .fg(if view.failed {
-            palette::REMOVED
+            palette::removed()
         } else {
-            palette::RG_TEXT
+            palette::rg_text()
         })
-        .bg(palette::RG_BG);
+        .bg(palette::rg_bg());
     let structured = view.result.is_some_and(|r| {
         r["content"].is_string()
             && r["details"]["outputMode"].as_str().unwrap_or("content") == "content"

@@ -400,7 +400,7 @@ fn input_uses_horizontal_rules_and_reserves_secondary_status_on_the_right() {
     let buffer = terminal.backend().buffer();
     for x in 0..88 {
         assert_eq!(buffer[(x, 25)].symbol(), "─");
-        assert_eq!(buffer[(x, 25)].fg, statusline::ACCENT);
+        assert_eq!(buffer[(x, 25)].fg, statusline::accent());
     }
     assert_eq!(app.input.lines(), &["draft-中", "second line"]);
     for (width, height) in [(1, 1), (2, 2), (20, 4), (100, 30)] {

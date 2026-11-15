@@ -346,7 +346,7 @@ impl Panel {
             if let Some(error) = &self.error {
                 Line::styled(
                     error.as_str(),
-                    Style::default().fg(super::transcript_style::REMOVED),
+                    Style::default().fg(super::transcript_style::removed()),
                 )
             } else {
                 Line::raw(

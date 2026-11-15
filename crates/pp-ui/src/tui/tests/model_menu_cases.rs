@@ -848,7 +848,7 @@ fn command_menu_renders_above_input_with_columns_and_blue_selection() {
     let separator_row = input_row - 1;
     for x in 0..100 {
         assert_eq!(buffer[(x, separator_row)].symbol(), "─");
-        assert_eq!(buffer[(x, separator_row)].fg, menu::SEPARATOR);
+        assert_eq!(buffer[(x, separator_row)].fg, menu::separator());
     }
     let menu_top = separator_row - 8;
     for (index, spec) in COMMANDS.iter().take(8).enumerate() {
@@ -860,7 +860,7 @@ fn command_menu_renders_above_input_with_columns_and_blue_selection() {
         assert_eq!(
             buffer[(3, y)].fg,
             if active {
-                menu::SELECTED
+                menu::selected()
             } else {
                 Color::DarkGray
             }

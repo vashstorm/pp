@@ -17,13 +17,7 @@ use ratatui::{
 use ratatui_textarea::TextArea;
 
 use super::menu::{MenuEvent, MenuItem, SelectionMenu};
-use super::transcript_style::ACCENT;
-use super::transcript_style::ACTIVITY;
-use super::transcript_style::ASK_BG;
-use super::transcript_style::ASK_BORDER;
-use super::transcript_style::ASK_TAB_BG;
-use super::transcript_style::DIM;
-use super::transcript_style::REMOVED;
+use super::transcript_style::{accent, activity, ask_bg, ask_border, ask_tab_bg, dim, removed};
 use pp_core::interaction::AskAnswer;
 use pp_core::interaction::AskArgs;
 use pp_core::interaction::AskRequest;
@@ -77,7 +71,7 @@ impl QuestionState {
             .filter(|index| *index < question.options.len())
             .unwrap_or(0);
         let menu =
-            SelectionMenu::new(menu_items(question, &[], false), initial).with_accent(ACCENT);
+            SelectionMenu::new(menu_items(question, &[], false), initial).with_accent(accent());
         Self {
             selected: Vec::new(),
             custom: String::new(),
@@ -537,7 +531,7 @@ mod tests {
                     .filter(|&x| x == 0 || Span::raw(buffer[(x - 1, row)].symbol()).width() <= 1);
                 let highlighted: String = columns
                     .clone()
-                    .filter(|&x| buffer[(x, row)].bg == ASK_TAB_BG)
+                    .filter(|&x| buffer[(x, row)].bg == ask_tab_bg())
                     .map(|x| buffer[(x, row)].symbol())
                     .collect();
                 assert_eq!(
@@ -547,9 +541,9 @@ mod tests {
                 );
                 for x in 2..width.saturating_sub(2) {
                     let cell = &buffer[(x, row)];
-                    assert_ne!(cell.bg, ACCENT, "页签不应使用亮黄色背景");
-                    if cell.bg == ASK_TAB_BG {
-                        assert_eq!(cell.fg, ACTIVITY);
+                    assert_ne!(cell.bg, accent(), "页签不应使用亮黄色背景");
+                    if cell.bg == ask_tab_bg() {
+                        assert_eq!(cell.fg, activity());
                         assert!(!cell.modifier.contains(Modifier::BOLD));
                     }
                 }

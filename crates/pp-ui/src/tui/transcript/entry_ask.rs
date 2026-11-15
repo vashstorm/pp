@@ -57,7 +57,7 @@ impl AskBlock {
                         question.question
                     ),
                     Style::default()
-                        .fg(palette::ACCENT)
+                        .fg(palette::accent())
                         .add_modifier(Modifier::BOLD),
                 ),
                 width,
@@ -80,7 +80,7 @@ impl AskBlock {
                         if selected {
                             Style::default()
                         } else {
-                            Style::default().fg(palette::MUTED)
+                            Style::default().fg(palette::muted())
                         },
                     ),
                     width,
@@ -94,7 +94,7 @@ impl AskBlock {
                     rows.extend(wrap_block(
                         block_line(
                             format!("  {description}"),
-                            Style::default().fg(palette::MUTED),
+                            Style::default().fg(palette::muted()),
                         ),
                         width,
                         "  ",
@@ -119,7 +119,7 @@ impl AskBlock {
                 }
                 if answer.selected_options.is_empty() && answer.custom_input.is_none() {
                     rows.extend(wrap_block(
-                        block_line("No options selected", Style::default().fg(palette::MUTED)),
+                        block_line("No options selected", Style::default().fg(palette::muted())),
                         width,
                         "",
                     ));

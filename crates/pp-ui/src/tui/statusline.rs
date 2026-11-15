@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use pp_config::config::ModelChoice;
+use pp_config::config::{IconMode, ModelChoice};
 use pp_core::context::ContextUsage;
 use pp_core::model::ThinkLevel;
 use ratatui::{
@@ -16,7 +16,7 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::transcript_style as palette;
+use super::{themes, transcript_style as palette};
 
 mod metric;
 mod speed;
@@ -28,45 +28,166 @@ pub(super) use speed::TokenSpeed;
 pub(super) use subagent::{SubagentUsage, subagent_metrics, subagent_status};
 pub(super) use workspace::{StatusContext, WorkspaceStatus, workdir_label};
 
-pub(super) const ACCENT: Color = Color::Rgb(127, 166, 106);
+pub(super) fn accent() -> Color {
+    themes::palette().status_accent
+}
 // Shell 模式：草稿以 `!` 开头时输入框上下边框的颜色，区分于普通输入。
-pub(super) const SHELL_MODE: Color = Color::Rgb(255, 121, 198);
+pub(super) fn shell_mode() -> Color {
+    themes::palette().shell_mode
+}
 // 主输入框指标行背景的权威取值：主输入框与子 Agent 详情共用同一深色底。
-pub(super) const INPUT_STATUS_BG: Color = Color::Rgb(26, 27, 38);
+pub(super) fn input_status_bg() -> Color {
+    themes::palette().input_status_bg
+}
 // Plan 模式标签：与 transcript 高亮一致的琥珀色。
-const PLAN_MODE: Color = Color::Rgb(254, 188, 56);
+fn plan_mode() -> Color {
+    themes::palette().plan_mode
+}
 // 模式标签之外仍需可容纳的最小字段空间（图标+至少一个字符）。
 const MIN_AFTER_MODE: usize = FIELD_ICON_WIDTH + 1;
-const MODEL: Color = Color::Rgb(223, 167, 209);
-const DIRECTORY: Color = Color::Rgb(36, 174, 181);
-const GIT: Color = Color::Rgb(204, 167, 72);
-const SPEED: Color = Color::Rgb(255, 95, 162);
-const SUBAGENTS: Color = Color::Rgb(254, 188, 56);
-const INPUT: Color = Color::Rgb(125, 207, 255);
-const OUTPUT: Color = Color::Rgb(158, 206, 106);
-const CACHE_READ: Color = Color::Rgb(187, 154, 247);
-const CACHE_WRITE: Color = Color::Rgb(255, 158, 100);
-// 与 omp 的 Nerd Font 图标一致；图标后保留一列空白，容纳字形右侧伸展。
-// Paper Plane 的首字母与应用名 pp 对应。
-const APP_ICON: &str = "\u{f1d8}";
-const MODEL_ICON: &str = "\u{ec19}";
-const PLAN_ICON: &str = "\u{f0132}";
-const DIRECTORY_ICON: &str = "\u{f07c}";
-const GIT_ICON: &str = "\u{f126}";
-const SUBAGENT_ONE_ICON: &str = "\u{f007}";
-const SUBAGENT_TWO_ICON: &str = "\u{f000e}";
-const SUBAGENT_GROUP_ICON: &str = "\u{f0c0}";
-// 速度图标按 tok/s 分三档；没有速率数据时使用低速档。
-const SPEED_SLOW_ICON: &str = "\u{f0f86}";
-const SPEED_MEDIUM_ICON: &str = "\u{f0f85}";
-const SPEED_FAST_ICON: &str = "\u{f04c5}";
-const IO_ICON: &str = "\u{f04e2}";
-const CACHE_ICON: &str = "\u{f01bc}";
-const TITLE_ICON: &str = "\u{f09a9}";
-const CONTEXT_ICON: &str = "\u{e62a}";
+fn model_color() -> Color {
+    themes::palette().status_model
+}
+fn directory_color() -> Color {
+    themes::palette().status_directory
+}
+fn git_color() -> Color {
+    themes::palette().status_git
+}
+fn speed_color() -> Color {
+    themes::palette().status_speed
+}
+fn subagents_color() -> Color {
+    themes::palette().status_subagents
+}
+fn input_color() -> Color {
+    themes::palette().status_input
+}
+fn output_color() -> Color {
+    themes::palette().status_output
+}
+fn cache_read_color() -> Color {
+    themes::palette().status_cache_read
+}
+fn cache_write_color() -> Color {
+    themes::palette().status_cache_write
+}
+fn context_color() -> Color {
+    themes::palette().status_context
+}
+fn cost_color() -> Color {
+    themes::palette().status_cost
+}
+fn muted_color() -> Color {
+    palette::muted()
+}
+fn timer_color() -> Color {
+    context_color()
+}
+
+pub(super) fn app_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f1d8}",
+        IconMode::Ascii => ">",
+    }
+}
+pub(super) fn model_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{ec19}",
+        IconMode::Ascii => "@",
+    }
+}
+fn plan_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f0132}",
+        IconMode::Ascii => "P",
+    }
+}
+pub(super) fn directory_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f07c}",
+        IconMode::Ascii => "/",
+    }
+}
+pub(super) fn git_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f126}",
+        IconMode::Ascii => "*",
+    }
+}
+fn subagent_one_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f007}",
+        IconMode::Ascii => "&",
+    }
+}
+fn subagent_two_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f000e}",
+        IconMode::Ascii => "&",
+    }
+}
+fn subagent_group_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f0c0}",
+        IconMode::Ascii => "G",
+    }
+}
+fn speed_slow_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f0f86}",
+        IconMode::Ascii => "~",
+    }
+}
+fn speed_medium_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f0f85}",
+        IconMode::Ascii => "=",
+    }
+}
+fn speed_fast_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f04c5}",
+        IconMode::Ascii => "^",
+    }
+}
+fn io_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f04e2}",
+        IconMode::Ascii => "%",
+    }
+}
+fn cache_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f01bc}",
+        IconMode::Ascii => "#",
+    }
+}
+fn title_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f09a9}",
+        IconMode::Ascii => "*",
+    }
+}
+fn context_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{e62a}",
+        IconMode::Ascii => "c",
+    }
+}
 #[cfg(test)]
-const COST_ICON: &str = "\u{f01c1}";
-const TIMER_ICON: &str = "\u{f051b}";
+fn cost_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f01c1}",
+        IconMode::Ascii => "$",
+    }
+}
+fn timer_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f051b}",
+        IconMode::Ascii => "t",
+    }
+}
 const ICON_WIDTH: usize = 2;
 // 分隔符与图标列在宽度预算中的固定开销。
 const SEPARATOR_WIDTH: usize = 3;
@@ -112,11 +233,14 @@ pub(super) fn status_line(
     context: &StatusContext,
     width: usize,
 ) -> Line<'static> {
+    let icons = themes::current_icons();
     let mode = mode.filter(|text| !text.is_empty());
     let mode_span = |text: &'static str| {
         Span::styled(
             text,
-            Style::default().fg(PLAN_MODE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(plan_mode())
+                .add_modifier(Modifier::BOLD),
         )
     };
     let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
@@ -129,7 +253,7 @@ pub(super) fn status_line(
         ThinkLevel::Max => "max",
     };
     // 思考级别统一使用 Nerd Font 图标（none 到 xhigh 为 Material Design 圆环，max 为
-    // Font Awesome 火苗），避免混用普通圆形字形导致宽度不一。
+    // Font Awesome 火苗），ASCII 模式使用阶梯字符。
     let think_icon = palette::think_icon(think_level);
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
     let think_width = Line::from(think).width();
@@ -173,13 +297,15 @@ pub(super) fn status_line(
                 // 4) 仍不足：仅显示模型前缀与模式；模式图标和标签优先保留。
                 let mut spans = vec![Span::styled(
                     compact(&model_display, width, false),
-                    Style::default().fg(MODEL).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(model_color())
+                        .add_modifier(Modifier::BOLD),
                 )];
                 if let Some(mode_text) = mode {
                     if width > 0 {
                         spans.push(separator());
                     }
-                    spans.push(icon(PLAN_ICON, PLAN_MODE));
+                    spans.push(icon(plan_icon(icons), plan_mode()));
                     spans.push(mode_span(mode_text));
                 }
                 return Line::from(spans);
@@ -189,33 +315,38 @@ pub(super) fn status_line(
         workdir_text = compact(&context.workdir, cwd_slot, true);
     }
 
-    let model_text_style = Style::default().fg(MODEL).add_modifier(Modifier::BOLD);
+    let model_text_style = Style::default()
+        .fg(model_color())
+        .add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::raw(" "),
         Span::styled(
-            APP_ICON,
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            app_icon(icons),
+            Style::default().fg(accent()).add_modifier(Modifier::BOLD),
         ),
     ];
     spans.push(separator());
-    spans.push(icon(MODEL_ICON, MODEL));
+    spans.push(icon(model_icon(icons), model_color()));
     spans.push(Span::styled(model_text, model_text_style));
     spans.push(separator());
     // off 表示显式发送 none，请求关闭思考。
-    spans.push(icon(think_icon, MODEL));
+    spans.push(icon(think_icon, model_color()));
     spans.push(Span::styled(think, model_text_style));
     if let Some(mode_text) = mode {
         spans.push(separator());
-        spans.push(icon(PLAN_ICON, PLAN_MODE));
+        spans.push(icon(plan_icon(icons), plan_mode()));
         spans.push(mode_span(mode_text));
     }
     spans.push(separator());
-    spans.push(icon(DIRECTORY_ICON, DIRECTORY));
-    spans.push(Span::styled(workdir_text, Style::default().fg(DIRECTORY)));
+    spans.push(icon(directory_icon(icons), directory_color()));
+    spans.push(Span::styled(
+        workdir_text,
+        Style::default().fg(directory_color()),
+    ));
     if let Some(git_text) = git_text {
         spans.push(separator());
-        spans.push(icon(GIT_ICON, GIT));
-        spans.push(Span::styled(git_text, Style::default().fg(GIT)));
+        spans.push(icon(git_icon(icons), git_color()));
+        spans.push(Span::styled(git_text, Style::default().fg(git_color())));
     }
     Line::from(spans)
 }

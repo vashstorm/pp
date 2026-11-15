@@ -52,11 +52,11 @@ pub(super) fn spans(
     changed: Option<&Range<usize>>,
 ) -> Vec<Span<'static>> {
     let color = match kind {
-        DiffLineKind::Added => palette::EDIT_ADDED,
-        DiffLineKind::Removed => palette::EDIT_REMOVED,
-        DiffLineKind::Context => palette::EDIT_TEXT,
+        DiffLineKind::Added => palette::edit_added(),
+        DiffLineKind::Removed => palette::edit_removed(),
+        DiffLineKind::Context => palette::edit_text(),
     };
-    let base = Style::default().fg(color).bg(palette::EDIT_BG);
+    let base = Style::default().fg(color).bg(palette::edit_bg());
     if kind != DiffLineKind::Context {
         let indent = text.len() - text.trim_start_matches([' ', '\t']).len();
         let mut spans = vec![Span::styled(
@@ -70,7 +70,7 @@ pub(super) fn spans(
             let start = indent + index;
             let highlighted = changed.is_some_and(|range| range.contains(&start));
             let style = if highlighted {
-                base.fg(palette::EDIT_BG).bg(color)
+                base.fg(palette::edit_bg()).bg(color)
             } else {
                 base
             };
@@ -115,7 +115,7 @@ pub(super) fn spans(
         let color = if text[start..].starts_with("//") || c == '#' {
             end = text.len();
             for _ in chars.by_ref() {}
-            palette::EDIT_META
+            palette::edit_meta()
         } else if c == '"' || (c == '\'' && extension != "rs") {
             let mut escaped = false;
             for (index, next) in chars.by_ref() {
@@ -125,7 +125,7 @@ pub(super) fn spans(
                 }
                 escaped = next == '\\' && !escaped;
             }
-            palette::EDIT_STRING
+            palette::edit_string()
         } else if c.is_alphanumeric() || c == '_' {
             while let Some(&(index, next)) = chars.peek() {
                 if !next.is_alphanumeric() && next != '_' {
@@ -185,18 +185,18 @@ pub(super) fn spans(
                     | "package"
                     | "func"
             ) {
-                palette::EDIT_KEYWORD
+                palette::edit_keyword()
             } else if c.is_ascii_digit() {
-                palette::EDIT_NUMBER
+                palette::edit_number()
             } else if c.is_uppercase() {
-                palette::EDIT_TYPE
+                palette::edit_type()
             } else {
-                palette::EDIT_TEXT
+                palette::edit_text()
             }
         } else if matches!(c, '=' | '&' | '|' | '<' | '>') {
-            palette::EDIT_KEYWORD
+            palette::edit_keyword()
         } else {
-            palette::EDIT_TEXT
+            palette::edit_text()
         };
         result.push(Span::styled(text[start..end].to_owned(), base.fg(color)));
     }
@@ -236,7 +236,7 @@ mod tests {
         assert!(
             result
                 .iter()
-                .any(|span| span.content == "新🌟" && span.style.bg == Some(palette::EDIT_ADDED))
+                .any(|span| span.content == "新🌟" && span.style.bg == Some(palette::edit_added()))
         );
         let endings = [
             line(DiffLineKind::Removed, "same\r\n"),

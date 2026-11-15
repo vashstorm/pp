@@ -175,16 +175,21 @@ impl Panel {
             ""
         };
         let color = if self.completed() {
-            palette::ADDED
+            palette::added()
         } else if self.preview() {
-            palette::CODE_BLOCK
+            palette::code_block()
         } else {
-            palette::ACCENT
+            palette::accent()
+        };
+        let done_prefix = if crate::tui::themes::is_ascii() {
+            "+ TODO"
+        } else {
+            "\u{f00c} TODO"
         };
         Line::from(vec![
             Span::styled(
                 if self.completed() {
-                    "\u{f00c} TODO"
+                    done_prefix
                 } else {
                     "TODO"
                 },
@@ -192,11 +197,11 @@ impl Panel {
                     .fg(if self.completed() {
                         color
                     } else {
-                        palette::ACCENT
+                        palette::accent()
                     })
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" · ", Style::default().fg(palette::DIM)),
+            Span::styled(" · ", Style::default().fg(palette::dim())),
             Span::styled(
                 format!("{closed}/{total}{status}"),
                 Style::default().fg(color),
@@ -228,7 +233,7 @@ impl Panel {
                 summary.spans.truncate(1);
                 if summary.width() + Span::raw(TOGGLE_HINT).width() + 3 > width {
                     return if Span::raw(TOGGLE_HINT).width() <= width {
-                        Line::styled(TOGGLE_HINT, Style::default().fg(palette::MUTED))
+                        Line::styled(TOGGLE_HINT, Style::default().fg(palette::muted()))
                     } else {
                         summary
                     };
@@ -238,10 +243,10 @@ impl Panel {
         };
         summary
             .spans
-            .push(Span::styled(" · ", Style::default().fg(palette::DIM)));
+            .push(Span::styled(" · ", Style::default().fg(palette::dim())));
         summary.spans.push(Span::styled(
             hint.to_owned(),
-            Style::default().fg(palette::MUTED),
+            Style::default().fg(palette::muted()),
         ));
         summary
     }
@@ -337,7 +342,7 @@ impl Panel {
             if headers && entering {
                 let mut header = Line::styled(
                     tool_display::todo_phase_prefix(width),
-                    Style::default().fg(palette::DIM),
+                    Style::default().fg(palette::dim()),
                 );
                 header
                     .spans
@@ -348,7 +353,7 @@ impl Panel {
             let last = next != Some(*index);
             let mut row = Line::styled(
                 tool_display::todo_task_prefix(width, last),
-                Style::default().fg(palette::DIM),
+                Style::default().fg(palette::dim()),
             );
             if width >= 6 {
                 row.spans.push(Span::styled(format!("{symbol} "), marker));
@@ -712,10 +717,10 @@ mod tests {
         // 第一行是阶段行，任务行内缩两列。
         assert_eq!(buffer[(3, 1)].symbol(), "I");
         assert_eq!(buffer[(6, 2)].symbol(), "[");
-        assert_eq!(buffer[(7, 2)].fg, palette::TODO_ACTIVE);
+        assert_eq!(buffer[(7, 2)].fg, palette::todo_active());
         assert_eq!(buffer[(6, 3)].symbol(), "[");
-        assert_eq!(buffer[(6, 3)].fg, palette::MUTED);
-        assert_eq!(buffer[(7, 3)].fg, palette::MUTED);
+        assert_eq!(buffer[(6, 3)].fg, palette::muted());
+        assert_eq!(buffer[(7, 3)].fg, palette::muted());
         assert!(buffer[(10, 2)].modifier.contains(Modifier::BOLD));
         panel.toggle();
         terminal
@@ -723,10 +728,10 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         for (y, symbol, marker, text) in [
-            (2, " ", palette::TODO_ACTIVE, palette::TODO_ACTIVE),
-            (3, " ", palette::MUTED, palette::MUTED),
-            (4, "!", palette::ACCENT, palette::ACCENT),
-            (5, "\u{f00c}", palette::ADDED, palette::ADDED),
+            (2, " ", palette::todo_active(), palette::todo_active()),
+            (3, " ", palette::muted(), palette::muted()),
+            (4, "!", palette::accent(), palette::accent()),
+            (5, "\u{f00c}", palette::added(), palette::added()),
         ] {
             assert_eq!(buffer[(6, y)].symbol(), "[");
             assert_eq!(buffer[(7, y)].symbol(), symbol);
@@ -743,15 +748,15 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(0, 0)].symbol(), "\u{f00c}");
-        assert_eq!(buffer[(7, 1)].fg, palette::ADDED);
-        assert_eq!(buffer[(0, 0)].fg, palette::ADDED);
+        assert_eq!(buffer[(7, 1)].fg, palette::added());
+        assert_eq!(buffer[(0, 0)].fg, palette::added());
         terminal
             .draw(|frame| panel.draw(frame, Rect::new(0, 0, 80, 4)))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(3, 1)].fg, palette::ADDED);
-        assert_eq!(buffer[(6, 2)].fg, palette::ADDED);
-        assert_eq!(buffer[(10, 2)].fg, palette::ADDED);
+        assert_eq!(buffer[(3, 1)].fg, palette::added());
+        assert_eq!(buffer[(6, 2)].fg, palette::added());
+        assert_eq!(buffer[(10, 2)].fg, palette::added());
     }
 
     #[test]

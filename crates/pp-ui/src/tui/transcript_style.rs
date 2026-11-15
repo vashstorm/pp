@@ -1,73 +1,186 @@
+use pp_config::config::IconMode;
 use pp_core::model::ThinkLevel;
 use ratatui::style::Color;
 
-pub(super) const ACCENT: Color = Color::Rgb(254, 188, 56);
-pub(super) const TEXT: Color = Color::Rgb(250, 250, 250);
-pub(super) const ACTIVITY: Color = Color::Rgb(190, 198, 212);
-pub(super) const MUTED: Color = Color::Rgb(119, 125, 136);
-pub(super) const DIM: Color = Color::Rgb(95, 102, 115);
-pub(super) const CODE: Color = Color::Rgb(229, 193, 255);
-pub(super) const CODE_BLOCK: Color = Color::Rgb(156, 220, 254);
-pub(super) const LINK: Color = Color::Rgb(0, 136, 250);
-pub(super) const ADDED: Color = Color::Rgb(137, 210, 129);
-// 按 OMP 参考截图取色，Markdown 语义色独立于工具和 diff 配色。
-pub(super) const MD_BG: Color = Color::Rgb(40, 42, 53);
-pub(super) const MD_TEXT: Color = Color::Rgb(248, 248, 243);
-pub(super) const MD_HEADING: Color = Color::Rgb(229, 229, 77);
-pub(super) const MD_CODE: Color = Color::Rgb(86, 185, 127);
-pub(super) const MD_STRONG: Color = Color::Rgb(174, 72, 182);
-pub(super) const MD_BULLET: Color = Color::Rgb(244, 191, 84);
-pub(super) const MD_BORDER: Color = MD_TEXT;
-pub(super) const TODO_ACTIVE: Color = Color::Rgb(255, 230, 109);
-pub(super) const ERROR_BORDER: Color = Color::Rgb(224, 108, 117);
-pub(super) const REMOVED: Color = Color::Rgb(252, 58, 75);
-// 工具共享中性底色与边框；主题色只用于名称、图标等少量标识。
-pub(super) const TOOL_BG: Color = Color::Rgb(22, 26, 31);
-pub(super) const TOOL_BORDER: Color = Color::Rgb(65, 72, 83);
-pub(super) const READ_TITLE: Color = Color::Rgb(145, 183, 218);
-pub(super) const SEARCH_TITLE: Color = Color::Rgb(131, 184, 172);
-pub(super) const GLOB_TITLE: Color = Color::Rgb(156, 185, 201);
-pub(super) const WRITE_TITLE: Color = Color::Rgb(165, 189, 143);
-pub(super) const SHELL_TITLE: Color = Color::Rgb(197, 187, 139);
-pub(super) const BASH_TITLE: Color = Color::Rgb(244, 191, 84);
-pub(super) const MCP_TITLE: Color = Color::Rgb(194, 158, 175);
-// MCP 卡片标题分段配色：`mcp` 前缀、服务名与工具名各用独立色相，避免整串名称连写。
-pub(super) const MCP_SERVER: Color = Color::Rgb(160, 196, 224);
-pub(super) const MCP_TOOL: Color = Color::Rgb(156, 220, 254);
-pub(super) const TOOL_PENDING_BG: Color = Color::Rgb(29, 33, 41);
-pub(super) const TOOL_SUCCESS_BG: Color = Color::Rgb(22, 26, 31);
-pub(super) const TOOL_ERROR_BG: Color = Color::Rgb(41, 29, 29);
-pub(super) const ASK_BG: Color = Color::Rgb(40, 42, 54);
-pub(super) const ASK_BORDER: Color = Color::Rgb(39, 135, 165);
-pub(super) const ASK_TAB_BG: Color = Color::Rgb(60, 63, 75);
-pub(super) const READ_BG: Color = TOOL_BG;
-pub(super) const READ_TEXT: Color = Color::Rgb(190, 190, 185);
-pub(super) const READ_SUMMARY_TITLE: Color = READ_TITLE;
-pub(super) const READ_SUMMARY_PATH: Color = ACCENT;
-pub(super) const READ_SUMMARY_META: Color = Color::Rgb(96, 102, 114);
-pub(super) const RG_BG: Color = TOOL_BG;
-pub(super) const RG_BORDER: Color = TOOL_BORDER;
-pub(super) const RG_TITLE: Color = Color::Rgb(156, 220, 254);
-pub(super) const RG_TEXT: Color = Color::Rgb(190, 198, 212);
-pub(super) const RG_META: Color = Color::Rgb(119, 125, 136);
-pub(super) const TOOL_COMMAND: Color = Color::Rgb(220, 226, 235);
-pub(super) const EDIT_BG: Color = TOOL_BG;
-pub(super) const EDIT_BORDER: Color = TOOL_BORDER;
-pub(super) const EDIT_TITLE: Color = Color::Rgb(244, 191, 84);
-pub(super) const EDIT_TEXT: Color = Color::Rgb(248, 248, 243);
-pub(super) const EDIT_META: Color = Color::Rgb(120, 125, 135);
-pub(super) const EDIT_ADDED: Color = Color::Rgb(153, 208, 137);
-pub(super) const EDIT_REMOVED: Color = Color::Rgb(232, 76, 82);
-pub(super) const EDIT_KEYWORD: Color = Color::Rgb(103, 154, 209);
-pub(super) const EDIT_TYPE: Color = Color::Rgb(170, 218, 250);
-pub(super) const EDIT_STRING: Color = Color::Rgb(197, 148, 124);
-pub(super) const EDIT_NUMBER: Color = Color::Rgb(220, 220, 175);
-// Markdown 代码块 syntect 语义高亮配色（VS Code Dark+ 风格）。
-pub(super) const SYNTAX_KEYWORD: Color = Color::Rgb(197, 134, 192);
-pub(super) const SYNTAX_COMMENT: Color = Color::Rgb(106, 153, 85);
-pub(super) const SYNTAX_FUNCTION: Color = Color::Rgb(220, 220, 170);
-pub(super) const SYNTAX_CONSTANT: Color = Color::Rgb(79, 193, 255);
-pub(super) const SYNTAX_TAG: Color = Color::Rgb(86, 156, 214);
+use super::themes;
+
+pub(super) fn accent() -> Color {
+    themes::palette().accent
+}
+pub(super) fn text() -> Color {
+    themes::palette().text
+}
+pub(super) fn activity() -> Color {
+    themes::palette().activity
+}
+pub(super) fn muted() -> Color {
+    themes::palette().muted
+}
+pub(super) fn dim() -> Color {
+    themes::palette().dim
+}
+pub(super) fn code() -> Color {
+    themes::palette().code
+}
+pub(super) fn code_block() -> Color {
+    themes::palette().code_block
+}
+pub(super) fn link() -> Color {
+    themes::palette().link
+}
+pub(super) fn added() -> Color {
+    themes::palette().added
+}
+pub(super) fn md_bg() -> Color {
+    themes::palette().md_bg
+}
+pub(super) fn md_text() -> Color {
+    themes::palette().md_text
+}
+pub(super) fn md_heading() -> Color {
+    themes::palette().md_heading
+}
+pub(super) fn md_code() -> Color {
+    themes::palette().md_code
+}
+pub(super) fn md_strong() -> Color {
+    themes::palette().md_strong
+}
+pub(super) fn md_bullet() -> Color {
+    themes::palette().md_bullet
+}
+pub(super) fn md_border() -> Color {
+    themes::palette().md_border
+}
+pub(super) fn todo_active() -> Color {
+    themes::palette().todo_active
+}
+pub(super) fn error_border() -> Color {
+    themes::palette().error_border
+}
+pub(super) fn removed() -> Color {
+    themes::palette().removed
+}
+pub(super) fn tool_bg() -> Color {
+    themes::palette().tool_bg
+}
+pub(super) fn tool_border() -> Color {
+    themes::palette().tool_border
+}
+#[cfg(test)]
+pub(super) fn search_title() -> Color {
+    themes::palette().search_title
+}
+#[cfg(test)]
+pub(super) fn shell_title() -> Color {
+    themes::palette().shell_title
+}
+pub(super) fn bash_title() -> Color {
+    themes::palette().bash_title
+}
+pub(super) fn mcp_title() -> Color {
+    themes::palette().mcp_title
+}
+pub(super) fn mcp_server() -> Color {
+    themes::palette().mcp_server
+}
+pub(super) fn mcp_tool() -> Color {
+    themes::palette().mcp_tool
+}
+pub(super) fn tool_pending_bg() -> Color {
+    themes::palette().tool_pending_bg
+}
+pub(super) fn tool_success_bg() -> Color {
+    themes::palette().tool_success_bg
+}
+pub(super) fn tool_error_bg() -> Color {
+    themes::palette().tool_error_bg
+}
+pub(super) fn ask_bg() -> Color {
+    themes::palette().ask_bg
+}
+pub(super) fn ask_border() -> Color {
+    themes::palette().ask_border
+}
+pub(super) fn ask_tab_bg() -> Color {
+    themes::palette().ask_tab_bg
+}
+pub(super) fn read_bg() -> Color {
+    themes::palette().tool_bg
+}
+pub(super) fn read_text() -> Color {
+    themes::palette().read_text
+}
+pub(super) fn read_summary_title() -> Color {
+    themes::palette().read_title
+}
+pub(super) fn read_summary_path() -> Color {
+    themes::palette().accent
+}
+pub(super) fn read_summary_meta() -> Color {
+    themes::palette().read_summary_meta
+}
+pub(super) fn rg_bg() -> Color {
+    themes::palette().tool_bg
+}
+pub(super) fn rg_border() -> Color {
+    themes::palette().tool_border
+}
+pub(super) fn rg_title() -> Color {
+    themes::palette().rg_title
+}
+pub(super) fn rg_text() -> Color {
+    themes::palette().rg_text
+}
+pub(super) fn rg_meta() -> Color {
+    themes::palette().rg_meta
+}
+pub(super) fn tool_command() -> Color {
+    themes::palette().tool_command
+}
+pub(super) fn edit_bg() -> Color {
+    themes::palette().tool_bg
+}
+pub(super) fn edit_border() -> Color {
+    themes::palette().tool_border
+}
+#[cfg(test)]
+pub(super) fn edit_title() -> Color {
+    themes::palette().edit_title
+}
+pub(super) fn edit_text() -> Color {
+    themes::palette().edit_text
+}
+pub(super) fn edit_meta() -> Color {
+    themes::palette().edit_meta
+}
+pub(super) fn edit_added() -> Color {
+    themes::palette().edit_added
+}
+pub(super) fn edit_removed() -> Color {
+    themes::palette().edit_removed
+}
+pub(super) fn edit_keyword() -> Color {
+    themes::palette().edit_keyword
+}
+pub(super) fn edit_type() -> Color {
+    themes::palette().edit_type
+}
+pub(super) fn edit_string() -> Color {
+    themes::palette().edit_string
+}
+pub(super) fn edit_number() -> Color {
+    themes::palette().edit_number
+}
+pub(super) fn syntax_keyword() -> Color {
+    themes::palette().syntax_keyword
+}
+pub(super) fn syntax_comment() -> Color {
+    themes::palette().syntax_comment
+}
+pub(super) fn syntax_function() -> Color {
+    themes::palette().syntax_function
+}
 
 #[cfg(test)]
 pub(super) const WAITING_CLOCK_FRAMES: [char; 12] = [
@@ -86,7 +199,7 @@ pub(super) const WAITING_CLOCK_FRAMES: [char; 12] = [
 ];
 
 pub(super) fn waiting_clock(milliseconds: u128) -> &'static str {
-    const FRAMES: [&str; 12] = [
+    const NERD_FRAMES: [&str; 12] = [
         "\u{f1456}",
         "\u{f144b}",
         "\u{f144c}",
@@ -100,41 +213,95 @@ pub(super) fn waiting_clock(milliseconds: u128) -> &'static str {
         "\u{f1454}",
         "\u{f1455}",
     ];
-    FRAMES[(milliseconds / 120 % FRAMES.len() as u128) as usize]
-}
-
-pub(super) fn tool_accent(name: &str) -> Color {
-    match name {
-        "read" => READ_TITLE,
-        "rg" | "plan_search" => SEARCH_TITLE,
-        "find" | "glob" | "plan_find" => GLOB_TITLE,
-        "edit" => EDIT_TITLE,
-        "write" => WRITE_TITLE,
-        "bash" | "bash_task" => SHELL_TITLE,
-        "ask" => Color::Rgb(140, 191, 195),
-        "todo" | "plan_submit" => Color::Rgb(168, 173, 208),
-        name if name.starts_with("mcp__") => MCP_TITLE,
-        _ => ACTIVITY,
+    const ASCII_FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+    if themes::is_ascii() {
+        ASCII_FRAMES[(milliseconds / 120 % ASCII_FRAMES.len() as u128) as usize]
+    } else {
+        NERD_FRAMES[(milliseconds / 120 % NERD_FRAMES.len() as u128) as usize]
     }
 }
 
-// 与底部状态栏一致，使用 Nerd Font 私用区单列字形；图标后保留一列空白。
-// rg 取 Font Awesome 放大镜（nf-fa-search，U+F002），其余为 Material Design 字形。
-pub(super) fn tool_icon(name: &str) -> &'static str {
+pub(super) fn tool_accent(name: &str) -> Color {
+    let p = themes::palette();
     match name {
-        "read" => "\u{f0219}",
-        "edit" => "\u{f03eb}",
-        "write" => "\u{f0193}",
-        "bash_task" => "\u{f08d6}",
-        "rg" => "\u{f002}",
-        "find" | "glob" => "\u{f024b}",
-        "ask" => "\u{f02d7}",
-        "plan_search" => "\u{f0232}",
-        "plan_find" => "\u{f018b}",
-        "plan_submit" => "\u{f012c}",
-        "todo" => "\u{f0756}",
-        name if name.starts_with("mcp__") => "\u{f06a5}",
-        _ => "\u{f1064}",
+        "read" => p.read_title,
+        "rg" | "plan_search" => p.search_title,
+        "find" | "glob" | "plan_find" => p.glob_title,
+        "edit" => p.edit_title,
+        "write" => p.write_title,
+        "bash" | "bash_task" => p.shell_title,
+        "ask" => p.ask_title,
+        "todo" | "plan_submit" => p.todo_title,
+        name if name.starts_with("mcp__") => p.mcp_title,
+        _ => p.activity,
+    }
+}
+
+// 与底部状态栏一致，默认使用 Nerd Font 私用区单列字形；ASCII 模式切换为可打印 ASCII 字符。
+// rg 取 Font Awesome 放大镜（nf-fa-search，U+F002），其余为 Material Design 字形。
+pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => match name {
+            "read" => "\u{f0219}",
+            "edit" => "\u{f03eb}",
+            "write" => "\u{f0193}",
+            "bash_task" => "\u{f08d6}",
+            "rg" => "\u{f002}",
+            "find" | "glob" => "\u{f024b}",
+            "ask" => "\u{f02d7}",
+            "plan_search" => "\u{f0232}",
+            "plan_find" => "\u{f018b}",
+            "plan_submit" => "\u{f012c}",
+            "todo" => "\u{f0756}",
+            name if name.starts_with("mcp__") => "\u{f06a5}",
+            _ => "\u{f1064}",
+        },
+        IconMode::Ascii => match name {
+            "read" => "R",
+            "edit" => "E",
+            "write" => "W",
+            "bash_task" => "&",
+            "rg" => "/",
+            "find" | "glob" => "*",
+            "ask" => "?",
+            "plan_search" => "/",
+            "plan_find" => "*",
+            "plan_submit" => "P",
+            "todo" => "#",
+            name if name.starts_with("mcp__") => "@",
+            _ => "$",
+        },
+    }
+}
+
+pub(super) fn tool_icon(name: &str) -> &'static str {
+    tool_icon_for(name, themes::current_icons())
+}
+
+pub(super) fn done_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f00c}",
+        IconMode::Ascii => "+",
+    }
+}
+
+pub(super) fn fail_icon(icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => "\u{f00d}",
+        IconMode::Ascii => "x",
+    }
+}
+
+pub(super) fn file_icon(path: &str, icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => {
+            if path.ends_with(".rs") {
+                "\u{f1617} "
+            } else {
+                "\u{f022e} "
+            }
+        }
+        IconMode::Ascii => "- ",
     }
 }
 
@@ -154,16 +321,28 @@ pub(super) fn mcp_label(name: &str) -> Option<String> {
     ))
 }
 
-// 思考级别统一使用 Nerd Font 图标，状态栏与角色面板共用同一组字形。
-// none 到 xhigh 为 Material Design 圆环阶梯；max 改用 Font Awesome 火苗（U+F06D 的
-// nf-fa-fire，单列实心火焰，与描边圆环阶梯形成最大对比）。
-pub(super) fn think_icon(level: ThinkLevel) -> &'static str {
-    match level {
-        ThinkLevel::None => "\u{f0766}",
-        ThinkLevel::Low => "\u{f0a9f}",
-        ThinkLevel::Medium => "\u{f0aa1}",
-        ThinkLevel::High => "\u{f0aa3}",
-        ThinkLevel::Xhigh => "\u{f0aa5}",
-        ThinkLevel::Max => "\u{f06d}",
+// 思考级别统一使用 Nerd Font 图标，状态栏与角色面板共用同一组字形；ASCII 模式使用阶梯字符。
+pub(super) fn think_icon_for(level: ThinkLevel, icons: IconMode) -> &'static str {
+    match icons {
+        IconMode::Nerd => match level {
+            ThinkLevel::None => "\u{f0766}",
+            ThinkLevel::Low => "\u{f0a9f}",
+            ThinkLevel::Medium => "\u{f0aa1}",
+            ThinkLevel::High => "\u{f0aa3}",
+            ThinkLevel::Xhigh => "\u{f0aa5}",
+            ThinkLevel::Max => "\u{f06d}",
+        },
+        IconMode::Ascii => match level {
+            ThinkLevel::None => ".",
+            ThinkLevel::Low => "1",
+            ThinkLevel::Medium => "2",
+            ThinkLevel::High => "3",
+            ThinkLevel::Xhigh => "4",
+            ThinkLevel::Max => "!",
+        },
     }
+}
+
+pub(super) fn think_icon(level: ThinkLevel) -> &'static str {
+    think_icon_for(level, themes::current_icons())
 }

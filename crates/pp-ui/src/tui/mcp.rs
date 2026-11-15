@@ -9,9 +9,17 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-const GOLD: Color = Color::Rgb(255, 190, 55);
-const MUTED: Color = Color::Rgb(125, 130, 145);
-const BORDER: Color = Color::Rgb(0, 175, 215);
+fn gold() -> Color {
+    super::themes::palette().menu_file_selected
+}
+
+fn muted() -> Color {
+    super::themes::palette().muted
+}
+
+fn border() -> Color {
+    super::themes::palette().panel_border
+}
 
 pub(super) struct Panel {
     lines: Vec<Line<'static>>,
@@ -37,14 +45,14 @@ impl Panel {
                 if path.is_none() || source != "Disabled" && path.as_ref() != Some(&entry.path) {
                     lines.push(Line::default());
                     lines.push(Line::from(vec![
-                        Span::styled(format!(" {source}"), Style::default().fg(GOLD)),
+                        Span::styled(format!(" {source}"), Style::default().fg(gold())),
                         Span::styled(
                             if source == "Disabled" {
                                 " (configured servers):".into()
                             } else {
                                 format!(" ({}):", entry.path.display())
                             },
-                            Style::default().fg(MUTED),
+                            Style::default().fg(muted()),
                         ),
                     ]));
                     path = Some(entry.path.clone());
@@ -55,12 +63,12 @@ impl Panel {
                     status if status.starts_with("failed") || status.starts_with("unsupported") => {
                         ("○", Color::Red)
                     }
-                    _ => ("○", MUTED),
+                    _ => ("○", muted()),
                 };
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("   {} ", pp_core::text::display_text(&entry.name)),
-                        Style::default().fg(GOLD),
+                        Style::default().fg(gold()),
                     ),
                     Span::styled(
                         format!("{icon} {}", entry.status),
@@ -153,8 +161,8 @@ impl Panel {
         frame.render_widget(Clear, area);
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(BORDER))
-            .title(Line::styled(self.title, Style::default().fg(GOLD)));
+            .border_style(Style::default().fg(border()))
+            .title(Line::styled(self.title, Style::default().fg(gold())));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.visible = usize::from(inner.height.saturating_sub(2));
@@ -181,7 +189,7 @@ impl Panel {
                     } else {
                         " Esc to close · ↑↓ / PgUp/PgDn scroll"
                     },
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ),
                 Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
             );
@@ -212,7 +220,7 @@ mod tests {
             .draw(|frame| panel.draw(frame, frame.area()))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert!(buffer.content.iter().any(|c| c.fg == BORDER));
+        assert!(buffer.content.iter().any(|c| c.fg == border()));
         assert!(buffer.content.iter().any(|c| c.fg == Color::Green));
         let page_down = Event::Key(crossterm::event::KeyEvent::new(
             KeyCode::PageDown,

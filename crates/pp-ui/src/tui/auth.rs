@@ -127,11 +127,25 @@ impl Drop for Worker {
     }
 }
 
-const GOLD: Color = Color::Rgb(255, 190, 50);
-const CYAN: Color = Color::Rgb(0, 170, 210);
-const GREEN: Color = Color::Rgb(132, 211, 125);
-const MUTED: Color = Color::Rgb(117, 124, 139);
-const BG: Color = Color::Rgb(39, 41, 54);
+fn gold() -> Color {
+    super::themes::palette().accent
+}
+
+fn cyan() -> Color {
+    super::themes::palette().panel_border
+}
+
+fn green() -> Color {
+    super::themes::palette().added
+}
+
+fn muted() -> Color {
+    super::themes::palette().muted
+}
+
+fn bg() -> Color {
+    super::themes::palette().panel_bg
+}
 
 pub(super) enum Action {
     None,
@@ -425,11 +439,11 @@ impl Panel {
         );
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(CYAN))
-            .style(Style::default().bg(BG).fg(Color::White))
+            .border_style(Style::default().fg(cyan()))
+            .style(Style::default().bg(bg()).fg(Color::White))
             .title(Line::styled(
                 format!(" {title} "),
-                Style::default().fg(GOLD),
+                Style::default().fg(gold()),
             ));
         let inner = block.inner(panel_area);
         frame.render_widget(block, panel_area);
@@ -470,20 +484,23 @@ impl Panel {
                     } else {
                         "Retry model discovery"
                     };
-                    let color = if chosen { GOLD } else { Color::White };
+                    let color = if chosen { gold() } else { Color::White };
                     let mut spans = vec![
-                        Span::styled(if chosen { "❯ " } else { "  " }, Style::default().fg(GOLD)),
+                        Span::styled(
+                            if chosen { "❯ " } else { "  " },
+                            Style::default().fg(gold()),
+                        ),
                         Span::styled(label, Style::default().fg(color)),
                     ];
                     if matches!(self.page, Page::List) && self.logged.contains(provider) {
-                        spans.push(Span::styled(" ● logged in", Style::default().fg(GREEN)));
+                        spans.push(Span::styled(" ● logged in", Style::default().fg(green())));
                         spans.push(Span::styled(
                             if provider.key_url().is_some() {
                                 " (api key)"
                             } else {
                                 " (login)"
                             },
-                            Style::default().fg(MUTED),
+                            Style::default().fg(muted()),
                         ));
                     }
                     frame.render_widget(Line::from(spans), row);
@@ -491,7 +508,7 @@ impl Panel {
                 }
                 if count == 0 {
                     frame.render_widget(
-                        Line::styled("No providers are logged in.", Style::default().fg(MUTED)),
+                        Line::styled("No providers are logged in.", Style::default().fg(muted())),
                         Rect { height: 1, ..body },
                     );
                 }
@@ -508,12 +525,16 @@ impl Panel {
                 self.url_area = Rect::new(body.x, body.y, body.width, url_height.min(footer));
                 frame.render_widget(
                     Paragraph::new(self.url.as_str())
-                        .style(Style::default().fg(GOLD).add_modifier(Modifier::UNDERLINED))
+                        .style(
+                            Style::default()
+                                .fg(gold())
+                                .add_modifier(Modifier::UNDERLINED),
+                        )
                         .wrap(Wrap { trim: false }),
                     self.url_area,
                 );
                 let mut lines = vec![
-                    Line::styled("Click URL or F2 to open", Style::default().fg(MUTED)),
+                    Line::styled("Click URL or F2 to open", Style::default().fg(muted())),
                     Line::default(),
                 ];
                 if matches!(self.page, Page::Key(_)) {
@@ -537,7 +558,7 @@ impl Panel {
                             } else {
                                 "e.g., sk-..."
                             },
-                            Style::default().fg(MUTED),
+                            Style::default().fg(muted()),
                         ),
                         Line::from(format!(
                             "> {}",
@@ -550,14 +571,14 @@ impl Panel {
                         )),
                         Line::styled(
                             "(Esc to cancel, Enter to submit)",
-                            Style::default().fg(MUTED),
+                            Style::default().fg(muted()),
                         ),
                     ]);
                 } else if !self.code.is_empty() {
                     lines.push(Line::from(format!("Verification code: {}", self.code)));
                     lines.push(Line::styled(
                         "Complete authorization in your browser.",
-                        Style::default().fg(GOLD),
+                        Style::default().fg(gold()),
                     ));
                 }
                 let top = body.y + url_height.min(footer);
@@ -591,7 +612,7 @@ impl Panel {
         };
         frame.render_widget(
             Paragraph::new(message)
-                .style(Style::default().fg(MUTED))
+                .style(Style::default().fg(muted()))
                 .wrap(Wrap { trim: false }),
             Rect::new(body.x, body.y + footer, body.width, body.height - footer),
         );

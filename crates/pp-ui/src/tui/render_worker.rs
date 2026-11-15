@@ -1,5 +1,6 @@
 //! 正文排版服务。队列按消息合并，UI 只读取已经完成的不可变结果。
 use super::transcript::{EntryLayout, LayoutContent, LayoutLine};
+use pp_config::config::{IconMode, Theme};
 use ratatui::{
     style::Style,
     text::{Line, Span},
@@ -83,6 +84,8 @@ struct Job {
     id: u64,
     epoch: u64,
     version: u64,
+    theme: Theme,
+    icons: IconMode,
     text: Arc<str>,
     width: u16,
     muted: bool,
@@ -93,6 +96,8 @@ struct Job {
 struct Rendered {
     epoch: u64,
     version: u64,
+    theme: Theme,
+    icons: IconMode,
     width: u16,
     source: Arc<str>,
     layout: Arc<EntryLayout>,
@@ -103,6 +108,8 @@ struct Rendered {
 struct CachedDocument {
     id: u64,
     epoch: u64,
+    theme: Theme,
+    icons: IconMode,
     source: Arc<str>,
     streaming: bool,
     markdown: super::markdown::MarkdownDocument,
@@ -151,15 +158,22 @@ impl Worker {
                             let _ = gate.release.recv_timeout(std::time::Duration::from_secs(5));
                         }
                     }
+                    super::themes::set_active(job.theme, job.icons);
                     super::markdown::highlight_context(job.id, job.epoch);
                     let render = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         let index = documents.iter().position(|document| document.id == job.id);
                         let mut document = index
                             .and_then(|i| documents.remove(i))
-                            .filter(|document| document.epoch == job.epoch)
+                            .filter(|document| {
+                                document.epoch == job.epoch
+                                    && document.theme == job.theme
+                                    && document.icons == job.icons
+                            })
                             .unwrap_or_else(|| CachedDocument {
                                 id: job.id,
                                 epoch: job.epoch,
+                                theme: job.theme,
+                                icons: job.icons,
                                 source: job.text.clone(),
                                 streaming: job.streaming,
                                 markdown: super::markdown::parse_streaming(
@@ -176,10 +190,9 @@ impl Worker {
                         }
                         let mut lines = document.markdown.layout_cached(job.width);
                         if job.muted {
+                            let muted_fg = super::themes::palette().welcome_muted;
                             for line in &mut lines {
-                                *line = std::mem::take(line).style(
-                                    Style::default().fg(ratatui::style::Color::Rgb(110, 117, 129)),
-                                );
+                                *line = std::mem::take(line).style(Style::default().fg(muted_fg));
                             }
                         }
                         let ends_with_table = document.markdown.ends_with_table();
@@ -204,6 +217,8 @@ impl Worker {
                         *result = Some(Rendered {
                             epoch: job.epoch,
                             version: job.version,
+                            theme: job.theme,
+                            icons: job.icons,
                             width: job.width,
                             source: job.text,
                             layout: Arc::new(prepared(lines, job.width)),
@@ -274,6 +289,8 @@ pub(super) struct Ticket {
     id: u64,
     epoch: u64,
     version: u64,
+    theme: Theme,
+    icons: IconMode,
     source: Arc<str>,
     revision: u64,
     snapshot_revision: u64,
@@ -286,10 +303,13 @@ pub(super) struct Ticket {
 }
 impl Default for Ticket {
     fn default() -> Self {
+        let (theme, icons) = super::themes::current();
         Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             epoch: 0,
             version: 0,
+            theme,
+            icons,
             source: Arc::from(""),
             revision: 1,
             snapshot_revision: 0,
@@ -333,6 +353,8 @@ impl Ticket {
         muted: bool,
         streaming: bool,
     ) -> Arc<EntryLayout> {
+        let (theme, icons) = super::themes::current();
+        let appearance_changed = self.theme != theme || self.icons != icons;
         let mode_changed = self.streaming != streaming;
         self.streaming = streaming;
         // 结束时把仍在预览的末行排入表格。正文已经完整排版时直接复用。
@@ -347,6 +369,7 @@ impl Ticket {
             || width != self.width
             || self.version == 0
             || needs_layout_for_mode
+            || appearance_changed
         {
             self.version += 1;
             if self.revision != self.snapshot_revision {
@@ -354,10 +377,12 @@ impl Ticket {
                 self.snapshot_revision = self.revision;
             }
             self.fallback = None;
-            if self.width != width {
+            if self.width != width || appearance_changed {
                 self.displayed = None;
             }
             self.width = width;
+            self.theme = theme;
+            self.icons = icons;
             self.exact = false;
             CURRENT.with(|current| {
                 if let Some(shared) = current.borrow().as_ref() {
@@ -366,6 +391,8 @@ impl Ticket {
                         id: self.id,
                         epoch: self.epoch,
                         version: self.version,
+                        theme,
+                        icons,
                         text: self.source.clone(),
                         width,
                         muted,
@@ -377,13 +404,12 @@ impl Ticket {
             });
         }
         let result = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(result) = result
+        if let Some(result) = result.as_ref().filter(|r| {
+            r.epoch == self.epoch && r.width == width && r.theme == theme && r.icons == icons
+        }) && self
+            .displayed
             .as_ref()
-            .filter(|r| r.epoch == self.epoch && r.width == width)
-            && self
-                .displayed
-                .as_ref()
-                .is_none_or(|old| result.version >= old.version)
+            .is_none_or(|old| result.version >= old.version)
         {
             if self
                 .displayed
@@ -493,7 +519,7 @@ fn prepared(lines: Vec<Line<'static>>, width: u16) -> EntryLayout {
 }
 fn text_style(muted: bool) -> Style {
     if muted {
-        Style::default().fg(ratatui::style::Color::Rgb(110, 117, 129))
+        Style::default().fg(super::themes::palette().welcome_muted)
     } else {
         Style::default()
     }
@@ -628,6 +654,8 @@ mod tests {
             *ticket.slot.lock().unwrap() = Some(Rendered {
                 epoch: ticket.epoch,
                 version: ticket.version,
+                theme: Theme::Default,
+                icons: IconMode::Nerd,
                 width: 4,
                 source: Arc::from(source),
                 layout: Arc::new(prepared(vec![Line::raw("ab")], 4)),
@@ -652,6 +680,8 @@ mod tests {
         let result = Rendered {
             epoch: 0,
             version: 1,
+            theme: Theme::Default,
+            icons: IconMode::Nerd,
             width: 80,
             source: Arc::from("**prefix**"),
             layout: Arc::new(prepared(vec![Line::raw("prefix")], 80)),
@@ -743,6 +773,8 @@ mod tests {
         *ticket.slot.lock().unwrap() = Some(Rendered {
             epoch: old_epoch,
             version: u64::MAX,
+            theme: Theme::Default,
+            icons: IconMode::Nerd,
             width: 80,
             source: Arc::from("old"),
             layout: Arc::new(prepared(vec![Line::raw("stale")], 80)),
@@ -758,6 +790,8 @@ mod tests {
         *ticket.slot.lock().unwrap() = Some(Rendered {
             epoch: ticket.epoch,
             version: ticket.version,
+            theme: Theme::Default,
+            icons: IconMode::Nerd,
             width: 80,
             source: Arc::from("new"),
             layout: Arc::new(prepared(vec![Line::raw("new")], 80)),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::tui::transcript_style::{EDIT_NUMBER, EDIT_STRING, SYNTAX_KEYWORD};
+use crate::tui::transcript_style::{edit_number, edit_string, syntax_keyword};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -39,11 +39,11 @@ fn span_fg(line: &Line<'_>, needle: &str) -> Option<Color> {
 fn heading_strips_marker_and_uses_yellow_bold() {
     let ls = layout("# Title", 40);
     assert_eq!(texts(&ls), vec!["Title"]);
-    assert_eq!(fg(&ls[0], 0), Some(MD_HEADING));
+    assert_eq!(fg(&ls[0], 0), Some(md_heading()));
     assert!(has_modifier(&ls[0], 0, Modifier::BOLD));
     let setext = layout("Title\n=====", 40);
     assert_eq!(texts(&setext), vec!["Title"]);
-    assert_eq!(fg(&setext[0], 0), Some(MD_HEADING));
+    assert_eq!(fg(&setext[0], 0), Some(md_heading()));
 }
 
 #[test]
@@ -87,11 +87,11 @@ fn inline_styles_use_modifiers_and_palette() {
         vec!["bold", " and ", "em", " and ", "gone", " and ", "code"]
     );
     assert!(has_modifier(&ls[0], 0, Modifier::BOLD));
-    assert_eq!(fg(&ls[0], 0), Some(MD_STRONG));
+    assert_eq!(fg(&ls[0], 0), Some(md_strong()));
     assert!(has_modifier(&ls[0], 2, Modifier::ITALIC));
     assert!(has_modifier(&ls[0], 4, Modifier::CROSSED_OUT));
     // 行内代码为绿色，粗体为紫色，两者分别突出。
-    assert_eq!(fg(&ls[0], 6), Some(MD_CODE));
+    assert_eq!(fg(&ls[0], 6), Some(md_code()));
     assert_eq!(fg(&ls[0], 1), None);
 }
 
@@ -100,12 +100,12 @@ fn link_shows_label_and_dim_url_only_when_different() {
     let ls = layout("see [docs](http://e.com/x) now", 80);
     let contents: Vec<String> = ls[0].spans.iter().map(|s| s.content.to_string()).collect();
     assert_eq!(contents, vec!["see ", "docs", " (http://e.com/x)", " now"]);
-    assert_eq!(fg(&ls[0], 1), Some(LINK));
-    assert_eq!(fg(&ls[0], 2), Some(DIM));
+    assert_eq!(fg(&ls[0], 1), Some(link()));
+    assert_eq!(fg(&ls[0], 2), Some(dim()));
     let same = layout("[http://e.com](http://e.com)", 80);
     assert_eq!(texts(&same), vec!["http://e.com"]);
     assert_eq!(same[0].spans.len(), 1);
-    assert_eq!(fg(&same[0], 0), Some(LINK));
+    assert_eq!(fg(&same[0], 0), Some(link()));
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn image_renders_as_alt_and_url() {
     let ls = layout("![alt text](http://i.io/p.png)", 80);
     let contents: Vec<String> = ls[0].spans.iter().map(|s| s.content.to_string()).collect();
     assert_eq!(contents, vec!["Image: alt text", " (http://i.io/p.png)"]);
-    assert_eq!(fg(&ls[0], 1), Some(DIM));
+    assert_eq!(fg(&ls[0], 1), Some(dim()));
 }
 
 #[test]
@@ -124,22 +124,22 @@ fn closed_code_block_renders_frame_with_language() {
     assert!(text(&ls[0]).ends_with('─'));
     assert_eq!(Span::raw(text(&ls[0])).width(), 40);
     assert_eq!(text(&ls[1]), "let x = 1;");
-    assert_eq!(span_fg(&ls[1], "let"), Some(SYNTAX_KEYWORD));
-    assert_eq!(span_fg(&ls[1], "="), Some(SYNTAX_KEYWORD));
-    assert_eq!(span_fg(&ls[1], "1"), Some(EDIT_NUMBER));
-    assert_eq!(span_fg(&ls[1], " x "), Some(CODE_BLOCK));
+    assert_eq!(span_fg(&ls[1], "let"), Some(syntax_keyword()));
+    assert_eq!(span_fg(&ls[1], "="), Some(syntax_keyword()));
+    assert_eq!(span_fg(&ls[1], "1"), Some(edit_number()));
+    assert_eq!(span_fg(&ls[1], " x "), Some(code_block()));
     assert_eq!(text(&ls[2]), "─".repeat(40));
-    assert_eq!(fg(&ls[2], 0), Some(DIM));
+    assert_eq!(fg(&ls[2], 0), Some(dim()));
 }
 
 #[test]
 fn code_block_without_or_unknown_language_falls_back_to_plain_color() {
     let plain = layout("```\nlet x = 1;\n```\n", 40);
     assert_eq!(text(&plain[1]), "let x = 1;");
-    assert_eq!(span_fg(&plain[1], "let"), Some(CODE_BLOCK));
+    assert_eq!(span_fg(&plain[1], "let"), Some(code_block()));
     let unknown = layout("```notalang\nlet x = 1;\n```\n", 40);
     assert_eq!(text(&unknown[1]), "let x = 1;");
-    assert_eq!(span_fg(&unknown[1], "let"), Some(CODE_BLOCK));
+    assert_eq!(span_fg(&unknown[1], "let"), Some(code_block()));
 }
 
 #[test]
@@ -152,10 +152,10 @@ fn highlighted_code_wraps_and_keeps_span_colors() {
             .map(String::from)
             .collect::<Vec<_>>()
     );
-    assert_eq!(span_fg(&ls[1], "let"), Some(SYNTAX_KEYWORD));
-    assert_eq!(span_fg(&ls[1], " xy "), Some(CODE_BLOCK));
-    assert_eq!(span_fg(&ls[2], "1"), Some(EDIT_NUMBER));
-    assert_eq!(span_fg(&ls[2], ";"), Some(CODE_BLOCK));
+    assert_eq!(span_fg(&ls[1], "let"), Some(syntax_keyword()));
+    assert_eq!(span_fg(&ls[1], " xy "), Some(code_block()));
+    assert_eq!(span_fg(&ls[2], "1"), Some(edit_number()));
+    assert_eq!(span_fg(&ls[2], ";"), Some(code_block()));
     assert!(ls.iter().all(|line| line.width() <= 9));
 }
 
@@ -163,8 +163,8 @@ fn highlighted_code_wraps_and_keeps_span_colors() {
 fn highlighted_code_with_tabs_cjk_and_emoji_survives() {
     let ls = layout("```rust\n\tlet s = \"中文🙂\";\n```\n", 40);
     assert_eq!(text(&ls[1]), "    let s = \"中文🙂\";");
-    assert_eq!(span_fg(&ls[1], "let"), Some(SYNTAX_KEYWORD));
-    assert_eq!(span_fg(&ls[1], "中文🙂"), Some(EDIT_STRING));
+    assert_eq!(span_fg(&ls[1], "let"), Some(syntax_keyword()));
+    assert_eq!(span_fg(&ls[1], "中文🙂"), Some(edit_string()));
 }
 
 #[test]
@@ -206,7 +206,7 @@ fn oversized_code_block_falls_back_to_plain_color() {
     // 500 行内容 + 1 空行 + 顶/底框，全部回退纯色。
     assert_eq!(ls.len(), 503);
     for line in &ls[1..501] {
-        assert_eq!(span_fg(line, "let"), Some(CODE_BLOCK));
+        assert_eq!(span_fg(line, "let"), Some(code_block()));
     }
 }
 
@@ -217,7 +217,7 @@ fn unclosed_code_block_stays_open_for_streaming() {
     assert!(text(&ls[0]).starts_with("── rust "));
     assert_eq!(text(&ls[1]), "let x = 1;");
     // 流式未闭合块已到达内容即时着色，且没有闭合底线。
-    assert_eq!(span_fg(&ls[1], "let"), Some(SYNTAX_KEYWORD));
+    assert_eq!(span_fg(&ls[1], "let"), Some(syntax_keyword()));
     assert!(!text(&ls[1]).chars().all(|c| c == '─'));
     let empty_closed = layout("```\n```\n", 20);
     assert_eq!(empty_closed.len(), 2);
@@ -242,7 +242,7 @@ fn soft_break_joins_with_space_hard_break_splits() {
 fn unordered_list_marker_with_hanging_indent() {
     let ls = layout("- alpha beta gamma\n- next", 12);
     assert_eq!(texts(&ls), vec!["• alpha beta", "  gamma", "• next"]);
-    assert_eq!(fg(&ls[0], 0), Some(MD_BULLET));
+    assert_eq!(fg(&ls[0], 0), Some(md_bullet()));
     assert_eq!(ls[0].spans[0].content, "• ");
     assert_eq!(ls[1].spans[0].content, "  ");
 }
@@ -259,8 +259,8 @@ fn ordered_list_uses_source_numbers_and_hangs() {
 fn task_list_markers() {
     let ls = layout("- [x] done\n- [ ] todo", 20);
     assert_eq!(texts(&ls), vec!["☑ done", "☐ todo"]);
-    assert_eq!(fg(&ls[0], 0), Some(MD_BULLET));
-    assert_eq!(fg(&ls[1], 0), Some(MD_BULLET));
+    assert_eq!(fg(&ls[0], 0), Some(md_bullet()));
+    assert_eq!(fg(&ls[1], 0), Some(md_bullet()));
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn quote_bar_repeated_on_wrapped_continuations() {
     let ls = layout("> alpha beta gamma", 11);
     assert_eq!(texts(&ls), vec!["│ alpha", "│ beta", "│ gamma"]);
     for l in &ls {
-        assert_eq!(fg(l, 0), Some(MUTED));
+        assert_eq!(fg(l, 0), Some(muted()));
         assert_eq!(l.spans[0].content, "│ ");
     }
 }
@@ -404,10 +404,10 @@ fn tables_align_cells_without_changing_their_content() {
         ]
     );
     assert!(lines.iter().all(|line| line.width() == 13));
-    assert_eq!(span_fg(&lines[1], "a"), Some(MD_HEADING));
-    assert_eq!(span_fg(&lines[1], "b"), Some(MD_HEADING));
-    assert_eq!(span_fg(&lines[1], "│"), Some(MD_BORDER));
-    assert_eq!(span_fg(&lines[2], "┼"), Some(MD_BORDER));
+    assert_eq!(span_fg(&lines[1], "a"), Some(md_heading()));
+    assert_eq!(span_fg(&lines[1], "b"), Some(md_heading()));
+    assert_eq!(span_fg(&lines[1], "│"), Some(md_border()));
+    assert_eq!(span_fg(&lines[2], "┼"), Some(md_border()));
     assert_eq!(span_fg(&lines[3], "x"), None);
 }
 
@@ -433,12 +433,12 @@ fn tables_frame_every_row_and_keep_unicode_and_inline_styles_when_wrapping() {
     assert!(
         lines
             .iter()
-            .any(|line| span_fg(line, "推荐") == Some(MD_STRONG))
+            .any(|line| span_fg(line, "推荐") == Some(md_strong()))
     );
     assert!(
         lines
             .iter()
-            .any(|line| span_fg(line, "todo") == Some(MD_CODE))
+            .any(|line| span_fg(line, "todo") == Some(md_code()))
     );
 
     let header_only = texts(&layout("| A |\n|---|", 7));

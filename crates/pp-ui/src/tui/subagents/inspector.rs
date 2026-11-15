@@ -9,7 +9,7 @@ impl Panel {
             draw_line(
                 frame,
                 area,
-                Line::from(colored("Select an agent to inspect.", MUTED)),
+                Line::from(colored("Select an agent to inspect.", muted())),
             );
             return;
         };
@@ -27,12 +27,12 @@ impl Panel {
                 format!("{} ", status_icon(agent.status, self.clock)),
                 status_color(agent.status),
             ),
-            colored(projection::truncate(&agent.definition), ACTIVITY),
+            colored(projection::truncate(&agent.definition), activity()),
         ])];
         if agent.name != agent.definition {
             lines.push(Line::from(colored(
                 projection::truncate(&agent.name),
-                MUTED,
+                muted(),
             )));
         }
         let status = agent
@@ -42,16 +42,16 @@ impl Panel {
         let age = self.age(agent);
         lines.push(Line::from(vec![
             colored(status.to_owned(), status_color(agent.status)),
-            colored(format!(" · {} · active {age}", agent_time(agent)), DIM),
+            colored(format!(" · {} · active {age}", agent_time(agent)), dim()),
         ]));
         lines.push(model_line(agent, width));
         if let Some(change) = &agent.model_change {
-            lines.push(Line::from(colored(projection::truncate(change), MUTED)));
+            lines.push(Line::from(colored(projection::truncate(change), muted())));
         }
         section(&mut lines, "Task");
         lines.push(Line::from(colored(
             projection::truncate(agent.task.as_deref().unwrap_or("—")),
-            ACTIVITY,
+            activity(),
         )));
         section(&mut lines, "Current");
         lines.push(Line::from(colored(
@@ -62,10 +62,10 @@ impl Panel {
                     .or(agent.task.as_deref())
                     .unwrap_or("—"),
             ),
-            ACTIVITY,
+            activity(),
         )));
         section(&mut lines, "Usage");
-        lines.push(Line::from(colored(usage(agent, " · "), ACTIVITY)));
+        lines.push(Line::from(colored(usage(agent, " · "), activity())));
         if agent.run_status.as_deref() == Some("running")
             && let Some(context) = agent.context
             && let Some(window) = context.context_window.filter(|window| *window > 0)
@@ -73,15 +73,15 @@ impl Panel {
         {
             let filled = (percent.min(100) as usize + 5) / 10;
             lines.push(Line::from(vec![
-                colored("━".repeat(filled), ACCENT),
-                colored("─".repeat(10 - filled), DIM),
+                colored("━".repeat(filled), accent()),
+                colored("─".repeat(10 - filled), dim()),
                 colored(
                     format!(
                         " {}/{} {percent}%",
                         compact(context.estimated_tokens),
                         compact(window)
                     ),
-                    ACTIVITY,
+                    activity(),
                 ),
             ]));
         }
@@ -92,7 +92,7 @@ impl Panel {
             .map_or(agent.parent.as_str(), |parent| parent.name.as_str());
         lines.push(Line::from(colored(
             format!("Spawned by {}", projection::truncate(parent)),
-            ACTIVITY,
+            activity(),
         )));
         if let Some(registered) = agent
             .registered_ms
@@ -106,28 +106,28 @@ impl Panel {
                         .with_timezone(&chrono::Local)
                         .format("%Y-%m-%d %H:%M %:z")
                 ),
-                DIM,
+                dim(),
             )));
         }
-        lines.push(Line::from(colored(format!("Agent ID {}", agent.id), DIM)));
+        lines.push(Line::from(colored(format!("Agent ID {}", agent.id), dim())));
         section(&mut lines, "Changes");
         let workspace = match (agent.readonly, agent.isolated) {
             (true, _) => "Read-only agent · no workspace writes",
             (_, true) => "Isolated workspace · patches only",
             _ => "Shared workspace · per-agent LoC not attributable",
         };
-        lines.push(Line::from(colored(workspace, DIM)));
+        lines.push(Line::from(colored(workspace, dim())));
         if let Some((output, patches)) = agent.artifacts.split_first() {
             for patch in patches {
-                lines.push(Line::from(colored(projection::truncate(patch), MUTED)));
+                lines.push(Line::from(colored(projection::truncate(patch), muted())));
             }
-            lines.push(Line::from(colored("Output", ACTIVITY)));
-            lines.push(Line::from(colored(output.clone(), ACTIVITY)));
+            lines.push(Line::from(colored("Output", activity())));
+            lines.push(Line::from(colored(output.clone(), activity())));
         }
         if let Some(error) = &agent.last_error {
             lines.push(Line::from(colored(
                 format!("last error: {}", projection::truncate(error)),
-                REMOVED,
+                removed(),
             )));
         }
         section(&mut lines, "Recent activity");
@@ -137,7 +137,7 @@ impl Panel {
             .clamp(1, 20);
         let recent = self.projection.recent(&agent.id, limit);
         if recent.is_empty() {
-            lines.push(Line::from(colored("—", DIM)));
+            lines.push(Line::from(colored("—", dim())));
         }
         for row in recent {
             let symbol = if row.kind == Kind::Response {
@@ -146,10 +146,10 @@ impl Panel {
                 activity_icon(row.status, self.clock)
             };
             lines.push(Line::from(vec![
-                colored(format!("{} ", detail::format_clock(row.timestamp)), DIM),
+                colored(format!("{} ", detail::format_clock(row.timestamp)), dim()),
                 colored(format!("{symbol} "), row_color(row.status)),
-                colored(format!("{} ", projection::truncate(&row.title)), MUTED),
-                colored(projection::truncate(&row.summary), ACTIVITY),
+                colored(format!("{} ", projection::truncate(&row.title)), muted()),
+                colored(projection::truncate(&row.summary), activity()),
             ]));
         }
         lines
@@ -163,34 +163,50 @@ pub(super) fn model_line(agent: &AgentView, width: usize) -> Line<'static> {
     let role = agent.role.unwrap_or(&agent.definition);
     let prefix = colored(
         format!("{} · ", projection::truncate(role)),
-        if agent.role.is_some() { ACCENT } else { MUTED },
+        if agent.role.is_some() {
+            accent()
+        } else {
+            muted()
+        },
     );
     let suffix = agent
         .thinking
         .parse::<pp_core::model::ThinkLevel>()
         .ok()
-        .map(|level| colored(format!(" {} {}", think_icon(level), level.as_str()), EFFORT));
+        .map(|level| {
+            colored(
+                format!(" {} {}", think_icon(level), level.as_str()),
+                effort_color(),
+            )
+        });
     let suffix_width = suffix.as_ref().map_or(0, Span::width);
     let model_width = width.saturating_sub(prefix.width() + suffix_width);
     if model_width < 3 {
         return fit_line(
-            Line::from(colored(projection::truncate(&agent.model), MUTED)),
+            Line::from(colored(projection::truncate(&agent.model), muted())),
             width,
         );
     }
     let model =
         super::super::tool_display::clip(&projection::truncate(&agent.model), model_width, true);
-    let mut spans = vec![prefix, colored(model, MUTED)];
+    let mut spans = vec![prefix, colored(model, muted())];
     spans.extend(suffix);
     Line::from(spans)
 }
 
 pub(super) fn status_icon(status: AgentStatus, clock: u64) -> &'static str {
+    let icons = super::super::themes::current_icons();
     match status {
         AgentStatus::Running => waiting_clock(u128::from(clock)),
         // Material Design 实心圆，与运行中的时钟图标同字体族、同尺寸。
-        AgentStatus::Idle | AgentStatus::Parked => "\u{f0765}",
-        AgentStatus::Aborted => "\u{f00d}",
+        AgentStatus::Idle | AgentStatus::Parked => {
+            if super::super::themes::is_ascii() {
+                "*"
+            } else {
+                "\u{f0765}"
+            }
+        }
+        AgentStatus::Aborted => fail_icon(icons),
     }
 }
 

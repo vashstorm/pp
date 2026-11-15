@@ -236,11 +236,11 @@ fn plan_focus_highlights_only_the_active_frame_and_preserves_selection() {
     app.receive_event_for_test(WorkerEvent::PlanRead(Ok(plan_review_fixture(
         PlanStatus::Ready,
     ))));
-    let muted = transcript_style::MUTED;
-    let accent = transcript_style::ACCENT;
+    let muted = transcript_style::muted();
+    let accent = transcript_style::accent();
     for colors in [
         [muted, accent, muted],
-        [muted, muted, statusline::ACCENT],
+        [muted, muted, statusline::accent()],
         [accent, muted, muted],
         [muted, accent, muted],
     ] {

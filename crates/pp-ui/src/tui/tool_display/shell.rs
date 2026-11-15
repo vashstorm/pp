@@ -58,7 +58,7 @@ pub(in crate::tui) fn command(
             0,
             Line::styled(
                 format!("… {hidden} earlier lines (Ctrl + O to expand)"),
-                Style::default().fg(palette::MUTED),
+                Style::default().fg(palette::muted()),
             ),
         );
     }
@@ -83,9 +83,9 @@ fn layout_row(
             "  "
         },
         Style::default().fg(if failed {
-            palette::REMOVED
+            palette::removed()
         } else {
-            palette::ACCENT
+            palette::accent()
         }),
     )]);
     lead.spans.push(Span::raw(
@@ -94,7 +94,7 @@ fn layout_row(
     if !row.effects.is_empty() {
         lead.spans.push(Span::styled(
             format!("{} ", safe(&row.effects)),
-            Style::default().fg(palette::ACCENT),
+            Style::default().fg(palette::accent()),
         ));
     }
     let mut body = Line::default();
@@ -103,15 +103,15 @@ fn layout_row(
         let inactive = matches!(segment.state, ShellState::Pending | ShellState::Skipped)
             || (running && segment.state != ShellState::Running);
         let mut style = Style::default().fg(match segment.style {
-            ShellStyle::Text => palette::TOOL_COMMAND,
-            ShellStyle::Command => palette::SYNTAX_FUNCTION,
-            ShellStyle::Keyword => palette::SYNTAX_KEYWORD,
-            ShellStyle::Variable => palette::EDIT_TYPE,
-            ShellStyle::String => palette::EDIT_STRING,
-            ShellStyle::Number => palette::EDIT_NUMBER,
-            ShellStyle::Operator => palette::MUTED,
-            ShellStyle::Badge => palette::ACCENT,
-            ShellStyle::Comment => palette::SYNTAX_COMMENT,
+            ShellStyle::Text => palette::tool_command(),
+            ShellStyle::Command => palette::syntax_function(),
+            ShellStyle::Keyword => palette::syntax_keyword(),
+            ShellStyle::Variable => palette::edit_type(),
+            ShellStyle::String => palette::edit_string(),
+            ShellStyle::Number => palette::edit_number(),
+            ShellStyle::Operator => palette::muted(),
+            ShellStyle::Badge => palette::accent(),
+            ShellStyle::Comment => palette::syntax_comment(),
         });
         if inactive {
             style = style.add_modifier(Modifier::DIM);
@@ -123,7 +123,7 @@ fn layout_row(
             && failures.insert(node)
         {
             body.spans
-                .push(Span::styled("× ", Style::default().fg(palette::REMOVED)));
+                .push(Span::styled("× ", Style::default().fg(palette::removed())));
         }
         let text = safe(&segment.text);
         let highlighted = document.map(<[Span<'static>]>::to_vec).or_else(|| {
@@ -149,9 +149,9 @@ fn layout_row(
         body.spans.push(Span::styled(
             format!("  {}", safe(&row.meta)),
             Style::default().fg(if row.state == ShellState::Fail {
-                palette::REMOVED
+                palette::removed()
             } else {
-                palette::MUTED
+                palette::muted()
             }),
         ));
     }

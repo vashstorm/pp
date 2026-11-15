@@ -101,7 +101,7 @@ fn shell_display_tui_live_final_and_replay_share_command_layout() {
         .unwrap();
     assert_eq!(
         buffer[(column as u16, position as u16)].fg,
-        palette::REMOVED
+        palette::removed()
     );
 }
 
@@ -201,7 +201,7 @@ fn shell_display_tui_embedded_document_keeps_multiline_highlight_state() {
         .iter()
         .find(|span| span.content.contains("inside"))
         .unwrap();
-    assert_eq!(span.style.fg, Some(palette::EDIT_STRING));
+    assert_eq!(span.style.fg, Some(palette::edit_string()));
     assert!(
         span.style
             .add_modifier

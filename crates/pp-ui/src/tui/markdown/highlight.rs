@@ -8,6 +8,7 @@ use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
 
+use pp_config::config::Theme as UiTheme;
 use ratatui::style::{Color as RatatuiColor, Modifier, Style};
 use ratatui::text::Span;
 use syntect::easy::HighlightLines;
@@ -17,9 +18,10 @@ use syntect::highlighting::{
 use syntect::parsing::{ParseState, SyntaxSet};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::tui::themes;
+#[cfg(test)]
 use crate::tui::transcript_style::{
-    CODE_BLOCK, EDIT_NUMBER, EDIT_STRING, EDIT_TYPE, SYNTAX_COMMENT, SYNTAX_CONSTANT,
-    SYNTAX_FUNCTION, SYNTAX_KEYWORD, SYNTAX_TAG,
+    code_block, edit_number, edit_string, syntax_comment, syntax_keyword,
 };
 
 /// 行数与字节上限：超出直接回退纯色，保证流式 delta 与超大块成本有界。
@@ -33,45 +35,57 @@ fn syntaxes() -> &'static SyntaxSet {
     SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
-/// 程序化构造的主题：scope 前缀匹配 + 长 scope 优先，未匹配文本使用
-/// `settings.foreground`（即 `CODE_BLOCK`）。不解析 .tmTheme。
-fn theme() -> &'static Theme {
-    static THEME: OnceLock<Theme> = OnceLock::new();
-    THEME.get_or_init(|| {
-        fn item(scope: &str, fg: RatatuiColor, italic: bool) -> ThemeItem {
-            ThemeItem {
-                scope: scope.parse().expect("static scope selector"),
-                style: syntect::highlighting::StyleModifier {
-                    foreground: Some(syntect_color(fg)),
-                    background: None,
-                    font_style: italic.then_some(FontStyle::ITALIC),
-                },
-            }
-        }
-        Theme {
-            name: Some("pp-tui".to_string()),
-            author: None,
-            settings: ThemeSettings {
-                foreground: Some(syntect_color(CODE_BLOCK)),
-                ..ThemeSettings::default()
+fn build_theme(active: UiTheme) -> Theme {
+    fn item(scope: &str, fg: RatatuiColor, italic: bool) -> ThemeItem {
+        ThemeItem {
+            scope: scope.parse().expect("static scope selector"),
+            style: syntect::highlighting::StyleModifier {
+                foreground: Some(syntect_color(fg)),
+                background: None,
+                font_style: italic.then_some(FontStyle::ITALIC),
             },
-            scopes: vec![
-                item("keyword", SYNTAX_KEYWORD, false),
-                item("storage", SYNTAX_KEYWORD, false),
-                item("comment", SYNTAX_COMMENT, true),
-                item("string", EDIT_STRING, false),
-                item("constant.character.escape", EDIT_STRING, false),
-                item("constant.numeric", EDIT_NUMBER, false),
-                item("constant", SYNTAX_CONSTANT, false),
-                item("entity.name.function", SYNTAX_FUNCTION, false),
-                item("support.function", SYNTAX_FUNCTION, false),
-                item("entity.name.type", EDIT_TYPE, false),
-                item("support.class", EDIT_TYPE, false),
-                item("support.type", EDIT_TYPE, false),
-                item("entity.name.tag", SYNTAX_TAG, false),
-            ],
         }
-    })
+    }
+    let p = themes::palette_for(active);
+    Theme {
+        name: Some(format!("pp-tui-{}", active.as_str())),
+        author: None,
+        settings: ThemeSettings {
+            foreground: Some(syntect_color(p.code_block)),
+            ..ThemeSettings::default()
+        },
+        scopes: vec![
+            item("keyword", p.syntax_keyword, false),
+            item("storage", p.syntax_keyword, false),
+            item("comment", p.syntax_comment, true),
+            item("string", p.edit_string, false),
+            item("constant.character.escape", p.edit_string, false),
+            item("constant.numeric", p.edit_number, false),
+            item("constant", p.syntax_constant, false),
+            item("entity.name.function", p.syntax_function, false),
+            item("support.function", p.syntax_function, false),
+            item("entity.name.type", p.edit_type, false),
+            item("support.class", p.edit_type, false),
+            item("support.type", p.edit_type, false),
+            item("entity.name.tag", p.syntax_tag, false),
+        ],
+    }
+}
+
+/// 程序化构造的主题：scope 前缀匹配 + 长 scope 优先，未匹配文本使用
+/// `settings.foreground`（即 `code_block`）。不解析 .tmTheme。
+fn theme_for(active: UiTheme) -> &'static Theme {
+    static THEMES: [OnceLock<Theme>; 7] = [const { OnceLock::new() }; 7];
+    let index = match active {
+        UiTheme::Default => 0,
+        UiTheme::TokyoNight => 1,
+        UiTheme::Catppuccin => 2,
+        UiTheme::Dracula => 3,
+        UiTheme::Nord => 4,
+        UiTheme::Gruvbox => 5,
+        UiTheme::SolarizedLight => 6,
+    };
+    THEMES[index].get_or_init(|| build_theme(active))
 }
 
 fn syntect_color(color: RatatuiColor) -> SyntectColor {
@@ -121,6 +135,7 @@ pub(super) fn context(id: u64, epoch: u64) {
 }
 struct Cached {
     context: Option<(u64, u64, usize)>,
+    theme: UiTheme,
     lang: String,
     code: String,
     stable: usize,
@@ -190,11 +205,16 @@ pub(super) fn highlight(lang: Option<&str>, code: &str) -> Option<Arc<Highlighte
             Some((id, epoch, block))
         }
     });
+    let active_theme = themes::current_theme();
+    let theme = theme_for(active_theme);
     let cached = {
         let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
-        let exact = cache
-            .iter()
-            .position(|item| item.lang == lang && item.code == code && item.context == context);
+        let exact = cache.iter().position(|item| {
+            item.theme == active_theme
+                && item.lang == lang
+                && item.code == code
+                && item.context == context
+        });
         if let Some(index) = exact {
             let item = cache.remove(index)?;
             let result = item.result.clone();
@@ -202,7 +222,8 @@ pub(super) fn highlight(lang: Option<&str>, code: &str) -> Option<Arc<Highlighte
             return Some(result);
         }
         let index = cache.iter().rposition(|item| {
-            item.lang == lang
+            item.theme == active_theme
+                && item.lang == lang
                 && item.context == context
                 && item.stable > 0
                 && code.starts_with(&item.code[..item.stable])
@@ -211,11 +232,11 @@ pub(super) fn highlight(lang: Option<&str>, code: &str) -> Option<Arc<Highlighte
     };
     let (mut highlighter, mut lines, offset) = match cached {
         Some(item) => (
-            HighlightLines::from_state(theme(), item.state.0, item.state.1),
+            HighlightLines::from_state(theme, item.state.0, item.state.1),
             item.prefix,
             item.stable,
         ),
-        None => (HighlightLines::new(syntax, theme()), Vec::new(), 0),
+        None => (HighlightLines::new(syntax, theme), Vec::new(), 0),
     };
     let stable = code.rfind('\n').map_or(0, |index| index + 1);
     for line in code[offset..stable].split_terminator('\n') {
@@ -227,7 +248,7 @@ pub(super) fn highlight(lang: Option<&str>, code: &str) -> Option<Arc<Highlighte
     }
     let state = highlighter.state();
     let prefix = lines.clone();
-    let mut highlighter = HighlightLines::from_state(theme(), state.0.clone(), state.1.clone());
+    let mut highlighter = HighlightLines::from_state(theme, state.0.clone(), state.1.clone());
     let last = &code[stable..];
     let fed = format!("{last}\n");
     lines.push(grapheme_spans(
@@ -241,6 +262,7 @@ pub(super) fn highlight(lang: Option<&str>, code: &str) -> Option<Arc<Highlighte
     }
     cache.push_back(Cached {
         context,
+        theme: active_theme,
         lang: lang.into(),
         code: code.into(),
         stable,
@@ -274,9 +296,9 @@ mod tests {
             .map(|(index, (offset, ch))| {
                 let style = syntect::highlighting::Style {
                     foreground: syntect_color(if index % 2 == 0 {
-                        EDIT_STRING
+                        edit_string()
                     } else {
-                        EDIT_NUMBER
+                        edit_number()
                     }),
                     ..syntect::highlighting::Style::default()
                 };
@@ -284,7 +306,7 @@ mod tests {
             })
             .collect();
         let spans = grapheme_spans(line, regions);
-        assert_eq!(spans[0].style.fg, Some(EDIT_STRING));
+        assert_eq!(spans[0].style.fg, Some(edit_string()));
         let width = Span::raw(line).width() as u16;
         let area = Rect::new(0, 0, width, 1);
         let mut buffer = Buffer::empty(area);
@@ -309,12 +331,15 @@ mod tests {
         let code = "let x = 1; // note\nlet s = \"hi\";";
         let lines = highlight(Some("rust"), code).expect("rust resolves");
         assert_eq!(lines.len(), 2);
-        assert_eq!(span_fg_containing(&lines, "let"), Some(SYNTAX_KEYWORD));
-        assert_eq!(span_fg_containing(&lines, "1"), Some(EDIT_NUMBER));
-        assert_eq!(span_fg_containing(&lines, "// note"), Some(SYNTAX_COMMENT));
-        assert_eq!(span_fg_containing(&lines, "\"hi\""), Some(EDIT_STRING));
+        assert_eq!(span_fg_containing(&lines, "let"), Some(syntax_keyword()));
+        assert_eq!(span_fg_containing(&lines, "1"), Some(edit_number()));
+        assert_eq!(
+            span_fg_containing(&lines, "// note"),
+            Some(syntax_comment())
+        );
+        assert_eq!(span_fg_containing(&lines, "\"hi\""), Some(edit_string()));
         for needle in ["let", "1", "// note", "\"hi\""] {
-            assert_ne!(span_fg_containing(&lines, needle), Some(CODE_BLOCK));
+            assert_ne!(span_fg_containing(&lines, needle), Some(code_block()));
         }
         // 注释叠加 ITALIC。
         let comment = lines[0]
@@ -362,8 +387,10 @@ mod tests {
             context(99881, 1);
             let incremental = highlight(Some("rust"), text).unwrap();
             let syntaxes = syntaxes();
-            let mut highlighter =
-                HighlightLines::new(syntaxes.find_syntax_by_token("rust").unwrap(), theme());
+            let mut highlighter = HighlightLines::new(
+                syntaxes.find_syntax_by_token("rust").unwrap(),
+                theme_for(themes::current_theme()),
+            );
             let full: HighlightedLines = text
                 .split('\n')
                 .map(|line| {
@@ -383,7 +410,7 @@ mod tests {
         let lines = highlight(Some("txt"), "just words").expect("txt resolves");
         assert_eq!(lines.len(), 1);
         for span in &lines[0] {
-            assert_eq!(span.style.fg, Some(CODE_BLOCK));
+            assert_eq!(span.style.fg, Some(code_block()));
         }
     }
 }

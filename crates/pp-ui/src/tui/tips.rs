@@ -1,4 +1,4 @@
-use super::statusline::ACCENT;
+use super::statusline::accent;
 use crate::tips::{Section, Tip, key_width, row_width, sorted};
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -13,7 +13,7 @@ fn tip_spans(tip: &Tip, key_width: usize, aligned: bool) -> Vec<Span<'static>> {
             } else {
                 format!("{} ", tip.label)
             },
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::default().fg(accent()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(tip.description, Style::default().fg(Color::Gray)),
     ]
@@ -25,7 +25,7 @@ fn section_lines(lines: &mut Vec<Line<'static>>, section: &'static Section, widt
     lines.push(Line::default());
     lines.push(Line::styled(
         section.title,
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
     ));
     // 双列由实际数据宽度决定：正文宽度容得下两个按对齐键名渲染的条目再加四列间隔。
     let two_column = usize::from(width) >= row_width() * 2 + 4;
@@ -50,7 +50,7 @@ fn section_lines(lines: &mut Vec<Line<'static>>, section: &'static Section, widt
 }
 
 pub(super) fn lines(width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::styled("Tips:", Style::default().fg(ACCENT))];
+    let mut lines = vec![Line::styled("Tips:", Style::default().fg(accent()))];
     for section in crate::tips::SECTIONS {
         section_lines(&mut lines, section, width);
     }

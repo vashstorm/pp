@@ -1,5 +1,5 @@
 //! 图片只在后台解码、缩放与编码；主线程复用完整缓冲，避免消耗 Kitty 的首次传输状态。
-use super::attachment_edit::COLOR;
+use super::attachment_edit::color as attachment_color;
 use anyhow::{Context, Result};
 use base64::Engine;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -506,7 +506,7 @@ impl View {
             frame.render_widget(
                 Line::styled(
                     if self.first > 0 { "‹" } else { " " },
-                    Style::default().fg(COLOR),
+                    Style::default().fg(attachment_color()),
                 ),
                 Rect::new(area.x, y, 1, 1),
             );
@@ -517,7 +517,7 @@ impl View {
                     } else {
                         " "
                     },
-                    Style::default().fg(COLOR),
+                    Style::default().fg(attachment_color()),
                 ),
                 Rect::new(area.right() - 1, y, 1, 1),
             );
@@ -576,7 +576,7 @@ fn card_frame(frame: &mut Frame, area: Rect, image: &Image) {
     let dimensions = image.dimensions();
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(COLOR))
+        .border_style(Style::default().fg(attachment_color()))
         .title_top(Line::from(format!(" {} ", image.marker)).centered())
         .title_bottom(Line::from(format!(" {dimensions} ")).centered());
     frame.render_widget(block, area);

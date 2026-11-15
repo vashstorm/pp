@@ -1,10 +1,6 @@
 //! Temporary latest-task view; filesystem access and undo remain on the worker.
 use super::transcript::{diff_layout, wrap_block};
-use super::transcript_style::ACCENT;
-use super::transcript_style::ADDED;
-use super::transcript_style::ASK_BG;
-use super::transcript_style::MUTED;
-use super::transcript_style::REMOVED;
+use super::transcript_style::{accent, added, ask_bg, muted, removed};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use pp_core::events::FileDiff;
 use pp_core::text::display_text;
@@ -214,18 +210,18 @@ impl Panel {
         draw_line(
             frame,
             &mut area,
-            Line::styled("Latest task changes", Style::default().fg(ACCENT)),
+            Line::styled("Latest task changes", Style::default().fg(accent())),
         );
         draw_line(
             frame,
             &mut area,
-            Line::styled(self.subtitle.as_str(), Style::default().fg(MUTED)),
+            Line::styled(self.subtitle.as_str(), Style::default().fg(muted())),
         );
         if let Some(error) = &self.error {
             draw_line(
                 frame,
                 &mut area,
-                Line::styled(error.as_str(), Style::default().fg(REMOVED)),
+                Line::styled(error.as_str(), Style::default().fg(removed())),
             );
         }
         if self.loading || self.pending {
@@ -238,7 +234,7 @@ impl Panel {
                     } else {
                         "Loading changes…"
                     },
-                    Style::default().fg(ACCENT),
+                    Style::default().fg(accent()),
                 ),
             );
             return;
@@ -249,7 +245,7 @@ impl Panel {
                 &mut area,
                 Line::styled(
                     "No edit/write changes in the latest task.",
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ),
             );
             return;
@@ -266,7 +262,7 @@ impl Panel {
                 let target = take_line(&mut area);
                 let selected = index == self.selected;
                 let style = if selected {
-                    Style::default().bg(ASK_BG).add_modifier(Modifier::BOLD)
+                    Style::default().bg(ask_bg()).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 };
@@ -292,13 +288,13 @@ impl Panel {
         draw_line(
             frame,
             &mut area,
-            Line::styled("Net diff", Style::default().fg(ACCENT)),
+            Line::styled("Net diff", Style::default().fg(accent())),
         );
         if let Err(reason) = &self.files[self.selected].undo {
             draw_line(
                 frame,
                 &mut area,
-                Line::styled(display_text(reason), Style::default().fg(REMOVED)),
+                Line::styled(display_text(reason), Style::default().fg(removed())),
             );
         }
         self.detail_height = usize::from(area.height);
@@ -350,19 +346,19 @@ fn file_row(file: &ChangedFile) -> Line<'static> {
             }));
             spans.push(Span::styled(
                 format!("+{added}"),
-                Style::default().fg(ADDED),
+                Style::default().fg(super::transcript_style::added()),
             ));
             spans.push(Span::raw("/"));
             spans.push(Span::styled(
                 format!("-{removed}"),
-                Style::default().fg(REMOVED),
+                Style::default().fg(super::transcript_style::removed()),
             ));
         }
         FileDiff::Unavailable { reason } => {
             spans.push(Span::raw("  Modified  "));
             spans.push(Span::styled(
                 display_text(reason).into_owned(),
-                Style::default().fg(MUTED),
+                Style::default().fg(muted()),
             ));
         }
     }
@@ -372,7 +368,11 @@ fn file_row(file: &ChangedFile) -> Line<'static> {
         } else {
             "  Blocked"
         },
-        Style::default().fg(if file.undo.is_ok() { ADDED } else { REMOVED }),
+        Style::default().fg(if file.undo.is_ok() {
+            added()
+        } else {
+            removed()
+        }),
     ));
     Line::from(spans)
 }
@@ -384,7 +384,7 @@ fn draw_confirmation(frame: &mut Frame, mut area: Rect, confirmation: &mut Confi
     draw_line(
         frame,
         &mut area,
-        Line::styled("Undo file?", Style::default().fg(ACCENT)),
+        Line::styled("Undo file?", Style::default().fg(accent())),
     );
     if confirmation.width != Some(area.width) {
         let path = display_text(&confirmation.token.path.to_string_lossy()).into_owned();
@@ -413,11 +413,11 @@ fn draw_confirmation(frame: &mut Frame, mut area: Rect, confirmation: &mut Confi
             label,
             if selected {
                 Style::default()
-                    .fg(ACCENT)
-                    .bg(ASK_BG)
+                    .fg(accent())
+                    .bg(ask_bg())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(MUTED)
+                Style::default().fg(muted())
             },
         )
     };
@@ -673,13 +673,13 @@ mod tests {
             buffer
                 .content
                 .iter()
-                .any(|cell| cell.symbol() == "o" && cell.fg == REMOVED)
+                .any(|cell| cell.symbol() == "o" && cell.fg == removed())
         );
         assert!(
             buffer
                 .content
                 .iter()
-                .any(|cell| cell.symbol() == "d" && cell.fg == ADDED)
+                .any(|cell| cell.symbol() == "d" && cell.fg == added())
         );
         let layout = diff_layout(&panel.files[0].diff, 100, true);
         assert_eq!(panel.detail, layout);

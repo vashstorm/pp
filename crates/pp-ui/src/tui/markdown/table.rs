@@ -87,7 +87,7 @@ fn table_border(widths: &[usize], left: char, middle: char, right: char) -> Line
         border.push_str(&"─".repeat(width + 2));
     }
     border.push(right);
-    Line::from(Span::styled(border, Style::new().fg(MD_BORDER)))
+    Line::from(Span::styled(border, Style::new().fg(md_border())))
 }
 
 fn render_table_row(
@@ -106,7 +106,7 @@ fn render_table_row(
         .collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(0).max(1);
     for r in 0..height {
-        let mut spans = vec![Span::styled("│", Style::new().fg(MD_BORDER))];
+        let mut spans = vec![Span::styled("│", Style::new().fg(md_border()))];
         for (i, w) in widths.iter().enumerate() {
             spans.push(Span::raw(" "));
             let mut line = wrapped[i].get(r).cloned().unwrap_or_default();
@@ -117,7 +117,7 @@ fn render_table_row(
             );
             spans.append(&mut line);
             spans.push(Span::raw(" "));
-            spans.push(Span::styled("│", Style::new().fg(MD_BORDER)));
+            spans.push(Span::styled("│", Style::new().fg(md_border())));
         }
         out.push(Line::from(spans));
     }
@@ -171,7 +171,7 @@ fn table_vertical_fallback(tb: &TableBlock, n: usize, width: usize, out: &mut Ve
         for (ci, cell) in row.iter().enumerate().take(n) {
             let mut content = vec![Span::styled(
                 format!("{}: ", labels[ci]),
-                Style::new().fg(MD_HEADING),
+                Style::new().fg(md_heading()),
             )];
             let prefix_width = spans_width(&content);
             content.extend(cell.iter().cloned());

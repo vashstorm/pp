@@ -75,9 +75,9 @@ fn mcp_title_splits_prefix_server_and_tool_with_distinct_colors() {
         let column = u16::try_from(line[..start].chars().count()).expect("标题行宽度有限");
         buffer[(column, row)].fg
     };
-    assert_eq!(color_at("mcp codebase"), palette::MCP_TITLE);
-    assert_eq!(color_at("codebase-memory-mcp"), palette::MCP_SERVER);
-    assert_eq!(color_at("search_graph"), palette::MCP_TOOL);
+    assert_eq!(color_at("mcp codebase"), palette::mcp_title());
+    assert_eq!(color_at("codebase-memory-mcp"), palette::mcp_server());
+    assert_eq!(color_at("search_graph"), palette::mcp_tool());
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn read_status_clock_animates_groups_and_stops_after_completion() {
         });
         let complete = render(&mut transcript, 80, 20);
         assert_eq!(complete[(icon_x, icon_y)].symbol(), "\u{f00c}");
-        assert_eq!(complete[(icon_x, icon_y)].fg, palette::ADDED);
+        assert_eq!(complete[(icon_x, icon_y)].fg, palette::added());
         assert_eq!(complete[(icon_x + 1, icon_y)].symbol(), " ");
         assert_eq!(complete[(icon_x + 2, icon_y)].symbol(), "R");
         assert!(!screen(&complete).contains("Read (1)"));
@@ -293,11 +293,11 @@ fn read_filename_color_preserves_colons_spaces_and_parameter_color() {
     let start = rows[0].find(path).unwrap();
     let start = Line::raw(&rows[0][..start]).width();
     for column in start..start + path.len() {
-        assert_eq!(buffer[(column as u16, 0)].fg, palette::READ_SUMMARY_PATH);
+        assert_eq!(buffer[(column as u16, 0)].fg, palette::read_summary_path());
     }
     assert_eq!(
         buffer[((start + path.len()) as u16, 0)].fg,
-        palette::ACTIVITY
+        palette::activity()
     );
 }
 
@@ -336,19 +336,19 @@ fn read_summary_matches_reference_layout_colors_and_wrapping() {
         ]
     );
     assert_eq!(transcript.entries[1].layout.as_ref().unwrap().height, 5);
-    assert_eq!(buffer[(2, 2)].fg, palette::ADDED);
-    assert_eq!(buffer[(9, 2)].fg, palette::READ_SUMMARY_META);
+    assert_eq!(buffer[(2, 2)].fg, palette::added());
+    assert_eq!(buffer[(9, 2)].fg, palette::read_summary_meta());
     for row in 1..8 {
         for col in 0..80 {
             assert_eq!(buffer[(col, row)].bg, Color::Reset);
             assert!(!buffer[(col, row)].modifier.contains(Modifier::BOLD));
         }
         if (3..7).contains(&row) {
-            assert_eq!(buffer[(4, row)].fg, palette::READ_SUMMARY_META);
-            assert_eq!(buffer[(7, row)].fg, palette::READ_SUMMARY_PATH);
+            assert_eq!(buffer[(4, row)].fg, palette::read_summary_meta());
+            assert_eq!(buffer[(7, row)].fg, palette::read_summary_path());
         }
     }
-    assert_eq!(buffer[(19, 3)].fg, palette::ACTIVITY);
+    assert_eq!(buffer[(19, 3)].fg, palette::activity());
     let narrow = screen(&render(&mut transcript, 20, 20));
     assert!(narrow.contains("    │  n_workflow.rs"), "{narrow}");
     assert!(narrow.contains("    └─ src/agent.rs:"), "{narrow}");

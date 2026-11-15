@@ -113,6 +113,11 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         usage: "/plan-list",
         description: "Manage saved plans: preview, continue, execute, rename, delete (TUI)",
     },
+    CommandSpec {
+        name: "/themes",
+        usage: "/themes [nerd|ascii] [THEME]",
+        description: "Configure TUI icon style and color theme",
+    },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-task",
@@ -224,6 +229,12 @@ pub(crate) enum SkillCommand<'a> {
     Source(pp_config::skills::SkillSource, bool),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ThemeCommand {
+    pub(crate) theme: Option<pp_config::config::Theme>,
+    pub(crate) icons: Option<pp_config::config::IconMode>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
     Help,
@@ -238,6 +249,7 @@ pub(crate) enum Command<'a> {
     Roles,
     Subagents,
     PlanList,
+    Themes(ThemeCommand),
     #[cfg(debug_assertions)]
     MockTest(MockTest),
     Login,
@@ -391,6 +403,28 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
                     .then(|| argument.parse())
                     .transpose()?,
             )));
+        }
+        "/themes" | "/theme" => {
+            let mut icons = None;
+            let mut theme = None;
+            for word in argument.split_whitespace() {
+                if let Some(parsed) = pp_config::config::IconMode::parse(word) {
+                    ensure!(
+                        icons.replace(parsed).is_none(),
+                        "usage: /themes [nerd|ascii] [THEME]"
+                    );
+                } else if let Some(parsed) = pp_config::config::Theme::parse(word) {
+                    ensure!(
+                        theme.replace(parsed).is_none(),
+                        "usage: /themes [nerd|ascii] [THEME]"
+                    );
+                } else {
+                    bail!(
+                        "usage: /themes [nerd|ascii] [THEME] (icons: nerd, ascii; themes: default, tokyonight, catppuccin, dracula, nord, gruvbox, solarized-light)"
+                    );
+                }
+            }
+            return Ok(Some(Command::Themes(ThemeCommand { theme, icons })));
         }
         _ => {
             let file: Option<&FileCommand> = files.entries.iter().find(|file| file.name == name);
@@ -729,6 +763,42 @@ mod tests {
                 parse(name, &FileCommands::default()).unwrap(),
                 Some(Command::Help | Command::Tips | Command::PlanList | Command::Quit)
             ));
+        }
+    }
+
+    #[test]
+    fn slash_themes_parses_icons_and_theme_arguments() {
+        use pp_config::config::{IconMode, Theme};
+
+        let files = FileCommands::default();
+        assert_eq!(
+            parse("/themes", &files).unwrap(),
+            Some(Command::Themes(ThemeCommand {
+                theme: None,
+                icons: None,
+            }))
+        );
+        assert_eq!(
+            parse("/theme ascii tokyonight", &files).unwrap(),
+            Some(Command::Themes(ThemeCommand {
+                theme: Some(Theme::TokyoNight),
+                icons: Some(IconMode::Ascii),
+            }))
+        );
+        assert_eq!(
+            parse("/themes dracula nerd", &files).unwrap(),
+            Some(Command::Themes(ThemeCommand {
+                theme: Some(Theme::Dracula),
+                icons: Some(IconMode::Nerd),
+            }))
+        );
+        for invalid in [
+            "/themes unknown",
+            "/themes ascii nerd",
+            "/themes nord dracula",
+            "/themes ascii tokyonight extra",
+        ] {
+            assert!(parse(invalid, &files).is_err(), "{invalid}");
         }
     }
 

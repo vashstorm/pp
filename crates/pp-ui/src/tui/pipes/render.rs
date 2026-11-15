@@ -1,12 +1,7 @@
 //! `/pipes` 面板绘制：run／流列表、分隔行与有界正文。
 
 use crate::tui::transcript::wrap_block;
-use crate::tui::transcript_style::ACCENT;
-use crate::tui::transcript_style::ACTIVITY;
-use crate::tui::transcript_style::ADDED;
-use crate::tui::transcript_style::ASK_BG;
-use crate::tui::transcript_style::MUTED;
-use crate::tui::transcript_style::REMOVED;
+use crate::tui::transcript_style::{accent, activity, added, ask_bg, muted, removed};
 use pp_core::text::display_text;
 use ratatui::{
     Frame,
@@ -28,10 +23,10 @@ impl Panel {
             frame,
             &mut area,
             Line::from(vec![
-                Span::styled("Pipe streams", Style::default().fg(ACCENT)),
+                Span::styled("Pipe streams", Style::default().fg(accent())),
                 Span::styled(
                     "  temporary stage streams · memory only",
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ),
             ]),
         );
@@ -39,14 +34,14 @@ impl Panel {
             draw_line(
                 frame,
                 &mut area,
-                Line::styled(error.as_str(), Style::default().fg(REMOVED)),
+                Line::styled(error.as_str(), Style::default().fg(removed())),
             );
         }
         if self.loading {
             draw_line(
                 frame,
                 &mut area,
-                Line::styled("Loading pipe streams…", Style::default().fg(ACCENT)),
+                Line::styled("Loading pipe streams…", Style::default().fg(accent())),
             );
             return;
         }
@@ -63,7 +58,7 @@ impl Panel {
             draw_line(
                 frame,
                 &mut area,
-                Line::styled(message, Style::default().fg(MUTED)),
+                Line::styled(message, Style::default().fg(muted())),
             );
             return;
         }
@@ -80,22 +75,22 @@ impl Panel {
                 Line::from(vec![
                     Span::styled(
                         format!("run {}/{} ", self.selected_run + 1, self.runs.len()),
-                        Style::default().fg(MUTED),
+                        Style::default().fg(muted()),
                     ),
                     Span::styled(
                         display_text(&run.run_id).into_owned(),
-                        Style::default().fg(ACTIVITY),
+                        Style::default().fg(activity()),
                     ),
                     Span::styled(
                         format!("  {}", display_text(&run.owner)),
-                        Style::default().fg(MUTED),
+                        Style::default().fg(muted()),
                     ),
                     Span::styled(
                         format!("  {state}"),
                         Style::default().fg(if run.exit_code.is_some_and(|code| code != 0) {
-                            ACCENT
+                            accent()
                         } else {
-                            MUTED
+                            muted()
                         }),
                     ),
                 ]),
@@ -108,13 +103,13 @@ impl Panel {
                     run.nonzero_stages
                 ),
                 Style::default().fg(if run.nonzero_stages > 0 {
-                    ACCENT
+                    accent()
                 } else {
-                    MUTED
+                    muted()
                 }),
             )];
             if run.incomplete {
-                spans.push(Span::styled(" · incomplete", Style::default().fg(ACCENT)));
+                spans.push(Span::styled(" · incomplete", Style::default().fg(accent())));
             }
             if run.omitted_pipelines > 0 || run.omitted_stages > 0 {
                 spans.push(Span::styled(
@@ -122,19 +117,19 @@ impl Panel {
                         " · omitted {}/{}",
                         run.omitted_pipelines, run.omitted_stages
                     ),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ));
             }
             if run.untapped_edges > 0 {
                 spans.push(Span::styled(
                     format!(" · untapped {}", run.untapped_edges),
-                    Style::default().fg(ACCENT),
+                    Style::default().fg(accent()),
                 ));
             }
             if run.evicted_streams > 0 {
                 spans.push(Span::styled(
                     format!(" · evicted {}", run.evicted_streams),
-                    Style::default().fg(ACCENT),
+                    Style::default().fg(accent()),
                 ));
             }
             let stream_rows: Vec<Line<'static>> = run
@@ -165,7 +160,7 @@ impl Panel {
                 area,
                 Line::styled(
                     format!("capture error: {}", display_text(&error)),
-                    Style::default().fg(REMOVED),
+                    Style::default().fg(removed()),
                 ),
             );
         }
@@ -173,7 +168,7 @@ impl Panel {
             draw_line(
                 frame,
                 area,
-                Line::styled("No pipe streams in this run.", Style::default().fg(MUTED)),
+                Line::styled("No pipe streams in this run.", Style::default().fg(muted())),
             );
         } else if list_height > 0 {
             let start = self
@@ -186,7 +181,7 @@ impl Panel {
                 };
                 let selected = index == self.selected_stream;
                 let style = if selected {
-                    Style::default().bg(ASK_BG).add_modifier(Modifier::BOLD)
+                    Style::default().bg(ask_bg()).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 };
@@ -231,34 +226,34 @@ impl Panel {
                 "output · kept {retained_start}..{retained_end} / {total_bytes} bytes · {}",
                 if self.following { "follow" } else { "frozen" }
             ),
-            Style::default().fg(if self.following { ADDED } else { MUTED }),
+            Style::default().fg(if self.following { added() } else { muted() }),
         )];
         if !open {
-            spans.push(Span::styled(" · closed", Style::default().fg(MUTED)));
+            spans.push(Span::styled(" · closed", Style::default().fg(muted())));
         }
         if self.body.trimmed {
             spans.push(Span::styled(
                 " · earlier display trimmed",
-                Style::default().fg(MUTED),
+                Style::default().fg(muted()),
             ));
         }
         if retained_start > 0 {
             spans.push(Span::styled(
                 " · earlier output evicted",
-                Style::default().fg(ACCENT),
+                Style::default().fg(accent()),
             ));
         }
         if !self.following {
             if self.new_bytes > 0 {
                 spans.push(Span::styled(
                     format!(" · new +{} bytes", self.new_bytes),
-                    Style::default().fg(ACCENT),
+                    Style::default().fg(accent()),
                 ));
             }
             if self.evicted {
                 spans.push(Span::styled(
                     " · cached bytes overwritten",
-                    Style::default().fg(ACCENT),
+                    Style::default().fg(accent()),
                 ));
             }
         }
@@ -281,7 +276,7 @@ impl Panel {
             draw_line(
                 frame,
                 &mut area,
-                Line::styled(message, Style::default().fg(MUTED)),
+                Line::styled(message, Style::default().fg(muted())),
             );
             return;
         }
@@ -352,11 +347,11 @@ fn pipeline_rows(run: &RunView) -> Vec<Line<'static>> {
                 Some(parent) => format!("p{}←{} {}s ", pipeline.id, parent, pipeline.stage_count),
                 None => format!("p{} {}s ", pipeline.id, pipeline.stage_count),
             },
-            Style::default().fg(MUTED),
+            Style::default().fg(muted()),
         )];
         for (index, stage) in pipeline.stages.iter().take(4).enumerate() {
             if index > 0 {
-                spans.push(Span::styled(" → ", Style::default().fg(MUTED)));
+                spans.push(Span::styled(" → ", Style::default().fg(muted())));
             }
             let detail = match (stage.status, stage.signal) {
                 (_, Some(signal)) => format!("signal {signal}"),
@@ -366,13 +361,13 @@ fn pipeline_rows(run: &RunView) -> Vec<Line<'static>> {
             let nonzero = stage.status.is_some_and(|status| status != 0) || stage.signal.is_some();
             spans.push(Span::styled(
                 format!("{}={detail}", display_text(&stage.command)),
-                Style::default().fg(if nonzero { ACCENT } else { ACTIVITY }),
+                Style::default().fg(if nonzero { accent() } else { activity() }),
             ));
         }
         if pipeline.stages.len() > 4 {
             spans.push(Span::styled(
                 format!(" +{}", pipeline.stages.len() - 4),
-                Style::default().fg(MUTED),
+                Style::default().fg(muted()),
             ));
         }
         let status = pipeline
@@ -385,9 +380,9 @@ fn pipeline_rows(run: &RunView) -> Vec<Line<'static>> {
                 if pipeline.bang { " !" } else { "" }
             ),
             Style::default().fg(if pipeline.status.is_some_and(|status| status != 0) {
-                ACCENT
+                accent()
             } else {
-                MUTED
+                muted()
             }),
         ));
         rows.push(Line::from(spans));
@@ -395,7 +390,7 @@ fn pipeline_rows(run: &RunView) -> Vec<Line<'static>> {
     if run.pipelines.len() > 3 {
         rows.push(Line::styled(
             format!("+{} more pipelines", run.pipelines.len() - 3),
-            Style::default().fg(MUTED),
+            Style::default().fg(muted()),
         ));
     }
     rows
@@ -407,7 +402,7 @@ fn stream_row(stream: &StreamView, selected: bool) -> Line<'static> {
             "s{} p{} {}→{} ",
             stream.id, stream.pipeline, stream.producer_stage, stream.consumer_stage
         ),
-        Style::default().fg(MUTED),
+        Style::default().fg(muted()),
     )];
     spans.push(Span::styled(
         format!(
@@ -415,23 +410,23 @@ fn stream_row(stream: &StreamView, selected: bool) -> Line<'static> {
             display_text(&stream.producer),
             display_text(&stream.consumer)
         ),
-        Style::default().fg(if selected { ACTIVITY } else { MUTED }),
+        Style::default().fg(if selected { activity() } else { muted() }),
     ));
     spans.push(Span::styled(
         if stream.open { "  open" } else { "  closed" },
-        Style::default().fg(if stream.open { ADDED } else { MUTED }),
+        Style::default().fg(if stream.open { added() } else { muted() }),
     ));
     spans.push(Span::styled(
         format!(
             "  kept {}..{} / {}  rev {}",
             stream.retained_start, stream.retained_end, stream.total_bytes, stream.revision
         ),
-        Style::default().fg(MUTED),
+        Style::default().fg(muted()),
     ));
     if let Some(reason) = &stream.close_reason {
         spans.push(Span::styled(
             format!("  {}", display_text(reason)),
-            Style::default().fg(MUTED),
+            Style::default().fg(muted()),
         ));
     }
     Line::from(spans)

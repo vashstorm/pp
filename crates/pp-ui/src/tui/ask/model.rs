@@ -131,6 +131,14 @@ pub(super) fn menu_items(
 }
 
 pub(in crate::tui) fn selection_icon(multi: bool, selected: bool) -> &'static str {
+    if crate::tui::themes::is_ascii() {
+        return match (multi, selected) {
+            (true, true) => "[x]",
+            (true, false) => "[ ]",
+            (false, true) => "(o)",
+            (false, false) => "( )",
+        };
+    }
     // 使用同系列的大轮廓配对字形，避免选中后因字体回退而缩小。
     match (multi, selected) {
         (true, true) => "󰄲",
@@ -141,5 +149,5 @@ pub(in crate::tui) fn selection_icon(multi: bool, selected: bool) -> &'static st
 }
 
 pub(super) fn hint_line(hint: &'static str) -> Line<'static> {
-    Line::styled(hint, Style::default().fg(DIM))
+    Line::styled(hint, Style::default().fg(dim()))
 }

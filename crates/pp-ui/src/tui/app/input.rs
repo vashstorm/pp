@@ -17,6 +17,7 @@ impl App {
                 .mcp_panel
                 .as_ref()
                 .is_none_or(|panel| panel.allows_input())
+            && self.themes_panel.is_none()
             && self.skill_panel.is_none()
             && self.session_panel.is_none()
             && self.tree_panel.is_none()
@@ -157,6 +158,59 @@ impl App {
                 preferred = items.iter().position(|item| item.current).unwrap_or(0);
                 items
             }
+            Some(("/themes" | "/theme", argument)) => {
+                use pp_config::config::{IconMode, Theme};
+
+                let words: Vec<_> = argument.split_whitespace().collect();
+                let trailing_space = argument.chars().last().is_some_and(char::is_whitespace);
+                let (prefix, has_icon, has_theme) = if trailing_space || words.is_empty() {
+                    (
+                        "",
+                        words.iter().any(|word| IconMode::parse(word).is_some()),
+                        words.iter().any(|word| Theme::parse(word).is_some()),
+                    )
+                } else {
+                    let prefix = words.last().copied().unwrap_or("");
+                    let prior = &words[..words.len() - 1];
+                    (
+                        prefix,
+                        prior.iter().any(|word| IconMode::parse(word).is_some()),
+                        prior.iter().any(|word| Theme::parse(word).is_some()),
+                    )
+                };
+                let prefix_lower = prefix.to_ascii_lowercase();
+                let mut items = Vec::new();
+                if !has_icon {
+                    items.extend(
+                        IconMode::ALL
+                            .into_iter()
+                            .filter(|mode| mode.as_str().starts_with(&prefix_lower))
+                            .map(|mode| MenuItem {
+                                value: MenuAction::ThemeIcon(mode),
+                                label: mode.as_str().into(),
+                                description: format!("{} · {}", mode.label(), mode.description()),
+                                icon: None,
+                                current: mode == self.icons,
+                            }),
+                    );
+                }
+                if !has_theme {
+                    items.extend(
+                        Theme::ALL
+                            .into_iter()
+                            .filter(|theme| theme.as_str().starts_with(&prefix_lower))
+                            .map(|theme| MenuItem {
+                                value: MenuAction::ThemeColor(theme),
+                                label: theme.as_str().into(),
+                                description: format!("{} · {}", theme.label(), theme.description()),
+                                icon: None,
+                                current: theme == self.theme,
+                            }),
+                    );
+                }
+                preferred = items.iter().position(|item| item.current).unwrap_or(0);
+                items
+            }
             None if input.trim().starts_with('/') => {
                 let query = input.trim()[1..].to_lowercase();
                 let mut matches: Vec<_> =
@@ -239,7 +293,7 @@ impl App {
                 menu.items().first().map(|item| item.value),
                 Some(MenuAction::McpSubcommand(_) | MenuAction::McpServer(_))
             ) {
-                menu.with_accent(ratatui::style::Color::Rgb(255, 190, 55))
+                menu.with_accent(super::super::themes::palette().menu_file_selected)
             } else {
                 menu
             };
@@ -642,6 +696,7 @@ impl App {
             || self.queue_paused
             || self.mcp_panel.is_some()
             || self.ask_panel.is_some()
+            || self.themes_panel.is_some()
             || self.skill_panel.is_some()
             || self.skills_pending
             || self.session_panel.is_some()
@@ -781,6 +836,8 @@ fn completion_text(item: &MenuItem<MenuAction>) -> &str {
     match item.value {
         MenuAction::File(_) | MenuAction::FileDirectory(_) => &item.description,
         MenuAction::Effort(level) => level.as_str(),
+        MenuAction::ThemeIcon(mode) => mode.as_str(),
+        MenuAction::ThemeColor(theme) => theme.as_str(),
         _ => &item.label,
     }
 }

@@ -150,9 +150,9 @@ fn partial_string(raw: &str) -> Option<String> {
 /// 预览字段的行前缀与配色；未知键不参与预览。
 fn field_style(key: &str) -> Option<(&'static str, Color)> {
     match key {
-        "oldText" => Some(("-   │", palette::EDIT_REMOVED)),
-        "newText" => Some(("+   │", palette::EDIT_ADDED)),
-        "input" => Some(("", palette::ACTIVITY)),
+        "oldText" => Some(("-   │", palette::edit_removed())),
+        "newText" => Some(("+   │", palette::edit_added())),
+        "input" => Some(("", palette::activity())),
         _ => None,
     }
 }
@@ -160,7 +160,7 @@ fn field_style(key: &str) -> Option<(&'static str, Color)> {
 /// `input` 的 `+` 行按新增内容着色。
 fn line_style(key: &str, line: &str, color: Color) -> Color {
     if key == "input" && line.starts_with('+') {
-        palette::EDIT_ADDED
+        palette::edit_added()
     } else {
         color
     }
@@ -180,7 +180,7 @@ pub(super) fn layout(
     expanded: bool,
     truncated: bool,
 ) -> Vec<Line<'static>> {
-    let base = Style::default().bg(palette::EDIT_BG);
+    let base = Style::default().bg(palette::edit_bg());
     let fields = fields(raw);
     if tool == "write" {
         let content = fields.iter().find(|(key, _)| key == "content");
@@ -188,10 +188,10 @@ pub(super) fn layout(
             content.map_or("", |(_, content)| content.as_str()),
             width,
             expanded,
-            base.fg(palette::EDIT_ADDED),
+            base.fg(palette::edit_added()),
         );
     }
-    let hint = || Line::styled(LIMIT_HINT, base.fg(palette::MUTED));
+    let hint = || Line::styled(LIMIT_HINT, base.fg(palette::muted()));
     if expanded {
         // 展开：正向物化全部行，`Ctrl + O` 需要完整正文。
         let mut rows = Vec::new();
@@ -250,7 +250,7 @@ pub(super) fn layout(
     let folded = rows.len() > COLLAPSED_LINES;
     if folded {
         rows.drain(..rows.len() - COLLAPSED_LINES);
-        rows.insert(0, Line::styled(TAIL_HINT, base.fg(palette::MUTED)));
+        rows.insert(0, Line::styled(TAIL_HINT, base.fg(palette::muted())));
     }
     rows
 }

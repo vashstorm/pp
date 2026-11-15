@@ -214,7 +214,7 @@ impl Panel {
         if item == option_count {
             let mut editor = super::super::editor();
             editor.set_placeholder_text(OTHER_LABEL);
-            editor.set_style(Style::default().bg(ASK_BG));
+            editor.set_style(Style::default().bg(ask_bg()));
             insert_custom_text(&mut editor, &self.states[index].custom);
             self.editor = Some((index, editor));
             self.error = None;

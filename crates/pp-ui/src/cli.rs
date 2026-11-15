@@ -179,6 +179,12 @@ pub fn run_line_mode(
                 continue;
             }
             Some(commands::Command::Quit) => break,
+            Some(commands::Command::Themes(cmd)) => {
+                if let Err(error) = handle_cli_themes(cmd, &mut stderr) {
+                    writeln!(stderr, "error: {error:#}")?;
+                }
+                continue;
+            }
             Some(commands::Command::Mcp(action)) => {
                 if matches!(action, pp_runtime::mcp::Action::Help) {
                     writeln!(stderr, "{}", pp_runtime::mcp::help())?;
@@ -416,6 +422,7 @@ pub fn run_line_mode(
                 | commands::Command::Tips
                 | commands::Command::Stats(_)
                 | commands::Command::Quit
+                | commands::Command::Themes(_)
                 | commands::Command::Skills(_)
                 | commands::Command::Mcp(_)
                 | commands::Command::Resume
@@ -449,4 +456,42 @@ pub fn run_line_mode(
         None => Ok(()),
     };
     stop_cli_lsp(agent.as_ref().ok(), hint)
+}
+
+fn handle_cli_themes(cmd: commands::ThemeCommand, stderr: &mut io::Stderr) -> Result<()> {
+    let dir = pp_config::config::global_dir()?;
+    let path = dir.join("settings.yml");
+    let current = if path.exists() {
+        pp_config::config::read_settings(&path)?.tui
+    } else {
+        pp_config::config::TuiSettings::default()
+    };
+    if cmd.theme.is_none() && cmd.icons.is_none() {
+        writeln!(
+            stderr,
+            "Theme: {} ({}), Icons: {} ({})",
+            current.theme.label(),
+            current.theme.as_str(),
+            current.icons.label(),
+            current.icons.as_str()
+        )?;
+        writeln!(stderr, "Available icons: nerd, ascii")?;
+        writeln!(
+            stderr,
+            "Available themes: default, tokyonight, catppuccin, dracula, nord, gruvbox, solarized-light"
+        )?;
+        return Ok(());
+    }
+    let theme = cmd.theme.unwrap_or(current.theme);
+    let icons = cmd.icons.unwrap_or(current.icons);
+    pp_config::config::TuiSettings::save_appearance(&path, theme, icons)?;
+    writeln!(
+        stderr,
+        "Saved theme: {} ({}), icons: {} ({})",
+        theme.label(),
+        theme.as_str(),
+        icons.label(),
+        icons.as_str()
+    )?;
+    Ok(())
 }

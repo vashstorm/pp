@@ -37,7 +37,7 @@ pub(in crate::tui) fn diff_layout_styled(
     else {
         if let FileDiff::Unavailable { reason } = diff {
             return wrap_block(
-                block_line(reason.clone(), Style::default().fg(palette::MUTED)),
+                block_line(reason.clone(), Style::default().fg(palette::muted())),
                 width,
                 "",
             );
@@ -48,9 +48,12 @@ pub(in crate::tui) fn diff_layout_styled(
         rows.extend(wrap_block(
             Line::from(vec![
                 Span::raw(if *deleted { "Deleted · " } else { "" }),
-                Span::styled(format!("+{added}"), Style::default().fg(palette::ADDED)),
+                Span::styled(format!("+{added}"), Style::default().fg(palette::added())),
                 Span::raw(" "),
-                Span::styled(format!("-{removed}"), Style::default().fg(palette::REMOVED)),
+                Span::styled(
+                    format!("-{removed}"),
+                    Style::default().fg(palette::removed()),
+                ),
             ]),
             width,
             "",
@@ -68,7 +71,7 @@ pub(in crate::tui) fn diff_layout_styled(
                 } else {
                     "No content changes."
                 },
-                Style::default().fg(palette::MUTED),
+                Style::default().fg(palette::muted()),
             ),
             width,
             "",
@@ -92,7 +95,7 @@ pub(in crate::tui) fn diff_layout_styled(
             break;
         }
         if hunk_index > 0 {
-            rows.push(Line::styled("…", Style::default().fg(palette::DIM)));
+            rows.push(Line::styled("…", Style::default().fg(palette::dim())));
         }
         let highlights = edit_path.map(|_| crate::tui::edit_diff::highlights(&hunk.lines));
         // 连续替换段中的行尾变化可能仅靠正文无法区分。
@@ -146,22 +149,22 @@ pub(in crate::tui) fn diff_layout_styled(
                 DiffLineKind::Added => (
                     "+",
                     if edit_path.is_some() {
-                        palette::EDIT_ADDED
+                        palette::edit_added()
                     } else {
-                        palette::ADDED
+                        palette::added()
                     },
                     line.new_line,
                 ),
                 DiffLineKind::Removed => (
                     "-",
                     if edit_path.is_some() {
-                        palette::EDIT_REMOVED
+                        palette::edit_removed()
                     } else {
-                        palette::REMOVED
+                        palette::removed()
                     },
                     line.old_line,
                 ),
-                DiffLineKind::Context => (" ", palette::MUTED, line.new_line),
+                DiffLineKind::Context => (" ", palette::muted(), line.new_line),
             };
             let number = number.map(|number| number.to_string()).unwrap_or_default();
             let mut spans = if let Some(path) = edit_path {
@@ -169,11 +172,11 @@ pub(in crate::tui) fn diff_layout_styled(
                     format!("{mark}{number:>gutter$}│"),
                     Style::default()
                         .fg(if line.kind == DiffLineKind::Context {
-                            palette::EDIT_META
+                            palette::edit_meta()
                         } else {
                             color
                         })
-                        .bg(palette::EDIT_BG),
+                        .bg(palette::edit_bg()),
                 )];
                 spans.extend(crate::tui::edit_diff::spans(
                     text,
@@ -186,18 +189,18 @@ pub(in crate::tui) fn diff_layout_styled(
                 vec![
                     Span::styled(
                         format!("{number:>gutter$} {mark} "),
-                        Style::default().fg(palette::DIM),
+                        Style::default().fg(palette::dim()),
                     ),
                     Span::styled(text.to_owned(), Style::default().fg(color)),
                 ]
             };
             if text.starts_with('\u{feff}') {
-                spans.push(Span::styled("  BOM", Style::default().fg(palette::DIM)));
+                spans.push(Span::styled("  BOM", Style::default().fg(palette::dim())));
             }
             if eol_hints.contains(&index) {
                 spans.push(Span::styled(
                     format!("  {eol}"),
-                    Style::default().fg(palette::DIM),
+                    Style::default().fg(palette::dim()),
                 ));
             }
             rows.extend(wrap_block(Line::from(spans), width, &continuation));
@@ -205,7 +208,7 @@ pub(in crate::tui) fn diff_layout_styled(
                 rows.extend(wrap_block(
                     block_line(
                         "No newline at end of file",
-                        Style::default().fg(palette::DIM),
+                        Style::default().fg(palette::dim()),
                     ),
                     width,
                     &continuation,
@@ -230,7 +233,7 @@ pub(in crate::tui) fn diff_layout_styled(
                 usize::from(width),
                 true,
             ),
-            Style::default().fg(palette::DIM),
+            Style::default().fg(palette::dim()),
         ));
     }
     rows

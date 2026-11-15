@@ -190,13 +190,13 @@ impl<'a> Builder<'a> {
     fn inline_style(&self) -> Style {
         let mut st = Style::new();
         if self.heading {
-            st = st.fg(MD_HEADING).add_modifier(Modifier::BOLD);
+            st = st.fg(md_heading()).add_modifier(Modifier::BOLD);
         } else if self.table_head {
-            st = st.fg(MD_HEADING);
+            st = st.fg(md_heading());
         }
         if self.strong > 0 {
             st = st.add_modifier(Modifier::BOLD);
-            if let Some(fg) = self.emphasis_fg(MD_STRONG) {
+            if let Some(fg) = self.emphasis_fg(md_strong()) {
                 st = st.fg(fg);
             }
         }
@@ -207,7 +207,7 @@ impl<'a> Builder<'a> {
             st = st.add_modifier(Modifier::CROSSED_OUT);
         }
         if !self.links.is_empty() {
-            st = st.fg(LINK);
+            st = st.fg(link());
         }
         st
     }
@@ -224,7 +224,7 @@ impl<'a> Builder<'a> {
     /// 内嵌代码使用绿色，保留上下文的修饰符与标题色。
     fn code_style(&self) -> Style {
         let mut st = self.inline_style();
-        if let Some(fg) = self.emphasis_fg(MD_CODE) {
+        if let Some(fg) = self.emphasis_fg(md_code()) {
             st = st.fg(fg);
         }
         st
@@ -281,7 +281,7 @@ impl<'a> Builder<'a> {
         let mut spans = Vec::new();
         for (i, seg) in self.prefix_stack.iter().enumerate() {
             match seg {
-                PrefixSeg::Quote => spans.push(Span::styled("│ ", Style::new().fg(MUTED))),
+                PrefixSeg::Quote => spans.push(Span::styled("│ ", Style::new().fg(muted()))),
                 PrefixSeg::List => {
                     if Some(i) != last_list {
                         spans.push(Span::raw("  "));
@@ -390,9 +390,9 @@ impl<'a> Builder<'a> {
             Some(frame) if frame.ordered => {
                 let m = format!("{}. ", frame.next);
                 frame.next += 1;
-                Span::styled(m, Style::new().fg(MD_BULLET))
+                Span::styled(m, Style::new().fg(md_bullet()))
             }
-            _ => Span::styled("• ", Style::new().fg(MD_BULLET)),
+            _ => Span::styled("• ", Style::new().fg(md_bullet())),
         };
         self.marker = Some(marker);
         self.marker_used = false;
@@ -407,7 +407,7 @@ impl<'a> Builder<'a> {
 
     fn on_task_marker(&mut self, checked: bool) {
         let glyph = if checked { "☑ " } else { "☐ " };
-        self.marker = Some(Span::styled(glyph, Style::new().fg(MD_BULLET)));
+        self.marker = Some(Span::styled(glyph, Style::new().fg(md_bullet())));
     }
 
     fn start_code(&mut self, kind: CodeBlockKind<'_>, start: usize) {
@@ -455,7 +455,7 @@ impl<'a> Builder<'a> {
                             if line.is_empty() {
                                 Vec::new()
                             } else {
-                                vec![Span::styled(line, Style::new().fg(CODE_BLOCK))]
+                                vec![Span::styled(line, Style::new().fg(code_block()))]
                             }
                         })
                         .collect(),
@@ -557,7 +557,7 @@ impl<'a> Builder<'a> {
         }
         if !self.links.is_empty() {
             self.links.last_mut().unwrap().1.push_str(text);
-            let style = Style::new().fg(LINK);
+            let style = Style::new().fg(link());
             self.push_text(text, style);
             return;
         }
@@ -608,7 +608,7 @@ impl<'a> Builder<'a> {
             return;
         }
         if !dest.is_empty() && label.trim() != dest {
-            let style = Style::new().fg(DIM);
+            let style = Style::new().fg(dim());
             self.push_text(&format!(" ({})", dest), style);
         }
     }
@@ -631,7 +631,7 @@ impl<'a> Builder<'a> {
         let style = self.inline_style();
         self.push_text(&format!("Image: {}", alt), style);
         if !dest.is_empty() {
-            self.push_text(&format!(" ({})", dest), Style::new().fg(DIM));
+            self.push_text(&format!(" ({})", dest), Style::new().fg(dim()));
         }
     }
 

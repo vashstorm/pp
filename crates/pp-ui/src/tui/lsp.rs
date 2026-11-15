@@ -85,7 +85,7 @@ pub(super) fn body(block: &Block, action: &str, width: u16, expanded: bool) -> V
             content.extend(wrap_block(
                 block_line(
                     format!("… {hidden} more lines (Ctrl + O to expand)"),
-                    Style::default().fg(palette::DIM),
+                    Style::default().fg(palette::dim()),
                 ),
                 width,
                 "",
@@ -114,7 +114,7 @@ fn symbol_lines(content: &str, width: u16, expanded: bool) -> Vec<Line<'static>>
     } else {
         lines.len().min(CONTENT_PREVIEW_LINES)
     };
-    let style = Style::default().fg(palette::TEXT);
+    let style = Style::default().fg(palette::text());
     let mut rows = Vec::new();
     let mut clipped = false;
     for line in &lines[..shown] {
@@ -137,7 +137,7 @@ fn symbol_lines(content: &str, width: u16, expanded: bool) -> Vec<Line<'static>>
     };
     if let Some(hint) = hint {
         rows.extend(wrap_block(
-            block_line(hint, Style::default().fg(palette::DIM)),
+            block_line(hint, Style::default().fg(palette::dim())),
             width,
             "",
         ));
@@ -149,7 +149,10 @@ fn path_spans(path: &str, color: Color) -> Vec<Span<'static>> {
     let path = pp_core::text::display_text(path).into_owned();
     match path.rsplit_once('/') {
         Some((directory, file)) => vec![
-            Span::styled(format!("{directory}/"), Style::default().fg(palette::MUTED)),
+            Span::styled(
+                format!("{directory}/"),
+                Style::default().fg(palette::muted()),
+            ),
             Span::styled(file.to_owned(), Style::default().fg(color)),
         ],
         None => vec![Span::styled(path, Style::default().fg(color))],
@@ -158,10 +161,10 @@ fn path_spans(path: &str, color: Color) -> Vec<Span<'static>> {
 
 fn change_label(change: &Change) -> (Option<&'static str>, Color) {
     match &change.diff {
-        FileDiff::Text { deleted: true, .. } => (Some("Deleted · "), palette::REMOVED),
-        FileDiff::Text { created: true, .. } => (Some("Created · "), palette::ADDED),
-        FileDiff::Unavailable { .. } => (None, palette::MUTED),
-        _ => (None, palette::READ_SUMMARY_PATH),
+        FileDiff::Text { deleted: true, .. } => (Some("Deleted · "), palette::removed()),
+        FileDiff::Text { created: true, .. } => (Some("Created · "), palette::added()),
+        FileDiff::Unavailable { .. } => (None, palette::muted()),
+        _ => (None, palette::read_summary_path()),
     }
 }
 
@@ -197,20 +200,20 @@ fn status_label(status: &ReportStatus) -> &'static str {
 
 fn status_color(status: &ReportStatus) -> Color {
     match status {
-        ReportStatus::ReportedIssues => palette::ERROR_BORDER,
-        ReportStatus::ReportedClean => palette::ADDED,
-        ReportStatus::Unreported => palette::ACCENT,
-        ReportStatus::Failed => palette::REMOVED,
-        ReportStatus::Unsupported => palette::MUTED,
+        ReportStatus::ReportedIssues => palette::error_border(),
+        ReportStatus::ReportedClean => palette::added(),
+        ReportStatus::Unreported => palette::accent(),
+        ReportStatus::Failed => palette::removed(),
+        ReportStatus::Unsupported => palette::muted(),
     }
 }
 
 fn severity_label(severity: u8) -> (&'static str, Color) {
     match severity {
-        1 => ("[error]", palette::REMOVED),
-        2 => ("[warning]", palette::ACCENT),
-        3 => ("[info]", palette::LINK),
-        _ => ("[hint]", palette::MUTED),
+        1 => ("[error]", palette::removed()),
+        2 => ("[warning]", palette::accent()),
+        3 => ("[info]", palette::link()),
+        _ => ("[hint]", palette::muted()),
     }
 }
 
@@ -274,16 +277,16 @@ fn summary(report: &DiagnosticReport) -> String {
 fn report_header(report: &DiagnosticReport, width: u16) -> Vec<Line<'static>> {
     let total = report.total();
     let color = if report.has_issues() {
-        palette::ERROR_BORDER
+        palette::error_border()
     } else if report.omitted > 0 {
-        palette::ACCENT
+        palette::accent()
     } else if report.all_clean() {
-        palette::ADDED
+        palette::added()
     } else {
-        palette::ACCENT
+        palette::accent()
     };
-    let mut spans = vec![Span::styled("LSP ", Style::default().fg(palette::ACCENT))];
-    spans.extend(path_spans(&report.path, palette::READ_SUMMARY_PATH));
+    let mut spans = vec![Span::styled("LSP ", Style::default().fg(palette::accent()))];
+    spans.extend(path_spans(&report.path, palette::read_summary_path()));
     spans.push(Span::styled(
         format!(" · {} ", summary(report)),
         Style::default().fg(color),
@@ -295,7 +298,7 @@ fn report_header(report: &DiagnosticReport, width: u16) -> Vec<Line<'static>> {
             } else {
                 "diagnostics"
             },
-            Style::default().fg(palette::MUTED),
+            Style::default().fg(palette::muted()),
         ));
     }
     wrap_block(Line::from(spans), width, "  ")
@@ -306,7 +309,7 @@ fn server_lines(server: &ServerReport, width: u16) -> Vec<Line<'static>> {
         Line::from(vec![
             Span::styled(
                 format!("  {} · ", pp_core::text::display_text(&server.server)),
-                Style::default().fg(palette::MUTED),
+                Style::default().fg(palette::muted()),
             ),
             Span::styled(
                 status_label(&server.status),
@@ -316,7 +319,7 @@ fn server_lines(server: &ServerReport, width: u16) -> Vec<Line<'static>> {
             ),
             Span::styled(
                 format!(" ({})", server.diagnostics.len()),
-                Style::default().fg(palette::DIM),
+                Style::default().fg(palette::dim()),
             ),
         ]),
         width,
@@ -326,7 +329,7 @@ fn server_lines(server: &ServerReport, width: u16) -> Vec<Line<'static>> {
         rows.extend(wrap_block(
             block_line(
                 format!("  {}", pp_core::text::display_text(note)),
-                Style::default().fg(palette::DIM),
+                Style::default().fg(palette::dim()),
             ),
             width,
             "  ",
@@ -345,12 +348,12 @@ fn diagnostic_line(diagnostic: &ReportDiagnostic, width: u16) -> Vec<Line<'stati
             } else {
                 format!("{}:{}", diagnostic.line, diagnostic.column)
             },
-            Style::default().fg(palette::DIM),
+            Style::default().fg(palette::dim()),
         ),
         Span::styled(" ", Style::default()),
         Span::styled(
             pp_core::text::display_text(&diagnostic.message).into_owned(),
-            Style::default().fg(palette::RG_TEXT),
+            Style::default().fg(palette::rg_text()),
         ),
     ];
     let mut detail = Vec::new();
@@ -367,7 +370,7 @@ fn diagnostic_line(diagnostic: &ReportDiagnostic, width: u16) -> Vec<Line<'stati
     if !detail.is_empty() {
         spans.push(Span::styled(
             format!(" ({})", detail.join(" ")),
-            Style::default().fg(palette::MUTED),
+            Style::default().fg(palette::muted()),
         ));
     }
     wrap_block(Line::from(spans), width, "    ")
@@ -387,7 +390,7 @@ fn formatter_line(
         text.push_str(&pp_core::text::display_text(note));
     }
     wrap_block(
-        block_line(text, Style::default().fg(palette::MUTED)),
+        block_line(text, Style::default().fg(palette::muted())),
         width,
         "  ",
     )
@@ -421,7 +424,7 @@ pub(super) fn diagnostics_lines(
         rows.extend(wrap_block(
             block_line(
                 format!("… {hidden} more diagnostic lines (Ctrl + O to expand)"),
-                Style::default().fg(palette::DIM),
+                Style::default().fg(palette::dim()),
             ),
             width,
             "",

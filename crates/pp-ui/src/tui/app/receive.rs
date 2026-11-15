@@ -79,6 +79,7 @@ impl App {
         changed |= self.poll_history();
         changed |= self.poll_model_control();
         changed |= self.receive_auth();
+        changed |= self.receive_themes();
         while let Some(reply) = self
             .stats_worker
             .as_ref()

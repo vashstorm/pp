@@ -20,11 +20,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::transcript_style::CODE_BLOCK;
-use super::transcript_style::DIM;
-use super::transcript_style::LINK;
-use super::transcript_style::MUTED;
-use super::transcript_style::{MD_BORDER, MD_BULLET, MD_CODE, MD_HEADING, MD_STRONG};
+use super::transcript_style::{
+    code_block, dim, link, md_border, md_bullet, md_code, md_heading, md_strong, muted,
+};
 use pp_core::text::display_text;
 
 mod highlight;
@@ -304,14 +302,14 @@ fn layout_code(cb: &CodeBlock, width: usize, out: &mut Vec<Line<'static>>) {
 }
 
 fn frame_top(lang: Option<&str>, width: usize) -> Line<'static> {
-    let dash = Style::new().fg(DIM);
+    let dash = Style::new().fg(dim());
     if let Some(lang) = lang.filter(|l| !l.is_empty()) {
         let label = format!(" {} ", lang);
         let lw = Span::raw(label.as_str()).width();
         if width > 2 + lw {
             return Line::from(vec![
                 Span::styled("──", dash),
-                Span::styled(label, Style::new().fg(MUTED)),
+                Span::styled(label, Style::new().fg(muted())),
                 Span::styled("─".repeat(width - 2 - lw), dash),
             ]);
         }
@@ -320,7 +318,10 @@ fn frame_top(lang: Option<&str>, width: usize) -> Line<'static> {
 }
 
 fn rule_line(width: usize) -> Line<'static> {
-    Line::from(vec![Span::styled("─".repeat(width), Style::new().fg(DIM))])
+    Line::from(vec![Span::styled(
+        "─".repeat(width),
+        Style::new().fg(dim()),
+    )])
 }
 
 fn expand_tabs(line: &str, tabstop: usize) -> String {

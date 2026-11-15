@@ -35,6 +35,9 @@ impl App {
         if let Some(panel) = &mut self.plan_panel {
             panel.set_error(message.clone());
         }
+        if let Some(panel) = &mut self.themes_panel {
+            panel.set_error(message.clone());
+        }
         if let Some(panel) = &mut self.skill_panel {
             panel.set_error(message);
         }
@@ -584,6 +587,7 @@ impl App {
             || self.roles_panel.is_some()
             || self.subagent_panel.is_some()
             || self.history_browser
+            || self.themes_panel.is_some()
             || self.skill_panel.is_some()
             || self.session_panel.is_some()
             || self.changes_panel.is_some()

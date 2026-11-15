@@ -210,7 +210,7 @@ fn folded_write_keeps_the_same_wrapped_rows_as_expanded_write() {
         format!("first\n{}\n\nlast\n", "中\te\u{301}🙂".repeat(1024)),
     ] {
         for width in [1, 7, 32, 100] {
-            let style = Style::default().fg(palette::EDIT_ADDED);
+            let style = Style::default().fg(palette::edit_added());
             let expanded = write_body(&content, width, true, style);
             let tail = write_body(&content, width, false, style);
             assert_eq!(tail.len(), 17);
@@ -439,13 +439,13 @@ fn committed_diff_survives_result_and_replay_without_reconstructing_old_logs() {
         buffer
             .content
             .iter()
-            .any(|cell| cell.symbol() == "o" && cell.fg == palette::EDIT_REMOVED)
+            .any(|cell| cell.symbol() == "o" && cell.fg == palette::edit_removed())
     );
     assert!(
         buffer
             .content
             .iter()
-            .any(|cell| cell.symbol() == "o" && cell.fg == palette::EDIT_ADDED)
+            .any(|cell| cell.symbol() == "o" && cell.fg == palette::edit_added())
     );
     let mut old = Transcript::new();
     old.replay(vec![
@@ -512,13 +512,13 @@ fn edit_card_reference_layout_colors_inline_changes_and_narrow_widths() {
     );
     assert!(rows[4].contains("-165│"), "{text}");
     assert!(rows[6].starts_with('╰') && rows[6].ends_with('╯'), "{text}");
-    assert_eq!(buffer[(0, 0)].fg, palette::EDIT_BORDER);
-    assert_eq!(buffer[(4, 0)].fg, palette::EDIT_TITLE);
-    assert_eq!(buffer[(14, 1)].fg, palette::EDIT_KEYWORD);
-    assert_eq!(buffer[(6, 2)].fg, palette::EDIT_ADDED);
-    assert_eq!(buffer[(6, 2)].bg, palette::EDIT_BG);
+    assert_eq!(buffer[(0, 0)].fg, palette::edit_border());
+    assert_eq!(buffer[(4, 0)].fg, palette::edit_title());
+    assert_eq!(buffer[(14, 1)].fg, palette::edit_keyword());
+    assert_eq!(buffer[(6, 2)].fg, palette::edit_added());
+    assert_eq!(buffer[(6, 2)].bg, palette::edit_bg());
     let highlighted: String = (0..130)
-        .filter(|&x| buffer[(x, 5)].bg == palette::EDIT_ADDED)
+        .filter(|&x| buffer[(x, 5)].bg == palette::edit_added())
         .map(|x| buffer[(x, 5)].symbol())
         .collect();
     assert_eq!(highlighted, " { workflow: &execute_workflow }");

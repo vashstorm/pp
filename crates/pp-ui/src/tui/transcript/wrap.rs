@@ -80,7 +80,7 @@ pub(in crate::tui) fn visit_wrapped_rows(
                         if !prefix.is_empty() {
                             spans.push(Span::styled(
                                 prefix.to_owned(),
-                                Style::default().fg(palette::DIM),
+                                Style::default().fg(palette::dim()),
                             ));
                         }
                         used = Line::raw(prefix).width();

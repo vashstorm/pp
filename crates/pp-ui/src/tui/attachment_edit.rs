@@ -4,7 +4,9 @@ use crossterm::event::KeyEvent;
 use ratatui_textarea::{CursorMove, DataCursor, TextArea};
 
 pub(super) const ICON: &str = "\u{f03e}";
-pub(super) const COLOR: ratatui::style::Color = ratatui::style::Color::Rgb(255, 175, 95);
+pub(super) fn color() -> ratatui::style::Color {
+    super::themes::palette().attachment_color
+}
 
 /// 返回旧文本的替换区间及新文本替换区间的终点，全部使用 UTF-8 字节位置。
 pub(super) fn changed_range(before: &str, after: &str) -> (usize, usize, usize) {

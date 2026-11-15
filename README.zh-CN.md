@@ -93,6 +93,9 @@ providers:
 edit: replace
 auto_compact: true
 auto_compact_threshold_percent: 80
+tui:
+  theme: default # default | tokyonight | catppuccin | dracula | nord | gruvbox | solarized-light
+  icons: nerd    # nerd | ascii
 ```
 
 模型请求不限制总耗时。`request_timeout_seconds` 默认 300 秒，限制建连及连续无数据的闲置等待；收到正文、思考或 SSE 心跳后重新计时，已有显式配置值仍生效。
@@ -141,6 +144,7 @@ pp --model deepseek/deepseek-flash:high /commit
 | 命令 | 用途 |
 | --- | --- |
 | `/stats [--host IP] [--port PORT] [--no-open]` | 打开本地统计页面，复用 `pp stats` 的服务 |
+| `/themes [nerd\|ascii] [THEME]` | 打开两步独立设置面板（先选 `nerd` / `ascii` 图标风格，再选 7 套配色主题），或直接传参应用并保存到 `settings.yml`（`/theme` 别名） |
 | `/model`（`/models`）、`/effort` | 切换模型与思考档位，保留历史 |
 | `/init` | 创建或更新当前项目的 `AGENTS.md` |
 | `/plan [prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，批准后执行（仅终端界面） |

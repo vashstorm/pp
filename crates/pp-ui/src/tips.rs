@@ -79,6 +79,7 @@ pub(crate) const SECTIONS: &[Section] = &[
             #[cfg(debug_assertions)]
             tip("/test-write", "debug write stream"),
             tip("/stats", "open statistics"),
+            tip("/themes", "set theme & icons"),
             tip("/tips", "show all tips"),
             tip("/tree", "browse & rewind chat"),
         ],

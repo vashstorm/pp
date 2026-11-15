@@ -60,7 +60,7 @@ impl Panel {
             frame.render_widget(
                 Line::styled(
                     "─".repeat(usize::from(area.width.saturating_sub(2))),
-                    Style::default().fg(ASK_BORDER),
+                    Style::default().fg(ask_border()),
                 ),
                 Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1),
             );
@@ -122,7 +122,7 @@ impl Panel {
         super::super::transcript::wrap_block(
             Line::styled(
                 menu_text(&self.questions.questions[index].question),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
             width,
             "",
@@ -175,9 +175,9 @@ impl Panel {
                 remaining -= 1;
             }
             let style = if index == active {
-                Style::default().fg(ACTIVITY).bg(ASK_TAB_BG)
+                Style::default().fg(activity()).bg(ask_tab_bg())
             } else {
-                Style::default().fg(DIM)
+                Style::default().fg(dim())
             };
             spans.push(Span::styled(label.as_str(), style));
             remaining = remaining.saturating_sub(width);

@@ -40,22 +40,23 @@ pub(in crate::tui) fn subagent_metrics(
         None,
     ];
     if let Some(context) = usage.usage {
+        let icons = super::super::themes::current_icons();
         let last = context.last_request;
         // 与主状态栏一致：最近请求和会话累计都为空时右侧显示 —，而不是 0。
         let output = (last.is_some() || context.session_output_tokens > 0)
             .then_some(context.session_output_tokens);
         fields[2] = Some(context_field(context));
         fields[3] = Some(pair_field(
-            IO_ICON,
+            io_icon(icons),
             count(last.map(|request| request.input_tokens)),
             count(output),
-            (INPUT, OUTPUT),
+            (input_color(), output_color()),
         ));
         fields[4] = Some(pair_field(
-            CACHE_ICON,
+            cache_icon(icons),
             count(last.and_then(|request| request.cached_tokens)),
             count(last.and_then(|request| request.cache_write_tokens)),
-            (CACHE_READ, CACHE_WRITE),
+            (cache_read_color(), cache_write_color()),
         ));
     } else if let Some(tokens) = usage.tokens {
         // 旧日志没有 ContextUpdated 时保留原先摘要里的 token 总量；它替代
@@ -67,15 +68,16 @@ pub(in crate::tui) fn subagent_metrics(
             if usage.measured < usage.runs {
                 line.spans.push(Span::styled(
                     format!(" ({} measured)", usage.measured),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(muted_color()),
                 ));
             }
             line
         })
     });
+    let icons = super::super::themes::current_icons();
     fields[6] = usage
         .time_ms
-        .map(|ms| field(TIMER_ICON, duration_text(ms), Color::White));
+        .map(|ms| field(timer_icon(icons), duration_text(ms), timer_color()));
 
     let mut line = join_fields(&fields);
     for remove in [4, 3, 1, 5, 6, 2] {
@@ -95,15 +97,19 @@ pub(in crate::tui) fn subagent_metrics(
 
 /// 指标簇首的固定标识，琥珀色粗体；作为整组参与降级的最后一道边界。
 fn subagent_badge() -> Line<'static> {
+    let icons = super::super::themes::current_icons();
     Line::from(Span::styled(
-        format!("{SUBAGENT_ONE_ICON} subagent"),
-        Style::default().fg(SUBAGENTS).add_modifier(Modifier::BOLD),
+        format!("{} subagent", subagent_one_icon(icons)),
+        Style::default()
+            .fg(subagents_color())
+            .add_modifier(Modifier::BOLD),
     ))
 }
 
 /// 极窄宽度下裁剪标识文本；`width` 为 0 时返回空行。
 fn clipped_subagent_badge(width: usize) -> Line<'static> {
-    let text = format!("{SUBAGENT_ONE_ICON} subagent");
+    let icons = super::super::themes::current_icons();
+    let text = format!("{} subagent", subagent_one_icon(icons));
     if Line::from(text.as_str()).width() <= width {
         return subagent_badge();
     }
@@ -112,15 +118,20 @@ fn clipped_subagent_badge(width: usize) -> Line<'static> {
     }
     Line::from(Span::styled(
         super::super::tool_display::clip(&text, width, true),
-        Style::default().fg(SUBAGENTS).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(subagents_color())
+            .add_modifier(Modifier::BOLD),
     ))
 }
 
 /// 没有上下文用量时的单个 token 总量字段：数字沿用输入色，单位保持暗色。
 fn token_total_field(tokens: u64) -> Line<'static> {
     Line::from(vec![
-        Span::styled(abbreviate_tokens(tokens), Style::default().fg(INPUT)),
-        Span::styled(" tok", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            abbreviate_tokens(tokens),
+            Style::default().fg(input_color()),
+        ),
+        Span::styled(" tok", Style::default().fg(muted_color())),
     ])
 }
 
@@ -196,11 +207,15 @@ mod tests {
 
     #[test]
     fn subagent_status_reuses_main_status_bar_head_and_colors() {
+        let icons = themes::current_icons();
+        let app = app_icon(icons);
+        let model_ic = model_icon(icons);
+        let dir_ic = directory_icon(icons);
         let line = subagent_status("fixture/primary", ThinkLevel::Medium, "~/dev/pp", 120);
         assert_eq!(
             line_text(&line),
             format!(
-                " {APP_ICON} · {MODEL_ICON} fixture/primary · {} med · {DIRECTORY_ICON} ~/dev/pp",
+                " {app} · {model_ic} fixture/primary · {} med · {dir_ic} ~/dev/pp",
                 palette::think_icon(ThinkLevel::Medium)
             )
         );
@@ -213,10 +228,10 @@ mod tests {
             model.style.add_modifier.contains(Modifier::BOLD),
             "模型引用与主状态栏同为粗体"
         );
-        assert_eq!(fg_at(line.clone(), 120, APP_ICON), ACCENT);
-        assert_eq!(fg_at(line.clone(), 120, "fixture/primary"), MODEL);
-        assert_eq!(fg_at(line.clone(), 120, "med"), MODEL);
-        assert_eq!(fg_at(line, 120, "~/dev/pp"), DIRECTORY);
+        assert_eq!(fg_at(line.clone(), 120, app), accent());
+        assert_eq!(fg_at(line.clone(), 120, "fixture/primary"), model_color());
+        assert_eq!(fg_at(line.clone(), 120, "med"), model_color());
+        assert_eq!(fg_at(line, 120, "~/dev/pp"), directory_color());
         // 每个思考档位都显示与主状态栏相同的图标和文案。
         for (level, text) in [
             (ThinkLevel::None, "off"),
@@ -229,7 +244,7 @@ mod tests {
             assert_eq!(
                 line_text(&subagent_status("m", level, "~", 120)),
                 format!(
-                    " {APP_ICON} · {MODEL_ICON} m · {} {text} · {DIRECTORY_ICON} ~",
+                    " {app} · {model_ic} m · {} {text} · {dir_ic} ~",
                     palette::think_icon(level)
                 ),
                 "{level:?}"
@@ -239,19 +254,22 @@ mod tests {
 
     #[test]
     fn subagent_status_degrades_cwd_then_model_then_prefix_within_width() {
+        let icons = themes::current_icons();
+        let app = app_icon(icons);
+        let dir_ic = directory_icon(icons);
         let model = "fixture/primary";
         let workdir = "~/dev/projects/pp";
         let think = ThinkLevel::Medium;
         let full = subagent_status(model, think, workdir, 120);
         assert_eq!(full.width(), 52, "完整状态栏的渲染宽度");
-        assert!(line_text(&full).ends_with(&format!("{DIRECTORY_ICON} {workdir}")));
+        assert!(line_text(&full).ends_with(&format!("{dir_ic} {workdir}")));
 
         // 1) 只缩短 cwd：模型与头部保留，目录以 … 开头保留尾部。
         let narrowed = line_text(&subagent_status(model, think, workdir, 52));
-        assert!(narrowed.contains(APP_ICON), "{narrowed}");
+        assert!(narrowed.contains(app), "{narrowed}");
         assert!(narrowed.contains(model), "{narrowed}");
         let cwd = narrowed
-            .split_once(&format!("{DIRECTORY_ICON} "))
+            .split_once(&format!("{dir_ic} "))
             .map(|(_, cwd)| cwd)
             .unwrap();
         assert!(cwd.starts_with('…'), "{narrowed}");
@@ -274,8 +292,8 @@ mod tests {
             shortened.content
         );
         assert!(!text.contains(model), "{text}");
-        assert!(text.contains(APP_ICON), "{text}");
-        assert!(text.contains(DIRECTORY_ICON), "{text}");
+        assert!(text.contains(app), "{text}");
+        assert!(text.contains(dir_ic), "{text}");
 
         // 3) 最后只留模型前缀：头部、档位与目录都消失。
         let prefix = line_text(&subagent_status(model, think, workdir, 17));
@@ -294,6 +312,14 @@ mod tests {
 
     #[test]
     fn subagent_metrics_orders_fields_and_matches_main_status_bar_colors() {
+        let icons = themes::current_icons();
+        let sub_ic = subagent_one_icon(icons);
+        let spd_ic = speed_medium_icon(icons);
+        let ctx_ic = context_icon(icons);
+        let io_ic = io_icon(icons);
+        let cache_ic = cache_icon(icons);
+        let cost_ic = cost_icon(icons);
+        let timer_ic = timer_icon(icons);
         let usage = status_usage();
         let line = subagent_metrics(
             SubagentUsage {
@@ -311,28 +337,36 @@ mod tests {
         assert_eq!(
             line_text(&line),
             format!(
-                " {SUBAGENT_ONE_ICON} subagent · {SPEED_MEDIUM_ICON} 61.5 tok/s · {CONTEXT_ICON} 81.6%/500K · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.012 · {TIMER_ICON} 1m25s "
+                " {sub_ic} subagent · {spd_ic} 61.5 tok/s · {ctx_ic} 81.6%/500K · {io_ic} 12.3K/45.7K · {cache_ic} 8K/0 · {cost_ic} 0.012 · {timer_ic} 1m25s "
             )
         );
         let badge = line
             .spans
             .iter()
-            .find(|span| span.content == format!("{SUBAGENT_ONE_ICON} subagent"))
+            .find(|span| span.content == format!("{sub_ic} subagent"))
             .unwrap();
         assert!(badge.style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(fg_at(line.clone(), 240, "subagent"), SUBAGENTS);
-        assert_eq!(fg_at(line.clone(), 240, "61.5 tok/s"), SPEED);
-        assert_eq!(fg_at(line.clone(), 240, "81.6%/500K"), Color::White);
-        assert_eq!(fg_at(line.clone(), 240, "12.3K"), INPUT);
-        assert_eq!(fg_at(line.clone(), 240, "45.7K"), OUTPUT);
-        assert_eq!(fg_at(line.clone(), 240, "8K"), CACHE_READ);
-        assert_eq!(fg_at_offset(line.clone(), 240, "8K/0", 3), CACHE_WRITE);
-        assert_eq!(fg_at(line.clone(), 240, "0.012"), Color::Red);
-        assert_eq!(fg_at(line, 240, "1m25s"), Color::White);
+        assert_eq!(fg_at(line.clone(), 240, "subagent"), subagents_color());
+        assert_eq!(fg_at(line.clone(), 240, "61.5 tok/s"), speed_color());
+        assert_eq!(fg_at(line.clone(), 240, "81.6%/500K"), context_color());
+        assert_eq!(fg_at(line.clone(), 240, "12.3K"), input_color());
+        assert_eq!(fg_at(line.clone(), 240, "45.7K"), output_color());
+        assert_eq!(fg_at(line.clone(), 240, "8K"), cache_read_color());
+        assert_eq!(
+            fg_at_offset(line.clone(), 240, "8K/0", 3),
+            cache_write_color()
+        );
+        assert_eq!(fg_at(line.clone(), 240, "0.012"), cost_color());
+        assert_eq!(fg_at(line, 240, "1m25s"), timer_color());
     }
 
     #[test]
     fn subagent_metrics_appends_measured_suffix_and_uses_token_fallback() {
+        let icons = themes::current_icons();
+        let sub_ic = subagent_one_icon(icons);
+        let spd_ic = speed_medium_icon(icons);
+        let cost_ic = cost_icon(icons);
+        let timer_ic = timer_icon(icons);
         let usage = status_usage();
         let partial = subagent_metrics(
             SubagentUsage {
@@ -356,7 +390,7 @@ mod tests {
                 .unwrap()
                 .style
                 .fg,
-            Some(Color::DarkGray)
+            Some(muted_color())
         );
         // 已计量次数与总次数一致时不追加后缀。
         let settled = subagent_metrics(
@@ -391,15 +425,23 @@ mod tests {
         assert_eq!(
             line_text(&fallback),
             format!(
-                " {SUBAGENT_ONE_ICON} subagent · {SPEED_MEDIUM_ICON} 61.5 tok/s · 12.3K tok · {COST_ICON} 0.500 · {TIMER_ICON} 1s "
+                " {sub_ic} subagent · {spd_ic} 61.5 tok/s · 12.3K tok · {cost_ic} 0.500 · {timer_ic} 1s "
             )
         );
-        assert_eq!(fg_at(fallback.clone(), 240, "12.3K"), INPUT);
-        assert_eq!(fg_at_offset(fallback, 240, "12.3K tok", 5), Color::DarkGray);
+        assert_eq!(fg_at(fallback.clone(), 240, "12.3K"), input_color());
+        assert_eq!(fg_at_offset(fallback, 240, "12.3K tok", 5), muted_color());
     }
 
     #[test]
     fn subagent_metrics_never_hides_badge_and_hides_groups_in_priority_order() {
+        let icons = themes::current_icons();
+        let sub_ic = subagent_one_icon(icons);
+        let spd_ic = speed_medium_icon(icons);
+        let ctx_ic = context_icon(icons);
+        let io_ic = io_icon(icons);
+        let cache_ic = cache_icon(icons);
+        let cost_ic = cost_icon(icons);
+        let timer_ic = timer_icon(icons);
         let usage = status_usage();
         let render = |width: u16| {
             subagent_metrics(
@@ -419,14 +461,7 @@ mod tests {
         let full = render(240);
         let full_width = u16::try_from(full.width()).unwrap();
         assert_eq!(line_text(&render(full_width)), line_text(&full));
-        let removal_order = [
-            CACHE_ICON,
-            IO_ICON,
-            SPEED_MEDIUM_ICON,
-            COST_ICON,
-            TIMER_ICON,
-            CONTEXT_ICON,
-        ];
+        let removal_order = [cache_ic, io_ic, spd_ic, cost_ic, timer_ic, ctx_ic];
         let mut previous = 0;
         for width in (0..=full_width).rev() {
             let line = render(width);
@@ -450,7 +485,7 @@ mod tests {
                 assert!(text.contains(icon), "不能跳过降级优先级: {text}");
             }
             assert!(
-                text.contains(SUBAGENT_ONE_ICON) || text.contains('…'),
+                text.contains(sub_ic) || text.contains('…'),
                 "标识永不消失: {text}"
             );
         }
@@ -459,12 +494,12 @@ mod tests {
             let line = render(width);
             let text = line_text(&line);
             assert!(line.width() <= usize::from(width));
-            for icon in [IO_ICON, CACHE_ICON, COST_ICON, TIMER_ICON, CONTEXT_ICON] {
+            for icon in [io_ic, cache_ic, cost_ic, timer_ic, ctx_ic] {
                 assert!(!text.contains(icon), "width {width}: {text}");
             }
             assert_eq!(text.is_empty(), width == 0, "width {width}: {text}");
         }
-        assert_eq!(line_text(&render(3)), format!("{SUBAGENT_ONE_ICON} …"));
+        assert_eq!(line_text(&render(3)), format!("{sub_ic} …"));
         assert_eq!(line_text(&render(1)), "…");
     }
 }

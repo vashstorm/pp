@@ -25,10 +25,11 @@ fn abbreviate_metric(value: f64) -> String {
 
 /// 速度图标：低于 60 tok/s 为低速档，60 到 120 为中速档，120 及以上为高速档。
 fn speed_icon(rate: Option<f64>) -> &'static str {
+    let icons = themes::current_icons();
     match rate {
-        Some(rate) if rate >= SPEED_FAST_RATE => SPEED_FAST_ICON,
-        Some(rate) if rate >= SPEED_MEDIUM_RATE => SPEED_MEDIUM_ICON,
-        _ => SPEED_SLOW_ICON,
+        Some(rate) if rate >= SPEED_FAST_RATE => speed_fast_icon(icons),
+        Some(rate) if rate >= SPEED_MEDIUM_RATE => speed_medium_icon(icons),
+        _ => speed_slow_icon(icons),
     }
 }
 
@@ -48,7 +49,7 @@ pub(in crate::tui) fn context_field(usage: &ContextUsage) -> Line<'static> {
         ),
         None => format!("{}/?", abbreviate_tokens(usage.estimated_tokens)),
     };
-    field(CONTEXT_ICON, text, Color::White)
+    field(context_icon(themes::current_icons()), text, context_color())
 }
 
 pub(super) fn pair_field(
@@ -78,7 +79,7 @@ fn title_field(text: &str, width: usize) -> Line<'static> {
     if truncated {
         title.push('…');
     }
-    field(TITLE_ICON, title, PLAN_MODE)
+    field(title_icon(themes::current_icons()), title, plan_mode())
 }
 
 fn cost_amount(usd: f64, display: &pp_config::config::CostDisplay) -> Option<String> {
@@ -90,17 +91,18 @@ fn cost_amount(usd: f64, display: &pp_config::config::CostDisplay) -> Option<Str
     Some(format!("{total:.precision$}"))
 }
 
-/// 费用金额字段：受支持币种的图标加按 `CostDisplay` 换算后的金额，红色。
+/// 费用金额字段：受支持币种的图标加按 `CostDisplay` 换算后的金额。
 pub(super) fn amount_field(
     usd: f64,
     display: &pp_config::config::CostDisplay,
 ) -> Option<Line<'static>> {
     let text = cost_amount(usd, display)?;
-    Some(field(
-        display.icon()?.encode_utf8(&mut [0; 4]),
-        text,
-        Color::Red,
-    ))
+    let icon = if themes::is_ascii() {
+        display.ascii_icon()
+    } else {
+        display.icon()
+    }?;
+    Some(field(icon.encode_utf8(&mut [0; 4]), text, cost_color()))
 }
 
 fn cost_field(
@@ -136,6 +138,7 @@ fn metric_separator() -> Span<'static> {
 }
 
 pub(super) fn speed_field(rate: Option<f64>, running_subagents: usize) -> Line<'static> {
+    let icons = themes::current_icons();
     let speed_text = rate.map_or_else(
         || "— tok/s".into(),
         |rate| {
@@ -149,15 +152,15 @@ pub(super) fn speed_field(rate: Option<f64>, running_subagents: usize) -> Line<'
             format!("{rate} tok/s")
         },
     );
-    let speed = field(speed_icon(rate), speed_text, SPEED);
+    let speed = field(speed_icon(rate), speed_text, speed_color());
     let icon = match running_subagents {
         0 => return speed,
-        1 => SUBAGENT_ONE_ICON,
-        2 => SUBAGENT_TWO_ICON,
-        _ => SUBAGENT_GROUP_ICON,
+        1 => subagent_one_icon(icons),
+        2 => subagent_two_icon(icons),
+        _ => subagent_group_icon(icons),
     };
     // 子代理数量和速度作为同一组参与窄屏降级。
-    let mut line = field(icon, running_subagents.to_string(), SUBAGENTS);
+    let mut line = field(icon, running_subagents.to_string(), subagents_color());
     line.spans.push(metric_separator());
     line.spans.extend(speed.spans);
     line
@@ -176,6 +179,7 @@ pub(in crate::tui) fn metric_fields(
     elapsed: Option<&str>,
     width: u16,
 ) -> Line<'static> {
+    let icons = themes::current_icons();
     let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
     let last = usage.last_request;
     // out 累计整个会话的服务端 output tokens；生成中的请求还没有 usage 时，
@@ -192,19 +196,19 @@ pub(in crate::tui) fn metric_fields(
             .map(|title| title_field(title, 32)),
         Some(context_field(usage)),
         Some(pair_field(
-            IO_ICON,
+            io_icon(icons),
             count(last.map(|u| u.input_tokens)),
             count(output_tokens),
-            (INPUT, OUTPUT),
+            (input_color(), output_color()),
         )),
         Some(pair_field(
-            CACHE_ICON,
+            cache_icon(icons),
             count(last.and_then(|u| u.cached_tokens)),
             count(last.and_then(|u| u.cache_write_tokens)),
-            (CACHE_READ, CACHE_WRITE),
+            (cache_read_color(), cache_write_color()),
         )),
         task.and_then(|(task, display)| cost_field(task, display)),
-        elapsed.map(|text| field(TIMER_ICON, text.replace(' ', ""), Color::White)),
+        elapsed.map(|text| field(timer_icon(icons), text.replace(' ', ""), context_color())),
     ];
     let budget = usize::from(width);
     let mut line = join_fields(&fields);
@@ -258,6 +262,7 @@ mod tests {
 
     #[test]
     fn metric_fields_order_units_and_independent_pair_colors() {
+        let icons = themes::current_icons();
         let usage = status_usage();
         let task = pp_config::task_status::Snapshot {
             title: Some("修复会话历史".into()),
@@ -276,19 +281,26 @@ mod tests {
         assert_eq!(
             line_text(&line),
             format!(
-                " {SPEED_SLOW_ICON} 30.2 tok/s · {TITLE_ICON} 修复会话历史 · {CONTEXT_ICON} 81.6%/500K · {IO_ICON} 12.3K/45.7K · {CACHE_ICON} 8K/0 · {COST_ICON} 0.012 · {TIMER_ICON} 1m25s "
+                " {} 30.2 tok/s · {} 修复会话历史 · {} 81.6%/500K · {} 12.3K/45.7K · {} 8K/0 · {} 0.012 · {} 1m25s ",
+                speed_slow_icon(icons),
+                title_icon(icons),
+                context_icon(icons),
+                io_icon(icons),
+                cache_icon(icons),
+                cost_icon(icons),
+                timer_icon(icons),
             )
         );
         for (text, color) in [
-            ("30.2 tok/s", SPEED),
-            ("修复会话历史", PLAN_MODE),
-            ("81.6%/500K", Color::White),
-            ("12.3K", INPUT),
-            ("45.7K", OUTPUT),
-            ("8K", CACHE_READ),
-            ("0", CACHE_WRITE),
-            ("0.012", Color::Red),
-            ("1m25s", Color::White),
+            ("30.2 tok/s", speed_color()),
+            ("修复会话历史", plan_mode()),
+            ("81.6%/500K", context_color()),
+            ("12.3K", input_color()),
+            ("45.7K", output_color()),
+            ("8K", cache_read_color()),
+            ("0", cache_write_color()),
+            ("0.012", cost_color()),
+            ("1m25s", context_color()),
         ] {
             assert_eq!(
                 line.spans
@@ -305,16 +317,19 @@ mod tests {
 
     #[test]
     fn metric_fields_distinguish_missing_usage_and_independent_zero_cache() {
+        let icons = themes::current_icons();
+        let io = io_icon(icons);
+        let cache = cache_icon(icons);
         let mut usage = status_usage();
         usage.last_request = None;
         usage.session_output_tokens = 0;
         let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
-        assert!(text.contains(&format!("{IO_ICON} —/—")));
-        assert!(text.contains(&format!("{CACHE_ICON} —/—")));
+        assert!(text.contains(&format!("{io} —/—")));
+        assert!(text.contains(&format!("{cache} —/—")));
         // 切模型或压缩清空最近请求指标，会话累计输出继续显示。
         usage.session_output_tokens = 45_678;
         let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
-        assert!(text.contains(&format!("{IO_ICON} —/45.7K")), "{text}");
+        assert!(text.contains(&format!("{io} —/45.7K")), "{text}");
         usage.session_output_tokens = 0;
         for (read, write, expected) in [
             (None, Some(0), "—/0"),
@@ -328,21 +343,24 @@ mod tests {
                 cache_write_tokens: write,
             });
             let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
-            assert!(text.contains(&format!("{IO_ICON} 0/0")));
-            assert!(text.contains(&format!("{CACHE_ICON} {expected}")));
+            assert!(text.contains(&format!("{io} 0/0")));
+            assert!(text.contains(&format!("{cache} {expected}")));
         }
     }
 
     #[test]
     fn metric_fields_out_accumulates_session_usage_and_adds_live_estimate() {
+        let icons = themes::current_icons();
+        let io = io_icon(icons);
+        let cache = cache_icon(icons);
         let usage = status_usage();
         // 生成中：out 在会话累计上叠加实时估算，in 与缓存仍是最近一次完成的请求。
         let text = line_text(&metric_fields(&usage, None, 0, Some(4200), None, None, 240));
-        assert!(text.contains(&format!("{IO_ICON} 12.3K/49.9K")), "{text}");
-        assert!(text.contains(&format!("{CACHE_ICON} 8K/0")), "{text}");
+        assert!(text.contains(&format!("{io} 12.3K/49.9K")), "{text}");
+        assert!(text.contains(&format!("{cache} 8K/0")), "{text}");
         // 没有估算时 out 就是会话累计，不回到单次请求的输出量。
         let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
-        assert!(text.contains(&format!("{IO_ICON} 12.3K/45.7K")), "{text}");
+        assert!(text.contains(&format!("{io} 12.3K/45.7K")), "{text}");
         // 首个请求没有历史 usage 时，in/缓存保持未知，out 也只是本次实时估算。
         let first = ContextUsage {
             last_request: None,
@@ -350,24 +368,28 @@ mod tests {
             ..usage
         };
         let text = line_text(&metric_fields(&first, None, 0, Some(260), None, None, 240));
-        assert!(text.contains(&format!("{IO_ICON} —/260")), "{text}");
+        assert!(text.contains(&format!("{io} —/260")), "{text}");
     }
 
     #[test]
     fn speed_icon_follows_rate_tiers() {
+        let icons = themes::current_icons();
+        let slow = speed_slow_icon(icons);
+        let medium = speed_medium_icon(icons);
+        let fast = speed_fast_icon(icons);
         for (rate, icon) in [
-            (None, SPEED_SLOW_ICON),
-            (Some(0.0), SPEED_SLOW_ICON),
-            (Some(59.9), SPEED_SLOW_ICON),
-            (Some(60.0), SPEED_MEDIUM_ICON),
-            (Some(119.9), SPEED_MEDIUM_ICON),
-            (Some(120.0), SPEED_FAST_ICON),
-            (Some(240.0), SPEED_FAST_ICON),
+            (None, slow),
+            (Some(0.0), slow),
+            (Some(59.9), slow),
+            (Some(60.0), medium),
+            (Some(119.9), medium),
+            (Some(120.0), fast),
+            (Some(240.0), fast),
         ] {
             assert_eq!(speed_icon(rate), icon, "{rate:?}");
         }
         // 三档图标都是单列字形，状态栏按固定图标列排版。
-        for icon in [SPEED_SLOW_ICON, SPEED_MEDIUM_ICON, SPEED_FAST_ICON] {
+        for icon in [slow, medium, fast] {
             assert_eq!(Line::from(icon).width(), 1, "{icon}");
         }
         let text = line_text(&metric_fields(
@@ -379,14 +401,12 @@ mod tests {
             None,
             240,
         ));
-        assert!(
-            text.contains(&format!("{SPEED_MEDIUM_ICON} 61.5 tok/s")),
-            "{text}"
-        );
+        assert!(text.contains(&format!("{medium} 61.5 tok/s")), "{text}");
     }
 
     #[test]
     fn metric_fields_speed_preserves_decimal_and_title_graphemes() {
+        let title = title_icon(themes::current_icons());
         let usage = status_usage();
         for (rate, expected) in [
             (999.0, "999.0 tok/s"),
@@ -408,7 +428,7 @@ mod tests {
         }
         assert_eq!(
             line_text(&title_field("🙂👩‍💻标题", 5)),
-            format!("{TITLE_ICON} 🙂👩‍💻…")
+            format!("{title} 🙂👩‍💻…")
         );
     }
 
@@ -424,17 +444,19 @@ mod tests {
             usage.context_window = window;
             usage.estimated_tokens = tokens;
             let line = context_field(&usage);
-            assert_eq!(line_text(&line), format!("\u{e62a} {expected}"));
+            let ctx = context_icon(themes::current_icons());
+            assert_eq!(line_text(&line), format!("{ctx} {expected}"));
             assert!(
                 line.spans
                     .iter()
-                    .all(|span| span.style.fg == Some(Color::White))
+                    .all(|span| span.style.fg == Some(context_color()))
             );
         }
     }
 
     #[test]
     fn cost_field_rounds_amount_and_displays_partial_subtotal() {
+        let cost = cost_icon(themes::current_icons());
         let mut task = pp_config::task_status::Snapshot::default();
         for amount in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             task.cost = amount;
@@ -443,13 +465,13 @@ mod tests {
         for (amount, expected) in [(0.0016, "0.002"), (10.0, "10.000"), (10.1251, "10.13")] {
             task.cost = amount;
             let line = cost_field(&task, &Default::default()).unwrap();
-            assert_eq!(line_text(&line), format!("{COST_ICON} {expected}"));
+            assert_eq!(line_text(&line), format!("{cost} {expected}"));
         }
         task.cost = 0.000001;
         task.incomplete = true;
         let line = cost_field(&task, &Default::default()).unwrap();
-        assert_eq!(line_text(&line), format!("{COST_ICON} 0.000"));
-        assert_eq!(line.spans[1].style.fg, Some(Color::Red));
+        assert_eq!(line_text(&line), format!("{cost} 0.000"));
+        assert_eq!(line.spans[1].style.fg, Some(cost_color()));
     }
 
     #[test]
@@ -483,6 +505,7 @@ mod tests {
 
     #[test]
     fn cost_field_displays_only_settled_session_subtotal() {
+        let cost = cost_icon(themes::current_icons());
         let render = |task: &pp_config::task_status::Snapshot| {
             cost_field(task, &Default::default()).map(|line| line_text(&line))
         };
@@ -501,14 +524,22 @@ mod tests {
         task.cost = 0.01;
         task.incomplete = false;
         task.live = 0.003;
-        assert_eq!(render(&task).unwrap(), format!("{COST_ICON} 0.020"));
+        assert_eq!(render(&task).unwrap(), format!("{cost} 0.020"));
         task.cost += 0.001;
         task.live = 0.0;
-        assert_eq!(render(&task).unwrap(), format!("{COST_ICON} 0.021"));
+        assert_eq!(render(&task).unwrap(), format!("{cost} 0.021"));
     }
 
     #[test]
     fn metric_fields_shrink_title_then_drop_whole_groups_by_priority() {
+        let icons = themes::current_icons();
+        let title = title_icon(icons);
+        let cache = cache_icon(icons);
+        let io = io_icon(icons);
+        let cost = cost_icon(icons);
+        let timer = timer_icon(icons);
+        let context = context_icon(icons);
+        let group = subagent_group_icon(icons);
         let usage = status_usage();
         let task = pp_config::task_status::Snapshot {
             title: Some("需要保留中文以及🙂的长任务标题以验证显示宽度".into()),
@@ -532,23 +563,23 @@ mod tests {
         let full_width = full.width() as u16;
         assert_eq!(render(full_width, &task), full);
         let shrunk = render(full_width - 2, &task);
-        assert!(line_text(&shrunk).contains(TITLE_ICON));
+        assert!(line_text(&shrunk).contains(title));
         assert!(line_text(&shrunk).contains('…'));
         let removal_order = [
-            TITLE_ICON,
-            CACHE_ICON,
-            IO_ICON,
+            title,
+            cache,
+            io,
             speed_icon(Some(rate)),
-            COST_ICON,
-            TIMER_ICON,
-            CONTEXT_ICON,
+            cost,
+            timer,
+            context,
         ];
         let mut previous = 0;
         for width in (0..=full_width).rev() {
             let line = render(width, &task);
             assert!(line.width() <= usize::from(width));
             let text = line_text(&line);
-            assert_eq!(text.contains(SUBAGENT_GROUP_ICON), text.contains("tok/s"));
+            assert_eq!(text.contains(group), text.contains("tok/s"));
             let missing = removal_order
                 .iter()
                 .take_while(|icon| !text.contains(**icon))
@@ -559,11 +590,7 @@ mod tests {
                 assert!(text.contains(icon), "不能跳过降级优先级: {text}");
             }
             for pair in ["12.3K/45.7K", "8K/0"] {
-                let icon = if pair.starts_with("12") {
-                    IO_ICON
-                } else {
-                    CACHE_ICON
-                };
+                let icon = if pair.starts_with("12") { io } else { cache };
                 assert_eq!(text.contains(icon), text.contains(pair));
             }
         }

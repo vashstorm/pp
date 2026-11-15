@@ -237,10 +237,26 @@ impl Activity {
     }
 
     fn sweep_line(&self, label: &str) -> Line<'static> {
-        let base = Style::default().fg(palette::DIM);
+        fn blend_channel(from: u8, to: u8, num: u16, den: u16) -> u8 {
+            ((u16::from(from) * (den - num) + u16::from(to) * num) / den) as u8
+        }
+        fn blend_color(dim: Color, accent: Color, num: u16, den: u16) -> Color {
+            match (dim, accent) {
+                (Color::Rgb(dr, dg, db), Color::Rgb(ar, ag, ab)) => Color::Rgb(
+                    blend_channel(dr, ar, num, den),
+                    blend_channel(dg, ag, num, den),
+                    blend_channel(db, ab, num, den),
+                ),
+                _ => dim,
+            }
+        }
+
+        let dim = palette::dim();
+        let accent = palette::accent();
+        let base = Style::default().fg(dim);
         let line = Line::raw(label);
         let graphemes: Vec<_> = line.styled_graphemes(base).collect();
-        // 金色光带从首字移至末字，尾部留出短暂停顿后重新开始。
+        // 光带从首字移至末字，尾部留出短暂停顿后重新开始。
         let head = (self.frame % (graphemes.len() as u128 + 8)) as usize;
         let mut spans = vec![Span::styled(
             format!("{} ", self.clock),
@@ -248,10 +264,10 @@ impl Activity {
         )];
         spans.extend(graphemes.into_iter().enumerate().map(|(index, grapheme)| {
             let color = match index.abs_diff(head) {
-                0 | 1 => palette::ACCENT,
-                2 => Color::Rgb(171, 135, 68),
-                3 => Color::Rgb(119, 109, 87),
-                _ => palette::DIM,
+                0 | 1 => accent,
+                2 => blend_color(dim, accent, 1, 2),
+                3 => blend_color(dim, accent, 1, 6),
+                _ => dim,
             };
             Span::styled(grapheme.symbol.to_owned(), base.fg(color))
         }));

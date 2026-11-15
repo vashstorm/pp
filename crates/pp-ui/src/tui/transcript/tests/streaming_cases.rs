@@ -432,19 +432,19 @@ fn activity_sweep_moves_from_first_to_last_without_shifting_text() {
     };
     let initial = render_activity(&transcript, 100);
     assert_eq!(initial[(2, 0)].symbol(), "\u{f1456}");
-    assert_eq!(initial[(4, 0)].fg, palette::ACCENT);
-    assert_eq!(initial[(19, 0)].fg, palette::DIM);
+    assert_eq!(initial[(4, 0)].fg, palette::accent());
+    assert_eq!(initial[(19, 0)].fg, palette::dim());
     assert!(initial[(2, 0)].modifier.contains(Modifier::BOLD));
     for index in 0..16_u16 {
         transcript.tick(started + Duration::from_millis(u64::from(index) * 80));
         let buffer = render_activity(&transcript, 100);
         assert_eq!(buffer[(4, 0)].symbol(), "R");
-        assert_eq!(buffer[(4 + index, 0)].fg, palette::ACCENT);
+        assert_eq!(buffer[(4 + index, 0)].fg, palette::accent());
     }
     transcript.tick(started + Duration::from_millis(24 * 80));
     assert_eq!(
         render_activity(&transcript, 100)[(4, 0)].fg,
-        palette::ACCENT
+        palette::accent()
     );
     assert_eq!(
         screen(&render_activity(&transcript, 12)),
@@ -615,13 +615,13 @@ fn rg_reference_layout_colors_and_replay() {
         assert_eq!(rows[2], "└─ *399│ function applyEntry() {");
         assert!(text.contains("   *634│ function formatSummary() {"));
         assert!(!text.contains("abc123") && !text.contains(" · ok"));
-        assert_eq!(buffer[(0, 0)].fg, palette::RG_BORDER);
-        assert_eq!(buffer[(2, 1)].fg, palette::SEARCH_TITLE);
-        assert_eq!(buffer[(10, 1)].fg, palette::RG_TEXT);
-        assert_eq!(buffer[(2, 2)].fg, palette::RG_META);
-        assert_eq!(buffer[(2, 3)].fg, palette::RG_TITLE);
+        assert_eq!(buffer[(0, 0)].fg, palette::rg_border());
+        assert_eq!(buffer[(2, 1)].fg, palette::search_title());
+        assert_eq!(buffer[(10, 1)].fg, palette::rg_text());
+        assert_eq!(buffer[(2, 2)].fg, palette::rg_meta());
+        assert_eq!(buffer[(2, 3)].fg, palette::rg_title());
         for y in 0..8 {
-            assert_eq!(buffer[(99, y)].bg, palette::RG_BG);
+            assert_eq!(buffer[(99, y)].bg, palette::rg_bg());
             assert!(
                 !buffer[(0, y)]
                     .modifier
@@ -729,8 +729,8 @@ fn rg_groups_keep_paths_notices_and_failures() {
         .lines()
         .position(|line| line.contains("cannot search path"))
         .unwrap() as u16;
-    assert_eq!(buffer[(0, row)].fg, palette::REMOVED);
-    assert_eq!(buffer[(0, row)].bg, palette::RG_BG);
+    assert_eq!(buffer[(0, row)].fg, palette::removed());
+    assert_eq!(buffer[(0, row)].bg, palette::rg_bg());
 }
 
 #[test]
@@ -777,13 +777,13 @@ fn glob_card_groups_paths_and_replays_without_changing_results() {
         let text = screen(&buffer);
         assert!(text.contains(header) && !text.contains("# src/"), "{text}");
         for (needle, column, color) in [
-            ("root.rs", 2, palette::READ_SUMMARY_PATH),
-            ("src/", 2, palette::RG_TITLE),
-            ("lib.rs", 4, palette::READ_SUMMARY_PATH),
-            ("tui/", 4, palette::RG_TITLE),
-            ("界", 6, palette::READ_SUMMARY_PATH),
-            ("tests/", 2, palette::RG_TITLE),
-            ("cli.rs", 4, palette::READ_SUMMARY_PATH),
+            ("root.rs", 2, palette::read_summary_path()),
+            ("src/", 2, palette::rg_title()),
+            ("lib.rs", 4, palette::read_summary_path()),
+            ("tui/", 4, palette::rg_title()),
+            ("界", 6, palette::read_summary_path()),
+            ("tests/", 2, palette::rg_title()),
+            ("cli.rs", 4, palette::read_summary_path()),
         ] {
             let row = text
                 .lines()
@@ -828,21 +828,21 @@ fn bash_card_keeps_stdout_gray_and_stderr_red_and_marks_failed_status() {
         .lines()
         .position(|line| line.contains("compiler diagnostic"))
         .unwrap() as u16;
-    assert_eq!(live[(2, row)].fg, palette::REMOVED);
+    assert_eq!(live[(2, row)].fg, palette::removed());
     transcript.progress(AgentEvent::ToolFinished { id: "b".into(), result: json!({"ok":false,"exit_code":1,"stdout":"checking crate\n","stderr":"compiler diagnostic\n"}) });
     let failed = render(&mut transcript, 80, 20);
     let text = screen(&failed);
     assert!(text.contains("Bash · failed") && text.contains("Exit: 1"));
-    assert_eq!(failed[(0, 0)].fg, palette::REMOVED);
+    assert_eq!(failed[(0, 0)].fg, palette::removed());
     let output_row = text
         .lines()
         .position(|line| line.contains(" Output "))
         .unwrap() as u16;
-    assert_eq!(failed[(3, output_row)].fg, palette::TEXT);
+    assert_eq!(failed[(3, output_row)].fg, palette::text());
     for (needle, color) in [
-        ("checking crate", palette::MUTED),
-        ("compiler diagnostic", palette::REMOVED),
-        ("Exit: 1", palette::MUTED),
+        ("checking crate", palette::muted()),
+        ("compiler diagnostic", palette::removed()),
+        ("Exit: 1", palette::muted()),
     ] {
         let row = text.lines().position(|line| line.contains(needle)).unwrap() as u16;
         assert_eq!(failed[(2, row)].fg, color);
@@ -868,7 +868,7 @@ fn streaming_category_colors_and_statuses_preserve_default_body() {
         assert_eq!(
             buffer[(0, 0)].fg,
             if tool {
-                palette::TOOL_BORDER
+                palette::tool_border()
             } else {
                 kind.color()
             }
@@ -876,13 +876,13 @@ fn streaming_category_colors_and_statuses_preserve_default_body() {
         assert_eq!(
             buffer[(2, 0)].fg,
             if tool {
-                palette::ACTIVITY
+                palette::activity()
             } else {
                 kind.color()
             }
         );
         assert!(buffer[(2, 0)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(4, 1)].fg, palette::TEXT);
+        assert_eq!(buffer[(4, 1)].fg, palette::text());
         if tool {
             assert!(buffer[(4, 1)].modifier.contains(Modifier::DIM));
         }
@@ -902,15 +902,15 @@ fn conversation_entries_use_backgrounds_without_role_labels() {
     assert_eq!(transcript.entries[0].kind, EntryKind::User);
     assert_eq!(transcript.entries[1].kind, EntryKind::Assistant);
     assert_eq!(buffer[(0, 0)].symbol(), " ");
-    assert_eq!(buffer[(0, 0)].bg, USER_BACKGROUND);
-    assert_eq!(buffer[(2, 0)].bg, USER_BACKGROUND);
+    assert_eq!(buffer[(0, 0)].bg, user_background());
+    assert_eq!(buffer[(2, 0)].bg, user_background());
     assert_eq!(buffer[(2, 1)].symbol(), "u");
-    assert_eq!(buffer[(2, 1)].bg, USER_BACKGROUND);
+    assert_eq!(buffer[(2, 1)].bg, user_background());
     assert_eq!(buffer[(0, 2)].symbol(), " ");
-    assert_eq!(buffer[(0, 2)].bg, USER_BACKGROUND);
-    assert_eq!(buffer[(0, 4)].bg, ASSISTANT_BACKGROUND);
-    assert_eq!(buffer[(2, 4)].bg, ASSISTANT_BACKGROUND);
-    assert_ne!(USER_BACKGROUND, ASSISTANT_BACKGROUND);
+    assert_eq!(buffer[(0, 2)].bg, user_background());
+    assert_eq!(buffer[(0, 4)].bg, assistant_background());
+    assert_eq!(buffer[(2, 4)].bg, assistant_background());
+    assert_ne!(user_background(), assistant_background());
     assert!(text.contains("user input"));
     assert!(text.contains("assistant output"));
     assert!(!text.contains("You"));
@@ -926,10 +926,10 @@ fn thinking_and_assistant_share_background_but_not_foreground() {
     });
 
     let buffer = render(&mut transcript, 60, 4);
-    assert_eq!(buffer[(2, 0)].fg, palette::MD_TEXT);
-    assert_eq!(buffer[(2, 0)].bg, ASSISTANT_BACKGROUND);
-    assert_eq!(buffer[(2, 2)].fg, MUTED_TEXT);
-    assert_eq!(buffer[(2, 2)].bg, ASSISTANT_BACKGROUND);
+    assert_eq!(buffer[(2, 0)].fg, palette::md_text());
+    assert_eq!(buffer[(2, 0)].bg, assistant_background());
+    assert_eq!(buffer[(2, 2)].fg, muted_text());
+    assert_eq!(buffer[(2, 2)].bg, assistant_background());
 }
 
 #[test]
@@ -1052,22 +1052,22 @@ fn bash_footer_tracks_elapsed_and_renders_status_on_bottom_border() {
         (
             json!({"ok":true,"exit_code":0,"stdout":"done"}),
             "Wall:",
-            BASH_BORDER,
+            bash_border(),
         ),
         (
             json!({"ok":true,"exit_code":100,"stdout":"failed","artifact_id":227}),
             "Artifact: 227 · Exit: 100",
-            palette::REMOVED,
+            palette::removed(),
         ),
         (
             json!({"ok":false,"exit_code":null,"timed_out":true}),
             "timed out",
-            palette::REMOVED,
+            palette::removed(),
         ),
         (
             json!({"ok":false,"exit_code":null,"cancelled":true}),
             "cancelled",
-            palette::REMOVED,
+            palette::removed(),
         ),
     ] {
         let mut transcript = Transcript::new();
@@ -1205,7 +1205,7 @@ fn bash_footer_surfaces_pipeline_badge_and_warnings_outside_output() {
         .unwrap()
         .find("Non-zero")
         .unwrap() as u16;
-    assert_eq!(buffer[(column, row)].fg, palette::ACCENT);
+    assert_eq!(buffer[(column, row)].fg, palette::accent());
 
     // 最终 result.pipes 是权威：非零阶段归零后警示消失，入口仍在。
     transcript.progress(AgentEvent::ToolFinished {
@@ -1427,21 +1427,21 @@ fn bash_card_and_thinking_match_reference_and_keep_full_output() {
         assert!(text.contains(expected), "{text}");
     }
     assert!(!text.contains("line-00"));
-    assert_eq!(buffer[(0, 0)].fg, BASH_BORDER);
-    assert_eq!(buffer[(2, 1)].fg, palette::SHELL_TITLE);
-    assert_eq!(buffer[(4, 1)].fg, palette::TOOL_COMMAND);
+    assert_eq!(buffer[(0, 0)].fg, bash_border());
+    assert_eq!(buffer[(2, 1)].fg, palette::shell_title());
+    assert_eq!(buffer[(4, 1)].fg, palette::tool_command());
     assert!(text.contains("Bash · done"));
     for column in 3..7 {
-        assert_eq!(buffer[(column, 0)].fg, palette::BASH_TITLE);
+        assert_eq!(buffer[(column, 0)].fg, palette::bash_title());
     }
-    assert_eq!(buffer[(2, 1)].bg, BASH_BACKGROUND);
+    assert_eq!(buffer[(2, 1)].bg, bash_background());
     let think_row = text
         .lines()
         .position(|line| line.contains("Check the diff"))
         .unwrap() as u16;
     assert_eq!(buffer[(0, think_row)].symbol(), " ");
-    assert_eq!(buffer[(2, think_row)].fg, MUTED_TEXT);
-    assert_eq!(buffer[(2, think_row)].bg, ASSISTANT_BACKGROUND);
+    assert_eq!(buffer[(2, think_row)].fg, muted_text());
+    assert_eq!(buffer[(2, think_row)].bg, assistant_background());
     transcript.toggle_tool_output();
     let expanded_buffer = render(&mut transcript, 100, 40);
     assert_eq!(expanded_buffer[(2, 1)].symbol(), "$");
@@ -1511,20 +1511,20 @@ fn thinking_renders_markdown_with_muted_base_and_semantic_highlights() {
     };
     // 普通文本保持灰色基调 + 助手暗色背景。
     let plain = cell_of("plain");
-    assert_eq!(buffer[plain].fg, MUTED_TEXT);
-    assert_eq!(buffer[plain].bg, ASSISTANT_BACKGROUND);
+    assert_eq!(buffer[plain].fg, muted_text());
+    assert_eq!(buffer[plain].bg, assistant_background());
     // 粗体叠加 BOLD modifier 与紫色语义高亮。
     let bold = cell_of("bold");
-    assert_eq!(buffer[bold].fg, palette::MD_STRONG);
+    assert_eq!(buffer[bold].fg, palette::md_strong());
     assert!(buffer[bold].modifier.contains(Modifier::BOLD));
     // 行内代码使用独立的绿色语义高亮。
     let code = cell_of("code");
-    assert_eq!(buffer[code].fg, palette::MD_CODE);
-    assert_eq!(buffer[code].bg, ASSISTANT_BACKGROUND);
+    assert_eq!(buffer[code].fg, palette::md_code());
+    assert_eq!(buffer[code].bg, assistant_background());
     // 围栏代码块按 syntect 语义高亮，`let` 为 keyword 色。思考正文的行级灰
     // 基调被语义 span 覆盖，与粗体/行内代码的约定一致。
     let block = cell_of("let x = 1;");
-    assert_eq!(buffer[block].fg, palette::SYNTAX_KEYWORD);
+    assert_eq!(buffer[block].fg, palette::syntax_keyword());
     // 表格渲染出真实分隔线而非原始管道符。
     assert!(text.contains('│'));
     assert!(text.contains("─┼─"));
@@ -1559,7 +1559,7 @@ fn thinking_markdown_reparses_across_streaming_deltas() {
         .expect("bold rendered");
     let column = line.find("bold").expect("bold rendered") as u16;
     let row = row as u16;
-    assert_eq!(buffer[(column, row)].fg, palette::MD_STRONG);
+    assert_eq!(buffer[(column, row)].fg, palette::md_strong());
     assert!(buffer[(column, row)].modifier.contains(Modifier::BOLD));
     assert!(text.contains("tail"));
 }
