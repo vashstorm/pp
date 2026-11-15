@@ -146,6 +146,8 @@ fn todo_snapshot_event(
     }
 }
 
+mod activity_cases;
+mod bash_card_cases;
 mod bash_task_cases;
 mod diff_cases;
 mod entry_cases;
@@ -153,9 +155,12 @@ mod instruction_cases;
 mod layout_cases;
 mod lsp_cases;
 mod native_cases;
+mod replay_cases;
 mod scroll_cases;
+mod search_cases;
 mod shell_cases;
 mod streaming_cases;
+mod theme_cases;
 mod todo_cases;
 mod tree_cases;
 mod wait_cases;
