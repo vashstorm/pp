@@ -2,6 +2,51 @@ use super::*;
 use pp_config::config::{EditMode, IconMode, Theme, read_settings};
 
 #[test]
+fn tui_themes_save_icon_style_without_entering_color_theme() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let mut pty = Pty::start(&server, home.path());
+    pty.ready();
+    pty.input("/themes\r");
+    pty.text("Themes — Icon Style");
+    pty.input("\x1b[B\r");
+    let path = config_path(home.path(), "settings.yml");
+    pty.wait_for("图标独立保存，颜色保持原值", |_| {
+        read_settings(&path).is_ok_and(|settings| {
+            (settings.tui.theme, settings.tui.icons) == (Theme::Default, IconMode::Ascii)
+        })
+    });
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
+fn tui_themes_save_color_theme_without_changing_icon_style() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let mut pty = Pty::start(&server, home.path());
+    pty.ready();
+    pty.input("/themes\r");
+    pty.text("Themes — Icon Style");
+    // 聚焦分类栏、切到颜色分类，再聚焦右侧列表。
+    pty.input("\t\x1b[B\r");
+    pty.text("Themes — Color Theme");
+    pty.input("\x1b[B\r");
+    let path = config_path(home.path(), "settings.yml");
+    pty.wait_for("颜色独立保存，图标保持原值", |_| {
+        read_settings(&path).is_ok_and(|settings| {
+            (settings.tui.theme, settings.tui.icons) == (Theme::TokyoNight, IconMode::Nerd)
+        })
+    });
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
 fn slow_tui_setting_tabs_persist_general_and_revert_unsaved_theme() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
@@ -23,7 +68,7 @@ fn slow_tui_setting_tabs_persist_general_and_revert_unsaved_theme() {
     pty.input("\x1b[C");
     pty.text("Model roles");
     pty.input("\x1b[C");
-    pty.text("Step 1/2: Icon Style");
+    pty.text("Themes — Icon Style");
     pty.input("\x1b[B");
     pty.text("ASCII");
     pty.input("\x1b[D");

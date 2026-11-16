@@ -17,8 +17,7 @@ impl Panel {
         if area.is_empty() {
             return;
         }
-        let selected_theme = self.selected_theme();
-        let selected_icons = self.selected_icons();
+        let (selected_theme, selected_icons) = self.preview_appearance();
         let p = palette_for(selected_theme);
         let ascii = selected_icons == IconMode::Ascii;
 
@@ -58,10 +57,12 @@ impl Panel {
                 ])
                 .split(inner);
             let header = format!(
-                "Themes — {} · saved: {} / {}",
-                self.step_label(),
-                self.saved_icons.label(),
-                self.saved_theme.label()
+                "Themes — {} · saved: {}",
+                self.category_label(),
+                match self.category {
+                    Category::IconMode => self.saved_icons.label(),
+                    Category::Theme => self.saved_theme.label(),
+                }
             );
             frame.render_widget(
                 Line::styled(header, Style::default().fg(p.muted)),
@@ -84,6 +85,9 @@ impl Panel {
         };
 
         let sidebar_width = super::super::settings::render::sidebar_width(body.width);
+        if sidebar_width == 0 {
+            self.sidebar_focus = false;
+        }
         let right_area = if sidebar_width > 0 {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
@@ -108,7 +112,7 @@ impl Panel {
                 .split(body);
             frame.render_widget(
                 Line::styled(
-                    format!(" Category: {} (Tab switch)", self.step_label()),
+                    format!(" Category: {} (Tab switch)", self.category_label()),
                     Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
                 ),
                 narrow[0],
@@ -133,13 +137,13 @@ impl Panel {
         }
         let items = [
             (
-                self.step == Step::IconMode,
+                self.category == Category::IconMode,
                 if ascii { "I" } else { "\u{f0279}" },
                 "Icon Style",
                 selected_icons.as_str().to_owned(),
             ),
             (
-                self.step == Step::Theme,
+                self.category == Category::Theme,
                 if ascii { "T" } else { "\u{f09a9}" },
                 "Color Theme",
                 Theme::ALL.len().to_string(),
@@ -157,7 +161,14 @@ impl Panel {
                 .saturating_sub(used)
                 .max(1);
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::styled(
+                    if active && self.sidebar_focus {
+                        "❯ "
+                    } else {
+                        "  "
+                    },
+                    label_style,
+                ),
                 Span::styled(format!("{icon} "), label_style),
                 Span::styled(name, label_style),
                 Span::styled(
@@ -222,8 +233,8 @@ impl Panel {
         let saved_dot = if ascii { "*" } else { "\u{f0765}" };
         let other_dot = if ascii { "o" } else { "\u{f0766}" };
 
-        match self.step {
-            Step::IconMode => {
+        match self.category {
+            Category::IconMode => {
                 for (row, (idx, mode)) in IconMode::ALL
                     .iter()
                     .copied()
@@ -232,7 +243,7 @@ impl Panel {
                     .take(visible)
                     .enumerate()
                 {
-                    let selected = idx == self.icon_index;
+                    let selected = idx == self.icon_index && !self.sidebar_focus;
                     let is_saved = mode == self.saved_icons;
                     let mode_ascii = mode == IconMode::Ascii;
                     let row_bg = if selected { p.panel_alt_bg } else { p.panel_bg };
@@ -285,7 +296,7 @@ impl Panel {
                     frame.render_widget(line, row_rect);
                 }
             }
-            Step::Theme => {
+            Category::Theme => {
                 for (row, (idx, theme)) in Theme::ALL
                     .iter()
                     .copied()
@@ -294,7 +305,7 @@ impl Panel {
                     .take(visible)
                     .enumerate()
                 {
-                    let selected = idx == self.theme_index;
+                    let selected = idx == self.theme_index && !self.sidebar_focus;
                     let is_saved = theme == self.saved_theme;
                     let row_bg = if selected { p.panel_alt_bg } else { p.panel_bg };
                     let marker = if selected { "❯ " } else { "  " };
@@ -564,18 +575,22 @@ impl Panel {
         if self.busy {
             frame.render_widget(
                 Line::styled(
-                    "Saving theme and icon preferences...",
+                    match self.category {
+                        Category::IconMode => "Saving icon style...",
+                        Category::Theme => "Saving color theme...",
+                    },
                     Style::default().fg(p.accent),
                 ),
                 area,
             );
             return;
         }
-        let hint = match self.step {
-            Step::IconMode => "←/→ tabs · ↑↓ select · Enter / Tab theme · Esc cancel & restore",
-            Step::Theme => {
-                "←/→ tabs · ↑↓ preview · Backspace / Tab icons · Enter save · Esc cancel"
-            }
+        let hint = if self.sidebar_focus {
+            "←/→ tabs · ↑↓ category · Tab / Shift+Tab / Enter focus list · Esc cancel"
+        } else if self.sidebar_area.width > 0 {
+            "←/→ tabs · Tab / Shift+Tab focus · ↑↓ preview · Enter save · Esc cancel"
+        } else {
+            "←/→ tabs · Tab / Shift+Tab category · ↑↓ preview · Enter save · Esc cancel"
         };
         frame.render_widget(Line::styled(hint, Style::default().fg(p.muted)), area);
     }

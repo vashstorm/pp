@@ -146,7 +146,7 @@ pp --model deepseek/deepseek-flash:high /commit
 | `/setting [general\|roles\|themes\|skills]` | 打开统一设置面板（菜单显示 `/setting (config)`，含带图标的 `General · Roles · Themes · Skills`，选中页签高亮且不加方括号，支持 `←/→` 与顶部点击切换；`/config` 和 `/settings` 为别名） |
 | `/roles`、`/agents` | 打开模型角色设置页，或打开 Agent Hub（也可用 `⌥ + A / Alt + A`） |
 | `/stats [--host IP] [--port PORT] [--no-open]` | 打开本地统计页面，复用 `pp stats` 的服务 |
-| `/themes [nerd\|ascii] [THEME]` | 打开设置面板的 Themes 页（先选 `nerd` / `ascii` 图标风格，再选 7 套配色主题），或直接传参应用并保存到 `settings.yml`（`/theme` 别名） |
+| `/themes [nerd\|ascii] [THEME]` | 打开设置面板的 Themes 页（`nerd` / `ascii` 图标风格与 7 套配色主题独立选择、预览和保存），或直接传参应用并保存到 `settings.yml`（`/theme` 别名） |
 | `/model`（`/models`）、`/effort` | 切换模型与思考档位，保留历史 |
 | `/init` | 创建或更新当前项目的 `AGENTS.md` |
 | `/plan [prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，批准后执行（仅终端界面） |

@@ -1,4 +1,4 @@
-//! 主题调色板、图标模式（Nerd Font / ASCII）激活态与 `/themes` 两步全屏设置面板。
+//! 主题调色板、图标模式（Nerd Font / ASCII）激活态与 `/themes` 独立分类设置面板。
 use std::{
     cell::Cell,
     path::PathBuf,
@@ -111,7 +111,7 @@ impl Drop for Worker {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Step {
+pub(super) enum Category {
     IconMode,
     Theme,
 }
@@ -127,7 +127,8 @@ pub(super) enum Action {
 pub(super) struct Panel {
     saved_theme: Theme,
     saved_icons: IconMode,
-    step: Step,
+    category: Category,
+    sidebar_focus: bool,
     icon_index: usize,
     theme_index: usize,
     pub(super) area: Rect,
@@ -139,10 +140,10 @@ pub(super) struct Panel {
 }
 
 impl Panel {
-    pub(super) fn step_label(&self) -> &'static str {
-        match self.step {
-            Step::IconMode => "Step 1/2: Icon Style",
-            Step::Theme => "Step 2/2: Color Theme",
+    pub(super) fn category_label(&self) -> &'static str {
+        match self.category {
+            Category::IconMode => "Icon Style",
+            Category::Theme => "Color Theme",
         }
     }
 
@@ -162,7 +163,8 @@ impl Panel {
         Self {
             saved_theme,
             saved_icons,
-            step: Step::IconMode,
+            category: Category::IconMode,
+            sidebar_focus: false,
             icon_index,
             theme_index,
             area: Rect::default(),
@@ -174,15 +176,10 @@ impl Panel {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn step(&self) -> Step {
-        self.step
-    }
-
     pub(super) fn selected_index(&self) -> usize {
-        match self.step {
-            Step::IconMode => self.icon_index,
-            Step::Theme => self.theme_index,
+        match self.category {
+            Category::IconMode => self.icon_index,
+            Category::Theme => self.theme_index,
         }
     }
 
@@ -192,6 +189,13 @@ impl Panel {
 
     pub(super) fn selected_theme(&self) -> Theme {
         Theme::ALL[self.theme_index]
+    }
+
+    fn preview_appearance(&self) -> (Theme, IconMode) {
+        match self.category {
+            Category::IconMode => (self.saved_theme, self.selected_icons()),
+            Category::Theme => (self.selected_theme(), self.saved_icons),
+        }
     }
 
     pub(super) fn set_error(&mut self, message: String) {
@@ -222,31 +226,26 @@ impl Panel {
                     KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
                     KeyCode::Home => self.jump_selection(0),
                     KeyCode::End => self.jump_selection(self.list_len().saturating_sub(1)),
-                    KeyCode::Enter => match self.step {
-                        Step::IconMode => {
-                            self.set_step(Step::Theme);
-                            Action::None
-                        }
-                        Step::Theme => {
-                            self.busy = true;
-                            self.error = None;
-                            Action::Save(self.selected_theme(), self.selected_icons())
-                        }
-                    },
-                    KeyCode::Char('l') if self.step == Step::IconMode => {
-                        self.set_step(Step::Theme);
+                    KeyCode::Enter if self.sidebar_focus => {
+                        self.sidebar_focus = false;
                         Action::None
                     }
-                    KeyCode::Backspace | KeyCode::Char('h') if self.step == Step::Theme => {
-                        self.set_step(Step::IconMode);
-                        Action::None
+                    KeyCode::Enter => {
+                        self.busy = true;
+                        self.error = None;
+                        let (theme, icons) = self.preview_appearance();
+                        Action::Save(theme, icons)
                     }
-                    KeyCode::Tab | KeyCode::BackTab => {
-                        let next = match self.step {
-                            Step::IconMode => Step::Theme,
-                            Step::Theme => Step::IconMode,
-                        };
-                        self.set_step(next);
+                    KeyCode::Tab | KeyCode::BackTab if key.kind == KeyEventKind::Press => {
+                        if self.sidebar_area.width > 0 {
+                            self.sidebar_focus = !self.sidebar_focus;
+                        } else {
+                            let next = match self.category {
+                                Category::IconMode => Category::Theme,
+                                Category::Theme => Category::IconMode,
+                            };
+                            return self.set_category(next);
+                        }
                         Action::None
                     }
                     _ => Action::None,
@@ -259,15 +258,16 @@ impl Panel {
                     MouseEventKind::Down(MouseButton::Left) => {
                         let pos = (mouse.column, mouse.row).into();
                         if self.sidebar_area.contains(pos) {
+                            self.sidebar_focus = true;
                             let row = usize::from(mouse.row - self.sidebar_area.y);
-                            match row {
-                                0 => self.set_step(Step::IconMode),
-                                1 => self.set_step(Step::Theme),
-                                _ => {}
-                            }
-                            return Action::None;
+                            return match row {
+                                0 => self.set_category(Category::IconMode),
+                                1 => self.set_category(Category::Theme),
+                                _ => Action::None,
+                            };
                         }
                         if self.list_area.contains(pos) {
+                            self.sidebar_focus = false;
                             let row = usize::from(mouse.row - self.list_area.y) + self.list_scroll;
                             if row < self.list_len() {
                                 return self.jump_selection(row);
@@ -282,24 +282,38 @@ impl Panel {
         }
     }
 
-    fn set_step(&mut self, step: Step) {
-        self.step = step;
+    fn set_category(&mut self, category: Category) -> Action {
+        let previous = self.preview_appearance();
+        self.category = category;
         self.list_scroll = 0;
         self.error = None;
+        let (theme, icons) = self.preview_appearance();
+        if previous != (theme, icons) {
+            Action::Preview(theme, icons)
+        } else {
+            Action::None
+        }
     }
 
     fn list_len(&self) -> usize {
-        match self.step {
-            Step::IconMode => IconMode::ALL.len(),
-            Step::Theme => Theme::ALL.len(),
+        match self.category {
+            Category::IconMode => IconMode::ALL.len(),
+            Category::Theme => Theme::ALL.len(),
         }
     }
 
     fn move_selection(&mut self, delta: isize) -> Action {
+        if self.sidebar_focus {
+            return self.set_category(if delta < 0 {
+                Category::IconMode
+            } else {
+                Category::Theme
+            });
+        }
         let len = self.list_len();
-        let current = match self.step {
-            Step::IconMode => self.icon_index,
-            Step::Theme => self.theme_index,
+        let current = match self.category {
+            Category::IconMode => self.icon_index,
+            Category::Theme => self.theme_index,
         };
         let next = if delta < 0 {
             if current == 0 { len - 1 } else { current - 1 }
@@ -310,22 +324,30 @@ impl Panel {
     }
 
     fn jump_selection(&mut self, index: usize) -> Action {
+        if self.sidebar_focus {
+            return self.set_category(if index == 0 {
+                Category::IconMode
+            } else {
+                Category::Theme
+            });
+        }
         let clamped = index.min(self.list_len().saturating_sub(1));
         self.error = None;
-        let changed = match self.step {
-            Step::IconMode => {
+        let changed = match self.category {
+            Category::IconMode => {
                 let changed = self.icon_index != clamped;
                 self.icon_index = clamped;
                 changed
             }
-            Step::Theme => {
+            Category::Theme => {
                 let changed = self.theme_index != clamped;
                 self.theme_index = clamped;
                 changed
             }
         };
         if changed {
-            Action::Preview(self.selected_theme(), self.selected_icons())
+            let (theme, icons) = self.preview_appearance();
+            Action::Preview(theme, icons)
         } else {
             Action::None
         }
@@ -343,7 +365,8 @@ mod tests {
     }
 
     fn render_screen(panel: &mut Panel, width: u16, height: u16) -> String {
-        set_active(panel.selected_theme(), panel.selected_icons());
+        let (theme, icons) = panel.preview_appearance();
+        set_active(theme, icons);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| panel.draw(frame, frame.area()))
@@ -362,56 +385,53 @@ mod tests {
     }
 
     #[test]
-    fn two_step_flow_selects_icon_mode_then_theme_and_supports_back_and_cancel() {
-        let mut panel = Panel::new(Theme::Default, IconMode::Nerd);
-        assert_eq!(panel.step(), Step::IconMode);
-        assert_eq!(panel.selected_icons(), IconMode::Nerd);
-        assert_eq!(panel.selected_theme(), Theme::Default);
+    fn categories_preview_and_save_independently() {
+        for (category, expected) in [
+            (Category::IconMode, (Theme::Default, IconMode::Ascii)),
+            (Category::Theme, (Theme::TokyoNight, IconMode::Nerd)),
+        ] {
+            let mut panel = Panel::new(Theme::Default, IconMode::Nerd);
+            assert_eq!(
+                key(&mut panel, KeyCode::Down),
+                Action::Preview(Theme::Default, IconMode::Ascii)
+            );
+            let icons = render_screen(&mut panel, 110, 32);
+            assert!(icons.contains("Themes — Icon Style"), "{icons}");
+            assert!(icons.contains("Nerd Font") && icons.contains("ASCII"));
 
-        // Step 1: 向下切换到 ASCII 并实时预览
-        assert_eq!(
-            key(&mut panel, KeyCode::Down),
-            Action::Preview(Theme::Default, IconMode::Ascii)
-        );
-        assert_eq!(panel.selected_icons(), IconMode::Ascii);
+            // 切换分类仅预览该分类，另一分类使用已保存值。
+            assert_eq!(
+                panel.set_category(Category::Theme),
+                Action::Preview(Theme::Default, IconMode::Nerd)
+            );
+            assert_eq!(
+                key(&mut panel, KeyCode::Down),
+                Action::Preview(Theme::TokyoNight, IconMode::Nerd)
+            );
+            let colors = render_screen(&mut panel, 110, 32);
+            assert!(colors.contains("Themes — Color Theme"), "{colors}");
+            assert!(colors.contains("Tokyo Night") && colors.contains("Solarized Light"));
+            for code in [KeyCode::Backspace, KeyCode::Char('h'), KeyCode::Char('l')] {
+                assert_eq!(key(&mut panel, code), Action::None);
+                assert_eq!(panel.category, Category::Theme);
+            }
 
-        let step1_screen = render_screen(&mut panel, 110, 32);
-        assert!(step1_screen.contains("Step 1/2: Icon Style"));
-        assert!(step1_screen.contains("Nerd Font"));
-        assert!(step1_screen.contains("ASCII"));
-
-        // Enter 从 Step 1 进入 Step 2（不直接保存）
-        assert_eq!(key(&mut panel, KeyCode::Enter), Action::None);
-        assert_eq!(panel.step(), Step::Theme);
-
-        // Step 2: 向下切换到 Tokyo Night 并实时预览
-        assert_eq!(
-            key(&mut panel, KeyCode::Down),
-            Action::Preview(Theme::TokyoNight, IconMode::Ascii)
-        );
-        assert_eq!(panel.selected_theme(), Theme::TokyoNight);
-
-        let step2_screen = render_screen(&mut panel, 110, 32);
-        assert!(step2_screen.contains("Step 2/2: Color Theme"));
-        assert!(step2_screen.contains("Tokyo Night"));
-        assert!(step2_screen.contains("Solarized Light"));
-
-        // Backspace 返回 Step 1
-        assert_eq!(key(&mut panel, KeyCode::Backspace), Action::None);
-        assert_eq!(panel.step(), Step::IconMode);
-
-        // 再按 Enter 回到 Step 2 后，按 Enter 确认保存
-        assert_eq!(key(&mut panel, KeyCode::Enter), Action::None);
-        assert_eq!(
-            key(&mut panel, KeyCode::Enter),
-            Action::Save(Theme::TokyoNight, IconMode::Ascii)
-        );
-        assert!(panel.busy);
-
-        // Esc 取消并恢复初始配置
-        assert_eq!(
-            key(&mut panel, KeyCode::Esc),
-            Action::Cancel(Theme::Default, IconMode::Nerd)
-        );
+            if category == Category::IconMode {
+                assert_eq!(
+                    panel.set_category(category),
+                    Action::Preview(Theme::Default, IconMode::Ascii)
+                );
+            }
+            assert_eq!(
+                key(&mut panel, KeyCode::Enter),
+                Action::Save(expected.0, expected.1)
+            );
+            assert!(panel.busy);
+            assert_eq!(panel.category, category);
+            assert_eq!(
+                key(&mut panel, KeyCode::Esc),
+                Action::Cancel(Theme::Default, IconMode::Nerd)
+            );
+        }
     }
 }

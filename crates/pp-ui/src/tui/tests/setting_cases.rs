@@ -400,7 +400,7 @@ fn themes_and_skills_sidebars_switch_categories_and_toggle_by_mouse() {
     let _guard = ThemeGuard::reset_default();
     let (mut app, _requests, _events) = plan_app();
 
-    // 1. Themes 页签：点击左侧 Color Theme 切换步骤，点击列表行预览。
+    // 1. Themes 页签：点击左侧 Color Theme 切换分类，点击列表行预览。
     app.insert_input("/config themes".into());
     app.submit(PendingKind::Steering);
     let screen = draw(&mut app, 110, 30);
@@ -428,8 +428,9 @@ fn themes_and_skills_sidebars_switch_categories_and_toggle_by_mouse() {
         &mut false,
     );
     let theme_screen = draw(&mut app, 110, 30);
-    assert!(theme_screen.contains("Step 2/2: Color Theme"));
+    assert!(theme_screen.contains("Themes — Color Theme"));
     assert!(theme_screen.contains("Tokyo Night"));
+    assert!(theme_screen.lines().any(|line| line.starts_with("│❯ ")));
 
     let tokyo_row = theme_screen
         .lines()
@@ -448,6 +449,11 @@ fn themes_and_skills_sidebars_switch_categories_and_toggle_by_mouse() {
     assert_eq!(
         crate::tui::themes::current(),
         (Theme::TokyoNight, IconMode::Nerd)
+    );
+    assert!(
+        !draw(&mut app, 110, 30)
+            .lines()
+            .any(|line| line.starts_with("│❯ "))
     );
 
     // 2. Skills 页签：按 `→` 切到 Skills，点击左侧 Global management 切换分类，点击开关图标列启停技能。
@@ -478,6 +484,7 @@ fn themes_and_skills_sidebars_switch_categories_and_toggle_by_mouse() {
     );
     let global_screen = draw(&mut app, 110, 30);
     assert!(global_screen.contains("Skills — Global management"));
+    assert!(global_screen.lines().any(|line| line.starts_with("│❯ ")));
     let rust_row = global_screen
         .lines()
         .position(|line| line.contains("rust"))
@@ -493,6 +500,98 @@ fn themes_and_skills_sidebars_switch_categories_and_toggle_by_mouse() {
         &mut false,
     );
     assert!(!app.skill_panel.as_ref().unwrap().entries[0].enabled);
+    assert!(
+        !draw(&mut app, 110, 30)
+            .lines()
+            .any(|line| line.starts_with("│❯ "))
+    );
+}
+
+#[test]
+fn themes_and_skills_focus_handles_tab_encodings_and_narrow_resize() {
+    let _guard = ThemeGuard::reset_default();
+    let (mut app, _requests, _events) = plan_app();
+    for (tab, first, second) in [
+        (
+            settings::Tab::Themes,
+            "Themes — Icon Style",
+            "Themes — Color Theme",
+        ),
+        (
+            settings::Tab::Skills,
+            "Skills — Sources",
+            "Skills — Global management",
+        ),
+    ] {
+        for (code, modifiers) in [
+            (KeyCode::Tab, KeyModifiers::NONE),
+            (KeyCode::BackTab, KeyModifiers::SHIFT),
+            (KeyCode::Tab, KeyModifiers::SHIFT),
+        ] {
+            if tab == settings::Tab::Themes {
+                app.open_settings(tab);
+            } else {
+                app.clear_other_settings_tabs(Some(tab));
+                app.skill_panel = Some(skills::Panel::new(pp_config::skills::Skills::default()));
+            }
+            draw(&mut app, 110, 30);
+            let focus = Event::Key(KeyEvent::new(code, modifiers));
+            app.handle(focus.clone(), &mut false);
+            for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
+                let mut event = KeyEvent::new(code, modifiers);
+                event.kind = kind;
+                app.handle(Event::Key(event), &mut false);
+            }
+            // 重复与松键不切焦点；End / Home 操作侧边栏，即使右侧技能列表为空。
+            for (code, marker) in [
+                (KeyCode::End, second),
+                (KeyCode::End, second),
+                (KeyCode::Home, first),
+            ] {
+                app.handle(key(code), &mut false);
+                let screen = draw(&mut app, 110, 30);
+                assert!(screen.contains(marker), "{tab:?}: {screen}");
+                assert!(
+                    screen.lines().any(|line| line.starts_with("│❯ ")),
+                    "{screen}"
+                );
+            }
+            app.handle(focus, &mut false);
+            let right = draw(&mut app, 110, 30);
+            assert!(
+                !right.lines().any(|line| line.starts_with("│❯ ")),
+                "{right}"
+            );
+
+            // 缩窄窗口时清除不可见侧边栏焦点，Tab 恢复分类切换。
+            app.handle(key(KeyCode::Tab), &mut false);
+            draw(&mut app, 40, 30);
+            app.handle(key(KeyCode::Tab), &mut false);
+            let narrow = draw(&mut app, 40, 30);
+            assert!(narrow.contains(second), "{narrow}");
+            app.handle(
+                Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+                &mut false,
+            );
+            if tab == settings::Tab::Themes {
+                app.handle(key(KeyCode::Down), &mut false);
+                assert_eq!(
+                    crate::tui::themes::current(),
+                    (Theme::Default, IconMode::Ascii)
+                );
+                app.handle(key(KeyCode::Esc), &mut false);
+            } else {
+                app.handle(key(KeyCode::Down), &mut false);
+                let screen = draw(&mut app, 40, 30);
+                assert!(
+                    screen
+                        .lines()
+                        .any(|line| line.contains('❯') && line.contains("codex")),
+                    "{screen}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -538,15 +637,35 @@ fn setting_tabs_show_arrow_only_on_focused_pane() {
     assert_eq!(pane_arrows(&general_left), (1, 0), "{general_left}");
     assert_no_selected_bg(&draw_buffer(&mut app, 110, 30));
 
-    // 2. Themes：Step 1 与 Step 2 均只在右侧列表显示箭头，左侧栏不显示。
+    // 2. Themes：Tab 聚焦侧边栏，方向键切换分类，Shift+Tab 回到列表。
     app.open_settings(settings::Tab::Themes);
     let themes_icons = draw(&mut app, 110, 30);
     assert_eq!(pane_arrows(&themes_icons), (0, 1), "{themes_icons}");
     app.handle(key(KeyCode::Tab), &mut false);
+    let themes_left = draw(&mut app, 110, 30);
+    assert_eq!(pane_arrows(&themes_left), (1, 0), "{themes_left}");
+    assert!(themes_left.contains("Themes — Icon Style"));
+    app.handle(key(KeyCode::Down), &mut false);
     let themes_colors = draw(&mut app, 110, 30);
-    assert_eq!(pane_arrows(&themes_colors), (0, 1), "{themes_colors}");
+    assert_eq!(pane_arrows(&themes_colors), (1, 0), "{themes_colors}");
+    assert!(themes_colors.contains("Themes — Color Theme"));
+    assert_eq!(
+        crate::tui::themes::current(),
+        (Theme::Default, IconMode::Nerd)
+    );
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+        &mut false,
+    );
+    assert_eq!(pane_arrows(&draw(&mut app, 110, 30)), (0, 1));
+    app.handle(key(KeyCode::Down), &mut false);
+    assert_eq!(
+        crate::tui::themes::current(),
+        (Theme::TokyoNight, IconMode::Nerd)
+    );
+    app.handle(key(KeyCode::Esc), &mut false);
 
-    // 3. Skills：Sources 与 Global management 均只在右侧列表显示箭头，左侧栏不显示。
+    // 3. Skills：在侧边栏只导航分类，Enter 聚焦列表后才切换技能。
     let mut snapshot = pp_config::skills::Skills::default();
     snapshot.entries.push(pp_config::skills::Skill {
         name: "rust".into(),
@@ -559,6 +678,17 @@ fn setting_tabs_show_arrow_only_on_focused_pane() {
     let skills_sources = draw(&mut app, 110, 30);
     assert_eq!(pane_arrows(&skills_sources), (0, 1), "{skills_sources}");
     app.handle(key(KeyCode::Tab), &mut false);
+    let skills_left = draw(&mut app, 110, 30);
+    assert_eq!(pane_arrows(&skills_left), (1, 0), "{skills_left}");
+    assert!(skills_left.contains("Skills — Sources"));
+    app.handle(key(KeyCode::Down), &mut false);
+    app.handle(key(KeyCode::Char(' ')), &mut false);
     let skills_global = draw(&mut app, 110, 30);
-    assert_eq!(pane_arrows(&skills_global), (0, 1), "{skills_global}");
+    assert_eq!(pane_arrows(&skills_global), (1, 0), "{skills_global}");
+    assert!(skills_global.contains("Skills — Global management"));
+    assert!(app.skill_panel.as_ref().unwrap().entries[0].enabled);
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert_eq!(pane_arrows(&draw(&mut app, 110, 30)), (0, 1));
+    app.handle(key(KeyCode::Char(' ')), &mut false);
+    assert!(!app.skill_panel.as_ref().unwrap().entries[0].enabled);
 }

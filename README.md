@@ -152,7 +152,7 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 | `/setting [general\|roles\|themes\|skills]` | Open the unified Settings TUI (shown as `/setting (config)` in completion; `General · Roles · Themes · Skills` with icons and the active tab highlighted, switch tabs via `←/→` or click; `/config` and `/settings` aliases) |
 | `/roles`, `/agents` | Open the Roles tab in the Setting TUI, or open Agent Hub (`⌥ + A / Alt + A`) |
 | `/stats [--host IP] [--port PORT] [--no-open]` | Open the local statistics page, using the same server as `pp stats` |
-| `/themes [nerd\|ascii] [THEME]` | Open the Themes tab (icon style `nerd` / `ascii` and 7 built-in themes), or apply directly and save to `settings.yml` (`/theme` alias) |
+| `/themes [nerd\|ascii] [THEME]` | Open the Themes tab (independently select, preview, and save icon style `nerd` / `ascii` or one of 7 built-in color themes), or apply directly and save to `settings.yml` (`/theme` alias) |
 | `/model` (`/models`), `/effort` | Switch models and reasoning levels while keeping history |
 | `/init` | Create or update the current project's `AGENTS.md` |
 | `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |

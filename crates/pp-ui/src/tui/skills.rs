@@ -95,6 +95,7 @@ pub(super) struct Panel {
     source_selection: ListState,
     sources: Vec<SkillSource>,
     sources_tab: bool,
+    sidebar_focus: bool,
     choices: BTreeMap<String, bool>,
     detail_scroll: u16,
     list_scroll: usize,
@@ -123,6 +124,7 @@ impl Panel {
             source_selection: ListState::default().with_selected(Some(0)),
             sources: skills.sources,
             sources_tab: true,
+            sidebar_focus: false,
             choices: BTreeMap::new(),
             entries: skills.entries,
             diagnostics: skills.diagnostics,
@@ -144,6 +146,7 @@ impl Panel {
             source_selection: ListState::default().with_selected(Some(0)),
             sources: Vec::new(),
             sources_tab,
+            sidebar_focus: false,
             choices: BTreeMap::new(),
             entries: Vec::new(),
             diagnostics: Vec::new(),
@@ -250,6 +253,7 @@ impl Panel {
                     MouseEventKind::Down(MouseButton::Left) => {
                         let pos = (mouse.column, mouse.row).into();
                         if self.sidebar_area.contains(pos) {
+                            self.sidebar_focus = true;
                             let row = usize::from(mouse.row - self.sidebar_area.y);
                             match row {
                                 0 => self.set_tab(true),
@@ -259,6 +263,7 @@ impl Panel {
                             return Action::None;
                         }
                         if self.list_area.contains(pos) {
+                            self.sidebar_focus = false;
                             let row = usize::from(mouse.row - self.list_area.y) + self.list_scroll;
                             let switch_col = mouse.column == self.list_area.x + 2;
                             if self.sources_tab {
@@ -295,14 +300,21 @@ impl Panel {
             KeyCode::PageUp => self.detail_scroll = self.detail_scroll.saturating_sub(3),
             KeyCode::PageDown => self.detail_scroll = self.detail_scroll.saturating_add(3),
             KeyCode::Esc => return Action::Cancel,
+            KeyCode::Enter if key.kind == KeyEventKind::Press && self.sidebar_focus => {
+                self.sidebar_focus = false;
+            }
             KeyCode::Enter if key.kind == KeyEventKind::Press => {
                 return Action::Save(self.draft());
             }
             KeyCode::Tab | KeyCode::BackTab if key.kind == KeyEventKind::Press => {
-                self.set_tab(!self.sources_tab);
+                if self.sidebar_area.width > 0 {
+                    self.sidebar_focus = !self.sidebar_focus;
+                } else {
+                    self.set_tab(!self.sources_tab);
+                }
             }
             KeyCode::Char('r') if key.kind == KeyEventKind::Press => return Action::Reload,
-            KeyCode::Char(' ') if key.kind == KeyEventKind::Press => {
+            KeyCode::Char(' ') if key.kind == KeyEventKind::Press && !self.sidebar_focus => {
                 if self.sources_tab {
                     let selected = self.source_selection.selected().unwrap_or(0);
                     return self.toggle_source(selected);
@@ -322,7 +334,9 @@ impl Panel {
     }
 
     fn current_len(&self) -> usize {
-        if self.sources_tab {
+        if self.sidebar_focus {
+            2
+        } else if self.sources_tab {
             SkillSource::ALL.len()
         } else {
             self.entries.len()
@@ -330,6 +344,10 @@ impl Panel {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        if self.sidebar_focus {
+            self.set_tab(delta < 0);
+            return;
+        }
         let count = self.current_len();
         if count == 0 {
             return;
@@ -348,6 +366,10 @@ impl Panel {
     }
 
     fn jump_selection(&mut self, index: usize) {
+        if self.sidebar_focus {
+            self.set_tab(index == 0);
+            return;
+        }
         let count = self.current_len();
         let target = (count > 0).then(|| index.min(count.saturating_sub(1)));
         if self.sources_tab {
@@ -459,6 +481,9 @@ impl Panel {
         };
 
         let sidebar_width = super::settings::render::sidebar_width(body.width);
+        if sidebar_width == 0 {
+            self.sidebar_focus = false;
+        }
         if sidebar_width > 0 {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
@@ -564,7 +589,14 @@ impl Panel {
                 .saturating_sub(used)
                 .max(1);
             lines.push(Line::from(vec![
-                Span::raw("  "),
+                Span::styled(
+                    if active && self.sidebar_focus {
+                        "❯ "
+                    } else {
+                        "  "
+                    },
+                    label_style,
+                ),
                 Span::styled(format!("{icon} "), label_style),
                 Span::styled(name, label_style),
                 Span::styled(
@@ -614,7 +646,7 @@ impl Panel {
                 .take(visible)
                 .enumerate()
             {
-                let selected = idx == selected_idx;
+                let selected = idx == selected_idx && !self.sidebar_focus;
                 let enabled = self.sources.contains(&source);
                 let prefix = if selected { "❯ " } else { "  " };
                 let dot = if enabled { enabled_dot } else { disabled_dot };
@@ -643,7 +675,7 @@ impl Panel {
         if self.entries.is_empty() {
             frame.render_widget(
                 Paragraph::new(
-                    "No skills found. Press Tab to inherit Claude/Codex skills, or update skill_dirs and press r.",
+                    "No skills found. Enable Claude/Codex in Sources, or update skill_dirs and press r.",
                 )
                 .style(Style::default().fg(p.muted))
                 .wrap(Wrap { trim: false }),
@@ -673,7 +705,7 @@ impl Panel {
             .take(visible)
             .enumerate()
         {
-            let selected = idx == selected_idx;
+            let selected = idx == selected_idx && !self.sidebar_focus;
             let prefix = if selected { "❯ " } else { "  " };
             let dot = if skill.enabled {
                 enabled_dot
@@ -756,9 +788,18 @@ impl Panel {
             Line::styled("Saving skills...", Style::default().fg(p.accent))
         } else if self.busy {
             Line::styled("Loading skills...", Style::default().fg(p.accent))
+        } else if self.sidebar_focus {
+            Line::styled(
+                "←/→ tabs · ↑↓ category · Tab / Shift+Tab / Enter focus list · Esc cancel",
+                Style::default().fg(p.muted),
+            )
         } else {
             Line::styled(
-                "←/→ tabs · Tab switch · ↑↓ select · Space toggle · Enter save · r rescan · Esc cancel",
+                if self.sidebar_area.width > 0 {
+                    "←/→ tabs · Tab / Shift+Tab focus · ↑↓ select · Space toggle · Enter save · r rescan · Esc cancel"
+                } else {
+                    "←/→ tabs · Tab category · ↑↓ select · Space toggle · Enter save · r rescan · Esc cancel"
+                },
                 Style::default().fg(p.muted),
             )
         };

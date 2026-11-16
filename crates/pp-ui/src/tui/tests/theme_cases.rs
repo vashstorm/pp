@@ -27,63 +27,64 @@ fn type_command(app: &mut App, text: &str) {
 }
 
 #[test]
-fn slash_themes_two_step_panel_previews_navigates_and_esc_restores() {
+fn slash_themes_categories_preview_independently_and_esc_restores() {
     let _guard = ThemeGuard::reset_default();
     let mut app = app();
     let mut dirty = false;
 
-    app.insert_input("/themes".into());
-    app.submit(PendingKind::Steering);
+    type_command(&mut app, "/themes");
     assert!(app.themes_panel.is_some());
     assert!(app.needs_alternate());
+    let icons = draw(&mut app, 100, 32);
+    assert!(icons.contains("Themes — Icon Style"), "{icons}");
+    assert!(icons.contains("Nerd Font") && icons.contains("ASCII"));
 
-    let step1 = draw(&mut app, 100, 32);
-    assert!(step1.contains("Step 1/2: Icon Style"), "{step1}");
-    assert!(
-        step1.contains("Nerd Font") && step1.contains("ASCII"),
-        "{step1}"
-    );
-    assert_eq!(
-        crate::tui::themes::current(),
-        (Theme::Default, IconMode::Nerd)
-    );
-
-    // Step 1 选择 ASCII 即实时预览图标风格。
     app.handle(key(KeyCode::Down), &mut dirty);
     assert_eq!(
         crate::tui::themes::current(),
         (Theme::Default, IconMode::Ascii)
     );
 
-    // Enter 进入 Step 2：色彩主题。
+    // 分类栏导航到颜色页，未保存的图标预览不会带入颜色页。
+    app.handle(key(KeyCode::Tab), &mut dirty);
+    app.handle(key(KeyCode::Down), &mut dirty);
     app.handle(key(KeyCode::Enter), &mut dirty);
-    let step2 = draw(&mut app, 100, 32);
-    assert!(step2.contains("Step 2/2: Color Theme"), "{step2}");
-    assert!(step2.contains("Tokyo Night"), "{step2}");
-
-    // Down 实时预览下一个主题，Backspace 返回 Step 1 仍保留已选预览。
+    let colors = draw(&mut app, 100, 32);
+    assert!(colors.contains("Themes — Color Theme"), "{colors}");
     app.handle(key(KeyCode::Down), &mut dirty);
     assert_eq!(
         crate::tui::themes::current(),
-        (Theme::TokyoNight, IconMode::Ascii)
-    );
-    app.handle(key(KeyCode::Backspace), &mut dirty);
-    let back_to_step1 = draw(&mut app, 100, 32);
-    assert!(
-        back_to_step1.contains("Step 1/2: Icon Style"),
-        "{back_to_step1}"
-    );
-    assert_eq!(
-        crate::tui::themes::current(),
-        (Theme::TokyoNight, IconMode::Ascii)
+        (Theme::TokyoNight, IconMode::Nerd)
     );
 
-    // Esc 取消并恢复打开面板前的 (Theme, IconMode)。
+    // 返回图标分类仍保留其草稿，颜色预览不影响图标分类。
+    app.handle(key(KeyCode::Tab), &mut dirty);
+    app.handle(key(KeyCode::Home), &mut dirty);
+    app.handle(key(KeyCode::Enter), &mut dirty);
+    let icons = draw(&mut app, 100, 32);
+    assert!(icons.contains("Themes — Icon Style"), "{icons}");
+    assert_eq!(
+        crate::tui::themes::current(),
+        (Theme::Default, IconMode::Ascii)
+    );
+
     app.handle(key(KeyCode::Esc), &mut dirty);
     assert!(app.themes_panel.is_none());
     assert_eq!(
         crate::tui::themes::current(),
         (Theme::Default, IconMode::Nerd)
+    );
+}
+
+fn wait_for_theme_save(app: &mut App) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while app.themes_panel.is_some() && Instant::now() < deadline {
+        app.receive();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        app.themes_panel.is_none(),
+        "themes worker should finish saving"
     );
 }
 
@@ -110,23 +111,27 @@ fn slash_themes_confirm_persists_appearance_and_preserves_other_tui_settings() {
     type_command(&mut app, "/themes");
     assert!(app.themes_panel.is_some());
 
-    // Step 1: Nerd -> Ascii -> Enter 进入 Step 2
+    // 图标分类直接保存，不必进入颜色分类。
     app.handle(key(KeyCode::Down), &mut dirty);
     app.handle(key(KeyCode::Enter), &mut dirty);
-    // Step 2: Default -> TokyoNight -> Catppuccin -> Enter 确认保存
-    app.handle(key(KeyCode::Down), &mut dirty);
-    app.handle(key(KeyCode::Down), &mut dirty);
-    app.handle(key(KeyCode::Enter), &mut dirty);
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while app.themes_panel.is_some() && Instant::now() < deadline {
-        app.receive();
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(
-        app.themes_panel.is_none(),
-        "themes worker should finish saving"
+    wait_for_theme_save(&mut app);
+    let saved = read_settings(&settings_path).unwrap();
+    assert_eq!(
+        (saved.tui.theme, saved.tui.icons),
+        (Theme::Default, IconMode::Ascii)
     );
+
+    type_command(&mut app, "/themes");
+    draw(&mut app, 100, 32);
+    // 图标分类先预览 Nerd，再切到颜色分类；保存颜色不能提交图标草稿。
+    app.handle(key(KeyCode::Up), &mut dirty);
+    app.handle(key(KeyCode::Tab), &mut dirty);
+    app.handle(key(KeyCode::Down), &mut dirty);
+    app.handle(key(KeyCode::Enter), &mut dirty);
+    app.handle(key(KeyCode::Down), &mut dirty);
+    app.handle(key(KeyCode::Down), &mut dirty);
+    app.handle(key(KeyCode::Enter), &mut dirty);
+    wait_for_theme_save(&mut app);
     assert_eq!(
         crate::tui::themes::current(),
         (Theme::Catppuccin, IconMode::Ascii)
