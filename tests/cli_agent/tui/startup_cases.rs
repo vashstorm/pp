@@ -841,15 +841,27 @@ fn tui_context_panel_displays_breakdown_and_closes_on_escape() {
     let (_home, mut pty) = context_tui_start(&server, "response", 128_000, 80);
     pty.input("/context\r");
     pty.wait_for(
-        "empty session context diagnostics shows baseline grid and zero messages",
+        "empty session context diagnostics shows zero usage and empty grid",
         |screen| {
             let text = screen.contents();
+            let grid_has_no_filled_cells = !text
+                .lines()
+                .any(|line| line.chars().take(52).any(|ch| ch == '⛁'));
             text.contains("Context · fixture/primary")
-                && text.contains("System Prompt")
-                && text.contains("Built-in Tools")
+                && text.contains("Used 0 of 128K tokens · 0%")
+                && text.contains("System Prompt  0  0.0%")
+                && text.contains("Instruction Files  0  0.0%")
+                && text.contains("Skills  0  0.0%")
+                && text.contains("Built-in Tools  0  0.0%")
+                && text.contains("Custom Tools  0  0.0%")
                 && text.contains("User / Developer Messages  0  0.0%")
+                && text.contains("Assistant Messages  0  0.0%")
+                && text.contains("Assistant Thinking  0  0.0%")
+                && text.contains("Tool Calls  0  0.0%")
+                && text.contains("Tool Output  0  0.0%")
                 && text.contains("Auto-Compact Buffer")
                 && text.contains("Free Space")
+                && grid_has_no_filled_cells
         },
     );
     pty.input("\x1b");
@@ -864,6 +876,9 @@ fn tui_context_panel_displays_breakdown_and_closes_on_escape() {
         |screen| {
             let text = screen.contents();
             text.contains("Context · fixture/primary")
+                && !text.contains("Used 0 of 128K tokens")
+                && !text.contains("System Prompt  0  0.0%")
+                && !text.contains("Built-in Tools  0  0.0%")
                 && text.contains("Custom Tools")
                 && text.contains("Assistant Thinking")
                 && !text.contains("User / Developer Messages  0  0.0%")

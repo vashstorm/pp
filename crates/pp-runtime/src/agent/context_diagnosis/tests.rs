@@ -44,93 +44,144 @@ fn category(report: &ContextReport, key: CategoryKey) -> &CategorySummary {
 }
 
 #[test]
-fn empty_session_reports_baseline_categories_and_zero_messages_without_side_effects() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = dir.path().join("cfg");
-    let work = dir.path().join("work");
-    let sessions = dir.path().join("sessions");
-    fs::create_dir_all(&cfg).unwrap();
-    fs::create_dir_all(work.join(".pp")).unwrap();
-    fs::create_dir_all(&sessions).unwrap();
+fn empty_session_reports_zero_usage_and_empty_categories_without_side_effects() {
+    for protocol in [Protocol::Response, Protocol::Completion] {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        let work = dir.path().join("work");
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::create_dir_all(work.join(".pp")).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
 
-    fs::write(work.join("AGENTS.md"), "Workspace rule: keep tests fast.").unwrap();
-    fs::write(
-        work.join(".pp/APPEND_SYSTEM.md"),
-        "Extra append instruction.",
-    )
-    .unwrap();
-    fs::write(cfg.join("settings.yml"), "skill_dirs:\n  - skills\n").unwrap();
-    let skill_dir = cfg.join("skills/alpha");
-    fs::create_dir_all(&skill_dir).unwrap();
-    fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\nname: alpha\ndescription: Alpha helper\n---\n\nFull alpha body.",
-    )
-    .unwrap();
+        fs::write(work.join("AGENTS.md"), "Workspace rule: keep tests fast.").unwrap();
+        fs::write(
+            work.join(".pp/APPEND_SYSTEM.md"),
+            "Extra append instruction.",
+        )
+        .unwrap();
+        fs::write(cfg.join("settings.yml"), "skill_dirs:\n  - skills\n").unwrap();
+        let skill_dir = cfg.join("skills/alpha");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: alpha\ndescription: Alpha helper\n---\n\nFull alpha body.",
+        )
+        .unwrap();
 
-    let catalog = test_catalog(&cfg, Protocol::Response, Some(128_000));
-    let mut tools = Tools::new(work.clone(), EditMode::Replace).unwrap();
-    let skills = pp_config::skills::Skills::from_dir(&cfg).shared();
-    tools.skills = skills;
-    let prompt_source =
-        crate::system_prompt::Snapshot::discover(&work, &cfg, None, None, None).unwrap();
+        let catalog = test_catalog(&cfg, protocol, Some(128_000));
+        let mut tools = Tools::new(work.clone(), EditMode::Replace).unwrap();
+        let skills = pp_config::skills::Skills::from_dir(&cfg).shared();
+        tools.skills = skills;
+        let prompt_source =
+            crate::system_prompt::Snapshot::discover(&work, &cfg, None, None, None).unwrap();
 
-    let agent = Agent::new_with_prompt(
-        ModelState::shared(catalog),
-        tools,
-        sessions.clone(),
-        sessions.join(".locks"),
-        prompt_source,
-        sessions.join(".stats/stats.db"),
-    )
-    .unwrap();
+        let agent = Agent::new_with_prompt(
+            ModelState::shared(catalog),
+            tools,
+            sessions.clone(),
+            sessions.join(".locks"),
+            prompt_source,
+            sessions.join(".stats/stats.db"),
+        )
+        .unwrap();
 
-    let report = agent.diagnose_context().unwrap();
-    assert!(report.empty_session);
-    assert_eq!(report.categories.len(), 10);
-    assert!(report.active_tokens > 0);
-    let in_ctx_sum: u64 = report
-        .categories
-        .iter()
-        .filter(|c| c.in_context)
-        .map(|c| c.tokens)
-        .sum();
-    assert_eq!(in_ctx_sum, report.active_tokens);
+        let report = agent.diagnose_context().unwrap();
+        assert!(report.empty_session);
+        assert_eq!(report.active_tokens, 0);
+        assert_eq!(report.thinking_tokens, 0);
+        assert_eq!(report.thinking_turns, 0);
+        assert_eq!(
+            report.thinking_in_context,
+            matches!(protocol, Protocol::Response)
+        );
+        assert!(report.last_request.is_none());
+        assert_eq!(report.session_output_tokens, 0);
+        assert_eq!(report.categories.len(), 10);
+        for cat in &report.categories {
+            assert_eq!(cat.tokens, 0, "category {:?} must be 0", cat.key);
+            assert_eq!(cat.bytes, 0, "category {:?} bytes must be 0", cat.key);
+            assert_eq!(cat.item_count, 0, "category {:?} count must be 0", cat.key);
+            assert!(
+                cat.items.is_empty(),
+                "category {:?} must have no items",
+                cat.key
+            );
+        }
 
-    assert!(category(&report, CategoryKey::System).tokens > 0);
-    assert!(
-        category(&report, CategoryKey::InstructionFiles)
-            .items
-            .iter()
-            .any(|i| i.title == "AGENTS.md")
-    );
-    assert!(
-        category(&report, CategoryKey::Skills)
-            .items
-            .iter()
-            .any(|i| i.title == "alpha")
-    );
-    assert!(
-        category(&report, CategoryKey::BuiltInTools)
-            .items
-            .iter()
-            .any(|i| i.title == "read")
-    );
-    assert_eq!(category(&report, CategoryKey::CustomTools).tokens, 0);
-    assert_eq!(category(&report, CategoryKey::UserMessages).tokens, 0);
-    assert_eq!(category(&report, CategoryKey::AssistantMessages).tokens, 0);
-    assert_eq!(category(&report, CategoryKey::Thinking).tokens, 0);
-    assert_eq!(category(&report, CategoryKey::ToolCalls).tokens, 0);
-    assert_eq!(category(&report, CategoryKey::ToolOutput).tokens, 0);
+        // 只读诊断不创建会话 JSONL。
+        assert_eq!(
+            fs::read_dir(&sessions)
+                .unwrap()
+                .filter_map(Result::ok)
+                .count(),
+            0
+        );
+    }
+}
 
-    // 只读诊断不创建会话 JSONL。
-    assert_eq!(
-        fs::read_dir(&sessions)
-            .unwrap()
-            .filter_map(Result::ok)
-            .count(),
-        0
-    );
+#[test]
+fn reset_clears_context_diagnosis_and_snapshot_to_zero() {
+    for protocol in [Protocol::Response, Protocol::Completion] {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        let work = dir.path().join("work");
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(work.join("AGENTS.md"), "Workspace rule.").unwrap();
+
+        let catalog = test_catalog(&cfg, protocol, Some(128_000));
+        let mut agent = Agent::new(
+            catalog,
+            Tools::new(work.clone(), EditMode::Replace).unwrap(),
+            sessions,
+        )
+        .unwrap();
+        let snapshot = agent.observe_context();
+
+        agent.refresh_instructions().unwrap();
+        agent.append_user("hello");
+        agent.last_request = Some(TokenUsage {
+            input_tokens: 500,
+            output_tokens: 120,
+            cached_tokens: Some(100),
+            cache_write_tokens: None,
+        });
+        agent.session_output_tokens = 120;
+        agent
+            .thinking_history
+            .push(crate::agent::context_diagnosis::ThinkingEntry {
+                thinking: "thought".into(),
+                summary: String::new(),
+            });
+
+        let active = agent.diagnose_context().unwrap();
+        assert!(!active.empty_session);
+        assert!(active.active_tokens > 0);
+
+        agent.reset();
+        agent.publish_context_snapshot();
+
+        let after_reset = agent.diagnose_context().unwrap();
+        let snap_report = snapshot.read().unwrap().unwrap();
+        for report in [&after_reset, snap_report.as_ref()] {
+            assert!(report.empty_session);
+            assert_eq!(report.active_tokens, 0);
+            assert_eq!(report.thinking_tokens, 0);
+            assert_eq!(report.thinking_turns, 0);
+            assert!(report.last_request.is_none());
+            assert_eq!(report.session_output_tokens, 0);
+            assert_eq!(report.categories.len(), 10);
+            for cat in &report.categories {
+                assert_eq!(cat.tokens, 0);
+                assert_eq!(cat.bytes, 0);
+                assert_eq!(cat.item_count, 0);
+                assert!(cat.items.is_empty());
+            }
+        }
+    }
 }
 
 #[test]

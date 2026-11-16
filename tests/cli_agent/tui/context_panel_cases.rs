@@ -141,3 +141,82 @@ fn context_panel_updates_free_space_after_changing_compact_threshold_in_settings
     pty.finish();
     no_more(&server);
 }
+
+#[test]
+fn context_panel_uses_only_real_session_data_before_chat_and_after_new() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(home.path(), "settings.yml"),
+        context_tui_settings(false, 80),
+    )
+    .unwrap();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        context_tui_models(&server, "response", 128_000),
+    )
+    .unwrap();
+    std::fs::write(
+        home.path().join("AGENTS.md"),
+        "Workspace rule that must not appear before a real turn.",
+    )
+    .unwrap();
+    let mut pty = Pty::start_with_existing_files(home.path());
+    pty.ready();
+
+    // 尚未开始对话时即使工作区存在 AGENTS.md，/context 也必须全部为 0。
+    pty.input("/context\r");
+    pty.wait_for("对话前仅显示零用量和全零分类", |screen| {
+        let text = screen.contents();
+        text.contains("Used 0 of 128K tokens · 0%")
+            && text.contains("System Prompt  0  0.0%")
+            && text.contains("Instruction Files  0  0.0%")
+            && text.contains("Built-in Tools  0  0.0%")
+            && text.contains("User / Developer Messages  0  0.0%")
+    });
+    pty.input("\x1b");
+    pty.wait_for("关闭对话前 /context", |screen| {
+        !screen.contents().contains("Context · fixture/primary") && input_is_ready(screen)
+    });
+
+    // 发送真实对话后，System Prompt、Instruction Files 与消息分类使用真实会话数据计算。
+    context_tui_exchange(&mut pty, &server, "response", "hello real context", "ok");
+    pty.input("/context\r");
+    pty.wait_for("对话后显示真实会话分类数据", |screen| {
+        let text = screen.contents();
+        text.contains("Context · fixture/primary")
+            && !text.contains("Used 0 of 128K tokens")
+            && !text.contains("System Prompt  0  0.0%")
+            && !text.contains("Instruction Files  0  0.0%")
+            && !text.contains("Built-in Tools  0  0.0%")
+            && !text.contains("User / Developer Messages  0  0.0%")
+            && !text.contains("Assistant Messages  0  0.0%")
+    });
+    pty.input("\x1b");
+    pty.wait_for("关闭对话后 /context", |screen| {
+        !screen.contents().contains("Context · fixture/primary") && input_is_ready(screen)
+    });
+
+    // 执行 /new 重置会话后，/context 重新回到全零状态。
+    pty.input("/new\r");
+    pty.wait_for("/new 清空会话完成", |screen| {
+        !screen.contents().contains("hello real context") && input_is_ready(screen)
+    });
+    pty.input("/context\r");
+    pty.wait_for("/new 后 /context 重新归零", |screen| {
+        let text = screen.contents();
+        text.contains("Used 0 of 128K tokens · 0%")
+            && text.contains("System Prompt  0  0.0%")
+            && text.contains("Instruction Files  0  0.0%")
+            && text.contains("Built-in Tools  0  0.0%")
+            && text.contains("User / Developer Messages  0  0.0%")
+    });
+    pty.input("\x1b");
+    pty.wait_for("关闭重置后 /context", |screen| {
+        !screen.contents().contains("Context · fixture/primary") && input_is_ready(screen)
+    });
+
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}

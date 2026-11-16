@@ -1,4 +1,4 @@
-//! 当前会话上下文的只读诊断快照：严格基于当前会话（含未发送首条消息时的初始系统与工具配置）
+//! 当前会话上下文的只读诊断快照：严格基于已发送/已恢复的真实会话数据，
 //! 按 10 个固定分类拆分统计：`System Prompt`、`Instruction Files`、`Skills`、`Built-in Tools`、
 //! `Custom Tools`、`User / Developer Messages`、`Assistant Messages`、`Assistant Thinking`、
 //! `Tool Calls` 与 `Tool Output`。
@@ -19,10 +19,7 @@ use anyhow::{Result, anyhow};
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageContent,
 };
-use pp_core::{
-    context::{TokenUsage, estimate_tokens},
-    model::ThinkLevel,
-};
+use pp_core::{context::TokenUsage, model::ThinkLevel};
 use sections::{
     build_agent_md_items, build_skill_items, build_split_tool_items, build_system_items,
 };
@@ -118,8 +115,8 @@ pub struct DiagnosticItem {
 
 impl Agent {
     /// 生成当前会话上下文的只读诊断报告：
-    /// 空会话展示静态基线（系统提示词、初始 AGENTS.md、技能索引、工具 Schema）与 0 消息；
-    /// 非空会话严格基于已发送/已恢复的真实会话数据。
+    /// 仅基于当前会话已发送/已恢复的真实数据统计；
+    /// 尚未开始对话的空会话返回零用量及全零分类，不把未发送的配置基线计入上下文，也不创建会话日志。
     pub fn diagnose_context(&self) -> Result<ContextReport> {
         let usage = self.context_usage()?;
         let empty_session = usage.estimated_tokens == 0;
@@ -127,6 +124,41 @@ impl Agent {
             Session::Completion(_) => "completion",
             Session::Response(_) => "response",
         };
+        let thinking_in_context = matches!(&self.session, Session::Response(_));
+
+        if empty_session {
+            let categories = CategoryKey::ALL
+                .into_iter()
+                .map(|key| CategorySummary {
+                    key,
+                    name: key.label(),
+                    tokens: 0,
+                    bytes: 0,
+                    item_count: 0,
+                    in_context: key != CategoryKey::Thinking || thinking_in_context,
+                    items: Vec::new(),
+                })
+                .collect();
+
+            return Ok(ContextReport {
+                model_reference: self.current_model.reference.clone(),
+                model_name: self.current_model.model.clone(),
+                protocol,
+                work_mode: self.workflow.mode_name(),
+                think_level: self.think_level,
+                empty_session: true,
+                active_tokens: 0,
+                context_window: self.current_model.context_window,
+                auto_compact: self.auto_compact,
+                threshold_percent: self.auto_compact_threshold_percent,
+                last_request: self.last_request,
+                session_output_tokens: self.session_output_tokens,
+                thinking_tokens: 0,
+                thinking_in_context,
+                thinking_turns: 0,
+                categories,
+            });
+        }
 
         let actual_system = self.session_system_text().unwrap_or("");
         let (inspected_docs, _) = self.tools.inspect_project_instructions()?;
@@ -135,9 +167,7 @@ impl Agent {
             actual_system,
             &self.reported_project_load,
             &inspected_docs,
-            empty_session,
         )?;
-        let agent_md_in_system = !agent_md_section.ranges.is_empty();
         let (agent_md_items, agent_md_tokens, agent_md_bytes, mut excluded_ranges) = (
             agent_md_section.items,
             agent_md_section.tokens,
@@ -203,60 +233,9 @@ impl Agent {
         let mcp_origins = self.tools.mcp.tool_origins(access);
         let split_tools = build_split_tool_items(&self.session, &mcp_origins)?;
 
-        let (history, thinking) = if empty_session {
-            (
-                history::HistoryBreakdown {
-                    user_messages: history::HistoryBucket {
-                        items: Vec::new(),
-                        tokens: 0,
-                        bytes: 0,
-                    },
-                    assistant_messages: history::HistoryBucket {
-                        items: Vec::new(),
-                        tokens: 0,
-                        bytes: 0,
-                    },
-                    tool_calls: history::HistoryBucket {
-                        items: Vec::new(),
-                        tokens: 0,
-                        bytes: 0,
-                    },
-                    tool_outputs: history::HistoryBucket {
-                        items: Vec::new(),
-                        tokens: 0,
-                        bytes: 0,
-                    },
-                },
-                thinking::ThinkingBreakdown {
-                    items: Vec::new(),
-                    tokens: 0,
-                    bytes: 0,
-                    count: 0,
-                    in_context: matches!(&self.session, Session::Response(_)),
-                },
-            )
-        } else {
-            (
-                self.inspect_history()?,
-                build_thinking_items(&self.session, &self.thinking_history)?,
-            )
-        };
-
-        let active_tokens = if empty_session {
-            let session_base = match &self.session {
-                Session::Completion(request) => estimate_tokens(request)?,
-                Session::Response(request) => estimate_tokens(request)?,
-            };
-            // 空会话时初始 session 尚未注入启动 AGENTS.md（agent_md_in_system 为 false 时未在 actual_system 中计入）。
-            let pending_agents_md = if agent_md_in_system {
-                0
-            } else {
-                agent_md_tokens
-            };
-            session_base.saturating_add(pending_agents_md)
-        } else {
-            usage.estimated_tokens
-        };
+        let history = self.inspect_history()?;
+        let thinking = build_thinking_items(&self.session, &self.thinking_history)?;
+        let active_tokens = usage.estimated_tokens;
 
         let mut categories = vec![
             CategorySummary {

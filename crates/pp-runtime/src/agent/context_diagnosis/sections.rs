@@ -19,14 +19,13 @@ pub(super) struct SectionWithRanges {
     pub ranges: Vec<(usize, usize)>,
 }
 
-/// 从 `actual_system` 中剥离并构建已真实注入的 `AGENTS.md` 指令文件条目；
-/// 当 `include_unsent_initial` 为 true（空会话）时，同时包含启动期将随首条请求发送的 `AGENTS.md`。
+/// 从 `actual_system` 中剥离并构建已真实注入的 `AGENTS.md` 指令文件条目，
+/// 排除尚未随请求发送的规则。
 pub(super) fn build_agent_md_items(
     cwd: &std::path::Path,
     actual_system: &str,
     reported_loads: &BTreeMap<String, String>,
     inspected_docs: &[InspectedDocument],
-    include_unsent_initial: bool,
 ) -> Result<SectionWithRanges> {
     let mut items = Vec::new();
     let mut tokens = 0u64;
@@ -153,7 +152,7 @@ pub(super) fn build_agent_md_items(
 
     for doc in inspected_docs {
         let path_str = doc.document.path.display().to_string();
-        if (!doc.sent && !include_unsent_initial) || seen_paths.contains(&path_str) {
+        if !doc.sent || seen_paths.contains(&path_str) {
             continue;
         }
         let rendered = project_instructions::render(std::slice::from_ref(&doc.document));
@@ -175,10 +174,9 @@ pub(super) fn build_agent_md_items(
             tokens: t,
             bytes: b,
             preview: format!(
-                "Path: {}\nRoot: {}\nStatus: {}\nRaw bytes: {} · Injected bytes: {b} (~{t} tokens)\n\n{}",
+                "Path: {}\nRoot: {}\nStatus: sent\nRaw bytes: {} · Injected bytes: {b} (~{t} tokens)\n\n{}",
                 doc.document.path.display(),
                 doc.document.root.display(),
-                if doc.sent { "sent" } else { "active in startup scope" },
                 doc.document.content.len(),
                 truncate_preview(&doc.document.content)
             ),

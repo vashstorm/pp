@@ -15,7 +15,7 @@ fn sample_empty_report() -> ContextReport {
         work_mode: "execute",
         think_level: ThinkLevel::Medium,
         empty_session: true,
-        active_tokens: 7_720,
+        active_tokens: 0,
         context_window: Some(500_000),
         auto_compact: true,
         threshold_percent: 85,
@@ -24,146 +24,18 @@ fn sample_empty_report() -> ContextReport {
         thinking_tokens: 0,
         thinking_in_context: true,
         thinking_turns: 0,
-        categories: vec![
-            CategorySummary {
-                key: CategoryKey::System,
-                name: "System Prompt",
-                tokens: 2_500,
-                bytes: 7_500,
-                item_count: 2,
-                in_context: true,
-                items: vec![
-                    DiagnosticItem {
-                        kind_label: "Base".into(),
-                        title: "Base System Prompt (bundled)".into(),
-                        subtitle: "bundled".into(),
-                        tokens: 1_800,
-                        bytes: 5_400,
-                        preview: "Base body".into(),
-                    },
-                    DiagnosticItem {
-                        kind_label: "Runtime".into(),
-                        title: "Runtime Tool & Environment Rules".into(),
-                        subtitle: "prompts/runtime.md".into(),
-                        tokens: 700,
-                        bytes: 2_100,
-                        preview: "Runtime rules".into(),
-                    },
-                ],
-            },
-            CategorySummary {
-                key: CategoryKey::InstructionFiles,
-                name: "Instruction Files",
-                tokens: 53,
-                bytes: 159,
-                item_count: 1,
-                in_context: true,
-                items: vec![DiagnosticItem {
-                    kind_label: "AGENTS.md".into(),
-                    title: "AGENTS.md".into(),
-                    subtitle: "startup scope".into(),
-                    tokens: 53,
-                    bytes: 159,
-                    preview: "Keep tests fast.".into(),
-                }],
-            },
-            CategorySummary {
-                key: CategoryKey::Skills,
-                name: "Skills",
-                tokens: 467,
-                bytes: 1_401,
-                item_count: 1,
-                in_context: true,
-                items: vec![DiagnosticItem {
-                    kind_label: "Skill".into(),
-                    title: "rust".into(),
-                    subtitle: "skill://rust".into(),
-                    tokens: 467,
-                    bytes: 1_401,
-                    preview: "Rust skill".into(),
-                }],
-            },
-            CategorySummary {
-                key: CategoryKey::BuiltInTools,
-                name: "Built-in Tools",
-                tokens: 4_700,
-                bytes: 14_100,
-                item_count: 2,
-                in_context: true,
-                items: vec![
-                    DiagnosticItem {
-                        kind_label: "Built-in".into(),
-                        title: "read".into(),
-                        subtitle: "Read files".into(),
-                        tokens: 1_200,
-                        bytes: 3_600,
-                        preview: "{\"name\":\"read\"}".into(),
-                    },
-                    DiagnosticItem {
-                        kind_label: "Built-in".into(),
-                        title: "bash".into(),
-                        subtitle: "Run shell".into(),
-                        tokens: 3_500,
-                        bytes: 10_500,
-                        preview: "{\"name\":\"bash\"}".into(),
-                    },
-                ],
-            },
-            CategorySummary {
-                key: CategoryKey::CustomTools,
-                name: "Custom Tools",
+        categories: CategoryKey::ALL
+            .into_iter()
+            .map(|key| CategorySummary {
+                key,
+                name: key.label(),
                 tokens: 0,
                 bytes: 0,
                 item_count: 0,
                 in_context: true,
                 items: Vec::new(),
-            },
-            CategorySummary {
-                key: CategoryKey::UserMessages,
-                name: "User / Developer Messages",
-                tokens: 0,
-                bytes: 0,
-                item_count: 0,
-                in_context: true,
-                items: Vec::new(),
-            },
-            CategorySummary {
-                key: CategoryKey::AssistantMessages,
-                name: "Assistant Messages",
-                tokens: 0,
-                bytes: 0,
-                item_count: 0,
-                in_context: true,
-                items: Vec::new(),
-            },
-            CategorySummary {
-                key: CategoryKey::Thinking,
-                name: "Assistant Thinking",
-                tokens: 0,
-                bytes: 0,
-                item_count: 0,
-                in_context: true,
-                items: Vec::new(),
-            },
-            CategorySummary {
-                key: CategoryKey::ToolCalls,
-                name: "Tool Calls",
-                tokens: 0,
-                bytes: 0,
-                item_count: 0,
-                in_context: true,
-                items: Vec::new(),
-            },
-            CategorySummary {
-                key: CategoryKey::ToolOutput,
-                name: "Tool Output",
-                tokens: 0,
-                bytes: 0,
-                item_count: 0,
-                in_context: true,
-                items: Vec::new(),
-            },
-        ],
+            })
+            .collect(),
     }
 }
 
@@ -181,6 +53,90 @@ fn sample_report() -> ContextReport {
     report.thinking_tokens = 1_200;
     report.thinking_turns = 1;
 
+    report.categories[0] = CategorySummary {
+        key: CategoryKey::System,
+        name: "System Prompt",
+        tokens: 2_500,
+        bytes: 7_500,
+        item_count: 2,
+        in_context: true,
+        items: vec![
+            DiagnosticItem {
+                kind_label: "Base".into(),
+                title: "Base System Prompt (bundled)".into(),
+                subtitle: "bundled".into(),
+                tokens: 1_800,
+                bytes: 5_400,
+                preview: "Base body".into(),
+            },
+            DiagnosticItem {
+                kind_label: "Runtime".into(),
+                title: "Runtime Tool & Environment Rules".into(),
+                subtitle: "prompts/runtime.md".into(),
+                tokens: 700,
+                bytes: 2_100,
+                preview: "Runtime rules".into(),
+            },
+        ],
+    };
+    report.categories[1] = CategorySummary {
+        key: CategoryKey::InstructionFiles,
+        name: "Instruction Files",
+        tokens: 53,
+        bytes: 159,
+        item_count: 1,
+        in_context: true,
+        items: vec![DiagnosticItem {
+            kind_label: "AGENTS.md".into(),
+            title: "AGENTS.md".into(),
+            subtitle: "sent in session".into(),
+            tokens: 53,
+            bytes: 159,
+            preview: "Keep tests fast.".into(),
+        }],
+    };
+    report.categories[2] = CategorySummary {
+        key: CategoryKey::Skills,
+        name: "Skills",
+        tokens: 467,
+        bytes: 1_401,
+        item_count: 1,
+        in_context: true,
+        items: vec![DiagnosticItem {
+            kind_label: "Skill".into(),
+            title: "rust".into(),
+            subtitle: "skill://rust".into(),
+            tokens: 467,
+            bytes: 1_401,
+            preview: "Rust skill".into(),
+        }],
+    };
+    report.categories[3] = CategorySummary {
+        key: CategoryKey::BuiltInTools,
+        name: "Built-in Tools",
+        tokens: 4_700,
+        bytes: 14_100,
+        item_count: 2,
+        in_context: true,
+        items: vec![
+            DiagnosticItem {
+                kind_label: "Built-in".into(),
+                title: "read".into(),
+                subtitle: "Read files".into(),
+                tokens: 1_200,
+                bytes: 3_600,
+                preview: "{\"name\":\"read\"}".into(),
+            },
+            DiagnosticItem {
+                kind_label: "Built-in".into(),
+                title: "bash".into(),
+                subtitle: "Run shell".into(),
+                tokens: 3_500,
+                bytes: 10_500,
+                preview: "{\"name\":\"bash\"}".into(),
+            },
+        ],
+    };
     report.categories[4] = CategorySummary {
         key: CategoryKey::CustomTools,
         name: "Custom Tools",
@@ -309,9 +265,8 @@ fn empty_session_renders_grid_and_compact_inline_metrics() {
     panel.set_report(sample_empty_report());
     let screen = draw_panel(&mut panel, 120, 26);
     assert!(screen.contains("Context · test/demo (medium)"));
-    assert!(screen.contains("Used 7.7K of 500K tokens · 2%"));
-    assert!(screen.contains("417.3K left before auto-compaction at 85%"));
-    assert!(screen.contains("⛁"));
+    assert!(screen.contains("Used 0 of 500K tokens · 0%"));
+    assert!(screen.contains("425K left before auto-compaction at 85%"));
     assert!(screen.contains("⛶"));
     assert!(screen.contains("⛝"));
     let grid_only: String = screen
@@ -319,20 +274,20 @@ fn empty_session_renders_grid_and_compact_inline_metrics() {
         .map(|line| line.chars().take(52).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n");
-    let total_cells = grid_only.matches('⛁').count()
-        + grid_only.matches('⛶').count()
-        + grid_only.matches('⛝').count();
-    assert_eq!(total_cells, 400);
+    assert_eq!(grid_only.matches('⛁').count(), 0);
     assert_eq!(grid_only.matches('⛝').count(), 60);
+    assert_eq!(grid_only.matches('⛶').count(), 340);
 
-    // 具体大小与占比紧跟在分类文字后方（2 空格间隔），绝不推到窗口右边缘对齐。
-    assert!(screen.contains("> ⛁ System Prompt  2.5K  0.5%"));
-    assert!(screen.contains("  ⛁ Instruction Files  53  <0.1%"));
-    assert!(screen.contains("  ⛁ Skills  467  0.1%"));
-    assert!(screen.contains("  ⛁ Built-in Tools  4.7K  0.9%"));
+    // 具体大小与占比紧跟在分类文字后方（2 空格间隔），绝不推到窗口右边缘对齐；空会话全为 0。
+    assert!(screen.contains("> ⛁ System Prompt  0  0.0%"));
+    assert!(screen.contains("  ⛁ Instruction Files  0  0.0%"));
+    assert!(screen.contains("  ⛁ Skills  0  0.0%"));
+    assert!(screen.contains("  ⛁ Built-in Tools  0  0.0%"));
     assert!(screen.contains("  ⛁ Custom Tools  0  0.0%"));
     assert!(screen.contains("  ⛝ Auto-Compact Buffer  75K  15.0%"));
-    assert!(screen.contains("  ⛶ Free Space  417.3K  83.5%"));
+    assert!(screen.contains("  ⛶ Free Space  425K  85.0%"));
+    assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
+    assert!(!panel.expanded[0]);
     let right_normalized: String = screen
         .lines()
         .map(|line| line.chars().skip(53).collect::<String>())
@@ -530,5 +485,5 @@ fn settings_save_syncs_compaction_policy_to_worker_usage_and_open_context_panel(
         .map(|c| c.symbol())
         .collect();
     assert!(rendered.contains("Auto-Compact Buffer  50K  10.0%"));
-    assert!(rendered.contains("Free Space  442.3K  88.5%"));
+    assert!(rendered.contains("Free Space  450K  90.0%"));
 }
