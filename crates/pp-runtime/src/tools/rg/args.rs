@@ -5,8 +5,72 @@ use pp_config::config::RgSettings;
 use serde::Deserialize;
 use serde_json::json;
 
+const RG_DESCRIPTION: &str = concat!(
+    "Search files or one artifact://<numeric-id> URI in process: Rust regex, PCRE2, literal ",
+    "fallback. path: files/dirs/globs/!exclusions separated by ';', file:20-40 ranges; default ",
+    "'.'. Case-sensitive, includes hidden files, respects ignore files. -i inverts case. ",
+    "context/-C set both sides; -A/-B override after/before; otherwise config. Conflicting ",
+    "aliases fail. -F matches literally; -w matches whole words; -t/-g/glob filter the directory ",
+    "walk only (repeatable, !name excludes; -g overrides ignore files, glob is its alias, ",
+    "explicit files always search); max_count caps matches per file (0 finds none). output_mode: ",
+    "content(default), files_with_matches(paths), count(per-file + all-file total; matching lines ",
+    "for single-line patterns, non-overlapping matches for multiline). countComplete=false means ",
+    "partial. Content always includes line numbers and supports context and Hashline snapshots: ",
+    "[path#TAG]; only complete returned lines editable. Other modes preserve snapshots. skip ",
+    "paginates files; bounded output. Optional positive integer max_output_tokens budgets ",
+    "content including notices (estimated from JSON at 3 bytes/token, metadata excluded); ",
+    "existing byte limits still apply. Tiny budgets may return empty content; ",
+    "details.tokenLimitReached marks truncation. Artifacts MUST use THIS tool, never bash ",
+    "grep/rg: URIs are not paths; per-call snapshot, no edit anchors; single-line covers saved ",
+    "logs, multiline capped at 4 MiB with warning.",
+);
+
 pub(in crate::tools) fn definition() -> FunctionObject {
-    FunctionObject { name: "rg".into(), description: Some("Search files or one artifact://<numeric-id> URI in process: Rust regex, PCRE2, literal fallback. path: files/dirs/globs/!exclusions separated by ';', file:20-40 ranges; default '.'. Case-sensitive, includes hidden files, respects ignore files. -i inverts case. context/-C set both sides; -A/-B override after/before; otherwise config. Conflicting aliases fail. -F matches literally; -w matches whole words; -t/-g/glob filter the directory walk only (repeatable, !name excludes; -g overrides ignore files, glob is its alias, explicit files always search); max_count caps matches per file (0 finds none). output_mode: content(default), files_with_matches(paths), count(per-file + all-file total; matching lines for single-line patterns, non-overlapping matches for multiline). countComplete=false means partial. Content always includes line numbers and supports context and Hashline snapshots: [path#TAG]; only complete returned lines editable. Other modes preserve snapshots. skip paginates files; bounded output. Optional positive integer max_output_tokens budgets content including notices (estimated from JSON at 3 bytes/token, metadata excluded); existing byte limits still apply. Tiny budgets may return empty content; details.tokenLimitReached marks truncation. Artifacts MUST use THIS tool, never bash grep/rg: URIs are not paths; per-call snapshot, no edit anchors; single-line covers saved logs, multiline capped at 4 MiB with warning.".into()), parameters: Some(json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"-i":{"type":"boolean"},"-n":{"type":"boolean","description":"Optional compatibility flag. Content always includes line numbers."},"context":{"type":"integer","minimum":0},"-C":{"type":"integer","minimum":0},"-A":{"type":"integer","minimum":0},"-B":{"type":"integer","minimum":0},"-F":{"type":"boolean"},"-w":{"type":"boolean"},"-t":{"type":["string","array"],"items":{"type":"string"}},"-g":{"type":["string","array"],"items":{"type":"string"}},"glob":{"type":["string","array"],"items":{"type":"string"},"description":"Alias of -g: override glob or list for the directory walk."},"max_count":{"type":["number","null"]},"max_output_tokens":{"type":["integer","null"],"minimum":1,"description":"Optional estimated token budget for content including notices, excluding metadata. JSON bytes / 3, rounded up; existing byte limits still apply."},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"gitignore":{"type":"boolean"},"skip":{"type":["number","null"]}},"required":["pattern"],"additionalProperties":false})), ..Default::default() }
+    FunctionObject {
+        name: "rg".into(),
+        description: Some(RG_DESCRIPTION.into()),
+        parameters: Some(json!({
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "case": {"type": "boolean"},
+                "-i": {"type": "boolean"},
+                "-n": {
+                    "type": "boolean",
+                    "description": "Optional compatibility flag. Content always includes line numbers."
+                },
+                "context": {"type": "integer", "minimum": 0},
+                "-C": {"type": "integer", "minimum": 0},
+                "-A": {"type": "integer", "minimum": 0},
+                "-B": {"type": "integer", "minimum": 0},
+                "-F": {"type": "boolean"},
+                "-w": {"type": "boolean"},
+                "-t": {"type": ["string", "array"], "items": {"type": "string"}},
+                "-g": {"type": ["string", "array"], "items": {"type": "string"}},
+                "glob": {
+                    "type": ["string", "array"],
+                    "items": {"type": "string"},
+                    "description": "Alias of -g: override glob or list for the directory walk."
+                },
+                "max_count": {"type": ["number", "null"]},
+                "max_output_tokens": {
+                    "type": ["integer", "null"],
+                    "minimum": 1,
+                    "description": "Optional estimated token budget for content including notices, excluding metadata. JSON bytes / 3, rounded up; existing byte limits still apply."
+                },
+                "output_mode": {
+                    "type": "string",
+                    "enum": ["content", "files_with_matches", "count"]
+                },
+                "gitignore": {"type": "boolean"},
+                "skip": {"type": ["number", "null"]}
+            },
+            "required": ["pattern"],
+            "additionalProperties": false
+        })),
+        ..Default::default()
+    }
 }
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]

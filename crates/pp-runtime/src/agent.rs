@@ -253,6 +253,41 @@ impl Session {
         }
     }
 
+    fn chat_tools(
+        definitions: Vec<async_openai::types::chat::FunctionObject>,
+    ) -> Vec<ChatCompletionTools> {
+        definitions
+            .into_iter()
+            .map(|function| ChatCompletionTools::Function(ChatCompletionTool { function }))
+            .collect()
+    }
+
+    fn response_tools(definitions: Vec<async_openai::types::chat::FunctionObject>) -> Vec<Tool> {
+        definitions
+            .into_iter()
+            .map(|function| {
+                Tool::Function(FunctionTool {
+                    name: function.name,
+                    description: function.description,
+                    parameters: function.parameters,
+                    strict: function.strict,
+                    ..Default::default()
+                })
+            })
+            .collect()
+    }
+
+    pub(in crate::agent) fn function_from_response_tool(
+        tool: &FunctionTool,
+    ) -> async_openai::types::chat::FunctionObject {
+        async_openai::types::chat::FunctionObject {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            parameters: tool.parameters.clone(),
+            strict: tool.strict,
+        }
+    }
+
     fn set_tools(&mut self, definitions: Vec<async_openai::types::chat::FunctionObject>) {
         let _ = self.update_tools(definitions);
     }
@@ -264,10 +299,7 @@ impl Session {
     ) -> bool {
         match self {
             Self::Completion(request) => {
-                let next: Vec<ChatCompletionTools> = definitions
-                    .into_iter()
-                    .map(|function| ChatCompletionTools::Function(ChatCompletionTool { function }))
-                    .collect();
+                let next = Self::chat_tools(definitions);
                 let changed = request.tools.as_ref() != Some(&next);
                 if changed {
                     request.tools = Some(next);
@@ -275,18 +307,7 @@ impl Session {
                 changed
             }
             Self::Response(request) => {
-                let next: Vec<Tool> = definitions
-                    .into_iter()
-                    .map(|function| {
-                        Tool::Function(FunctionTool {
-                            name: function.name,
-                            description: function.description,
-                            parameters: function.parameters,
-                            strict: function.strict,
-                            ..Default::default()
-                        })
-                    })
-                    .collect();
+                let next = Self::response_tools(definitions);
                 let changed = request.tools.as_ref() != Some(&next);
                 if changed {
                     request.tools = Some(next);
@@ -307,14 +328,7 @@ impl Session {
                         ..Default::default()
                     },
                 )],
-                tools: Some(
-                    definitions
-                        .into_iter()
-                        .map(|function| {
-                            ChatCompletionTools::Function(ChatCompletionTool { function })
-                        })
-                        .collect(),
-                ),
+                tools: Some(Self::chat_tools(definitions)),
                 tool_choice: Some(ChatCompletionToolChoiceOption::Mode(
                     ToolChoiceOptions::Auto,
                 )),
@@ -329,20 +343,7 @@ impl Session {
                 model: Some(model),
                 instructions: Some(system),
                 input: InputParam::Items(Vec::new()),
-                tools: Some(
-                    definitions
-                        .into_iter()
-                        .map(|function| {
-                            Tool::Function(FunctionTool {
-                                name: function.name,
-                                description: function.description,
-                                parameters: function.parameters,
-                                strict: function.strict,
-                                ..Default::default()
-                            })
-                        })
-                        .collect(),
-                ),
+                tools: Some(Self::response_tools(definitions)),
                 tool_choice: Some(ToolChoiceParam::Option(ResponseToolChoiceOptions::Auto)),
                 stream: Some(true),
                 store: Some(false),

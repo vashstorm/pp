@@ -545,15 +545,7 @@ fn extract_session_tools(session: &Session) -> Result<Vec<(FunctionObject, u64)>
             for tool in request.tools.as_deref().unwrap_or_default() {
                 if let Tool::Function(func) = tool {
                     let bytes = estimate_bytes(tool)?;
-                    out.push((
-                        FunctionObject {
-                            name: func.name.clone(),
-                            description: func.description.clone(),
-                            parameters: func.parameters.clone(),
-                            strict: func.strict,
-                        },
-                        bytes,
-                    ));
+                    out.push((Session::function_from_response_tool(func), bytes));
                 }
             }
         }
