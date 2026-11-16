@@ -696,7 +696,10 @@ fn notification_skill_save_failure_keeps_panel_draft_and_full_message() {
     let shown = draw(&mut app, 100, 30);
     assert!(shown.contains("save failed"));
     assert!(shown.contains("Skills"));
-    assert_eq!(shown.contains("[x] claude"), before.contains("[x] claude"));
+    assert_eq!(
+        shown.contains("\u{f0765} claude"),
+        before.contains("\u{f0765} claude")
+    );
     assert!(app.skill_panel.is_some());
     app.handle(key(KeyCode::Esc), &mut dirty);
     assert_eq!(app.input.lines(), &["main draft"]);

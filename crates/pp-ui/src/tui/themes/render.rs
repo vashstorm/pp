@@ -12,6 +12,8 @@ use ratatui::{
 impl Panel {
     pub(in crate::tui) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.area = area;
+        self.sidebar_area = Rect::default();
+        self.list_area = Rect::default();
         if area.is_empty() {
             return;
         }
@@ -29,13 +31,12 @@ impl Panel {
             return;
         }
 
-        let step_label = self.step_label();
         let outer = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(p.panel_border))
             .title(super::super::settings::render::tabs_title(
                 super::super::settings::Tab::Themes,
-                Some(step_label),
+                None,
                 area,
                 p.accent,
                 p.text,
@@ -47,116 +48,129 @@ impl Panel {
             return;
         }
 
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(inner);
+        let (body, footer_area) = if inner.height >= 8 {
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2),
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                ])
+                .split(inner);
+            let header = format!(
+                "Themes — {} · saved: {} / {}",
+                self.step_label(),
+                self.saved_icons.label(),
+                self.saved_theme.label()
+            );
+            frame.render_widget(
+                Line::styled(header, Style::default().fg(p.muted)),
+                Rect::new(sections[0].x, sections[0].y, sections[0].width, 1),
+            );
+            frame.render_widget(
+                Line::styled(
+                    "─".repeat(usize::from(sections[0].width)),
+                    Style::default().fg(p.panel_border),
+                ),
+                Rect::new(sections[0].x, sections[0].y + 1, sections[0].width, 1),
+            );
+            (sections[1], sections[2])
+        } else {
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1)])
+                .split(inner);
+            (sections[0], sections[1])
+        };
 
-        self.draw_steps(frame, sections[0], p, selected_theme, selected_icons, ascii);
-
-        let body = sections[1];
-        if body.width >= 68 {
-            let left_width = (body.width * 38 / 100).clamp(28, 44);
+        let sidebar_width = super::super::settings::render::sidebar_width(body.width);
+        let right_area = if sidebar_width > 0 {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Length(left_width),
+                    Constraint::Length(sidebar_width),
                     Constraint::Length(1),
-                    Constraint::Min(24),
+                    Constraint::Min(10),
                 ])
                 .split(body);
-            self.draw_list(frame, cols[0], p, selected_theme, selected_icons, ascii);
+            self.sidebar_area = cols[0];
+            self.draw_sidebar(frame, cols[0], p, selected_icons, ascii);
             frame.render_widget(
                 Paragraph::new(vec![Line::from("│"); usize::from(cols[1].height)])
                     .style(Style::default().fg(p.panel_border)),
                 cols[1],
             );
-            self.draw_preview(frame, cols[2], p, selected_theme, selected_icons, ascii);
+            cols[2]
         } else {
-            let list_height = match self.step {
-                Step::IconMode => 8,
-                Step::Theme => 11,
-            }
-            .min(body.height.saturating_sub(4).max(3));
-            let rows = Layout::default()
+            let narrow = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(list_height), Constraint::Min(1)])
+                .constraints([Constraint::Length(1), Constraint::Min(1)])
                 .split(body);
-            self.draw_list(frame, rows[0], p, selected_theme, selected_icons, ascii);
-            self.draw_preview(frame, rows[1], p, selected_theme, selected_icons, ascii);
-        }
-
-        self.draw_footer(frame, sections[2], p);
-    }
-
-    fn draw_steps(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        p: &Palette,
-        selected_theme: Theme,
-        selected_icons: IconMode,
-        ascii: bool,
-    ) {
-        let step1_active = self.step == Step::IconMode;
-        let step2_active = self.step == Step::Theme;
-        let step1_text = format!(" 1. Icons: {} ", selected_icons.label());
-        let step2_text = format!(" 2. Theme: {} ", selected_theme.label());
-        let step1_len = Line::from(step1_text.as_str()).width() as u16;
-        let step2_len = Line::from(step2_text.as_str()).width() as u16;
-
-        self.step_icon_area = Rect::new(area.x, area.y, step1_len.min(area.width), 1);
-        let arrow_x = area.x + step1_len;
-        let step2_x = arrow_x.saturating_add(3);
-        self.step_theme_area = if step2_x < area.right() {
-            Rect::new(step2_x, area.y, step2_len.min(area.right() - step2_x), 1)
-        } else {
-            Rect::default()
-        };
-
-        let badge = |active: bool| {
-            if active {
-                Style::default()
-                    .bg(p.panel_selected_bg)
-                    .fg(p.panel_selected_fg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().bg(p.panel_alt_bg).fg(p.muted)
-            }
-        };
-        let mode_tag = if ascii { "ASCII" } else { "Nerd Font" };
-        let saved_tag = format!(
-            "  saved: {} / {}",
-            self.saved_icons.label(),
-            self.saved_theme.label()
-        );
-        let top = Line::from(vec![
-            Span::styled(step1_text, badge(step1_active)),
-            Span::styled(" > ", Style::default().fg(p.dim)),
-            Span::styled(step2_text, badge(step2_active)),
-            Span::styled(
-                format!("  [{mode_tag}]"),
-                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(saved_tag, Style::default().fg(p.muted)),
-        ]);
-        frame.render_widget(top, Rect::new(area.x, area.y, area.width, 1));
-        if area.height >= 2 {
             frame.render_widget(
                 Line::styled(
-                    "─".repeat(usize::from(area.width)),
-                    Style::default().fg(p.panel_border),
+                    format!(" Category: {} (Tab switch)", self.step_label()),
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
                 ),
-                Rect::new(area.x, area.y + 1, area.width, 1),
+                narrow[0],
             );
-        }
+            narrow[1]
+        };
+
+        self.draw_right(frame, right_area, p, selected_theme, selected_icons, ascii);
+        self.draw_footer(frame, footer_area, p);
     }
 
-    fn draw_list(
+    fn draw_sidebar(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        p: &Palette,
+        selected_icons: IconMode,
+        ascii: bool,
+    ) {
+        if area.is_empty() {
+            return;
+        }
+        let items = [
+            (
+                self.step == Step::IconMode,
+                if ascii { "I" } else { "\u{f0279}" },
+                "Icon Style",
+                selected_icons.as_str().to_owned(),
+            ),
+            (
+                self.step == Step::Theme,
+                if ascii { "T" } else { "\u{f09a9}" },
+                "Color Theme",
+                Theme::ALL.len().to_string(),
+            ),
+        ];
+        let mut lines = Vec::with_capacity(items.len());
+        for (active, icon, name, count) in items {
+            let prefix = if active { "❯ " } else { "  " };
+            let label_style = if active {
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(p.text)
+            };
+            let used = Line::from(format!("{prefix}{icon} {name}{count}")).width();
+            let gap = usize::from(area.width.saturating_sub(1))
+                .saturating_sub(used)
+                .max(1);
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(p.accent)),
+                Span::styled(format!("{icon} "), label_style),
+                Span::styled(name, label_style),
+                Span::styled(
+                    format!("{}{count}", " ".repeat(gap)),
+                    Style::default().fg(p.muted),
+                ),
+            ]));
+        }
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+
+    fn draw_right(
         &mut self,
         frame: &mut Frame,
         area: Rect,
@@ -165,27 +179,78 @@ impl Panel {
         selected_icons: IconMode,
         ascii: bool,
     ) {
+        if area.is_empty() {
+            return;
+        }
+        let total = self.list_len() as u16;
+        if area.height >= 12 {
+            let list_height = total.min(area.height.saturating_sub(6).max(2));
+            let spacer = u16::from(area.height > list_height + 8);
+            let list_area = Rect::new(area.x, area.y, area.width, list_height);
+            let preview_y = area.y + list_height + spacer;
+            let preview_area = Rect::new(
+                area.x,
+                preview_y,
+                area.width,
+                area.bottom().saturating_sub(preview_y),
+            );
+            self.draw_list(frame, list_area, p, ascii);
+            self.draw_preview(
+                frame,
+                preview_area,
+                p,
+                selected_theme,
+                selected_icons,
+                ascii,
+            );
+        } else {
+            self.draw_list(frame, area, p, ascii);
+        }
+    }
+
+    fn draw_list(&mut self, frame: &mut Frame, area: Rect, p: &Palette, ascii: bool) {
         self.list_area = area;
         if area.is_empty() {
             return;
         }
+        let visible = usize::from(area.height).max(1);
+        let selected_idx = self.selected_index();
+        if selected_idx < self.list_scroll {
+            self.list_scroll = selected_idx;
+        } else if selected_idx >= self.list_scroll + visible {
+            self.list_scroll = selected_idx + 1 - visible;
+        }
+        let saved_dot = if ascii { "*" } else { "\u{f0765}" };
+        let other_dot = if ascii { "o" } else { "\u{f0766}" };
+
         match self.step {
             Step::IconMode => {
-                self.row_height = 4;
-                let mut lines = Vec::new();
-                for (idx, mode) in IconMode::ALL.iter().copied().enumerate() {
+                for (row, (idx, mode)) in IconMode::ALL
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .skip(self.list_scroll)
+                    .take(visible)
+                    .enumerate()
+                {
                     let selected = idx == self.icon_index;
                     let is_saved = mode == self.saved_icons;
                     let mode_ascii = mode == IconMode::Ascii;
                     let row_bg = if selected { p.panel_alt_bg } else { p.panel_bg };
                     let marker = if selected { "❯ " } else { "  " };
-                    let saved_badge = if is_saved { "  [saved]" } else { "" };
+                    let dot = if is_saved { saved_dot } else { other_dot };
+                    let dot_color = if is_saved { p.added } else { p.muted };
                     let sample = if mode_ascii {
-                        ">  @  /  *  +  R  E  3"
+                        "> @ / * +"
                     } else {
-                        "\u{f1d8}  \u{ec19}  \u{f07c}  \u{f126}  \u{f00c}  \u{f0219}  \u{f03eb}  \u{f0aa3}"
+                        "\u{f1d8} \u{ec19} \u{f07c} \u{f00c}"
                     };
-                    lines.push(Line::from(vec![
+                    let row_rect = Rect::new(area.x, area.y + row as u16, area.width, 1);
+                    frame.render_widget(
+                        Block::default().style(Style::default().bg(row_bg)),
+                        row_rect,
+                    );
+                    let line = Line::from(vec![
                         Span::styled(
                             marker,
                             Style::default()
@@ -193,8 +258,9 @@ impl Panel {
                                 .bg(row_bg)
                                 .add_modifier(Modifier::BOLD),
                         ),
+                        Span::styled(format!("{dot} "), Style::default().fg(dot_color).bg(row_bg)),
                         Span::styled(
-                            mode.label(),
+                            format!("{:<10}", mode.label()),
                             Style::default()
                                 .fg(if selected { p.accent } else { p.text })
                                 .bg(row_bg)
@@ -208,51 +274,39 @@ impl Panel {
                             format!(" ({})", mode.as_str()),
                             Style::default().fg(p.muted).bg(row_bg),
                         ),
-                        Span::styled(saved_badge, Style::default().fg(p.added).bg(row_bg)),
-                    ]));
-                    lines.push(Line::from(vec![
-                        Span::styled("  ", Style::default().bg(row_bg)),
                         Span::styled(
-                            mode.description(),
-                            Style::default().fg(p.activity).bg(row_bg),
+                            format!("  {sample}"),
+                            Style::default().fg(p.status_model).bg(row_bg),
                         ),
-                    ]));
-                    lines.push(Line::from(vec![
-                        Span::styled("  ", Style::default().bg(row_bg)),
-                        Span::styled("Glyphs: ", Style::default().fg(p.muted).bg(row_bg)),
-                        Span::styled(sample, Style::default().fg(p.status_model).bg(row_bg)),
-                    ]));
-                    lines.push(Line::from(""));
+                        Span::styled(
+                            format!("  {}", mode.description()),
+                            Style::default().fg(p.muted).bg(row_bg),
+                        ),
+                    ]);
+                    frame.render_widget(line, row_rect);
                 }
-                lines.push(Line::from(vec![
-                    Span::styled("Next: ", Style::default().fg(p.muted)),
-                    Span::styled(
-                        format!("Select color theme (current: {})", selected_theme.label()),
-                        Style::default().fg(p.text),
-                    ),
-                ]));
-                let hint = if ascii {
-                    "Tip: Pure ASCII keeps all borders & glyphs terminal-safe."
-                } else {
-                    "Tip: Nerd Font requires a patched Nerd Font in your terminal."
-                };
-                lines.push(Line::styled(hint, Style::default().fg(p.dim)));
-                frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
             }
             Step::Theme => {
-                self.row_height = 2;
-                let mut lines = Vec::new();
-                for (idx, theme) in Theme::ALL.iter().copied().enumerate() {
+                for (row, (idx, theme)) in Theme::ALL
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .skip(self.list_scroll)
+                    .take(visible)
+                    .enumerate()
+                {
                     let selected = idx == self.theme_index;
                     let is_saved = theme == self.saved_theme;
                     let row_bg = if selected { p.panel_alt_bg } else { p.panel_bg };
                     let marker = if selected { "❯ " } else { "  " };
-                    let saved_icon = if is_saved {
-                        if ascii { "* " } else { "● " }
-                    } else {
-                        "  "
-                    };
-                    let mut row1 = vec![
+                    let dot = if is_saved { saved_dot } else { other_dot };
+                    let dot_color = if is_saved { p.added } else { p.muted };
+                    let row_rect = Rect::new(area.x, area.y + row as u16, area.width, 1);
+                    frame.render_widget(
+                        Block::default().style(Style::default().bg(row_bg)),
+                        row_rect,
+                    );
+                    let mut spans = vec![
                         Span::styled(
                             marker,
                             Style::default()
@@ -260,9 +314,9 @@ impl Panel {
                                 .bg(row_bg)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(saved_icon, Style::default().fg(p.added).bg(row_bg)),
+                        Span::styled(format!("{dot} "), Style::default().fg(dot_color).bg(row_bg)),
                         Span::styled(
-                            theme.label(),
+                            format!("{:<16}", theme.label()),
                             Style::default()
                                 .fg(if selected { p.accent } else { p.text })
                                 .bg(row_bg)
@@ -272,28 +326,17 @@ impl Panel {
                                     Modifier::empty()
                                 }),
                         ),
-                        Span::styled("  ", Style::default().bg(row_bg)),
+                        Span::styled(" ", Style::default().bg(row_bg)),
                     ];
                     for color in palette_for(theme).swatch() {
-                        row1.push(Span::styled("██", Style::default().fg(color).bg(row_bg)));
+                        spans.push(Span::styled("██", Style::default().fg(color).bg(row_bg)));
                     }
-                    lines.push(Line::from(row1));
-                    lines.push(Line::from(vec![
-                        Span::styled("    ", Style::default().bg(row_bg)),
-                        Span::styled(
-                            format!("{} · {}", theme.as_str(), theme.description()),
-                            Style::default().fg(p.muted).bg(row_bg),
-                        ),
-                    ]));
-                }
-                if selected_icons == IconMode::Ascii {
-                    lines.push(Line::default());
-                    lines.push(Line::styled(
-                        "Icon style: ASCII",
-                        Style::default().fg(p.status_directory),
+                    spans.push(Span::styled(
+                        format!("  {}", theme.description()),
+                        Style::default().fg(p.muted).bg(row_bg),
                     ));
+                    frame.render_widget(Line::from(spans), row_rect);
                 }
-                frame.render_widget(Paragraph::new(lines), area);
             }
         }
     }
@@ -341,6 +384,7 @@ impl Panel {
         let git_icon = statusline::git_icon(selected_icons);
         let think_high = transcript_style::think_icon_for(ThinkLevel::High, selected_icons);
 
+        let spacious = inner.height >= 16;
         let mut lines = vec![
             // 1. 色卡
             Line::from(vec![
@@ -351,23 +395,29 @@ impl Panel {
                 Span::styled("██ Removed ", Style::default().fg(p.removed)),
                 Span::styled("██ Link", Style::default().fg(p.link)),
             ]),
-            Line::default(),
-            // 2. 用户消息
-            Line::from(vec![
-                Span::styled(
-                    " You ",
-                    Style::default()
-                        .fg(p.accent)
-                        .bg(p.user_bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    " Switch theme and render pure ASCII icons cleanly ",
-                    Style::default().fg(p.text).bg(p.user_bg),
-                ),
-            ]),
-            Line::default(),
-            // 3. 助手 Markdown + 语法高亮代码块
+        ];
+        if spacious {
+            lines.push(Line::default());
+        }
+        // 2. 用户消息
+        lines.push(Line::from(vec![
+            Span::styled(
+                " You ",
+                Style::default()
+                    .fg(p.accent)
+                    .bg(p.user_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " Switch theme and render pure ASCII icons cleanly ",
+                Style::default().fg(p.text).bg(p.user_bg),
+            ),
+        ]));
+        if spacious {
+            lines.push(Line::default());
+        }
+        // 3. 助手 Markdown + 语法高亮代码块
+        lines.extend([
             Line::from(vec![Span::styled(
                 "# Assistant Preview",
                 Style::default()
@@ -458,40 +508,42 @@ impl Panel {
                     Style::default().fg(p.activity),
                 ),
             ]),
-            Line::default(),
-            // 6. 状态栏预览
-            Line::from(vec![
-                Span::styled(
-                    format!(" {app_icon}"),
-                    Style::default()
-                        .fg(p.status_accent)
-                        .bg(p.input_status_bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
-                Span::styled(
-                    format!("{model_icon} openai/gpt-5"),
-                    Style::default().fg(p.status_model).bg(p.input_status_bg),
-                ),
-                Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
-                Span::styled(
-                    format!("{think_high} hig"),
-                    Style::default().fg(p.text).bg(p.input_status_bg),
-                ),
-                Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
-                Span::styled(
-                    format!("{dir_icon} ~/pp"),
-                    Style::default()
-                        .fg(p.status_directory)
-                        .bg(p.input_status_bg),
-                ),
-                Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
-                Span::styled(
-                    format!("{git_icon} main* "),
-                    Style::default().fg(p.status_git).bg(p.input_status_bg),
-                ),
-            ]),
-        ];
+        ]);
+        if spacious || inner.height >= 14 {
+            lines.push(Line::default());
+        }
+        // 6. 状态栏预览
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {app_icon}"),
+                Style::default()
+                    .fg(p.status_accent)
+                    .bg(p.input_status_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
+            Span::styled(
+                format!("{model_icon} openai/gpt-5"),
+                Style::default().fg(p.status_model).bg(p.input_status_bg),
+            ),
+            Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
+            Span::styled(
+                format!("{think_high} hig"),
+                Style::default().fg(p.text).bg(p.input_status_bg),
+            ),
+            Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
+            Span::styled(
+                format!("{dir_icon} ~/pp"),
+                Style::default()
+                    .fg(p.status_directory)
+                    .bg(p.input_status_bg),
+            ),
+            Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
+            Span::styled(
+                format!("{git_icon} main* "),
+                Style::default().fg(p.status_git).bg(p.input_status_bg),
+            ),
+        ]));
 
         // 填充背景色避免浅色主题下出现终端黑底条纹
         let max_rows = usize::from(inner.height);
@@ -505,7 +557,7 @@ impl Panel {
         }
         if let Some(error) = &self.error {
             frame.render_widget(
-                Line::styled(error.clone(), Style::default().fg(p.removed)),
+                Line::styled(error.as_str(), Style::default().fg(p.removed)),
                 area,
             );
             return;
@@ -522,10 +574,10 @@ impl Panel {
         }
         let hint = match self.step {
             Step::IconMode => {
-                "↑/↓ select icon style · Enter / → next: choose theme · Esc cancel & restore"
+                "[/] or 1-4 tabs · ↑↓ select · Enter / → / Tab theme · Esc cancel & restore"
             }
             Step::Theme => {
-                "↑/↓ preview theme · Backspace / ← back: icon style · Enter save & apply · Esc cancel & restore"
+                "[/] or 1-4 tabs · ↑↓ preview · ← / Backspace / Tab icons · Enter save · Esc cancel"
             }
         };
         frame.render_widget(Line::styled(hint, Style::default().fg(p.muted)), area);

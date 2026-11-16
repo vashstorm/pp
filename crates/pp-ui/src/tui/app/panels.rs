@@ -663,7 +663,7 @@ impl App {
                         }
                         panel
                     }
-                    None => skills::Panel::loading(open_sources),
+                    None => skills::Panel::loading(true),
                 };
                 panel.busy = true;
                 self.skill_panel = Some(panel);

@@ -53,15 +53,11 @@ impl App {
         } else if let Some(panel) = &self.roles_panel {
             Some((settings::Tab::Roles, panel.area, None))
         } else if let Some(panel) = &self.themes_panel {
-            Some((settings::Tab::Themes, panel.area, Some(panel.step_label())))
+            Some((settings::Tab::Themes, panel.area, None))
         } else {
-            self.skill_panel.as_ref().map(|panel| {
-                (
-                    settings::Tab::Skills,
-                    panel.area,
-                    panel.busy.then_some("Working"),
-                )
-            })
+            self.skill_panel
+                .as_ref()
+                .map(|panel| (settings::Tab::Skills, panel.area, None))
         }
     }
 
@@ -166,22 +162,18 @@ impl App {
             self.apply_themes_action(action);
         } else if let Some(panel) = &mut self.skill_panel {
             self.escape_tap.reset();
-            if let Event::Key(key) = event
-                && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
-            {
-                match panel.key(key) {
-                    skills::Action::None => {}
-                    skills::Action::Cancel => {
-                        self.skill_panel = None;
-                        self.menu_dismissed = true;
-                    }
-                    skills::Action::Save(selection) => {
-                        self.request_skills(skills::Request::Save(selection))
-                    }
-                    skills::Action::Reload => self.request_skills(skills::Request::Reload),
-                    skills::Action::Preview(selection) => {
-                        self.request_skills(skills::Request::Preview(selection))
-                    }
+            match panel.handle(event) {
+                skills::Action::None => {}
+                skills::Action::Cancel => {
+                    self.skill_panel = None;
+                    self.menu_dismissed = true;
+                }
+                skills::Action::Save(selection) => {
+                    self.request_skills(skills::Request::Save(selection))
+                }
+                skills::Action::Reload => self.request_skills(skills::Request::Reload),
+                skills::Action::Preview(selection) => {
+                    self.request_skills(skills::Request::Preview(selection))
                 }
             }
         }

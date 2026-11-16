@@ -131,10 +131,9 @@ pub(super) struct Panel {
     icon_index: usize,
     theme_index: usize,
     pub(super) area: Rect,
+    sidebar_area: Rect,
     list_area: Rect,
-    step_icon_area: Rect,
-    step_theme_area: Rect,
-    row_height: u16,
+    list_scroll: usize,
     pub(super) busy: bool,
     error: Option<String>,
 }
@@ -167,10 +166,9 @@ impl Panel {
             icon_index,
             theme_index,
             area: Rect::default(),
+            sidebar_area: Rect::default(),
             list_area: Rect::default(),
-            step_icon_area: Rect::default(),
-            step_theme_area: Rect::default(),
-            row_height: 3,
+            list_scroll: 0,
             busy: false,
             error: None,
         }
@@ -179,6 +177,13 @@ impl Panel {
     #[cfg(test)]
     pub(super) fn step(&self) -> Step {
         self.step
+    }
+
+    pub(super) fn selected_index(&self) -> usize {
+        match self.step {
+            Step::IconMode => self.icon_index,
+            Step::Theme => self.theme_index,
+        }
     }
 
     pub(super) fn selected_icons(&self) -> IconMode {
@@ -219,8 +224,7 @@ impl Panel {
                     KeyCode::End => self.jump_selection(self.list_len().saturating_sub(1)),
                     KeyCode::Enter => match self.step {
                         Step::IconMode => {
-                            self.step = Step::Theme;
-                            self.error = None;
+                            self.set_step(Step::Theme);
                             Action::None
                         }
                         Step::Theme => {
@@ -229,18 +233,22 @@ impl Panel {
                             Action::Save(self.selected_theme(), self.selected_icons())
                         }
                     },
-                    KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab
-                        if self.step == Step::IconMode =>
-                    {
-                        self.step = Step::Theme;
-                        self.error = None;
+                    KeyCode::Right | KeyCode::Char('l') if self.step == Step::IconMode => {
+                        self.set_step(Step::Theme);
                         Action::None
                     }
-                    KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab
+                    KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h')
                         if self.step == Step::Theme =>
                     {
-                        self.step = Step::IconMode;
-                        self.error = None;
+                        self.set_step(Step::IconMode);
+                        Action::None
+                    }
+                    KeyCode::Tab | KeyCode::BackTab => {
+                        let next = match self.step {
+                            Step::IconMode => Step::Theme,
+                            Step::Theme => Step::IconMode,
+                        };
+                        self.set_step(next);
                         Action::None
                     }
                     _ => Action::None,
@@ -252,19 +260,17 @@ impl Panel {
                     MouseEventKind::ScrollDown => self.move_selection(1),
                     MouseEventKind::Down(MouseButton::Left) => {
                         let pos = (mouse.column, mouse.row).into();
-                        if self.step_icon_area.contains(pos) {
-                            self.step = Step::IconMode;
-                            self.error = None;
+                        if self.sidebar_area.contains(pos) {
+                            let row = usize::from(mouse.row - self.sidebar_area.y);
+                            match row {
+                                0 => self.set_step(Step::IconMode),
+                                1 => self.set_step(Step::Theme),
+                                _ => {}
+                            }
                             return Action::None;
                         }
-                        if self.step_theme_area.contains(pos) {
-                            self.step = Step::Theme;
-                            self.error = None;
-                            return Action::None;
-                        }
-                        if self.list_area.contains(pos) && self.row_height > 0 {
-                            let row = usize::from(mouse.row - self.list_area.y)
-                                / usize::from(self.row_height);
+                        if self.list_area.contains(pos) {
+                            let row = usize::from(mouse.row - self.list_area.y) + self.list_scroll;
                             if row < self.list_len() {
                                 return self.jump_selection(row);
                             }
@@ -276,6 +282,12 @@ impl Panel {
             }
             _ => Action::None,
         }
+    }
+
+    fn set_step(&mut self, step: Step) {
+        self.step = step;
+        self.list_scroll = 0;
+        self.error = None;
     }
 
     fn list_len(&self) -> usize {

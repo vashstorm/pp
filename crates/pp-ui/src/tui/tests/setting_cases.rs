@@ -305,11 +305,120 @@ fn setting_tabs_keep_stable_geometry_palette_and_alternate_screen_across_switche
         );
     }
 
-    // General 与 Roles 的侧边栏竖线位于完全相同的列坐标。
+    // 四个页签的侧边栏竖线位于完全相同的列坐标。
     let general_pipe = screens[0].1.lines().nth(4).unwrap().find('│').unwrap();
-    let roles_pipe = screens[1].1.lines().nth(4).unwrap().find('│').unwrap();
-    assert_eq!(
-        general_pipe, roles_pipe,
-        "sidebar divider shifted between General and Roles"
+    for (tab, screen) in screens
+        .iter()
+        .map(|(t, s)| (*t, s.as_str()))
+        .chain(std::iter::once((
+            settings::Tab::Skills,
+            skills_loaded_screen.as_str(),
+        )))
+    {
+        let pipe = screen.lines().nth(4).unwrap().find('│').unwrap();
+        assert_eq!(
+            pipe, general_pipe,
+            "sidebar divider shifted on {tab:?}:\n{screen}"
+        );
+    }
+}
+
+#[test]
+fn themes_and_skills_sidebars_switch_categories_and_toggle_by_mouse() {
+    let _guard = ThemeGuard::reset_default();
+    let (mut app, _requests, _events) = plan_app();
+
+    // 1. Themes 页签：点击左侧 Color Theme 切换步骤，点击列表行预览。
+    app.insert_input("/config themes".into());
+    app.submit(PendingKind::Steering);
+    let screen = draw(&mut app, 110, 30);
+    assert!(screen.contains("Icon Style"));
+    assert!(screen.contains("Color Theme"));
+
+    let col_of = |screen: &str, row: u16, needle: &str| -> u16 {
+        let line = screen.lines().nth(usize::from(row)).unwrap();
+        let byte_idx = line.find(needle).unwrap();
+        ratatui::text::Line::raw(&line[..byte_idx]).width() as u16
+    };
+
+    let color_row = screen
+        .lines()
+        .position(|line| line.contains("Color Theme"))
+        .unwrap() as u16;
+    let color_col = col_of(&screen, color_row, "Color Theme");
+    app.handle(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: color_col,
+            row: color_row,
+            modifiers: KeyModifiers::NONE,
+        }),
+        &mut false,
     );
+    let theme_screen = draw(&mut app, 110, 30);
+    assert!(theme_screen.contains("Step 2/2: Color Theme"));
+    assert!(theme_screen.contains("Tokyo Night"));
+
+    let tokyo_row = theme_screen
+        .lines()
+        .position(|line| line.contains("Tokyo Night"))
+        .unwrap() as u16;
+    let tokyo_col = col_of(&theme_screen, tokyo_row, "Tokyo Night");
+    app.handle(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: tokyo_col,
+            row: tokyo_row,
+            modifiers: KeyModifiers::NONE,
+        }),
+        &mut false,
+    );
+    assert_eq!(
+        crate::tui::themes::current(),
+        (Theme::TokyoNight, IconMode::Nerd)
+    );
+
+    // 2. Skills 页签：点击左侧 Global management 切换分类，点击开关图标列启停技能。
+    app.handle(key(KeyCode::Char('4')), &mut false);
+    wait_for_skills(&mut app);
+    let mut snapshot = pp_config::skills::Skills::default();
+    snapshot.entries.push(pp_config::skills::Skill {
+        name: "rust".into(),
+        description: "Rust skill".into(),
+        path: "/skills/rust/SKILL.md".into(),
+        enabled: true,
+    });
+    app.skill_panel = Some(skills::Panel::new(snapshot));
+    let skills_screen = draw(&mut app, 110, 30);
+    let global_row = skills_screen
+        .lines()
+        .position(|line| line.contains("Global management"))
+        .unwrap() as u16;
+    let global_col = col_of(&skills_screen, global_row, "Global management");
+    app.handle(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: global_col,
+            row: global_row,
+            modifiers: KeyModifiers::NONE,
+        }),
+        &mut false,
+    );
+    let global_screen = draw(&mut app, 110, 30);
+    assert!(global_screen.contains("Skills — Global management"));
+    let rust_row = global_screen
+        .lines()
+        .position(|line| line.contains("rust"))
+        .unwrap() as u16;
+    let switch_col = col_of(&global_screen, rust_row, "\u{f0765}");
+    app.handle(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: switch_col,
+            row: rust_row,
+            modifiers: KeyModifiers::NONE,
+        }),
+        &mut false,
+    );
+    assert!(!app.skill_panel.as_ref().unwrap().entries[0].enabled);
 }
