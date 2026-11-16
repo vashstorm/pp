@@ -14,6 +14,7 @@ use ratatui::layout::Rect;
 pub(in crate::tui) use palette::{Palette, palette_for};
 
 mod palette;
+mod preview;
 mod render;
 
 thread_local! {
@@ -432,6 +433,112 @@ mod tests {
                 key(&mut panel, KeyCode::Esc),
                 Action::Cancel(Theme::Default, IconMode::Nerd)
             );
+        }
+    }
+
+    #[test]
+    fn preview_renders_aligned_cards_full_width_backgrounds_and_status_across_sizes() {
+        let light = palette_for(Theme::SolarizedLight);
+        for (w, h) in [(80, 24), (100, 30), (120, 36)] {
+            let mut preview_ys = Vec::new();
+            for (category, icons) in [
+                (Category::IconMode, IconMode::Ascii),
+                (Category::Theme, IconMode::Nerd),
+            ] {
+                let mut panel = Panel::new(Theme::SolarizedLight, icons);
+                let _ = panel.set_category(category);
+                let (theme, active_icons) = panel.preview_appearance();
+                set_active(theme, active_icons);
+                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                terminal
+                    .draw(|frame| panel.draw(frame, frame.area()))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+
+                let mut screen_rows = Vec::with_capacity(usize::from(h));
+                for y in 0..h {
+                    let row: String = (0..w).map(|x| buffer[(x, y)].symbol()).collect();
+                    screen_rows.push(row);
+                    // 浅色主题下任何单元格不得回落到终端默认 Reset 背景。
+                    for x in 0..w {
+                        assert_ne!(
+                            buffer[(x, y)].bg,
+                            ratatui::style::Color::Reset,
+                            "cell ({x},{y}) fell back to Reset bg on {w}x{h} {category:?}"
+                        );
+                    }
+                }
+                set_active(Theme::Default, IconMode::Nerd);
+
+                let screen = screen_rows.join("\n");
+                assert!(screen.contains("Live Preview"), "{w}x{h}:\n{screen}");
+                assert!(screen.contains("Solarized Light"), "{w}x{h}:\n{screen}");
+                assert!(screen.contains("gpt-5"), "{w}x{h}:\n{screen}");
+
+                // 用户消息条、Edit 卡片与底栏均按视口全宽铺满对应背景色，且 Edit 四角列对齐。
+                let preview_y = screen_rows
+                    .iter()
+                    .position(|r| r.contains("Live Preview"))
+                    .unwrap();
+                let user_y = screen_rows
+                    .iter()
+                    .position(|r| r.contains("Apply solarized-light"))
+                    .unwrap() as u16;
+                let edit_top_y = screen_rows
+                    .iter()
+                    .position(|r| r.contains("╭─") && r.contains("Edit:"))
+                    .unwrap() as u16;
+                let edit_bot_y = screen_rows
+                    .iter()
+                    .position(|r| r.contains("╰─") && r.contains('╯'))
+                    .unwrap() as u16;
+                let status_y = screen_rows
+                    .iter()
+                    .position(|r| r.contains("gpt-5") && r.contains("~/pp"))
+                    .unwrap() as u16;
+                preview_ys.push((preview_y, user_y, edit_top_y, status_y));
+
+                let col = |row: &str, ch: char| {
+                    row.find(ch)
+                        .map(|byte| ratatui::text::Line::raw(&row[..byte]).width())
+                };
+                let left_col = col(&screen_rows[usize::from(edit_top_y)], '╭').unwrap();
+                let right_col = col(&screen_rows[usize::from(edit_top_y)], '╮').unwrap();
+                assert_eq!(
+                    col(&screen_rows[usize::from(edit_bot_y)], '╰'),
+                    Some(left_col)
+                );
+                assert_eq!(
+                    col(&screen_rows[usize::from(edit_bot_y)], '╯'),
+                    Some(right_col)
+                );
+
+                let user_bg_cols = (0..w)
+                    .filter(|&x| buffer[(x, user_y)].bg == light.user_bg)
+                    .count();
+                let status_bg_cols = (0..w)
+                    .filter(|&x| buffer[(x, status_y)].bg == light.input_status_bg)
+                    .count();
+                assert!(user_bg_cols >= usize::from(w) / 2, "{user_bg_cols}");
+                assert_eq!(status_bg_cols, user_bg_cols);
+
+                if icons == IconMode::Ascii {
+                    let preview_start = screen_rows
+                        .iter()
+                        .position(|r| r.contains("Live Preview"))
+                        .unwrap();
+                    let preview_text =
+                        screen_rows[preview_start..=usize::from(status_y)].join("\n");
+                    assert!(
+                        !preview_text
+                            .chars()
+                            .any(|ch| ('\u{e000}'..='\u{f8ff}').contains(&ch)
+                                || ('\u{f0000}'..='\u{ffffd}').contains(&ch)),
+                        "ASCII preview contained Nerd Font PUA glyph:\n{preview_text}"
+                    );
+                }
+            }
+            assert_eq!(preview_ys[0], preview_ys[1], "preview jumped on {w}x{h}");
         }
     }
 }

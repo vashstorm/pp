@@ -145,13 +145,13 @@ fn speed_medium_icon(icons: IconMode) -> &'static str {
         IconMode::Ascii => "=",
     }
 }
-fn speed_fast_icon(icons: IconMode) -> &'static str {
+pub(super) fn speed_fast_icon(icons: IconMode) -> &'static str {
     match icons {
         IconMode::Nerd => "\u{f04c5}",
         IconMode::Ascii => "^",
     }
 }
-fn io_icon(icons: IconMode) -> &'static str {
+pub(super) fn io_icon(icons: IconMode) -> &'static str {
     match icons {
         IconMode::Nerd => "\u{f04e2}",
         IconMode::Ascii => "%",
@@ -169,14 +169,13 @@ fn title_icon(icons: IconMode) -> &'static str {
         IconMode::Ascii => "*",
     }
 }
-fn context_icon(icons: IconMode) -> &'static str {
+pub(super) fn context_icon(icons: IconMode) -> &'static str {
     match icons {
         IconMode::Nerd => "\u{e62a}",
         IconMode::Ascii => "c",
     }
 }
-#[cfg(test)]
-fn cost_icon(icons: IconMode) -> &'static str {
+pub(super) fn cost_icon(icons: IconMode) -> &'static str {
     match icons {
         IconMode::Nerd => "\u{f01c1}",
         IconMode::Ascii => "$",

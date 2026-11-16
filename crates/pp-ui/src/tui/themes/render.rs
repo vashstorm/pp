@@ -1,12 +1,10 @@
 use super::*;
-use crate::tui::{statusline, transcript_style};
-use pp_core::model::ThinkLevel;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 impl Panel {
@@ -192,10 +190,19 @@ impl Panel {
         if area.is_empty() {
             return;
         }
-        let total = self.list_len() as u16;
+        // 按两个分类的最大列表行数固定上方列表槽位，避免在 Icon Style 与 Color Theme 间切换时预览区上下跳动。
+        let max_list_rows = IconMode::ALL.len().max(Theme::ALL.len()) as u16;
         if area.height >= 12 {
-            let list_height = total.min(area.height.saturating_sub(6).max(2));
-            let spacer = u16::from(area.height > list_height + 8);
+            let list_height = max_list_rows.min(area.height.saturating_sub(6).max(2));
+            let spacer = if area.height >= list_height + 19 {
+                3
+            } else if area.height >= list_height + 11 {
+                2
+            } else if area.height > list_height + 8 {
+                1
+            } else {
+                0
+            };
             let list_area = Rect::new(area.x, area.y, area.width, list_height);
             let preview_y = area.y + list_height + spacer;
             let preview_area = Rect::new(
@@ -205,7 +212,7 @@ impl Panel {
                 area.bottom().saturating_sub(preview_y),
             );
             self.draw_list(frame, list_area, p, ascii);
-            self.draw_preview(
+            super::preview::draw(
                 frame,
                 preview_area,
                 p,
@@ -349,216 +356,6 @@ impl Panel {
                 }
             }
         }
-    }
-
-    fn draw_preview(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        p: &Palette,
-        selected_theme: Theme,
-        selected_icons: IconMode,
-        ascii: bool,
-    ) {
-        if area.width < 8 || area.height < 4 {
-            return;
-        }
-        let title_icon = if ascii { "*" } else { "\u{f09a9}" };
-        let preview_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(p.tool_border))
-            .style(Style::default().bg(p.md_bg).fg(p.md_text))
-            .title(Line::from(vec![
-                Span::styled(
-                    format!(" {title_icon} Live Preview: {} ", selected_theme.label()),
-                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("({}) ", selected_icons.label()),
-                    Style::default().fg(p.muted),
-                ),
-            ]));
-        let inner = preview_block.inner(area);
-        frame.render_widget(preview_block, area);
-        if inner.width < 4 || inner.height < 2 {
-            return;
-        }
-
-        let edit_icon = transcript_style::tool_icon_for("edit", selected_icons);
-        let read_icon = transcript_style::tool_icon_for("read", selected_icons);
-        let bash_icon = transcript_style::tool_icon_for("bash", selected_icons);
-        let check_icon = transcript_style::done_icon(selected_icons);
-        let app_icon = statusline::app_icon(selected_icons);
-        let model_icon = statusline::model_icon(selected_icons);
-        let dir_icon = statusline::directory_icon(selected_icons);
-        let git_icon = statusline::git_icon(selected_icons);
-        let think_high = transcript_style::think_icon_for(ThinkLevel::High, selected_icons);
-
-        let spacious = inner.height >= 16;
-        let mut lines = vec![
-            // 1. 色卡
-            Line::from(vec![
-                Span::styled("Palette: ", Style::default().fg(p.muted)),
-                Span::styled("██ Accent ", Style::default().fg(p.accent)),
-                Span::styled("██ Code ", Style::default().fg(p.code_block)),
-                Span::styled("██ Added ", Style::default().fg(p.added)),
-                Span::styled("██ Removed ", Style::default().fg(p.removed)),
-                Span::styled("██ Link", Style::default().fg(p.link)),
-            ]),
-        ];
-        if spacious {
-            lines.push(Line::default());
-        }
-        // 2. 用户消息
-        lines.push(Line::from(vec![
-            Span::styled(
-                " You ",
-                Style::default()
-                    .fg(p.accent)
-                    .bg(p.user_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " Switch theme and render pure ASCII icons cleanly ",
-                Style::default().fg(p.text).bg(p.user_bg),
-            ),
-        ]));
-        if spacious {
-            lines.push(Line::default());
-        }
-        // 3. 助手 Markdown + 语法高亮代码块
-        lines.extend([
-            Line::from(vec![Span::styled(
-                "# Assistant Preview",
-                Style::default()
-                    .fg(p.md_heading)
-                    .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(vec![
-                Span::styled("• ", Style::default().fg(p.md_bullet)),
-                Span::styled(
-                    "Bold highlight",
-                    Style::default()
-                        .fg(p.md_strong)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(", inline ", Style::default().fg(p.md_text)),
-                Span::styled("`tui.theme`", Style::default().fg(p.md_code)),
-                Span::styled(" & ", Style::default().fg(p.md_text)),
-                Span::styled(
-                    "https://pp.dev",
-                    Style::default()
-                        .fg(p.link)
-                        .add_modifier(Modifier::UNDERLINED),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("  │ ", Style::default().fg(p.dim)),
-                Span::styled("fn ", Style::default().fg(p.syntax_keyword)),
-                Span::styled("apply_theme", Style::default().fg(p.syntax_function)),
-                Span::styled("(mode: ", Style::default().fg(p.md_text)),
-                Span::styled("IconMode", Style::default().fg(p.edit_type)),
-                Span::styled(") -> ", Style::default().fg(p.md_text)),
-                Span::styled("\"ok\"", Style::default().fg(p.edit_string)),
-                Span::styled(" // preview", Style::default().fg(p.syntax_comment)),
-            ]),
-            Line::default(),
-            // 4. 工具与 Diff 预览
-            Line::from(vec![
-                Span::styled(format!(" {check_icon} Read "), Style::default().fg(p.added)),
-                Span::styled("· ", Style::default().fg(p.read_summary_meta)),
-                Span::styled(
-                    "crates/pp-config/src/config/theme.rs:1-42",
-                    Style::default().fg(p.accent),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    format!(" {edit_icon} Edit: src/tui/themes.rs "),
-                    Style::default().fg(p.edit_title).bg(p.tool_bg),
-                ),
-                Span::styled("+2", Style::default().fg(p.edit_added).bg(p.tool_bg)),
-                Span::styled("/", Style::default().fg(p.edit_meta).bg(p.tool_bg)),
-                Span::styled("-1 ", Style::default().fg(p.edit_removed).bg(p.tool_bg)),
-                Span::styled(
-                    format!("  {read_icon} read  {bash_icon} bash"),
-                    Style::default().fg(p.muted).bg(p.tool_bg),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" - ", Style::default().fg(p.edit_removed).bg(p.tool_bg)),
-                Span::styled(
-                    "const THEME: &str = \"old\";",
-                    Style::default().fg(p.edit_removed).bg(p.tool_bg),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(" + ", Style::default().fg(p.edit_added).bg(p.tool_bg)),
-                Span::styled(
-                    format!("let theme = \"{}\";", selected_theme.as_str()),
-                    Style::default().fg(p.edit_added).bg(p.tool_bg),
-                ),
-            ]),
-            Line::default(),
-            // 5. 思考档位图标
-            Line::from(vec![
-                Span::styled("Effort: ", Style::default().fg(p.muted)),
-                Span::styled(
-                    ThinkLevel::ALL
-                        .iter()
-                        .map(|level| {
-                            format!(
-                                "{} {}",
-                                transcript_style::think_icon_for(*level, selected_icons),
-                                level.as_str()
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" · "),
-                    Style::default().fg(p.activity),
-                ),
-            ]),
-        ]);
-        if spacious || inner.height >= 14 {
-            lines.push(Line::default());
-        }
-        // 6. 状态栏预览
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" {app_icon}"),
-                Style::default()
-                    .fg(p.status_accent)
-                    .bg(p.input_status_bg)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
-            Span::styled(
-                format!("{model_icon} openai/gpt-5"),
-                Style::default().fg(p.status_model).bg(p.input_status_bg),
-            ),
-            Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
-            Span::styled(
-                format!("{think_high} hig"),
-                Style::default().fg(p.text).bg(p.input_status_bg),
-            ),
-            Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
-            Span::styled(
-                format!("{dir_icon} ~/pp"),
-                Style::default()
-                    .fg(p.status_directory)
-                    .bg(p.input_status_bg),
-            ),
-            Span::styled(" · ", Style::default().fg(p.dim).bg(p.input_status_bg)),
-            Span::styled(
-                format!("{git_icon} main* "),
-                Style::default().fg(p.status_git).bg(p.input_status_bg),
-            ),
-        ]));
-
-        // 填充背景色避免浅色主题下出现终端黑底条纹
-        let max_rows = usize::from(inner.height);
-        lines.truncate(max_rows);
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 
     fn draw_footer(&self, frame: &mut Frame, area: Rect, p: &Palette) {
