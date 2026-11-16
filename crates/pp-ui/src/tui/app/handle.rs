@@ -237,12 +237,6 @@ impl App {
                     return false;
                 }
                 *dirty = true;
-                if let Some(panel) = &mut self.changes_panel {
-                    let action = panel.key(key);
-                    self.escape_tap.reset();
-                    self.apply_changes_action(action);
-                    return false;
-                }
                 if let Some(panel) = &mut self.tree_panel {
                     let action = panel.key(key);
                     self.escape_tap.reset();

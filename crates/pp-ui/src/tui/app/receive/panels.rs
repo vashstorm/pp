@@ -1,6 +1,6 @@
-//! 面板与会话类事件：changes、树、会话列表、子 Agent 根、MCP 与 LSP。
+//! 面板与会话类事件：树、会话列表、子 Agent 根、MCP 与 LSP。
 
-use crate::tui::{App, Level, State, WorkerCommand, WorkerEvent, editor};
+use crate::tui::{App, Level, State, WorkerEvent, editor};
 
 impl App {
     /// 面板／会话事件族：只在本地面板与快照上生效，I/O 仍由 worker 完成。
@@ -17,38 +17,6 @@ impl App {
                 if self.install_pipe_store(Some(store)) {
                     changed = true;
                 }
-            }
-
-            WorkerEvent::ChangesRead(view) => {
-                self.state = State::Ready;
-                if let Some(panel) = &mut self.changes_panel {
-                    panel.set_view(view);
-                    if panel.take_refresh() {
-                        self.send(WorkerCommand::ReadChanges, State::ReadingChanges);
-                    }
-                }
-                changed = true;
-            }
-            WorkerEvent::FileUndone(result) => {
-                match result {
-                    Ok(result) => {
-                        self.state = State::Ready;
-                        if let Some(panel) = &mut self.changes_panel {
-                            panel.set_view(result.view);
-                        }
-                        if let Some(warning) = result.warning {
-                            self.notify(Level::Error, warning);
-                        }
-                    }
-                    Err(error) => {
-                        // The worker appends an authoritative ChangesRead in FIFO order.
-                        // Stay busy until that snapshot arrives; set_view keeps this error.
-                        if let Some(panel) = &mut self.changes_panel {
-                            panel.set_error(format!("{error:#}"));
-                        }
-                    }
-                }
-                changed = true;
             }
 
             WorkerEvent::TreeRead(result) => {

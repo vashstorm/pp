@@ -13,7 +13,7 @@ use crate::lsp::types::TextEdit;
 use crate::lsp::types::WorkspaceEdit;
 use crate::lsp::uri::uri_to_path;
 use crate::tools::Tools;
-use crate::tools::changes::Original;
+use crate::tools::diff::Original;
 use crate::tools::save::DirectoryEntry;
 use crate::tools::save::EntryKind;
 use crate::tools::save::RESOURCE_FILE_LIMIT;

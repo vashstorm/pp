@@ -13,9 +13,7 @@ use std::{
 use tokio::sync::Semaphore;
 
 use super::catalog::{self, Definition};
-use super::{
-    Binding, ChangeSink, Disk, Factory, Inner, McpTools, RootOptions, State, Validator, lock, now,
-};
+use super::{Binding, Disk, Factory, Inner, McpTools, RootOptions, State, Validator, lock, now};
 
 impl Binding {
     pub(crate) fn root(
@@ -122,7 +120,7 @@ impl Binding {
             user,
             factory: Mutex::new(Some(factory)),
             validate,
-            changes: Mutex::new(None),
+            write_lock: Mutex::new(None),
             mcp_tools: Mutex::default(),
             plan_mode,
         });
@@ -178,17 +176,8 @@ impl Binding {
     pub(crate) fn allow_mcp(&self, all: Vec<String>, read_only: Vec<String>) {
         *lock(&self.inner.mcp_tools) = McpTools { all, read_only };
     }
-    pub(crate) fn track_changes(
-        &self,
-        root: PathBuf,
-        tracker: Arc<Mutex<crate::tools::changes::TaskChanges>>,
-        serial: Arc<Mutex<()>>,
-    ) {
-        *lock(&self.inner.changes) = Some(ChangeSink {
-            root,
-            tracker,
-            serial,
-        });
+    pub(crate) fn set_write_lock(&self, serial: Arc<Mutex<()>>) {
+        *lock(&self.inner.write_lock) = Some(serial);
     }
     pub(crate) fn set_accounting(&self, ledger: Option<pp_config::task_status::Ledger>) {
         if self.depth == 0 {

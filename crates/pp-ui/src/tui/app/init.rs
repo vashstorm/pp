@@ -126,7 +126,6 @@ impl App {
             themes_panel: None,
             session_panel: None,
             tree_panel: None,
-            changes_panel: None,
             plan_list_panel: None,
             plan_list_pending: None,
             plan_reenter_standby: false,
@@ -437,14 +436,6 @@ impl App {
                                 push_runtime_snapshot(&agent, &mut snapshots);
                             }
                             WorkerEvent::ModelSwitched(result)
-                        }
-                        WorkerCommand::ReadChanges => WorkerEvent::ChangesRead(agent.changes()),
-                        WorkerCommand::UndoFile(token) => {
-                            let result = agent.undo_file(&token);
-                            if result.is_err() {
-                                snapshots.push(WorkerEvent::ChangesRead(agent.changes()));
-                            }
-                            WorkerEvent::FileUndone(result)
                         }
                         WorkerCommand::ReadTree => WorkerEvent::TreeRead(agent.session_tree()),
                         WorkerCommand::NavigateTree(id) => {

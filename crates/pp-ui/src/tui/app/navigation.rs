@@ -1,7 +1,6 @@
 use crate::tui::{
     App, CancellationToken, Level, PlanEnterAction, PlanLocation, PlanOpenIntent, PlanSelection,
-    PlanStatus, State, WorkMode, WorkerCommand, changes, plan, plan_list, plan_location_from_path,
-    tree,
+    PlanStatus, State, WorkMode, WorkerCommand, plan, plan_list, plan_location_from_path, tree,
 };
 
 impl App {
@@ -28,7 +27,6 @@ impl App {
             || self.session_panel.is_some()
             || self.ask_panel.is_some()
             || self.tree_panel.is_some()
-            || self.changes_panel.is_some()
         {
             return;
         }
@@ -36,49 +34,6 @@ impl App {
         self.file_query = None;
         self.tree_panel = Some(tree::Panel::new());
         self.send(WorkerCommand::ReadTree, State::ReadingTree);
-    }
-
-    pub(in crate::tui) fn open_changes(&mut self) {
-        self.escape_tap.reset();
-        if !matches!(self.state, State::Ready)
-            || self.skills_pending
-            || self.active_settings_tab().is_some()
-            || self.session_panel.is_some()
-            || self.ask_panel.is_some()
-            || self.tree_panel.is_some()
-            || self.changes_panel.is_some()
-            || self.plan_panel.is_some()
-            || self.model_panel.is_some()
-        {
-            return;
-        }
-        self.close_pending_menu();
-        self.menu = None;
-        self.file_query = None;
-        self.changes_panel = Some(changes::Panel::new(self.workflow.mode == WorkMode::Plan));
-        self.send(WorkerCommand::ReadChanges, State::ReadingChanges);
-    }
-
-    pub(in crate::tui) fn apply_changes_action(&mut self, action: changes::Action) {
-        match action {
-            changes::Action::None => {}
-            changes::Action::Close => {
-                self.changes_panel = None;
-                self.menu_dismissed = true;
-            }
-            changes::Action::Refresh if matches!(self.state, State::Ready) => {
-                self.send(WorkerCommand::ReadChanges, State::ReadingChanges);
-            }
-            changes::Action::Undo(token) if matches!(self.state, State::Ready) => {
-                self.send(WorkerCommand::UndoFile(token), State::UndoingFile);
-            }
-            changes::Action::Message(message) => {
-                if let Some(panel) = &mut self.changes_panel {
-                    panel.set_error(message);
-                }
-            }
-            changes::Action::Refresh | changes::Action::Undo(_) => {}
-        }
     }
 
     /// /plan-list 打开前提：Ready、无 pending、无其它 modal；被拒时保留输入。
@@ -102,7 +57,6 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
-            || self.changes_panel.is_some()
             || self.plan_panel.is_some()
             || self.model_panel.is_some()
             || self.queue_menu

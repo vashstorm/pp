@@ -57,7 +57,6 @@ fn hashline_edit_rejects_invalid_edits_without_writing() {
             false
         );
     }
-    assert!(tools.changes_view().files.is_empty());
 }
 
 #[test]
@@ -205,16 +204,10 @@ fn hashline_read_noneditable_sources_and_cache_invalidation() {
     );
     assert_eq!(execute(&tools, "edit", args.clone())["ok"], false);
     read_content(&tools, "demo.txt");
-    tools.begin_changes_task();
     assert_eq!(execute(&tools, "edit", args.clone())["ok"], true);
-    let view = tools.changes_view();
-    read_content(&tools, "demo.txt");
-    tools
-        .undo_file(view.files[0].undo.as_ref().unwrap())
-        .unwrap();
     assert_eq!(execute(&tools, "edit", args.clone())["ok"], false);
     read_content(&tools, "demo.txt");
-    tools.clear_changes();
+    tools.clear_caches();
     assert_eq!(execute(&tools, "edit", args)["ok"], false);
     for (name, bytes) in [("empty", b"".as_slice()), ("binary", b"a\xff\n".as_slice())] {
         fs::write(dir.path().join(name), bytes).unwrap();
@@ -475,4 +468,126 @@ fn replace_edit_rejects_whole_batch_without_writing() {
     );
     assert_eq!(wrong_mode["ok"], false, "{wrong_mode}");
     assert_eq!(fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn file_changed_follows_commit_and_never_changes_model_tool_result() {
+    let workflow = WorkflowState::default();
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("demo.txt"), b"old\nkeep\n").unwrap();
+    let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    let token = CancellationToken::new();
+    let mut events = Vec::new();
+    let output = tools
+        .execute(
+            "edit",
+            &json!({"path":"demo.txt","edits":[{"oldText":"old","newText":"new"}]}).to_string(),
+            "edit-1",
+            ToolPolicy::Execute {
+                workflow: &workflow,
+            },
+            &token,
+            &mut |event| {
+                if matches!(event, AgentEvent::FileChanged { .. }) {
+                    assert_eq!(
+                        fs::read(dir.path().join("demo.txt")).unwrap(),
+                        b"new\nkeep\n"
+                    );
+                }
+                events.push(event);
+            },
+        )
+        .output;
+    assert!(matches!(
+        &events[..],
+        [
+            AgentEvent::ToolStarted { .. },
+            AgentEvent::FileChanged {
+                diff: pp_core::events::FileDiff::Text {
+                    added: 1,
+                    removed: 1,
+                    created: false,
+                    ..
+                },
+                ..
+            },
+            AgentEvent::ToolFinished { .. }
+        ]
+    ));
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap(),
+        json!({"ok":true,"edits_applied":1,"bytes_written":9})
+    );
+    events.clear();
+    tools.execute(
+        "edit",
+        &json!({"path":"demo.txt","edits":[{"oldText":"missing","newText":"bad"}]}).to_string(),
+        "edit-fail",
+        ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        &token,
+        &mut |event| events.push(event),
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, AgentEvent::FileChanged { .. }))
+    );
+    fs::write(dir.path().join("binary.txt"), [0xff, 0xfe]).unwrap();
+    events.clear();
+    let output = tools
+        .execute(
+            "write",
+            &json!({"path":"binary.txt","content":"text\n"}).to_string(),
+            "write-binary",
+            ToolPolicy::Execute {
+                workflow: &workflow,
+            },
+            &token,
+            &mut |event| events.push(event),
+        )
+        .output;
+    assert_eq!(fs::read(dir.path().join("binary.txt")).unwrap(), b"text\n");
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap(),
+        json!({"ok":true,"bytes_written":5})
+    );
+    assert!(
+        matches!(&events[1], AgentEvent::FileChanged { diff: pp_core::events::FileDiff::Unavailable { reason }, .. } if reason == "Previous content is not UTF-8; text diff unavailable.")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn write_snapshot_permission_failure_does_not_block_commit() {
+    let workflow = WorkflowState::default();
+    use std::os::unix::fs::PermissionsExt;
+    if rustix::process::getuid().as_raw() == 0 {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("unreadable.txt");
+    fs::write(&path, b"old").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o200)).unwrap();
+    let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    let mut events = Vec::new();
+    let output = tools
+        .execute(
+            "write",
+            &json!({"path":"unreadable.txt","content":"new"}).to_string(),
+            "unreadable",
+            ToolPolicy::Execute {
+                workflow: &workflow,
+            },
+            &CancellationToken::new(),
+            &mut |event| events.push(event),
+        )
+        .output;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"new");
+    assert_eq!(serde_json::from_str::<Value>(&output).unwrap()["ok"], true);
+    assert!(
+        matches!(&events[1], AgentEvent::FileChanged { diff: pp_core::events::FileDiff::Unavailable { reason }, .. } if reason == "Previous content could not be read; text diff unavailable.")
+    );
 }

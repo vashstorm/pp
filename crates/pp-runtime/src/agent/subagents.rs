@@ -72,7 +72,6 @@ impl Agent {
         let mcp = self.tools.mcp.clone();
         let approval = self.tools.approval.clone();
         let ask = self.tools.ask_handler.clone();
-        let changes = self.tools.changes.clone();
         let write_lock = self.tools.write_lock.clone();
         let artifacts = self.tools.artifacts.clone();
         // 临时管道正文属于根会话：子 Agent 只共享 registry，不另起一棵树。
@@ -138,7 +137,6 @@ impl Agent {
             tools.limits = config.settings.tool_limits();
             tools.skills = skills.clone();
             if !record.spec.isolated {
-                tools.changes = changes.clone();
                 tools.write_lock = write_lock.clone();
             }
             tools.approval = approval.clone();
@@ -355,11 +353,7 @@ impl Agent {
         );
         binding.set_model_roles(self.catalog.subagent_roles());
         binding.set_runtime_models(self.runtime_models.clone());
-        binding.track_changes(
-            self.tools.cwd().to_owned(),
-            self.tools.changes.clone(),
-            self.tools.write_lock.clone(),
-        );
+        binding.set_write_lock(self.tools.write_lock.clone());
         *self
             .subagent_control
             .lock()

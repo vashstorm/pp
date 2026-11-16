@@ -5,7 +5,7 @@ use crate::lsp::types::Position;
 use crate::lsp::types::Range;
 use crate::lsp::types::TextDocumentEdit;
 use crate::lsp::types::TextEdit;
-use crate::tools::changes::Original;
+use crate::tools::diff::Original;
 use anyhow::{Context, Result, bail, ensure};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

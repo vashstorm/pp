@@ -363,32 +363,15 @@ pub(super) fn worker(
         })();
         let outcome = outcome.and_then(|mut value| {
             if record.spec.isolated {
-                let sink = lock(&binding.inner.changes).clone();
-                let _guard = sink.as_ref().map(|s| lock(&s.serial));
-                let captured = workspace::capture(
+                let write_lock = lock(&binding.inner.write_lock).clone();
+                let _guard = write_lock.as_ref().map(|serial| lock(serial));
+                let patches = workspace::capture(
                     &binding.inner.directory(),
                     &record.id,
                     value["ok"] == true,
                     &CancellationToken::new(),
                 )?;
-                value["patches"] = json!(captured.patches);
-                if let Some(sink) = &sink {
-                    for change in captured.changes {
-                        if let Ok(path) = change.path.strip_prefix(&sink.root) {
-                            let mut tracker = lock(&sink.tracker);
-                            let before = change.before.map_or(
-                                crate::tools::changes::Original::Missing,
-                                crate::tools::changes::Original::Bytes,
-                            );
-                            if let Some(after) = change.after {
-                                tracker.record(path.to_owned(), before, after);
-                            } else {
-                                tracker.record_resource(path.to_owned(), before, None);
-                            }
-                            tracker.source(path, &record.id);
-                        }
-                    }
-                }
+                value["patches"] = json!(patches);
             }
             Ok(value)
         });

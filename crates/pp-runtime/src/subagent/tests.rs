@@ -1244,14 +1244,13 @@ fn worktree_captures_nested_repository_binary_and_deleted_files() {
     let target = workspace::prepare(&repo, &artifacts, "a1", &Default::default()).unwrap();
     fs::write(target.join("nested/binary"), [0, 255, 9, 8]).unwrap();
     fs::remove_file(target.join("nested/deleted")).unwrap();
-    let captured = workspace::capture(&artifacts, "a1", true, &Default::default()).unwrap();
-    assert!(!captured.patches.is_empty());
+    let patches = workspace::capture(&artifacts, "a1", true, &Default::default()).unwrap();
+    assert!(!patches.is_empty());
     assert_eq!(fs::read(nested.join("binary")).unwrap(), [0, 255, 9, 8]);
     assert!(!nested.join("deleted").exists());
     assert!(
         workspace::capture(&artifacts, "a1", true, &Default::default())
             .unwrap()
-            .patches
             .is_empty()
     );
 }

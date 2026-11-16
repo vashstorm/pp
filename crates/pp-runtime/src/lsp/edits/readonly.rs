@@ -2,7 +2,7 @@
 
 use crate::lsp::types::WorkspaceEdit;
 use crate::tools::Tools;
-use crate::tools::changes::Original;
+use crate::tools::diff::Original;
 use anyhow::Result;
 use pp_core::cancellation::CancellationToken;
 use pp_core::cancellation::check;

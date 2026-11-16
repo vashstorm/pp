@@ -16,8 +16,6 @@ fn completion_states() -> impl Iterator<Item = State> {
         State::Resuming,
         State::ReadingTree,
         State::NavigatingTree,
-        State::ReadingChanges,
-        State::UndoingFile,
         State::ListingPlans,
         State::ReadingListedPlan,
         State::OpeningListedPlan,

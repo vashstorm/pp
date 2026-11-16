@@ -532,7 +532,7 @@ impl Agent {
                 .map(std::path::PathBuf::from),
         );
         self.replay = replay;
-        self.tools.clear_changes();
+        self.tools.clear_caches();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(true);
         }

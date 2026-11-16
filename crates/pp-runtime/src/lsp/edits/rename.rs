@@ -6,7 +6,7 @@ use crate::lsp::types::DeleteFile;
 use crate::lsp::types::DeleteFileOptions;
 use crate::lsp::types::RenameFile;
 use crate::lsp::types::RenameFileOptions;
-use crate::tools::changes::Original;
+use crate::tools::diff::Original;
 use anyhow::{Result, bail, ensure};
 use pp_core::cancellation::check;
 use std::path::Path;

@@ -37,57 +37,6 @@ fn draw(app: &mut App, width: u16, height: u16) -> String {
         .join("\n")
 }
 
-fn changes_view(blocked: bool) -> ChangesView {
-    let path = std::path::PathBuf::from("demo.txt");
-    ChangesView {
-        task_id: 1,
-        revision: 2,
-        files: vec![pp_runtime::tools::ChangedFile {
-            sources: Vec::new(),
-            path: path.clone(),
-            diff: pp_core::events::FileDiff::Text {
-                created: false,
-                deleted: false,
-                added: 1,
-                removed: 1,
-                hunks: vec![pp_core::events::DiffHunk {
-                    lines: vec![
-                        pp_core::events::DiffLine {
-                            kind: pp_core::events::DiffLineKind::Removed,
-                            old_line: Some(1),
-                            new_line: None,
-                            text: "user-local\n".into(),
-                        },
-                        pp_core::events::DiffLine {
-                            kind: pp_core::events::DiffLineKind::Added,
-                            old_line: None,
-                            new_line: Some(1),
-                            text: "agent-final\n".into(),
-                        },
-                    ],
-                }],
-            },
-            undo: if blocked {
-                Err("File changed outside this task; undo refused.".into())
-            } else {
-                Ok(UndoToken {
-                    task_id: 1,
-                    revision: 2,
-                    path,
-                })
-            },
-        }],
-    }
-}
-
-fn changes_empty_view() -> ChangesView {
-    ChangesView {
-        task_id: 1,
-        revision: 3,
-        files: vec![],
-    }
-}
-
 fn ask_fixture(
     app: &mut App,
 ) -> (
@@ -413,7 +362,6 @@ fn start_review(app: &mut App, requests: &mpsc::Receiver<WorkerCommand>) -> Work
 }
 
 mod ask_cases;
-mod changes_cases;
 mod command_cases;
 mod file_picker_cases;
 mod hub_cases;

@@ -151,10 +151,6 @@ fn lsp_save_write_preserves_ai_bytes_and_reports_diagnostics() {
         e["method"].as_str(),
         Some("textDocument/formatting" | "workspace/executeCommand")
     )));
-    let view = tools.changes_view();
-    let undo = view.files[0].undo.as_ref().unwrap();
-    tools.undo_file(undo).unwrap();
-    assert!(!path.exists());
 }
 #[test]
 fn lsp_save_edit_syncs_exact_text_and_version_without_formatting() {
@@ -201,11 +197,6 @@ fn lsp_save_edit_syncs_exact_text_and_version_without_formatting() {
         e["method"].as_str(),
         Some("textDocument/formatting" | "textDocument/diagnostic" | "workspace/executeCommand")
     )));
-    let view = tools.changes_view();
-    tools
-        .undo_file(view.files[0].undo.as_ref().unwrap())
-        .unwrap();
-    assert_eq!(client.document(&path).unwrap().text, "one\n");
 }
 #[test]
 fn lsp_save_failure_publishes_neither_diff_nor_diagnostics() {

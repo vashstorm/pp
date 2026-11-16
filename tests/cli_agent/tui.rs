@@ -12,7 +12,6 @@ include!("context_tui.rs");
 include!("statusline_tui.rs");
 include!("project_instructions_tui.rs");
 include!("diff_blocks_tui.rs");
-include!("changes_tui.rs");
 include!("transcript_blocks_tui.rs");
 include!("ask_tui.rs");
 include!("subagents_tui.rs");

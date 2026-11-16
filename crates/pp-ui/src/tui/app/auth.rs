@@ -14,7 +14,6 @@ impl App {
             || self.plan_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.model_panel.is_some()
-            || self.changes_panel.is_some()
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
         {

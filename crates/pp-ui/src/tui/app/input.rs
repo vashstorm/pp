@@ -19,7 +19,6 @@ impl App {
                 .is_none_or(|panel| panel.allows_input())
             && self.session_panel.is_none()
             && self.tree_panel.is_none()
-            && self.changes_panel.is_none()
             && self.pipes_panel.is_none()
             && self.plan_leave_confirmation.is_none()
             && (self.plan_list_panel.is_none() || self.plan_panel.is_some())
@@ -729,7 +728,6 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
-            || self.changes_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.plan_panel.is_some()
             || self.plan_leave_confirmation.is_some()

@@ -35,8 +35,6 @@ mod dispatch;
 pub mod output;
 pub use bash::{BackgroundCleanup, PipeStore};
 pub mod approval;
-pub(crate) mod changes;
-pub use changes::{ChangedFile, ChangesView, UndoResult, UndoToken};
 pub(crate) mod diff;
 mod edit;
 mod glob;
@@ -49,7 +47,6 @@ pub(crate) use plan::PlanChange;
 pub(crate) mod plan_catalog;
 pub(crate) mod read;
 mod replace;
-mod rollback;
 pub(crate) mod save;
 mod shell_fields;
 use shell_fields::{remove_shell_display, restore_shell_display};
@@ -96,7 +93,6 @@ pub struct Tools {
     cwd: PathBuf,
     edit_mode: EditMode,
     workspace: save::Workspace,
-    pub(crate) changes: std::sync::Arc<std::sync::Mutex<changes::TaskChanges>>,
     pub(crate) write_lock: std::sync::Arc<std::sync::Mutex<()>>,
     web_cache: RefCell<read::WebCache>,
     snapshots: RefCell<hashline::Store>,

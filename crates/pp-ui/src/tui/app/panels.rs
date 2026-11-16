@@ -24,7 +24,6 @@ impl App {
     pub(in crate::tui) fn shortcut_ready(&mut self) -> bool {
         if self.skills_pending
             || self.active_settings_tab().is_some()
-            || self.changes_panel.is_some()
             || self.plan_list_panel.is_some()
         {
             return false;
@@ -151,7 +150,6 @@ impl App {
         }
         if self.skills_pending
             || self.skill_panel.is_some()
-            || self.changes_panel.is_some()
             || self.pipes_panel.is_some()
             || self.model_panel.is_some()
         {
@@ -281,15 +279,6 @@ impl App {
         }
         if matches!(command, Some(Command::Model(_))) && matches!(self.state, State::Unavailable) {
             self.reload_model_catalog();
-            return false;
-        }
-        if matches!(command, Some(Command::Changes))
-            && matches!(self.state, State::Running | State::Cancelling)
-        {
-            self.notify(
-                Level::Error,
-                "Finish or cancel the current task before opening /changes.".into(),
-            );
             return false;
         }
         if matches!(command, Some(Command::PlanList)) && !matches!(self.state, State::Ready) {
@@ -498,8 +487,6 @@ impl App {
             | State::Resuming
             | State::ReadingTree
             | State::NavigatingTree
-            | State::ReadingChanges
-            | State::UndoingFile
             | State::ListingPlans
             | State::ReadingListedPlan
             | State::OpeningListedPlan
@@ -544,11 +531,6 @@ impl App {
                     self.remember_input();
                     self.clear_input();
                     self.open_tree();
-                }
-                Some(Command::Changes) => {
-                    self.remember_input();
-                    self.clear_input();
-                    self.open_changes();
                 }
                 Some(Command::Resume) => {
                     if self.skill_panel.is_some() || self.skills_pending {
@@ -892,7 +874,6 @@ impl App {
             worker.cancel();
         }
         self.close_pipes();
-        self.changes_panel = None;
         self.plan_list_panel = None;
         self.plan_list_pending = None;
         self.plan_reenter_standby = false;

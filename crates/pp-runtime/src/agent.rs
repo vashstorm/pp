@@ -28,8 +28,6 @@ mod turn_loop;
 mod usage;
 
 #[cfg(test)]
-mod changes_tests;
-#[cfg(test)]
 mod read_tests;
 
 use crate::tools::Tools;

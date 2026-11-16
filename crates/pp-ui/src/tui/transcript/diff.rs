@@ -12,14 +12,6 @@ fn diff_line_text(text: &str) -> (&str, &'static str) {
     }
 }
 
-pub(in crate::tui) fn diff_layout(
-    diff: &FileDiff,
-    width: u16,
-    expanded: bool,
-) -> Vec<Line<'static>> {
-    diff_layout_styled(diff, width, expanded, None)
-}
-
 pub(in crate::tui) fn diff_layout_styled(
     diff: &FileDiff,
     width: u16,

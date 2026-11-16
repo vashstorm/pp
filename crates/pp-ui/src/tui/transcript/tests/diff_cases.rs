@@ -554,14 +554,14 @@ fn diff_preview_caps_hunks_and_wrapped_rows_but_full_mode_keeps_tail() {
             })
             .collect(),
     };
-    let collapsed = diff_layout(&diff, 100, false)
+    let collapsed = diff_layout_styled(&diff, 100, false, None)
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n");
     assert!(collapsed.contains("hunk-8") && !collapsed.contains("hunk-9"));
     assert!(
-        diff_layout(&diff, 100, true)
+        diff_layout_styled(&diff, 100, true, None)
             .iter()
             .any(|row| row.to_string().contains("hunk-9"))
     );
@@ -574,7 +574,7 @@ fn diff_preview_caps_hunks_and_wrapped_rows_but_full_mode_keeps_tail() {
             lines: vec![make_line(1, format!("{}tail\n", "x".repeat(2000)))],
         }],
     };
-    let rows = diff_layout(&diff, 30, false);
+    let rows = diff_layout_styled(&diff, 30, false, None);
     let marker = rows
         .iter()
         .position(|row| row.to_string().contains("more lines"))
@@ -582,7 +582,7 @@ fn diff_preview_caps_hunks_and_wrapped_rows_but_full_mode_keeps_tail() {
     assert_eq!(marker, 17);
     assert!(!rows.iter().any(|row| row.to_string().contains("tail")));
     assert!(
-        diff_layout(&diff, 30, true)
+        diff_layout_styled(&diff, 30, true, None)
             .iter()
             .any(|row| row.to_string().contains("tail"))
     );

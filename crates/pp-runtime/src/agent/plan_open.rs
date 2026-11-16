@@ -218,7 +218,7 @@ impl Agent {
         self.workflow = candidate_workflow;
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
-        self.tools.clear_changes();
+        self.tools.clear_caches();
         self.clear_session_usage();
         self.clear_session_cost();
         self.pending_instructions = None;

@@ -58,18 +58,11 @@ impl Tools {
         let bytes_written = final_bytes.len();
         // 记录与 diff 使用本次实际提交的内容。
         let original = match baseline {
-            WriteBaseline::Existing(bytes) => changes::Original::Bytes(bytes),
-            WriteBaseline::Missing => changes::Original::Missing,
-            WriteBaseline::Unavailable => changes::Original::Unavailable,
+            WriteBaseline::Existing(bytes) => diff::Original::Bytes(bytes),
+            WriteBaseline::Missing => diff::Original::Missing,
+            WriteBaseline::Unavailable => diff::Original::Unavailable,
         };
-        self.record_committed_file(
-            call_id,
-            normalized_path,
-            original,
-            Some(final_bytes),
-            false,
-            emit,
-        );
+        self.record_committed_file(call_id, normalized_path, original, &final_bytes, emit);
         drop(guard);
         if cancellation.is_cancelled() {
             // 已提交的副作用保留，沿用现有取消链。

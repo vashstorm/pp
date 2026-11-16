@@ -20,9 +20,6 @@ use pp_runtime::agent::input::InputQueue;
 use pp_runtime::agent::plan_management::PlanListing;
 use pp_runtime::agent::plan_management::PlanOpenIntent;
 use pp_runtime::agent::plan_management::PlanSelection;
-use pp_runtime::tools::ChangesView;
-use pp_runtime::tools::UndoResult;
-use pp_runtime::tools::UndoToken;
 use std::{
     collections::BTreeMap,
     sync::mpsc,
@@ -75,8 +72,6 @@ pub(super) enum WorkerCommand {
     },
     ReadTree,
     NavigateTree(String),
-    ReadChanges,
-    UndoFile(UndoToken),
     EnterPlan {
         cancellation: CancellationToken,
     },
@@ -177,8 +172,6 @@ pub(super) enum WorkerEvent {
     SubagentsEnsured(Result<()>),
     TreeRead(Result<pp_runtime::agent::persistence::tree::View>),
     TreeNavigated(Result<pp_runtime::agent::TreeNavigation>),
-    ChangesRead(ChangesView),
-    FileUndone(Result<UndoResult>),
     // /plan-list 管理结果；失败保留旧列表与输入，只展示可见错误。
     PlansListed(Result<PlanListing>),
     ListedPlanRead(Result<PlanSelection>),

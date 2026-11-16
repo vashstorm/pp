@@ -48,7 +48,6 @@ impl Tools {
             cwd: workspace.path.clone(),
             edit_mode,
             workspace,
-            changes: Default::default(),
             write_lock: Default::default(),
             web_cache: RefCell::default(),
             snapshots: RefCell::default(),
@@ -124,6 +123,29 @@ impl Tools {
     /// 登记表/登记事务复用的安全工作区句柄；不扩大任何文件权限。
     pub(crate) fn plan_workspace(&self) -> &save::Workspace {
         &self.workspace
+    }
+
+    /// 调用者已完成安全提交，并传入工作区规范相对路径；此处不再读盘。
+    pub(super) fn record_committed_file(
+        &self,
+        call_id: &str,
+        path: PathBuf,
+        before: super::diff::Original,
+        after: &[u8],
+        emit: &mut dyn FnMut(pp_core::events::AgentEvent),
+    ) {
+        let diff = super::diff::committed(&before, Some(after));
+        self.snapshots.borrow_mut().invalidate(&path);
+        emit(pp_core::events::AgentEvent::FileChanged {
+            id: call_id.to_owned(),
+            path: path.display().to_string(),
+            diff,
+        });
+    }
+
+    pub(crate) fn clear_caches(&self) {
+        self.web_cache.borrow_mut().clear();
+        self.snapshots.borrow_mut().clear();
     }
 
     pub(super) fn mcp_access(&self, mode: WorkMode) -> crate::mcp::Access {

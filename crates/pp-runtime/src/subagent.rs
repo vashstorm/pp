@@ -159,12 +159,6 @@ struct State {
 }
 type Validator = dyn Fn(&mut Spec) -> Result<()> + Send + Sync;
 type Factory = dyn Fn(&Record, Binding) -> Result<Agent> + Send + Sync;
-#[derive(Clone)]
-struct ChangeSink {
-    root: PathBuf,
-    tracker: Arc<Mutex<crate::tools::changes::TaskChanges>>,
-    serial: Arc<Mutex<()>>,
-}
 pub(crate) fn is_read_only_child_tool(name: &str, mcp: impl FnOnce(&str) -> bool) -> bool {
     matches!(name, "read" | "rg" | "glob" | "lsp") || mcp(name)
 }
@@ -199,7 +193,7 @@ struct Inner {
     user: PathBuf,
     factory: Mutex<Option<Arc<Factory>>>,
     validate: Arc<Validator>,
-    changes: Mutex<Option<ChangeSink>>,
+    write_lock: Mutex<Option<Arc<Mutex<()>>>>,
     mcp_tools: Mutex<McpTools>,
     plan_mode: bool,
 }

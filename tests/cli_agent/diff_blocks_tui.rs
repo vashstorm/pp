@@ -306,7 +306,7 @@ fn diff_blocks_settings(mode: &str) -> String {
 
 // 直接按终端单元格匹配 ASCII 文本及颜色，避免标题图标影响列号计算。
 fn diff_blocks_screen_colored(screen: &vt100::Screen, needle: &str, color: vt100::Color) -> bool {
-    // edit 使用参考图色板，/changes 继续使用原有 diff 色板；局部变更以背景强调。
+    // edit 使用参考图色板，局部变更以背景强调。
     let edit_color = match color {
         DIFF_BLOCKS_ADDED => vt100::Color::Rgb(153, 208, 137),
         DIFF_BLOCKS_REMOVED => vt100::Color::Rgb(232, 76, 82),

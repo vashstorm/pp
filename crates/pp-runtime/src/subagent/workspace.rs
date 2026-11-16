@@ -5,7 +5,7 @@ use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
 use serde::{Deserialize, Serialize};
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     fs,
     io::Read,
     os::unix::{ffi::OsStrExt, process::CommandExt},
@@ -24,16 +24,6 @@ struct Lease {
     relative: PathBuf,
     #[serde(default)]
     nested: Vec<String>,
-}
-pub(crate) struct Change {
-    pub path: PathBuf,
-    pub before: Option<Vec<u8>>,
-    pub after: Option<Vec<u8>>,
-}
-#[derive(Default)]
-pub(crate) struct Capture {
-    pub patches: Vec<PathBuf>,
-    pub changes: Vec<Change>,
 }
 struct Git<'a> {
     cwd: &'a Path,
@@ -313,7 +303,6 @@ struct Prepared {
     lease: Lease,
     next: String,
     patch: PathBuf,
-    paths: Vec<PathBuf>,
     already_applied: bool,
 }
 fn collect(dir: &Path, id: &str, token: &CancellationToken, out: &mut Vec<Prepared>) -> Result<()> {
@@ -339,18 +328,6 @@ fn collect(dir: &Path, id: &str, token: &CancellationToken, out: &mut Vec<Prepar
     if bytes.is_empty() {
         return Ok(());
     }
-    let names = git.run(&[
-        "diff".as_ref(),
-        "--name-only".as_ref(),
-        "-z".as_ref(),
-        lease.baseline.as_ref(),
-        next.as_ref(),
-    ])?;
-    let paths = names
-        .split(|b| *b == 0)
-        .filter(|b| !b.is_empty())
-        .map(|b| PathBuf::from(OsString::from(OsStr::from_bytes(b))))
-        .collect();
     let patch = dir.join(format!("{id}.patch"));
     fs::write(&patch, bytes)?;
     out.push(Prepared {
@@ -358,7 +335,6 @@ fn collect(dir: &Path, id: &str, token: &CancellationToken, out: &mut Vec<Prepar
         lease,
         next,
         patch,
-        paths,
         already_applied: false,
     });
     Ok(())
@@ -368,15 +344,12 @@ pub(crate) fn capture(
     id: &str,
     apply: bool,
     token: &CancellationToken,
-) -> Result<Capture> {
+) -> Result<Vec<PathBuf>> {
     let mut prepared = Vec::new();
     collect(dir, id, token, &mut prepared)?;
-    let mut captured = Capture {
-        patches: prepared.iter().map(|p| p.patch.clone()).collect(),
-        changes: Vec::new(),
-    };
+    let patches: Vec<PathBuf> = prepared.iter().map(|p| p.patch.clone()).collect();
     if !apply {
-        return Ok(captured);
+        return Ok(patches);
     }
     static MERGE: OnceLock<Mutex<()>> = OnceLock::new();
     let _guard = lock(MERGE.get_or_init(|| Mutex::new(())));
@@ -407,28 +380,14 @@ pub(crate) fn capture(
     }
     for item in &mut prepared {
         if !item.already_applied {
-            let before = item
-                .paths
-                .iter()
-                .map(|p| fs::read(item.lease.source.join(p)).ok())
-                .collect::<Vec<_>>();
             Git {
                 cwd: &item.lease.source,
                 token,
             }
             .run(&["apply".as_ref(), item.patch.as_os_str()])?;
-            for (path, before) in item.paths.iter().zip(before) {
-                let path = item.lease.source.join(path);
-                let after = fs::read(&path).ok();
-                captured.changes.push(Change {
-                    path,
-                    before,
-                    after,
-                });
-            }
         }
         item.lease.baseline = item.next.clone();
         atomic_json(&item.meta, &item.lease)?;
     }
-    Ok(captured)
+    Ok(patches)
 }

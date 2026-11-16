@@ -5,7 +5,6 @@ impl App {
     pub(in crate::tui) fn open_roles(&mut self) {
         let allowed = if self.active_settings_tab().is_some() {
             !self.skills_pending
-                && self.changes_panel.is_none()
                 && self.plan_list_panel.is_none()
                 && matches!(
                     self.state,

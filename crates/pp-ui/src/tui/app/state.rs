@@ -125,7 +125,6 @@ impl App {
         self.unavailable = Some(message.into());
         self.tree_panel = None;
         self.roles_panel = None;
-        self.changes_panel = None;
         self.close_pipes();
         self.plan_list_panel = None;
         self.plan_list_pending = None;
@@ -261,7 +260,7 @@ impl App {
     }
 
     pub(in crate::tui) fn request_plan_read(&mut self) {
-        if !matches!(self.state, State::Ready) || self.changes_panel.is_some() {
+        if !matches!(self.state, State::Ready) {
             return;
         }
         self.send(WorkerCommand::ReadPlan, State::ReadingPlan);
@@ -296,7 +295,6 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
-            || self.changes_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.model_panel.is_some()
             || self.settings_panel.is_some()
@@ -598,7 +596,6 @@ impl App {
             || self.skill_panel.is_some()
             || self.skills_pending
             || self.session_panel.is_some()
-            || self.changes_panel.is_some()
             || self.pipes_panel.is_some()
             // 读取完成前保留主屏幕，空历史或读取失败时无需切换屏幕。
             || self.tree_panel.as_ref().is_some_and(|panel| !panel.is_loading())

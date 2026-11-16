@@ -47,16 +47,6 @@ impl SaveOperations for FaultSave {
     }
 }
 
-fn assert_undo_conflict<T>(result: Result<T>) {
-    let Err(error) = result else {
-        panic!("expected undo conflict");
-    };
-    assert_eq!(
-        error.to_string(),
-        "File changed outside this task; undo refused."
-    );
-}
-
 struct MutateAfterSync<'a> {
     path: &'a Path,
     content: &'a [u8],
@@ -69,7 +59,7 @@ impl SaveOperations for MutateAfterSync<'_> {
 }
 
 #[test]
-fn changes_matches_exact_bytes_across_chunks_and_eof() {
+fn compare_bytes_matches_exact_bytes_across_chunks_and_eof() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("target");
     let workspace = Workspace::open(dir.path()).unwrap();
@@ -77,219 +67,29 @@ fn changes_matches_exact_bytes_across_chunks_and_eof() {
     for length in [0, 1, 8191, 8192, 8193, 16384, 20000] {
         let expected: Vec<_> = (0..length).map(|index| (index % 251) as u8).collect();
         std::fs::write(&path, &expected).unwrap();
-        target.ensure_matches(&expected).unwrap();
+        target.compare_bytes(&expected).unwrap();
 
         let mut longer = expected.clone();
         longer.push(0);
-        assert_undo_conflict(target.ensure_matches(&longer));
+        assert!(target.compare_bytes(&longer).is_err());
         std::fs::write(&path, &longer).unwrap();
-        assert_undo_conflict(target.ensure_matches(&expected));
+        assert!(target.compare_bytes(&expected).is_err());
 
         if !expected.is_empty() {
             std::fs::write(&path, &expected[..length - 1]).unwrap();
-            assert_undo_conflict(target.ensure_matches(&expected));
+            assert!(target.compare_bytes(&expected).is_err());
             for offset in [0, length / 2, length - 1] {
                 let mut changed = expected.clone();
                 changed[offset] ^= 0xff;
                 std::fs::write(&path, &changed).unwrap();
-                assert_undo_conflict(target.ensure_matches(&expected));
+                assert!(target.compare_bytes(&expected).is_err());
             }
         }
     }
 }
 
 #[test]
-fn changes_restore_checks_after_temporary_sync_and_cleans_up() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("target");
-    std::fs::write(&path, b"tool-written").unwrap();
-    let workspace = Workspace::open(dir.path()).unwrap();
-    let target = workspace.target(Path::new("target"), false).unwrap();
-    target.ensure_matches(b"tool-written").unwrap();
-    let operations = MutateAfterSync {
-        path: &path,
-        content: b"user-written",
-    };
-    assert_undo_conflict(target.restore_with(b"tool-written", Some(b"original"), &operations));
-    assert_eq!(std::fs::read(&path).unwrap(), b"user-written");
-    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-}
-
-#[test]
-fn changes_restore_faults_keep_target_and_remove_temporary() {
-    for fault in [Fault::Write, Fault::Sync, Fault::Commit] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("target");
-        std::fs::write(&path, b"tool-written\r\n\xff").unwrap();
-        let workspace = Workspace::open(dir.path()).unwrap();
-        let target = workspace.target(Path::new("target"), false).unwrap();
-        assert!(
-            target
-                .restore_with(
-                    b"tool-written\r\n\xff",
-                    Some(b"original\r\n\xef\xbb\xbf"),
-                    &FaultSave(fault),
-                )
-                .is_err(),
-            "{fault:?}"
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), b"tool-written\r\n\xff");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-}
-
-#[test]
-fn changes_restore_and_delete_report_directory_sync_warning_after_commit() {
-    for original in [Some(&b"original\r\n\xff"[..]), None] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("target");
-        std::fs::write(&path, b"tool-written").unwrap();
-        let workspace = Workspace::open(dir.path()).unwrap();
-        let target = workspace.target(Path::new("target"), false).unwrap();
-        let warning = target
-            .restore_with(b"tool-written", original, &FaultSave(Fault::Directory))
-            .unwrap()
-            .unwrap();
-        assert!(warning.contains("syncing parent directory failed"));
-        if let Some(original) = original {
-            assert!(warning.contains("file committed"));
-            assert_eq!(std::fs::read(&path).unwrap(), original);
-        } else {
-            assert!(warning.contains("file deleted"));
-            assert!(!path.exists());
-        }
-        assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
-            usize::from(original.is_some())
-        );
-    }
-}
-
-#[test]
-fn changes_restore_preserves_exact_baseline_and_current_permissions() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("target");
-    let workspace = Workspace::open(dir.path()).unwrap();
-    for original in [&b""[..], &b"\xef\xbb\xbfuser-local\r\nkeep\xff"[..]] {
-        std::fs::write(&path, b"tool-written").unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751)).unwrap();
-        // Re-resolve at undo time, so a user chmod after the tool write is
-        // preserved rather than restoring any baseline permission bits.
-        let target = workspace.target(Path::new("target"), false).unwrap();
-        assert_eq!(
-            target
-                .restore_if_unchanged(b"tool-written", Some(original))
-                .unwrap(),
-            None
-        );
-        assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o751
-        );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-}
-
-#[test]
-fn changes_delete_empty_and_nonempty_files_keeps_parent_directory() {
-    let dir = tempfile::tempdir().unwrap();
-    let workspace = Workspace::open(dir.path()).unwrap();
-    for expected in [&b""[..], &b"created\xff\r\n"[..]] {
-        let target = workspace.target(Path::new("parent/new"), true).unwrap();
-        target.save(expected).unwrap();
-        assert_eq!(target.restore_if_unchanged(expected, None).unwrap(), None);
-        assert!(!dir.path().join("parent/new").exists());
-        assert!(dir.path().join("parent").is_dir());
-        assert_eq!(
-            std::fs::read_dir(dir.path().join("parent"))
-                .unwrap()
-                .count(),
-            0
-        );
-    }
-}
-
-#[test]
-fn changes_restore_and_delete_refuse_external_bytes_and_missing_files() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("target");
-    let workspace = Workspace::open(dir.path()).unwrap();
-    for original in [Some(&b"original"[..]), None] {
-        for external in [
-            &b""[..],
-            &b"tool"[..],
-            &b"tool-written-extra"[..],
-            &b"user-written"[..],
-        ] {
-            std::fs::write(&path, external).unwrap();
-            let target = workspace.target(Path::new("target"), false).unwrap();
-            assert_undo_conflict(target.restore_if_unchanged(b"tool-written", original));
-            assert_eq!(std::fs::read(&path).unwrap(), external);
-            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-        }
-        std::fs::remove_file(&path).unwrap();
-        let target = workspace.target(Path::new("target"), false).unwrap();
-        assert_undo_conflict(target.ensure_matches(b"tool-written"));
-        assert_undo_conflict(target.restore_if_unchanged(b"tool-written", original));
-        assert!(!path.exists());
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-}
-
-#[test]
-fn changes_undo_rejects_swapped_special_targets_without_following_them() {
-    let dir = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
-    let peer = outside.path().join("peer");
-    let path = dir.path().join("target");
-    std::fs::write(&peer, b"tool-written").unwrap();
-    let workspace = Workspace::open(dir.path()).unwrap();
-    // Hold a previously valid target to exercise the late open's type
-    // checks too, not only Workspace::target's initial validation.
-    std::fs::write(&path, b"tool-written").unwrap();
-    let target = workspace.target(Path::new("target"), false).unwrap();
-    std::fs::remove_file(&path).unwrap();
-    symlink(&peer, &path).unwrap();
-    assert!(workspace.target(Path::new("target"), false).is_err());
-    assert_undo_conflict(target.ensure_matches(b"tool-written"));
-    for original in [Some(&b"original"[..]), None] {
-        assert_undo_conflict(target.restore_if_unchanged(b"tool-written", original));
-        assert!(
-            std::fs::symlink_metadata(&path)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(std::fs::read(&peer).unwrap(), b"tool-written");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-    std::fs::remove_file(&path).unwrap();
-    assert!(
-        std::process::Command::new("mkfifo")
-            .arg(&path)
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(workspace.target(Path::new("target"), false).is_err());
-    assert_undo_conflict(target.ensure_matches(b""));
-    for original in [Some(&b"original"[..]), None] {
-        assert_undo_conflict(target.restore_if_unchanged(b"", original));
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-    std::fs::remove_file(&path).unwrap();
-    std::fs::create_dir(&path).unwrap();
-    assert_undo_conflict(target.ensure_matches(b""));
-    for original in [Some(&b"original"[..]), None] {
-        assert_undo_conflict(target.restore_if_unchanged(b"", original));
-        assert!(path.is_dir());
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-    }
-}
-
-#[test]
-fn changes_undo_target_resolution_rejects_parent_symlink_and_missing_parent() {
+fn target_resolution_rejects_parent_symlink_and_missing_parent() {
     let dir = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("parent")).unwrap();
@@ -313,31 +113,6 @@ fn changes_undo_target_resolution_rejects_parent_symlink_and_missing_parent() {
         std::fs::read(dir.path().join("moved/target")).unwrap(),
         b"tool-written"
     );
-}
-
-#[test]
-fn changes_undo_refuses_unreadable_target_without_changing_permissions() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("target");
-    std::fs::write(&path, b"tool-written").unwrap();
-    let workspace = Workspace::open(dir.path()).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-    // Privileged test environments can bypass mode bits, as in the
-    // existing read_optional permission regression.
-    if std::fs::read(&path).is_err() {
-        let target = workspace.target(Path::new("target"), false).unwrap();
-        assert_undo_conflict(target.ensure_matches(b"tool-written"));
-        for original in [Some(&b"original"[..]), None] {
-            assert_undo_conflict(target.restore_if_unchanged(b"tool-written", original));
-            assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0
-            );
-            assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-        }
-    }
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert_eq!(std::fs::read(&path).unwrap(), b"tool-written");
 }
 
 #[test]

@@ -26,7 +26,7 @@ TUI rendering defaults to a maximum of 60 FPS. Set `tui.max_fps` in `~/.pp/agent
 | **Planning and execution** | Plan research, review, and explicit approval, with an ask panel for key decisions; `/plan-list` manages saved plans across drafts, plans, and done |
 | **Todo tracking** | Fixed progress above the input box, expandable task lists during execution, approved-plan checkbox synchronization, and bounded completion reminders |
 | **Task control** | Add instructions while a task runs, queue follow-up tasks, and press Esc to cancel |
-| **Sessions and changes** | Automatic saving and restoration, session tree navigation, persistent per-directory input recall, full-prompt `/resume` search, and recent-task diffs with safe undo |
+| **Sessions** | Automatic saving and restoration, session tree navigation, persistent per-directory input recall, and full-prompt `/resume` search |
 | **Extensions on demand** | Layered project `AGENTS.md`, skills, Markdown prompt commands, and stdio and remote HTTP/SSE MCP tools |
 | **Usage visibility** | Context estimates and compaction, plus local request, token, cost, and latency statistics |
 
@@ -164,7 +164,6 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | Manage MCP servers without restarting |
 | `/compact`, `/new` | Compact context or start a new session |
 | `/resume`, `/tree` | Restore a session or navigate back through current history (TUI only) |
-| `/changes` | View recent-task edit/write changes and undo individual files (TUI only) |
 | `/skills`, `/quit` | Manage skills or exit |
 
 Enter `!command` to run a local, non-interactive bash command in the project directory. Output is shown locally, not sent to the model or saved in session history. Requires a configured agent and Execute mode; commands run with your user permissions, without a sandbox. Each command starts a fresh shell. In the TUI, the first `!` enters shell mode without appearing in the editor; subsequent `!` characters belong to the command. Esc leaves shell mode while editing; Backspace on an empty editor also leaves it. While a command is running, Esc cancels it; wait for cleanup before continuing.
@@ -211,7 +210,7 @@ Project instructions follow directory scope: the first request includes the `AGE
 
 Tool previews follow the ANSI policies of [Oh My Pi](https://github.com/can1357/oh-my-pi/tree/0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0). Reads only show local path/range summaries, with a white dot and Read title, gray counts and tree branches, and gold paths on a dark gray-purple background. Grouped successful reads omit the `ok` suffix. Read bodies stay hidden in all views, including CLI output, Ctrl + O expansion, and session-tree previews. The legacy `read.toolResultPreview` setting is accepted but has no display effect. Automatically loaded `AGENTS.md` and `skill://` reads use the same summaries and grouping as other reads. Unchanged project instructions are reported once per session, changes produce a new card, and resume rebuilds summaries from recorded results without rereading files. Skill discovery summaries are not body-load cards. Ctrl + O toggles existing and future tool output except read and ask and reports the state. Search previews clip long rows, shell output keeps a bounded visual tail, and other tools have separate limits. Expanded rg and file lists remain width-clipped; MCP text still has a 12-line limit. These display limits do not change model-facing results. Session-tree previews retain complete output except for read bodies and TODO checklists. Normal conversation uses the main screen and commits completed content incrementally; terminal history keeps the display state at commit time. Exiting only finishes uncommitted content and does not replay the session or automatically expand tools. History browsing, Ctrl + O, and panels temporarily use the alternate screen; Esc returns to the conversation. A successful `/new` clears the screen and native scrollback; resume and tree rewind rebuild them from the effective history. [Preview limits (Chinese) →](docs/guide.md#工具输出折叠)
 
-With `edit: hashline`, local reads and rg results provide a `[path#TAG]` file-version header and `N:text` lines. Submit one file through `edit({"input":"…"})` using `PUT` replacements/insertions or `CUT` deletions. Only displayed lines may be edited; stale or missing snapshots require a fresh read. Each successful edit, write, or undo invalidates that file's snapshot. The default `replace` mode is unchanged.
+With `edit: hashline`, local reads and rg results provide a `[path#TAG]` file-version header and `N:text` lines. Submit one file through `edit({"input":"…"})` using `PUT` replacements/insertions or `CUT` deletions. Only displayed lines may be edited; stale or missing snapshots require a fresh read. Each successful edit or write invalidates that file's snapshot. The default `replace` mode is unchanged.
 
 
 </details>

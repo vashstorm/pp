@@ -246,7 +246,7 @@ impl Agent {
             if let Some(id) = self.journal.id() {
                 let _ = self.tools.artifacts.bind(self.journal.directory(), id);
             }
-            self.tools.clear_changes();
+            self.tools.clear_caches();
             self.clear_session_usage();
             self.clear_session_cost();
             self.pending_project_load.clear();

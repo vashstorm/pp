@@ -52,9 +52,15 @@ pub(super) fn build(before: Option<&str>, after: &str) -> FileDiff {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum Original {
+    Missing,
+    Bytes(Vec<u8>),
+    Unavailable,
+}
+
 /// 从真实提交前后的存在性与字节构造 diff；删除空文件也有独立的删除标记。
-pub(crate) fn committed(before: &super::changes::Original, after: Option<&[u8]>) -> FileDiff {
-    use super::changes::Original;
+pub(crate) fn committed(before: &Original, after: Option<&[u8]>) -> FileDiff {
     let before = match before {
         Original::Missing => None,
         Original::Bytes(bytes) => match std::str::from_utf8(bytes) {

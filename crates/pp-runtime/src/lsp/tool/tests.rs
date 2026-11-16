@@ -372,7 +372,6 @@ fn lsp_tool_format_suggestion_never_changes_disk_or_client_text() {
     assert_eq!(state.text, "old   \n\n");
     assert!(!state.pending_write);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), state.text);
-    assert!(tools.changes_view().files.is_empty());
     finish(tools, registry);
 }
 #[test]
@@ -451,7 +450,6 @@ fn lsp_tool_rename_file_preserves_versions_and_never_moves() {
             "old\n"
         );
         assert!(!dir.path().join("nested").exists());
-        assert!(tools.changes_view().files.is_empty());
         if version == "1" {
             assert_eq!(
                 value["details"]["suggestions"][0]["details"]["suggestion"]["workspace_edit"]["documentChanges"]

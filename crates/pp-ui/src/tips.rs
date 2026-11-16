@@ -32,7 +32,6 @@ pub(crate) const SECTIONS: &[Section] = &[
         title: "Commands",
         tips: &[
             tip("/agents", "open Agent Hub"),
-            tip("/changes", "review/undo edits"),
             tip("/compact", "summarize context"),
             tip("/effort", "set thinking level"),
             tip("/help", "list commands/usage"),

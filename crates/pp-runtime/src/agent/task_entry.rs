@@ -188,7 +188,6 @@ impl Agent {
             self.refresh_instructions()?;
             self.begin_task_status(prompt, cancellation);
             self.publish_context(emit)?;
-            self.tools.begin_changes_task();
             if let Some(prepared) = prepared {
                 turn::append_input_to(&mut self.session, prepared);
             } else {

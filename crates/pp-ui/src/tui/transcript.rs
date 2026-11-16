@@ -43,7 +43,7 @@ mod tool_result;
 mod tree_layout;
 mod wrap;
 
-pub(super) use diff::{diff_layout, diff_layout_styled};
+pub(super) use diff::diff_layout_styled;
 use tool_result::{background_status, tool_result};
 pub(super) use wrap::{block_line, visit_wrapped_rows, wrap_block};
 

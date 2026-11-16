@@ -603,14 +603,6 @@ impl Target {
         }
     }
 
-    /// Compares exact bytes through a fresh NOFOLLOW handle without allocating
-    /// another copy of the file. Missing, unreadable and non-regular targets
-    /// are conflicts just like a content mismatch.
-    pub(crate) fn ensure_matches(&self, expected: &[u8]) -> Result<()> {
-        self.compare_bytes(expected)
-            .context("File changed outside this task; undo refused.")
-    }
-
     /// 共用精确比较；调用者负责提供操作对应的脱敏错误。
     fn compare_bytes(&self, expected: &[u8]) -> Result<()> {
         let mut file = self.open_read()?;
@@ -648,40 +640,6 @@ impl Target {
         )
     }
 
-    /// Restores the task baseline, or removes a task-created file, only after
-    /// checking the last tool-written bytes. This is not filesystem CAS: an
-    /// external writer can still race between comparison and rename/unlink.
-    pub(crate) fn restore_if_unchanged(
-        &self,
-        expected: &[u8],
-        original: Option<&[u8]>,
-    ) -> Result<Option<String>> {
-        self.restore_with(expected, original, &SystemSave)
-    }
-
-    fn restore_with(
-        &self,
-        expected: &[u8],
-        original: Option<&[u8]>,
-        operations: &impl SaveOperations,
-    ) -> Result<Option<String>> {
-        if let Some(content) = original {
-            return self.save_checked_with(
-                content,
-                operations,
-                false,
-                Some((expected, "File changed outside this task; undo refused.")),
-            );
-        }
-        self.ensure_matches(expected)?;
-        fs::unlinkat(&self.parent, &self.name, AtFlags::empty())
-            .context("removing task-created file; undo not committed")?;
-        Ok(operations
-            .sync_directory(&self.parent)
-            .err()
-            .map(|error| format!("file deleted, but syncing parent directory failed: {error}")))
-    }
-
     /// Atomically creates the target only when it does not already exist.
     /// A concurrent or pre-existing target is never overwritten; `EEXIST`
     /// becomes the exact plan-collision error so callers stay in Plan mode.
@@ -702,7 +660,6 @@ impl Target {
             true,
             None,
             NewConflict::Message(conflict),
-            None,
         )
     }
 
@@ -713,25 +670,12 @@ impl Target {
         content: &[u8],
         conflict: &'static str,
     ) -> Result<Option<String>> {
-        self.save_if_unchanged_custom_with_permissions(expected, content, conflict, None)
-    }
-
-    /// 与 [`Self::save_if_unchanged_custom`] 相同，但显式设置提交后的权限位；
-    /// 用于回滚时连可执行位一起还原。
-    pub(crate) fn save_if_unchanged_custom_with_permissions(
-        &self,
-        expected: &[u8],
-        content: &[u8],
-        conflict: &'static str,
-        permissions: Option<u32>,
-    ) -> Result<Option<String>> {
         self.save_checked_conflict(
             content,
             &SystemSave,
             false,
             Some((expected, conflict)),
             NewConflict::Message(PLAN_SAVE_NEW_CONFLICT),
-            permissions,
         )
     }
 
@@ -780,7 +724,6 @@ impl Target {
             new_only,
             expected,
             NewConflict::Message(PLAN_SAVE_NEW_CONFLICT),
-            None,
         )
     }
 
@@ -791,7 +734,6 @@ impl Target {
         new_only: bool,
         expected: Option<(&[u8], &'static str)>,
         new_only_conflict: NewConflict,
-        permissions: Option<u32>,
     ) -> Result<Option<String>> {
         let (temporary, mut file) = self.create_temporary()?;
         let cleanup = Temporary {
@@ -801,14 +743,8 @@ impl Target {
         operations
             .write(&mut file, content)
             .context("writing atomic save file; target unchanged")?;
-        // 显式权限位优先（回滚重建被删/被移动的节点）；否则非排他提交保留
-        // 既有目标权限，排他创建交给 umask。
-        let target_mode = match permissions {
-            Some(bits) => Some(Mode::from_raw_mode(bits as RawMode)),
-            None if !new_only => self.mode,
-            None => None,
-        };
-        if let Some(mode) = target_mode {
+        // 非排他提交保留既有目标权限，排他创建交给 umask。
+        if !new_only && let Some(mode) = self.mode {
             fs::fchmod(&file, mode).context("setting target permissions; target unchanged")?;
         }
         operations

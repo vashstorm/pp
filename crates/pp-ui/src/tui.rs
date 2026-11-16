@@ -4,7 +4,6 @@ mod attachment_edit;
 mod auth;
 #[cfg(test)]
 mod auth_tests;
-mod changes;
 mod edit_diff;
 mod files;
 mod frame_clock;
@@ -83,12 +82,6 @@ use pp_runtime::agent::input::PendingKind;
 use pp_runtime::agent::input::QueueSnapshot;
 use pp_runtime::agent::plan_management::PlanOpenIntent;
 use pp_runtime::agent::plan_management::PlanSelection;
-#[cfg(test)]
-use pp_runtime::tools::ChangesView;
-#[cfg(test)]
-use pp_runtime::tools::UndoResult;
-#[cfg(test)]
-use pp_runtime::tools::UndoToken;
 use ratatui::{
     Frame,
     buffer::Buffer,
@@ -398,8 +391,6 @@ enum State {
     Resuming,
     ReadingTree,
     NavigatingTree,
-    ReadingChanges,
-    UndoingFile,
     ListingPlans,
     ReadingListedPlan,
     OpeningListedPlan,
@@ -565,7 +556,6 @@ struct App {
     themes_panel: Option<themes::Panel>,
     session_panel: Option<sessions::Panel>,
     tree_panel: Option<tree::Panel>,
-    changes_panel: Option<changes::Panel>,
     subagent_panel: Option<subagents::Panel>,
     subagent_autowake: bool,
     // 当前根的观察修订号与正在运行的子代理数。

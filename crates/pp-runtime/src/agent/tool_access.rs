@@ -1,4 +1,4 @@
-//! 工具侧运行时句柄（LSP、后台清理、临时管道）与用户 shell／撤销入口。
+//! 工具侧运行时句柄（LSP、后台清理、临时管道）与用户 shell 入口。
 use super::Agent;
 use anyhow::{Result, ensure};
 use pp_core::cancellation::CancellationToken;
@@ -46,18 +46,6 @@ impl Agent {
 
     pub fn workflow(&self) -> &pp_core::plan::WorkflowState {
         &self.workflow
-    }
-
-    pub fn changes(&self) -> crate::tools::ChangesView {
-        self.tools.changes_view()
-    }
-
-    pub fn undo_file(&self, token: &crate::tools::UndoToken) -> Result<crate::tools::UndoResult> {
-        ensure!(
-            self.workflow.mode == pp_core::plan::WorkMode::Execute,
-            "Undo is unavailable in Plan mode."
-        );
-        self.tools.undo_file(token)
     }
 
     /// 进程级 MCP 单例的只读句柄：UI 只看建连进度与 `/mcp` 快照，不拥有回收权。

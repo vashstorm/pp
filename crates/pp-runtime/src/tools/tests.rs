@@ -231,7 +231,6 @@ fn todo_call(tools: &Tools, workflow: &WorkflowState, arguments: Value) -> ToolE
 }
 
 mod background_cases;
-mod changes_cases;
 mod edit_cases;
 mod embedded_shell;
 mod file_cases;

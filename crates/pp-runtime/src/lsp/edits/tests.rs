@@ -197,7 +197,6 @@ fn lsp_edits_suggestions_validate_resources_in_memory_only() {
     assert_eq!(fs::read(&from).unwrap(), b"old");
     assert!(!to.exists());
     assert!(!dir.path().join("nested").exists());
-    assert!(tools.changes_view().files.is_empty());
 }
 #[test]
 fn lsp_edits_suggestions_reject_unproved_versions_and_symlinks() {

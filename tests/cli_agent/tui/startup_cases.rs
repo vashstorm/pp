@@ -402,7 +402,6 @@ const TIPS_ACCENT: vt100::Color = vt100::Color::Rgb(127, 166, 106);
 // `/tips` 命令组等于命令注册表的可见项，按用户看到的键名忽略大小写排序。
 const TIPS_COMMANDS: &[&str] = &[
     "/agents",
-    "/changes",
     "/compact",
     "/effort",
     "/help",

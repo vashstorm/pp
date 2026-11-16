@@ -266,7 +266,6 @@ fn plan_tools_report_changes_through_execute_and_seal_the_queue() {
         content.as_bytes()
     );
 
-    assert!(tools.changes_view().files.is_empty());
     let Some(PlanChange::Written { title, .. }) = &execution.plan_change else {
         panic!("计划写入必须返回 Written");
     };

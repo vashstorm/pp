@@ -27,7 +27,6 @@ impl App {
             && self.plan_list_panel.is_none()
             && self.plan_leave_confirmation.is_none()
             && self.session_panel.is_none()
-            && self.changes_panel.is_none()
             && self.tree_panel.is_none()
             && self.mcp_panel.is_none()
             && !self.history_browser

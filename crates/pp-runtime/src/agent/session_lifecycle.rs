@@ -298,7 +298,7 @@ impl Agent {
         }
         self.session = session;
         self.reset_lsp_diagnostics();
-        self.tools.clear_changes();
+        self.tools.clear_caches();
         // 导航到另一会话根：旧根的临时管道正文不能跨根复用。
         self.tools.reset_pipe_store();
         self.clear_session_usage();
@@ -326,7 +326,7 @@ impl Agent {
         }
         self.plan_lease = None;
         self.reset_lsp_diagnostics();
-        self.tools.clear_changes();
+        self.tools.clear_caches();
         self.workflow = pp_core::plan::WorkflowState {
             mode: self.workflow.mode,
             ..Default::default()

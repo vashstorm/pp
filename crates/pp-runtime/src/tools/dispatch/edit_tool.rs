@@ -42,9 +42,8 @@ impl Tools {
         self.record_committed_file(
             call_id,
             normalized_path,
-            changes::Original::Bytes(bytes),
-            Some(final_bytes),
-            false,
+            diff::Original::Bytes(bytes),
+            &final_bytes,
             emit,
         );
         drop(guard);
