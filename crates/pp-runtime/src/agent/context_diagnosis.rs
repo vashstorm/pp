@@ -3,9 +3,12 @@
 
 mod history;
 mod sections;
+mod snapshot;
 #[cfg(test)]
 mod tests;
 mod thinking;
+
+pub use snapshot::Snapshot;
 
 pub(crate) use thinking::{ThinkingEntry, extract_thinking_from_replay, trim_for_retained_turns};
 

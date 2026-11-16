@@ -123,6 +123,7 @@ impl Bootstrap {
 
 pub struct Agent {
     task_status: task_status::Runtime,
+    context_snapshot: Option<context_diagnosis::Snapshot>,
     role_route: Option<pp_config::config::RoleRoute>,
     pub runtime_models: Option<crate::model_control::Binding>,
     pub subagent_control: std::sync::Arc<std::sync::Mutex<Option<crate::subagent::Binding>>>,

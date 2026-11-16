@@ -40,8 +40,10 @@ impl App {
 
     pub(in crate::tui) fn open_context(&mut self) {
         self.escape_tap.reset();
-        if !matches!(self.state, State::Ready)
-            || self.skills_pending
+        if !matches!(
+            self.state,
+            State::Ready | State::Running | State::Cancelling
+        ) || self.skills_pending
             || self.active_settings_tab().is_some()
             || self.session_panel.is_some()
             || self.ask_panel.is_some()
@@ -54,8 +56,26 @@ impl App {
         self.file_query = None;
         self.menu_dismissed = true;
         self.context_panel = Some(context_panel::Panel::new());
-        if !self.send(WorkerCommand::InspectContext, State::InspectingContext) {
+        if matches!(self.state, State::Running | State::Cancelling) {
+            self.read_context_snapshot();
+        } else if !self.send(WorkerCommand::InspectContext, State::InspectingContext) {
             self.context_panel = None;
+        }
+    }
+
+    fn read_context_snapshot(&mut self) {
+        let Some(panel) = &mut self.context_panel else {
+            return;
+        };
+        match self
+            .context_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.read())
+        {
+            Some(Ok(report)) => panel.set_report((*report).clone()),
+            Some(Err(error)) => panel.set_error(error),
+            None => panel
+                .set_error("Context diagnostics are not available yet; press r to refresh.".into()),
         }
     }
 
@@ -69,7 +89,9 @@ impl App {
             context_panel::Action::None => {}
             context_panel::Action::Close => self.close_context(),
             context_panel::Action::Refresh => {
-                if matches!(self.state, State::Ready)
+                if matches!(self.state, State::Running | State::Cancelling) {
+                    self.read_context_snapshot();
+                } else if matches!(self.state, State::Ready)
                     && !self.send(WorkerCommand::InspectContext, State::InspectingContext)
                     && let Some(panel) = &mut self.context_panel
                 {

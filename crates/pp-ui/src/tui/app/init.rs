@@ -127,6 +127,7 @@ impl App {
             session_panel: None,
             tree_panel: None,
             context_panel: None,
+            context_snapshot: None,
             plan_list_panel: None,
             plan_list_pending: None,
             plan_reenter_standby: false,
@@ -204,6 +205,7 @@ impl App {
             control.registry.clone(),
         ));
         self.model_control = Some(control);
+        self.context_snapshot = Some(agent.observe_context());
         self.model_revision = 0;
         self.pending_model = None;
         self.pending_think = None;
@@ -271,6 +273,7 @@ impl App {
             .name("pp-agent".into())
             .spawn(move || {
                 agent.enable_task_status(task_status_view.clone());
+                agent.publish_context_snapshot();
                 // 空闲时以 50ms 超时轮询迟到诊断：只发布 Progress，不续跑
                 // 模型、不把 Ready 改成 Running，也不伪造工具调用。
                 let mut last_poll_error: Option<String> = None;
@@ -652,6 +655,7 @@ impl App {
                             break;
                         }
                     }
+                    agent.publish_context_snapshot();
                 }
             })
             .context("starting agent worker")?;

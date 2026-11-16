@@ -367,6 +367,37 @@ fn context_panel_drills_down_to_split_tools_mcp_thinking_and_detail_view() {
 }
 
 #[test]
+fn app_context_does_not_replace_running_or_cancelling_state() {
+    use crate::tui::{App, CancellationToken, State, WorkerEvent};
+
+    for (state, command) in [(State::Running, "/context"), (State::Cancelling, "/ctx")] {
+        let original_state = std::mem::discriminant(&state);
+        let mut app = App::new(Err(anyhow::anyhow!("no cfg"))).unwrap();
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+        let cancellation = CancellationToken::new();
+        app.commands = Some(cmd_tx);
+        app.state = state;
+        app.active_cancellation = Some(cancellation.clone());
+        app.insert_input(command.into());
+        let mut dirty = false;
+        app.handle(key(KeyCode::Enter), &mut dirty);
+        assert!(app.context_panel.is_some());
+        assert!(!app.has_pending());
+        assert!(cmd_rx.try_recv().is_err());
+
+        // 迟到的诊断回复不能覆盖主任务的状态。
+        app.receive_event_for_test(WorkerEvent::ContextInspected(Ok(sample_report())));
+        app.handle(key(KeyCode::Char('r')), &mut dirty);
+        assert!(cmd_rx.try_recv().is_err());
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        assert!(app.context_panel.is_none());
+        assert_eq!(std::mem::discriminant(&app.state), original_state);
+        assert!(!cancellation.is_cancelled());
+        assert!(app.active_cancellation.is_some());
+    }
+}
+
+#[test]
 fn app_submits_context_command_opens_alternate_panel_and_closes_on_escape() {
     let mut app = crate::tui::App::new(Err(anyhow::anyhow!("no cfg"))).unwrap();
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();

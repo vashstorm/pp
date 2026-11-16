@@ -20,7 +20,9 @@ impl App {
             }
 
             WorkerEvent::ContextInspected(result) => {
-                self.state = State::Ready;
+                if matches!(self.state, State::InspectingContext) {
+                    self.state = State::Ready;
+                }
                 match result {
                     Ok(report) => {
                         if let Some(panel) = &mut self.context_panel {

@@ -886,6 +886,8 @@ fn create_tool_session(server: &TestServer, home: &Path, protocol: &str) -> Stri
     saved_session_id(home)
 }
 
+#[path = "tui/context_panel_cases.rs"]
+mod context_panel_cases;
 #[path = "tui/file_command_cases.rs"]
 mod file_command_cases;
 #[path = "tui/file_picker_cases.rs"]

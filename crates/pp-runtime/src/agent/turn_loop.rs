@@ -136,6 +136,7 @@ impl Agent {
                     append_developer_to(&mut self.session,"Request budget reached. Finish your current work and return the partial findings now.".into());
                 }
             }
+            self.publish_context_snapshot();
             request_count += 1;
             emit(AgentEvent::AssistantStarted);
             let update = RequestUpdate {

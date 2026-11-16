@@ -190,6 +190,7 @@ impl Agent {
             }
             let sessions = binding.directory().join("sessions");
             let mut child = Agent {
+                context_snapshot: None,
                 role_route: record.spec.role_route.clone().or_else(|| {
                     record
                         .spec

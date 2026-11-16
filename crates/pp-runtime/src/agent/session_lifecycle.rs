@@ -102,6 +102,7 @@ impl Agent {
             runtime_models: None,
             subagent_control: Default::default(),
             task_status: Default::default(),
+            context_snapshot: None,
             tools,
             session: checkpoint.session,
             auto_compact: config.settings.auto_compact,

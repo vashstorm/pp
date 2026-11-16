@@ -168,6 +168,17 @@ impl App {
         }
         // 提交时恢复对话区，让命令结果和后续输出可见。
         self.mcp_panel = None;
+        if matches!(command, Some(Command::Context))
+            && matches!(
+                self.state,
+                State::Ready | State::Running | State::Cancelling
+            )
+        {
+            self.remember_input();
+            self.clear_input();
+            self.open_context();
+            return false;
+        }
         if matches!(
             self.state,
             State::Running | State::Cancelling | State::ReviewingPlan
@@ -518,11 +529,7 @@ impl App {
                     self.send_submission(WorkerCommand::Reset, State::Resetting);
                 }
                 Some(Command::Compact) => self.send_compaction(),
-                Some(Command::Context) => {
-                    self.remember_input();
-                    self.clear_input();
-                    self.open_context();
-                }
+                Some(Command::Context) => unreachable!("handled before the state match"),
                 Some(Command::Tree) => {
                     self.remember_input();
                     self.clear_input();

@@ -148,6 +148,7 @@ impl Agent {
             runtime_models: None,
             subagent_control: Default::default(),
             task_status: Default::default(),
+            context_snapshot: None,
             session,
             tools,
             auto_compact: config.settings.auto_compact,
