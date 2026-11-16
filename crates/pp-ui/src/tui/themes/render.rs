@@ -72,7 +72,7 @@ impl Panel {
             self.draw_list(frame, cols[0], p, selected_theme, selected_icons, ascii);
             frame.render_widget(
                 Paragraph::new(vec![Line::from("│"); usize::from(cols[1].height)])
-                    .style(Style::default().fg(p.dim)),
+                    .style(Style::default().fg(p.panel_border)),
                 cols[1],
             );
             self.draw_preview(frame, cols[2], p, selected_theme, selected_icons, ascii);
@@ -149,7 +149,7 @@ impl Panel {
             frame.render_widget(
                 Line::styled(
                     "─".repeat(usize::from(area.width)),
-                    Style::default().fg(p.dim),
+                    Style::default().fg(p.panel_border),
                 ),
                 Rect::new(area.x, area.y + 1, area.width, 1),
             );

@@ -22,11 +22,15 @@ impl App {
     }
 
     fn settings_tab_busy(&self) -> bool {
-        self.settings_panel.as_ref().is_some_and(|panel| panel.busy)
+        self.settings_panel
+            .as_ref()
+            .is_some_and(settings::Panel::is_saving)
             || self.roles_panel.as_ref().is_some_and(|panel| panel.busy)
             || self.themes_panel.as_ref().is_some_and(|panel| panel.busy)
-            || self.skill_panel.as_ref().is_some_and(|panel| panel.busy)
-            || self.skills_pending
+            || self
+                .skill_panel
+                .as_ref()
+                .is_some_and(skills::Panel::is_saving)
     }
 
     fn settings_typing_input(&self) -> bool {
@@ -89,13 +93,19 @@ impl App {
                 self.file_query = None;
                 self.menu_dismissed = true;
                 if let Some(path) = self.settings_path.clone() {
-                    let mut panel = settings::Panel::loading(path.display().to_string());
+                    let mut panel = settings::Panel::loading(
+                        path.display().to_string(),
+                        self.cached_settings.clone(),
+                    );
                     if let Err(error) = self.settings_worker.load(&path) {
                         panel.apply_loaded(Err(error));
                     }
                     self.settings_panel = Some(panel);
                 } else {
-                    let mut panel = settings::Panel::loading("(memory only)".to_owned());
+                    let mut panel = settings::Panel::loading(
+                        "(memory only)".to_owned(),
+                        self.cached_settings.clone(),
+                    );
                     panel.apply_loaded(Ok(Settings::default()));
                     self.settings_panel = Some(panel);
                 }
@@ -251,12 +261,16 @@ impl App {
         while let Some(reply) = self.settings_worker.try_recv() {
             match reply {
                 settings::Reply::Loaded(result) => {
+                    if let Ok(settings) = &result {
+                        self.cached_settings = Some(settings.clone());
+                    }
                     if let Some(panel) = &mut self.settings_panel {
                         panel.apply_loaded(result);
                     }
                 }
                 settings::Reply::Saved(result) => match result {
                     Ok(saved) => {
+                        self.cached_settings = Some(saved.clone());
                         self.cost_display = saved.cost.clone();
                         self.conversation
                             .set_bash_timeout(saved.bash_timeout_seconds);

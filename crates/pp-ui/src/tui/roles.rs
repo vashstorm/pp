@@ -11,7 +11,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use super::transcript_style as palette;
@@ -146,6 +146,7 @@ pub(super) struct Panel {
     pub(super) area: Rect,
     body: Rect,
     sidebar_area: Rect,
+    has_top_bar: bool,
     sidebar_scroll: usize,
     scroll: usize,
     pub(super) busy: bool,
@@ -180,6 +181,7 @@ impl Panel {
             area: Rect::default(),
             body: Rect::default(),
             sidebar_area: Rect::default(),
+            has_top_bar: false,
             sidebar_scroll: 0,
             scroll: 0,
             busy: false,

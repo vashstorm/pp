@@ -97,6 +97,8 @@ pub(super) struct Panel {
     detail_scroll: u16,
     pub(super) area: Rect,
     pub(super) busy: bool,
+    pub(super) loading: bool,
+    pub(super) saving: bool,
     error: Option<String>,
 }
 pub(super) enum Action {
@@ -120,9 +122,34 @@ impl Panel {
             diagnostics: skills.diagnostics,
             area: Rect::default(),
             busy: false,
+            loading: false,
+            saving: false,
             error: None,
         }
     }
+
+    pub(super) fn loading(sources_tab: bool) -> Self {
+        Self {
+            selection: ListState::default(),
+            detail_scroll: 0,
+            source_selection: ListState::default().with_selected(Some(0)),
+            sources: Vec::new(),
+            sources_tab,
+            choices: BTreeMap::new(),
+            entries: Vec::new(),
+            diagnostics: Vec::new(),
+            area: Rect::default(),
+            busy: true,
+            loading: true,
+            saving: false,
+            error: None,
+        }
+    }
+
+    pub(super) fn is_saving(&self) -> bool {
+        self.saving
+    }
+
     pub(super) fn set_error(&mut self, message: String) {
         self.error = Some(pp_core::text::display_text(&message).into_owned());
     }
@@ -144,6 +171,28 @@ impl Panel {
         self.sources_tab = true;
     }
 
+    pub(super) fn apply_snapshot(&mut self, snapshot: Skills, open_sources: bool) {
+        self.error = None;
+        self.entries = snapshot.entries;
+        self.diagnostics = snapshot.diagnostics;
+        self.sources = snapshot.sources;
+        self.choices.clear();
+        if open_sources {
+            self.sources_tab = true;
+        }
+        self.selection.select(
+            (!self.entries.is_empty()).then_some(
+                self.selection
+                    .selected()
+                    .unwrap_or(0)
+                    .min(self.entries.len().saturating_sub(1)),
+            ),
+        );
+        self.loading = false;
+        self.busy = false;
+        self.saving = false;
+    }
+
     pub(super) fn apply_preview(&mut self, snapshot: Skills) {
         self.error = None;
         self.choices = self.draft().skills.into_iter().collect();
@@ -158,7 +207,9 @@ impl Panel {
                     .min(self.entries.len().saturating_sub(1)),
             ),
         );
+        self.loading = false;
         self.busy = false;
+        self.saving = false;
     }
 
     pub(super) fn key(&mut self, key: KeyEvent) -> Action {
@@ -211,8 +262,18 @@ impl Panel {
     }
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.area = area;
-        frame.render_widget(Clear, area);
+        if area.is_empty() {
+            return;
+        }
         let p = super::themes::palette();
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Block::default().style(Style::default().bg(p.panel_bg).fg(p.text)),
+            area,
+        );
+        if area.width < 4 || area.height < 4 {
+            return;
+        }
         let suffix = self.busy.then_some("Working");
         let block = Block::default()
             .borders(Borders::ALL)
@@ -220,11 +281,11 @@ impl Panel {
                 super::settings::Tab::Skills,
                 suffix,
                 area,
-                Color::Magenta,
+                p.accent,
                 p.text,
-                Color::DarkGray,
+                p.muted,
             ))
-            .border_style(Style::default().fg(Color::Magenta));
+            .border_style(Style::default().fg(p.panel_border));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         if inner.height == 0 || inner.width == 0 {
@@ -237,16 +298,19 @@ impl Panel {
         } else {
             ["S", "G"]
         };
+        let highlight = if self.loading {
+            Style::default().fg(p.muted)
+        } else {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
+        };
         frame.render_widget(
             Tabs::new(titles)
                 .select(usize::from(!self.sources_tab))
-                .style(Style::default().fg(Color::DarkGray))
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                )
+                .style(Style::default().fg(p.muted))
+                .highlight_style(highlight)
                 .divider(" │ "),
             Rect::new(inner.x, inner.y, inner.width, 1),
         );
@@ -254,7 +318,7 @@ impl Panel {
             frame.render_widget(
                 Line::styled(
                     "─".repeat(inner.width as usize),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(p.panel_border),
                 ),
                 Rect::new(inner.x, inner.y + 1, inner.width, 1),
             );
@@ -268,14 +332,25 @@ impl Panel {
         if inner.height == 0 {
             return;
         }
-        let detail_height = inner.height.saturating_sub(1).min(7);
+        let show_sep = inner.height >= 4;
+        let detail_height = inner.height.saturating_sub(1 + u16::from(show_sep)).min(6);
         let list_area = Rect::new(
             inner.x,
             inner.y,
             inner.width,
-            inner.height.saturating_sub(detail_height + 1),
+            inner
+                .height
+                .saturating_sub(detail_height + 1 + u16::from(show_sep)),
         );
-        if self.sources_tab {
+        if self.loading {
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    "Loading skills...",
+                    Style::default().fg(p.muted),
+                )),
+                list_area,
+            );
+        } else if self.sources_tab {
             let rows = SkillSource::ALL.into_iter().map(|source| {
                 ListItem::new(format!(
                     "[{}] {}  {}",
@@ -290,7 +365,7 @@ impl Panel {
             });
             frame.render_stateful_widget(
                 List::new(rows)
-                    .highlight_style(Style::default().fg(Color::Yellow))
+                    .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
                     .highlight_symbol("❯ "),
                 list_area,
                 &mut self.source_selection,
@@ -299,65 +374,89 @@ impl Panel {
             frame.render_widget(
                 Paragraph::new(
                     "No skills found. Press Tab to inherit Claude/Codex skills, or update skill_dirs and press r.",
-                ),
+                )
+                .style(Style::default().fg(p.muted)),
                 list_area,
             );
         } else {
             let rows = self.entries.iter().map(|skill| {
                 ListItem::new(Line::from(vec![
-                    Span::raw(format!(
-                        "[{}] {}  ",
-                        if skill.enabled { "x" } else { " " },
-                        skill.name
-                    )),
+                    Span::styled(
+                        format!(
+                            "[{}] {}  ",
+                            if skill.enabled { "x" } else { " " },
+                            skill.name
+                        ),
+                        Style::default().fg(p.text),
+                    ),
                     Span::styled(
                         skill.description.replace(['\n', '\r'], " "),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(p.muted),
                     ),
                 ]))
             });
             frame.render_stateful_widget(
                 List::new(rows)
-                    .highlight_style(Style::default().fg(Color::Yellow))
+                    .highlight_style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD))
                     .highlight_symbol("❯ "),
                 list_area,
                 &mut self.selection,
             );
         }
+        if show_sep {
+            frame.render_widget(
+                Line::styled(
+                    "─".repeat(usize::from(inner.width)),
+                    Style::default().fg(p.panel_border),
+                ),
+                Rect::new(inner.x, list_area.bottom(), inner.width, 1),
+            );
+        }
         let mut details = Vec::new();
         if self.sources_tab {
-            details.push(Line::raw(
+            details.push(Line::styled(
                 "Inherit user skills from selected tools; pp skill_dirs stay active.",
+                Style::default().fg(p.text),
             ));
-            details.push(Line::raw(
+            details.push(Line::styled(
                 "Tab: adjust individual skills. Enter: save sources and skills. Esc: discard.",
+                Style::default().fg(p.muted),
             ));
         } else if let Some(skill) = self
             .selection
             .selected()
             .and_then(|index| self.entries.get(index))
         {
-            details.push(Line::raw(format!("Source: {}", skill.path.display())));
-            details.push(Line::raw(skill.description.clone()));
+            details.push(Line::styled(
+                format!("Source: {}", skill.path.display()),
+                Style::default().fg(p.muted),
+            ));
+            details.push(Line::styled(
+                skill.description.clone(),
+                Style::default().fg(p.text),
+            ));
         }
         for diagnostic in &self.diagnostics {
-            details.push(Line::styled(diagnostic, Style::default().fg(Color::Red)));
+            details.push(Line::styled(diagnostic, Style::default().fg(p.removed)));
         }
         frame.render_widget(
             Paragraph::new(details)
                 .wrap(Wrap { trim: false })
                 .scroll((self.detail_scroll, 0)),
-            Rect::new(inner.x, list_area.bottom(), inner.width, detail_height),
+            Rect::new(
+                inner.x,
+                list_area.bottom() + u16::from(show_sep),
+                inner.width,
+                detail_height,
+            ),
         );
         frame.render_widget(
             if let Some(error) = &self.error {
-                Line::styled(
-                    error.as_str(),
-                    Style::default().fg(super::transcript_style::removed()),
-                )
+                Line::styled(error.as_str(), Style::default().fg(p.removed))
             } else {
-                Line::raw(
+                Line::styled(
                     "Tab/←→ tabs · ↑↓ select · Space toggle · Enter save · Esc cancel · r rescan",
+                    Style::default().fg(p.muted),
                 )
             },
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),

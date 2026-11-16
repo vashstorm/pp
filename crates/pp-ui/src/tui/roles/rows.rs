@@ -58,8 +58,9 @@ impl Panel {
     }
 
     pub(super) fn content_offset(&self) -> u16 {
-        // Roles 视图在角色行之前固定保留一行只读 Override 信息。
-        2
+        // Roles 视图在角色行之前固定保留一行只读 Override 信息；
+        // 极矮终端无全宽顶栏时，body 首行额外承载视图说明标题。
+        if self.has_top_bar { 1 } else { 2 }
     }
 
     fn effective(&self) -> RoleAssignment {

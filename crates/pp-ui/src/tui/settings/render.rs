@@ -16,6 +16,14 @@ struct TabSlot {
     end_col: u16,
 }
 
+pub(in crate::tui) fn sidebar_width(width: u16) -> u16 {
+    if width >= 54 {
+        (width / 4).clamp(20, 26)
+    } else {
+        0
+    }
+}
+
 fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &'static str, bool) {
     let avail = usize::from(area.width.saturating_sub(2));
     let full_slots: Vec<_> = Tab::ALL
@@ -24,7 +32,7 @@ fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &
             if tab == active {
                 format!("[{} {}]", tab.number(), tab.label())
             } else {
-                format!("{} {}", tab.number(), tab.label())
+                format!(" {} {} ", tab.number(), tab.label())
             }
         })
         .collect();
@@ -37,7 +45,13 @@ fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &
     }
     let compact_slots: Vec<_> = Tab::ALL
         .into_iter()
-        .map(|tab| format!("{}:{}", tab.number(), tab.label()))
+        .map(|tab| {
+            if tab == active {
+                format!("[{}:{}]", tab.number(), tab.label())
+            } else {
+                format!(" {}:{} ", tab.number(), tab.label())
+            }
+        })
         .collect();
     let compact_width = 2
         + compact_slots
@@ -45,11 +59,17 @@ fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &
             .map(|s| s.chars().count())
             .sum::<usize>()
         + (Tab::ALL.len() - 1);
-    if avail >= compact_width + suffix_len {
+    if avail >= compact_width + suffix_len || avail >= compact_width {
         return build_slots(compact_slots, " ", area.x, active);
     }
-    if avail >= compact_width {
-        return build_slots(compact_slots, " ", area.x, active);
+    let tight_slots: Vec<_> = Tab::ALL
+        .into_iter()
+        .map(|tab| format!("{}:{}", tab.number(), tab.label()))
+        .collect();
+    let tight_width =
+        2 + tight_slots.iter().map(|s| s.chars().count()).sum::<usize>() + (Tab::ALL.len() - 1);
+    if avail >= tight_width {
+        return build_slots(tight_slots, " ", area.x, active);
     }
     // 窄终端仅渲染当前激活标签名，确保在极端小屏下仍不溢出。
     let single = vec![active.label().to_owned()];
@@ -177,23 +197,52 @@ impl Panel {
             return;
         }
 
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(3),
-                Constraint::Length(3),
-                Constraint::Length(1),
-            ])
-            .split(inner);
-        let body = sections[0];
-        let detail_area = sections[1];
-        let footer_area = sections[2];
-
-        let sidebar_width = if body.width >= 54 {
-            (body.width / 4).clamp(18, 24)
+        let (body, detail_area, footer_area) = if inner.height >= 8 {
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(2),
+                    Constraint::Min(3),
+                    Constraint::Length(1),
+                    Constraint::Length(2),
+                    Constraint::Length(1),
+                ])
+                .split(inner);
+            frame.render_widget(
+                Line::styled(
+                    "General — ←/→ or Space adjust · Enter edit numeric values",
+                    Style::default().fg(p.muted),
+                ),
+                Rect::new(sections[0].x, sections[0].y, sections[0].width, 1),
+            );
+            frame.render_widget(
+                Line::styled(
+                    "─".repeat(usize::from(sections[0].width)),
+                    Style::default().fg(p.panel_border),
+                ),
+                Rect::new(sections[0].x, sections[0].y + 1, sections[0].width, 1),
+            );
+            frame.render_widget(
+                Line::styled(
+                    "─".repeat(usize::from(sections[2].width)),
+                    Style::default().fg(p.panel_border),
+                ),
+                sections[2],
+            );
+            (sections[1], sections[3], sections[4])
         } else {
-            0
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(3),
+                    Constraint::Length(2),
+                    Constraint::Length(1),
+                ])
+                .split(inner);
+            (sections[0], sections[1], sections[2])
         };
+
+        let sidebar_width = sidebar_width(body.width);
         if sidebar_width > 0 {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)

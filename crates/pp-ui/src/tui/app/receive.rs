@@ -97,6 +97,9 @@ impl App {
             self.skills_pending = false;
             match reply.result {
                 Ok(snapshot) if !reply.saved => {
+                    if !reply.preview {
+                        self.cached_skills = Some(snapshot.clone());
+                    }
                     if reply.preview
                         && let Some(panel) = &mut self.skill_panel
                     {
@@ -106,15 +109,19 @@ impl App {
                         && self.roles_panel.is_none()
                         && self.themes_panel.is_none()
                     {
-                        self.skill_panel = Some(skills::Panel::new(snapshot));
-                        if reply.open_sources
-                            && let Some(panel) = &mut self.skill_panel
-                        {
-                            panel.show_sources();
+                        if let Some(panel) = &mut self.skill_panel {
+                            panel.apply_snapshot(snapshot, reply.open_sources);
+                        } else {
+                            let mut panel = skills::Panel::new(snapshot);
+                            if reply.open_sources {
+                                panel.show_sources();
+                            }
+                            self.skill_panel = Some(panel);
                         }
                     }
                 }
-                Ok(_) => {
+                Ok(snapshot) => {
+                    self.cached_skills = Some(snapshot);
                     self.skill_panel = None;
                     self.menu = None;
                     self.menu_dismissed = true;
@@ -122,6 +129,8 @@ impl App {
                 Err(error) => {
                     if let Some(panel) = &mut self.skill_panel {
                         panel.busy = false;
+                        panel.loading = false;
+                        panel.saving = false;
                     }
                     self.notify(Level::Error, format!("{error:#}"));
                 }

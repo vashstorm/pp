@@ -596,6 +596,7 @@ impl App {
             || self.history_browser
             || self.themes_panel.is_some()
             || self.skill_panel.is_some()
+            || self.skills_pending
             || self.session_panel.is_some()
             || self.changes_panel.is_some()
             || self.pipes_panel.is_some()

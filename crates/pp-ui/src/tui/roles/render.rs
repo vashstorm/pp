@@ -5,6 +5,10 @@ use super::*;
 impl Panel {
     pub(in crate::tui) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.area = area;
+        if area.is_empty() {
+            return;
+        }
+        frame.render_widget(Clear, area);
         frame.render_widget(
             Block::default().style(Style::default().bg(bg()).fg(text_fg())),
             area,
@@ -25,23 +29,65 @@ impl Panel {
             ));
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        let sidebar_width = if inner.width >= 54 {
-            (inner.width / 5).clamp(22, 32)
-        } else {
-            0
+        if inner.width == 0 || inner.height == 0 {
+            return;
+        }
+        let header = match self.view {
+            View::Roles => {
+                "Model roles — Space or click the switch icon to toggle; only enabled roles are offered to the model".to_owned()
+            }
+            View::Models => format!(
+                "Select a model for {}{} · type to search · Enter to choose effort",
+                self.role().name(), if self.editing_fallback { " · fallback" } else { "" }
+            ),
+            View::Effort => format!(
+                "{} · {}",
+                self.role().name(),
+                self.pending
+                    .as_ref()
+                    .map_or("", |assignment| if self.editing_fallback { assignment.fallback.as_ref().map_or("", |f| f.model.as_str()) } else { assignment.model.as_str() })
+            ),
         };
-        self.sidebar_area = Rect::new(
-            inner.x,
-            inner.y,
-            sidebar_width.saturating_sub(1),
-            inner.height.saturating_sub(1),
-        );
+        let header_text = pp_core::text::display_text(&header).into_owned();
+        self.has_top_bar = inner.height >= 8;
+        let main_area = if self.has_top_bar {
+            frame.render_widget(
+                Line::styled(header_text.clone(), Style::default().fg(muted())),
+                Rect::new(inner.x, inner.y, inner.width, 1),
+            );
+            frame.render_widget(
+                Line::styled(
+                    "─".repeat(usize::from(inner.width)),
+                    Style::default().fg(border()),
+                ),
+                Rect::new(inner.x, inner.y + 1, inner.width, 1),
+            );
+            Rect::new(
+                inner.x,
+                inner.y + 2,
+                inner.width,
+                inner.height.saturating_sub(3),
+            )
+        } else {
+            Rect::new(
+                inner.x,
+                inner.y,
+                inner.width,
+                inner.height.saturating_sub(1),
+            )
+        };
+        let sidebar_width = super::super::settings::render::sidebar_width(main_area.width);
+        self.sidebar_area = if sidebar_width > 0 {
+            Rect::new(main_area.x, main_area.y, sidebar_width, main_area.height)
+        } else {
+            Rect::default()
+        };
         if sidebar_width > 0 {
             let mut lines = vec![];
             for index in 0..self.providers.len() + 2 {
                 if index == 2 {
                     lines.push(Line::styled(
-                        "─".repeat(usize::from(sidebar_width.saturating_sub(2))),
+                        "─".repeat(usize::from(sidebar_width.saturating_sub(1))),
                         Style::default().fg(border()),
                     ));
                 }
@@ -91,7 +137,7 @@ impl Panel {
                     "  "
                 };
                 let used = Line::from(format!("{prefix}{icon} {name}{count}")).width();
-                let gap = usize::from(sidebar_width.saturating_sub(2))
+                let gap = usize::from(sidebar_width.saturating_sub(1))
                     .saturating_sub(used)
                     .max(1);
                 let mut spans = vec![
@@ -117,43 +163,33 @@ impl Panel {
                 self.sidebar_area,
             );
             frame.render_widget(
-                Paragraph::new(vec![Line::from("│"); usize::from(inner.height)])
+                Paragraph::new(vec![Line::from("│"); usize::from(main_area.height)])
                     .style(Style::default().fg(border())),
-                Rect::new(inner.x + sidebar_width - 1, inner.y, 1, inner.height),
+                Rect::new(
+                    main_area.x + sidebar_width,
+                    main_area.y,
+                    1,
+                    main_area.height,
+                ),
             );
         }
+        let body_x = main_area.x + sidebar_width + u16::from(sidebar_width > 0);
         self.body = Rect::new(
-            inner.x + sidebar_width + u16::from(sidebar_width > 0),
-            inner.y,
-            inner
+            body_x,
+            main_area.y,
+            main_area
                 .width
                 .saturating_sub(sidebar_width + u16::from(sidebar_width > 0)),
-            inner.height.saturating_sub(2),
+            main_area.height,
         );
-        let header = match self.view {
-            View::Roles => {
-                "Model roles — Space or click the switch icon to toggle; only enabled roles are offered to the model".to_owned()
-            }
-            View::Models => format!(
-                "Select a model for {}{} · type to search · Enter to choose effort",
-                self.role().name(), if self.editing_fallback { " · fallback" } else { "" }
-            ),
-            View::Effort => format!(
-                "{} · {}",
-                self.role().name(),
-                self.pending
-                    .as_ref()
-                    .map_or("", |assignment| if self.editing_fallback { assignment.fallback.as_ref().map_or("", |f| f.model.as_str()) } else { assignment.model.as_str() })
-            ),
-        };
-        frame.render_widget(
-            Line::styled(
-                pp_core::text::display_text(&header).into_owned(),
-                Style::default().fg(muted()),
-            ),
-            Rect::new(self.body.x, self.body.y, self.body.width, 1),
-        );
+        if !self.has_top_bar && self.body.height > 0 {
+            frame.render_widget(
+                Line::styled(header_text, Style::default().fg(muted())),
+                Rect::new(self.body.x, self.body.y, self.body.width, 1),
+            );
+        }
         let content_offset = self.content_offset();
+        let subheader_y = self.body.y + u16::from(!self.has_top_bar);
         if self.body.height <= content_offset {
             return;
         }
@@ -166,7 +202,7 @@ impl Panel {
         match self.view {
             View::Roles => {
                 // 只读 Override 行固定在角色列表上方；无覆盖时显示 none。
-                let override_y = self.body.y + 1;
+                let override_y = subheader_y;
                 let mut spans = vec![
                     Span::styled("  ", Style::default().fg(muted())),
                     Span::styled(
@@ -300,7 +336,7 @@ impl Panel {
                         format!("{} {}", search_icon(), self.query),
                         Style::default().fg(gold()),
                     ),
-                    Rect::new(self.body.x, self.body.y + 1, self.body.width, 1),
+                    Rect::new(self.body.x, subheader_y, self.body.width, 1),
                 );
                 let indices = self.model_indices();
                 self.selected = self.selected.min(indices.len().saturating_sub(1));
@@ -345,7 +381,7 @@ impl Panel {
             View::Effort => {
                 frame.render_widget(
                     "Choose an effort for this role (only levels supported by the model)",
-                    Rect::new(self.body.x, self.body.y + 1, self.body.width, 1),
+                    Rect::new(self.body.x, subheader_y, self.body.width, 1),
                 );
                 let chips = self
                     .efforts()

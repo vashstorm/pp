@@ -210,3 +210,106 @@ fn setting_tabs_switch_by_keys_click_guard_typing_and_revert_unsaved_theme_previ
     );
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::General));
 }
+
+#[test]
+fn setting_tabs_keep_stable_geometry_palette_and_alternate_screen_across_switches() {
+    let _guard = ThemeGuard::reset_default();
+    let temp = tempfile::tempdir().unwrap();
+    let settings_path = temp.path().join("settings.yml");
+    let (mut app, _requests, _events) = plan_app();
+    app.settings_path = Some(settings_path);
+    app.choices = favorite_model_choices();
+    app.current_model = Some(app.choices[0].clone());
+
+    app.insert_input("/config".into());
+    app.submit(PendingKind::Steering);
+    flush_settings(&mut app);
+
+    let mut screens = Vec::new();
+    let mut buffers = Vec::new();
+    for (tab_key, expected) in [
+        ('1', settings::Tab::General),
+        ('2', settings::Tab::Roles),
+        ('3', settings::Tab::Themes),
+        ('4', settings::Tab::Skills),
+    ] {
+        if tab_key != '1' {
+            app.handle(key(KeyCode::Char(tab_key)), &mut false);
+        }
+        assert_eq!(app.active_settings_tab(), Some(expected));
+        // 即使 Skills 后台回复尚未到达，也必须保持在备用屏幕，不闪回主屏。
+        assert!(
+            app.needs_alternate(),
+            "{expected:?} should stay on alternate screen"
+        );
+        let buf = draw_buffer(&mut app, 110, 30);
+        let screen = draw(&mut app, 110, 30);
+        buffers.push((expected, buf));
+        screens.push((expected, screen));
+    }
+    wait_for_skills(&mut app);
+    let skills_loaded_screen = draw(&mut app, 110, 30);
+    let skills_loaded_buf = draw_buffer(&mut app, 110, 30);
+
+    // 切回 General 时应立即使用缓存快照渲染完整设置列表，不出现空白加载帧。
+    app.handle(key(KeyCode::Char('1')), &mut false);
+    assert!(app.needs_alternate());
+    let general_revisit = draw(&mut app, 110, 30);
+    assert!(!general_revisit.contains("Loading settings.yml..."));
+    assert!(general_revisit.contains("Edit mode"));
+    flush_settings(&mut app);
+
+    // 四个页签的顶部 Tab 文字起始列坐标完全不变，外框和第 2 行分隔线对齐。
+    let tab_labels = ["1 General", "2 Roles", "3 Themes", "4 Skills"];
+    let expected_cols: Vec<usize> = tab_labels
+        .iter()
+        .map(|label| screens[0].1.lines().next().unwrap().find(label).unwrap())
+        .collect();
+    for (tab, screen) in screens
+        .iter()
+        .map(|(t, s)| (*t, s.as_str()))
+        .chain(std::iter::once((
+            settings::Tab::Skills,
+            skills_loaded_screen.as_str(),
+        )))
+    {
+        let top_line = screen.lines().next().unwrap();
+        let cols: Vec<usize> = tab_labels
+            .iter()
+            .map(|label| top_line.find(label).unwrap())
+            .collect();
+        assert_eq!(
+            cols, expected_cols,
+            "tab header shifted on {tab:?}: {top_line}"
+        );
+        let sep_line = screen.lines().nth(2).unwrap();
+        assert!(
+            sep_line.starts_with('│')
+                && sep_line.ends_with('│')
+                && sep_line[3..sep_line.len() - 3].chars().all(|c| c == '─'),
+            "row 2 separator misaligned on {tab:?}: {sep_line}"
+        );
+    }
+
+    // 四个页签使用一致的外框边框色与背景色。
+    let expected_border_fg = buffers[0].1[(0, 5)].fg;
+    for (tab, buf) in buffers
+        .iter()
+        .map(|(t, b)| (*t, b))
+        .chain(std::iter::once((settings::Tab::Skills, &skills_loaded_buf)))
+    {
+        assert_eq!(
+            buf[(0, 5)].fg,
+            expected_border_fg,
+            "border color mismatch on {tab:?}"
+        );
+    }
+
+    // General 与 Roles 的侧边栏竖线位于完全相同的列坐标。
+    let general_pipe = screens[0].1.lines().nth(4).unwrap().find('│').unwrap();
+    let roles_pipe = screens[1].1.lines().nth(4).unwrap().find('│').unwrap();
+    assert_eq!(
+        general_pipe, roles_pipe,
+        "sidebar divider shifted between General and Roles"
+    );
+}

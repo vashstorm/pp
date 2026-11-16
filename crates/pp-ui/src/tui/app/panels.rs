@@ -649,8 +649,25 @@ impl App {
     }
 
     pub(in crate::tui) fn request_skills(&mut self, request: skills::Request) {
-        if matches!(request, skills::Request::Open | skills::Request::Sources) {
+        let open_request = matches!(request, skills::Request::Open | skills::Request::Sources);
+        let open_sources = matches!(request, skills::Request::Sources);
+        let save_request = matches!(request, skills::Request::Save(_));
+        if open_request {
             self.clear_other_settings_tabs(Some(super::super::settings::Tab::Skills));
+            if self.skill_panel.is_none() {
+                let mut panel = match &self.cached_skills {
+                    Some(cached) => {
+                        let mut panel = skills::Panel::new(cached.clone());
+                        if open_sources {
+                            panel.show_sources();
+                        }
+                        panel
+                    }
+                    None => skills::Panel::loading(open_sources),
+                };
+                panel.busy = true;
+                self.skill_panel = Some(panel);
+            }
         }
         match self.skill_worker.requests.send(request) {
             Ok(()) => {
@@ -659,9 +676,17 @@ impl App {
                 self.menu = None;
                 if let Some(panel) = &mut self.skill_panel {
                     panel.busy = true;
+                    panel.saving = save_request;
                 }
             }
-            Err(_) => self.notify(Level::Error, "Skill management worker unavailable.".into()),
+            Err(_) => {
+                if let Some(panel) = &mut self.skill_panel {
+                    panel.busy = false;
+                    panel.loading = false;
+                    panel.saving = false;
+                }
+                self.notify(Level::Error, "Skill management worker unavailable.".into());
+            }
         }
     }
 

@@ -189,7 +189,8 @@ pub(in crate::tui) struct Panel {
     pub(super) sidebar_focus: bool,
     pub(super) item_scroll: usize,
     pub(super) editing: Option<InlineEdit>,
-    pub(super) busy: bool,
+    pub(in crate::tui) busy: bool,
+    saving: bool,
     pub(super) status: Option<String>,
     pub(super) error: Option<String>,
     pub(in crate::tui) area: Rect,
@@ -198,9 +199,10 @@ pub(in crate::tui) struct Panel {
 }
 
 impl Panel {
-    pub(in crate::tui) fn loading(settings_display_path: String) -> Self {
+    pub(in crate::tui) fn loading(settings_display_path: String, cached: Option<Settings>) -> Self {
+        let has_cached = cached.is_some();
         Self {
-            settings: None,
+            settings: cached,
             settings_display_path,
             category_index: 0,
             item_index: 0,
@@ -208,7 +210,8 @@ impl Panel {
             item_scroll: 0,
             editing: None,
             busy: true,
-            status: Some("Loading settings.yml...".to_owned()),
+            saving: false,
+            status: (!has_cached).then(|| "Loading settings.yml...".to_owned()),
             error: None,
             area: Rect::default(),
             sidebar_area: Rect::default(),
@@ -216,8 +219,13 @@ impl Panel {
         }
     }
 
+    pub(in crate::tui) fn is_saving(&self) -> bool {
+        self.saving
+    }
+
     pub(in crate::tui) fn apply_loaded(&mut self, result: Result<Settings>) {
         self.busy = false;
+        self.saving = false;
         match result {
             Ok(settings) => {
                 self.settings = Some(settings);
@@ -233,6 +241,7 @@ impl Panel {
 
     pub(in crate::tui) fn apply_saved(&mut self, result: Result<Settings>) {
         self.busy = false;
+        self.saving = false;
         match result {
             Ok(settings) => {
                 self.settings = Some(settings);
@@ -496,6 +505,7 @@ impl Panel {
 
     fn begin_save(&mut self, patch: SettingPatch) -> Action {
         self.busy = true;
+        self.saving = true;
         self.error = None;
         self.status = Some("Saving settings.yml...".to_owned());
         Action::Save(patch)
