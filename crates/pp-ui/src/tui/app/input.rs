@@ -156,7 +156,7 @@ impl App {
                 preferred = items.iter().position(|item| item.current).unwrap_or(0);
                 items
             }
-            Some(("/setting" | "/settings" | "/config", argument)) => {
+            Some(("/settings" | "/setting" | "/config", argument)) => {
                 if argument.split_whitespace().count() > 1 {
                     Vec::new()
                 } else {
@@ -233,24 +233,37 @@ impl App {
                     COMMANDS
                         .iter()
                         .enumerate()
-                        .map(|(index, spec)| MenuItem {
-                            value: MenuAction::Command(index),
-                            label: spec.name.into(),
-                            description: spec.description.into(),
-                            icon: None,
-                            current: false,
+                        .map(|(index, spec)| {
+                            (
+                                spec.name,
+                                spec.aliases,
+                                MenuItem {
+                                    value: MenuAction::Command(index),
+                                    label: spec.menu_label().into(),
+                                    description: spec.description.into(),
+                                    icon: None,
+                                    current: false,
+                                },
+                            )
                         })
                         .chain(self.file_commands.entries.iter().enumerate().map(
-                            |(index, command)| MenuItem {
-                                value: MenuAction::FileCommand(index),
-                                label: command.name.clone(),
-                                description: command.description.clone(),
-                                icon: None,
-                                current: false,
+                            |(index, command)| {
+                                (
+                                    command.name.as_str(),
+                                    &[][..],
+                                    MenuItem {
+                                        value: MenuAction::FileCommand(index),
+                                        label: command.name.clone(),
+                                        description: command.description.clone(),
+                                        icon: None,
+                                        current: false,
+                                    },
+                                )
                             },
                         ))
-                        .filter_map(|item| {
-                            command_match_rank(&item.label, &query).map(|rank| (rank, item))
+                        .filter_map(|(name, aliases, item)| {
+                            command_with_aliases_match_rank(name, aliases, &query)
+                                .map(|rank| (rank, item))
                         })
                         .collect();
                 matches.sort_by_key(|(rank, _)| *rank);
@@ -851,6 +864,7 @@ impl App {
 
 fn completion_text(item: &MenuItem<MenuAction>) -> &str {
     match item.value {
+        MenuAction::Command(index) => COMMANDS[index].name,
         MenuAction::File(_) | MenuAction::FileDirectory(_) => &item.description,
         MenuAction::Effort(level) => level.as_str(),
         MenuAction::SettingTab(tab) => tab.slug(),
@@ -858,6 +872,13 @@ fn completion_text(item: &MenuItem<MenuAction>) -> &str {
         MenuAction::ThemeColor(theme) => theme.as_str(),
         _ => &item.label,
     }
+}
+
+fn command_with_aliases_match_rank(name: &str, aliases: &[&str], query: &str) -> Option<u8> {
+    std::iter::once(name)
+        .chain(aliases.iter().copied())
+        .filter_map(|candidate| command_match_rank(candidate, query))
+        .min()
 }
 
 fn command_match_rank(name: &str, query: &str) -> Option<u8> {

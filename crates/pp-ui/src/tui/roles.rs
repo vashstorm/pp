@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn roles_choose_model_then_only_supported_effort_before_atomic_save() {
         let mut panel = panel();
-        key(&mut panel, KeyCode::Right);
+        key(&mut panel, KeyCode::Tab);
         key(&mut panel, KeyCode::Down);
         assert_eq!(panel.role(), ModelRole::Fast);
         key(&mut panel, KeyCode::Enter);
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn roles_cancel_and_clear_and_busy_never_leak_partial_configuration() {
         let mut panel = panel();
-        key(&mut panel, KeyCode::Right);
+        key(&mut panel, KeyCode::Tab);
         key(&mut panel, KeyCode::Enter);
         key(&mut panel, KeyCode::Enter);
         key(&mut panel, KeyCode::Esc);
@@ -558,7 +558,7 @@ mod tests {
                 ..value.clone()
             },
         );
-        key(&mut panel, KeyCode::Right);
+        key(&mut panel, KeyCode::Tab);
         key(&mut panel, KeyCode::Down);
         key(&mut panel, KeyCode::Down);
         let buffer = draw(&mut panel, 140, 24);
@@ -610,7 +610,7 @@ mod tests {
                 }),
             },
         );
-        key(&mut panel, KeyCode::Right);
+        key(&mut panel, KeyCode::Tab);
         key(&mut panel, KeyCode::Down);
         assert!(panel.on_fallback());
         assert_eq!(panel.role(), ModelRole::Default);
@@ -665,7 +665,7 @@ mod tests {
                 }),
             };
             panel.roles.insert(ModelRole::Default, value.clone());
-            key(&mut panel, KeyCode::Right);
+            key(&mut panel, KeyCode::Tab);
             if editing_fallback {
                 key(&mut panel, KeyCode::Down);
             }
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn fallback_roles_can_be_configured_before_primary() {
         let mut panel = panel();
-        key(&mut panel, KeyCode::Right);
+        key(&mut panel, KeyCode::Tab);
         key(&mut panel, KeyCode::Char('f'));
         key(&mut panel, KeyCode::Enter);
         let Action::Save(ModelRole::Default, Some(assignment)) = key(&mut panel, KeyCode::Enter)
@@ -699,7 +699,7 @@ mod tests {
     #[test]
     fn override_row_is_read_only_and_backspace_clears_it_only_when_present() {
         let mut panel = panel();
-        key(&mut panel, KeyCode::Right);
+        key(&mut panel, KeyCode::Tab);
         // 无覆盖时 Backspace 不产生清除动作，也不误删角色。
         assert!(matches!(key(&mut panel, KeyCode::Backspace), Action::None));
         let buffer = draw(&mut panel, 140, 24);

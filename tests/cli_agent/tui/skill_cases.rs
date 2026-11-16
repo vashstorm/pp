@@ -29,19 +29,11 @@ fn tui_skills_sources_preview_cancel_save_and_individual_disable() {
                 .zip(text.find("Global"))
                 .is_some_and(|(sources, global)| sources < global)
     });
-    pty.input("\x1b[C");
-    pty.wait_for("右箭头选择全局管理页签", |screen| {
-        selected_tab(screen, "Global management")
-    });
-    pty.text(&format!("{ENABLED} native"));
-    pty.input("\x1b[D");
-    pty.wait_for("左箭头选择来源页签", |screen| {
-        selected_tab(screen, "Sources")
-    });
     pty.input("\x1b[Z");
     pty.wait_for("Shift+Tab 选择全局管理页签", |screen| {
         selected_tab(screen, "Global management")
     });
+    pty.text(&format!("{ENABLED} native"));
     pty.input(" \t");
     pty.wait_for("Tab 返回来源页签", |screen| {
         selected_tab(screen, "Sources")

@@ -573,11 +573,9 @@ impl Panel {
             return;
         }
         let hint = match self.step {
-            Step::IconMode => {
-                "[/] or 1-4 tabs · ↑↓ select · Enter / → / Tab theme · Esc cancel & restore"
-            }
+            Step::IconMode => "←/→ tabs · ↑↓ select · Enter / Tab theme · Esc cancel & restore",
             Step::Theme => {
-                "[/] or 1-4 tabs · ↑↓ preview · ← / Backspace / Tab icons · Enter save · Esc cancel"
+                "←/→ tabs · ↑↓ preview · Backspace / Tab icons · Enter save · Esc cancel"
             }
         };
         frame.render_widget(Line::styled(hint, Style::default().fg(p.muted)), area);

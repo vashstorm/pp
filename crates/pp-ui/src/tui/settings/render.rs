@@ -30,9 +30,9 @@ fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &
         .into_iter()
         .map(|tab| {
             if tab == active {
-                format!("[{} {}]", tab.number(), tab.label())
+                format!("[{}]", tab.label())
             } else {
-                format!(" {} {} ", tab.number(), tab.label())
+                format!(" {} ", tab.label())
             }
         })
         .collect();
@@ -47,9 +47,9 @@ fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &
         .into_iter()
         .map(|tab| {
             if tab == active {
-                format!("[{}:{}]", tab.number(), tab.label())
+                format!("[{}]", tab.label())
             } else {
-                format!(" {}:{} ", tab.number(), tab.label())
+                format!(" {} ", tab.label())
             }
         })
         .collect();
@@ -64,7 +64,7 @@ fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &
     }
     let tight_slots: Vec<_> = Tab::ALL
         .into_iter()
-        .map(|tab| format!("{}:{}", tab.number(), tab.label()))
+        .map(|tab| tab.label().to_owned())
         .collect();
     let tight_width =
         2 + tight_slots.iter().map(|s| s.chars().count()).sum::<usize>() + (Tab::ALL.len() - 1);
@@ -210,7 +210,7 @@ impl Panel {
                 .split(inner);
             frame.render_widget(
                 Line::styled(
-                    "General — ←/→ or Space adjust · Enter edit numeric values",
+                    "General — -/+ or Space adjust · Enter edit numeric values",
                     Style::default().fg(p.muted),
                 ),
                 Rect::new(sections[0].x, sections[0].y, sections[0].width, 1),
@@ -402,7 +402,7 @@ impl Panel {
             )
         } else {
             Line::styled(
-                "[/] or 1-4 tabs · Tab focus · ↑↓ move · ←→/-/+ adjust · Enter edit · r reload · Esc close",
+                "←/→ tabs · Tab focus · ↑↓ move · -/+/Space adjust · Enter edit · r reload · Esc close",
                 Style::default().fg(p.muted),
             )
         };

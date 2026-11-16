@@ -121,6 +121,7 @@ fn slash_setting_roles_and_agents_casing_and_aliases() {
         );
     }
     for invalid in [
+        "/settings unknown",
         "/setting unknown",
         "/config general extra",
         "/roles extra",
@@ -128,6 +129,10 @@ fn slash_setting_roles_and_agents_casing_and_aliases() {
     ] {
         assert!(parse(invalid, &files).is_err(), "{invalid}");
     }
+    assert_eq!(
+        parse("/setting unknown", &files).unwrap_err().to_string(),
+        "usage: /setting [general|roles|themes|skills]"
+    );
 }
 
 #[test]
@@ -320,7 +325,6 @@ fn slash_help_lists_debug_only_commands_in_debug_builds() {
         "/help",
         "/tips",
         "/setting",
-        "/config",
         "/roles",
         "/agents",
         "/plan-list",
@@ -332,7 +336,7 @@ fn slash_help_lists_debug_only_commands_in_debug_builds() {
             "{name}\n{text}"
         );
     }
-    for removed in ["/Roles", "/subagents"] {
+    for removed in ["/Roles", "/subagents", "/config"] {
         assert!(
             !text
                 .lines()

@@ -49,11 +49,11 @@ fn setting_aliases_and_tab_arguments_open_expected_tabs_and_complete() {
     app.current_model = Some(app.choices[0].clone());
 
     for (cmd, expected_tab, marker) in [
-        ("/setting", settings::Tab::General, "[1 General]"),
-        ("/config", settings::Tab::General, "[1 General]"),
-        ("/settings", settings::Tab::General, "[1 General]"),
-        ("/setting roles", settings::Tab::Roles, "[2 Roles]"),
-        ("/config themes", settings::Tab::Themes, "[3 Themes]"),
+        ("/setting", settings::Tab::General, "[General]"),
+        ("/config", settings::Tab::General, "[General]"),
+        ("/settings", settings::Tab::General, "[General]"),
+        ("/setting roles", settings::Tab::Roles, "[Roles]"),
+        ("/config themes", settings::Tab::Themes, "[Themes]"),
     ] {
         app.insert_input(cmd.into());
         app.submit(PendingKind::Steering);
@@ -65,17 +65,72 @@ fn setting_aliases_and_tab_arguments_open_expected_tabs_and_complete() {
         assert_eq!(app.active_settings_tab(), None, "{cmd}");
     }
 
-    // Tab 补全支持 `/setting <tab>` 与 `/config <tab>`。
-    app.insert_input("/config r".into());
+    // 合并后主菜单只展示 `/setting (config)`，不再单列 `/config`。
+    app.insert_input("/".into());
     app.refresh_candidates(true);
-    let actions: Vec<_> = active_menu(&app)
+    let top_labels: Vec<_> = active_menu(&app)
         .items()
         .iter()
-        .map(|item| item.value)
+        .map(|item| item.label.as_str())
         .collect();
-    assert_eq!(actions, vec![MenuAction::SettingTab(settings::Tab::Roles)]);
-    app.handle(key(KeyCode::Tab), &mut false);
-    assert_eq!(app.input_text(), "/config roles");
+    assert_eq!(
+        top_labels
+            .iter()
+            .filter(|label| **label == "/setting (config)")
+            .count(),
+        1
+    );
+    assert!(!top_labels.contains(&"/setting"));
+    assert!(!top_labels.contains(&"/config"));
+
+    // 命令补全支持 `setting` 与 `config`（含前缀与模糊匹配），并补全为 `/setting`。
+    for query in ["/set", "/setting", "/settings", "/con", "/config", "/cfg"] {
+        app.clear_input();
+        app.insert_input(query.into());
+        app.refresh_candidates(true);
+        let labels: Vec<_> = active_menu(&app)
+            .items()
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["/setting (config)"], "{query}");
+        app.handle(key(KeyCode::Tab), &mut false);
+        assert_eq!(app.input_text(), "/setting", "{query}");
+    }
+
+    // `/co` 同时匹配 `/setting (config)`（经 `config` 别名）与 `/compact`。
+    app.clear_input();
+    app.insert_input("/co".into());
+    app.refresh_candidates(true);
+    let co_labels: Vec<_> = active_menu(&app)
+        .items()
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect();
+    assert_eq!(co_labels, vec!["/setting (config)", "/compact"]);
+
+    // Tab 补全支持 `/settings <tab>`、`/setting <tab>` 与 `/config <tab>`。
+    for (typed, expected) in [
+        ("/settings r", "/settings roles"),
+        ("/setting r", "/setting roles"),
+        ("/config r", "/config roles"),
+    ] {
+        app.clear_input();
+        app.insert_input(typed.into());
+        app.refresh_candidates(true);
+        let actions: Vec<_> = active_menu(&app)
+            .items()
+            .iter()
+            .map(|item| item.value)
+            .collect();
+        assert_eq!(
+            actions,
+            vec![MenuAction::SettingTab(settings::Tab::Roles)],
+            "{typed}"
+        );
+        app.handle(key(KeyCode::Tab), &mut false);
+        assert_eq!(app.input_text(), expected, "{typed}");
+    }
 }
 
 #[test]
@@ -133,7 +188,7 @@ fn general_tab_persists_edits_guards_numeric_typing_and_updates_live_state() {
     assert_eq!(app.pending_max_fps, Some(45));
 
     app.handle(key(KeyCode::Down), &mut false);
-    app.handle(key(KeyCode::Right), &mut false);
+    app.handle(key(KeyCode::Char('+')), &mut false);
     flush_settings(&mut app);
     assert_ne!(app.cost_display.currency, "USD");
     assert_eq!(
@@ -154,35 +209,50 @@ fn setting_tabs_switch_by_keys_click_guard_typing_and_revert_unsaved_theme_previ
     flush_settings(&mut app);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::General));
 
-    // `]` 切到 Roles。
-    app.handle(key(KeyCode::Char(']')), &mut false);
+    // 数字与 `[/]` 不再切换标签页。
+    for code in [
+        KeyCode::Char('['),
+        KeyCode::Char(']'),
+        KeyCode::Char('1'),
+        KeyCode::Char('2'),
+        KeyCode::Char('3'),
+        KeyCode::Char('4'),
+    ] {
+        app.handle(key(code), &mut false);
+        assert_eq!(app.active_settings_tab(), Some(settings::Tab::General));
+    }
+
+    // `→` 切到 Roles。
+    app.handle(key(KeyCode::Right), &mut false);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
 
-    // 在 Roles 打开模型搜索输入数字 `3` 时，不应误切到 Themes。
-    app.handle(key(KeyCode::Right), &mut false);
+    // 在 Roles 打开模型搜索输入文本或按左右方向键时，不应误切标签页。
+    app.handle(key(KeyCode::Tab), &mut false);
     app.handle(key(KeyCode::Enter), &mut false);
     app.handle(key(KeyCode::Char('3')), &mut false);
+    app.handle(key(KeyCode::Right), &mut false);
+    app.handle(key(KeyCode::Left), &mut false);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
     app.handle(key(KeyCode::Esc), &mut false);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
 
-    // 按 `3` 切到 Themes 并触发 Icon Style 预览变更（默认 Nerd -> Down 预览 ASCII）。
-    app.handle(key(KeyCode::Char('3')), &mut false);
+    // 按 `→` 切到 Themes 并触发 Icon Style 预览变更（默认 Nerd -> Down 预览 ASCII）。
+    app.handle(key(KeyCode::Right), &mut false);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::Themes));
     let bar = draw(&mut app, 110, 30);
-    assert!(bar.contains("[3 Themes]"), "{bar}");
+    assert!(bar.contains("[Themes]"), "{bar}");
     app.handle(key(KeyCode::Down), &mut false);
     assert_eq!(
         crate::tui::themes::current(),
         (Theme::Default, IconMode::Ascii)
     );
 
-    // 点击顶部标签 `[1 General]` 离开 Themes：未保存的预览应回滚。
+    // 点击顶部标签 `[General]` 离开 Themes：未保存的预览应回滚。
     let first_line = bar.lines().next().unwrap();
-    let general_col = first_line.find("1 General").unwrap() as u16;
+    let general_col = first_line.find("General").unwrap() as u16;
     let panel_top_y = bar
         .lines()
-        .position(|line| line.contains("[3 Themes]"))
+        .position(|line| line.contains("[Themes]"))
         .unwrap() as u16;
     app.handle(
         Event::Mouse(MouseEvent {
@@ -199,15 +269,12 @@ fn setting_tabs_switch_by_keys_click_guard_typing_and_revert_unsaved_theme_previ
         (Theme::Default, IconMode::Nerd)
     );
 
-    // `[` 反向循环到 Skills，再 `Ctrl+Right` 回到 General。
-    app.handle(key(KeyCode::Char('[')), &mut false);
+    // `←` 反向循环到 Skills，再 `→` 回到 General。
+    app.handle(key(KeyCode::Left), &mut false);
     wait_for_skills(&mut app);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::Skills));
 
-    app.handle(
-        Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL)),
-        &mut false,
-    );
+    app.handle(key(KeyCode::Right), &mut false);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::General));
 }
 
@@ -227,14 +294,14 @@ fn setting_tabs_keep_stable_geometry_palette_and_alternate_screen_across_switche
 
     let mut screens = Vec::new();
     let mut buffers = Vec::new();
-    for (tab_key, expected) in [
-        ('1', settings::Tab::General),
-        ('2', settings::Tab::Roles),
-        ('3', settings::Tab::Themes),
-        ('4', settings::Tab::Skills),
+    for expected in [
+        settings::Tab::General,
+        settings::Tab::Roles,
+        settings::Tab::Themes,
+        settings::Tab::Skills,
     ] {
-        if tab_key != '1' {
-            app.handle(key(KeyCode::Char(tab_key)), &mut false);
+        if expected != settings::Tab::General {
+            app.handle(key(KeyCode::Right), &mut false);
         }
         assert_eq!(app.active_settings_tab(), Some(expected));
         // 即使 Skills 后台回复尚未到达，也必须保持在备用屏幕，不闪回主屏。
@@ -252,7 +319,7 @@ fn setting_tabs_keep_stable_geometry_palette_and_alternate_screen_across_switche
     let skills_loaded_buf = draw_buffer(&mut app, 110, 30);
 
     // 切回 General 时应立即使用缓存快照渲染完整设置列表，不出现空白加载帧。
-    app.handle(key(KeyCode::Char('1')), &mut false);
+    app.handle(key(KeyCode::Right), &mut false);
     assert!(app.needs_alternate());
     let general_revisit = draw(&mut app, 110, 30);
     assert!(!general_revisit.contains("Loading settings.yml..."));
@@ -260,7 +327,7 @@ fn setting_tabs_keep_stable_geometry_palette_and_alternate_screen_across_switche
     flush_settings(&mut app);
 
     // 四个页签的顶部 Tab 文字起始列坐标完全不变，外框和第 2 行分隔线对齐。
-    let tab_labels = ["1 General", "2 Roles", "3 Themes", "4 Skills"];
+    let tab_labels = ["General", "Roles", "Themes", "Skills"];
     let expected_cols: Vec<usize> = tab_labels
         .iter()
         .map(|label| screens[0].1.lines().next().unwrap().find(label).unwrap())
@@ -378,8 +445,8 @@ fn themes_and_skills_sidebars_switch_categories_and_toggle_by_mouse() {
         (Theme::TokyoNight, IconMode::Nerd)
     );
 
-    // 2. Skills 页签：点击左侧 Global management 切换分类，点击开关图标列启停技能。
-    app.handle(key(KeyCode::Char('4')), &mut false);
+    // 2. Skills 页签：按 `→` 切到 Skills，点击左侧 Global management 切换分类，点击开关图标列启停技能。
+    app.handle(key(KeyCode::Right), &mut false);
     wait_for_skills(&mut app);
     let mut snapshot = pp_config::skills::Skills::default();
     snapshot.entries.push(pp_config::skills::Skill {

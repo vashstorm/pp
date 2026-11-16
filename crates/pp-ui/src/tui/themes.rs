@@ -233,13 +233,11 @@ impl Panel {
                             Action::Save(self.selected_theme(), self.selected_icons())
                         }
                     },
-                    KeyCode::Right | KeyCode::Char('l') if self.step == Step::IconMode => {
+                    KeyCode::Char('l') if self.step == Step::IconMode => {
                         self.set_step(Step::Theme);
                         Action::None
                     }
-                    KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h')
-                        if self.step == Step::Theme =>
-                    {
+                    KeyCode::Backspace | KeyCode::Char('h') if self.step == Step::Theme => {
                         self.set_step(Step::IconMode);
                         Action::None
                     }

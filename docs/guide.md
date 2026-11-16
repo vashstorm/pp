@@ -257,7 +257,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/help`、`/tips` | 查看完整帮助或全部操作提示 | TUI / 行模式 |
 | `/stats [--host IP] [--port PORT] [--no-open]` | 后台启动本地统计服务并打开浏览器，等同于 `pp stats` | TUI / 行模式 |
 | `/model [provider/model]` | 选择模型，保留历史 | TUI / 行模式 |
-| `/setting [general\|roles\|themes\|skills]` | 打开统一设置面板（`1 General · 2 Roles · 3 Themes · 4 Skills`，`/config`、`/settings` 别名）；行模式按子页提示或复用 themes/skills 列表 | TUI（部分行模式） |
+| `/setting [general\|roles\|themes\|skills]` | 打开统一设置面板（菜单显示 `/setting (config)`，含 `General · Roles · Themes · Skills`，支持 `←/→` 与顶部点击切换，`/config`、`/settings` 别名，命令补全支持 `setting` 与 `config`）；行模式按子页提示或复用 themes/skills 列表 | TUI（部分行模式） |
 | `/roles` | 打开统一设置面板的 Roles 页配置七个模型 Role 的 model 和 effort，不改变当前模型 | 仅 TUI |
 | `/agents` | 打开 Agent Hub 查看、跟随和控制子 Agent（`⌥ + A / Alt + A`），行模式输出快照 | TUI / 行模式 |
 | `/effort [none\|low\|medium\|high\|xhigh\|max]` | 查看或切换当前模型允许的思考档位，`/think` 为别名 | TUI / 行模式 |

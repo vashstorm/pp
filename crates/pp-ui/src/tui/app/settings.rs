@@ -192,23 +192,15 @@ impl App {
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 let active = self.active_settings_tab()?;
-                if key.modifiers == KeyModifiers::CONTROL {
-                    return match key.code {
-                        KeyCode::Left => Some(active.prev()),
-                        KeyCode::Right => Some(active.next()),
-                        _ => None,
-                    };
-                }
                 if self.settings_typing_input() {
                     return None;
                 }
-                if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::SHIFT {
+                if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::CONTROL {
                     return None;
                 }
                 match key.code {
-                    KeyCode::Char('[') => Some(active.prev()),
-                    KeyCode::Char(']') => Some(active.next()),
-                    KeyCode::Char(ch) => settings::Tab::from_digit(ch),
+                    KeyCode::Left => Some(active.prev()),
+                    KeyCode::Right => Some(active.next()),
                     _ => None,
                 }
             }

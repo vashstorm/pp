@@ -8,212 +8,292 @@ use pp_core::model::ThinkLevel;
 
 pub(crate) struct CommandSpec {
     pub(crate) name: &'static str,
+    pub(crate) display_label: Option<&'static str>,
+    pub(crate) aliases: &'static [&'static str],
     pub(crate) usage: &'static str,
     pub(crate) description: &'static str,
+}
+
+impl CommandSpec {
+    pub(crate) const fn menu_label(&self) -> &'static str {
+        match self.display_label {
+            Some(label) => label,
+            None => self.name,
+        }
+    }
 }
 
 pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/mcp",
+        display_label: None,
+        aliases: &[],
         usage: "/mcp [list|enable <name>|disable <name>|reconnect <name>|reload|help]",
         description: "Manage MCP servers and connection state",
     },
     CommandSpec {
         name: "/setting",
+        display_label: Some("/setting (config)"),
+        aliases: &["/settings", "/config"],
         usage: "/setting [general|roles|themes|skills]",
         description: "Open Settings TUI (/config, /settings)",
     },
     CommandSpec {
-        name: "/config",
-        usage: "/config [general|roles|themes|skills]",
-        description: "Alias for /setting",
-    },
-    CommandSpec {
         name: "/roles",
+        display_label: None,
+        aliases: &[],
         usage: "/roles",
         description: "Configure model and effort for each model role (TUI)",
     },
     CommandSpec {
         name: "/agents",
+        display_label: None,
+        aliases: &[],
         usage: "/agents",
         description: "View, follow up, and control subagents",
     },
     CommandSpec {
         name: "/help",
+        display_label: None,
+        aliases: &[],
         usage: "/help",
         description: "Show available commands",
     },
     CommandSpec {
         name: "/tips",
+        display_label: None,
+        aliases: &[],
         usage: "/tips",
         description: "Show startup tips without recording session history",
     },
     CommandSpec {
         name: "/stats",
+        display_label: None,
+        aliases: &[],
         usage: "/stats [--host IP] [--port PORT] [--no-open]",
         description: "Open the local statistics page (same as pp stats)",
     },
     CommandSpec {
         name: "/login",
+        display_label: None,
+        aliases: &[],
         usage: "/login",
         description: "Log in to a subscription provider (TUI)",
     },
     CommandSpec {
         name: "/logout",
+        display_label: None,
+        aliases: &[],
         usage: "/logout",
         description: "Remove saved subscription authorization (TUI)",
     },
     CommandSpec {
         name: "/model",
+        display_label: None,
+        aliases: &[],
         usage: "/model [provider/model]",
         description: "Select a model at the next safe boundary; /models is an alias",
     },
     CommandSpec {
         name: "/new",
+        display_label: None,
+        aliases: &[],
         usage: "/new",
         description: "Reset the session, keeping the current model",
     },
     CommandSpec {
         name: "/init",
+        display_label: None,
+        aliases: &[],
         usage: "/init",
         description: "Create or update project AGENTS.md using the current model",
     },
     CommandSpec {
         name: "/compact",
+        display_label: None,
+        aliases: &[],
         usage: "/compact",
         description: "Summarize older context, preserving recent exchanges and visible history",
     },
     CommandSpec {
         name: "/resume",
+        display_label: None,
+        aliases: &[],
         usage: "/resume",
         description: "List saved sessions and resume a conversation",
     },
     CommandSpec {
         name: "/effort",
+        display_label: None,
+        aliases: &[],
         usage: "/effort [none|low|medium|high|xhigh|max]",
         description: "View or set the thinking effort level, keeping session history",
     },
     CommandSpec {
         name: "/plan",
+        display_label: None,
+        aliases: &[],
         usage: "/plan [view|prompt]",
         description: "Toggle Plan mode, view the current plan, or send a planning task (TUI)",
     },
     CommandSpec {
         name: "/tree",
+        display_label: None,
+        aliases: &[],
         usage: "/tree",
         description: "Browse current history and rewind to an earlier point (TUI)",
     },
     CommandSpec {
         name: "/changes",
+        display_label: None,
+        aliases: &[],
         usage: "/changes",
         description: "Review latest-task edit/write changes and undo files (TUI)",
     },
     CommandSpec {
         name: "/pipes",
+        display_label: None,
+        aliases: &[],
         usage: "/pipes [run-id]",
         description: "Browse temporary pipeline stage streams for a bash run (TUI)",
     },
     CommandSpec {
         name: "/plan-list",
+        display_label: None,
+        aliases: &[],
         usage: "/plan-list",
         description: "Manage saved plans: preview, continue, execute, rename, delete (TUI)",
     },
     CommandSpec {
         name: "/themes",
+        display_label: None,
+        aliases: &[],
         usage: "/themes [nerd|ascii] [THEME]",
         description: "Configure TUI icon style and color theme",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-task",
+        display_label: None,
+        aliases: &[],
         usage: "/test-task",
         description: "Debug build: dispatch a fixed FAST/SLOW/REVIEW subagent batch",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-tools",
+        display_label: None,
+        aliases: &[],
         usage: "/test-tools",
         description: "Debug build: run every local tool display scenario",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-read",
+        display_label: None,
+        aliases: &[],
         usage: "/test-read",
         description: "Debug build: local read tool scenarios",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-write",
+        display_label: None,
+        aliases: &[],
         usage: "/test-write",
         description: "Debug build: typewriter write on /tmp, then bash cleanup",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-edit",
+        display_label: None,
+        aliases: &[],
         usage: "/test-edit",
         description: "Debug build: local edit tool scenarios",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-rg",
+        display_label: None,
+        aliases: &[],
         usage: "/test-rg",
         description: "Debug build: local rg tool scenarios",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-glob",
+        display_label: None,
+        aliases: &[],
         usage: "/test-glob",
         description: "Debug build: local glob tool scenarios",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-bash",
+        display_label: None,
+        aliases: &[],
         usage: "/test-bash",
         description: "Debug build: local bash tool scenarios",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-bash-task",
+        display_label: None,
+        aliases: &[],
         usage: "/test-bash-task",
         description: "Debug build: local background bash scenarios",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-wait",
+        display_label: None,
+        aliases: &[],
         usage: "/test-wait",
         description: "Debug build: local wait tool scenarios",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-todo",
+        display_label: None,
+        aliases: &[],
         usage: "/test-todo",
         description: "Debug build: local todo tool scenarios",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-ask",
+        display_label: None,
+        aliases: &[],
         usage: "/test-ask",
         description: "Debug build: local ask panel scenario",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-fail",
+        display_label: None,
+        aliases: &[],
         usage: "/test-fail",
         description: "Debug build: two failing attempts then a retry recovery",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
         name: "/test-ui",
+        display_label: None,
+        aliases: &[],
         usage: "/test-ui",
         description: "Debug build: slow mock thinking and Markdown stream",
     },
     CommandSpec {
         name: "/skills",
+        display_label: None,
+        aliases: &[],
         usage: "/skills [enable NAME|disable NAME|sources [enable|disable claude|codex]]",
         description: "Manage skill sources and per-item toggles",
     },
     CommandSpec {
         name: "/quit",
+        display_label: None,
+        aliases: &[],
         usage: "/quit",
         description: "Exit pp",
     },

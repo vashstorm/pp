@@ -10,7 +10,7 @@ fn roles_favorites_commit_before_reorder_and_keep_focus_after_success_or_failure
     app.favorite_models = vec![app.choices[3].reference.clone()];
     app.open_roles();
     let mut dirty = false;
-    for code in [KeyCode::Down, KeyCode::Right, KeyCode::Down] {
+    for code in [KeyCode::Down, KeyCode::Tab, KeyCode::Down] {
         app.handle(key(code), &mut dirty);
     }
     let selected = app.choices[0].reference.clone();
@@ -222,7 +222,7 @@ fn roles_backspace_clears_override_and_no_override_never_submits_clear() {
     assert!(screen.contains("Backspace clear override"), "{screen}");
 
     let mut dirty = false;
-    app.handle(key(KeyCode::Right), &mut dirty);
+    app.handle(key(KeyCode::Tab), &mut dirty);
     app.handle(key(KeyCode::Backspace), &mut dirty);
     for _ in 0..400 {
         app.receive();

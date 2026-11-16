@@ -48,7 +48,7 @@ pub(crate) const SECTIONS: &[Section] = &[
             tip("/quit", "quit pp"),
             tip("/resume", "reopen a session"),
             tip("/roles", "role model/effort"),
-            tip("/setting", "settings & config"),
+            tip("/setting", "settings (config)"),
             tip("/skills", "toggle skills"),
             #[cfg(debug_assertions)]
             tip("/test-ask", "debug ask panel"),

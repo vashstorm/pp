@@ -46,15 +46,6 @@ impl Tab {
         }
     }
 
-    pub(in crate::tui) fn number(self) -> u8 {
-        match self {
-            Self::General => 1,
-            Self::Roles => 2,
-            Self::Themes => 3,
-            Self::Skills => 4,
-        }
-    }
-
     pub(in crate::tui) fn from_command_tab(tab: crate::commands::SettingTab) -> Self {
         match tab {
             crate::commands::SettingTab::General => Self::General,
@@ -78,16 +69,6 @@ impl Tab {
             .position(|candidate| *candidate == self)
             .unwrap_or(0);
         Self::ALL[(index + 1) % Self::ALL.len()]
-    }
-
-    pub(in crate::tui) fn from_digit(ch: char) -> Option<Self> {
-        match ch {
-            '1' => Some(Self::General),
-            '2' => Some(Self::Roles),
-            '3' => Some(Self::Themes),
-            '4' => Some(Self::Skills),
-            _ => None,
-        }
     }
 }
 
@@ -388,14 +369,14 @@ impl Panel {
                 }
                 Action::None
             }
-            KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Char('h') => {
                 if self.sidebar_focus {
                     Action::None
                 } else {
                     self.adjust_selected(false)
                 }
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            KeyCode::Char('l') => {
                 if self.sidebar_focus {
                     self.sidebar_focus = false;
                     Action::None

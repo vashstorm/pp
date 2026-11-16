@@ -96,11 +96,10 @@ impl Panel {
                         key.code == KeyCode::PageDown,
                         usize::from(self.body.height.saturating_sub(3)).max(1),
                     ),
-                    KeyCode::Left if self.view == View::Effort => self.move_selection(false, 1),
-                    KeyCode::Right if self.view == View::Effort => self.move_selection(true, 1),
-                    KeyCode::Left | KeyCode::BackTab => self.sidebar_focus = true,
-                    KeyCode::Right if self.sidebar_focus => self.sidebar_focus = false,
-                    KeyCode::Tab if self.sidebar_focus => self.sidebar_focus = false,
+                    KeyCode::BackTab => self.sidebar_focus = true,
+                    KeyCode::Tab if self.view != View::Effort => {
+                        self.sidebar_focus = !self.sidebar_focus;
+                    }
                     KeyCode::Enter if self.sidebar_focus => self.sidebar_focus = false,
                     KeyCode::Enter if key.kind == KeyEventKind::Press => match self.view {
                         View::Roles => {

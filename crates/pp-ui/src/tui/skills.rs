@@ -298,9 +298,7 @@ impl Panel {
             KeyCode::Enter if key.kind == KeyEventKind::Press => {
                 return Action::Save(self.draft());
             }
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right
-                if key.kind == KeyEventKind::Press =>
-            {
+            KeyCode::Tab | KeyCode::BackTab if key.kind == KeyEventKind::Press => {
                 self.set_tab(!self.sources_tab);
             }
             KeyCode::Char('r') if key.kind == KeyEventKind::Press => return Action::Reload,
@@ -761,7 +759,7 @@ impl Panel {
             Line::styled("Loading skills...", Style::default().fg(p.accent))
         } else {
             Line::styled(
-                "[/] or 1-4 tabs · Tab/←→ switch · ↑↓ select · Space toggle · Enter save · r rescan · Esc cancel",
+                "←/→ tabs · Tab switch · ↑↓ select · Space toggle · Enter save · r rescan · Esc cancel",
                 Style::default().fg(p.muted),
             )
         };
