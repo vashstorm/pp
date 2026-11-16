@@ -132,14 +132,34 @@ pub(super) fn static_text(target: &str) -> Option<(&'static str, &'static str)> 
     Some(match target {
         "/" | "/index.html" => ("text/html", include_str!("index.html")),
         "/stats.css" => ("text/css", include_str!("stats.css")),
+        "/web/stats-pages.css" => ("text/css", include_str!("web/stats-pages.css")),
         "/ui.css" => ("text/css", include_str!("ui.css")),
+        "/web/ui-components.css" => ("text/css", include_str!("web/ui-components.css")),
         "/traces.css" => ("text/css", include_str!("traces.css")),
         "/modern.css" => ("text/css", include_str!("modern.css")),
+        "/web/modern-pages.css" => ("text/css", include_str!("web/modern-pages.css")),
         "/stats.js" => ("text/javascript", include_str!("stats.js")),
         "/activity.js" => ("text/javascript", include_str!("activity.js")),
         "/insights.js" => ("text/javascript", include_str!("insights.js")),
         "/traces.js" => ("text/javascript", include_str!("traces.js")),
         "/context.js" => ("text/javascript", include_str!("context.js")),
+        "/web/analytics-shared.js" => ("text/javascript", include_str!("web/analytics-shared.js")),
+        "/web/charts.js" => ("text/javascript", include_str!("web/charts.js")),
+        "/web/costs.js" => ("text/javascript", include_str!("web/costs.js")),
+        "/web/format.js" => ("text/javascript", include_str!("web/format.js")),
+        "/web/hooks.js" => ("text/javascript", include_str!("web/hooks.js")),
+        "/web/models.js" => ("text/javascript", include_str!("web/models.js")),
+        "/web/overview.js" => ("text/javascript", include_str!("web/overview.js")),
+        "/web/projects.js" => ("text/javascript", include_str!("web/projects.js")),
+        "/web/providers.js" => ("text/javascript", include_str!("web/providers.js")),
+        "/web/requests.js" => ("text/javascript", include_str!("web/requests.js")),
+        "/web/state.js" => ("text/javascript", include_str!("web/state.js")),
+        "/web/table.js" => ("text/javascript", include_str!("web/table.js")),
+        "/web/tooltip.js" => ("text/javascript", include_str!("web/tooltip.js")),
+        "/web/traces-drawer.js" => ("text/javascript", include_str!("web/traces-drawer.js")),
+        "/web/traces-scale.js" => ("text/javascript", include_str!("web/traces-scale.js")),
+        "/web/traces-state.js" => ("text/javascript", include_str!("web/traces-state.js")),
+        "/web/traces-timeline.js" => ("text/javascript", include_str!("web/traces-timeline.js")),
         "/icon.svg" => ("image/svg+xml", include_str!("icon.svg")),
         _ => return None,
     })
@@ -296,6 +316,85 @@ fn ensure_limit(errors: bool, limit: usize) -> Result<()> {
 mod tests {
     use super::super::fixtures::*;
     use crate::server;
+    use std::collections::{BTreeSet, VecDeque};
+    use std::path::Path;
+
+    fn extract_quoted_attrs(html: &str, attr: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let needle = format!(r#"{attr}=""#);
+        let mut rest = html;
+        while let Some(idx) = rest.find(&needle) {
+            let after = &rest[idx + needle.len()..];
+            if let Some(end) = after.find('"') {
+                out.push(after[..end].to_owned());
+                rest = &after[end + 1..];
+            } else {
+                break;
+            }
+        }
+        out
+    }
+
+    fn extract_esm_specifiers(source: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for line in source.lines() {
+            let trimmed = line.trim();
+            if !(trimmed.starts_with("import ")
+                || trimmed.starts_with("export ")
+                || trimmed.starts_with("} from "))
+            {
+                continue;
+            }
+            if let Some(idx) = trimmed.find("from \"") {
+                let after = &trimmed[idx + 6..];
+                if let Some(end) = after.find('"') {
+                    out.push(after[..end].to_owned());
+                }
+            } else if let Some(after) = trimmed.strip_prefix("import \"")
+                && let Some(end) = after.find('"')
+            {
+                out.push(after[..end].to_owned());
+            }
+        }
+        out
+    }
+
+    fn resolve_web_path(base: &str, specifier: &str) -> String {
+        let mut parts: Vec<&str> = base
+            .rsplit_once('/')
+            .map_or("", |(dir, _)| dir)
+            .split('/')
+            .filter(|s| !s.is_empty())
+            .collect();
+        for seg in specifier.split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                _ => parts.push(seg),
+            }
+        }
+        format!("/{}", parts.join("/"))
+    }
+
+    fn collect_disk_assets(dir: &Path, prefix: &str, out: &mut BTreeSet<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let path = entry.path();
+            if path.is_dir() {
+                if name == "web" {
+                    collect_disk_assets(&path, &format!("{prefix}/web"), out);
+                }
+                continue;
+            }
+            if name.ends_with(".js") || name.ends_with(".css") {
+                out.insert(format!("{prefix}/{name}"));
+            }
+        }
+    }
 
     #[test]
     fn stats_server_serves_traces_assets() {
@@ -310,6 +409,93 @@ mod tests {
             assert_eq!(status, 200, "{path}");
             assert_eq!(content_type, kind, "{path}");
             assert!(!body.is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn stats_server_static_assets_and_esm_graph_are_complete() {
+        let (_, html) = server::static_text("/index.html").expect("index.html");
+        // CSP `script-src 'self'` 下禁止内联脚本或内联事件属性。
+        assert!(!html.contains("onclick="));
+        assert!(!html.contains("<style"));
+        for chunk in html.split("<script").skip(1) {
+            let tag_end = chunk.find('>').unwrap();
+            assert!(
+                chunk[..tag_end].contains("src="),
+                "inline script tag found in index.html"
+            );
+        }
+
+        let mut linked_css = BTreeSet::new();
+        let mut entry_scripts = Vec::new();
+        for attr in ["href", "src"] {
+            for target in extract_quoted_attrs(html, attr) {
+                if !target.starts_with('/') {
+                    continue;
+                }
+                let (kind, body) = server::static_text(&target)
+                    .unwrap_or_else(|| panic!("unregistered HTML asset: {target}"));
+                assert!(!body.is_empty(), "{target}");
+                if target.ends_with(".css") {
+                    assert_eq!(kind, "text/css", "{target}");
+                    linked_css.insert(target);
+                } else if target.ends_with(".js") {
+                    assert_eq!(kind, "text/javascript", "{target}");
+                    entry_scripts.push(target);
+                }
+            }
+        }
+        assert!(
+            !entry_scripts.is_empty(),
+            "no entry module script in index.html"
+        );
+
+        let mut visited_js = BTreeSet::new();
+        let mut queue: VecDeque<String> = entry_scripts.into();
+        while let Some(module) = queue.pop_front() {
+            if !visited_js.insert(module.clone()) {
+                continue;
+            }
+            let (kind, source) = server::static_text(&module)
+                .unwrap_or_else(|| panic!("missing ESM target: {module}"));
+            assert_eq!(kind, "text/javascript", "{module}");
+            for spec in extract_esm_specifiers(source) {
+                if !spec.starts_with("./") && !spec.starts_with("../") {
+                    continue;
+                }
+                let resolved = resolve_web_path(&module, &spec);
+                assert!(
+                    server::static_text(&resolved).is_some(),
+                    "{module} imports unregistered asset {spec} -> {resolved}"
+                );
+                if resolved.ends_with(".js") && !visited_js.contains(&resolved) {
+                    queue.push_back(resolved);
+                }
+            }
+        }
+
+        let mut disk_assets = BTreeSet::new();
+        collect_disk_assets(
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            "",
+            &mut disk_assets,
+        );
+        for asset in disk_assets {
+            assert!(
+                server::static_text(&asset).is_some(),
+                "disk asset missing from static_text: {asset}"
+            );
+            if asset.ends_with(".css") {
+                assert!(
+                    linked_css.contains(&asset),
+                    "orphan CSS not linked in index.html: {asset}"
+                );
+            } else if asset.ends_with(".js") {
+                assert!(
+                    visited_js.contains(&asset),
+                    "orphan JS not reachable from index.html: {asset}"
+                );
+            }
         }
     }
 }

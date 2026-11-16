@@ -1,208 +1,98 @@
-// Tools 页复刻 omp stats 的 ToolsRoute：字体、颜色、卡片/表格/图表结构与可点击位置。
-let toolFilter = "",
-  insightSort = "cost",
-  toolMetric = "calls",
-  toolSort = { key: "calls", dir: "desc" },
-  toolModelSort = { key: "calls", dir: "desc" },
-  toolShown = 20,
-  toolModelShown = 25,
-  hookEventSort = { key: "runs", dir: "desc" },
-  hookProjectSort = { key: "runs", dir: "desc" },
-  hookExpandedEvents = new Set();
+/**
+ * Tools 页面与 Insights 分组交互分发（Tools / Hooks / Projects）。
+ */
 
-function resetInsights() {
+import {
+  pivotSeries,
+  resetToolCharts,
+  TOOL_OTHER_COLOR,
+  toolBucketAxis,
+  toolBucketWord,
+  toolCard,
+  toolChart,
+  toolDensify,
+  toolLegend,
+  toolRangeMeta,
+  toolSeriesColors,
+  toolSparkline,
+  toolStat,
+  wireToolsCharts,
+} from "./web/charts.js";
+import {
+  $,
+  compact,
+  errorRateText,
+  estimatedCost,
+  h,
+  localTime,
+  number,
+  ratioPercent,
+  relative,
+  TOOL_CLEAR,
+} from "./web/format.js";
+import { hooksClick, hooksPage, resetHooks } from "./web/hooks.js";
+import { projectsPage, resetProjects, setInsightSort } from "./web/projects.js";
+import { app, hooks } from "./web/state.js";
+import { renderSortHeader, renderTableMore, sortRows, xEmpty, xMeter } from "./web/table.js";
+
+/** @typedef {import("../web-types/api.d.ts").ProjectsResponse} ProjectsResponse */
+/** @typedef {import("../web-types/api.d.ts").SortDirection} SortDirection */
+/** @typedef {import("../web-types/api.d.ts").SortState} SortState */
+/** @typedef {import("../web-types/api.d.ts").ToolRow} ToolRow */
+/** @typedef {import("../web-types/api.d.ts").ToolsResponse} ToolsResponse */
+
+const TOOL_TOP_TOOLS = 6;
+const TOOL_ATTRIBUTION =
+  "Tokens and API-equivalent cost of each invoking turn, split evenly across that turn's tool calls";
+
+let toolFilter = "";
+/** @type {"calls" | "errors"} */
+let toolMetric = "calls";
+/** @type {SortState} */
+let toolSort = { key: "calls", dir: "desc" };
+/** @type {SortState} */
+let toolModelSort = { key: "calls", dir: "desc" };
+let toolShown = 20;
+let toolModelShown = 25;
+
+export function resetInsights() {
   toolFilter = "";
-  insightSort = "cost";
   toolMetric = "calls";
   toolSort = { key: "calls", dir: "desc" };
   toolModelSort = { key: "calls", dir: "desc" };
   toolShown = 20;
   toolModelShown = 25;
-  hookEventSort = { key: "runs", dir: "desc" };
-  hookProjectSort = { key: "runs", dir: "desc" };
-  hookExpandedEvents = new Set();
+  resetHooks();
+  resetProjects();
 }
 
-const TOOL_SERIES_COLORS = [
-  "#5ad8e6",
-  "#ed4abf",
-  "#9d7bff",
-  "#f5b54a",
-  "#4ade80",
-  "#5b8cff",
-  "#ff7a59",
-  "#2dd4bf",
-  "#c3e94f",
-  "#fb7185",
-];
-const TOOL_MODERN_DARK_COLORS = [
-  "#7aa2f7",
-  "#d7af5f",
-  "#3dd69b",
-  "#2ac3de",
-  "#bb9af7",
-  "#f7768e",
-  "#ff9e64",
-  "#73daca",
-  "#9ece6a",
-  "#7dcfff",
-];
-const TOOL_MODERN_LIGHT_COLORS = [
-  "#2e6be6",
-  "#b88418",
-  "#0e885d",
-  "#0891b2",
-  "#7c3aed",
-  "#cf333a",
-  "#d96b1f",
-  "#0d9488",
-  "#65a30d",
-  "#0284c7",
-];
-const toolSeriesColors = () =>
-  document.documentElement.dataset.style === "modern"
-    ? document.documentElement.dataset.theme === "dark"
-      ? TOOL_MODERN_DARK_COLORS
-      : TOOL_MODERN_LIGHT_COLORS
-    : TOOL_SERIES_COLORS;
-const TOOL_OTHER_COLOR = "#6c6c74";
-const TOOL_TOP_TOOLS = 6;
-const TOOL_ATTRIBUTION =
-  "Tokens and API-equivalent cost of each invoking turn, split evenly across that turn's tool calls";
-const TOOL_RANGES = {
-  "1h": { windowLabel: "the last hour", bucketMs: 300000, spanMs: 3600000 },
-  "24h": { windowLabel: "the last 24 hours", bucketMs: 3600000, spanMs: 86400000 },
-  "7d": { windowLabel: "the last 7 days", bucketMs: 86400000, spanMs: 604800000 },
-  "30d": { windowLabel: "the last 30 days", bucketMs: 86400000, spanMs: 2592000000 },
-  "90d": { windowLabel: "the last 90 days", bucketMs: 86400000, spanMs: 7776000000 },
-  all: { windowLabel: "all time", bucketMs: 86400000, spanMs: null },
-};
-const TOOL_INBOX =
-  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>';
-const TOOL_ARROW_UP =
-  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>';
-const TOOL_ARROW_DOWN =
-  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>';
-const TOOL_CLEAR =
-  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
-
-const toolInteger = (value) => (value == null ? "—" : Number(value).toLocaleString("en-US"));
-const toolCompact = (value) =>
-  value == null ? "—" : Number(value).toLocaleString("en-US", { notation: "compact" });
-const toolPercent = (value, digits = 1) => `${(value * 100).toFixed(digits)}%`;
-const toolErrorRate = (value) => {
-  const percent = value * 100;
-  if (percent > 0 && percent < 0.005) return "<0.01%";
-  return toolPercent(value, percent > 0 && percent < 0.1 ? 2 : 1);
-};
-const toolCost = (value, digits) => {
-  if (value == null) return "—";
-  if (value === 0) return "$0";
-  const places = digits ?? (value > 0 && value < 0.01 ? 4 : 2);
-  return `$${value.toLocaleString("en-US", {
-    minimumFractionDigits: places,
-    maximumFractionDigits: places,
-  })}`;
-};
-const toolEstimatedCost = (value, unpriced) =>
-  value == null ? "—" : value === 0 && unpriced > 0 ? "N/A" : toolCost(value);
-const toolRelative = (timestamp) => (timestamp == null ? "—" : relative(timestamp));
+/** @param {number} rate */
 const toolErrorTone = (rate) => (rate >= 0.05 ? "bad" : rate >= 0.01 ? "warn" : "ok");
-const toolPad = (value) => String(value).padStart(2, "0");
-const toolRangeMeta = () => TOOL_RANGES[range] || TOOL_RANGES["7d"];
 
-function toolStartOfDay(timestamp) {
-  const date = new Date(timestamp);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
-}
-function toolNextDay(timestamp) {
-  const date = new Date(timestamp);
-  date.setDate(date.getDate() + 1);
-  return date.getTime();
-}
-
-/** Contiguous bucket starts aligned with the server's bucket function. */
-function toolBucketAxis(timestamps) {
-  const meta = toolRangeMeta();
-  const now = data?.updated_at || Date.now();
-  const buckets = [];
-  if (meta.bucketMs < 86400000) {
-    const first = Math.floor((now - meta.spanMs) / meta.bucketMs) * meta.bucketMs;
-    const last = Math.floor(now / meta.bucketMs) * meta.bucketMs;
-    for (let t = first; t <= last; t += meta.bucketMs) buckets.push(t);
-  } else {
-    let earliest = now;
-    for (const timestamp of timestamps) if (timestamp < earliest) earliest = timestamp;
-    const first = toolStartOfDay(meta.spanMs == null ? earliest : now - meta.spanMs);
-    const last = toolStartOfDay(now);
-    for (let t = first; t <= last; t = toolNextDay(t)) buckets.push(t);
-  }
-  return buckets.length > 1500 ? buckets.slice(-1500) : buckets;
-}
-
+/** @param {ToolRow[]} rows */
 function toolColorLookup(rows) {
   const palette = toolSeriesColors();
   const ranked = [...rows].sort((a, b) => b.calls - a.calls || a.tool.localeCompare(b.tool));
-  return new Map(
-    ranked.map((row, index) => [row.tool, palette[index % palette.length]]),
-  );
+  return new Map(ranked.map((row, index) => [row.tool, palette[index % palette.length]]));
 }
 
-function toolPivot(points, buckets, limit, colors, keyOf = (point) => point.tool) {
-  const index = new Map(buckets.map((timestamp, i) => [timestamp, i]));
-  const byKey = new Map();
-  for (const point of points) {
-    const i = index.get(point.timestamp);
-    if (i === undefined) continue;
-    const key = keyOf(point);
-    let values = byKey.get(key);
-    if (!values) {
-      values = Array.from({ length: buckets.length }, () => 0);
-      byKey.set(key, values);
-    }
-    values[i] += point.value;
-  }
-  const ranked = [...byKey.entries()]
-    .map(([key, values]) => ({
-      key,
-      values,
-      total: values.reduce((sum, value) => sum + value, 0),
-    }))
-    .filter((entry) => entry.total !== 0)
-    .sort((a, b) => b.total - a.total || a.key.localeCompare(b.key));
-  const head = ranked.slice(0, limit);
-  const tail = ranked.slice(limit);
+/**
+ * @param {Array<{ timestamp: number, tool: string, value: number }>} points
+ * @param {number[]} buckets
+ * @param {number} limit
+ * @param {Map<string, string>} colors
+ */
+export function toolPivot(points, buckets, limit, colors) {
   const palette = toolSeriesColors();
-  const series = head.map((entry, rank) => ({
-    key: entry.key,
-    label: entry.key,
-    color: colors.get(entry.key) ?? palette[rank % palette.length],
-    values: entry.values,
-  }));
-  if (tail.length) {
-    const other = Array.from({ length: buckets.length }, () => 0);
-    for (const entry of tail) for (let i = 0; i < other.length; i++) other[i] += entry.values[i];
-    series.push({
-      key: "__other__",
-      label: `Other (${tail.length})`,
-      color: TOOL_OTHER_COLOR,
-      values: other,
-    });
-  }
-  return series;
+  return pivotSeries(points, buckets, limit, {
+    keyOf: (point) => point.tool,
+    timestampOf: (point) => point.timestamp,
+    valueOf: (point) => point.value,
+    colorOf: (key, rank) => colors.get(key) ?? palette[rank % palette.length],
+  });
 }
 
-function toolDensify(points, buckets) {
-  const index = new Map(buckets.map((timestamp, i) => [timestamp, i]));
-  const out = Array.from({ length: buckets.length }, () => 0);
-  for (const point of points) {
-    const i = index.get(point.timestamp);
-    if (i !== undefined) out[i] += point.value;
-  }
-  return out;
-}
-
+/** @param {ToolRow} tool */
 function toolNormalize(tool) {
   return {
     tool: tool.tool,
@@ -223,8 +113,12 @@ function toolNormalize(tool) {
   };
 }
 
-function toolView() {
-  const rows = (data?.tools || [])
+/**
+ * 构建 Tools 页面视图模型，便于测试与渲染共享。
+ * @param {ToolsResponse | null} [source]
+ */
+export function toolView(source = /** @type {ToolsResponse | null} */ (app.data)) {
+  const rows = (source?.tools || [])
     .map(toolNormalize)
     .map((row) => {
       const errorRate = row.calls > 0 ? (row.errors ?? 0) / row.calls : 0;
@@ -234,14 +128,21 @@ function toolView() {
         errorRate,
         resultKnown: row.resultChars != null,
         avgResultChars:
-          row.resultChars == null || row.resultCalls === 0 ? null : row.resultChars / row.resultCalls,
+          row.resultChars == null || row.resultCalls === 0
+            ? null
+            : row.resultChars / row.resultCalls,
+        callFraction: 0,
+        tokenFraction: 0,
+        costFraction: 0,
       };
     })
     .sort((a, b) => b.calls - a.calls);
   const calls = rows.reduce((sum, row) => sum + row.calls, 0);
   const tokens = rows.reduce((sum, row) => sum + row.totalTokensShare, 0);
   const knownCosts = rows.filter((row) => row.costShare != null);
-  const cost = knownCosts.length ? knownCosts.reduce((sum, row) => sum + row.costShare, 0) : null;
+  const cost = knownCosts.length
+    ? knownCosts.reduce((sum, row) => sum + (row.costShare ?? 0), 0)
+    : null;
   const errorsKnown = rows.some((row) => row.errorsKnown);
   const errors = errorsKnown ? rows.reduce((sum, row) => sum + (row.errors ?? 0), 0) : null;
   const resultKnown = rows.some((row) => row.resultKnown);
@@ -253,9 +154,9 @@ function toolView() {
   for (const row of rows) {
     row.callFraction = calls > 0 ? row.calls / calls : 0;
     row.tokenFraction = tokens > 0 ? row.totalTokensShare / tokens : 0;
-    row.costFraction = cost > 0 ? (row.costShare ?? 0) / cost : 0;
+    row.costFraction = cost != null && cost > 0 ? (row.costShare ?? 0) / cost : 0;
   }
-  const colors = toolColorLookup(rows);
+  const colors = toolColorLookup(source?.tools || []);
   const callPoints = rows.flatMap((row) =>
     row.buckets.map((bucket) => ({
       timestamp: bucket.timestamp,
@@ -319,93 +220,33 @@ function toolView() {
   };
 }
 
-function toolBucketWord(bucketMs) {
-  return bucketMs < 3600000 ? "5 minutes" : bucketMs < 86400000 ? "hour" : "day";
-}
-
-function toolTickLabel(timestamp, bucketMs) {
-  const date = new Date(timestamp);
-  if (bucketMs < 86400000) return `${toolPad(date.getHours())}:${toolPad(date.getMinutes())}`;
-  return date.toLocaleString("en-US", { month: "short", day: "numeric" });
-}
-
-function toolBucketLabel(timestamp, bucketMs) {
-  const date = new Date(timestamp);
-  if (bucketMs < 3600000) return `${toolPad(date.getHours())}:${toolPad(date.getMinutes())}`;
-  if (bucketMs < 86400000)
-    return `${date.toLocaleString("en-US", { month: "short", day: "numeric" })} ${toolPad(date.getHours())}:${toolPad(date.getMinutes())}`;
-  return date.toLocaleString("en-US", { month: "short", day: "numeric" });
-}
-
-function toolNiceScale(max, min = 0) {
-  const hi = Math.max(0, max);
-  const lo = Math.min(0, min);
-  if (!(hi - lo > 0)) return { min: 0, max: 1, ticks: [0] };
-  const rough = (hi - lo) / 4;
-  const magnitude = 10 ** Math.floor(Math.log10(rough));
-  const step =
-    [1, 2, 2.5, 5, 10]
-      .map((multiple) => multiple * magnitude)
-      .find((candidate) => candidate >= rough) ?? 10 * magnitude;
-  const top = Math.ceil(hi / step) * step;
-  const bottom = Math.floor(lo / step) * step;
-  const ticks = [];
-  for (let tick = bottom; tick <= top + step / 2; tick += step)
-    ticks.push(Number(tick.toPrecision(12)));
-  return { min: bottom, max: top > bottom ? top : bottom + step, ticks };
-}
-
-/** Axis-free line used by stat tiles and table rows. */
-function toolSparkline(values, width, height, color) {
-  const actual = width ?? 260;
-  const max = Math.max(0, ...values);
-  const min = Math.min(0, ...values);
-  const count = values.length;
-  let line = "";
-  if (count > 0) {
-    const step = count > 1 ? actual / (count - 1) : 0;
-    for (let i = 0; i < count; i++) {
-      const x = count > 1 ? i * step : actual / 2;
-      const y =
-        max > min ? height - 2 - ((values[i] - min) / (max - min)) * (height - 4) : height - 2;
-      line += `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    }
-  }
-  const attrs = width
-    ? `width="${width}" height="${height}"`
-    : `viewBox="0 0 260 ${height}" width="100%" height="${height}" preserveAspectRatio="none"`;
-  return `<svg class="x-sparkline" ${attrs} aria-hidden="true"><path class="area" d="${line}L${actual},${height}L0,${height}Z" fill="${color}"/><path class="x-chart-line" d="${line}" stroke="${color}"/></svg>`;
-}
-
-function toolStat(label, value, hint, options = {}) {
-  const size = options.size ?? "md";
-  return `<div class="x-stat" data-size="${size}"${options.title ? ` title="${h(options.title)}"` : ""}><div class="x-stat-label">${h(label)}</div><div class="x-stat-value">${h(value)}</div>${hint !== undefined ? `<div class="x-stat-foot"><span class="x-truncate">${h(hint)}</span></div>` : ""}${options.spark ? `<div class="x-stat-spark">${toolSparkline(options.spark, null, 28, options.sparkColor || "var(--chart-primary)")}</div>` : ""}</div>`;
-}
-
+/** @param {ReturnType<typeof toolView>} view */
 function toolStatGrids(view) {
   const totals = view.totals;
-  const failed = totals.errorsKnown ? `${toolInteger(totals.errors)} failed` : "No execution data";
+  const failed = totals.errorsKnown ? `${number(totals.errors)} failed` : "No execution data";
   const errorRate =
-    totals.errorsKnown && totals.calls > 0 ? toolErrorRate(totals.errors / totals.calls) : "—";
+    totals.errorsKnown && totals.calls > 0
+      ? errorRateText((totals.errors ?? 0) / totals.calls)
+      : "—";
   const errorHint = totals.errorsKnown
-    ? `${toolInteger(totals.calls - totals.errors)} succeeded`
+    ? `${number(totals.calls - (totals.errors ?? 0))} succeeded`
     : "No execution data";
   const costHint =
     totals.unpriced > 0
-      ? `${toolInteger(Math.round(totals.unpriced))} unpriced requests`
+      ? `${number(Math.round(totals.unpriced))} unpriced requests`
       : "API-equivalent";
   const resultCells = [
     toolStat(
       "Result text",
-      totals.resultChars == null ? "—" : `${toolCompact(totals.resultChars)} chars`,
-      totals.resultKnown ? `${toolInteger(totals.resultCalls)} recorded calls` : "No result data",
+      totals.resultChars == null ? "—" : `${compact(totals.resultChars)} chars`,
+      totals.resultKnown ? `${number(totals.resultCalls)} recorded calls` : "No result data",
       {
         size: "sm",
         title:
           "Characters of tool-result text fed back into context; totals include recorded results only",
       },
     ),
-    toolStat("Call arguments", `${toolCompact(totals.argsChars)} chars`, undefined, {
+    toolStat("Call arguments", `${compact(totals.argsChars)} chars`, undefined, {
       size: "sm",
       title: "Characters of serialized tool-call arguments",
     }),
@@ -413,28 +254,29 @@ function toolStatGrids(view) {
       "Avg result per call",
       totals.resultChars == null || totals.resultCalls === 0
         ? "—"
-        : `${toolCompact(Math.round(totals.resultChars / totals.resultCalls))} chars`,
-      totals.resultKnown ? `${toolInteger(totals.resultCalls)} recorded calls` : "No result data",
+        : `${compact(Math.round(totals.resultChars / totals.resultCalls))} chars`,
+      totals.resultKnown ? `${number(totals.resultCalls)} recorded calls` : "No result data",
       {
         size: "sm",
-        title: "Mean tool-result characters per recorded result; historical and unexecuted calls are excluded",
+        title:
+          "Mean tool-result characters per recorded result; historical and unexecuted calls are excluded",
       },
     ),
     toolStat(
       "Avg arguments per call",
-      `${toolCompact(totals.calls > 0 ? Math.round(totals.argsChars / totals.calls) : 0)} chars`,
+      `${compact(totals.calls > 0 ? Math.round(totals.argsChars / totals.calls) : 0)} chars`,
       undefined,
       { size: "sm" },
     ),
   ];
   return `<div class="x-stack x-rise" style="gap:16px">
     <div class="x-stat-grid x-rise" style="--stat-min:190px">
-      ${toolStat("Tool calls", toolInteger(totals.calls), failed, {
+      ${toolStat("Tool calls", number(totals.calls), failed, {
         spark: view.totalCalls,
       })}
       ${toolStat(
         "Distinct tools",
-        toolInteger(totals.tools),
+        number(totals.tools),
         view.rows[0] ? `Most used: ${view.rows[0].tool}` : undefined,
       )}
       ${toolStat("Error rate", errorRate, errorHint, {
@@ -444,11 +286,11 @@ function toolStatGrids(view) {
       })}
       ${toolStat(
         "Attributed tokens",
-        toolCompact(Math.round(totals.tokens)),
-        `${toolCompact(Math.round(totals.output))} output`,
+        compact(Math.round(totals.tokens)),
+        `${compact(Math.round(totals.output))} output`,
         { title: TOOL_ATTRIBUTION },
       )}
-      ${toolStat("Attributed cost", toolEstimatedCost(totals.cost, totals.unpriced), costHint, {
+      ${toolStat("Attributed cost", estimatedCost(totals.cost, totals.unpriced), costHint, {
         title: `${TOOL_ATTRIBUTION}; API-equivalent estimate`,
       })}
     </div>
@@ -470,87 +312,28 @@ function toolMetricSegmented() {
     .join("")}</div>`;
 }
 
-let toolChartModels = new Map();
-let toolChartSeq = 0;
-
-function toolChart(view, series, emptyLabel, options = {}) {
-  const id = `tool-chart-${++toolChartSeq}`;
-  const model = {
-    series,
-    buckets: view.buckets,
-    bucketMs: view.bucketMs ?? toolRangeMeta().bucketMs,
-    height: 260,
-    emptyLabel,
-    ...options,
-  };
-  toolChartModels.set(id, model);
-  return `<div class="x-chart" data-chart-id="${id}" style="height:${model.height}px"></div>`;
-}
-
-function toolLegend(series, format = toolCompact, options = {}) {
-  const hidden = options.hidden || hiddenSeries;
-  const attribute = options.attribute || "data-series";
-  const focus = options.focusAttribute || "data-tools-focus";
-  const values = options.values !== false;
-  return `<div class="x-legend">${series
-    .map(
-      (item) =>
-        `<button type="button" class="x-legend-item" ${attribute}="${h(item.key)}" data-off="${hidden.has(item.key)}" aria-pressed="${!hidden.has(item.key)}" ${focus}="legend-${encodeURIComponent(item.key)}" title="${h(item.label)}"><span class="x-swatch" style="background:${item.color}"></span><span class="x-truncate">${h(item.label)}</span>${values ? `<span class="x-legend-value">${format(item.values.reduce((sum, value) => sum + (value ?? 0), 0))}</span>` : ""}</button>`,
-    )
-    .join("")}</div>`;
-}
-
-function toolCard(index, title, description, actions, body, flush = false, footer = "") {
-  return `<section class="x-card x-rise" style="--i:${index}"><header class="x-card-header"><div class="x-card-titles"><h2 class="x-card-title">${h(title)}</h2><p class="x-card-description">${h(description)}</p></div>${actions ? `<div class="x-card-actions">${actions}</div>` : ""}</header><div class="x-card-body"${flush ? ' data-flush="true"' : ""}>${body}</div>${footer ? `<footer class="x-card-footer">${footer}</footer>` : ""}</section>`;
-}
-
-function toolSortHeader(column, sort, table) {
-  const sorted = sort.key === column.key ? sort.dir : undefined;
-  const arrow = sorted === "asc" ? TOOL_ARROW_UP : sorted === "desc" ? TOOL_ARROW_DOWN : "";
-  return `<th data-align="${column.align || "left"}" data-sortable="${Boolean(column.sort)}"${sorted ? ` data-sorted="${sorted}" aria-sort="${sorted === "asc" ? "ascending" : "descending"}"` : ""}${column.title ? ` title="${h(column.title)}"` : ""}${column.sort ? ` data-toolsort="${column.key}" data-tooltable="${table}" data-toolalign="${column.align || "left"}" data-tools-focus="sort-${table}-${column.key}"` : ""}>${h(column.header)}${arrow ? `<span class="x-sort-arrow">${arrow}</span>` : ""}</th>`;
-}
-
-function toolSorted(rows, columns, sort) {
-  const column = columns.find((item) => item.key === sort.key && item.sort);
-  if (!column) return rows;
-  const direction = sort.dir === "asc" ? 1 : -1;
-  return [...rows].sort((a, b) => {
-    const left = column.sort(a);
-    const right = column.sort(b);
-    const delta =
-      typeof left === "number" && typeof right === "number"
-        ? left - right
-        : String(left).localeCompare(String(right));
-    return delta * direction;
-  });
-}
-
-function toolTableMore(total, shown, limit, table) {
-  if (total <= limit) return "";
-  return `<div class="x-table-more"><span class="x-micro">${toolInteger(shown)} of ${toolInteger(total)}</span>${total > shown ? `<button type="button" class="x-btn" data-size="sm" data-variant="ghost" data-toolpage="${table}" data-toolaction="more" data-tools-focus="${table}-more">Show more</button>` : ""}${shown > limit ? `<button type="button" class="x-btn" data-size="sm" data-variant="ghost" data-toolpage="${table}" data-toolaction="less" data-tools-focus="${table}-less">Show fewer</button>` : ""}</div>`;
-}
-
-function toolEmpty(title, hint) {
-  return `<div class="x-empty">${TOOL_INBOX}<div class="x-empty-title">${h(title)}</div>${hint ? `<div class="x-empty-hint">${hint}</div>` : ""}</div>`;
-}
-
-function toolMeter(value, max, display, color) {
-  const width = max > 0 ? Math.min(100, (value / max) * 100) : 0;
-  return `<div class="x-meter-cell"><span class="x-num">${display}</span><div class="x-meter"><div class="x-meter-fill" style="width:${width}%${color ? `;background:${color}` : ""}"></div></div></div>`;
-}
-
+/** @param {{ errorsKnown: boolean, errors: number | null, errorRate: number }} row */
 function toolErrorsCell(row) {
-  if (!row.errorsKnown)
-    return `<span class="x-row" style="gap:8px;justify-content:flex-end"><span class="x-num x-dim">—</span><span class="x-badge" data-mono="true">—</span></span>`;
-  const tone = row.errors > 0 ? toolErrorTone(row.errorRate) : "neutral";
-  return `<span class="x-row" style="gap:8px;justify-content:flex-end"><span class="x-num x-dim">${toolInteger(row.errors)}</span><span class="x-badge" data-tone="${tone}" data-mono="true">${toolErrorRate(row.errorRate)}</span></span>`;
+  if (!row.errorsKnown) {
+    return '<span class="x-row" style="gap:8px;justify-content:flex-end"><span class="x-num x-dim">—</span><span class="x-badge" data-mono="true">—</span></span>';
+  }
+  const tone = (row.errors ?? 0) > 0 ? toolErrorTone(row.errorRate) : "neutral";
+  return `<span class="x-row" style="gap:8px;justify-content:flex-end"><span class="x-num x-dim">${number(row.errors)}</span><span class="x-badge" data-tone="${tone}" data-mono="true">${errorRateText(row.errorRate)}</span></span>`;
 }
 
+/**
+ * @param {{ tool: string }} row
+ * @param {ReturnType<typeof toolView>} view
+ */
 function toolToolCell(row, view) {
   const color = view.colors.get(row.tool) ?? TOOL_OTHER_COLOR;
   return `<span class="x-row" style="gap:8px"><span class="x-swatch" style="background:${color}"></span><span class="x-mono x-truncate x-tools-name" title="${h(row.tool)}">${h(row.tool)}</span></span>`;
 }
 
+/**
+ * @param {ReturnType<typeof toolView>["rows"][number]} row
+ * @param {ReturnType<typeof toolView>} view
+ */
 function toolTrendCell(row, view) {
   const values = view.trends.get(row.tool);
   if (!values || values.length <= 1) return '<span class="x-dim">–</span>';
@@ -558,6 +341,10 @@ function toolTrendCell(row, view) {
   return `<span style="display:inline-block;width:80px;height:20px">${toolSparkline(values, 80, 20, color)}</span>`;
 }
 
+/**
+ * @param {ReturnType<typeof toolView>} view
+ * @returns {import("./web/table.js").TableColumn<ReturnType<typeof toolView>["rows"][number]>[]}
+ */
 function toolColumns(view) {
   const maxCalls = view.rows[0]?.calls ?? 0;
   return [
@@ -579,10 +366,10 @@ function toolColumns(view) {
       align: "right",
       sort: (row) => row.calls,
       render: (row) =>
-        toolMeter(
+        xMeter(
           row.calls,
           maxCalls,
-          `<span title="${toolPercent(row.callFraction)} of all tool calls">${toolInteger(row.calls)}<span class="x-dim x-tools-share">${toolPercent(row.callFraction, 0)}</span></span>`,
+          `<span title="${ratioPercent(row.callFraction)} of all tool calls">${number(row.calls)}<span class="x-dim x-tools-share">${ratioPercent(row.callFraction, 0)}</span></span>`,
         ),
     },
     {
@@ -599,7 +386,7 @@ function toolColumns(view) {
       title: "Characters of serialized tool-call arguments",
       align: "right",
       sort: (row) => row.argsChars,
-      render: (row) => `<span class="x-num">${toolCompact(row.argsChars)}</span>`,
+      render: (row) => `<span class="x-num">${compact(row.argsChars)}</span>`,
     },
     {
       key: "result",
@@ -608,7 +395,7 @@ function toolColumns(view) {
       align: "right",
       sort: (row) => row.resultChars ?? -1,
       render: (row) =>
-        `<span class="x-num" title="${row.resultKnown ? `${toolInteger(row.resultCalls)} recorded calls` : "No result data"}">${toolCompact(row.resultChars)}</span>`,
+        `<span class="x-num" title="${row.resultKnown ? `${number(row.resultCalls)} recorded calls` : "No result data"}">${compact(row.resultChars)}</span>`,
     },
     {
       key: "avgResult",
@@ -617,7 +404,7 @@ function toolColumns(view) {
       align: "right",
       sort: (row) => row.avgResultChars ?? -1,
       render: (row) =>
-        `<span class="x-num x-muted">${toolCompact(row.avgResultChars == null ? null : Math.round(row.avgResultChars))}</span>`,
+        `<span class="x-num x-muted">${compact(row.avgResultChars == null ? null : Math.round(row.avgResultChars))}</span>`,
     },
     {
       key: "tokens",
@@ -626,7 +413,7 @@ function toolColumns(view) {
       align: "right",
       sort: (row) => row.totalTokensShare,
       render: (row) =>
-        `<span class="x-num" title="${toolPercent(row.tokenFraction)} of attributed tokens">${toolCompact(Math.round(row.totalTokensShare))}<span class="x-dim x-tools-share">${toolPercent(row.tokenFraction, 0)}</span></span>`,
+        `<span class="x-num" title="${ratioPercent(row.tokenFraction)} of attributed tokens">${compact(Math.round(row.totalTokensShare))}<span class="x-dim x-tools-share">${ratioPercent(row.tokenFraction, 0)}</span></span>`,
     },
     {
       key: "cost",
@@ -635,7 +422,7 @@ function toolColumns(view) {
       align: "right",
       sort: (row) => row.costShare ?? -1,
       render: (row) =>
-        `<span class="x-num" title="${toolPercent(row.costFraction)} of attributed cost">${toolEstimatedCost(row.costShare, row.unpricedRequestsShare)}<span class="x-dim x-tools-share">${toolPercent(row.costFraction, 0)}</span></span>`,
+        `<span class="x-num" title="${ratioPercent(row.costFraction)} of attributed cost">${estimatedCost(row.costShare, row.unpricedRequestsShare)}<span class="x-dim x-tools-share">${ratioPercent(row.costFraction, 0)}</span></span>`,
     },
     {
       key: "lastUsed",
@@ -643,26 +430,50 @@ function toolColumns(view) {
       align: "right",
       sort: (row) => row.lastUsed ?? -1,
       render: (row) =>
-        `<span class="x-muted" title="${h(localTime(row.lastUsed))}">${toolRelative(row.lastUsed)}</span>`,
+        `<span class="x-muted" title="${h(localTime(row.lastUsed))}">${row.lastUsed == null ? "—" : relative(row.lastUsed)}</span>`,
     },
   ];
 }
 
+/** @param {ReturnType<typeof toolView>} view */
 function toolTable(view) {
   const columns = toolColumns(view);
-  const sorted = toolSorted(view.rows, columns, toolSort);
+  const sorted = sortRows(view.rows, columns, toolSort);
   const visible = sorted.slice(0, toolShown);
-  if (!sorted.length) return toolEmpty("No tool calls in this range");
-  const head = columns.map((column) => toolSortHeader(column, toolSort, "tool")).join("");
+  if (!sorted.length) return xEmpty("No tool calls in this range");
+  const head = columns
+    .map((column) =>
+      renderSortHeader(column, toolSort, {
+        sortAttr: "data-toolsort",
+        tableAttr: "data-tooltable",
+        table: "tool",
+        alignAttr: "data-toolalign",
+        focusAttr: "data-tools-focus",
+        focusPrefix: "sort-tool-",
+      }),
+    )
+    .join("");
   const body = visible
     .map(
       (row) =>
         `<tr data-clickable="true" data-selected="${row.tool === view.toolFilter}" data-toolselect="${encodeURIComponent(row.tool)}" data-tools-focus="row-${encodeURIComponent(row.tool)}" tabindex="0">${columns.map((column) => `<td data-align="${column.align || "left"}">${column.render(row)}</td>`).join("")}</tr>`,
     )
     .join("");
-  return `<div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${toolTableMore(sorted.length, visible.length, 20, "tool")}`;
+  return `<div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${renderTableMore(
+    {
+      total: sorted.length,
+      shown: visible.length,
+      step: 20,
+      moreAttr: 'data-toolpage="tool" data-toolaction="more"',
+      lessAttr: 'data-toolpage="tool" data-toolaction="less"',
+      focusAttr: "data-tools-focus",
+      focusMore: "tool-more",
+      focusLess: "tool-less",
+    },
+  )}`;
 }
 
+/** @param {ReturnType<typeof toolView>} view */
 function toolModelRows(view) {
   const rows = view.rows.flatMap((tool) =>
     tool.models.map((model) => {
@@ -688,6 +499,11 @@ function toolModelRows(view) {
   return view.toolFilter ? rows.filter((row) => row.tool === view.toolFilter) : rows;
 }
 
+/**
+ * @param {ReturnType<typeof toolModelRows>} rows
+ * @param {ReturnType<typeof toolView>} view
+ * @returns {import("./web/table.js").TableColumn<ReturnType<typeof toolModelRows>[number]>[]}
+ */
 function toolModelColumns(rows, view) {
   const maxCalls = rows.reduce((max, row) => Math.max(max, row.calls), 0);
   return [
@@ -709,7 +525,7 @@ function toolModelColumns(rows, view) {
       header: "Calls",
       align: "right",
       sort: (row) => row.calls,
-      render: (row) => toolMeter(row.calls, maxCalls, toolInteger(row.calls)),
+      render: (row) => xMeter(row.calls, maxCalls, number(row.calls)),
     },
     {
       key: "errorRate",
@@ -725,7 +541,7 @@ function toolModelColumns(rows, view) {
       align: "right",
       sort: (row) => row.resultChars ?? -1,
       render: (row) =>
-        `<span class="x-num"${row.resultKnown ? "" : ' title="Not recorded by this pp version"'}>${toolCompact(row.resultChars)}</span>`,
+        `<span class="x-num"${row.resultKnown ? "" : ' title="Not recorded by this pp version"'}>${compact(row.resultChars)}</span>`,
     },
     {
       key: "tokens",
@@ -733,8 +549,7 @@ function toolModelColumns(rows, view) {
       title: TOOL_ATTRIBUTION,
       align: "right",
       sort: (row) => row.totalTokensShare,
-      render: (row) =>
-        `<span class="x-num">${toolCompact(Math.round(row.totalTokensShare))}</span>`,
+      render: (row) => `<span class="x-num">${compact(Math.round(row.totalTokensShare))}</span>`,
     },
     {
       key: "cost",
@@ -743,7 +558,7 @@ function toolModelColumns(rows, view) {
       align: "right",
       sort: (row) => row.costShare ?? -1,
       render: (row) =>
-        `<span class="x-num">${toolEstimatedCost(row.costShare, row.unpricedRequestsShare)}</span>`,
+        `<span class="x-num">${estimatedCost(row.costShare, row.unpricedRequestsShare)}</span>`,
     },
     {
       key: "lastUsed",
@@ -751,287 +566,63 @@ function toolModelColumns(rows, view) {
       align: "right",
       sort: (row) => row.lastUsed ?? -1,
       render: (row) =>
-        `<span class="x-muted" title="${h(localTime(row.lastUsed))}">${toolRelative(row.lastUsed)}</span>`,
+        `<span class="x-muted" title="${h(localTime(row.lastUsed))}">${row.lastUsed == null ? "—" : relative(row.lastUsed)}</span>`,
     },
   ];
 }
 
+/** @param {ReturnType<typeof toolView>} view */
 function toolModelTable(view) {
   const rows = toolModelRows(view);
   const columns = toolModelColumns(rows, view);
-  const sorted = toolSorted(rows, columns, toolModelSort);
+  const sorted = sortRows(rows, columns, toolModelSort);
   const visible = sorted.slice(0, toolModelShown);
-  if (!sorted.length)
-    return toolEmpty(
+  if (!sorted.length) {
+    return xEmpty(
       view.toolFilter
         ? `No calls to ${view.toolFilter} in this range`
         : "No tool calls in this range",
     );
-  const head = columns.map((column) => toolSortHeader(column, toolModelSort, "model")).join("");
+  }
+  const head = columns
+    .map((column) =>
+      renderSortHeader(column, toolModelSort, {
+        sortAttr: "data-toolsort",
+        tableAttr: "data-tooltable",
+        table: "model",
+        alignAttr: "data-toolalign",
+        focusAttr: "data-tools-focus",
+        focusPrefix: "sort-model-",
+      }),
+    )
+    .join("");
   const body = visible
     .map(
       (row) =>
         `<tr>${columns.map((column) => `<td data-align="${column.align || "left"}">${column.render(row)}</td>`).join("")}</tr>`,
     )
     .join("");
-  return `<div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${toolTableMore(sorted.length, visible.length, 25, "model")}`;
+  return `<div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${renderTableMore(
+    {
+      total: sorted.length,
+      shown: visible.length,
+      step: 25,
+      moreAttr: 'data-toolpage="model" data-toolaction="more"',
+      lessAttr: 'data-toolpage="model" data-toolaction="less"',
+      focusAttr: "data-tools-focus",
+      focusMore: "model-more",
+      focusLess: "model-less",
+    },
+  )}`;
 }
 
-// 图表支持左／右双轴、堆叠柱、折线（可选虚线）与单点标记；Models 详情同时用到四种形态。
-function toolChartSvg(model, width) {
-  const hidden = model.hidden || hiddenSeries;
-  const visible = model.series.filter((series) => !hidden.has(series.key));
-  const slots = model.buckets.length;
-  const height = model.height;
-  const padTop = 10;
-  const padBottom = 24;
-  const plotH = height - padTop - padBottom;
-  const stacked = model.stacked !== false;
-  const kind = (series) => series.kind || "bars";
-  const left = visible.filter((series) => series.axis !== "right");
-  const right = visible.filter((series) => series.axis === "right");
-  const stackable = (series) => stacked && kind(series) === "bars";
-  const bars = visible.filter((series) => kind(series) === "bars");
-  const grouped = bars.filter((series) => !stackable(series));
-  const bases = new Map();
-  const tops = Array.from({ length: slots }, () => 0);
-  const bottoms = Array.from({ length: slots }, () => 0);
-  let leftMax = 0;
-  let leftMin = 0;
-  for (const series of left) {
-    if (stackable(series)) {
-      const base = Array.from({ length: slots }, () => 0);
-      for (let i = 0; i < slots; i++) {
-        const value = series.values[i] ?? 0;
-        if (value < 0) {
-          base[i] = bottoms[i];
-          bottoms[i] += value;
-        } else {
-          base[i] = tops[i];
-          tops[i] += value;
-        }
-      }
-      bases.set(series.key, base);
-      continue;
-    }
-    for (let i = 0; i < slots; i++) {
-      leftMax = Math.max(leftMax, series.values[i] ?? 0);
-      leftMin = Math.min(leftMin, series.values[i] ?? 0);
-    }
-  }
-  for (let i = 0; i < slots; i++) {
-    leftMax = Math.max(leftMax, tops[i]);
-    leftMin = Math.min(leftMin, bottoms[i]);
-  }
-  let rightMax = 0;
-  let rightMin = 0;
-  for (const series of right) {
-    for (let i = 0; i < slots; i++) {
-      rightMax = Math.max(rightMax, series.values[i] ?? 0);
-      rightMin = Math.min(rightMin, series.values[i] ?? 0);
-    }
-  }
-  const scale = toolNiceScale(model.yMax ?? leftMax, leftMin);
-  const rightScale = right.length ? toolNiceScale(model.yMaxRight ?? rightMax, rightMin) : null;
-  const project = (axis, value) =>
-    padTop + plotH - ((value - axis.min) / (axis.max - axis.min)) * plotH;
-  const yLeft = (value) => project(scale, value);
-  const yRight = (value) => (rightScale ? project(rightScale, value) : yLeft(value));
-  const format = model.format || toolCompact;
-  const formatRight = model.formatRight || format;
-  const tickLabel =
-    model.tickLabel || ((index) => toolTickLabel(model.buckets[index], model.bucketMs));
-  const labels = scale.ticks.map((tick) => format(tick));
-  const rightLabels = rightScale ? rightScale.ticks.map((tick) => formatRight(tick)) : [];
-  const labelWidth = (items) => items.reduce((max, label) => Math.max(max, label.length * 6.3), 0);
-  const padLeft = Math.max(28, labelWidth(labels) + 12);
-  const padRight = rightScale ? Math.max(28, labelWidth(rightLabels) + 12) : 8;
-  const plotW = Math.max(0, width - padLeft - padRight);
-  const slotW = slots > 0 ? plotW / slots : 0;
-  const cx = (index) => padLeft + (index + 0.5) * slotW;
-  const barW = Math.max(1, Math.min(56, slotW * (slotW > 6 ? 0.72 : 0.9)));
-  const tickEvery = Math.max(1, Math.ceil(slots / Math.max(1, Math.floor(plotW / 68))));
-  const empty = visible.every((series) => series.values.every((value) => !value));
-  const pointAt = (series, index) => {
-    const value = series.values[index];
-    if (value === null || value === undefined) return null;
-    return (series.axis === "right" ? yRight : yLeft)(value);
-  };
-  let svg = `<svg width="${width}" height="${height}" role="img">`;
-  svg += '<g class="x-chart-grid">';
-  for (const tick of scale.ticks)
-    svg += `<line x1="${padLeft}" x2="${padLeft + plotW}" y1="${yLeft(tick)}" y2="${yLeft(tick)}"/>`;
-  svg += "</g>";
-  svg += '<g class="x-chart-axis">';
-  scale.ticks.forEach((tick, index) => {
-    svg += `<text x="${padLeft - 8}" y="${yLeft(tick)}" dy="0.32em" text-anchor="end">${h(labels[index])}</text>`;
-  });
-  if (rightScale)
-    rightScale.ticks.forEach((tick, index) => {
-      svg += `<text x="${padLeft + plotW + 8}" y="${yRight(tick)}" dy="0.32em" text-anchor="start">${h(rightLabels[index])}</text>`;
-    });
-  for (let i = 0; i < slots; i++) {
-    if (i % tickEvery !== 0) continue;
-    svg += `<text x="${cx(i)}" y="${height - 6}" text-anchor="middle">${h(tickLabel(i))}</text>`;
-  }
-  svg += "</g>";
-  svg += `<rect class="x-chart-cursor" x="${padLeft}" y="${padTop}" width="${slotW}" height="${plotH}" style="display:none"/>`;
-  for (const series of bars) {
-    const base = bases.get(series.key);
-    const group = grouped.indexOf(series);
-    const subW = group >= 0 ? barW / grouped.length : barW;
-    const y = series.axis === "right" ? yRight : yLeft;
-    for (let i = 0; i < slots; i++) {
-      const value = series.values[i];
-      if (!value) continue;
-      const bottom = base?.[i] ?? 0;
-      const y0 = y(bottom);
-      const y1 = y(bottom + value);
-      const x = cx(i) - barW / 2 + (group >= 0 ? group * subW : 0);
-      svg += `<rect class="x-chart-bar" data-hover="false" data-index="${i}" x="${x}" y="${Math.min(y0, y1)}" width="${Math.max(1, subW - (group >= 0 && grouped.length > 1 ? 1 : 0))}" height="${Math.max(value > 0 ? 1 : 0, Math.abs(y0 - y1))}" fill="${series.color}"/>`;
-    }
-  }
-  for (const series of visible.filter((item) => kind(item) === "line")) {
-    let path = "";
-    let pen = false;
-    for (let i = 0; i < slots; i++) {
-      const value = pointAt(series, i);
-      if (value === null) {
-        pen = false;
-        continue;
-      }
-      path += `${pen ? "L" : "M"}${cx(i).toFixed(1)},${value.toFixed(1)}`;
-      pen = true;
-    }
-    const dashes = series.dashed ? ' stroke-dasharray="4 3"' : "";
-    svg += `<g><path class="x-chart-line" d="${path}" stroke="${series.color}"${dashes}/>`;
-    // 前后都没有相邻点的孤立值只画点，避免整段折线静默消失。
-    for (let i = 0; i < slots; i++) {
-      const value = pointAt(series, i);
-      if (value === null) continue;
-      if (
-        (i > 0 && pointAt(series, i - 1) !== null) ||
-        (i < slots - 1 && pointAt(series, i + 1) !== null)
-      )
-        continue;
-      svg += `<circle cx="${cx(i)}" cy="${value}" r="2.5" fill="${series.color}"/>`;
-    }
-    svg += "</g>";
-  }
-  svg += `<line class="x-chart-baseline" x1="${padLeft}" x2="${padLeft + plotW}" y1="${yLeft(0)}" y2="${yLeft(0)}"/>`;
-  svg += "</svg>";
-  return {
-    svg,
-    empty,
-    visible,
-    slots,
-    width,
-    height,
-    padTop,
-    plotH,
-    padLeft,
-    plotW,
-    slotW,
-    cx,
-  };
-}
-
-function toolChartTooltipRows(visible, hover) {
-  return visible
-    .map((series) => ({ series, value: series.values[hover] }))
-    .filter(
-      (row) =>
-        row.value !== null && row.value !== undefined && (row.value !== 0 || visible.length === 1),
-    )
-    .sort((a, b) => (visible.length > 1 ? b.value - a.value : 0));
-}
-
-function toolChartHover(root, geometry, hover) {
-  const tooltip = root.querySelector(".x-chart-tooltip");
-  const cursor = root.querySelector(".x-chart-cursor");
-  const bars = root.querySelectorAll(".x-chart-bar");
-  if (hover === null) {
-    root.dataset.hovering = "false";
-    if (cursor) cursor.style.display = "none";
-    for (const bar of bars) bar.dataset.hover = "false";
-    if (tooltip) tooltip.hidden = true;
-    return;
-  }
-  root.dataset.hovering = "true";
-  if (cursor) {
-    cursor.style.display = "";
-    cursor.setAttribute("x", geometry.padLeft + hover * geometry.slotW);
-  }
-  for (const bar of bars) bar.dataset.hover = String(bar.dataset.index === String(hover));
-  if (!tooltip) return;
-  if (geometry.empty) {
-    tooltip.hidden = true;
-    return;
-  }
-  const rows = toolChartTooltipRows(geometry.visible, hover);
-  const total = rows.reduce(
-    (sum, row) => sum + (row.series.axis === "right" ? 0 : row.value),
-    0,
-  );
-  const model = geometry.model;
-  const formatValue = (row) =>
-    row.series.axis === "right"
-      ? (model.formatRight || model.formatTooltip || toolInteger)(row.value)
-      : (model.formatTooltip || toolInteger)(row.value);
-  const title = model.tooltipTitle
-    ? model.tooltipTitle(hover)
-    : toolBucketLabel(model.buckets[hover], model.bucketMs);
-  tooltip.innerHTML = `<div class="x-chart-tooltip-title">${h(title)}</div>${rows
-    .map(
-      (row) =>
-        `<div class="x-chart-tooltip-row"><span class="x-swatch" style="background:${row.series.color}"></span><span class="x-chart-tooltip-label">${h(row.series.label)}</span><span class="x-chart-tooltip-value">${formatValue(row)}</span></div>`,
-    )
-    .join(
-      "",
-    )}${rows.length > 1 && model.showTotal !== false && rows.some((row) => row.series.axis !== "right") ? `<div class="x-chart-tooltip-row x-chart-tooltip-total"><span class="x-chart-tooltip-label">Total</span><span class="x-chart-tooltip-value">${(model.formatTooltip || toolInteger)(total)}</span></div>` : ""}${model.extraRows ? model.extraRows(hover) : ""}`;
-  tooltip.hidden = false;
-  const cx = geometry.cx(hover);
-  if (cx > geometry.width / 2) {
-    tooltip.style.left = "";
-    tooltip.style.right = `${geometry.width - cx + Math.min(geometry.slotW / 2, 24) + 8}px`;
-  } else {
-    tooltip.style.right = "";
-    tooltip.style.left = `${cx + Math.min(geometry.slotW / 2, 24) + 8}px`;
-  }
-  tooltip.style.top = `${geometry.padTop}px`;
-}
-
-function wireToolsCharts() {
-  for (const root of $("page").querySelectorAll("[data-chart-id]")) {
-    const model = toolChartModels.get(root.dataset.chartId);
-    if (!model) continue;
-    const width = root.clientWidth;
-    if (width <= 0) continue;
-    const drawn = toolChartSvg(model, width);
-    root.innerHTML = `${drawn.svg}${drawn.empty ? `<div class="x-chart-empty">${h(model.emptyLabel || "No data in this range")}</div>` : ""}<div class="x-chart-tooltip" hidden></div>`;
-    const geometry = { ...drawn, model };
-    root.onpointermove = (event) => {
-      const box = root.getBoundingClientRect();
-      const localY = event.clientY - box.top;
-      if (
-        event.clientX - box.left < geometry.padLeft ||
-        localY < geometry.padTop ||
-        localY > geometry.padTop + geometry.plotH
-      ) {
-        toolChartHover(root, geometry, null);
-        return;
-      }
-      const index = Math.floor((event.clientX - box.left - geometry.padLeft) / geometry.slotW);
-      toolChartHover(root, geometry, index >= 0 && index < geometry.slots ? index : null);
-    };
-    root.onpointerleave = () => toolChartHover(root, geometry, null);
-  }
-}
-
-function toolsPage() {
-  if (!data) return '<div class="loading">Loading tools…</div>';
-  toolChartModels = new Map();
-  toolChartSeq = 0;
+/**
+ * 渲染 Tools 页面。
+ * @returns {string}
+ */
+export function toolsPage() {
+  if (!app.data) return '<div class="loading">Loading tools…</div>';
+  resetToolCharts();
   const view = toolView();
   const meta = toolRangeMeta();
   const series = toolMetric === "calls" ? view.callSeries : view.errorSeries;
@@ -1060,454 +651,42 @@ function toolsPage() {
   </div>`;
 }
 
-function hookDuration(ms) {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms < 10 ? ms.toFixed(1) : Math.round(ms)}ms`;
-  return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)}s`;
-}
-
-function hookRateBadge(count, total, warnThreshold, badThreshold) {
-  if (!(total > 0)) return '<span class="x-num x-dim">0</span>';
-  const rate = count / total;
-  const tone =
-    count === 0
-      ? "neutral"
-      : rate >= badThreshold
-        ? "bad"
-        : rate >= warnThreshold
-          ? "warn"
-          : "ok";
-  return `<span class="x-row" style="gap:8px;justify-content:flex-end"><span class="x-num x-dim">${toolInteger(count)}</span><span class="x-badge" data-tone="${tone}" data-mono="true">${toolErrorRate(rate)}</span></span>`;
-}
-
-function hookSortHeader(column, sort, table) {
-  const sorted = sort.key === column.key ? sort.dir : undefined;
-  const arrow = sorted === "asc" ? TOOL_ARROW_UP : sorted === "desc" ? TOOL_ARROW_DOWN : "";
-  return `<th data-align="${column.align || "left"}" data-sortable="${Boolean(column.sort)}"${sorted ? ` data-sorted="${sorted}" aria-sort="${sorted === "asc" ? "ascending" : "descending"}"` : ""}${column.title ? ` title="${h(column.title)}"` : ""}${column.sort ? ` data-hooksort="${column.key}" data-hooktable="${table}" data-hookalign="${column.align || "left"}" data-hooks-focus="sort-${table}-${column.key}"` : ""}>${h(column.header)}${arrow ? `<span class="x-sort-arrow">${arrow}</span>` : ""}</th>`;
-}
-
-function hookEventToolsDetail(eventRow) {
-  const tools = eventRow.tools || [];
-  const maxRuns = tools.reduce((m, t) => Math.max(m, t.runs || 0), 0);
-  const body = tools
-    .map(
-      (tool) => `<tr>
-        <td><span class="x-mono">${h(tool.tool)}</span></td>
-        <td data-align="right">${toolMeter(tool.runs, maxRuns, `${toolInteger(tool.runs)}<span class="x-dim x-tools-share">${toolPercent(eventRow.runs > 0 ? tool.runs / eventRow.runs : 0, 0)}</span>`)}</td>
-        <td data-align="right"><span class="x-num">${toolInteger(tool.ok)}</span></td>
-        <td data-align="right">${hookRateBadge(tool.blocked, tool.runs, 0.01, 0.25)}</td>
-        <td data-align="right">${hookRateBadge(tool.errors, tool.runs, 0.01, 0.05)}</td>
-        <td data-align="right"><span class="x-num">${toolInteger(tool.modified)}</span></td>
-        <td data-align="right"><span class="x-num">${hookDuration(tool.avg_duration_ms)}</span></td>
-        <td data-align="right"><span class="x-num x-muted">${hookDuration(tool.max_duration_ms)}</span></td>
-        <td data-align="right"><span class="x-num x-muted">${hookDuration(tool.total_duration_ms)}</span></td>
-      </tr>`,
-    )
-    .join("");
-  return `<div class="x-providers-mix" style="padding:10px 16px 12px 38px">
-    <div class="x-section-label">By matched tool (${toolInteger(tools.length)})</div>
-    <div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>
-      <th>Tool</th><th data-align="right">Runs</th><th data-align="right">Allowed</th><th data-align="right">Blocked</th><th data-align="right">Errors</th><th data-align="right">Modified</th><th data-align="right">Avg</th><th data-align="right">Max</th><th data-align="right">Total</th>
-    </tr></thead><tbody>${body}</tbody></table></div>
-  </div>`;
-}
-
-function hookEventTable(events, totalRuns) {
-  if (!events.length) return toolEmpty("No hook executions in this range", "Hook runs appear here once configured command hooks execute.");
-  const maxRuns = events.reduce((m, e) => Math.max(m, e.runs || 0), 0);
-  const columns = [
-    {
-      key: "event",
-      header: "Event",
-      sort: (row) => row.event,
-      render: (row) => {
-        const hasTools = (row.tools?.length || 0) > 0;
-        const open = hasTools && hookExpandedEvents.has(row.event);
-        const chev = hasTools
-          ? `<span class="x-models-chevron" data-open="${open}">${icon("chevron", 12)}</span>`
-          : `<span style="display:inline-block;width:12px"></span>`;
-        const badge = hasTools
-          ? `<span class="x-badge">${toolInteger(row.tools.length)} tools</span>`
-          : "";
-        return `<span class="x-row" style="gap:8px">${chev}<span class="x-mono x-cell-primary">${h(row.event)}</span>${badge}</span>`;
-      },
-    },
-    {
-      key: "runs",
-      header: "Runs",
-      align: "right",
-      sort: (row) => row.runs || 0,
-      render: (row) =>
-        toolMeter(
-          row.runs,
-          maxRuns,
-          `${toolInteger(row.runs)}<span class="x-dim x-tools-share">${toolPercent(totalRuns > 0 ? row.runs / totalRuns : 0, 0)}</span>`,
-        ),
-    },
-    {
-      key: "ok",
-      header: "Allowed",
-      align: "right",
-      sort: (row) => row.ok || 0,
-      render: (row) => `<span class="x-num">${toolInteger(row.ok)}</span>`,
-    },
-    {
-      key: "blocked",
-      header: "Blocked",
-      title: "Handlers that returned deny, block, continue:false, or exit code 2",
-      align: "right",
-      sort: (row) => row.blocked || 0,
-      render: (row) => hookRateBadge(row.blocked, row.runs, 0.01, 0.25),
-    },
-    {
-      key: "errors",
-      header: "Errors",
-      title: "Handlers that timed out, exited abnormally, or produced invalid JSON",
-      align: "right",
-      sort: (row) => row.errors || 0,
-      render: (row) => hookRateBadge(row.errors, row.runs, 0.01, 0.05),
-    },
-    {
-      key: "modified",
-      header: "Modified",
-      title: "Runs that rewrote tool input/output or injected context",
-      align: "right",
-      sort: (row) => row.modified || 0,
-      render: (row) => `<span class="x-num">${toolInteger(row.modified)}</span>`,
-    },
-    {
-      key: "avg",
-      header: "Avg time",
-      align: "right",
-      sort: (row) => row.avg_duration_ms ?? -1,
-      render: (row) => `<span class="x-num">${hookDuration(row.avg_duration_ms)}</span>`,
-    },
-    {
-      key: "max",
-      header: "Max time",
-      align: "right",
-      sort: (row) => row.max_duration_ms ?? -1,
-      render: (row) => `<span class="x-num x-muted">${hookDuration(row.max_duration_ms)}</span>`,
-    },
-    {
-      key: "total",
-      header: "Total time",
-      align: "right",
-      sort: (row) => row.total_duration_ms || 0,
-      render: (row) => `<span class="x-num x-muted">${hookDuration(row.total_duration_ms)}</span>`,
-    },
-  ];
-  const sorted = toolSorted(events, columns, hookEventSort);
-  const head = columns.map((column) => hookSortHeader(column, hookEventSort, "event")).join("");
-  const body = sorted
-    .map((row) => {
-      const hasTools = (row.tools?.length || 0) > 0;
-      const open = hasTools && hookExpandedEvents.has(row.event);
-      const attrs = hasTools
-        ? ` data-clickable="true" data-selected="${open}" data-hookevent="${h(row.event)}" data-hooks-focus="event-${h(row.event)}" tabindex="0"`
-        : "";
-      const cells = columns
-        .map((column) => `<td data-align="${column.align || "left"}">${column.render(row)}</td>`)
-        .join("");
-      const detail = open
-        ? `<tr><td colspan="${columns.length}" data-wrap="true" style="padding:0">${hookEventToolsDetail(row)}</td></tr>`
-        : "";
-      return `<tr${attrs}>${cells}</tr>${detail}`;
-    })
-    .join("");
-  return `<div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
-}
-
-function hookProjectTable(projects) {
-  if (!projects.length) return toolEmpty("No project hook activity in this range");
-  const maxRuns = projects.reduce((m, p) => Math.max(m, p.runs || 0), 0);
-  const columns = [
-    {
-      key: "project",
-      header: "Project",
-      sort: (row) => row.project || row.key || "",
-      render: (row) =>
-        `<div class="x-stack" style="gap:0"><span class="x-cell-primary x-truncate">${h(row.project || row.key || "Unknown directory")}</span><span class="x-cell-secondary x-mono x-truncate" title="${h(row.key)}">${h(row.key)}</span></div>`,
-    },
-    {
-      key: "runs",
-      header: "Runs",
-      align: "right",
-      sort: (row) => row.runs || 0,
-      render: (row) => toolMeter(row.runs, maxRuns, toolInteger(row.runs)),
-    },
-    {
-      key: "blocked",
-      header: "Blocked",
-      align: "right",
-      sort: (row) => row.blocked || 0,
-      render: (row) => hookRateBadge(row.blocked, row.runs, 0.01, 0.25),
-    },
-    {
-      key: "errors",
-      header: "Errors",
-      align: "right",
-      sort: (row) => row.errors || 0,
-      render: (row) => hookRateBadge(row.errors, row.runs, 0.01, 0.05),
-    },
-    {
-      key: "modified",
-      header: "Modified",
-      align: "right",
-      sort: (row) => row.modified || 0,
-      render: (row) => `<span class="x-num">${toolInteger(row.modified)}</span>`,
-    },
-    {
-      key: "events",
-      header: "Events",
-      align: "right",
-      sort: (row) => row.events || 0,
-      render: (row) => `<span class="x-num">${toolInteger(row.events)}</span>`,
-    },
-    {
-      key: "sessions",
-      header: "Sessions",
-      align: "right",
-      sort: (row) => row.sessions || 0,
-      render: (row) => `<span class="x-num">${toolInteger(row.sessions)}</span>`,
-    },
-    {
-      key: "avg",
-      header: "Avg time",
-      align: "right",
-      sort: (row) => row.avg_duration_ms ?? -1,
-      render: (row) => `<span class="x-num">${hookDuration(row.avg_duration_ms)}</span>`,
-    },
-    {
-      key: "lastSeen",
-      header: "Last run",
-      align: "right",
-      sort: (row) => row.last_seen ?? -1,
-      render: (row) =>
-        `<span class="x-muted" title="${h(localTime(row.last_seen))}">${toolRelative(row.last_seen)}</span>`,
-    },
-  ];
-  const sorted = toolSorted(projects, columns, hookProjectSort);
-  const head = columns.map((column) => hookSortHeader(column, hookProjectSort, "project")).join("");
-  const body = sorted
-    .map(
-      (row) =>
-        `<tr>${columns.map((column) => `<td data-align="${column.align || "left"}">${column.render(row)}</td>`).join("")}</tr>`,
-    )
-    .join("");
-  return `<div class="x-table-wrap"><table class="x-table" data-dense="true"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
-}
-
-function hooksPage() {
-  if (!data) return '<div class="loading">Loading hooks…</div>';
-  toolChartModels = new Map();
-  toolChartSeq = 0;
-  const s = data.summary || {};
-  const meta = toolRangeMeta();
-  const buckets = toolBucketAxis((data.buckets || []).map((b) => b.timestamp));
-  const byTime = new Map((data.buckets || []).map((b) => [b.timestamp, b]));
-  const totalRuns = buckets.map((t) => byTime.get(t)?.runs ?? 0);
-  const totalBlocked = buckets.map((t) => byTime.get(t)?.blocked ?? 0);
-  const totalErrors = buckets.map((t) => byTime.get(t)?.errors ?? 0);
-  const totalOk = buckets.map((t) => byTime.get(t)?.ok ?? 0);
-  const series = [
-    { key: "ok", label: "Allowed", color: "var(--ok)", values: totalOk.map((v) => v || null) },
-    {
-      key: "blocked",
-      label: "Blocked",
-      color: "var(--warn)",
-      values: totalBlocked.map((v) => v || null),
-    },
-    {
-      key: "errors",
-      label: "Errors",
-      color: "var(--bad)",
-      values: totalErrors.map((v) => v || null),
-    },
-  ];
-  const runs = s.runs || 0;
-  const blockRate = runs > 0 ? toolErrorRate((s.blocked || 0) / runs) : "—";
-  const errRate = runs > 0 ? toolErrorRate((s.errors || 0) / runs) : "—";
-  const modRate = runs > 0 ? toolErrorRate((s.modified || 0) / runs) : "—";
-  const statGrid = `<div class="x-stat-grid x-rise" style="--stat-min:175px">
-    ${toolStat("Hook runs", toolInteger(runs), `${toolInteger(s.ok || 0)} allowed · ${toolInteger(s.sessions || 0)} sessions`, {
-      spark: totalRuns,
-    })}
-    ${toolStat("Blocked", toolInteger(s.blocked || 0), `${blockRate} block rate`, {
-      title: "Handlers that returned deny, block, continue:false, or exit code 2",
-      spark: totalBlocked,
-      sparkColor: "var(--warn)",
-    })}
-    ${toolStat("Handler errors", errRate, `${toolInteger(s.errors || 0)} errors · ${toolInteger(runs - (s.errors || 0))} completed`, {
-      title: "Handlers that failed due to timeout, abnormal exit code, or invalid protocol output",
-      spark: totalErrors,
-      sparkColor: "var(--bad)",
-    })}
-    ${toolStat("Modified", toolInteger(s.modified || 0), `${modRate} rewrite / context`, {
-      title: "Handler runs that rewrote tool input/output or injected additionalContext",
-    })}
-    ${toolStat("Avg duration", hookDuration(s.avg_duration_ms), `${hookDuration(s.total_duration_ms)} total · max ${hookDuration(s.max_duration_ms)}`, {
-      title: "Elapsed wall-clock time per handler execution",
-    })}
-  </div>`;
-  const chart = toolChart({ buckets, bucketMs: meta.bucketMs }, series, "No hook runs in this range", {
-    extraRows: (index) => {
-      const b = byTime.get(buckets[index]);
-      if (!b?.runs) return "";
-      return `<div class="x-chart-tooltip-row"><span class="x-chart-tooltip-label">Modified</span><span class="x-chart-tooltip-value">${toolInteger(b.modified)}</span></div><div class="x-chart-tooltip-row"><span class="x-chart-tooltip-label">Avg time</span><span class="x-chart-tooltip-value">${hookDuration(b.avg_duration_ms)}</span></div>`;
-    },
-  });
-  const chartBody = `<div class="x-stack" style="gap:12px">${chart}${toolLegend(series, toolInteger, { focusAttribute: "data-hooks-focus" })}</div>`;
-  return `<div class="x-page">
-    <header class="x-page-header x-rise"><div><h1 class="x-page-title">Hooks</h1><p class="x-page-description">Lifecycle command hook executions, decisions, rewrites, and latency in ${h(meta.windowLabel)}.</p></div></header>
-    ${statGrid}
-    ${toolCard(1, "Hook activity over time", `Per ${toolBucketWord(meta.bucketMs)}, stacked by handler outcome`, "", chartBody)}
-    ${toolCard(2, "By hook event", "Select a tool event row to break executions down by matched tool", "", hookEventTable(data.events || [], runs), true)}
-    ${toolCard(3, "By project", "Directories where hooks ran", "", hookProjectTable(data.projects || []), true)}
-  </div>`;
-}
-
-function projectRank(projects, field, title, color) {
-  const rows = [...projects]
-    .filter((g) => g[field] != null)
-    .sort((a, b) => b[field] - a[field])
-    .slice(0, 6);
-  const total = data.summary[field],
-    max = Math.max(...rows.map((g) => g[field]), 1e-12);
-  return chartPanel(
-    title,
-    field === "cost" ? "Share of priced API-equivalent estimate" : "Share of all requests",
-    `<div class="insight-ranking">${rows.map((g) => `<button data-insight-open="${h(groupKey("project", g.key))}" title="${h(g.key)}" style="--rank-width:${(100 * g[field]) / max}%;--rank-color:${color}"><span>${h(g.project || g.key || "Unknown directory")}</span><span class="num">${field === "cost" ? money(g[field]) : number(g[field])} · ${percent(g[field], total)}</span></button>`).join("") || '<div class="empty">No data in this range</div>'}</div>`,
-  );
-}
-function projectDetails(g) {
-  return `<div class="group-details"><div class="session-path">${h(g.key || "Working directory not recorded")}</div>${detailsGrid(
-    [
-      ["Sessions", number(g.sessions)],
-      ["Requests without session", number(g.requests_without_session)],
-      ["Avg TTFT", duration(g.avg_ttft_ms)],
-      ["Pricing coverage", costNote(g)],
-      ["First active", localTime(g.first_seen)],
-      ["Last active", localTime(g.last_seen)],
-    ],
-  )}${tokenMix(g)}<h2>Models · select a row for usage and latency</h2>${analyticsTable(
-    ["Model", "Requests", "Tokens", "Cost", "Cache rate", "Errors"],
-    [...g.models]
-      .sort((a, b) => b.requests - a.requests)
-      .map((m) =>
-        groupRow(
-          { ...m, key: JSON.stringify([g.key, m.key]), description: `${m.provider} · ${m.key}` },
-          "project-model",
-          numericCells([
-            number(m.requests),
-            detailed(m.tokens),
-            detailed(m.cost, money(m.cost), " USD"),
-            cacheRate(m),
-            percent(m.failed, m.requests),
-          ]),
-          () =>
-            `<div class="group-details">${detailsGrid([
-              ["Avg duration", duration(m.avg_duration_ms)],
-              ["Avg TTFT", duration(m.avg_ttft_ms)],
-              ["Pricing coverage", costNote(m)],
-              ["Aborted", number(m.aborted)],
-            ])}${tokenMix(m)}</div>`,
-          6,
-        ),
-      )
-      .join(""),
-  )}<h2>Latest requests · up to 10 in this range</h2>${insightRecent(g.recent)}</div>`;
-}
-function projectSearch(label, placeholder) {
-  return `<div class="search">${icon("search")}<input id="search" type="search" aria-label="${label}" placeholder="${placeholder}" value="${h(query)}"></div>`;
-}
-
-function projectFooter(rows) {
-  return `<div class="table-footer">${number(Math.min(visible, rows.length))} of ${number(rows.length)}${visible < rows.length ? '<button class="outline-button" data-more>Show more</button>' : ""}</div>`;
-}
-
-function projectsPage() {
-  if (!data) return '<div class="loading">Loading projects…</div>';
-  const s = data.summary,
-    q = query.trim().toLowerCase();
-  const rows = [...data.projects]
-    .filter(
-      (g) =>
-        !q ||
-        [g.project, g.key, ...g.models.map((m) => m.key)].some((v) => v.toLowerCase().includes(q)),
-    )
-    .sort((a, b) => (b[insightSort] ?? -1) - (a[insightSort] ?? -1) || a.key.localeCompare(b.key));
-  return `<h1>Projects</h1><p class="subtitle">Usage by working directory in the ${descriptions[range]}.</p><div class="panel metrics">${metric("Folders", number(data.projects.length))}${metric("Requests", number(s.requests), `${number(s.failed)} failed`)}${metric("API-equivalent cost", money(s.cost), costNote(s))}${metric("Conversation tokens", short(s.tokens))}${metric("Cache rate", cacheRate(s))}</div>
-    <div class="graphs project-ranks">${projectRank(data.projects, "cost", "Top by cost", "var(--pink)")}${projectRank(data.projects, "requests", "Top by requests", "var(--accent)")}</div>
-    <section class="panel analytics-panel"><div class="requests-heading panel-heading"><div><h2>Folders</h2><p class="panel-description">${number(rows.length)} folders · select a row for tokens, models and recent requests</p></div><div class="trace-controls">${projectSearch("Search folders", "Folder, path or model…")}<select class="insight-select" id="insight-sort" aria-label="Sort folders">${[
-      ["cost", "Cost"],
-      ["requests", "Requests"],
-      ["tokens", "Tokens"],
-      ["last_seen", "Last active"],
-    ]
-      .map(
-        ([key, label]) =>
-          `<option value="${key}"${key === insightSort ? " selected" : ""}>${label}</option>`,
-      )
-      .join("")}</select></div></div>${analyticsTable(
-      [
-        "Folder",
-        "Requests",
-        "Cost",
-        "Tokens",
-        "Cache rate",
-        "Errors",
-        "Avg duration",
-        "Last active",
-      ],
-      rows
-        .slice(0, visible)
-        .map((g) =>
-          groupRow(
-            { ...g, label: g.project || g.key || "Unknown directory", description: g.key },
-            "project",
-            numericCells([
-              number(g.requests),
-              detailed(g.cost, money(g.cost), " USD"),
-              detailed(g.tokens),
-              cacheRate(g),
-              percent(g.failed, g.requests),
-              detailed(g.avg_duration_ms, duration(g.avg_duration_ms), " ms"),
-              `<span title="${h(localTime(g.last_seen))}">${relative(g.last_seen)}</span>`,
-            ]),
-            () => projectDetails(g),
-            8,
-          ),
-        )
-        .join(""),
-    )}${projectFooter(rows)}</section><p class="load-note">Folders are grouped by the full recorded working directory. Different paths with the same folder name stay separate. All summaries cover every request in the selected range.</p>${pricingNotice()}`;
-}
-function insightsClick(e) {
+/**
+ * 处理 Tools / Hooks / Projects 页点击交互。
+ * @param {MouseEvent} e
+ * @returns {boolean}
+ */
+export function insightsClick(e) {
+  if (!(e.target instanceof Element)) return false;
   const target = e.target.closest("[data-insight-open]");
-  if (target) {
-    const key = target.dataset.insightOpen;
-    expandedGroups.add(key);
-    query = "";
-    visible = Math.max(100, data.projects.length);
-    render();
-    const row = [...$("page").querySelectorAll("[data-expand]")].find(
-      (el) => el.dataset.expand === key,
+  if (target instanceof HTMLElement) {
+    const key = target.dataset.insightOpen ?? "";
+    const projectsPayload = /** @type {ProjectsResponse | null} */ (app.data);
+    app.expandedGroups.add(key);
+    app.query = "";
+    app.visible = Math.max(100, projectsPayload?.projects.length ?? 100);
+    hooks.render();
+    const row = [...($("page")?.querySelectorAll("[data-expand]") ?? [])].find(
+      (el) => el instanceof HTMLElement && el.dataset.expand === key,
     );
-    row?.focus({ preventScroll: true });
-    row?.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (row instanceof HTMLElement) {
+      row.focus({ preventScroll: true });
+      row.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
     return true;
   }
   const metricButton = e.target.closest("[data-tool-metric]");
-  if (metricButton) {
-    toolMetric = metricButton.dataset.toolMetric;
-    render();
+  if (metricButton instanceof HTMLElement) {
+    toolMetric = metricButton.dataset.toolMetric === "errors" ? "errors" : "calls";
+    hooks.render();
     return true;
   }
   const sortHeader = e.target.closest("[data-toolsort]");
-  if (sortHeader) {
+  if (sortHeader instanceof HTMLElement) {
     const table = sortHeader.dataset.tooltable;
-    const key = sortHeader.dataset.toolsort;
+    const key = sortHeader.dataset.toolsort ?? "";
     const state = table === "model" ? toolModelSort : toolSort;
+    /** @type {SortDirection} */
     const direction =
       state.key === key
         ? state.dir === "asc"
@@ -1518,18 +697,18 @@ function insightsClick(e) {
           : "asc";
     if (table === "model") toolModelSort = { key, dir: direction };
     else toolSort = { key, dir: direction };
-    render();
+    hooks.render();
     return true;
   }
   const row = e.target.closest("[data-toolselect]");
-  if (row) {
-    const name = decodeURIComponent(row.dataset.toolselect);
+  if (row instanceof HTMLElement) {
+    const name = decodeURIComponent(row.dataset.toolselect ?? "");
     toolFilter = toolFilter === name ? "" : name;
-    render();
+    hooks.render();
     return true;
   }
   const pageButton = e.target.closest("[data-toolpage]");
-  if (pageButton) {
+  if (pageButton instanceof HTMLElement) {
     const table = pageButton.dataset.toolpage;
     const action = pageButton.dataset.toolaction;
     if (table === "model") {
@@ -1537,49 +716,49 @@ function insightsClick(e) {
     } else {
       toolShown = action === "more" ? toolShown + 20 * 4 : 20;
     }
-    render();
+    hooks.render();
     return true;
   }
   if (e.target.closest("[data-clear-tool]")) {
     toolFilter = "";
-    render();
+    hooks.render();
     return true;
   }
-  const hookSortHeader = e.target.closest("[data-hooksort]");
-  if (hookSortHeader) {
-    const table = hookSortHeader.dataset.hooktable;
-    const key = hookSortHeader.dataset.hooksort;
-    const state = table === "project" ? hookProjectSort : hookEventSort;
-    const direction =
-      state.key === key
-        ? state.dir === "asc"
-          ? "desc"
-          : "asc"
-        : hookSortHeader.dataset.hookalign === "right"
-          ? "desc"
-          : "asc";
-    if (table === "project") hookProjectSort = { key, dir: direction };
-    else hookEventSort = { key, dir: direction };
-    render();
-    return true;
-  }
-  const hookEventRow = e.target.closest("[data-hookevent]");
-  if (hookEventRow) {
-    const name = hookEventRow.dataset.hookevent;
-    if (hookExpandedEvents.has(name)) hookExpandedEvents.delete(name);
-    else hookExpandedEvents.add(name);
-    render();
-    return true;
-  }
-  return false;
+  return hooksClick(e.target);
 }
-function insightsChange(e) {
-  if (!["tool-filter", "insight-sort"].includes(e.target.id)) return false;
+
+/**
+ * 处理 Tools 与 Projects 页面的下拉选择变化。
+ * @param {Event} e
+ * @returns {boolean}
+ */
+export function insightsChange(e) {
+  if (
+    !(e.target instanceof HTMLSelectElement) ||
+    !["tool-filter", "insight-sort"].includes(e.target.id)
+  ) {
+    return false;
+  }
   const id = e.target.id;
-  if (id === "tool-filter") toolFilter = e.target.value;
-  else insightSort = e.target.value;
-  render();
+  if (id === "tool-filter") {
+    toolFilter = e.target.value;
+  } else {
+    setInsightSort(/** @type {"cost" | "requests" | "tokens" | "last_seen"} */ (e.target.value));
+  }
+  hooks.render();
   $(id)?.focus({ preventScroll: true });
   return true;
 }
-window.addEventListener("resize", wireToolsCharts);
+
+let insightsBound = false;
+
+/**
+ * 绑定图表随窗口宽度重绘监听（幂等）。
+ */
+export function initInsights() {
+  if (insightsBound) return;
+  insightsBound = true;
+  window.addEventListener("resize", wireToolsCharts);
+}
+
+export { hooksPage, projectsPage };

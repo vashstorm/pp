@@ -68,7 +68,11 @@ html[data-style="modern"][data-theme="light"] {
   --modern-ambient-b: rgba(215, 175, 95, 0.11);
   --modern-grid-dot: rgba(24, 39, 75, 0.055);
   --modern-card-edge: rgba(255, 255, 255, 0.9);
-  --modern-nav-active-bg: linear-gradient(90deg, rgba(46, 107, 230, 0.12), rgba(215, 175, 95, 0.06));
+  --modern-nav-active-bg: linear-gradient(
+    90deg,
+    rgba(46, 107, 230, 0.12),
+    rgba(215, 175, 95, 0.06)
+  );
   --modern-code-bg: #f6f8fc;
   accent-color: var(--accent-a);
 }
@@ -132,7 +136,11 @@ html[data-style="modern"][data-theme="dark"] {
   --modern-ambient-b: rgba(215, 175, 95, 0.09);
   --modern-grid-dot: rgba(164, 186, 235, 0.055);
   --modern-card-edge: rgba(255, 255, 255, 0.06);
-  --modern-nav-active-bg: linear-gradient(90deg, rgba(122, 162, 247, 0.16), rgba(215, 175, 95, 0.07));
+  --modern-nav-active-bg: linear-gradient(
+    90deg,
+    rgba(122, 162, 247, 0.16),
+    rgba(215, 175, 95, 0.07)
+  );
   --modern-code-bg: #0c1018;
   accent-color: var(--accent-a);
 }
@@ -158,7 +166,10 @@ html[data-style="modern"] .shell-ambient {
     radial-gradient(64rem 30rem at 8% -10%, var(--modern-ambient-a), transparent 70%),
     radial-gradient(52rem 28rem at 92% -12%, var(--modern-ambient-b), transparent 70%),
     radial-gradient(var(--modern-grid-dot) 1px, transparent 1px);
-  background-size: 100% 100%, 100% 100%, 22px 22px;
+  background-size:
+    100% 100%,
+    100% 100%,
+    22px 22px;
 }
 
 /* 顶栏 */
@@ -337,15 +348,27 @@ html[data-style="modern"] #page > .subtitle {
   margin-bottom: 22px;
 }
 
-html[data-style="modern"] #page[data-enter="true"] > :is(.metrics, .small-metrics, .graphs, .panel, .load-note, .pricing-note) {
+html[data-style="modern"]
+  #page[data-enter="true"]
+  > :is(.metrics, .small-metrics, .graphs, .panel, .load-note, .pricing-note) {
   animation: x-rise var(--dur-3) var(--ease-out) backwards;
 }
 
-html[data-style="modern"] #page[data-enter="true"] > :nth-child(3) { animation-delay: 0ms; }
-html[data-style="modern"] #page[data-enter="true"] > :nth-child(4) { animation-delay: 35ms; }
-html[data-style="modern"] #page[data-enter="true"] > :nth-child(5) { animation-delay: 70ms; }
-html[data-style="modern"] #page[data-enter="true"] > :nth-child(6) { animation-delay: 105ms; }
-html[data-style="modern"] #page[data-enter="true"] > :nth-child(7) { animation-delay: 140ms; }
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(3) {
+  animation-delay: 0ms;
+}
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(4) {
+  animation-delay: 35ms;
+}
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(5) {
+  animation-delay: 70ms;
+}
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(6) {
+  animation-delay: 105ms;
+}
+html[data-style="modern"] #page[data-enter="true"] > :nth-child(7) {
+  animation-delay: 140ms;
+}
 
 /* 卡片与统计指标统一（x-stat-grid / x-card 与旧 .panel / .metrics） */
 html[data-style="modern"] .x-card,
@@ -353,9 +376,7 @@ html[data-style="modern"] .x-stat-grid,
 html[data-style="modern"] .panel {
   border-radius: var(--r-card);
   border: 1px solid var(--line-2);
-  background:
-    linear-gradient(180deg, var(--modern-card-edge), transparent 44px),
-    var(--card);
+  background: linear-gradient(180deg, var(--modern-card-edge), transparent 44px), var(--card);
   box-shadow: var(--shadow-1);
 }
 
@@ -478,7 +499,9 @@ html[data-style="modern"] .all-requests {
   color: var(--ink-2);
   font-size: 12px;
   font-weight: 500;
-  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+  transition:
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
 }
 
 html[data-style="modern"] .all-requests:hover {
@@ -571,7 +594,9 @@ html[data-style="modern"] .segmented button {
   font-size: 12px;
   font-weight: 500;
   color: var(--ink-3);
-  transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+  transition:
+    color var(--dur-1) var(--ease),
+    background var(--dur-1) var(--ease);
 }
 
 html[data-style="modern"] .segmented button:hover {
@@ -581,430 +606,7 @@ html[data-style="modern"] .segmented button:hover {
 html[data-style="modern"] .segmented button[aria-checked="true"] {
   background: var(--card);
   color: var(--ink-1);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14), 0 0 0 1px var(--line-2);
-}
-
-/* 表格体系统一（x-table 与旧 table） */
-html[data-style="modern"] .x-table th,
-html[data-style="modern"] table:not(.x-table) th {
-  background: color-mix(in srgb, var(--raised) 55%, var(--card));
-  color: var(--ink-3);
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  border-bottom: 1px solid var(--line-2);
-  padding: 9px 14px;
-}
-
-html[data-style="modern"] table:not(.x-table) th:first-child,
-html[data-style="modern"] table:not(.x-table) td:first-child {
-  padding-left: 18px;
-}
-
-html[data-style="modern"] table:not(.x-table) th:last-child,
-html[data-style="modern"] table:not(.x-table) td:last-child {
-  padding-right: 18px;
-}
-
-html[data-style="modern"] table:not(.x-table) {
-  font-size: 13px;
-}
-
-html[data-style="modern"] table:not(.x-table) td {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--line-1);
-  color: var(--ink-1);
-}
-
-html[data-style="modern"] table:not(.x-table) tbody tr {
-  transition: background var(--dur-1) var(--ease);
-}
-
-html[data-style="modern"] table:not(.x-table) tbody tr:hover {
-  background: var(--hover);
-}
-
-html[data-style="modern"] .first-request-row {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-a) 10%, transparent), transparent 48%);
-}
-
-html[data-style="modern"] .first-request-row td:first-child {
-  box-shadow: inset 3px 0 0 var(--accent-a);
-}
-
-html[data-style="modern"] .first-request-mark,
-html[data-style="modern"] .first-request-badge {
-  border-color: var(--accent-line);
-  color: var(--accent-a);
-  background: var(--accent-soft);
-}
-
-html[data-style="modern"] .badge {
-  display: inline-flex;
-  align-items: center;
-  height: 21px;
-  padding: 0 9px;
-  border-radius: var(--r-pill);
-  font-size: 11.5px;
-  font-weight: 550;
-  color: var(--ok);
-  background: var(--ok-soft);
-}
-
-html[data-style="modern"] .badge.failed {
-  color: var(--bad);
-  background: var(--bad-soft);
-}
-
-html[data-style="modern"] .badge.aborted {
-  color: var(--warn);
-  background: var(--warn-soft);
-}
-
-html[data-style="modern"] .table-footer {
-  border-top: 1px solid var(--line-1);
-  padding: 12px 16px;
-  color: var(--ink-3);
-}
-
-html[data-style="modern"] .group-details {
-  padding: 20px 24px;
-  background: color-mix(in srgb, var(--raised) 55%, var(--panel));
-  border-top: 1px solid var(--line-1);
-}
-
-/* 比例条、组件列表与 Projects 排行 */
-html[data-style="modern"] .token-bar,
-html[data-style="modern"] .cost-split {
-  height: 9px;
-  gap: 2px;
-  border-radius: var(--r-pill);
-  background: var(--line-1);
-  padding: 1px;
-}
-
-html[data-style="modern"] .token-bar span,
-html[data-style="modern"] .cost-split span {
-  border-radius: var(--r-pill);
-}
-
-html[data-style="modern"] .component-list > div {
-  border-bottom-color: var(--line-1);
-  padding: 11px 4px;
-}
-
-html[data-style="modern"] .insight-ranking button {
-  border-radius: 9px;
-  padding: 8px 12px;
-  border: 1px solid transparent;
-  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
-}
-
-html[data-style="modern"] .insight-ranking button:hover {
-  border-color: var(--line-1);
-}
-
-/* 图表与悬浮提示统一 */
-html[data-style="modern"] .chart line {
-  stroke: var(--chart-grid);
-}
-
-html[data-style="modern"] .chart text {
-  fill: var(--chart-axis);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-}
-
-html[data-style="modern"] .chart rect:not(.chart-hit) {
-  rx: 2px;
-}
-
-html[data-style="modern"] .x-chart-bar {
-  rx: 2px;
-}
-
-html[data-style="modern"] .chart-hit:hover,
-html[data-style="modern"] .chart-hit:focus-visible {
-  fill: var(--chart-cursor);
-}
-
-html[data-style="modern"] #stats-tooltip,
-html[data-style="modern"] .x-chart-tooltip {
-  border-radius: var(--r-control);
-  border: 1px solid var(--line-2);
-  background: var(--overlay);
-  backdrop-filter: blur(14px) saturate(160%);
-  -webkit-backdrop-filter: blur(14px) saturate(160%);
-  color: var(--ink-1);
-  box-shadow: var(--shadow-2);
-}
-
-/* Traces 页面精致化 */
-html[data-style="modern"] .traces-minimap {
-  border-radius: 10px;
-  border-color: var(--line-2);
-  background: color-mix(in srgb, var(--panel) 80%, var(--card));
-}
-
-html[data-style="modern"] .traces-timeline {
-  border-top-color: var(--line-2);
-}
-
-html[data-style="modern"] .traces-row[data-selected="true"] {
-  background: var(--selected);
-  box-shadow: inset 3px 0 0 var(--accent-a);
-}
-
-html[data-style="modern"] .traces-kind {
-  border-radius: 6px;
-}
-
-html[data-style="modern"] .trace-sheet {
-  border-radius: var(--r-panel);
-  border: 1px solid var(--line-2);
-  background: var(--overlay);
-  box-shadow: var(--shadow-3);
-}
-
-html[data-style="modern"] .trace-sheet-header {
-  background: color-mix(in srgb, var(--raised) 65%, transparent);
-  border-bottom-color: var(--line-2);
-}
-
-/* 请求详情抽屉 (#drawer) 与 .trace-sheet 同源毛玻璃语言 */
-html[data-style="modern"] #overlay {
-  z-index: 60;
-  background: var(--veil);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-}
-
-html[data-style="modern"] #drawer {
-  top: 10px;
-  right: 10px;
-  bottom: 10px;
-  width: min(640px, calc(100vw - 20px));
-  border-radius: var(--r-panel);
-  border: 1px solid var(--line-2);
-  background: var(--overlay);
-  backdrop-filter: blur(20px) saturate(170%);
-  -webkit-backdrop-filter: blur(20px) saturate(170%);
-  box-shadow: var(--shadow-3);
-}
-
-html[data-style="modern"] .drawer-header {
-  background: color-mix(in srgb, var(--raised) 72%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--line-2);
-  padding: 18px 22px;
-}
-
-html[data-style="modern"] .drawer-header h2 {
-  font-size: 15.5px;
-  font-weight: 620;
-  letter-spacing: -0.015em;
-}
-
-html[data-style="modern"] .drawer-link {
-  padding: 5px 10px;
-  border-radius: var(--r-control);
-  border: 1px solid var(--line-2);
-  background: var(--card);
-  color: var(--ink-1);
-  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
-}
-
-html[data-style="modern"] .drawer-link:hover {
-  text-decoration: none;
-  border-color: var(--accent-line);
-  background: var(--accent-soft);
-}
-
-html[data-style="modern"] .drawer-actions {
-  gap: 10px;
-}
-
-html[data-style="modern"] .drawer-body {
-  padding: 20px 22px 26px;
-}
-
-html[data-style="modern"] .detail-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-3);
-  margin: 22px 0 10px;
-}
-
-html[data-style="modern"] .detail-grid {
-  gap: 10px;
-}
-
-html[data-style="modern"] .detail-grid > div {
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--line-1);
-  background: color-mix(in srgb, var(--card) 78%, transparent);
-}
-
-html[data-style="modern"] .detail-grid dt {
-  color: var(--ink-3);
-  font-size: 11px;
-  margin-bottom: 4px;
-}
-
-html[data-style="modern"] .detail-grid dd {
-  color: var(--ink-1);
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-}
-
-html[data-style="modern"] .session-path {
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--line-1);
-  background: var(--modern-code-bg);
-  color: var(--ink-2);
-}
-
-html[data-style="modern"] .payload pre {
-  padding: 12px 14px;
-  border-radius: var(--r-control);
-  border: 1px solid var(--line-1);
-  background: var(--modern-code-bg);
-  color: var(--ink-2);
-}
-
-/* 上下文阅读器 (#context-reader) */
-html[data-style="modern"] #context-overlay {
-  background: var(--veil);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-}
-
-html[data-style="modern"] #context-reader {
-  border-radius: var(--r-panel);
-  border: 1px solid var(--line-2);
-  background: var(--panel);
-  box-shadow: var(--shadow-3);
-}
-
-html[data-style="modern"] .context-reader-heading {
-  background: color-mix(in srgb, var(--raised) 55%, var(--card));
-  border-bottom-color: var(--line-2);
-}
-
-html[data-style="modern"] .context-sidebar {
-  background: color-mix(in srgb, var(--bg) 65%, var(--panel));
-  border-right-color: var(--line-2);
-}
-
-html[data-style="modern"] #context-search {
-  border-radius: var(--r-control);
-  border-color: var(--line-2);
-  background: var(--card);
-  color: var(--ink-1);
-}
-
-html[data-style="modern"] #context-tabs button {
-  border-radius: 7px;
-  font-weight: 500;
-}
-
-html[data-style="modern"] #context-tabs button[aria-selected="true"] {
-  background: var(--card);
-  color: var(--ink-1);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--line-2);
-}
-
-html[data-style="modern"] .context-item {
-  border-radius: 9px;
-  border: 1px solid transparent;
-}
-
-html[data-style="modern"] .context-item.selected {
-  background: var(--card);
-  border-color: var(--accent-line);
-  box-shadow: inset 3px 0 0 var(--accent-a), var(--shadow-1);
-}
-
-html[data-style="modern"] .context-code,
-html[data-style="modern"] .x-code-block,
-html[data-style="modern"] .code-block {
-  border-radius: 10px;
-  border-color: var(--line-2);
-  background: var(--modern-code-bg);
-}
-
-html[data-style="modern"] .context-token-key,
-html[data-style="modern"] .context-token-marker { color: var(--accent-a); }
-html[data-style="modern"] .context-token-string { color: var(--ok); }
-html[data-style="modern"] .context-token-literal { color: var(--accent-b); }
-html[data-style="modern"] .context-token-tag { color: var(--bad); }
-
-html[data-style="modern"] #toast {
-  border-radius: var(--r-pill);
-  border: 1px solid var(--line-2);
-  background: var(--ink-1);
-  color: var(--ink-inverse);
-  box-shadow: var(--shadow-2);
-  padding: 9px 18px;
-  font-weight: 500;
-}
-
-html[data-style="modern"] .pricing-note,
-html[data-style="modern"] .load-note {
-  color: var(--ink-3);
-}
-
-@media (max-width: 1360px) {
-  html[data-style="modern"] {
-    --sidebar-w: 208px;
-    --gutter: 24px;
-  }
-}
-
-@media (max-width: 900px) {
-  html[data-style="modern"] {
-    --gutter: 16px;
-  }
-  html[data-style="modern"] .shell-panel {
-    margin-left: 8px;
-    margin-right: 8px;
-  }
-}
-
-/* 高对比度 / 强制色彩模式兜底：确保边界与激活状态不依赖纯阴影或渐变 */
-@media (forced-colors: active) {
-  html[data-style="modern"] .x-card,
-  html[data-style="modern"] .x-stat-grid,
-  html[data-style="modern"] .panel,
-  html[data-style="modern"] .shell-panel,
-  html[data-style="modern"] .detail-grid > div,
-  html[data-style="modern"] #drawer,
-  html[data-style="modern"] #context-reader {
-    border: 1px solid ButtonBorder;
-    background: Canvas;
-  }
-  html[data-style="modern"] .nav-row[data-active="true"] {
-    border: 2px solid Highlight;
-    background: Canvas;
-    color: CanvasText;
-  }
-  html[data-style="modern"] .nav-row[data-active="true"]::before,
-  html[data-style="modern"] .x-stat-grid::before,
-  html[data-style="modern"] .panel.metrics::before {
-    background: Highlight;
-  }
-  html[data-style="modern"] :focus-visible {
-    outline: 2px solid Highlight;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  html[data-style="modern"] #page[data-enter="true"] > * {
-    animation: none !important;
-  }
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.14),
+    0 0 0 1px var(--line-2);
 }

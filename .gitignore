@@ -25,3 +25,7 @@
 
 # zcode 本地插件配置
 /.zcode/
+
+# pp-stats 前端开发期工具链产物
+/crates/pp-stats/node_modules/
+/crates/pp-stats/.playwright/
