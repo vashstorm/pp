@@ -5,6 +5,18 @@ use ratatui::{
     text::{Line, Span},
 };
 
+fn first() -> Color {
+    super::themes::palette().welcome_first
+}
+
+fn separator() -> Color {
+    super::themes::palette().welcome_separator
+}
+
+fn muted() -> Color {
+    super::themes::palette().welcome_muted
+}
+
 fn tip_spans(tip: &Tip, key_width: usize, aligned: bool) -> Vec<Span<'static>> {
     vec![
         Span::styled(
@@ -25,13 +37,22 @@ fn section_lines(lines: &mut Vec<Line<'static>>, section: &'static Section, widt
     lines.push(Line::default());
     lines.push(Line::styled(
         section.title,
-        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+        Style::default().fg(first()).add_modifier(Modifier::BOLD),
     ));
+    let rule_style = Style::default().fg(separator());
     // 双列由实际数据宽度决定：正文宽度容得下两个按对齐键名渲染的条目再加四列间隔。
     let two_column = usize::from(width) >= row_width() * 2 + 4;
     if two_column {
         let rows = tips.len().div_ceil(2);
         let column_width = usize::from((width - 4) / 2);
+        lines.push(Line::styled(
+            format!(
+                "{}    {}",
+                "─".repeat(column_width),
+                "─".repeat(column_width)
+            ),
+            rule_style,
+        ));
         for row in 0..rows {
             let mut spans = tip_spans(tips[row], key_width, true);
             let used = spans.iter().map(Span::width).sum::<usize>();
@@ -42,6 +63,7 @@ fn section_lines(lines: &mut Vec<Line<'static>>, section: &'static Section, widt
             lines.push(Line::from(spans));
         }
     } else {
+        lines.push(Line::styled("─".repeat(usize::from(width)), rule_style));
         lines.extend(
             tips.into_iter()
                 .map(|tip| Line::from(tip_spans(tip, key_width, width >= 34))),
@@ -50,7 +72,18 @@ fn section_lines(lines: &mut Vec<Line<'static>>, section: &'static Section, widt
 }
 
 pub(super) fn lines(width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::styled("Tips:", Style::default().fg(accent()))];
+    let header = if width >= 54 {
+        Line::from(vec![
+            Span::styled("Tips:", Style::default().fg(accent())),
+            Span::styled(
+                "  All commands & shortcuts · /help for full usage",
+                Style::default().fg(muted()),
+            ),
+        ])
+    } else {
+        Line::styled("Tips:", Style::default().fg(accent()))
+    };
+    let mut lines = vec![header];
     for section in crate::tips::SECTIONS {
         section_lines(&mut lines, section, width);
     }

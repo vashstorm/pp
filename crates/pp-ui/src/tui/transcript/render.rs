@@ -348,6 +348,11 @@ impl Transcript {
                     {
                         let color = if entry.tool.is_some() {
                             palette::tool_border()
+                        } else if matches!(
+                            entry.body,
+                            super::EntryBody::Tips | super::EntryBody::Help(_)
+                        ) {
+                            super::super::statusline::accent()
                         } else {
                             entry.kind.color()
                         };

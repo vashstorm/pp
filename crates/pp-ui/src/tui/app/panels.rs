@@ -1,24 +1,13 @@
 use crate::tui::{
     App, COMMANDS, Command, Level, MenuAction, ModelPickerDraft, PendingKind, PlanCommand, Result,
-    SHORTCUTS_TAIL, STEERING_HINT, State, WARNING, WorkerCommand, ask, commands, editor, files,
-    model, sessions, skills,
+    State, WorkerCommand, ask, commands, editor, files, model, sessions, skills,
 };
 use anyhow::Context;
 
 impl App {
     pub(in crate::tui) fn show_help(&mut self) {
-        self.append("Help", &commands::help(&self.file_commands));
-        if !self.file_commands.diagnostics.is_empty() {
-            self.append(
-                "Help",
-                &format!(
-                    "Command load issues:\n{}",
-                    self.file_commands.diagnostics.join("\n")
-                ),
-            );
-        }
-        self.append("Tips", &format!("{STEERING_HINT}{SHORTCUTS_TAIL}"));
-        self.append("Help", WARNING);
+        self.show_welcome = false;
+        self.conversation.append_help(&self.file_commands);
     }
 
     pub(in crate::tui) fn shortcut_ready(&mut self) -> bool {

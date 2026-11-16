@@ -7,6 +7,7 @@ mod auth_tests;
 mod edit_diff;
 mod files;
 mod frame_clock;
+mod help;
 mod history;
 mod image_terminal;
 mod images;
@@ -102,16 +103,6 @@ use std::{
 };
 use transcript::Transcript;
 
-const WARNING: &str = "write/edit only modify files inside the startup directory; bash has no directory isolation, so run in a trusted or temporary directory.\nForeground bash has an execution timeout; managed background tasks survive tool calls and stop at this user task's end or controlled exit. Ctrl + C stops managed background groups, but cleanup of other foreground children is not guaranteed. No shell/file side-effect rollback; deliberately detached descendants are not covered.";
-// F1 帮助中的队列快捷键提示。
-const STEERING_HINT: &str = platform_text(
-    "Enter steer · ⌥ + Enter queue · ⌥ + Q pending messages · ⌥ + R resume queue",
-    "Enter steer · Alt + Enter queue · Ctrl + Q pending messages · Ctrl + R resume queue",
-);
-const SHORTCUTS_TAIL: &str = platform_text(
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model as default · ⌥ + S save selected effort as default · ⌥ + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Shift + Enter / Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · F8 pipe streams · ⌥ + T expand/collapse TODO · ⌥ + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
-    " · ↑↓ move/history/menu · Shift + Tab cycle thinking · Ctrl + F favorite selected model · Ctrl + S save selected model/effort as default in its menu · Ctrl + P choose model · F1 help · Tab complete · Esc cancel task/dismiss · Esc Esc session tree (empty input) · Ctrl + A / Ctrl + E line start/end · Ctrl + K delete to end of line · Shift + Enter / Ctrl + J newline · Ctrl + V paste image/text · Ctrl + U undo · @ local resources · Ctrl + O expand/collapse all tool output · F8 pipe streams · Ctrl + T expand/collapse TODO · Ctrl + PgUp/PgDn scroll TODO · Wheel/PgUp/PgDn scroll · Ctrl + C quit",
-);
 const EFFORT_HINT: &str = platform_text(
     "Enter select · ⌥ + S set selected effort as default · Esc cancel",
     "Enter select · Ctrl + S set selected effort as default · Esc cancel",

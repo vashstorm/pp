@@ -309,7 +309,7 @@ impl TranscriptEntry {
             }
         } else if self.kind != EntryKind::Lsp
             && !self.kind.hides_title()
-            && !matches!(self.body, EntryBody::Tips)
+            && !matches!(self.body, EntryBody::Tips | EntryBody::Help(_))
         {
             self.add_lines(Source::Title, &mut lines);
         }
@@ -382,6 +382,16 @@ impl TranscriptEntry {
         } else if matches!(self.body, EntryBody::Tips) {
             lines.extend(
                 crate::tui::tips::lines(width)
+                    .into_iter()
+                    .flat_map(|line| wrap_block(line, width, ""))
+                    .map(|line| LayoutLine {
+                        content: LayoutContent::Styled(line),
+                        height: 1,
+                    }),
+            );
+        } else if let EntryBody::Help(block) = &self.body {
+            lines.extend(
+                crate::tui::help::lines(width, block)
                     .into_iter()
                     .flat_map(|line| wrap_block(line, width, ""))
                     .map(|line| LayoutLine {

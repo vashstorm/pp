@@ -312,10 +312,21 @@ fn slash_mock_tests_match_all_and_reject_arguments() {
 #[test]
 fn slash_help_lists_debug_only_commands_in_debug_builds() {
     let text = help(&FileCommands::default());
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.first().copied(), Some("Help:"));
+    for title in [
+        "Session & History",
+        "Models & Thinking",
+        "Workflow & Execution",
+        "Settings & Extensions",
+    ] {
+        assert!(lines.contains(&title), "missing section {title}\n{text}");
+    }
     for name in TEST_COMMAND_NAMES {
         assert_eq!(
-            text.lines()
-                .any(|line| line.starts_with(&format!("{name} "))),
+            lines
+                .iter()
+                .any(|line| line.starts_with("  ") && line[2..].starts_with(&format!("{name} "))),
             cfg!(debug_assertions),
             "{name}\n{text}"
         );
@@ -329,18 +340,20 @@ fn slash_help_lists_debug_only_commands_in_debug_builds() {
         "/agents",
         "/plan-list",
         "/quit",
+        "!command",
     ] {
         assert!(
-            text.lines()
-                .any(|line| line.starts_with(&format!("{name} "))),
+            lines
+                .iter()
+                .any(|line| line.starts_with("  ") && line[2..].starts_with(&format!("{name} "))),
             "{name}\n{text}"
         );
     }
     for removed in ["/Roles", "/subagents", "/config"] {
         assert!(
-            !text
-                .lines()
-                .any(|line| line.starts_with(&format!("{removed} "))),
+            !lines
+                .iter()
+                .any(|line| line.trim_start().starts_with(&format!("{removed} "))),
             "{removed}\n{text}"
         );
     }

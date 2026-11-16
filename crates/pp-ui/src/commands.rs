@@ -6,10 +6,43 @@ pub use templates::{FileCommand, FileCommands};
 use anyhow::{Context, Result, bail, ensure};
 use pp_core::model::ThinkLevel;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandCategory {
+    Session,
+    Model,
+    Workflow,
+    Config,
+    #[cfg(debug_assertions)]
+    Debug,
+}
+
+impl CommandCategory {
+    pub(crate) const ALL: &[Self] = &[
+        Self::Session,
+        Self::Model,
+        Self::Workflow,
+        Self::Config,
+        #[cfg(debug_assertions)]
+        Self::Debug,
+    ];
+
+    pub(crate) const fn title(self) -> &'static str {
+        match self {
+            Self::Session => "Session & History",
+            Self::Model => "Models & Thinking",
+            Self::Workflow => "Workflow & Execution",
+            Self::Config => "Settings & Extensions",
+            #[cfg(debug_assertions)]
+            Self::Debug => "Debug Scenarios",
+        }
+    }
+}
+
 pub(crate) struct CommandSpec {
     pub(crate) name: &'static str,
     pub(crate) display_label: Option<&'static str>,
     pub(crate) aliases: &'static [&'static str],
+    pub(crate) category: CommandCategory,
     pub(crate) usage: &'static str,
     pub(crate) description: &'static str,
 }
@@ -28,6 +61,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/mcp",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Config,
         usage: "/mcp [list|enable <name>|disable <name>|reconnect <name>|reload|help]",
         description: "Manage MCP servers and connection state",
     },
@@ -35,6 +69,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/setting",
         display_label: Some("/setting (config)"),
         aliases: &["/settings", "/config"],
+        category: CommandCategory::Config,
         usage: "/setting [general|roles|themes|skills]",
         description: "Open Settings TUI (/config, /settings)",
     },
@@ -42,6 +77,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/roles",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Model,
         usage: "/roles",
         description: "Configure model and effort for each model role (TUI)",
     },
@@ -49,6 +85,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/agents",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Workflow,
         usage: "/agents",
         description: "View, follow up, and control subagents",
     },
@@ -56,6 +93,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/help",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Config,
         usage: "/help",
         description: "Show available commands",
     },
@@ -63,6 +101,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/tips",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Config,
         usage: "/tips",
         description: "Show startup tips without recording session history",
     },
@@ -70,6 +109,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/stats",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Config,
         usage: "/stats [--host IP] [--port PORT] [--no-open]",
         description: "Open the local statistics page (same as pp stats)",
     },
@@ -77,6 +117,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/login",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Config,
         usage: "/login",
         description: "Log in to a subscription provider (TUI)",
     },
@@ -84,6 +125,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/logout",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Config,
         usage: "/logout",
         description: "Remove saved subscription authorization (TUI)",
     },
@@ -91,6 +133,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/model",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Model,
         usage: "/model [provider/model]",
         description: "Select a model at the next safe boundary; /models is an alias",
     },
@@ -98,6 +141,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/new",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Session,
         usage: "/new",
         description: "Reset the session, keeping the current model",
     },
@@ -105,6 +149,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/init",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Session,
         usage: "/init",
         description: "Create or update project AGENTS.md using the current model",
     },
@@ -112,6 +157,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/compact",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Session,
         usage: "/compact",
         description: "Summarize older context, preserving recent exchanges and visible history",
     },
@@ -119,6 +165,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/resume",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Session,
         usage: "/resume",
         description: "List saved sessions and resume a conversation",
     },
@@ -126,6 +173,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/effort",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Model,
         usage: "/effort [none|low|medium|high|xhigh|max]",
         description: "View or set the thinking effort level, keeping session history",
     },
@@ -133,6 +181,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/plan",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Workflow,
         usage: "/plan [view|prompt]",
         description: "Toggle Plan mode, view the current plan, or send a planning task (TUI)",
     },
@@ -140,6 +189,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/tree",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Session,
         usage: "/tree",
         description: "Browse current history and rewind to an earlier point (TUI)",
     },
@@ -147,6 +197,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/pipes",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Workflow,
         usage: "/pipes [run-id]",
         description: "Browse temporary pipeline stage streams for a bash run (TUI)",
     },
@@ -154,6 +205,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/plan-list",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Workflow,
         usage: "/plan-list",
         description: "Manage saved plans: preview, continue, execute, rename, delete (TUI)",
     },
@@ -161,6 +213,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/themes",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Config,
         usage: "/themes [nerd|ascii] [THEME]",
         description: "Configure TUI icon style and color theme",
     },
@@ -169,6 +222,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-task",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-task",
         description: "Debug build: dispatch a fixed FAST/SLOW/REVIEW subagent batch",
     },
@@ -177,6 +231,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-tools",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-tools",
         description: "Debug build: run every local tool display scenario",
     },
@@ -185,6 +240,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-read",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-read",
         description: "Debug build: local read tool scenarios",
     },
@@ -193,6 +249,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-write",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-write",
         description: "Debug build: typewriter write on /tmp, then bash cleanup",
     },
@@ -201,6 +258,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-edit",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-edit",
         description: "Debug build: local edit tool scenarios",
     },
@@ -209,6 +267,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-rg",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-rg",
         description: "Debug build: local rg tool scenarios",
     },
@@ -217,6 +276,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-glob",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-glob",
         description: "Debug build: local glob tool scenarios",
     },
@@ -225,6 +285,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-bash",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-bash",
         description: "Debug build: local bash tool scenarios",
     },
@@ -233,6 +294,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-bash-task",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-bash-task",
         description: "Debug build: local background bash scenarios",
     },
@@ -241,6 +303,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-wait",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-wait",
         description: "Debug build: local wait tool scenarios",
     },
@@ -249,6 +312,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-todo",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-todo",
         description: "Debug build: local todo tool scenarios",
     },
@@ -257,6 +321,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-ask",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-ask",
         description: "Debug build: local ask panel scenario",
     },
@@ -265,6 +330,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-fail",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-fail",
         description: "Debug build: two failing attempts then a retry recovery",
     },
@@ -273,6 +339,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/test-ui",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Debug,
         usage: "/test-ui",
         description: "Debug build: slow mock thinking and Markdown stream",
     },
@@ -280,6 +347,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/skills",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Config,
         usage: "/skills [enable NAME|disable NAME|sources [enable|disable claude|codex]]",
         description: "Manage skill sources and per-item toggles",
     },
@@ -287,6 +355,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         name: "/quit",
         display_label: None,
         aliases: &[],
+        category: CommandCategory::Session,
         usage: "/quit",
         description: "Exit pp",
     },
@@ -540,22 +609,89 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
     Ok(Some(command))
 }
 
+pub(crate) const SHELL_COMMAND_USAGE: &str = "!command";
+pub(crate) const SHELL_COMMAND_DESCRIPTION: &str =
+    "Run a local shell command without sending it to the model";
+pub(crate) const HELP_USAGE_COLUMN: usize = 28;
+
+fn spec_order(name: &str) -> usize {
+    match name {
+        "/new" => 0,
+        "/resume" => 1,
+        "/tree" => 2,
+        "/compact" => 3,
+        "/init" => 4,
+        "/quit" => 5,
+        "/model" => 0,
+        "/effort" => 1,
+        "/roles" => 2,
+        "/plan" => 0,
+        "/plan-list" => 1,
+        "/agents" => 2,
+        "/pipes" => 3,
+        "/setting" => 0,
+        "/themes" => 1,
+        "/skills" => 2,
+        "/mcp" => 3,
+        "/stats" => 4,
+        "/login" => 5,
+        "/logout" => 6,
+        "/tips" => 7,
+        "/help" => 8,
+        _ => usize::MAX,
+    }
+}
+
+pub(crate) fn category_specs(category: CommandCategory) -> Vec<&'static CommandSpec> {
+    let mut specs: Vec<&'static CommandSpec> = COMMANDS
+        .iter()
+        .filter(|spec| spec.category == category)
+        .collect();
+    specs.sort_by(|left, right| {
+        spec_order(left.name)
+            .cmp(&spec_order(right.name))
+            .then_with(|| left.name.cmp(right.name))
+    });
+    specs
+}
+
+fn format_help_row(usage: &str, description: &str) -> String {
+    if usage.chars().count() < HELP_USAGE_COLUMN {
+        format!("  {usage:<HELP_USAGE_COLUMN$} {description}")
+    } else {
+        format!("  {usage} — {description}")
+    }
+}
+
 /// 命令清单：`COMMANDS` 已按构建裁剪，非 dev/test 不含 `/test-*` 条目。
 pub(crate) fn help(files: &FileCommands) -> String {
-    COMMANDS
-        .iter()
-        .map(|spec| format!("{} — {}", spec.usage, spec.description))
-        .chain(
-            files
-                .entries
-                .iter()
-                .map(|file| format!("{} [arguments] — {}", file.name, file.description)),
-        )
-        .chain(std::iter::once(
-            "!command — Run a local shell command without sending it to the model".to_owned(),
-        ))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut lines = vec!["Help:".to_owned()];
+    for &category in CommandCategory::ALL {
+        let specs = category_specs(category);
+        if specs.is_empty() {
+            continue;
+        }
+        lines.push(String::new());
+        lines.push(category.title().to_owned());
+        for spec in specs {
+            lines.push(format_help_row(spec.usage, spec.description));
+        }
+        if category == CommandCategory::Workflow {
+            lines.push(format_help_row(
+                SHELL_COMMAND_USAGE,
+                SHELL_COMMAND_DESCRIPTION,
+            ));
+        }
+    }
+    if !files.entries.is_empty() {
+        lines.push(String::new());
+        lines.push("Custom Commands".to_owned());
+        for file in &files.entries {
+            let usage = format!("{} [arguments]", file.name);
+            lines.push(format_help_row(&usage, &file.description));
+        }
+    }
+    lines.join("\n")
 }
 
 #[cfg(test)]

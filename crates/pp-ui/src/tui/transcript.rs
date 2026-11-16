@@ -144,6 +144,7 @@ enum EntryBody {
         truncated: bool,
     },
     Tips,
+    Help(super::help::HelpBlock),
     Markdown(super::markdown::MarkdownDocument),
     Diff(FileDiff),
     Ask(AskBlock),
@@ -388,6 +389,18 @@ impl Transcript {
         let mut entry =
             TranscriptEntry::new(EntryKind::Data, String::new(), crate::tips::text(), None);
         entry.body = EntryBody::Tips;
+        self.read_groups_key = None;
+        self.entries.push(entry);
+    }
+
+    pub(super) fn append_help(&mut self, files: &crate::commands::FileCommands) {
+        let mut entry = TranscriptEntry::new(
+            EntryKind::Data,
+            String::new(),
+            crate::commands::help(files),
+            None,
+        );
+        entry.body = EntryBody::Help(super::help::HelpBlock::new(files));
         self.read_groups_key = None;
         self.entries.push(entry);
     }

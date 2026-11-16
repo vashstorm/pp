@@ -398,6 +398,7 @@ fn input_bar_above_draft(text: &str) -> bool {
 }
 
 const TIPS_ACCENT: vt100::Color = vt100::Color::Rgb(127, 166, 106);
+const TIPS_HEADER: vt100::Color = vt100::Color::Rgb(215, 175, 95);
 
 // `/tips` 命令组等于命令注册表的可见项，按用户看到的键名忽略大小写排序。
 const TIPS_COMMANDS: &[&str] = &[
@@ -527,19 +528,22 @@ fn tips_right_column(cols: u16) -> u16 {
     2 + (cols - 2 - 4) / 2 + 4
 }
 
-// 逐行读取指定键名列的键名，跳过标题行与空白行。
+// 逐行读取指定键名列的键名，跳过标题行、分隔细线与空白行。
 fn tips_visible_keys(screen: &vt100::Screen, column: u16, key_width: u16) -> Vec<String> {
     (0..screen.size().0)
         .filter(|&row| {
             screen
                 .cell(row, 0)
                 .is_some_and(|cell| cell.contents() == "│")
+                && tip_columns(screen, row, 2..7).trim() != "Tips:"
         })
         .filter_map(|row| {
             let key = tip_columns(screen, row, column..column + key_width);
             let key = key.trim().to_owned();
-            (!key.is_empty() && !matches!(key.as_str(), "Tips:" | "Commands" | "Shortcuts"))
-                .then_some(key)
+            (!key.is_empty()
+                && !key.chars().all(|ch| ch == '─')
+                && !matches!(key.as_str(), "Tips:" | "Commands" | "Shortcuts"))
+            .then_some(key)
         })
         .collect()
 }
@@ -550,12 +554,22 @@ fn tips_key_row(screen: &vt100::Screen, column: u16, key_width: u16, label: &str
             screen
                 .cell(row, 0)
                 .is_some_and(|cell| cell.contents() == "│")
-                && tip_columns(screen, row, column..column + key_width).trim() == label
+                && if label == "Tips:" {
+                    tip_columns(screen, row, column..column + 5).trim() == "Tips:"
+                } else {
+                    tip_columns(screen, row, column..column + key_width).trim() == label
+                }
         })
         .unwrap_or_else(|| panic!("missing tips key {label}: {}", screen.contents()))
 }
 
-fn assert_tips_title(screen: &vt100::Screen, key_width: u16, title: &str, bold: bool) {
+fn assert_tips_title(
+    screen: &vt100::Screen,
+    key_width: u16,
+    title: &str,
+    color: vt100::Color,
+    bold: bool,
+) {
     let row = tips_key_row(screen, 2, key_width, title);
     for (offset, character) in title.chars().enumerate() {
         let col = 2 + u16::try_from(offset).unwrap();
@@ -565,7 +579,7 @@ fn assert_tips_title(screen: &vt100::Screen, key_width: u16, title: &str, bold: 
             character.to_string(),
             "row {row}, col {col}"
         );
-        assert_eq!(cell.fgcolor(), TIPS_ACCENT, "row {row}, col {col}");
+        assert_eq!(cell.fgcolor(), color, "row {row}, col {col}");
         assert_eq!(cell.bold(), bold, "row {row}, col {col}");
     }
 }
@@ -607,9 +621,9 @@ fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
                 && tips_visible_keys(screen, wide, key_width) == expected_right
         });
         let screen = pty.parser.screen();
-        assert_tips_title(screen, key_width, "Tips:", false);
-        assert_tips_title(screen, key_width, "Commands", true);
-        assert_tips_title(screen, key_width, "Shortcuts", true);
+        assert_tips_title(screen, key_width, "Tips:", TIPS_ACCENT, false);
+        assert_tips_title(screen, key_width, "Commands", TIPS_HEADER, true);
+        assert_tips_title(screen, key_width, "Shortcuts", TIPS_HEADER, true);
         assert_colored_tip_key(
             screen,
             tips_key_row(screen, 2, key_width, "/agents"),
