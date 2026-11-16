@@ -841,36 +841,39 @@ fn tui_context_panel_displays_breakdown_and_closes_on_escape() {
     let (_home, mut pty) = context_tui_start(&server, "response", 128_000, 80);
     pty.input("/context\r");
     pty.wait_for(
-        "empty session context diagnostics shows no fake metrics",
+        "empty session context diagnostics shows baseline grid and zero messages",
         |screen| {
             let text = screen.contents();
-            text.contains("Context Diagnostics")
-                && text.contains("No Context Data Yet")
-                && !text.contains("Prepared")
+            text.contains("Context · fixture/primary")
+                && text.contains("System Prompt")
+                && text.contains("Built-in Tools")
+                && text.contains("User / Developer Messages  0  0.0%")
+                && text.contains("Auto-Compact Buffer")
+                && text.contains("Free Space")
         },
     );
     pty.input("\x1b");
     pty.wait_for(
         "Esc closes empty context panel and returns to main screen",
-        |screen| !screen.contents().contains("Context Diagnostics") && input_is_ready(screen),
+        |screen| !screen.contents().contains("Context · fixture/primary") && input_is_ready(screen),
     );
     context_tui_exchange(&mut pty, &server, "response", "hello context", "reply");
     pty.input("/context\r");
     pty.wait_for(
-        "context diagnostics panel shows real breakdown after sending a message",
+        "context diagnostics panel shows message breakdown after sending a message",
         |screen| {
             let text = screen.contents();
-            text.contains("Context Diagnostics")
-                && text.contains("Overview")
-                && text.contains("Tools")
-                && text.contains("MCP")
-                && text.contains("Thinking")
+            text.contains("Context · fixture/primary")
+                && text.contains("Custom Tools")
+                && text.contains("Assistant Thinking")
+                && !text.contains("User / Developer Messages  0  0.0%")
+                && !text.contains("Assistant Messages  0  0.0%")
         },
     );
     pty.input("\x1b");
     pty.wait_for(
         "Esc closes context panel and returns to main screen",
-        |screen| !screen.contents().contains("Context Diagnostics") && input_is_ready(screen),
+        |screen| !screen.contents().contains("Context · fixture/primary") && input_is_ready(screen),
     );
     pty.input("\x03");
     pty.wait_for("terminal restored after quit", |screen| {

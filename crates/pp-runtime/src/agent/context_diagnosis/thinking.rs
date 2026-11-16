@@ -167,32 +167,12 @@ fn build_response_thinking(
             tokens,
             bytes,
             preview,
-            is_header: false,
-            rankable: true,
         });
     }
 
     // 若会话中尚无原生 Reasoning 项但采集到了流式思考（如部分不回传 Reasoning 项的兼容网关），补入展示。
     if count == 0 && !history.is_empty() {
         return build_completion_thinking(history);
-    }
-
-    if count > 0 {
-        items.insert(
-            0,
-            DiagnosticItem {
-                kind_label: "Summary Row".into(),
-                title: "LLM Reasoning in Context".into(),
-                subtitle: format!("{count} reasoning items retained in context"),
-                tokens: total_tokens,
-                bytes: total_bytes,
-                preview: format!(
-                    "Protocol: Responses (in-context reasoning)\nReasoning turns: {count}\nTotal estimated tokens: ~{total_tokens}\nTotal bytes: {total_bytes}\n\nThese reasoning items (including summary, text, and encrypted state) are carried in the request input."
-                ),
-                is_header: true,
-                rankable: false,
-            },
-        );
     }
 
     Ok(ThinkingBreakdown {
@@ -235,27 +215,7 @@ fn build_completion_thinking(history: &[ThinkingEntry]) -> Result<ThinkingBreakd
             tokens,
             bytes,
             preview: truncate_preview(&combined),
-            is_header: false,
-            rankable: true,
         });
-    }
-
-    if count > 0 {
-        items.insert(
-            0,
-            DiagnosticItem {
-                kind_label: "Summary Row".into(),
-                title: "LLM Thinking Generated".into(),
-                subtitle: format!("{count} thinking turns (model output, not resent in prompt)"),
-                tokens: total_tokens,
-                bytes: total_bytes,
-                preview: format!(
-                    "Protocol: Chat Completions (generated thinking)\nThinking turns: {count}\nTotal estimated tokens: ~{total_tokens}\nTotal bytes: {total_bytes}\n\nNote: Chat Completions omits historical thinking from subsequent prompt inputs, so these tokens are tracked as LLM thinking output rather than active context window occupancy."
-                ),
-                is_header: true,
-                rankable: false,
-            },
-        );
     }
 
     Ok(ThinkingBreakdown {

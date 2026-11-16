@@ -1,5 +1,7 @@
-//! 当前会话上下文的只读诊断快照：严格基于已发送/已恢复的真实会话数据，
-//! 按系统指令、已发送 AGENTS.md、技能、内置工具、MCP、历史消息、LLM 思考与工具结果拆分统计。
+//! 当前会话上下文的只读诊断快照：严格基于当前会话（含未发送首条消息时的初始系统与工具配置）
+//! 按 10 个固定分类拆分统计：`System Prompt`、`Instruction Files`、`Skills`、`Built-in Tools`、
+//! `Custom Tools`、`User / Developer Messages`、`Assistant Messages`、`Assistant Thinking`、
+//! `Tool Calls` 与 `Tool Output`。
 
 mod history;
 mod sections;
@@ -12,20 +14,13 @@ pub use snapshot::Snapshot;
 
 pub(crate) use thinking::{ThinkingEntry, extract_thinking_from_replay, trim_for_retained_turns};
 
-use super::{
-    Agent, Session,
-    context::{
-        completion_boundaries, response_boundaries, retained_suffix_budget, select_cutoff,
-        summary_budget,
-    },
-};
+use super::{Agent, Session};
 use anyhow::{Result, anyhow};
-use async_openai::types::{
-    chat::{ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageContent},
-    responses::InputParam,
+use async_openai::types::chat::{
+    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageContent,
 };
 use pp_core::{
-    context::{TokenUsage, estimate_bytes},
+    context::{TokenUsage, estimate_tokens},
     model::ThinkLevel,
 };
 use sections::{
@@ -38,13 +33,45 @@ const MAX_PREVIEW_BYTES: usize = 64 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CategoryKey {
     System,
-    AgentsMd,
+    InstructionFiles,
     Skills,
-    Tools,
-    Mcp,
-    Messages,
+    BuiltInTools,
+    CustomTools,
+    UserMessages,
+    AssistantMessages,
     Thinking,
-    ToolResults,
+    ToolCalls,
+    ToolOutput,
+}
+
+impl CategoryKey {
+    pub const ALL: [Self; 10] = [
+        Self::System,
+        Self::InstructionFiles,
+        Self::Skills,
+        Self::BuiltInTools,
+        Self::CustomTools,
+        Self::UserMessages,
+        Self::AssistantMessages,
+        Self::Thinking,
+        Self::ToolCalls,
+        Self::ToolOutput,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::System => "System Prompt",
+            Self::InstructionFiles => "Instruction Files",
+            Self::Skills => "Skills",
+            Self::BuiltInTools => "Built-in Tools",
+            Self::CustomTools => "Custom Tools",
+            Self::UserMessages => "User / Developer Messages",
+            Self::AssistantMessages => "Assistant Messages",
+            Self::Thinking => "Assistant Thinking",
+            Self::ToolCalls => "Tool Calls",
+            Self::ToolOutput => "Tool Output",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -64,37 +91,7 @@ pub struct ContextReport {
     pub thinking_tokens: u64,
     pub thinking_in_context: bool,
     pub thinking_turns: usize,
-    pub compaction: CompactionPreview,
     pub categories: Vec<CategorySummary>,
-    pub system_items: Vec<DiagnosticItem>,
-    pub agent_md_items: Vec<DiagnosticItem>,
-    pub skill_items: Vec<DiagnosticItem>,
-    pub tool_items: Vec<DiagnosticItem>,
-    pub mcp_items: Vec<DiagnosticItem>,
-    pub message_items: Vec<DiagnosticItem>,
-    pub thinking_items: Vec<DiagnosticItem>,
-    pub tool_result_items: Vec<DiagnosticItem>,
-}
-
-#[derive(Clone, Debug)]
-pub struct CompactionPreview {
-    pub retained_budget_tokens: u64,
-    pub summary_budget_tokens: u64,
-    pub total_exchanges: usize,
-    pub has_existing_summary: bool,
-    pub status: CompactionStatus,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CompactionStatus {
-    NotEnoughHistory,
-    Ready {
-        compressible_exchanges: usize,
-        compressible_tokens: u64,
-        retained_exchanges: usize,
-        retained_tokens: u64,
-    },
-    UnsupportedHistory,
 }
 
 #[derive(Clone, Debug)]
@@ -106,7 +103,7 @@ pub struct CategorySummary {
     pub item_count: usize,
     /// 为 true 表示计入下一次请求上下文窗口；为 false 表示历史产出（如 Chat Completions 思考）。
     pub in_context: bool,
-    pub description: String,
+    pub items: Vec<DiagnosticItem>,
 }
 
 #[derive(Clone, Debug)]
@@ -117,12 +114,12 @@ pub struct DiagnosticItem {
     pub tokens: u64,
     pub bytes: u64,
     pub preview: String,
-    pub is_header: bool,
-    pub rankable: bool,
 }
 
 impl Agent {
-    /// 生成当前会话上下文的只读诊断报告，仅统计真实已发送/已恢复的数据。
+    /// 生成当前会话上下文的只读诊断报告：
+    /// 空会话展示静态基线（系统提示词、初始 AGENTS.md、技能索引、工具 Schema）与 0 消息；
+    /// 非空会话严格基于已发送/已恢复的真实会话数据。
     pub fn diagnose_context(&self) -> Result<ContextReport> {
         let usage = self.context_usage()?;
         let empty_session = usage.estimated_tokens == 0;
@@ -130,45 +127,6 @@ impl Agent {
             Session::Completion(_) => "completion",
             Session::Response(_) => "response",
         };
-        let default_thinking_in_ctx = matches!(&self.session, Session::Response(_));
-
-        if empty_session {
-            return Ok(ContextReport {
-                model_reference: self.current_model.reference.clone(),
-                model_name: self.current_model.model.clone(),
-                protocol,
-                work_mode: self.workflow.mode_name(),
-                think_level: self.think_level,
-                empty_session: true,
-                active_tokens: 0,
-                context_window: self.current_model.context_window,
-                auto_compact: self.auto_compact,
-                threshold_percent: self.auto_compact_threshold_percent,
-                last_request: self.last_request,
-                session_output_tokens: self.session_output_tokens,
-                thinking_tokens: 0,
-                thinking_in_context: default_thinking_in_ctx,
-                thinking_turns: 0,
-                compaction: CompactionPreview {
-                    retained_budget_tokens: retained_suffix_budget(
-                        self.current_model.context_window,
-                    ),
-                    summary_budget_tokens: summary_budget(self.current_model.context_window),
-                    total_exchanges: 0,
-                    has_existing_summary: false,
-                    status: CompactionStatus::NotEnoughHistory,
-                },
-                categories: Vec::new(),
-                system_items: Vec::new(),
-                agent_md_items: Vec::new(),
-                skill_items: Vec::new(),
-                tool_items: Vec::new(),
-                mcp_items: Vec::new(),
-                message_items: Vec::new(),
-                thinking_items: Vec::new(),
-                tool_result_items: Vec::new(),
-            });
-        }
 
         let actual_system = self.session_system_text().unwrap_or("");
         let (inspected_docs, _) = self.tools.inspect_project_instructions()?;
@@ -177,29 +135,27 @@ impl Agent {
             actual_system,
             &self.reported_project_load,
             &inspected_docs,
+            empty_session,
         )?;
-        let (agent_md_items, agent_md_tokens, agent_md_bytes, agent_md_count, mut excluded_ranges) = (
+        let agent_md_in_system = !agent_md_section.ranges.is_empty();
+        let (agent_md_items, agent_md_tokens, agent_md_bytes, mut excluded_ranges) = (
             agent_md_section.items,
             agent_md_section.tokens,
             agent_md_section.bytes,
-            agent_md_section.count,
             agent_md_section.ranges,
         );
 
-        let history = self.inspect_history()?;
         let skill_headers = self
             .tools
             .skills
             .lock()
             .map_err(|_| anyhow!("skill registry unavailable"))?
             .headers();
-        let skill_section =
-            build_skill_items(actual_system, &skill_headers, &history.loaded_skills)?;
-        let (skill_items, skills_tokens, skills_bytes, skills_count) = (
+        let skill_section = build_skill_items(actual_system, &skill_headers)?;
+        let (skill_items, skills_tokens, skills_bytes) = (
             skill_section.items,
             skill_section.tokens,
             skill_section.bytes,
-            skill_section.count,
         );
         excluded_ranges.extend(skill_section.ranges);
 
@@ -232,7 +188,7 @@ impl Agent {
                 )
             };
 
-        let (system_items, system_tokens, system_bytes, system_count) = build_system_items(
+        let (system_items, system_tokens, system_bytes) = build_system_items(
             actual_system,
             base_title,
             base_subtitle,
@@ -245,93 +201,167 @@ impl Agent {
 
         let access = crate::mcp::Access::for_mode(self.workflow.mode);
         let mcp_origins = self.tools.mcp.tool_origins(access);
-        let mcp_view = self.mcp_view();
-        let split_tools = build_split_tool_items(&self.session, &mcp_origins, &mcp_view)?;
+        let split_tools = build_split_tool_items(&self.session, &mcp_origins)?;
 
-        let thinking = build_thinking_items(&self.session, &self.thinking_history)?;
-        let compaction = self.inspect_compaction(history.has_existing_summary)?;
+        let (history, thinking) = if empty_session {
+            (
+                history::HistoryBreakdown {
+                    user_messages: history::HistoryBucket {
+                        items: Vec::new(),
+                        tokens: 0,
+                        bytes: 0,
+                    },
+                    assistant_messages: history::HistoryBucket {
+                        items: Vec::new(),
+                        tokens: 0,
+                        bytes: 0,
+                    },
+                    tool_calls: history::HistoryBucket {
+                        items: Vec::new(),
+                        tokens: 0,
+                        bytes: 0,
+                    },
+                    tool_outputs: history::HistoryBucket {
+                        items: Vec::new(),
+                        tokens: 0,
+                        bytes: 0,
+                    },
+                },
+                thinking::ThinkingBreakdown {
+                    items: Vec::new(),
+                    tokens: 0,
+                    bytes: 0,
+                    count: 0,
+                    in_context: matches!(&self.session, Session::Response(_)),
+                },
+            )
+        } else {
+            (
+                self.inspect_history()?,
+                build_thinking_items(&self.session, &self.thinking_history)?,
+            )
+        };
 
-        let categories = vec![
+        let active_tokens = if empty_session {
+            let session_base = match &self.session {
+                Session::Completion(request) => estimate_tokens(request)?,
+                Session::Response(request) => estimate_tokens(request)?,
+            };
+            // 空会话时初始 session 尚未注入启动 AGENTS.md（agent_md_in_system 为 false 时未在 actual_system 中计入）。
+            let pending_agents_md = if agent_md_in_system {
+                0
+            } else {
+                agent_md_tokens
+            };
+            session_base.saturating_add(pending_agents_md)
+        } else {
+            usage.estimated_tokens
+        };
+
+        let mut categories = vec![
             CategorySummary {
                 key: CategoryKey::System,
-                name: "System Prompt",
+                name: CategoryKey::System.label(),
                 tokens: system_tokens,
                 bytes: system_bytes,
-                item_count: system_count,
+                item_count: system_items.len(),
                 in_context: true,
-                description: "Base, runtime, append, and workflow instructions in session".into(),
+                items: system_items,
             },
             CategorySummary {
-                key: CategoryKey::AgentsMd,
-                name: "AGENTS.md",
+                key: CategoryKey::InstructionFiles,
+                name: CategoryKey::InstructionFiles.label(),
                 tokens: agent_md_tokens,
                 bytes: agent_md_bytes,
-                item_count: agent_md_count,
+                item_count: agent_md_items.len(),
                 in_context: true,
-                description: "Maintenance rules and active AGENTS.md sent in session".into(),
+                items: agent_md_items,
             },
             CategorySummary {
                 key: CategoryKey::Skills,
-                name: "Skills",
+                name: CategoryKey::Skills.label(),
                 tokens: skills_tokens,
                 bytes: skills_bytes,
-                item_count: skills_count,
+                item_count: skill_items.len(),
                 in_context: true,
-                description: format!(
-                    "{skills_count} in prompt · {} bodies read in history",
-                    history.loaded_skills.len()
-                ),
+                items: skill_items,
             },
             CategorySummary {
-                key: CategoryKey::Tools,
-                name: "Tools",
+                key: CategoryKey::BuiltInTools,
+                name: CategoryKey::BuiltInTools.label(),
                 tokens: split_tools.tools_tokens,
                 bytes: split_tools.tools_bytes,
-                item_count: split_tools.tools_count,
+                item_count: split_tools.tool_items.len(),
                 in_context: true,
-                description: "Built-in tool JSON schemas in session".into(),
+                items: split_tools.tool_items,
             },
             CategorySummary {
-                key: CategoryKey::Mcp,
-                name: "MCP",
+                key: CategoryKey::CustomTools,
+                name: CategoryKey::CustomTools.label(),
                 tokens: split_tools.mcp_tokens,
                 bytes: split_tools.mcp_bytes,
-                item_count: split_tools.mcp_count,
+                item_count: split_tools.mcp_items.len(),
                 in_context: true,
-                description: "External MCP server tool schemas in session".into(),
+                items: split_tools.mcp_items,
             },
             CategorySummary {
-                key: CategoryKey::Messages,
-                name: "Messages",
-                tokens: history.message_tokens,
-                bytes: history.message_bytes,
-                item_count: history.message_count,
+                key: CategoryKey::UserMessages,
+                name: CategoryKey::UserMessages.label(),
+                tokens: history.user_messages.tokens,
+                bytes: history.user_messages.bytes,
+                item_count: history.user_messages.items.len(),
                 in_context: true,
-                description: "User, summary, developer, assistant replies, and tool calls".into(),
+                items: history.user_messages.items,
+            },
+            CategorySummary {
+                key: CategoryKey::AssistantMessages,
+                name: CategoryKey::AssistantMessages.label(),
+                tokens: history.assistant_messages.tokens,
+                bytes: history.assistant_messages.bytes,
+                item_count: history.assistant_messages.items.len(),
+                in_context: true,
+                items: history.assistant_messages.items,
             },
             CategorySummary {
                 key: CategoryKey::Thinking,
-                name: "Thinking",
+                name: CategoryKey::Thinking.label(),
                 tokens: thinking.tokens,
                 bytes: thinking.bytes,
-                item_count: thinking.count,
+                item_count: thinking.items.len(),
                 in_context: thinking.in_context,
-                description: if thinking.in_context {
-                    "LLM reasoning items carried in context".into()
-                } else {
-                    "LLM thinking output recorded from model responses".into()
-                },
+                items: thinking.items,
             },
             CategorySummary {
-                key: CategoryKey::ToolResults,
-                name: "Tool Results",
-                tokens: history.tool_result_tokens,
-                bytes: history.tool_result_bytes,
-                item_count: history.tool_result_count,
+                key: CategoryKey::ToolCalls,
+                name: CategoryKey::ToolCalls.label(),
+                tokens: history.tool_calls.tokens,
+                bytes: history.tool_calls.bytes,
+                item_count: history.tool_calls.items.len(),
                 in_context: true,
-                description: "Tool outputs and read image attachments".into(),
+                items: history.tool_calls.items,
+            },
+            CategorySummary {
+                key: CategoryKey::ToolOutput,
+                name: CategoryKey::ToolOutput.label(),
+                tokens: history.tool_outputs.tokens,
+                bytes: history.tool_outputs.bytes,
+                item_count: history.tool_outputs.items.len(),
+                in_context: true,
+                items: history.tool_outputs.items,
             },
         ];
+
+        // 将总占用 `Used` 按各在上下文分类的原始估算份额切分，使分类合计与 `Used` 对账一致。
+        let share_inputs: Vec<Option<u64>> = categories
+            .iter()
+            .map(|cat| cat.in_context.then_some(cat.tokens))
+            .collect();
+        let allocated = split_used_by_share(active_tokens, &share_inputs);
+        for (cat, tokens) in categories.iter_mut().zip(allocated) {
+            if cat.in_context {
+                cat.tokens = tokens;
+            }
+        }
 
         Ok(ContextReport {
             model_reference: self.current_model.reference.clone(),
@@ -339,8 +369,8 @@ impl Agent {
             protocol,
             work_mode: self.workflow.mode_name(),
             think_level: self.think_level,
-            empty_session: false,
-            active_tokens: usage.estimated_tokens,
+            empty_session,
+            active_tokens,
             context_window: self.current_model.context_window,
             auto_compact: self.auto_compact,
             threshold_percent: self.auto_compact_threshold_percent,
@@ -349,16 +379,7 @@ impl Agent {
             thinking_tokens: thinking.tokens,
             thinking_in_context: thinking.in_context,
             thinking_turns: thinking.count,
-            compaction,
             categories,
-            system_items,
-            agent_md_items,
-            skill_items,
-            tool_items: split_tools.tool_items,
-            mcp_items: split_tools.mcp_items,
-            message_items: history.message_items,
-            thinking_items: thinking.items,
-            tool_result_items: history.tool_result_items,
         })
     }
 
@@ -374,93 +395,43 @@ impl Agent {
             Session::Response(request) => request.instructions.as_deref(),
         }
     }
+}
 
-    fn inspect_compaction(&self, has_existing_summary: bool) -> Result<CompactionPreview> {
-        let retained_budget_tokens = retained_suffix_budget(self.current_model.context_window);
-        let summary_budget_tokens = summary_budget(self.current_model.context_window);
-        let (total_exchanges, status) = match &self.session {
-            Session::Completion(request) => match completion_boundaries(&request.messages) {
-                Err(_) => (0, CompactionStatus::UnsupportedHistory),
-                Ok(boundaries) => {
-                    let total = boundaries.len();
-                    match select_cutoff(&boundaries, retained_budget_tokens, |cutoff| {
-                        Ok(estimate_bytes(&&request.messages[cutoff..])?.div_ceil(3))
-                    })? {
-                        None => (total, CompactionStatus::NotEnoughHistory),
-                        Some(cutoff) => {
-                            let retained_exchanges =
-                                boundaries.iter().filter(|&&b| b > cutoff).count();
-                            let compressible_exchanges = total.saturating_sub(retained_exchanges);
-                            let prefix_start = usize::from(matches!(
-                                request.messages.first(),
-                                Some(ChatCompletionRequestMessage::System(_))
-                            ));
-                            let compressible_tokens =
-                                estimate_bytes(&&request.messages[prefix_start..cutoff])?
-                                    .div_ceil(3);
-                            let retained_tokens =
-                                estimate_bytes(&&request.messages[cutoff..])?.div_ceil(3);
-                            (
-                                total,
-                                CompactionStatus::Ready {
-                                    compressible_exchanges,
-                                    compressible_tokens,
-                                    retained_exchanges,
-                                    retained_tokens,
-                                },
-                            )
-                        }
-                    }
-                }
-            },
-            Session::Response(request) => {
-                let InputParam::Items(items) = &request.input else {
-                    return Ok(CompactionPreview {
-                        retained_budget_tokens,
-                        summary_budget_tokens,
-                        total_exchanges: 0,
-                        has_existing_summary,
-                        status: CompactionStatus::NotEnoughHistory,
-                    });
-                };
-                match response_boundaries(items) {
-                    Err(_) => (0, CompactionStatus::UnsupportedHistory),
-                    Ok(boundaries) => {
-                        let total = boundaries.len();
-                        match select_cutoff(&boundaries, retained_budget_tokens, |cutoff| {
-                            Ok(estimate_bytes(&&items[cutoff..])?.div_ceil(3))
-                        })? {
-                            None => (total, CompactionStatus::NotEnoughHistory),
-                            Some(cutoff) => {
-                                let retained_exchanges =
-                                    boundaries.iter().filter(|&&b| b > cutoff).count();
-                                let compressible_exchanges =
-                                    total.saturating_sub(retained_exchanges);
-                                let compressible_tokens =
-                                    estimate_bytes(&&items[..cutoff])?.div_ceil(3);
-                                let retained_tokens =
-                                    estimate_bytes(&&items[cutoff..])?.div_ceil(3);
-                                (
-                                    total,
-                                    CompactionStatus::Ready {
-                                        compressible_exchanges,
-                                        compressible_tokens,
-                                        retained_exchanges,
-                                        retained_tokens,
-                                    },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        };
-        Ok(CompactionPreview {
-            retained_budget_tokens,
-            summary_budget_tokens,
-            total_exchanges,
-            has_existing_summary,
-            status,
-        })
+fn split_used_by_share(used: u64, raw_tokens: &[Option<u64>]) -> Vec<u64> {
+    let raw_sum: u128 = raw_tokens
+        .iter()
+        .filter_map(|opt| *opt)
+        .map(u128::from)
+        .sum();
+    let mut out = vec![0u64; raw_tokens.len()];
+    if used == 0 || raw_sum == 0 {
+        return out;
     }
+    let used_u128 = u128::from(used);
+    let mut remainders: Vec<(usize, u128, u64)> = Vec::new();
+    let mut assigned = 0u64;
+    for (idx, opt) in raw_tokens.iter().enumerate() {
+        let Some(raw) = *opt else {
+            continue;
+        };
+        if raw == 0 {
+            continue;
+        }
+        let exact = used_u128 * u128::from(raw);
+        let share = (exact / raw_sum) as u64;
+        let rem = exact % raw_sum;
+        out[idx] = share;
+        assigned = assigned.saturating_add(share);
+        remainders.push((idx, rem, raw));
+    }
+    let left = used.saturating_sub(assigned) as usize;
+    remainders.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    for (idx, _, _) in remainders.into_iter().take(left) {
+        out[idx] += 1;
+    }
+    out
 }

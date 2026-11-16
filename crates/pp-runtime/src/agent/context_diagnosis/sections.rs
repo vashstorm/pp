@@ -1,5 +1,5 @@
 //! 基于当前会话真实数据的半静态上下文分块构建：
-//! 系统提示词、已发送的 AGENTS.md、技能索引、内置工具 Schema 与 MCP 工具 Schema。
+//! 系统提示词、已发送的指令文件（AGENTS.md）、技能索引、内置工具 Schema 与自定义/MCP 工具 Schema。
 
 use super::{DiagnosticItem, MAX_PREVIEW_BYTES};
 use crate::agent::Session;
@@ -16,42 +16,22 @@ pub(super) struct SectionWithRanges {
     pub items: Vec<DiagnosticItem>,
     pub tokens: u64,
     pub bytes: u64,
-    pub count: usize,
     pub ranges: Vec<(usize, usize)>,
 }
 
-/// 从 `actual_system` 中剥离并构建已真实注入的 `AGENTS.md` 规则条目。
+/// 从 `actual_system` 中剥离并构建已真实注入的 `AGENTS.md` 指令文件条目；
+/// 当 `include_unsent_initial` 为 true（空会话）时，同时包含启动期将随首条请求发送的 `AGENTS.md`。
 pub(super) fn build_agent_md_items(
     cwd: &std::path::Path,
     actual_system: &str,
     reported_loads: &BTreeMap<String, String>,
     inspected_docs: &[InspectedDocument],
+    include_unsent_initial: bool,
 ) -> Result<SectionWithRanges> {
     let mut items = Vec::new();
     let mut tokens = 0u64;
     let mut bytes = 0u64;
-    let mut count = 0usize;
     let mut consumed_ranges: Vec<(usize, usize)> = Vec::new();
-
-    if let Some(pos) = actual_system.find(project_instructions::MAINTENANCE) {
-        let len = project_instructions::MAINTENANCE.len();
-        consumed_ranges.push((pos, pos + len));
-        let b = estimate_bytes(&project_instructions::MAINTENANCE)?;
-        let t = b.div_ceil(3);
-        tokens = tokens.saturating_add(t);
-        bytes = bytes.saturating_add(b);
-        count += 1;
-        items.push(DiagnosticItem {
-            kind_label: "Rule".into(),
-            title: "AGENTS.md Maintenance Rules".into(),
-            subtitle: "Fixed instruction header in session".into(),
-            tokens: t,
-            bytes: b,
-            preview: project_instructions::MAINTENANCE.to_owned(),
-            is_header: false,
-            rankable: true,
-        });
-    }
 
     // 提取真实存在于 actual_system 中的 `[Project root boundary: ...]` 片段
     let boundary_prefix = "[Project root boundary: ";
@@ -77,7 +57,6 @@ pub(super) fn build_agent_md_items(
         let t = b.div_ceil(3);
         tokens = tokens.saturating_add(t);
         bytes = bytes.saturating_add(b);
-        count += 1;
         items.push(DiagnosticItem {
             kind_label: "Boundary".into(),
             title: "Project Root Boundaries".into(),
@@ -85,8 +64,6 @@ pub(super) fn build_agent_md_items(
             tokens: t,
             bytes: b,
             preview: boundaries_text,
-            is_header: false,
-            rankable: true,
         });
     }
 
@@ -108,7 +85,6 @@ pub(super) fn build_agent_md_items(
         let t = b.div_ceil(3);
         tokens = tokens.saturating_add(t);
         bytes = bytes.saturating_add(b);
-        count += 1;
         seen_paths.insert(path_str.clone());
         let display_path = std::path::Path::new(&path_str)
             .strip_prefix(cwd)
@@ -120,7 +96,7 @@ pub(super) fn build_agent_md_items(
             subtitle: if root_str.is_empty() {
                 "sent in session".into()
             } else {
-                format!("sent · root {root_str}")
+                format!("root {root_str}")
             },
             tokens: t,
             bytes: b,
@@ -130,13 +106,11 @@ pub(super) fn build_agent_md_items(
                 body.len(),
                 truncate_preview(body),
             ),
-            is_header: false,
-            rankable: true,
         });
         pos = end;
     }
 
-    // 兜底：对于通过 `reported_loads` 或 `doc.sent` 确认已发送、但未出现在 system 文本（如测试构造）中的文档
+    // 兜底：对于通过 `reported_loads` 或 `doc.sent`（以及空会话初始活跃链）确认的文档
     for (path_str, content) in reported_loads {
         if seen_paths.contains(path_str) {
             continue;
@@ -155,7 +129,6 @@ pub(super) fn build_agent_md_items(
         let t = b.div_ceil(3);
         tokens = tokens.saturating_add(t);
         bytes = bytes.saturating_add(b);
-        count += 1;
         seen_paths.insert(path_str.clone());
         let display_path = doc_opt
             .path
@@ -165,7 +138,7 @@ pub(super) fn build_agent_md_items(
         items.push(DiagnosticItem {
             kind_label: "AGENTS.md".into(),
             title: display_path,
-            subtitle: format!("sent · root {}", doc_opt.root.display()),
+            subtitle: format!("root {}", doc_opt.root.display()),
             tokens: t,
             bytes: b,
             preview: format!(
@@ -175,14 +148,12 @@ pub(super) fn build_agent_md_items(
                 doc_opt.content.len(),
                 truncate_preview(&doc_opt.content)
             ),
-            is_header: false,
-            rankable: true,
         });
     }
 
     for doc in inspected_docs {
         let path_str = doc.document.path.display().to_string();
-        if !doc.sent || seen_paths.contains(&path_str) {
+        if (!doc.sent && !include_unsent_initial) || seen_paths.contains(&path_str) {
             continue;
         }
         let rendered = project_instructions::render(std::slice::from_ref(&doc.document));
@@ -190,7 +161,6 @@ pub(super) fn build_agent_md_items(
         let t = b.div_ceil(3);
         tokens = tokens.saturating_add(t);
         bytes = bytes.saturating_add(b);
-        count += 1;
         seen_paths.insert(path_str);
         let display_path = doc
             .document
@@ -201,18 +171,17 @@ pub(super) fn build_agent_md_items(
         items.push(DiagnosticItem {
             kind_label: "AGENTS.md".into(),
             title: display_path,
-            subtitle: format!("sent · root {}", doc.document.root.display()),
+            subtitle: format!("root {}", doc.document.root.display()),
             tokens: t,
             bytes: b,
             preview: format!(
-                "Path: {}\nRoot: {}\nStatus: sent\nRaw bytes: {} · Injected bytes: {b} (~{t} tokens)\n\n{}",
+                "Path: {}\nRoot: {}\nStatus: {}\nRaw bytes: {} · Injected bytes: {b} (~{t} tokens)\n\n{}",
                 doc.document.path.display(),
                 doc.document.root.display(),
+                if doc.sent { "sent" } else { "active in startup scope" },
                 doc.document.content.len(),
                 truncate_preview(&doc.document.content)
             ),
-            is_header: false,
-            rankable: true,
         });
     }
 
@@ -220,7 +189,6 @@ pub(super) fn build_agent_md_items(
         items,
         tokens,
         bytes,
-        count,
         ranges: consumed_ranges,
     })
 }
@@ -260,12 +228,10 @@ fn parse_project_instruction_block(block: &str) -> (String, String, &str) {
 pub(super) fn build_skill_items(
     actual_system: &str,
     headers: &[pp_config::skills::SkillHeader],
-    loaded_skills: &[DiagnosticItem],
 ) -> Result<SectionWithRanges> {
     let mut items = Vec::new();
     let mut summary_tokens = 0u64;
     let mut summary_bytes = 0u64;
-    let mut index_count = 0usize;
     let mut ranges = Vec::new();
 
     if let Some((start, end, inner_entries)) = extract_skills_block(actual_system) {
@@ -274,69 +240,24 @@ pub(super) fn build_skill_items(
         summary_bytes = estimate_bytes(&block)?;
         summary_tokens = summary_bytes.div_ceil(3);
 
-        let parsed_entries = parse_skill_entries(inner_entries, headers);
-        index_count = parsed_entries.len();
-
-        items.push(DiagnosticItem {
-            kind_label: "Summary Row".into(),
-            title: "Skills Index in System Prompt".into(),
-            subtitle: format!("{index_count} skills listed in session prompt"),
-            tokens: summary_tokens,
-            bytes: summary_bytes,
-            preview: truncate_preview(block),
-            is_header: true,
-            rankable: false,
-        });
-
-        for (name, uri, desc, raw_line) in parsed_entries {
+        for (name, uri, desc, raw_line) in parse_skill_entries(inner_entries, headers) {
             let b = estimate_bytes(&raw_line)?;
             let t = b.div_ceil(3);
             items.push(DiagnosticItem {
-                kind_label: "Skill Index".into(),
+                kind_label: "Skill".into(),
                 title: name.clone(),
                 subtitle: uri.clone(),
                 tokens: t,
                 bytes: b,
                 preview: format!("Name: {name}\nURI: {uri}\nDescription: {desc}"),
-                is_header: false,
-                rankable: true,
             });
         }
-    }
-
-    if !loaded_skills.is_empty() {
-        let loaded_tokens: u64 = loaded_skills.iter().map(|i| i.tokens).sum();
-        let loaded_bytes: u64 = loaded_skills.iter().map(|i| i.bytes).sum();
-        items.push(DiagnosticItem {
-            kind_label: "Summary Row".into(),
-            title: "Loaded Skill Bodies (in Tool Results)".into(),
-            subtitle: format!(
-                "{} read(skill://...) results (counted under Tool Results)",
-                loaded_skills.len()
-            ),
-            tokens: loaded_tokens,
-            bytes: loaded_bytes,
-            preview: loaded_skills
-                .iter()
-                .map(|item| {
-                    format!(
-                        "- {}  ~{} tok  ({})",
-                        item.title, item.tokens, item.subtitle
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-            is_header: true,
-            rankable: false,
-        });
-        items.extend(loaded_skills.iter().cloned());
     }
 
     Ok(SectionWithRanges {
         items,
         tokens: summary_tokens,
         bytes: summary_bytes,
-        count: index_count,
         ranges,
     })
 }
@@ -396,7 +317,7 @@ fn parse_skill_entries(
     out
 }
 
-/// 基于 `actual_system` 扣减 `AGENTS.md` 与 `Skills` 区块后，构建真实有效的 `System Prompt` 条目。
+/// 基于 `actual_system` 扣减 `Instruction Files` 与 `Skills` 区块后，构建真实有效的 `System Prompt` 条目。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_system_items(
     actual_system: &str,
@@ -407,10 +328,10 @@ pub(super) fn build_system_items(
     append_part: Option<(String, String)>,
     workflow_text: &str,
     excluded_ranges: &[(usize, usize)],
-) -> Result<(Vec<DiagnosticItem>, u64, u64, usize)> {
+) -> Result<(Vec<DiagnosticItem>, u64, u64)> {
     let residual = strip_ranges(actual_system, excluded_ranges);
     if residual.trim().is_empty() {
-        return Ok((Vec::new(), 0, 0, 0));
+        return Ok((Vec::new(), 0, 0));
     }
 
     let total_bytes = estimate_bytes(&residual)?;
@@ -418,7 +339,6 @@ pub(super) fn build_system_items(
 
     let mut items = Vec::new();
     let mut matched_ranges: Vec<(usize, usize)> = Vec::new();
-    let mut count = 0usize;
 
     let mut try_match =
         |kind: &str, title: String, subtitle: String, candidate: &str| -> Result<()> {
@@ -431,7 +351,6 @@ pub(super) fn build_system_items(
                 matched_ranges.push((pos, end));
                 let b = estimate_bytes(&trimmed)?;
                 let t = b.div_ceil(3);
-                count += 1;
                 items.push(DiagnosticItem {
                     kind_label: kind.into(),
                     title,
@@ -439,8 +358,6 @@ pub(super) fn build_system_items(
                     tokens: t,
                     bytes: b,
                     preview: truncate_preview(trimmed),
-                    is_header: false,
-                    rankable: true,
                 });
             }
             Ok(())
@@ -450,7 +367,7 @@ pub(super) fn build_system_items(
     try_match(
         "Runtime",
         "Runtime Tool & Environment Rules".into(),
-        "prompts/runtime.md (rendered)".into(),
+        "prompts/runtime.md".into(),
         runtime_text,
     )?;
     if let Some((origin, text)) = &append_part {
@@ -467,13 +384,18 @@ pub(super) fn build_system_items(
         "Plan / workflow state".into(),
         workflow_text,
     )?;
+    try_match(
+        "Rule",
+        "Project Instruction Maintenance Rules".into(),
+        "AGENTS.md policy".into(),
+        project_instructions::MAINTENANCE,
+    )?;
 
     // 若因恢复自其它日期/模型或旧会话自定义导致仍有未匹配出的真实系统提示词残余，一并纳入确保不漏算
     let leftover = strip_ranges(&residual, &matched_ranges);
     if !leftover.trim().is_empty() {
         let b = estimate_bytes(&leftover)?;
         let t = b.div_ceil(3);
-        count += 1;
         let is_only = items.is_empty();
         items.insert(
             0,
@@ -492,27 +414,11 @@ pub(super) fn build_system_items(
                 tokens: t,
                 bytes: b,
                 preview: truncate_preview(leftover.trim()),
-                is_header: false,
-                rankable: true,
             },
         );
     }
 
-    items.insert(
-        0,
-        DiagnosticItem {
-            kind_label: "Summary Row".into(),
-            title: "Active System Prompt (excluding AGENTS.md & Skills)".into(),
-            subtitle: format!("{count} system instruction section(s) in session"),
-            tokens: total_tokens,
-            bytes: total_bytes,
-            preview: truncate_preview(residual.trim()),
-            is_header: true,
-            rankable: false,
-        },
-    );
-
-    Ok((items, total_tokens, total_bytes, count))
+    Ok((items, total_tokens, total_bytes))
 }
 
 fn strip_ranges(source: &str, ranges: &[(usize, usize)]) -> String {
@@ -554,29 +460,23 @@ pub(super) struct SplitToolsBreakdown {
     pub tool_items: Vec<DiagnosticItem>,
     pub tools_tokens: u64,
     pub tools_bytes: u64,
-    pub tools_count: usize,
     pub mcp_items: Vec<DiagnosticItem>,
     pub mcp_tokens: u64,
     pub mcp_bytes: u64,
-    pub mcp_count: usize,
 }
 
-/// 从 `self.session` 中真实持有的工具定义拆分为 Built-in `Tools` 与 `MCP` 两个独立集合。
+/// 从 `self.session` 中真实持有的工具定义拆分为 Built-in Tools 与 Custom Tools（MCP）两个独立集合。
 pub(super) fn build_split_tool_items(
     session: &Session,
     mcp_origins: &BTreeMap<String, (String, String)>,
-    mcp_view: &crate::mcp::View,
 ) -> Result<SplitToolsBreakdown> {
     let mut tool_items = Vec::new();
     let mut tools_tokens = 0u64;
     let mut tools_bytes = 0u64;
-    let mut tools_count = 0usize;
 
     let mut mcp_items = Vec::new();
     let mut mcp_tokens = 0u64;
     let mut mcp_bytes = 0u64;
-    let mut mcp_count = 0usize;
-    let mut server_totals: BTreeMap<String, (usize, u64, u64)> = BTreeMap::new();
 
     let entries = extract_session_tools(session)?;
 
@@ -591,16 +491,10 @@ pub(super) fn build_split_tool_items(
         if let Some((server, original)) = mcp_identity {
             mcp_tokens = mcp_tokens.saturating_add(tokens);
             mcp_bytes = mcp_bytes.saturating_add(bytes);
-            mcp_count += 1;
-            let entry = server_totals.entry(server.clone()).or_insert((0, 0, 0));
-            entry.0 += 1;
-            entry.1 = entry.1.saturating_add(bytes);
-            entry.2 = entry.2.saturating_add(tokens);
-
             mcp_items.push(DiagnosticItem {
                 kind_label: "MCP".into(),
                 title: format!("{server} / {original}"),
-                subtitle: format!("{} · {}", def.name, def.description.as_deref().map(first_line_preview).unwrap_or_default()),
+                subtitle: def.name.clone(),
                 tokens,
                 bytes,
                 preview: format!(
@@ -608,13 +502,10 @@ pub(super) fn build_split_tool_items(
                     def.name,
                     truncate_preview(&schema_pretty)
                 ),
-                is_header: false,
-                rankable: true,
             });
         } else {
             tools_tokens = tools_tokens.saturating_add(tokens);
             tools_bytes = tools_bytes.saturating_add(bytes);
-            tools_count += 1;
             let desc = def
                 .description
                 .as_deref()
@@ -627,48 +518,7 @@ pub(super) fn build_split_tool_items(
                 tokens,
                 bytes,
                 preview: truncate_preview(&schema_pretty),
-                is_header: false,
-                rankable: true,
             });
-        }
-    }
-
-    if !mcp_items.is_empty() || !mcp_view.entries.is_empty() {
-        let mut overview_lines = Vec::new();
-        let mut seen_servers = std::collections::BTreeSet::new();
-        for entry in &mcp_view.entries {
-            seen_servers.insert(entry.name.clone());
-            let (count, b, t) = server_totals.get(&entry.name).copied().unwrap_or((0, 0, 0));
-            overview_lines.push(format!(
-                "- {} [{}] ({})  {} tools  ~{} tok  {} bytes",
-                entry.name, entry.status, entry.source, count, t, b
-            ));
-        }
-        for (server, (count, b, t)) in &server_totals {
-            if !seen_servers.contains(server) {
-                overview_lines.push(format!(
-                    "- {server} [saved in session]  {count} tools  ~{t} tok  {b} bytes"
-                ));
-            }
-        }
-        if !overview_lines.is_empty() {
-            let server_count = seen_servers.len().max(server_totals.len());
-            mcp_items.insert(
-                0,
-                DiagnosticItem {
-                    kind_label: "Summary Row".into(),
-                    title: "MCP Servers Overview".into(),
-                    subtitle: format!("{server_count} server(s) · {mcp_count} tools in session"),
-                    tokens: mcp_tokens,
-                    bytes: mcp_bytes,
-                    preview: format!(
-                        "Active MCP tools in session: {mcp_count} (~{mcp_tokens} tokens, {mcp_bytes} bytes)\n\nServers:\n{}",
-                        overview_lines.join("\n")
-                    ),
-                    is_header: true,
-                    rankable: false,
-                },
-            );
         }
     }
 
@@ -676,11 +526,9 @@ pub(super) fn build_split_tool_items(
         tool_items,
         tools_tokens,
         tools_bytes,
-        tools_count,
         mcp_items,
         mcp_tokens,
         mcp_bytes,
-        mcp_count,
     })
 }
 

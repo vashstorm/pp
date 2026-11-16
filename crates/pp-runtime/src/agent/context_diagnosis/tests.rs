@@ -3,12 +3,13 @@ use crate::agent::persistence::ReplayRecord;
 use crate::tools::Tools;
 use async_openai::types::responses::{
     EasyInputContent, FunctionCallOutput, FunctionCallOutputItemParam, InputContent, InputItem,
-    Item, ReasoningItem, Role, SummaryPart,
+    InputParam, Item, ReasoningItem, Role, SummaryPart,
 };
 use pp_config::config::{EditMode, ModelCatalog};
 use pp_config::model_state::ModelState;
 use pp_config::models::Protocol;
 use pp_core::cancellation::CancellationToken;
+use pp_core::context::TokenUsage;
 use pp_core::events::AgentEvent;
 use std::fs;
 
@@ -34,8 +35,16 @@ fn test_catalog(
     ModelCatalog::from_files(&dir.join("settings.yml"), &dir.join("models.yml")).unwrap()
 }
 
+fn category(report: &ContextReport, key: CategoryKey) -> &CategorySummary {
+    report
+        .categories
+        .iter()
+        .find(|c| c.key == key)
+        .expect("missing category")
+}
+
 #[test]
-fn empty_session_reports_zero_stats_without_prefill_or_side_effects() {
+fn empty_session_reports_baseline_categories_and_zero_messages_without_side_effects() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("cfg");
     let work = dir.path().join("work");
@@ -78,18 +87,42 @@ fn empty_session_reports_zero_stats_without_prefill_or_side_effects() {
 
     let report = agent.diagnose_context().unwrap();
     assert!(report.empty_session);
-    assert_eq!(report.active_tokens, 0);
-    assert_eq!(report.thinking_tokens, 0);
-    assert_eq!(report.thinking_turns, 0);
-    assert!(report.categories.is_empty());
-    assert!(report.system_items.is_empty());
-    assert!(report.agent_md_items.is_empty());
-    assert!(report.skill_items.is_empty());
-    assert!(report.tool_items.is_empty());
-    assert!(report.mcp_items.is_empty());
-    assert!(report.message_items.is_empty());
-    assert!(report.thinking_items.is_empty());
-    assert!(report.tool_result_items.is_empty());
+    assert_eq!(report.categories.len(), 10);
+    assert!(report.active_tokens > 0);
+    let in_ctx_sum: u64 = report
+        .categories
+        .iter()
+        .filter(|c| c.in_context)
+        .map(|c| c.tokens)
+        .sum();
+    assert_eq!(in_ctx_sum, report.active_tokens);
+
+    assert!(category(&report, CategoryKey::System).tokens > 0);
+    assert!(
+        category(&report, CategoryKey::InstructionFiles)
+            .items
+            .iter()
+            .any(|i| i.title == "AGENTS.md")
+    );
+    assert!(
+        category(&report, CategoryKey::Skills)
+            .items
+            .iter()
+            .any(|i| i.title == "alpha")
+    );
+    assert!(
+        category(&report, CategoryKey::BuiltInTools)
+            .items
+            .iter()
+            .any(|i| i.title == "read")
+    );
+    assert_eq!(category(&report, CategoryKey::CustomTools).tokens, 0);
+    assert_eq!(category(&report, CategoryKey::UserMessages).tokens, 0);
+    assert_eq!(category(&report, CategoryKey::AssistantMessages).tokens, 0);
+    assert_eq!(category(&report, CategoryKey::Thinking).tokens, 0);
+    assert_eq!(category(&report, CategoryKey::ToolCalls).tokens, 0);
+    assert_eq!(category(&report, CategoryKey::ToolOutput).tokens, 0);
+
     // 只读诊断不创建会话 JSONL。
     assert_eq!(
         fs::read_dir(&sessions)
@@ -101,7 +134,7 @@ fn empty_session_reports_zero_stats_without_prefill_or_side_effects() {
 }
 
 #[test]
-fn non_empty_session_splits_tools_mcp_thinking_and_excludes_unsent_agents_md() {
+fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("cfg");
     let work = dir.path().join("work");
@@ -151,7 +184,7 @@ fn non_empty_session_splits_tools_mcp_thinking_and_excludes_unsent_agents_md() {
     });
     agent.session_output_tokens = 1234;
 
-    // 注入一个内置之外的 MCP 工具到当前 session 的 tools 列表，验证 Tools / MCP 分离。
+    // 注入一个内置之外的 MCP 工具到当前 session 的 tools 列表，验证 Built-in / Custom Tools 分离。
     let mut defs = agent.tools.all_definitions(agent.workflow.mode);
     defs.push(async_openai::types::chat::FunctionObject {
         name: "mcp__docs__search".into(),
@@ -253,84 +286,82 @@ fn non_empty_session_splits_tools_mcp_thinking_and_excludes_unsent_agents_md() {
     assert!(report.thinking_in_context);
     assert!(report.thinking_tokens > 0);
     assert_eq!(report.thinking_turns, 1);
+    assert_eq!(report.categories.len(), 10);
 
-    assert!(matches!(
-        report.compaction.status,
-        CompactionStatus::Ready {
-            compressible_exchanges: 1,
-            retained_exchanges: 1,
-            ..
-        }
-    ));
+    let in_ctx_sum: u64 = report
+        .categories
+        .iter()
+        .filter(|c| c.in_context)
+        .map(|c| c.tokens)
+        .sum();
+    assert_eq!(in_ctx_sum, report.active_tokens);
 
-    // Built-in Tools 与 MCP 严格拆分
+    // Built-in Tools 与 Custom Tools (MCP) 严格拆分
+    let builtin = category(&report, CategoryKey::BuiltInTools);
     assert!(
-        report
-            .tool_items
+        builtin
+            .items
             .iter()
             .any(|i| i.kind_label == "Built-in" && i.title == "read")
     );
-    assert!(!report.tool_items.iter().any(|i| i.kind_label == "MCP"));
+    assert!(!builtin.items.iter().any(|i| i.kind_label == "MCP"));
+
+    let custom = category(&report, CategoryKey::CustomTools);
     assert!(
-        report
-            .mcp_items
+        custom
+            .items
             .iter()
             .any(|i| i.kind_label == "MCP" && i.title == "docs / search")
     );
-    assert!(!report.mcp_items.iter().any(|i| i.kind_label == "Built-in"));
+    assert!(!custom.items.iter().any(|i| i.kind_label == "Built-in"));
 
     // 只统计已发送的 AGENTS.md，不统计未发送的 nested/AGENTS.md
+    let instr = category(&report, CategoryKey::InstructionFiles);
     assert!(
-        report
-            .agent_md_items
+        instr
+            .items
             .iter()
             .any(|i| i.kind_label == "AGENTS.md" && i.title == "AGENTS.md")
     );
-    assert!(
-        !report
-            .agent_md_items
-            .iter()
-            .any(|i| i.title.contains("nested"))
-    );
+    assert!(!instr.items.iter().any(|i| i.title.contains("nested")));
 
-    // Thinking 独立分类，不混入 message_items
-    assert_eq!(report.thinking_items.len(), 2); // Summary Row + Turn 1
+    // Thinking 独立分类，不混入 UserMessages / AssistantMessages
+    let thinking = category(&report, CategoryKey::Thinking);
+    assert_eq!(thinking.items.len(), 1);
     assert!(
-        report.thinking_items[1]
+        thinking.items[0]
             .preview
             .contains("<encrypted_content: 4500 chars")
     );
-    assert!(
-        !report
-            .message_items
-            .iter()
-            .any(|i| i.kind_label == "Reasoning" || i.kind_label == "Thinking")
-    );
 
-    // Tool Results 与 Messages 分离
+    // User / Assistant / Tool Calls / Tool Output 四分法各自独立
+    let user_msgs = category(&report, CategoryKey::UserMessages);
     assert!(
-        report
-            .tool_result_items
-            .iter()
-            .any(|i| i.kind_label == "Skill Body" && i.subtitle == "skill://alpha")
-    );
-    assert!(
-        report
-            .skill_items
-            .iter()
-            .any(|i| i.kind_label == "Skill Body" && i.title == "skill://alpha")
-    );
-    assert!(
-        report
-            .message_items
+        user_msgs
+            .items
             .iter()
             .any(|i| i.kind_label == "User" && i.preview.contains("base64 image data"))
     );
-    assert_eq!(report.categories.len(), 8);
+    assert!(user_msgs.items.iter().any(|i| i.kind_label == "Summary"));
+    let asst_msgs = category(&report, CategoryKey::AssistantMessages);
+    assert_eq!(asst_msgs.items.len(), 1);
+    assert_eq!(asst_msgs.items[0].subtitle, "Done.");
+
+    let calls = category(&report, CategoryKey::ToolCalls);
+    assert_eq!(calls.items.len(), 1);
+    assert!(calls.items[0].title.contains("read(skill://alpha)"));
+
+    let outputs = category(&report, CategoryKey::ToolOutput);
+    assert!(
+        outputs
+            .items
+            .iter()
+            .any(|i| i.kind_label == "Skill Body" && i.subtitle == "skill://alpha")
+    );
 }
 
 #[test]
-fn completion_thinking_and_resumed_session_usage_are_diagnosed() {
+fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("cfg");
     let work = dir.path().join("work");
@@ -376,7 +407,7 @@ fn completion_thinking_and_resumed_session_usage_are_diagnosed() {
     let session_id = agent.session_id().unwrap().to_owned();
     let session_file = sessions.join(format!("{session_id}.jsonl"));
 
-    // 模拟加载的项目规则事件 + 流式思考 + 助手回复
+    // 模拟加载的项目规则事件 + 流式思考 + 带 tool_call 的助手回复 + 纯正文助手回复
     agent.journal.event(&AgentEvent::ProjectInstructionsLoaded {
         path: work.join("AGENTS.md").display().to_string(),
         content: "Keep completion tests accurate.".into(),
@@ -389,6 +420,33 @@ fn completion_thinking_and_resumed_session_usage_are_diagnosed() {
         text: "Here is the answer.".into(),
     });
     if let Session::Completion(req) = &mut agent.session {
+        req.messages.push(
+            async_openai::types::chat::ChatCompletionRequestMessage::Assistant(
+                async_openai::types::chat::ChatCompletionRequestAssistantMessage {
+                    content: Some("Let me check.".into()),
+                    tool_calls: Some(vec![
+                        async_openai::types::chat::ChatCompletionMessageToolCalls::Function(
+                            async_openai::types::chat::ChatCompletionMessageToolCall {
+                                id: "call_chat_1".into(),
+                                function: async_openai::types::chat::FunctionCall {
+                                    name: "read".into(),
+                                    arguments: r#"{"path":"AGENTS.md"}"#.into(),
+                                },
+                            },
+                        ),
+                    ]),
+                    ..Default::default()
+                },
+            ),
+        );
+        req.messages.push(
+            async_openai::types::chat::ChatCompletionRequestMessage::Tool(
+                async_openai::types::chat::ChatCompletionRequestToolMessage {
+                    content: "Keep completion tests accurate.".into(),
+                    tool_call_id: "call_chat_1".into(),
+                },
+            ),
+        );
         req.messages.push(
             async_openai::types::chat::ChatCompletionRequestMessage::Assistant(
                 async_openai::types::chat::ChatCompletionRequestAssistantMessage {
@@ -429,7 +487,7 @@ fn completion_thinking_and_resumed_session_usage_are_diagnosed() {
         &Ok(()),
     );
 
-    // 验证通过 Agent::restore 恢复后的 /context 统计（含 Thinking、AGENTS.md、服务端 Usage）
+    // 验证通过 Agent::restore 恢复后的 /context 统计（含 Thinking、AGENTS.md、ToolCalls、服务端 Usage）
     let restored = crate::agent::persistence::load(
         &sessions,
         &sessions.join(".locks"),
@@ -451,12 +509,32 @@ fn completion_thinking_and_resumed_session_usage_are_diagnosed() {
     assert!(!report.thinking_in_context);
     assert_eq!(report.thinking_turns, 1);
     assert!(report.thinking_tokens > 0);
+    let thinking = category(&report, CategoryKey::Thinking);
+    assert!(!thinking.in_context);
     assert!(
-        report
-            .thinking_items
+        thinking
+            .items
             .iter()
             .any(|i| i.preview.contains("Step 1: inspect session."))
     );
+    // Thinking 不在上下文中时，不计入 active_tokens 切分。
+    let in_ctx_sum: u64 = report
+        .categories
+        .iter()
+        .filter(|c| c.in_context)
+        .map(|c| c.tokens)
+        .sum();
+    assert_eq!(in_ctx_sum, report.active_tokens);
+
+    assert_eq!(category(&report, CategoryKey::ToolCalls).items.len(), 1);
+    assert_eq!(
+        category(&report, CategoryKey::AssistantMessages)
+            .items
+            .len(),
+        2
+    );
+    assert_eq!(category(&report, CategoryKey::ToolOutput).items.len(), 1);
+
     assert_eq!(
         report.last_request,
         Some(TokenUsage {
@@ -468,8 +546,8 @@ fn completion_thinking_and_resumed_session_usage_are_diagnosed() {
     );
     assert_eq!(report.session_output_tokens, 340);
     assert!(
-        report
-            .agent_md_items
+        category(&report, CategoryKey::InstructionFiles)
+            .items
             .iter()
             .any(|i| i.kind_label == "AGENTS.md" && i.title == "AGENTS.md")
     );

@@ -157,7 +157,7 @@ pp --model deepseek/deepseek-flash:high /commit
 | `/test-ui` | 仅 dev/test：以 12.5 mock token/s 输出原生 Responses SSE 思考与 Markdown／代码分片 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
-| `/context` | 在独立 TUI 面板中查看基于真实会话数据的上下文总览与分项详情（系统指令、AGENTS.md、技能、内置 Tools、MCP、消息、LLM 思考与工具结果，别名 `/ctx`）；主任务运行中也可打开，按 `r` 刷新最近一次请求的快照 |
+| `/context` | 在独立 TUI 面板中以 20×10 占比网格与 10 项分类（`System Prompt`、`Instruction Files`、`Skills`、`Built-in Tools`、`Custom Tools`、`User / Developer Messages`、`Assistant Messages`、`Assistant Thinking`、`Tool Calls`、`Tool Output`）加 `Auto-Compact Buffer`／`Free Space` 展示上下文占用，支持原地展开子项查看详情（别名 `/ctx`）；空会话及主任务运行中均可打开，按 `r` 刷新 |
 | `/resume`、`/tree` | 恢复会话，或回退当前历史（仅终端界面） |
 | `/skills`、`/quit` | 管理技能，或退出 |
 
