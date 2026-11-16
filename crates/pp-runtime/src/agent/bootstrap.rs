@@ -154,6 +154,7 @@ impl Agent {
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
             last_request: None,
             session_output_tokens: 0,
+            thinking_history: Vec::new(),
             current_model,
             think_level,
             models,

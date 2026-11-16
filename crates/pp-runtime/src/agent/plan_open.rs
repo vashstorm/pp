@@ -220,6 +220,7 @@ impl Agent {
             .set_tools(self.tools.all_definitions(self.workflow.mode));
         self.tools.clear_caches();
         self.clear_session_usage();
+        self.thinking_history.clear();
         self.clear_session_cost();
         self.pending_instructions = None;
         drop(verified);

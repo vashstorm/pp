@@ -134,6 +134,8 @@ pub struct Agent {
     last_request: Option<TokenUsage>,
     /// 本次会话普通请求的 output tokens 累计；会话根变化才清空。
     session_output_tokens: u64,
+    /// 当前会话已提交轮次的思考/推理记录（用于 `/context` 真实统计，覆盖双协议及恢复）。
+    thinking_history: Vec<context_diagnosis::ThinkingEntry>,
     /// 进程内唯一的模型决议权威（手动覆盖 `a` → 配置默认 `b`）。
     models: std::sync::Arc<ModelState>,
     /// 当前生效模型的来源；只有 fallback 会在任务边界按 `resolve()` 回落。

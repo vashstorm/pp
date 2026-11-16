@@ -1,4 +1,4 @@
-//! 会话原生历史消息、思考项、工具调用与工具结果占用诊断。
+//! 会话原生历史消息、工具调用与工具结果占用诊断（思考项由 `thinking` 模块独立统计）。
 
 use super::DiagnosticItem;
 use super::sections::{first_line_preview, truncate_preview};
@@ -15,7 +15,7 @@ use async_openai::types::{
     },
     responses::{
         EasyInputContent, FunctionCallOutput, InputContent, InputItem, InputParam, InputRole, Item,
-        MessageItem, OutputMessageContent, ReasoningItemContent, Role, SummaryPart,
+        MessageItem, OutputMessageContent, Role,
     },
 };
 use pp_core::context::estimate_bytes;
@@ -23,11 +23,12 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
 pub(super) struct HistoryBreakdown {
-    pub history_items: Vec<DiagnosticItem>,
+    pub message_items: Vec<DiagnosticItem>,
+    pub tool_result_items: Vec<DiagnosticItem>,
     pub loaded_skills: Vec<DiagnosticItem>,
-    pub history_tokens: u64,
-    pub history_bytes: u64,
-    pub history_count: usize,
+    pub message_tokens: u64,
+    pub message_bytes: u64,
+    pub message_count: usize,
     pub tool_result_tokens: u64,
     pub tool_result_bytes: u64,
     pub tool_result_count: usize,
@@ -36,16 +37,17 @@ pub(super) struct HistoryBreakdown {
 
 impl Agent {
     pub(super) fn inspect_history(&self) -> Result<HistoryBreakdown> {
-        let mut raw_items: Vec<(bool, DiagnosticItem)> = Vec::new();
+        let mut raw_messages: Vec<DiagnosticItem> = Vec::new();
+        let mut raw_tool_results: Vec<DiagnosticItem> = Vec::new();
         let mut loaded_skills: Vec<DiagnosticItem> = Vec::new();
         let mut role_stats: BTreeMap<&'static str, (usize, u64, u64)> = BTreeMap::new();
         let mut tool_stats: BTreeMap<String, (usize, u64, u64)> = BTreeMap::new();
         let mut call_map: HashMap<String, (String, String)> = HashMap::new();
         let mut has_existing_summary = false;
 
-        let mut history_tokens = 0u64;
-        let mut history_bytes = 0u64;
-        let mut history_count = 0usize;
+        let mut message_tokens = 0u64;
+        let mut message_bytes = 0u64;
+        let mut message_count = 0usize;
         let mut tool_result_tokens = 0u64;
         let mut tool_result_bytes = 0u64;
         let mut tool_result_count = 0usize;
@@ -68,12 +70,13 @@ impl Agent {
                 tool_result_count += 1;
                 tool_result_bytes = tool_result_bytes.saturating_add(item.bytes);
                 tool_result_tokens = tool_result_tokens.saturating_add(item.tokens);
+                raw_tool_results.push(item);
             } else {
-                history_count += 1;
-                history_bytes = history_bytes.saturating_add(item.bytes);
-                history_tokens = history_tokens.saturating_add(item.tokens);
+                message_count += 1;
+                message_bytes = message_bytes.saturating_add(item.bytes);
+                message_tokens = message_tokens.saturating_add(item.tokens);
+                raw_messages.push(item);
             }
-            raw_items.push((is_tool_result, item));
         };
 
         match &self.session {
@@ -512,57 +515,8 @@ impl Agent {
                                     },
                                 );
                             }
-                            InputItem::Item(Item::Reasoning(reasoning)) => {
-                                let mut parts = Vec::new();
-                                for s in &reasoning.summary {
-                                    let SummaryPart::SummaryText(s) = s;
-                                    if !s.text.trim().is_empty() {
-                                        parts.push(s.text.clone());
-                                    }
-                                }
-                                for c in reasoning.content.iter().flatten() {
-                                    let ReasoningItemContent::ReasoningText(c) = c;
-                                    if !c.text.trim().is_empty() {
-                                        parts.push(c.text.clone());
-                                    }
-                                }
-                                if let Some(enc) = &reasoning.encrypted_content {
-                                    parts.push(format!(
-                                        "<encrypted_content: {} chars, ~{} tokens>",
-                                        enc.len(),
-                                        enc.len().div_ceil(3)
-                                    ));
-                                }
-                                let preview = if parts.is_empty() {
-                                    "(empty reasoning item)".into()
-                                } else {
-                                    truncate_preview(&parts.join("\n\n"))
-                                };
-                                push_item(
-                                    "Reasoning",
-                                    false,
-                                    None,
-                                    DiagnosticItem {
-                                        kind_label: "Reasoning".into(),
-                                        title: format!("#{seq} Reasoning"),
-                                        subtitle: if reasoning.encrypted_content.is_some() {
-                                            format!(
-                                                "includes encrypted_content ({} chars)",
-                                                reasoning
-                                                    .encrypted_content
-                                                    .as_ref()
-                                                    .map_or(0, String::len)
-                                            )
-                                        } else {
-                                            first_line_preview(&preview)
-                                        },
-                                        tokens,
-                                        bytes,
-                                        preview,
-                                        is_header: false,
-                                        rankable: true,
-                                    },
-                                );
+                            InputItem::Item(Item::Reasoning(_)) => {
+                                // 思考项由 `Thinking` 分类独立统计，不混入普通消息列表。
                             }
                             InputItem::Item(Item::FunctionCall(call)) => {
                                 let args_summary = summarize_tool_args(&call.name, &call.arguments);
@@ -665,20 +619,20 @@ impl Agent {
             }
         }
 
-        let mut history_items = Vec::new();
-        let total_hist_tokens = history_tokens.saturating_add(tool_result_tokens);
-        let total_hist_bytes = history_bytes.saturating_add(tool_result_bytes);
-        let total_hist_count = history_count + tool_result_count;
-        if total_hist_count > 0 {
+        let mut message_items = Vec::new();
+        if message_count > 0 {
             let mut lines = vec![format!(
-                "Total history: {} items · ~{} tokens ({} bytes)\n",
-                total_hist_count, total_hist_tokens, total_hist_bytes
+                "Messages: {} items · ~{} tokens ({} bytes)\n",
+                message_count, message_tokens, message_bytes
             )];
-            let mut sorted_roles: Vec<_> = role_stats.iter().collect();
+            let mut sorted_roles: Vec<_> = role_stats
+                .iter()
+                .filter(|(role, _)| !matches!(**role, "Tool Result" | "Tool Image"))
+                .collect();
             sorted_roles.sort_by_key(|a| std::cmp::Reverse(a.1.2));
             for (role, (count, bytes, tokens)) in sorted_roles {
-                let pct = if total_hist_tokens > 0 {
-                    *tokens as f64 * 100.0 / total_hist_tokens as f64
+                let pct = if message_tokens > 0 {
+                    *tokens as f64 * 100.0 / message_tokens as f64
                 } else {
                     0.0
                 };
@@ -687,17 +641,20 @@ impl Agent {
                     count, tokens, bytes
                 ));
             }
-            history_items.push(DiagnosticItem {
+            message_items.push(DiagnosticItem {
                 kind_label: "Summary Row".into(),
-                title: "History Breakdown by Role / Type".into(),
-                subtitle: format!("{total_hist_count} items across {} types", role_stats.len()),
-                tokens: total_hist_tokens,
-                bytes: total_hist_bytes,
+                title: "Messages Breakdown by Role".into(),
+                subtitle: format!("{message_count} messages & tool calls"),
+                tokens: message_tokens,
+                bytes: message_bytes,
                 preview: lines.join("\n"),
                 is_header: true,
                 rankable: false,
             });
         }
+        message_items.extend(raw_messages);
+
+        let mut tool_result_items = Vec::new();
         if !tool_stats.is_empty() {
             let mut sorted_tools: Vec<_> = tool_stats.into_iter().collect();
             sorted_tools.sort_by(|a, b| b.1.2.cmp(&a.1.2).then_with(|| a.0.cmp(&b.0)));
@@ -709,7 +666,7 @@ impl Agent {
                     count, tokens
                 ));
             }
-            history_items.push(DiagnosticItem {
+            tool_result_items.push(DiagnosticItem {
                 kind_label: "Summary Row".into(),
                 title: "Tool Result Footprint by Tool".into(),
                 subtitle: format!(
@@ -723,14 +680,15 @@ impl Agent {
                 rankable: false,
             });
         }
-        history_items.extend(raw_items.into_iter().map(|(_, item)| item));
+        tool_result_items.extend(raw_tool_results);
 
         Ok(HistoryBreakdown {
-            history_items,
+            message_items,
+            tool_result_items,
             loaded_skills,
-            history_tokens,
-            history_bytes,
-            history_count,
+            message_tokens,
+            message_bytes,
+            message_count,
             tool_result_tokens,
             tool_result_bytes,
             tool_result_count,

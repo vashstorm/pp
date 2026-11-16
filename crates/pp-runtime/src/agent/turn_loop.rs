@@ -151,6 +151,7 @@ impl Agent {
                 skills: &self.request_skills,
                 last_request: &mut self.last_request,
                 session_output_tokens: &mut self.session_output_tokens,
+                thinking_history: &mut self.thinking_history,
                 tools: &self.tools,
                 journal: &mut self.journal,
                 workflow: &mut self.workflow,

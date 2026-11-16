@@ -248,6 +248,7 @@ impl Agent {
             }
             self.tools.clear_caches();
             self.clear_session_usage();
+            self.thinking_history.clear();
             self.clear_session_cost();
             self.pending_project_load.clear();
             self.reported_project_load.clear();

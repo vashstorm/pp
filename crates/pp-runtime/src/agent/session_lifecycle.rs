@@ -95,6 +95,7 @@ impl Agent {
                 include_obfuscation: None,
             });
         }
+        let thinking_history = super::context_diagnosis::extract_thinking_from_replay(&replay);
         let mut agent = Self {
             role_route: None,
             client,
@@ -107,6 +108,7 @@ impl Agent {
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
             last_request: None,
             session_output_tokens: 0,
+            thinking_history,
             models,
             model_source,
             current_model: ModelChoice {
@@ -169,6 +171,7 @@ impl Agent {
                 .journal
                 .checkpoint(&metadata, (&agent.session).into(), &agent.workflow)?;
         }
+        agent.restore_session_usage();
         Ok(agent)
     }
 
@@ -302,6 +305,7 @@ impl Agent {
         // 导航到另一会话根：旧根的临时管道正文不能跨根复用。
         self.tools.reset_pipe_store();
         self.clear_session_usage();
+        self.thinking_history = super::context_diagnosis::extract_thinking_from_replay(&replay);
         if let Some(view) = &self.task_status.view {
             view.clear_title();
         }
@@ -339,6 +343,7 @@ impl Agent {
             debug.set_prompt_recorded(false);
         }
         self.replay.clear();
+        self.thinking_history.clear();
         self.clear_session_usage();
         self.clear_session_cost();
         self.pending_project_load.clear();

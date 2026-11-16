@@ -61,6 +61,35 @@ pub(super) fn record_usage(
     }
 }
 
+/// 收集流式事件中的思考内容，重试/失败时重置。
+pub(super) fn collect_thinking_event(
+    event: &AgentEvent,
+    thinking: &mut String,
+    summary: &mut String,
+) {
+    match event {
+        AgentEvent::AssistantStarted | AgentEvent::ModelAttemptFailed { .. } => {
+            thinking.clear();
+            summary.clear();
+        }
+        AgentEvent::ThinkingDelta { text } => thinking.push_str(text),
+        AgentEvent::ReasoningSummaryDelta { text } => summary.push_str(text),
+        _ => {}
+    }
+}
+
+/// 记录本轮已提交的 LLM 思考数据。
+pub(super) fn record_thinking(
+    history: &mut Vec<super::super::context_diagnosis::ThinkingEntry>,
+    thinking: String,
+    summary: String,
+) {
+    let entry = super::super::context_diagnosis::ThinkingEntry { thinking, summary };
+    if !entry.is_empty() {
+        history.push(entry);
+    }
+}
+
 /// Append a user message to either protocol's native history; shared by the
 /// agent loop and the fresh-context execution candidate session.
 pub(in crate::agent) fn append_input_to(

@@ -49,6 +49,25 @@ impl Agent {
         self.session_output_tokens = 0;
     }
 
+    /// 恢复会话时从 `stats.db` 回填最近一次普通请求用量与会话累计输出。
+    pub(in crate::agent) fn restore_session_usage(&mut self) {
+        let Some(id) = self.journal.id() else {
+            self.clear_session_usage();
+            return;
+        };
+        let file = self.journal.directory().join(format!("{id}.jsonl"));
+        match pp_stats::session_usage(self.journal.stats_database(), &file) {
+            Ok(restored) => {
+                self.last_request = restored.last_request;
+                self.session_output_tokens = restored.session_output_tokens;
+            }
+            Err(_) => {
+                tracing::warn!(event = "session_usage_history_unavailable");
+                self.clear_session_usage();
+            }
+        }
+    }
+
     pub(in crate::agent) fn publish_context(&self, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
         emit(AgentEvent::ContextUpdated {
             usage: self.context_usage()?,

@@ -2,7 +2,7 @@
 use super::super::hooks::{BatchCall, HookHalt, HookSession, PreparedBatch, prepare_batch};
 use super::batch::{batch_failure, not_executed};
 use super::plan_progress::{apply_plan_change, plan_file_touched, tracked_plan_path};
-use super::request::{push_developer, record_usage};
+use super::request::{collect_thinking_event, push_developer, record_thinking, record_usage};
 use super::*;
 
 pub(in crate::agent) fn completion_turn(
@@ -18,6 +18,7 @@ pub(in crate::agent) fn completion_turn(
         skills,
         last_request,
         session_output_tokens,
+        thinking_history,
         tools,
         journal,
         workflow,
@@ -33,9 +34,13 @@ pub(in crate::agent) fn completion_turn(
     );
     let request_started = std::time::Instant::now();
     tools.project_request_sent();
+    let mut turn_thinking = String::new();
+    let mut turn_summary = String::new();
     let response = {
         let journal = RefCell::new(&mut *journal);
         let emit = RefCell::new(&mut *emit);
+        let thinking_buf = RefCell::new(&mut turn_thinking);
+        let summary_buf = RefCell::new(&mut turn_summary);
         let mut sent = || {
             let mut journal = journal.borrow_mut();
             journal.sent(
@@ -71,6 +76,11 @@ pub(in crate::agent) fn completion_turn(
             journal.check()
         };
         let mut progress = |event| {
+            collect_thinking_event(
+                &event,
+                &mut thinking_buf.borrow_mut(),
+                &mut summary_buf.borrow_mut(),
+            );
             journal.borrow_mut().event(&event);
             (*emit.borrow_mut())(event);
         };
@@ -107,6 +117,7 @@ pub(in crate::agent) fn completion_turn(
             .messages
             .push(ChatCompletionRequestMessage::Assistant(response));
         record_usage(last_request, session_output_tokens, usage);
+        record_thinking(thinking_history, turn_thinking, turn_summary);
         return Ok(TurnOutcome::Completed {
             awaiting_user_answer,
             text,
@@ -287,6 +298,7 @@ pub(in crate::agent) fn completion_turn(
         push_developer(request, hook_context.join("\n\n"));
     }
     record_usage(last_request, session_output_tokens, usage);
+    record_thinking(thinking_history, turn_thinking, turn_summary);
     let hook_error = hook_halt.map(|halt| match halt {
         HookHalt::Stop(reason) => anyhow::anyhow!("{reason}"),
         HookHalt::Failure(error) => error,

@@ -163,7 +163,7 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 | `/test-ui` | Dev/test only: native Responses SSE reasoning and Markdown/code chunks at 12.5 mock tokens/s |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | Manage MCP servers without restarting |
 | `/compact`, `/new` | Compact context or start a new session |
-| `/context` | Inspect session context usage breakdown, largest items, and compaction boundaries (TUI, alias `/ctx`) |
+| `/context` | Inspect real session context breakdown (system, AGENTS.md, skills, built-in tools, MCP, messages, LLM thinking, tool results) and compaction boundaries (TUI, alias `/ctx`) |
 | `/resume`, `/tree` | Restore a session or navigate back through current history (TUI only) |
 | `/skills`, `/quit` | Manage skills or exit |
 

@@ -25,6 +25,22 @@ impl Tools {
         state.get_or_insert_with(|| State::new(&self.cwd)).refresh()
     }
 
+    /// 只读读取指定历史路径的活跃 `AGENTS.md` 链与范围摘要，不改变当前工具状态。
+    pub(crate) fn preview_project_documents(
+        &self,
+        paths: impl IntoIterator<Item = PathBuf>,
+    ) -> Result<(Vec<Document>, String)> {
+        let mut state = State::new(&self.cwd);
+        for path in paths {
+            if let Some(parent) = path.parent() {
+                state.remember(parent.to_owned());
+            }
+        }
+        let docs = state.refresh()?;
+        let scope = state.scope_summary();
+        Ok((docs, scope))
+    }
+
     pub(crate) fn project_scope_summary(&self) -> String {
         self.project_instructions
             .borrow()

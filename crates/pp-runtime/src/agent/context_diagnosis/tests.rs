@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::persistence::ReplayRecord;
 use crate::tools::Tools;
 use async_openai::types::responses::{
     EasyInputContent, FunctionCallOutput, FunctionCallOutputItemParam, InputContent, InputItem,
@@ -7,6 +8,8 @@ use async_openai::types::responses::{
 use pp_config::config::{EditMode, ModelCatalog};
 use pp_config::model_state::ModelState;
 use pp_config::models::Protocol;
+use pp_core::cancellation::CancellationToken;
+use pp_core::events::AgentEvent;
 use std::fs;
 
 fn test_catalog(
@@ -32,7 +35,7 @@ fn test_catalog(
 }
 
 #[test]
-fn empty_session_reports_prepared_baseline_agents_skills_and_system_parts_without_side_effects() {
+fn empty_session_reports_zero_stats_without_prefill_or_side_effects() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("cfg");
     let work = dir.path().join("work");
@@ -76,45 +79,17 @@ fn empty_session_reports_prepared_baseline_agents_skills_and_system_parts_withou
     let report = agent.diagnose_context().unwrap();
     assert!(report.empty_session);
     assert_eq!(report.active_tokens, 0);
-    assert!(report.prepared_tokens > 0);
-    assert_eq!(report.context_window, Some(128_000));
-    assert_eq!(report.protocol, "response");
-    assert!(matches!(
-        report.compaction.status,
-        CompactionStatus::NotEnoughHistory
-    ));
-    assert!(report.system_items.iter().any(|i| i.kind_label == "Base"));
-    assert!(
-        report
-            .system_items
-            .iter()
-            .any(|i| i.kind_label == "Runtime")
-    );
-    assert!(
-        report
-            .system_items
-            .iter()
-            .any(|i| i.kind_label == "Append" && i.preview.contains("Extra append instruction."))
-    );
-    assert!(
-        report
-            .agent_md_items
-            .iter()
-            .any(|i| i.kind_label == "AGENTS.md" && i.title == "AGENTS.md")
-    );
-    assert!(
-        report
-            .skill_items
-            .iter()
-            .any(|i| i.kind_label == "Skill Index" && i.title == "alpha")
-    );
-    assert!(
-        report
-            .tool_items
-            .iter()
-            .any(|i| i.kind_label == "Built-in" && i.title == "read")
-    );
-    assert!(!report.largest_items.is_empty());
+    assert_eq!(report.thinking_tokens, 0);
+    assert_eq!(report.thinking_turns, 0);
+    assert!(report.categories.is_empty());
+    assert!(report.system_items.is_empty());
+    assert!(report.agent_md_items.is_empty());
+    assert!(report.skill_items.is_empty());
+    assert!(report.tool_items.is_empty());
+    assert!(report.mcp_items.is_empty());
+    assert!(report.message_items.is_empty());
+    assert!(report.thinking_items.is_empty());
+    assert!(report.tool_result_items.is_empty());
     // 只读诊断不创建会话 JSONL。
     assert_eq!(
         fs::read_dir(&sessions)
@@ -126,22 +101,48 @@ fn empty_session_reports_prepared_baseline_agents_skills_and_system_parts_withou
 }
 
 #[test]
-fn history_diagnosis_links_tools_skills_reasoning_images_and_compaction_preview() {
+fn non_empty_session_splits_tools_mcp_thinking_and_excludes_unsent_agents_md() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("cfg");
     let work = dir.path().join("work");
     let sessions = dir.path().join("sessions");
     fs::create_dir_all(&cfg).unwrap();
-    fs::create_dir_all(&work).unwrap();
+    fs::create_dir_all(work.join("nested")).unwrap();
     fs::create_dir_all(&sessions).unwrap();
+
+    fs::write(work.join("AGENTS.md"), "Root sent rule.").unwrap();
+    // 激活但尚未随请求发送的 nested/AGENTS.md 不应计入真实统计。
+    fs::write(work.join("nested/AGENTS.md"), "Unsent nested rule.").unwrap();
 
     let catalog = test_catalog(&cfg, Protocol::Response, Some(100_000));
     let mut agent = Agent::new(
         catalog,
-        Tools::new(work, EditMode::Replace).unwrap(),
+        Tools::new(work.clone(), EditMode::Replace).unwrap(),
         sessions,
     )
     .unwrap();
+    agent.refresh_instructions().unwrap();
+    agent.tools.project_request_sent();
+    for doc in std::mem::take(&mut agent.pending_project_load) {
+        agent
+            .reported_project_load
+            .insert(doc.path.display().to_string(), doc.content);
+    }
+
+    // 在发送后才通过 read 激活 nested 目录（模拟读了子目录文件但尚未发送下一轮请求）。
+    fs::write(work.join("nested/file.txt"), "hello").unwrap();
+    let read_res = agent.tools.execute(
+        "read",
+        r#"{"path":"nested/file.txt"}"#,
+        "call_nested",
+        crate::tools::ToolPolicy::Execute {
+            workflow: &agent.workflow,
+        },
+        &CancellationToken::new(),
+        &mut |_| {},
+    );
+    assert!(read_res.stop_error.is_none());
+
     agent.last_request = Some(TokenUsage {
         input_tokens: 9500,
         output_tokens: 420,
@@ -149,6 +150,16 @@ fn history_diagnosis_links_tools_skills_reasoning_images_and_compaction_preview(
         cache_write_tokens: Some(800),
     });
     agent.session_output_tokens = 1234;
+
+    // 注入一个内置之外的 MCP 工具到当前 session 的 tools 列表，验证 Tools / MCP 分离。
+    let mut defs = agent.tools.all_definitions(agent.workflow.mode);
+    defs.push(async_openai::types::chat::FunctionObject {
+        name: "mcp__docs__search".into(),
+        description: Some("Search docs via MCP".into()),
+        parameters: Some(serde_json::json!({"type": "object", "properties": {}})),
+        strict: Some(false),
+    });
+    agent.session.set_tools(defs);
 
     let huge_skill_body = "S".repeat(15000);
     let encrypted = "E".repeat(4500);
@@ -239,8 +250,10 @@ fn history_diagnosis_links_tools_skills_reasoning_images_and_compaction_preview(
     assert!(report.active_tokens > 0);
     assert_eq!(report.last_request.unwrap().cached_tokens, Some(7200));
     assert_eq!(report.session_output_tokens, 1234);
-    assert!(report.compaction.has_existing_summary);
-    assert_eq!(report.compaction.total_exchanges, 2);
+    assert!(report.thinking_in_context);
+    assert!(report.thinking_tokens > 0);
+    assert_eq!(report.thinking_turns, 1);
+
     assert!(matches!(
         report.compaction.status,
         CompactionStatus::Ready {
@@ -250,38 +263,236 @@ fn history_diagnosis_links_tools_skills_reasoning_images_and_compaction_preview(
         }
     ));
 
-    let skill_result = report
-        .history_items
-        .iter()
-        .find(|i| i.kind_label == "Skill Body")
-        .expect("skill read tool result");
-    assert_eq!(skill_result.subtitle, "skill://alpha");
+    // Built-in Tools 与 MCP 严格拆分
+    assert!(
+        report
+            .tool_items
+            .iter()
+            .any(|i| i.kind_label == "Built-in" && i.title == "read")
+    );
+    assert!(!report.tool_items.iter().any(|i| i.kind_label == "MCP"));
+    assert!(
+        report
+            .mcp_items
+            .iter()
+            .any(|i| i.kind_label == "MCP" && i.title == "docs / search")
+    );
+    assert!(!report.mcp_items.iter().any(|i| i.kind_label == "Built-in"));
+
+    // 只统计已发送的 AGENTS.md，不统计未发送的 nested/AGENTS.md
+    assert!(
+        report
+            .agent_md_items
+            .iter()
+            .any(|i| i.kind_label == "AGENTS.md" && i.title == "AGENTS.md")
+    );
+    assert!(
+        !report
+            .agent_md_items
+            .iter()
+            .any(|i| i.title.contains("nested"))
+    );
+
+    // Thinking 独立分类，不混入 message_items
+    assert_eq!(report.thinking_items.len(), 2); // Summary Row + Turn 1
+    assert!(
+        report.thinking_items[1]
+            .preview
+            .contains("<encrypted_content: 4500 chars")
+    );
+    assert!(
+        !report
+            .message_items
+            .iter()
+            .any(|i| i.kind_label == "Reasoning" || i.kind_label == "Thinking")
+    );
+
+    // Tool Results 与 Messages 分离
+    assert!(
+        report
+            .tool_result_items
+            .iter()
+            .any(|i| i.kind_label == "Skill Body" && i.subtitle == "skill://alpha")
+    );
     assert!(
         report
             .skill_items
             .iter()
             .any(|i| i.kind_label == "Skill Body" && i.title == "skill://alpha")
     );
-
-    let reasoning_item = report
-        .history_items
-        .iter()
-        .find(|i| i.kind_label == "Reasoning")
-        .expect("reasoning item");
     assert!(
-        reasoning_item
-            .preview
-            .contains("<encrypted_content: 4500 chars")
+        report
+            .message_items
+            .iter()
+            .any(|i| i.kind_label == "User" && i.preview.contains("base64 image data"))
+    );
+    assert_eq!(report.categories.len(), 8);
+}
+
+#[test]
+fn completion_thinking_and_resumed_session_usage_are_diagnosed() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("cfg");
+    let work = dir.path().join("work");
+    let sessions = dir.path().join("sessions");
+    fs::create_dir_all(&cfg).unwrap();
+    fs::create_dir_all(&work).unwrap();
+    fs::create_dir_all(&sessions).unwrap();
+
+    fs::write(work.join("AGENTS.md"), "Keep completion tests accurate.").unwrap();
+
+    let catalog = test_catalog(&cfg, Protocol::Completion, Some(64_000));
+    let mut agent = Agent::new(
+        catalog.clone(),
+        Tools::new(work.clone(), EditMode::Replace).unwrap(),
+        sessions.clone(),
+    )
+    .unwrap();
+    agent.refresh_instructions().unwrap();
+    let system = agent.session_system_text().unwrap().to_owned();
+    agent.append_user("Explain thinking stats");
+    let metadata = crate::agent::persistence::Metadata {
+        role_route: None,
+        cwd: &work,
+        model_reference: "test/demo",
+        think_level: ThinkLevel::Medium,
+        edit_mode: EditMode::Replace,
+        tool_limits: agent.tools.limits,
+        base_system: &agent.base_system,
+        prompt_source: agent.prompt_source.as_ref(),
+    };
+
+    // 构造一条真实的 Completion 历史并持久化到 JSONL + stats.db
+    agent
+        .journal
+        .sent(
+            &metadata,
+            (&agent.session).into(),
+            &agent.workflow,
+            Some("Explain thinking stats"),
+            None,
+        )
+        .unwrap();
+    let session_id = agent.session_id().unwrap().to_owned();
+    let session_file = sessions.join(format!("{session_id}.jsonl"));
+
+    // 模拟加载的项目规则事件 + 流式思考 + 助手回复
+    agent.journal.event(&AgentEvent::ProjectInstructionsLoaded {
+        path: work.join("AGENTS.md").display().to_string(),
+        content: "Keep completion tests accurate.".into(),
+    });
+    agent.journal.event(&AgentEvent::AssistantStarted);
+    agent.journal.event(&AgentEvent::ThinkingDelta {
+        text: "Step 1: inspect session.\nStep 2: aggregate thinking.".into(),
+    });
+    agent.journal.event(&AgentEvent::AssistantFinished {
+        text: "Here is the answer.".into(),
+    });
+    if let Session::Completion(req) = &mut agent.session {
+        req.messages.push(
+            async_openai::types::chat::ChatCompletionRequestMessage::Assistant(
+                async_openai::types::chat::ChatCompletionRequestAssistantMessage {
+                    content: Some("Here is the answer.".into()),
+                    ..Default::default()
+                },
+            ),
+        );
+    }
+    agent.journal.commit((&agent.session).into()).unwrap();
+    drop(agent);
+
+    // 写入一条对应的服务端请求用量到 stats.db
+    let stats_db = sessions.join(".stats/stats.db");
+    let ctx = pp_stats::RequestContext {
+        model_reference: "test/demo".into(),
+        database: stats_db.clone(),
+        cwd: work.clone(),
+        purpose: "task",
+        session_file: Some(session_file),
+        unlinked_requests: None,
+        first_request: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        skills: Vec::new(),
+    };
+    let mut obs = pp_stats::Observation::new();
+    obs.usage = Some(TokenUsage {
+        input_tokens: 1200,
+        output_tokens: 340,
+        cached_tokens: Some(600),
+        cache_write_tokens: None,
+    });
+    pp_stats::save(
+        &ctx,
+        "demo-model",
+        "chat-completions",
+        obs,
+        std::time::Instant::now(),
+        &Ok(()),
     );
 
-    let user_img_item = report
-        .history_items
-        .iter()
-        .find(|i| i.kind_label == "User" && i.preview.contains("base64 image data"))
-        .expect("sanitized image preview");
-    assert!(!user_img_item.preview.contains("AAAA"));
+    // 验证通过 Agent::restore 恢复后的 /context 统计（含 Thinking、AGENTS.md、服务端 Usage）
+    let restored = crate::agent::persistence::load(
+        &sessions,
+        &sessions.join(".locks"),
+        Some(&session_id),
+        true,
+        &stats_db,
+    )
+    .unwrap();
+    let restored_agent = Agent::restore(
+        ModelState::shared(catalog),
+        Tools::new(work, EditMode::Replace).unwrap(),
+        restored,
+    )
+    .unwrap();
+    assert_eq!(restored_agent.session_system_text().unwrap(), system);
 
-    assert_eq!(report.largest_items[0].kind_label, "Skill Body");
-    let sum_categories: u64 = report.categories.iter().map(|c| c.tokens).sum();
-    assert!(sum_categories > 0);
+    let report = restored_agent.diagnose_context().unwrap();
+    assert!(!report.empty_session);
+    assert!(!report.thinking_in_context);
+    assert_eq!(report.thinking_turns, 1);
+    assert!(report.thinking_tokens > 0);
+    assert!(
+        report
+            .thinking_items
+            .iter()
+            .any(|i| i.preview.contains("Step 1: inspect session."))
+    );
+    assert_eq!(
+        report.last_request,
+        Some(TokenUsage {
+            input_tokens: 1200,
+            output_tokens: 340,
+            cached_tokens: Some(600),
+            cache_write_tokens: None,
+        })
+    );
+    assert_eq!(report.session_output_tokens, 340);
+    assert!(
+        report
+            .agent_md_items
+            .iter()
+            .any(|i| i.kind_label == "AGENTS.md" && i.title == "AGENTS.md")
+    );
+
+    // 验证显式提取函数也能正确忽略失败重试的思考
+    let records = vec![
+        ReplayRecord::Event(AgentEvent::AssistantStarted),
+        ReplayRecord::Event(AgentEvent::ThinkingDelta {
+            text: "failed attempt thought".into(),
+        }),
+        ReplayRecord::Event(AgentEvent::ModelAttemptFailed {
+            attempt: 1,
+            model: "demo".into(),
+            error: "503".into(),
+        }),
+        ReplayRecord::Event(AgentEvent::AssistantStarted),
+        ReplayRecord::Event(AgentEvent::ThinkingDelta {
+            text: "successful thought".into(),
+        }),
+        ReplayRecord::Event(AgentEvent::AssistantFinished { text: "ok".into() }),
+    ];
+    let extracted = extract_thinking_from_replay(&records);
+    assert_eq!(extracted.len(), 1);
+    assert_eq!(extracted[0].thinking, "successful thought");
+    let _ = CancellationToken::new();
 }

@@ -47,6 +47,39 @@ impl Store {
         Ok(result)
     }
 
+    pub(super) fn session_usage(&self, session: &Path) -> Result<super::SessionUsage> {
+        let session_path = session.to_string_lossy();
+        let mut statement = self.conn.prepare(
+            "SELECT input_tokens, output_tokens, cached_tokens, cache_write_tokens \
+             FROM requests \
+             WHERE session_file=?1 AND purpose='task' AND status='ok' \
+             ORDER BY id ASC",
+        )?;
+        let mut rows = statement.query(params![session_path.as_ref()])?;
+        let mut usage = super::SessionUsage::default();
+        while let Some(row) = rows.next()? {
+            let input: Option<i64> = row.get(0)?;
+            let output: Option<i64> = row.get(1)?;
+            let cached: Option<i64> = row.get(2)?;
+            let cache_write: Option<i64> = row.get(3)?;
+            if let Some(out) = output.and_then(|v| u64::try_from(v).ok()) {
+                usage.session_output_tokens = usage.session_output_tokens.saturating_add(out);
+            }
+            if let (Some(input_tokens), Some(output_tokens)) = (
+                input.and_then(|v| u64::try_from(v).ok()),
+                output.and_then(|v| u64::try_from(v).ok()),
+            ) {
+                usage.last_request = Some(pp_core::context::TokenUsage {
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens: cached.and_then(|v| u64::try_from(v).ok()),
+                    cache_write_tokens: cache_write.and_then(|v| u64::try_from(v).ok()),
+                });
+            }
+        }
+        Ok(usage)
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with_models(path, pp_config::config::global_dir()?.join("models.yml"))
     }

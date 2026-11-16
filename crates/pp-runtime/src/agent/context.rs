@@ -848,6 +848,24 @@ impl Agent {
         };
         // 压缩只是重写历史，不改变会话身份：会话累计输出保留。
         self.last_request = None;
+        let retained_turns = match &self.session {
+            Session::Completion(request) => request
+                .messages
+                .iter()
+                .filter(|m| matches!(m, ChatCompletionRequestMessage::Assistant(_)))
+                .count(),
+            Session::Response(request) => match &request.input {
+                InputParam::Items(items) => items
+                    .iter()
+                    .filter(|i| matches!(i, InputItem::Item(Item::Reasoning(_))))
+                    .count(),
+                _ => 0,
+            },
+        };
+        super::context_diagnosis::trim_for_retained_turns(
+            &mut self.thinking_history,
+            retained_turns,
+        );
         if fallback_used.get() {
             self.activate_fallback(emit)?;
         }

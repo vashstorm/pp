@@ -1,4 +1,4 @@
-//! `/context` 独立 TUI 面板渲染：顶部容量/缓存摘要、左侧分类栏、右上占比列表与右下正文预览。
+//! `/context` 独立 TUI 面板渲染：顶部核心指标、左侧分类栏、右侧全高列表或条目详情视图。
 
 use super::*;
 use crate::tui::{
@@ -88,7 +88,7 @@ impl Panel {
         };
 
         let line1 = header_capacity_line(report, area.width, p);
-        let line2 = header_cache_and_compact_line(report, p);
+        let line2 = header_usage_line(report, p);
         frame.render_widget(line1, Rect::new(area.x, area.y, area.width, 1));
         frame.render_widget(line2, Rect::new(area.x, area.y + 1, area.width, 1));
         frame.render_widget(
@@ -101,6 +101,17 @@ impl Panel {
     }
 
     fn draw_body(&mut self, frame: &mut Frame, area: Rect, p: &Palette) {
+        if let Some(report) = &self.report
+            && report.empty_session
+        {
+            self.sidebar_area = Rect::default();
+            self.list_area = Rect::default();
+            self.detail_area = Rect::default();
+            self.detail_max_scroll = 0;
+            draw_empty_state(frame, area, report, p);
+            return;
+        }
+
         let sb_width = sidebar_width(area.width);
         let right = if sb_width > 0 {
             let cols = Layout::default()
@@ -135,24 +146,29 @@ impl Panel {
             narrow[1]
         };
 
-        let list_height = ((right.height * 45) / 100)
-            .max(4)
-            .min(right.height.saturating_sub(4));
-        let panes = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(list_height),
-                Constraint::Length(1),
-                Constraint::Min(2),
-            ])
-            .split(right);
-
-        self.list_area = panes[0];
-        self.preview_area = panes[2];
-
-        self.draw_list(frame, panes[0], p);
-        self.draw_preview_divider(frame, panes[1], p);
-        self.draw_preview(frame, panes[2], p);
+        match self.view {
+            ViewMode::List => {
+                self.detail_area = Rect::default();
+                self.detail_max_scroll = 0;
+                let panes = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(2), Constraint::Min(2)])
+                    .split(right);
+                self.draw_list_header(frame, panes[0], p);
+                self.list_area = panes[1];
+                self.draw_list(frame, panes[1], p);
+            }
+            ViewMode::Detail => {
+                self.list_area = Rect::default();
+                let panes = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(2), Constraint::Min(2)])
+                    .split(right);
+                self.draw_detail_header(frame, panes[0], p);
+                self.detail_area = panes[1];
+                self.draw_detail_body(frame, panes[1], p);
+            }
+        }
     }
 
     fn draw_sidebar(&self, frame: &mut Frame, area: Rect, p: &Palette) {
@@ -202,6 +218,59 @@ impl Panel {
         frame.render_widget(Paragraph::new(lines), area);
     }
 
+    fn draw_list_header(&self, frame: &mut Frame, area: Rect, p: &Palette) {
+        let summary_text = match &self.report {
+            None => " Loading...".to_owned(),
+            Some(report) if self.category == Category::Overview => format!(
+                " Overview · {} categories · ~{} active tokens (Enter to open)",
+                report.categories.len(),
+                abbreviate_tokens(report.active_tokens)
+            ),
+            Some(report) => {
+                let tokens = self.category_tokens(self.category);
+                let items = self.current_items().len();
+                if self.category == Category::Thinking && !report.thinking_in_context {
+                    format!(
+                        " {} · {} turn(s) · ~{} tokens (model output · Enter for detail)",
+                        self.category.label(),
+                        report.thinking_turns,
+                        abbreviate_tokens(tokens),
+                    )
+                } else {
+                    let denom = report.active_tokens.max(1) as f64;
+                    let pct = tokens as f64 * 100.0 / denom;
+                    format!(
+                        " {} · {} entries · ~{} tokens ({pct:.1}% of context · Enter for detail)",
+                        self.category.label(),
+                        items,
+                        abbreviate_tokens(tokens),
+                    )
+                }
+            }
+        };
+        let sort_badge = if self.report.is_some() {
+            format!(" [Sort: {}] ", self.sort.label())
+        } else {
+            String::new()
+        };
+        let width = usize::from(area.width);
+        let fill = width.saturating_sub(sort_badge.chars().count());
+        frame.render_widget(
+            Line::styled(
+                truncate_chars(&summary_text, width),
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+            ),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+        frame.render_widget(
+            Line::from(vec![
+                Span::styled("─".repeat(fill), Style::default().fg(p.panel_border)),
+                Span::styled(sort_badge, Style::default().fg(p.accent)),
+            ]),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
+    }
+
     fn draw_list(&mut self, frame: &mut Frame, area: Rect, p: &Palette) {
         let visible = usize::from(area.height).max(1);
         self.list_visible = visible;
@@ -210,7 +279,7 @@ impl Panel {
             let msg = if self.loading {
                 "Loading..."
             } else {
-                "No items in this category."
+                "No items recorded in this category."
             };
             frame.render_widget(
                 Paragraph::new(Line::styled(
@@ -221,25 +290,44 @@ impl Panel {
             );
             return;
         }
+        let sep_idx = self.overview_separator_index();
+        let total_visual = item_count + usize::from(sep_idx.is_some());
         if self.list_index >= item_count {
             self.list_index = item_count - 1;
         }
-        if self.list_index < self.list_scroll {
-            self.list_scroll = self.list_index;
-        } else if self.list_index >= self.list_scroll + visible {
-            self.list_scroll = self.list_index + 1 - visible;
+        let selected_visual = if sep_idx.is_some_and(|sep| self.list_index >= sep) {
+            self.list_index + 1
+        } else {
+            self.list_index
+        };
+        let max_scroll = total_visual.saturating_sub(visible);
+        if self.list_scroll > max_scroll {
+            self.list_scroll = max_scroll;
+        }
+        if selected_visual < self.list_scroll {
+            self.list_scroll = selected_visual;
+        } else if selected_visual >= self.list_scroll + visible {
+            self.list_scroll = selected_visual + 1 - visible;
         }
         let items = self.current_items();
-
-        let denom = self.report.as_ref().map_or(1, |r| r.prepared_tokens.max(1)) as f64;
+        let denom = self.report.as_ref().map_or(1, |r| r.active_tokens.max(1)) as f64;
         let width = usize::from(area.width);
         let mut lines = Vec::with_capacity(visible);
-        for (idx, item) in items
-            .iter()
-            .enumerate()
-            .skip(self.list_scroll)
-            .take(visible)
-        {
+
+        for visual_idx in self.list_scroll..(self.list_scroll + visible).min(total_visual) {
+            if sep_idx == Some(visual_idx) {
+                lines.push(Line::styled(
+                    "─".repeat(width),
+                    Style::default().fg(p.panel_border),
+                ));
+                continue;
+            }
+            let idx = if sep_idx.is_some_and(|sep| visual_idx > sep) {
+                visual_idx - 1
+            } else {
+                visual_idx
+            };
+            let item = items[idx];
             let selected = idx == self.list_index;
             let focused_sel = selected && self.focus == Focus::List;
             let row_style = if focused_sel {
@@ -258,12 +346,25 @@ impl Panel {
 
             let prefix = if selected { "❯ " } else { "  " };
             let kind = format!("[{}]", item.kind_label);
-            let tok_str = format!("~{}", abbreviate_tokens(item.tokens));
+            let tok_str = if item.tokens > 0 {
+                format!("~{}", abbreviate_tokens(item.tokens))
+            } else {
+                "0".into()
+            };
+            let in_ctx = self.current_row_in_context(idx);
             let pct = item.tokens as f64 * 100.0 / denom;
-            let pct_str = format!("{pct:>4.1}%");
+            let pct_str = if in_ctx {
+                format!("{pct:>4.1}%")
+            } else {
+                "  gen".into()
+            };
             let show_bar = width >= 66;
             let bar = if show_bar {
-                format!(" {}", proportion_bar(pct / 100.0, 8))
+                if in_ctx {
+                    format!(" {}", proportion_bar(pct / 100.0, 8))
+                } else {
+                    " ────────".into()
+                }
             } else {
                 String::new()
             };
@@ -306,64 +407,66 @@ impl Panel {
         frame.render_widget(Paragraph::new(lines), area);
     }
 
-    fn draw_preview_divider(&self, frame: &mut Frame, area: Rect, p: &Palette) {
-        let sort_badge = if !matches!(self.category, Category::Overview | Category::Largest) {
-            format!(" [Sort: {}] ", self.sort.label())
-        } else {
-            String::new()
-        };
-        let item_label = self
+    fn draw_detail_header(&self, frame: &mut Frame, area: Rect, p: &Palette) {
+        let width = usize::from(area.width);
+        let back_hint = " [Esc/Backspace: Back] ";
+        let title_str = self
             .current_items()
             .get(self.list_index)
             .map(|item| {
                 format!(
-                    " Preview: {} (~{} tok, {} B) ",
+                    " [{}] {} (~{} tok, {} B)",
+                    item.kind_label,
                     display_text(&item.title),
                     item.tokens,
                     item.bytes
                 )
             })
-            .unwrap_or_else(|| " Preview ".to_owned());
-        let focus_tag = if self.focus == Focus::Preview {
-            "[ACTIVE] "
-        } else {
-            ""
-        };
-        let width = usize::from(area.width);
-        let title_str = truncate_chars(
-            &format!("{focus_tag}{item_label}"),
-            width.saturating_sub(sort_badge.chars().count() + 2),
-        );
-        let fill = width.saturating_sub(title_str.chars().count() + sort_badge.chars().count());
-        let border_fg = if self.focus == Focus::Preview {
-            p.accent
-        } else {
-            p.panel_border
-        };
+            .unwrap_or_else(|| " Detail ".to_owned());
+        let subtitle_str = self
+            .current_items()
+            .get(self.list_index)
+            .map(|item| display_text(&item.subtitle).into_owned())
+            .unwrap_or_default();
+
+        let title_budget = width.saturating_sub(back_hint.chars().count() + 1);
+        let left_title = truncate_chars(&title_str, title_budget);
+        let gap = width.saturating_sub(left_title.chars().count() + back_hint.chars().count());
         frame.render_widget(
             Line::from(vec![
                 Span::styled(
-                    title_str,
-                    Style::default()
-                        .fg(if self.focus == Focus::Preview {
-                            p.accent
-                        } else {
-                            p.text
-                        })
-                        .add_modifier(Modifier::BOLD),
+                    left_title,
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("─".repeat(fill), Style::default().fg(border_fg)),
-                Span::styled(sort_badge, Style::default().fg(p.accent)),
+                Span::styled(" ".repeat(gap), Style::default()),
+                Span::styled(back_hint, Style::default().fg(p.muted)),
             ]),
-            area,
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+
+        let sub_tag = if subtitle_str.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " {} ",
+                truncate_chars(&subtitle_str, width.saturating_sub(6))
+            )
+        };
+        let fill = width.saturating_sub(sub_tag.chars().count());
+        frame.render_widget(
+            Line::from(vec![
+                Span::styled(sub_tag, Style::default().fg(p.muted)),
+                Span::styled("─".repeat(fill), Style::default().fg(p.panel_border)),
+            ]),
+            Rect::new(area.x, area.y + 1, area.width, 1),
         );
     }
 
-    fn draw_preview(&mut self, frame: &mut Frame, area: Rect, p: &Palette) {
-        self.preview_visible = usize::from(area.height).max(1);
+    fn draw_detail_body(&mut self, frame: &mut Frame, area: Rect, p: &Palette) {
+        self.detail_visible = usize::from(area.height).max(1);
         let Some(item) = self.current_items().get(self.list_index).copied() else {
-            self.preview_max_scroll = 0;
-            self.preview_scroll = 0;
+            self.detail_max_scroll = 0;
+            self.detail_scroll = 0;
             return;
         };
         let sanitized = display_text(&item.preview).into_owned();
@@ -371,11 +474,11 @@ impl Panel {
             .style(Style::default().fg(p.text))
             .wrap(Wrap { trim: false });
         let total_lines = para.line_count(area.width.max(1));
-        self.preview_max_scroll = total_lines.saturating_sub(self.preview_visible);
-        self.preview_scroll = self.preview_scroll.min(self.preview_max_scroll);
+        self.detail_max_scroll = total_lines.saturating_sub(self.detail_visible);
+        self.detail_scroll = self.detail_scroll.min(self.detail_max_scroll);
 
         frame.render_widget(
-            para.scroll((self.preview_scroll.min(u16::MAX as usize) as u16, 0)),
+            para.scroll((self.detail_scroll.min(u16::MAX as usize) as u16, 0)),
             area,
         );
     }
@@ -383,24 +486,38 @@ impl Panel {
     fn draw_footer(&self, frame: &mut Frame, area: Rect, p: &Palette) {
         let line = if let Some(error) = &self.error {
             Line::styled(error.as_str(), Style::default().fg(p.removed))
+        } else if self.report.as_ref().is_some_and(|r| r.empty_session) {
+            Line::styled(
+                "No messages sent yet · r refresh · Esc close",
+                Style::default().fg(p.muted),
+            )
+        } else if self.view == ViewMode::Detail {
+            let scroll_info = if self.detail_max_scroll > 0 {
+                format!(
+                    "Detail {}/{} · ",
+                    self.detail_scroll + 1,
+                    self.detail_max_scroll + 1
+                )
+            } else {
+                "Detail · ".into()
+            };
+            Line::styled(
+                format!("{scroll_info}↑↓/PgUp/PgDn scroll · Esc/Backspace back · r refresh"),
+                Style::default().fg(p.muted),
+            )
         } else {
             let focus_hint = match self.focus {
                 Focus::Sidebar => "Focus: Category",
-                Focus::List => "Focus: Items",
-                Focus::Preview => "Focus: Preview",
+                Focus::List => "Focus: List",
             };
-            let scroll_info = if self.preview_max_scroll > 0 {
-                format!(
-                    " · Preview {}/{}",
-                    self.preview_scroll + 1,
-                    self.preview_max_scroll + 1
-                )
+            let back_hint = if self.category != Category::Overview {
+                " · Backspace overview"
             } else {
-                String::new()
+                ""
             };
             Line::styled(
                 format!(
-                    "{focus_hint}{scroll_info} · Tab/←/→ focus · ↑↓ move/scroll · Enter open/preview · s sort · r refresh · Esc close"
+                    "{focus_hint} · Tab/←/→ focus · ↑↓ move · Enter open · s sort{back_hint} · r refresh · Esc close"
                 ),
                 Style::default().fg(p.muted),
             )
@@ -409,10 +526,63 @@ impl Panel {
     }
 }
 
+fn draw_empty_state(frame: &mut Frame, area: Rect, report: &ContextReport, p: &Palette) {
+    let lines = vec![
+        Line::raw(""),
+        Line::styled(
+            "  No Context Data Yet",
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(
+            "  No messages have been sent in this session yet.",
+            Style::default().fg(p.text),
+        ),
+        Line::styled(
+            "  Context statistics are collected from actual session requests only.",
+            Style::default().fg(p.muted),
+        ),
+        Line::raw(""),
+        Line::styled(
+            "  Send your first message, or use /resume to load an existing session.",
+            Style::default().fg(p.muted),
+        ),
+        Line::raw(""),
+        Line::styled(
+            format!(
+                "  Current Model: {} ({}) · Protocol: {} · Mode: {} · Thinking: {}",
+                display_text(&report.model_reference),
+                display_text(&report.model_name),
+                report.protocol,
+                report.work_mode,
+                report.think_level.label(),
+            ),
+            Style::default().fg(p.muted),
+        ),
+        Line::styled(
+            format!(
+                "  Auto-Compact: {}",
+                if !report.auto_compact {
+                    "off".into()
+                } else if let Some(w) = report.context_window {
+                    format!(
+                        "on at {}% ({} window)",
+                        report.threshold_percent,
+                        abbreviate_tokens(w)
+                    )
+                } else {
+                    "inactive (context_window unconfigured)".into()
+                }
+            ),
+            Style::default().fg(p.muted),
+        ),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
 fn header_capacity_line(report: &ContextReport, width: u16, p: &Palette) -> Line<'static> {
     let mut spans = Vec::new();
     let active_str = abbreviate_tokens(report.active_tokens);
-    let prep_str = abbreviate_tokens(report.prepared_tokens);
     match report.context_window {
         Some(window) => {
             let ratio = report.active_tokens as f64 / window as f64;
@@ -433,58 +603,57 @@ fn header_capacity_line(report: &ContextReport, width: u16, p: &Palette) -> Line
             }
             spans.push(Span::styled(
                 format!(
-                    "Active: ~{active_str}/{} ({pct:.1}%)",
+                    "Context: ~{active_str}/{} ({pct:.1}%)",
                     abbreviate_tokens(window)
                 ),
                 Style::default().fg(p.text).add_modifier(Modifier::BOLD),
             ));
-            if report.empty_session || report.prepared_tokens != report.active_tokens {
-                spans.push(Span::styled(
-                    format!(" · Prepared: ~{prep_str}"),
-                    Style::default().fg(p.accent),
-                ));
-            }
-            let compact_str = if report.auto_compact {
-                let threshold_tokens = window * u64::from(report.threshold_percent) / 100;
-                let headroom = threshold_tokens.saturating_sub(report.active_tokens);
-                format!(
-                    " · Auto-compact: {}% (headroom ~{})",
-                    report.threshold_percent,
-                    abbreviate_tokens(headroom)
-                )
-            } else {
-                " · Auto-compact: off".into()
-            };
-            spans.push(Span::styled(compact_str, Style::default().fg(p.muted)));
         }
         None => {
             spans.push(Span::styled(
-                format!("Active: ~{active_str} / ?"),
+                format!("Context: ~{active_str} / ?"),
                 Style::default().fg(p.text).add_modifier(Modifier::BOLD),
-            ));
-            if report.empty_session || report.prepared_tokens != report.active_tokens {
-                spans.push(Span::styled(
-                    format!(" · Prepared: ~{prep_str}"),
-                    Style::default().fg(p.accent),
-                ));
-            }
-            spans.push(Span::styled(
-                " · context_window unconfigured",
-                Style::default().fg(p.muted),
             ));
         }
     }
+    let compact_str = if report.empty_session {
+        " · No messages sent yet".into()
+    } else if !report.auto_compact {
+        " · Auto-compact: off".into()
+    } else if report.context_window.is_some() {
+        format!(" · Auto-compact: {}%", report.threshold_percent)
+    } else {
+        " · context_window unconfigured".into()
+    };
+    spans.push(Span::styled(compact_str, Style::default().fg(p.muted)));
     Line::from(spans)
 }
 
-fn header_cache_and_compact_line(report: &ContextReport, p: &Palette) -> Line<'static> {
+fn header_usage_line(report: &ContextReport, p: &Palette) -> Line<'static> {
+    if report.empty_session {
+        return Line::styled(
+            format!(
+                "Model: {} · Mode: {} · Thinking: {} · Auto-compact: {}",
+                display_text(&report.model_reference),
+                report.work_mode,
+                report.think_level.label(),
+                if report.auto_compact {
+                    format!("{}%", report.threshold_percent)
+                } else {
+                    "off".into()
+                }
+            ),
+            Style::default().fg(p.muted),
+        );
+    }
+
     let mut spans = Vec::new();
     match report.last_request {
         Some(usage) => {
             spans.push(Span::styled("Last req: ", Style::default().fg(p.muted)));
             spans.push(Span::styled(
                 format!(
-                    "in {} / out {}",
+                    "in {} · out {}",
                     abbreviate_tokens(usage.input_tokens),
                     abbreviate_tokens(usage.output_tokens)
                 ),
@@ -500,38 +669,41 @@ fn header_cache_and_compact_line(report: &ContextReport, p: &Palette) -> Line<'s
                     String::new()
                 };
                 spans.push(Span::styled(
-                    format!(" · cache read {}{hit}", abbreviate_tokens(cached)),
+                    format!(" · cache {}{hit}", abbreviate_tokens(cached)),
                     Style::default().fg(p.status_cache_read),
-                ));
-            }
-            if let Some(write) = usage.cache_write_tokens {
-                spans.push(Span::styled(
-                    format!(" / write {}", abbreviate_tokens(write)),
-                    Style::default().fg(p.status_cache_write),
                 ));
             }
         }
         None => {
-            spans.push(Span::styled(
-                "Last req: none yet",
-                Style::default().fg(p.muted),
-            ));
+            spans.push(Span::styled("Last req: none", Style::default().fg(p.muted)));
         }
     }
-    let compact_summary = match &report.compaction.status {
-        CompactionStatus::NotEnoughHistory => " · Compact: <2 exchanges".into(),
-        CompactionStatus::UnsupportedHistory => " · Compact: unsupported history".into(),
-        CompactionStatus::Ready {
-            compressible_exchanges,
-            compressible_tokens,
-            retained_exchanges,
-            ..
-        } => format!(
-            " · Compact: {compressible_exchanges} exch (~{}) → keep {retained_exchanges}",
-            abbreviate_tokens(*compressible_tokens)
+
+    spans.push(Span::styled(
+        format!(
+            " · Session out: {}",
+            abbreviate_tokens(report.session_output_tokens)
         ),
+        Style::default().fg(p.muted),
+    ));
+
+    let thinking_str = if report.thinking_turns > 0 {
+        format!(
+            " · Thinking: ~{} ({}t)",
+            abbreviate_tokens(report.thinking_tokens),
+            report.thinking_turns
+        )
+    } else {
+        " · Thinking: 0".into()
     };
-    spans.push(Span::styled(compact_summary, Style::default().fg(p.muted)));
+    spans.push(Span::styled(
+        thinking_str,
+        Style::default().fg(if report.thinking_turns > 0 {
+            p.code
+        } else {
+            p.muted
+        }),
+    ));
     Line::from(spans)
 }
 
@@ -562,7 +734,7 @@ fn kind_color(kind: &str, p: &Palette) -> Color {
         "Skill Index" | "Skill Body" => p.md_code,
         "Tool Result" | "Tool Image" => p.status_output,
         "Tool Call" => p.bash_title,
-        "Reasoning" => p.code,
+        "Thinking" => p.code,
         "Summary" => p.plan_mode,
         "Summary Row" => p.accent,
         "User" => p.status_input,

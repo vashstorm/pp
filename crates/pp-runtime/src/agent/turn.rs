@@ -46,6 +46,8 @@ pub(super) struct TurnResources<'a> {
     pub(super) last_request: &'a mut Option<TokenUsage>,
     /// 会话累计 output tokens，与 `last_request` 同步更新。
     pub(super) session_output_tokens: &'a mut u64,
+    /// 当前会话已提交轮次的思考/推理记录。
+    pub(super) thinking_history: &'a mut Vec<super::context_diagnosis::ThinkingEntry>,
     pub(super) tools: &'a Tools,
     pub(super) journal: &'a mut SessionJournal,
     pub(super) workflow: &'a mut pp_core::plan::WorkflowState,

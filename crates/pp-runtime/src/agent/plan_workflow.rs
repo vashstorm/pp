@@ -401,6 +401,7 @@ impl Agent {
         Ok(self.workflow.clone())
     }
 
+    #[cfg(test)]
     pub(super) fn resumed_session(
         &self,
         checkpoint: persistence::Checkpoint,
@@ -408,6 +409,43 @@ impl Agent {
         effort: ThinkLevel,
         definitions: Vec<async_openai::types::chat::FunctionObject>,
     ) -> Result<(Session, WorkflowState)> {
+        self.resumed_session_with_loads(
+            checkpoint,
+            choice,
+            effort,
+            definitions,
+            &Default::default(),
+            false,
+        )
+    }
+
+    pub(super) fn resumed_session_with_loads(
+        &self,
+        checkpoint: persistence::Checkpoint,
+        choice: &ModelChoice,
+        effort: ThinkLevel,
+        definitions: Vec<async_openai::types::chat::FunctionObject>,
+        reported_loads: &super::turn::ReportedProjectLoads,
+        preserve_system: bool,
+    ) -> Result<(Session, WorkflowState)> {
+        let saved_system = match &checkpoint.session {
+            Session::Completion(request) => match request.messages.first() {
+                Some(super::ChatCompletionRequestMessage::System(message)) => {
+                    match &message.content {
+                        async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(
+                            text,
+                        ) if !text.trim().is_empty() => Some(text.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
+            Session::Response(request) => request
+                .instructions
+                .as_ref()
+                .filter(|text| !text.trim().is_empty())
+                .cloned(),
+        };
         let same_model = checkpoint.model_reference == choice.reference
             && matches!(&checkpoint.session, Session::Response(request)
                 if choice.protocol == Protocol::Response
@@ -425,12 +463,49 @@ impl Agent {
                 self.tools.edit_mode(),
             )?
         };
-        let system = self.compose_prompt(
-            &crate::subagent::catalog::workflow_instructions(&checkpoint.workflow),
-            checkpoint.workflow.mode_name(),
-            &choice.model,
-            definitions.iter().map(|tool| tool.name.clone()).collect(),
-        )?;
+        let system = if preserve_system
+            && checkpoint.model_reference == choice.reference
+            && let Some(saved) = saved_system
+        {
+            saved
+        } else {
+            let (documents, scope_summary) = self
+                .tools
+                .preview_project_documents(reported_loads.keys().map(std::path::PathBuf::from))?;
+            let project = scope_summary + &project_instructions::render(&documents);
+            let skills = self
+                .tools
+                .skills
+                .lock()
+                .map_err(|_| anyhow!("skill registry unavailable"))?
+                .headers();
+            let summary = pp_config::skills::Skills::format_summary(&skills);
+            let instructions =
+                crate::subagent::catalog::workflow_instructions(&checkpoint.workflow);
+            if let Some(source) = &self.prompt_source {
+                let context = crate::system_prompt::RenderContext::new(
+                    self.tools.cwd(),
+                    &choice.model,
+                    self.tools.edit_mode(),
+                    checkpoint.workflow.mode_name(),
+                    definitions.iter().map(|tool| tool.name.clone()).collect(),
+                );
+                source.compose(
+                    &context,
+                    self.tools.limits,
+                    &project,
+                    &summary,
+                    &instructions,
+                )?
+            } else {
+                let mut sys = project_instructions::compose(&self.base_system, &project, &summary);
+                if !instructions.is_empty() {
+                    sys.push_str("\n\n");
+                    sys.push_str(&instructions);
+                }
+                sys
+            }
+        };
         let mut session = Session::new(
             choice.model.clone(),
             choice.protocol,
@@ -502,7 +577,15 @@ impl Agent {
             .map_or((&self.current_model, self.think_level), |model| {
                 (&model.choice, model.effort)
             });
-        let (session, workflow) = self.resumed_session(checkpoint, choice, effort, definitions)?;
+        let reported_loads = super::turn::reported_project_load(&replay);
+        let (session, workflow) = self.resumed_session_with_loads(
+            checkpoint,
+            choice,
+            effort,
+            definitions,
+            &reported_loads,
+            model.is_none(),
+        )?;
         cancellation::check(cancellation)?;
         if let Some(model) = &model {
             let metadata =
@@ -525,18 +608,19 @@ impl Agent {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
         }
         self.pending_project_load.clear();
-        self.reported_project_load = super::turn::reported_project_load(&replay);
+        self.reported_project_load = reported_loads;
         self.tools.reset_project_instructions(
             self.reported_project_load
                 .keys()
                 .map(std::path::PathBuf::from),
         );
+        self.thinking_history = super::context_diagnosis::extract_thinking_from_replay(&replay);
         self.replay = replay;
         self.tools.clear_caches();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(true);
         }
-        self.clear_session_usage();
+        self.restore_session_usage();
         self.restore_session_cost();
         self.pending_instructions = None;
         Ok(ExecutionPreparation {
