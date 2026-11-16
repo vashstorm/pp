@@ -99,6 +99,16 @@ fn renderer() -> Handlebars<'static> {
     renderer
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PromptParts {
+    pub base_origin: String,
+    pub base_kind: &'static str,
+    pub base_text: String,
+    pub runtime_text: String,
+    pub append_origin: Option<String>,
+    pub append_text: Option<String>,
+}
+
 impl Snapshot {
     pub fn bundled() -> Self {
         Self {
@@ -229,14 +239,11 @@ impl Snapshot {
         Ok(renderer)
     }
 
-    pub(crate) fn compose(
+    fn render_base_and_runtime(
         &self,
         context: &RenderContext<'_>,
         limits: ToolLimits,
-        project: &str,
-        skills: &str,
-        workflow: &str,
-    ) -> Result<String> {
+    ) -> Result<(String, String)> {
         let base = match self.base.kind {
             SourceKind::Text => self.base.content.clone(),
             _ => self
@@ -262,14 +269,46 @@ impl Snapshot {
         runtime["read_max_bytes"] = limits.read_max_bytes.into();
         runtime["read_max_lines"] = limits.read_max_lines.into();
         runtime["bash_timeout_seconds"] = limits.bash_timeout_seconds.into();
+        let runtime_text = renderer()
+            .render_template(RUNTIME, &runtime)?
+            .trim()
+            .to_owned();
+        Ok((base, runtime_text))
+    }
+
+    pub(crate) fn inspect_parts(
+        &self,
+        context: &RenderContext<'_>,
+        limits: ToolLimits,
+    ) -> Result<PromptParts> {
+        let (base_text, runtime_text) = self.render_base_and_runtime(context, limits)?;
+        let base_kind = match self.base.kind {
+            SourceKind::Bundled => "bundled",
+            SourceKind::Text => "text",
+            SourceKind::Template => "template",
+        };
+        Ok(PromptParts {
+            base_origin: self.base.origin.clone(),
+            base_kind,
+            base_text,
+            runtime_text,
+            append_origin: self.append.as_ref().map(|append| append.origin.clone()),
+            append_text: self.append.as_ref().map(|append| append.content.clone()),
+        })
+    }
+
+    pub(crate) fn compose(
+        &self,
+        context: &RenderContext<'_>,
+        limits: ToolLimits,
+        project: &str,
+        skills: &str,
+        workflow: &str,
+    ) -> Result<String> {
+        let (base, runtime_text) = self.render_base_and_runtime(context, limits)?;
         let mut blocks = Blocks::default();
         blocks.push(base);
-        blocks.push(
-            renderer()
-                .render_template(RUNTIME, &runtime)?
-                .trim()
-                .to_owned(),
-        );
+        blocks.push(runtime_text);
         blocks.push(
             project_instructions::compose("", project, skills)
                 .trim()

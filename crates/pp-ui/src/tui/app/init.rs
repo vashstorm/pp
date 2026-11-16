@@ -126,6 +126,7 @@ impl App {
             themes_panel: None,
             session_panel: None,
             tree_panel: None,
+            context_panel: None,
             plan_list_panel: None,
             plan_list_pending: None,
             plan_reenter_standby: false,
@@ -374,6 +375,9 @@ impl App {
                             // 成功、失败、取消、未变化都会刷新状态栏。
                             push_runtime_snapshot(&agent, &mut snapshots);
                             WorkerEvent::Compacted(result)
+                        }
+                        WorkerCommand::InspectContext => {
+                            WorkerEvent::ContextInspected(agent.diagnose_context())
                         }
                         WorkerCommand::Reset => {
                             agent.reset();

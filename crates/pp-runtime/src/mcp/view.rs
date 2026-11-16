@@ -28,6 +28,27 @@ impl McpManager {
             .collect()
     }
 
+    pub(crate) fn tool_origins(
+        &self,
+        access: Access,
+    ) -> std::collections::BTreeMap<String, (String, String)> {
+        let state = self.lock_state();
+        state
+            .tools
+            .values()
+            .filter(|tool| {
+                tool_available(&state, tool)
+                    && (access == Access::Full || read_only_tool(&state, tool))
+            })
+            .map(|tool| {
+                (
+                    tool.definition.name.clone(),
+                    (tool.server.clone(), tool.original_name.clone()),
+                )
+            })
+            .collect()
+    }
+
     pub(crate) fn view(&self, access: Access) -> View {
         let state = self.lock_state();
         View {

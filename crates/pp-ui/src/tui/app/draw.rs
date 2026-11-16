@@ -190,6 +190,12 @@ impl App {
             return;
         }
         if !self.native_render
+            && let Some(panel) = &mut self.context_panel
+        {
+            panel.draw(frame, area);
+            return;
+        }
+        if !self.native_render
             && let Some(panel) = &mut self.pipes_panel
         {
             let available = area.height.saturating_sub(1);

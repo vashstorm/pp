@@ -1,8 +1,15 @@
 //! 项目规则的工具接入；复用保存层路径校验，不扩展任何读写权限。
 use super::*;
-use crate::project_instructions::{Document, State};
+use crate::project_instructions::{Document, InspectedDocument, State};
 
 impl Tools {
+    pub(crate) fn inspect_project_instructions(&self) -> Result<(Vec<InspectedDocument>, String)> {
+        if let Some(state) = self.project_instructions.borrow().as_ref() {
+            state.inspect()
+        } else {
+            State::new(&self.cwd).inspect()
+        }
+    }
     pub(crate) fn reset_project_instructions(&self, paths: impl IntoIterator<Item = PathBuf>) {
         let mut state = State::new(&self.cwd);
         for path in paths {

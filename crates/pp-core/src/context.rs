@@ -59,10 +59,15 @@ impl ContextUsage {
 /// 原生 JSON 文本按三字节估一 token，内嵌图片每张估 4096 token。
 /// 这只是容量启发式，既不是计费依据，也不分配完整历史的序列化副本。
 pub fn estimate_tokens(value: &impl Serialize) -> Result<u64> {
+    estimate_bytes(value).map(|bytes| bytes.div_ceil(3))
+}
+
+/// 统计原生 JSON 文本的估算字节数（内嵌图片等价 4096 * 3 字节）。
+pub fn estimate_bytes(value: &impl Serialize) -> Result<u64> {
     let mut count = EstimateCount::default();
     serde_json::to_writer(&mut count, value)
         .map_err(|_| anyhow::anyhow!("estimating context usage failed"))?;
-    Ok(count.bytes.div_ceil(3))
+    Ok(count.bytes)
 }
 
 #[derive(Default)]

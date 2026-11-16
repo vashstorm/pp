@@ -1,4 +1,5 @@
 pub mod context;
+pub mod context_diagnosis;
 mod debug;
 mod fallback;
 mod history;

@@ -317,6 +317,10 @@ pub fn run_line_mode(
                 writeln!(stderr, "/tree requires the TUI; run pp in a terminal.")?;
                 continue;
             }
+            Some(commands::Command::Context) => {
+                writeln!(stderr, "/context requires the TUI; run pp in a terminal.")?;
+                continue;
+            }
             Some(commands::Command::Plan(_)) => {
                 writeln!(stderr, "/plan requires the TUI; run pp in a terminal.")?;
                 continue;
@@ -446,6 +450,7 @@ pub fn run_line_mode(
                 | commands::Command::Mcp(_)
                 | commands::Command::Resume
                 | commands::Command::Tree
+                | commands::Command::Context
                 | commands::Command::Roles
                 | commands::Command::Agents
                 | commands::Command::Setting(_)

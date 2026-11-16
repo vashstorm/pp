@@ -147,6 +147,8 @@ fn slash_valid_commands_and_model_reference_boundaries() {
         ),
         ("\t/new ", Command::New),
         (" /compact ", Command::Compact),
+        ("/context", Command::Context),
+        (" /ctx ", Command::Context),
         (
             " /init ",
             Command::Prompt(pp_runtime::project_instructions::INIT_PROMPT.to_owned()),

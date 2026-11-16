@@ -29,6 +29,9 @@ impl App {
         if let Some(panel) = &mut self.tree_panel {
             panel.set_error(message.clone());
         }
+        if let Some(panel) = &mut self.context_panel {
+            panel.set_error(message.clone());
+        }
         if let Some(panel) = &mut self.settings_panel {
             panel.set_error(message.clone());
         }
@@ -94,6 +97,7 @@ impl App {
         self.model_panel = None;
         self.settings_panel = None;
         self.roles_panel = None;
+        self.context_panel = None;
         self.file_paths.clear();
         self.file_directory.clear();
         self.file_query = None;
@@ -124,6 +128,7 @@ impl App {
         self.events = None;
         self.unavailable = Some(message.into());
         self.tree_panel = None;
+        self.context_panel = None;
         self.roles_panel = None;
         self.close_pipes();
         self.plan_list_panel = None;
@@ -295,6 +300,7 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
+            || self.context_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.model_panel.is_some()
             || self.settings_panel.is_some()
@@ -597,6 +603,7 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.pipes_panel.is_some()
+            || self.context_panel.is_some()
             // 读取完成前保留主屏幕，空历史或读取失败时无需切换屏幕。
             || self.tree_panel.as_ref().is_some_and(|panel| !panel.is_loading())
             || self.plan_list_panel.is_some()

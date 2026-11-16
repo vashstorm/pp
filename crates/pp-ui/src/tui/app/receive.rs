@@ -261,6 +261,7 @@ impl App {
             WorkerEvent::MockCompleted { .. } => self.on_run_event(event),
             WorkerEvent::SessionStarted(_)
             | WorkerEvent::PipeStoreBound { .. }
+            | WorkerEvent::ContextInspected(_)
             | WorkerEvent::TreeRead(_)
             | WorkerEvent::TreeNavigated(_)
             | WorkerEvent::SessionDeleted(_)

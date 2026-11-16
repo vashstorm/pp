@@ -404,6 +404,7 @@ const TIPS_HEADER: vt100::Color = vt100::Color::Rgb(215, 175, 95);
 const TIPS_COMMANDS: &[&str] = &[
     "/agents",
     "/compact",
+    "/context",
     "/effort",
     "/help",
     "/init",
@@ -832,4 +833,32 @@ fn tui_notification_errors_stay_local_and_do_not_replay_after_resume() {
         resumed.finish();
         no_more(&fixture);
     }
+}
+
+#[test]
+fn tui_context_panel_displays_breakdown_and_closes_on_escape() {
+    let server = server();
+    let (_home, mut pty) = context_tui_start(&server, "response", 128_000, 80);
+    pty.input("/context\r");
+    pty.wait_for(
+        "context diagnostics panel is visible in alternate screen",
+        |screen| {
+            let text = screen.contents();
+            text.contains("Context Diagnostics")
+                && text.contains("Overview")
+                && text.contains("Largest Items")
+                && text.contains("Tools & MCP")
+        },
+    );
+    pty.input("\x1b");
+    pty.wait_for(
+        "Esc closes context panel and returns to main screen",
+        |screen| !screen.contents().contains("Context Diagnostics") && input_is_ready(screen),
+    );
+    pty.input("\x03");
+    pty.wait_for("terminal restored after quit", |screen| {
+        !screen.bracketed_paste() && !screen.hide_cursor()
+    });
+    pty.finish();
+    no_more(&server);
 }

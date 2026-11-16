@@ -53,6 +53,7 @@ pub(super) enum WorkerCommand {
     Compact {
         cancellation: CancellationToken,
     },
+    InspectContext,
     Reset,
     /// 会话根切换（/resume、/tree、/new）会停掉旧子 Agent 根；Hub 打开时按需重建。
     EnsureSubagents,
@@ -154,6 +155,7 @@ pub(super) enum WorkerEvent {
     },
     // 压缩终态：与普通任务 Completed 是不同的判别值，不触发任务收尾展示。
     Compacted(Result<CompactionOutcome>),
+    ContextInspected(Result<pp_runtime::agent::context_diagnosis::ContextReport>),
     Reset,
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),
     DefaultThinkLevelSaved(Result<ThinkLevel>),

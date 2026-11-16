@@ -9,6 +9,7 @@ fn completion_states() -> impl Iterator<Item = State> {
         State::RunningTools,
         State::Cancelling,
         State::Compacting,
+        State::InspectingContext,
         State::Resetting,
         State::SwitchingModel,
         State::SavingModelSettings,

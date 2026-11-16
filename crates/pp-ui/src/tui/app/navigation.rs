@@ -1,6 +1,7 @@
 use crate::tui::{
     App, CancellationToken, Level, PlanEnterAction, PlanLocation, PlanOpenIntent, PlanSelection,
-    PlanStatus, State, WorkMode, WorkerCommand, plan, plan_list, plan_location_from_path, tree,
+    PlanStatus, State, WorkMode, WorkerCommand, context_panel, plan, plan_list,
+    plan_location_from_path, tree,
 };
 
 impl App {
@@ -27,6 +28,7 @@ impl App {
             || self.session_panel.is_some()
             || self.ask_panel.is_some()
             || self.tree_panel.is_some()
+            || self.context_panel.is_some()
         {
             return;
         }
@@ -34,6 +36,47 @@ impl App {
         self.file_query = None;
         self.tree_panel = Some(tree::Panel::new());
         self.send(WorkerCommand::ReadTree, State::ReadingTree);
+    }
+
+    pub(in crate::tui) fn open_context(&mut self) {
+        self.escape_tap.reset();
+        if !matches!(self.state, State::Ready)
+            || self.skills_pending
+            || self.active_settings_tab().is_some()
+            || self.session_panel.is_some()
+            || self.ask_panel.is_some()
+            || self.tree_panel.is_some()
+            || self.context_panel.is_some()
+        {
+            return;
+        }
+        self.menu = None;
+        self.file_query = None;
+        self.menu_dismissed = true;
+        self.context_panel = Some(context_panel::Panel::new());
+        if !self.send(WorkerCommand::InspectContext, State::InspectingContext) {
+            self.context_panel = None;
+        }
+    }
+
+    pub(in crate::tui) fn close_context(&mut self) {
+        self.context_panel = None;
+        self.menu_dismissed = true;
+    }
+
+    pub(in crate::tui) fn apply_context_action(&mut self, action: context_panel::Action) {
+        match action {
+            context_panel::Action::None => {}
+            context_panel::Action::Close => self.close_context(),
+            context_panel::Action::Refresh => {
+                if matches!(self.state, State::Ready)
+                    && !self.send(WorkerCommand::InspectContext, State::InspectingContext)
+                    && let Some(panel) = &mut self.context_panel
+                {
+                    panel.set_error("Agent worker unavailable.".into());
+                }
+            }
+        }
     }
 
     /// /plan-list 打开前提：Ready、无 pending、无其它 modal；被拒时保留输入。
@@ -57,6 +100,7 @@ impl App {
             || self.skills_pending
             || self.session_panel.is_some()
             || self.tree_panel.is_some()
+            || self.context_panel.is_some()
             || self.plan_panel.is_some()
             || self.model_panel.is_some()
             || self.queue_menu

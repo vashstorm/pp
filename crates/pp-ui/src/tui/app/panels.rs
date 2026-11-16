@@ -140,6 +140,7 @@ impl App {
         if self.skills_pending
             || self.skill_panel.is_some()
             || self.pipes_panel.is_some()
+            || self.context_panel.is_some()
             || self.model_panel.is_some()
         {
             return false;
@@ -469,6 +470,7 @@ impl App {
             | State::RunningTools
             | State::Cancelling
             | State::Compacting
+            | State::InspectingContext
             | State::Resetting
             | State::SwitchingModel
             | State::SavingModelSettings
@@ -516,6 +518,11 @@ impl App {
                     self.send_submission(WorkerCommand::Reset, State::Resetting);
                 }
                 Some(Command::Compact) => self.send_compaction(),
+                Some(Command::Context) => {
+                    self.remember_input();
+                    self.clear_input();
+                    self.open_context();
+                }
                 Some(Command::Tree) => {
                     self.remember_input();
                     self.clear_input();

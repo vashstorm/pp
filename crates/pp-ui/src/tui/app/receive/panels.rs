@@ -19,6 +19,25 @@ impl App {
                 }
             }
 
+            WorkerEvent::ContextInspected(result) => {
+                self.state = State::Ready;
+                match result {
+                    Ok(report) => {
+                        if let Some(panel) = &mut self.context_panel {
+                            panel.set_report(report);
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("Failed to inspect context: {error:#}");
+                        if let Some(panel) = &mut self.context_panel {
+                            panel.set_error(message.clone());
+                        }
+                        self.notify(Level::Error, message);
+                    }
+                }
+                changed = true;
+            }
+
             WorkerEvent::TreeRead(result) => {
                 self.state = State::Ready;
                 match result {

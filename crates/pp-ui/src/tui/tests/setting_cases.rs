@@ -84,7 +84,7 @@ fn setting_aliases_and_tab_arguments_open_expected_tabs_and_complete() {
     assert!(!top_labels.contains(&"/config"));
 
     // 命令补全支持 `setting` 与 `config`（含前缀与模糊匹配），并补全为 `/setting`。
-    for query in ["/set", "/setting", "/settings", "/con", "/config", "/cfg"] {
+    for query in ["/set", "/setting", "/settings", "/conf", "/config", "/cfg"] {
         app.clear_input();
         app.insert_input(query.into());
         app.refresh_candidates(true);
@@ -98,16 +98,21 @@ fn setting_aliases_and_tab_arguments_open_expected_tabs_and_complete() {
         assert_eq!(app.input_text(), "/setting", "{query}");
     }
 
-    // `/co` 同时匹配 `/setting (config)`（经 `config` 别名）与 `/compact`。
-    app.clear_input();
-    app.insert_input("/co".into());
-    app.refresh_candidates(true);
-    let co_labels: Vec<_> = active_menu(&app)
-        .items()
-        .iter()
-        .map(|item| item.label.as_str())
-        .collect();
-    assert_eq!(co_labels, vec!["/setting (config)", "/compact"]);
+    // `/con` 匹配 `/setting (config)` 与 `/context`，`/co` 同时匹配 `/compact`。
+    for (query, expected) in [
+        ("/con", vec!["/setting (config)", "/context"]),
+        ("/co", vec!["/setting (config)", "/compact", "/context"]),
+    ] {
+        app.clear_input();
+        app.insert_input(query.into());
+        app.refresh_candidates(true);
+        let co_labels: Vec<_> = active_menu(&app)
+            .items()
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(co_labels, expected, "{query}");
+    }
 
     // Tab 补全支持 `/settings <tab>`、`/setting <tab>` 与 `/config <tab>`。
     for (typed, expected) in [

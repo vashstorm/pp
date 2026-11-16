@@ -162,6 +162,14 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Summarize older context, preserving recent exchanges and visible history",
     },
     CommandSpec {
+        name: "/context",
+        display_label: None,
+        aliases: &["/ctx"],
+        category: CommandCategory::Session,
+        usage: "/context",
+        description: "Inspect session context usage breakdown and largest items (TUI)",
+    },
+    CommandSpec {
         name: "/resume",
         display_label: None,
         aliases: &[],
@@ -397,6 +405,7 @@ pub(crate) enum Command<'a> {
     Stats(&'a str),
     New,
     Compact,
+    Context,
     Resume,
     Tree,
     Pipes(Option<&'a str>),
@@ -448,6 +457,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/new" => Command::New,
         "/init" => Command::Prompt(pp_runtime::project_instructions::INIT_PROMPT.to_owned()),
         "/compact" => Command::Compact,
+        "/context" | "/ctx" => Command::Context,
         "/resume" => Command::Resume,
         "/tree" => Command::Tree,
         "/pipes" => {
@@ -603,7 +613,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
     };
     let spec = COMMANDS
         .iter()
-        .find(|spec| spec.name == name)
+        .find(|spec| spec.name == name || spec.aliases.contains(&name))
         .expect("registered command");
     ensure!(argument.is_empty(), "usage: {}", spec.usage);
     Ok(Some(command))
@@ -620,8 +630,9 @@ fn spec_order(name: &str) -> usize {
         "/resume" => 1,
         "/tree" => 2,
         "/compact" => 3,
-        "/init" => 4,
-        "/quit" => 5,
+        "/context" => 4,
+        "/init" => 5,
+        "/quit" => 6,
         "/model" => 0,
         "/effort" => 1,
         "/roles" => 2,

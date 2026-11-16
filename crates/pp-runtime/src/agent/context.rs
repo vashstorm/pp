@@ -52,7 +52,7 @@ pub enum CompactionOutcome {
 
 /// Token budget for the retained native suffix: `min(16384, window / 5)`, or
 /// 16384 when the current model has no explicit context window.
-fn retained_suffix_budget(context_window: Option<u64>) -> u64 {
+pub(super) fn retained_suffix_budget(context_window: Option<u64>) -> u64 {
     context_window.map_or(RETAINED_SUFFIX_MAX_TOKENS, |window| {
         RETAINED_SUFFIX_MAX_TOKENS.min(window / 5)
     })
@@ -60,7 +60,7 @@ fn retained_suffix_budget(context_window: Option<u64>) -> u64 {
 
 /// Target length of the generated summary: `min(2048, max(1, window / 16))`,
 /// or 2048 when the current model has no explicit context window.
-fn summary_budget(context_window: Option<u64>) -> u64 {
+pub(super) fn summary_budget(context_window: Option<u64>) -> u64 {
     context_window.map_or(SUMMARY_MAX_TOKENS, |window| {
         SUMMARY_MAX_TOKENS.min(window / 16).max(1)
     })
@@ -239,7 +239,7 @@ pub(super) fn response_boundaries(items: &[InputItem]) -> Result<Vec<usize>> {
 /// `suffix_cost` must be non-increasing over ascending boundaries: the suffix
 /// of a later boundary is a sub-suffix of an earlier one, so binary search
 /// finds the earliest fitting boundary without estimating every candidate.
-fn select_cutoff(
+pub(super) fn select_cutoff(
     boundaries: &[usize],
     budget: u64,
     mut suffix_cost: impl FnMut(usize) -> Result<u64>,
@@ -864,7 +864,7 @@ impl Agent {
 
     /// The earliest boundary cutoff whose retained suffix fits the budget,
     /// or `None` when the session has no removable complete exchange.
-    fn compaction_cutoff(&self) -> Result<Option<usize>> {
+    pub(super) fn compaction_cutoff(&self) -> Result<Option<usize>> {
         let budget = retained_suffix_budget(self.current_model.context_window);
         match &self.session {
             Session::Completion(request) => {

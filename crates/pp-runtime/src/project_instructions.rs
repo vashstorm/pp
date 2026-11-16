@@ -10,15 +10,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MAINTENANCE: &str = "When code changes make project descriptions, commands, paths, or workflows in AGENTS.md outdated or inconsistent, update AGENTS.md as part of the same task. Preserve valid project constraints; never rewrite rules merely to conceal a violation. Project instructions apply only within the specified directory and its descendants in the specified project root. Parent rules remain effective; deeper rules take precedence on conflicts within their scope. Rules from sibling directories or other projects do not apply outside their scope. All project rules remain subject to higher-priority instructions and the user's current request. Read target files before modifying them to discover applicable rules. If a tool reports rules were not included in the model request, reconsider the change using the updated rules and submit new tool calls; do not bypass the check using bash or external tools.";
+pub(crate) const MAINTENANCE: &str = "When code changes make project descriptions, commands, paths, or workflows in AGENTS.md outdated or inconsistent, update AGENTS.md as part of the same task. Preserve valid project constraints; never rewrite rules merely to conceal a violation. Project instructions apply only within the specified directory and its descendants in the specified project root. Parent rules remain effective; deeper rules take precedence on conflicts within their scope. Rules from sibling directories or other projects do not apply outside their scope. All project rules remain subject to higher-priority instructions and the user's current request. Read target files before modifying them to discover applicable rules. If a tool reports rules were not included in the model request, reconsider the change using the updated rules and submit new tool calls; do not bypass the check using bash or external tools.";
 
 pub const INIT_PROMPT: &str = "Create or update AGENTS.md in the startup working directory. First inspect the existing AGENTS.md, if present, and relevant project files using the available tools. Based only on observed evidence, document the project purpose, architecture, development commands, testing procedures, and necessary project constraints. If AGENTS.md already exists, preserve valid rules and user guidance while correcting outdated descriptions, commands, paths, and workflows. Keep the document concise and useful to future coding agents; do not invent facts or expose secrets. Do not change unrelated code. Use write or edit to save AGENTS.md, then briefly describe the changes actually made.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Document {
     pub(crate) path: PathBuf,
-    root: PathBuf,
+    pub(crate) root: PathBuf,
     pub(crate) content: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InspectedDocument {
+    pub(crate) document: Document,
+    pub(crate) sent: bool,
 }
 
 /// 每个 Agent 独立保存已激活的目录和最近一次请求的完整规则快照。
@@ -94,7 +100,7 @@ impl State {
         }
     }
 
-    pub(crate) fn refresh(&mut self) -> Result<Vec<Document>> {
+    fn collect(&self) -> Result<(Vec<Document>, BTreeSet<PathBuf>)> {
         let mut documents = BTreeMap::new();
         let mut roots = BTreeSet::new();
         for directory in &self.directories {
@@ -105,16 +111,35 @@ impl State {
                 documents.insert(document.path.clone(), document);
             }
         }
-        self.current = documents.into_values().collect();
-        self.roots = roots;
-        self.current.sort_by(|a, b| {
+        let mut current: Vec<Document> = documents.into_values().collect();
+        current.sort_by(|a, b| {
             a.path
                 .components()
                 .count()
                 .cmp(&b.path.components().count())
                 .then_with(|| a.path.cmp(&b.path))
         });
+        Ok((current, roots))
+    }
+
+    pub(crate) fn refresh(&mut self) -> Result<Vec<Document>> {
+        let (current, roots) = self.collect()?;
+        self.current = current;
+        self.roots = roots;
         Ok(self.current.clone())
+    }
+
+    pub(crate) fn inspect(&self) -> Result<(Vec<InspectedDocument>, String)> {
+        let (documents, roots) = self.collect()?;
+        let scope = scope_summary_for(&documents, &roots);
+        let inspected = documents
+            .into_iter()
+            .map(|document| {
+                let sent = self.sent.iter().any(|existing| existing == &document);
+                InspectedDocument { document, sent }
+            })
+            .collect();
+        Ok((inspected, scope))
     }
 
     pub(crate) fn sent(&mut self) {
@@ -131,20 +156,7 @@ impl State {
     }
 
     pub(crate) fn scope_summary(&self) -> String {
-        let mut summary = String::new();
-        for root in &self.roots {
-            if self
-                .current
-                .iter()
-                .any(|document| root != &document.root && root.starts_with(&document.root))
-            {
-                summary.push_str(&format!(
-                    "\n[Project root boundary: {}]\nAncestor project rules do not apply inside this project root.\n",
-                    root.display(),
-                ));
-            }
-        }
-        summary
+        scope_summary_for(&self.current, &self.roots)
     }
 
     pub(crate) fn blocked(&self) -> Option<&str> {
@@ -181,6 +193,22 @@ impl State {
         }
         Ok(())
     }
+}
+
+fn scope_summary_for(documents: &[Document], roots: &BTreeSet<PathBuf>) -> String {
+    let mut summary = String::new();
+    for root in roots {
+        if documents
+            .iter()
+            .any(|document| root != &document.root && root.starts_with(&document.root))
+        {
+            summary.push_str(&format!(
+                "\n[Project root boundary: {}]\nAncestor project rules do not apply inside this project root.\n",
+                root.display(),
+            ));
+        }
+    }
+    summary
 }
 
 pub(crate) fn render(documents: &[Document]) -> String {
