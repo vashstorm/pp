@@ -21,7 +21,7 @@ fn tui_session_resume_replays_history_without_request() {
         assert!(text.contains("print(\"tool-out\")"));
         assert!(text.contains("Read · tui-read.txt"));
         assert!(text.contains("tool-out"));
-        assert!(text.contains("Timeout: 300s"));
+        assert!(text.contains("Timeout: 60s"));
         assert!(!text.contains("Exit:"));
         assert!(!text.contains("Wall:"));
         // 输入框为空且未处于历史浏览状态。

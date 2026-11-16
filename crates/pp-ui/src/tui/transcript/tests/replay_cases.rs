@@ -23,7 +23,7 @@ fn replay_restores_visible_history_and_marks_interruption() {
     let text = screen(&render(&mut transcript, 100, 30));
     assert!(text.contains("remember replay"));
     assert!(text.contains("replay"));
-    assert!(text.contains("Timeout: 300s"));
+    assert!(text.contains("Timeout: 60s"));
     assert!(!text.contains("Exit:"));
     assert!(!text.contains("Wall:"));
     assert_eq!(error.as_deref(), Some("Previous request was interrupted."));

@@ -236,7 +236,7 @@ fn streaming_tool_channels_results_and_reused_ids_are_calibrated() {
     assert_eq!(transcript.entries[0].status, EntryStatus::Failed);
     assert_eq!(transcript.entries[1].status, EntryStatus::Complete);
     assert_eq!(transcript.entries[1].text, "");
-    assert!(transcript.entries[1].footer.contains("Timeout: 300s"));
+    assert!(transcript.entries[1].footer.contains("Timeout: 60s"));
     assert!(!transcript.entries[1].footer.contains("Exit:"));
     tool(&mut transcript, "read", "read", json!({"path": "SKILL.md"}));
     transcript.progress(AgentEvent::ToolFinished {

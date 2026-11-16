@@ -84,6 +84,7 @@ fn bash_footer_uses_per_call_timeout_and_renders_unlimited() {
         (0, "Timeout: none"),
         (1, "Timeout: 1s"),
         (3600, "Timeout: 3600s"),
+        (7200, "Timeout: 7200s"),
     ] {
         let mut transcript = Transcript::new();
         transcript.set_bash_timeout(37);
@@ -479,7 +480,7 @@ fn bash_card_and_thinking_match_reference_and_keep_full_output() {
         "line-14",
         "line-23",
         "Wall:",
-        "Timeout: 300s",
+        "Timeout: 60s",
         "╰─",
         "Check the diff 中",
     ] {

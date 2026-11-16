@@ -307,7 +307,7 @@ fn bash_timeout_argument_works_in_both_protocols() {
             &server,
             dir.path(),
             Some("bash timeout arguments"),
-            r#"{"bash_timeout_seconds":1}"#,
+            r#"{"bash_timeout_seconds":1,"bash_max_timeout_seconds":7200}"#,
         );
         let (request, body) = protocol.receive(&server);
         let tool = body["tools"]
@@ -322,46 +322,57 @@ fn bash_timeout_argument_works_in_both_protocols() {
             .unwrap();
         let timeout = &tool["parameters"]["properties"]["timeout_seconds"];
         assert_eq!(timeout["type"], "integer");
-        assert_eq!(timeout["minimum"], 0);
-        assert_eq!(timeout["maximum"], 3600);
+        assert_eq!(timeout["minimum"], 1);
+        assert_eq!(timeout["maximum"], 7200);
         assert_eq!(tool["parameters"]["required"], json!(["command"]));
         protocol.calls_reply(
             request,
             json!([
-                protocol.call("invalid-timeout", "bash", json!({"command":"printf unexpected > invalid","timeout_seconds":3601})),
+                protocol.call("invalid-timeout", "bash", json!({"command":"printf unexpected > invalid","timeout_seconds":7201})),
+                protocol.call("zero-timeout", "bash", json!({"command":"printf unexpected > zero","timeout_seconds":0})),
                 protocol.call("short-timeout", "bash", json!({"command":"printf before; sleep 10; printf unexpected > late","timeout_seconds":1}))
             ]),
         );
         let (request, body) = protocol.receive(&server);
         assert_eq!(protocol.tool_result(&body, "invalid-timeout")["ok"], false);
+        assert_eq!(protocol.tool_result(&body, "zero-timeout")["ok"], false);
         assert_eq!(
             protocol.tool_result(&body, "short-timeout")["timed_out"],
             true
         );
         assert!(!dir.path().join("invalid").exists());
+        assert!(!dir.path().join("zero").exists());
         assert!(!dir.path().join("late").exists());
+        let timed_out = protocol.tool_result(&body, "short-timeout");
+        assert_eq!(timed_out["timeout_seconds"], 1);
+        assert_eq!(timed_out["output"], "before");
+        assert!(timed_out["duration_ms"].as_u64().unwrap() >= 1000);
+        assert!(timed_out["error"].as_str().is_some());
         protocol.calls_reply(
             request,
             json!([
                 protocol.call(
-                    "no-timeout",
+                    "default-timeout",
                     "bash",
-                    json!({"command":"sleep 1.2; printf unlimited","timeout_seconds":0})
+                    json!({"command":"sleep 10; printf unexpected > default-late"})
                 ),
                 protocol.call(
                     "long-timeout",
                     "bash",
-                    json!({"command":"sleep 1.2; printf extended","timeout_seconds":3600})
+                    json!({"command":"sleep 1.2; printf extended","timeout_seconds":7200})
                 )
             ]),
         );
         let (request, body) = protocol.receive(&server);
-        for (id, output) in [("no-timeout", "unlimited"), ("long-timeout", "extended")] {
-            let result = protocol.tool_result(&body, id);
-            assert_eq!(result["ok"], true, "{protocol:?}: {result}");
-            assert_eq!(result["timed_out"], false);
-            assert_eq!(result["output"], output);
-        }
+        let default = protocol.tool_result(&body, "default-timeout");
+        assert_eq!(default["timed_out"], true);
+        assert_eq!(default["timeout_seconds"], 1);
+        assert!(!dir.path().join("default-late").exists());
+        let extended = protocol.tool_result(&body, "long-timeout");
+        assert_eq!(extended["ok"], true, "{protocol:?}: {extended}");
+        assert_eq!(extended["timed_out"], false);
+        assert_eq!(extended["timeout_seconds"], 7200);
+        assert_eq!(extended["output"], "extended");
         protocol.final_reply(request, "timeout verified");
         let output = cli.finish();
         assert!(output.status.success(), "{output:?}");

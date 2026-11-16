@@ -269,6 +269,7 @@ impl Snapshot {
         runtime["read_max_bytes"] = limits.read_max_bytes.into();
         runtime["read_max_lines"] = limits.read_max_lines.into();
         runtime["bash_timeout_seconds"] = limits.bash_timeout_seconds.into();
+        runtime["bash_max_timeout_seconds"] = limits.bash_max_timeout_seconds.into();
         let runtime_text = renderer()
             .render_template(RUNTIME, &runtime)?
             .trim()

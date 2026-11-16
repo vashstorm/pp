@@ -30,7 +30,7 @@ TUI 默认最大帧率为 60 FPS。可在 `~/.pp/agent/settings.yml` 中将 `tui
 | **按需扩展** | 分层项目 `AGENTS.md`、技能、Markdown 提示词命令、本地 stdio 与远程 HTTP／SSE MCP 工具 |
 | **用量可见** | 上下文估算与压缩，本地请求、词元、费用和耗时统计 |
 
-前台 Bash 接受可选的 `timeout_seconds` 参数，范围为 0–3600 秒，0 表示不设超时。省略时使用 `bash_timeout_seconds`，默认 300 秒，已有显式配置仍生效。后台模式忽略此参数，沿用现有任务生命周期；不限时时仍可取消。
+前台 Bash 通常使用 `bash_timeout_seconds`，默认 60 秒。可选参数 `timeout_seconds` 必须为正整数，且不超过 `bash_max_timeout_seconds`（默认 600 秒）；0 不能关闭超时。简单命令建议 10–30 秒，构建／测试／安装按需使用 120–300 秒，更长时限只用于已知耗时较长的任务。超过 600 秒的任务需在 `~/.pp/agent/settings.yml` 中提高 `bash_max_timeout_seconds`，默认超时不能超过该上限。超时后应先诊断原因，再决定是否延长；不要自动重跑有副作用的命令。后台模式忽略合法的超时参数，仍仅用于常驻服务并沿用现有生命周期。
 
 Bash 合并 stdout/stderr，默认返回最多 50 KiB 的头尾预览。超限或超长行被裁剪时保存为 `artifact://<id>`，模型可用 `read` 行选择器或 `rg` 继续查看；后台运行中的读取按每次调用冻结快照。资源由根会话与子 Agent 共享，恢复后仍可读取，删除会话时清理，`pp gc` 不按天数删除。日志默认上限 16 MiB，并明确报告中间省略和保存失败。配置与完整性边界见 [Bash 输出与 artifact 资源](docs/guide.md#bash-输出与-artifact-资源)。
 

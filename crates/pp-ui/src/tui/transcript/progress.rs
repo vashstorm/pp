@@ -370,7 +370,6 @@ impl Transcript {
                     entry.bash_timeout_seconds = Some(
                         entry.arguments["timeout_seconds"]
                             .as_u64()
-                            .filter(|seconds| *seconds <= 3600)
                             .unwrap_or(self.bash_timeout_seconds),
                     );
                 }

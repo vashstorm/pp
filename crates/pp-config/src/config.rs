@@ -34,6 +34,8 @@ pub use theme::{IconMode, Theme, TuiSettings};
 mod general;
 pub use general::{SettingPatch, update_general_setting};
 
+mod limits;
+
 // Deliberately not Debug: this owns the API credential.
 pub struct Config {
     pub auth: Option<crate::auth::Config>,
@@ -78,14 +80,13 @@ pub struct ModelSelection {
     pub effort: ThinkLevel,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize)]
 pub struct ToolLimits {
-    #[serde(default)]
     pub output: crate::config::OutputSettings,
     pub read_max_bytes: usize,
     pub read_max_lines: usize,
     pub bash_timeout_seconds: u64,
-    #[serde(default)]
+    pub bash_max_timeout_seconds: u64,
     pub rg: RgSettings,
 }
 
@@ -135,10 +136,20 @@ impl ToolLimits {
             "bash_timeout_seconds must be greater than zero"
         );
         ensure!(
+            self.bash_max_timeout_seconds > 0,
+            "bash_max_timeout_seconds must be greater than zero"
+        );
+        ensure!(
+            self.bash_timeout_seconds <= self.bash_max_timeout_seconds,
+            "bash_timeout_seconds must not exceed bash_max_timeout_seconds"
+        );
+        ensure!(
             std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(self.bash_timeout_seconds))
+                .checked_add(std::time::Duration::from_secs(
+                    self.bash_max_timeout_seconds
+                ))
                 .is_some(),
-            "bash_timeout_seconds is too large"
+            "bash_max_timeout_seconds is too large"
         );
         Ok(())
     }
@@ -150,6 +161,7 @@ impl Default for ToolLimits {
             read_max_bytes: default_read_max_bytes(),
             read_max_lines: default_read_max_lines(),
             bash_timeout_seconds: default_bash_timeout_seconds(),
+            bash_max_timeout_seconds: default_bash_max_timeout_seconds(),
             rg: RgSettings::default(),
             output: Default::default(),
         }
@@ -163,7 +175,11 @@ fn default_read_max_lines() -> usize {
     2_000
 }
 fn default_bash_timeout_seconds() -> u64 {
-    300
+    60
+}
+
+fn default_bash_max_timeout_seconds() -> u64 {
+    600
 }
 
 fn default_notification_show_countdown() -> bool {
@@ -268,6 +284,8 @@ pub struct Settings {
     pub read_max_lines: usize,
     #[serde(default = "default_bash_timeout_seconds")]
     pub bash_timeout_seconds: u64,
+    #[serde(default = "default_bash_max_timeout_seconds")]
+    pub bash_max_timeout_seconds: u64,
     #[serde(default = "default_auto_compact")]
     pub auto_compact: bool,
     #[serde(default = "default_auto_compact_threshold_percent")]
@@ -280,6 +298,7 @@ impl Settings {
             read_max_bytes: self.read_max_bytes,
             read_max_lines: self.read_max_lines,
             bash_timeout_seconds: self.bash_timeout_seconds,
+            bash_max_timeout_seconds: self.bash_max_timeout_seconds,
             rg: self.rg,
             output: self.tools.output,
         }
@@ -407,6 +426,7 @@ fn default_settings() -> Settings {
         read_max_bytes: default_read_max_bytes(),
         read_max_lines: default_read_max_lines(),
         bash_timeout_seconds: default_bash_timeout_seconds(),
+        bash_max_timeout_seconds: default_bash_max_timeout_seconds(),
         auto_compact: default_auto_compact(),
         auto_compact_threshold_percent: default_auto_compact_threshold_percent(),
     }

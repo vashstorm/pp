@@ -297,7 +297,7 @@ impl Session {
     }
 
     fn new(model: String, protocol: Protocol, system: String, edit_mode: EditMode) -> Self {
-        let definitions = Tools::definitions(edit_mode);
+        let definitions = Tools::definitions(edit_mode, pp_config::config::ToolLimits::default());
         match protocol {
             Protocol::Completion => Session::Completion(Box::new(CreateChatCompletionRequest {
                 model,

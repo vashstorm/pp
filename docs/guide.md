@@ -136,7 +136,8 @@ read_max_bytes: 65536
 read_max_lines: 2000
 read:
   toolResultPreview: false # 兼容旧配置；read 始终隐藏正文，此值不再影响展示
-bash_timeout_seconds: 300
+bash_timeout_seconds: 60
+bash_max_timeout_seconds: 600 # 前台单次调用的硬上限；默认超时不能超过此值
 # 内置 rg 工具的默认上下文行数；调用参数可覆盖
 rg:
   contextBefore: 1
@@ -962,7 +963,7 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 - 默认前台 `bash({"command":"..."})`：以启动目录执行 `bash -c`，关闭 stdin，建立独立进程组。stdout/stderr 按收集器接收顺序合并，不保证跨流真实写入顺序；无需等待换行即可显示有界头尾快照。返回合并的 `output`、退出码、输出计数、截断标记、`timed_out` 与 `cancelled`，信号退出的退出码为 null。超限日志通过下述 artifact 机制继续读取，旧会话的 stdout/stderr 分流结果仍可回放。
 - 嵌入式 Bash 会拒绝直接重定向到命名管道（FIFO），包括指向 FIFO 的符号链接。需要使用 FIFO 时，将重定向放在外部 `bash -c` 的命令字符串中，由受管子进程执行。
 - 工具参数严格校验：缺失／额外字段、非法 JSON、空白路径／命令、未知工具及文件／进程错误均返回 `ok:false`，供模型修正。bash 非零退出同样失败并保留输出。
-- 前台 bash 接受可选的 `timeout_seconds` 整数参数，范围为 0–3600 秒，0 表示不设超时；例如 `{"command":"cargo build --locked","timeout_seconds":600}`。省略时使用 `bash_timeout_seconds` 配置，默认 300 秒，已有显式配置仍生效。后台模式忽略此参数，继续按后台任务生命周期管理。`{"command":"..."}` 和显式 `"mode":"foreground"` 保持相同契约，超时与模型请求超时独立。独立监督线程在超时时向进程组发送 TERM，等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。超时返回 `ok:false, timed_out:true`，保留已捕获输出，不回滚 shell 修改。正常结束也清理同一进程组的残留后代；主动脱离进程组的进程不受保证。TUI Esc 取消通过 TERM→1 秒宽限→KILL／wait 停止受控进程组，即使 `timeout_seconds:0` 也仍可取消；前台结果为 `ok:false, cancelled:true, timed_out:false`，正常／超时前台结果的 `cancelled` 为 false。
+- 前台 bash 接受可选的 `timeout_seconds` 正整数参数，范围为 1 至 `bash_max_timeout_seconds`（默认 600 秒），0 不能关闭超时；例如 `{"command":"cargo build --locked","timeout_seconds":180}`。通常省略此参数，使用 `bash_timeout_seconds` 配置（默认 60 秒）；简单查询／小脚本建议 10–30 秒，构建／测试／安装按实际范围使用 120–300 秒，仅已知耗时较长的完整验证才使用更长时限。超过上限的调用在启动命令前被拒绝并返回允许范围；如确有需要，在 `settings.yml` 中显式提高 `bash_max_timeout_seconds`。后台模式忽略合法的超时参数，继续仅按常驻服务生命周期管理。`{"command":"..."}` 和显式 `"mode":"foreground"` 保持相同契约，超时与模型请求超时独立。独立监督线程在超时时向进程组发送 TERM，等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。前台结果包含实际采用的 `timeout_seconds` 与包含启动、回收的 `duration_ms`；超时返回 `ok:false, timed_out:true` 与诊断提示，保留已捕获输出，不回滚 shell 修改。应先检查交互输入、网络阻塞和验证范围，再决定是否延长，不要自动重跑有副作用的命令。正常结束也清理同一进程组的残留后代；主动脱离进程组的进程不受保证。TUI Esc 取消通过 TERM→1 秒宽限→KILL／wait 停止受控进程组；前台结果为 `ok:false, cancelled:true, timed_out:false`，正常／超时前台结果的 `cancelled` 为 false。
 - 跨工具调用验证服务时使用 `bash({"command":"exec server ...","mode":"background"})`，保存返回的 `task_id`（如 `bg-1`）。后台没有固定执行超时，但只属于当前用户任务：最终回答、拒绝、请求预算耗尽、错误、Esc 取消或 TUI 受控退出前自动停止并清理。运行中补充沿用当前任务的后台服务；独立 FollowUp 结束时单独收尾。不会跨独立任务、会话恢复或应用重启保留；历史 ID 不会复活进程。服务应保持在受管进程组内，优先 `exec server`，不要 daemonize／setsid。shell `&` 不是受管理后台模式。
 - `bash_task({"task_id":"bg-1","action":"status"})` 立即返回当前累计日志／状态，不等待就绪；`"action":"stop"` 发出本任务的停止请求并等待 TERM／KILL／wait、worker 和 scratch 收尾，不取消整个用户任务。验证完成后显式 stop；已终结任务的 status／stop 保留原终态，stop 幂等。仅接受本管理器当前任务的 ID，不接受任意 PID；上一用户任务的 ID 已清除，新 ID 不复用。mode/action 仅接受上述小写枚举，拒绝 null、额外字段和空白 command／task_id。
 - `wait({"task_ids":["bg-1"]})` 等待选中的后台命令全部结束，可同时指定 `run_ids` 等待自有子 Agent；所有目标进入终态后才返回尚未交付的结果。省略两个 ID 列表时选择全部未交付自有目标，集合在调用开始时冻结。固定等待上限为 120 分钟，超时后终止并回收本批未完成任务及派生工作，再返回超时结果与可用输出；旧整数 `timeout_ms` 参数仅兼容解析，数值忽略，包括 `0`。Steering 和 FollowUp 排队，Esc 取消整个当前任务。长期服务应通过实际请求验证就绪后使用 stop，不用 wait 判断服务是否就绪。TUI 在同一个等待框持续更新状态、耗时与已结束数量，Ctrl + O 展开全部目标；整批结束后冻结最终状态并更新原 Bash 卡片，下一次 wait 新建框。详见[统一等待与结果协议](subagents.md)。
@@ -971,7 +972,7 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 - bash 默认将 `TMPDIR`、`TMP`、`TEMP` 设置为项目内每个命令独立的 `.pp-tmp-*` 目录；前台调用结束后清理，后台随任务存活直到进程收尾后清理；`XDG_CACHE_HOME` 设置为项目内 `.pp-cache` 并保留缓存，二者均已加入忽略规则。这是默认位置而非权限隔离；不遵守这些变量的程序仍可能使用其他位置。清理失败通过结果中的 `warning` 报告。
 - Esc 取消会关闭本地模型连接及 SDK 后台网络任务；下一任务惰性创建新的 runtime／HTTP 连接池。流式半成品只保留展示，不进入原生历史或执行未完成工具调用。已开始的同步 read/edit/write 操作允许完成并保留真实结果；同批剩余调用不执行，但仍按 call_id 追加取消结果。只有终止／回收成功且原生批次与终态同步保存成功才显示取消；真实清理失败或持久化错误优先报告错误。只能保证本地连接及同进程组受控工作停止，不能撤销供应商远端计算、计费、外部副作用或主动脱离进程组的进程。
 - 工具按序执行，write → read 等批内依赖按顺序可见。先保存完整模型输出，再按对应 call ID 逐项追加结果；普通工具失败不会跳过其余调用。取消和真实进程清理失败按前述规则处理。
-- `read_max_bytes`、`read_max_lines`、`bash_timeout_seconds` 配置均要求正整数，启动时读取并固定；`/model`、`/new` 不重新读取这些配置。单次前台 bash 调用可用 `timeout_seconds` 覆盖配置，其中 0 允许关闭超时。技能 URI 文本使用独立的全文读取例外，不改变普通文件和 HTTP 的限额。
+- `read_max_bytes`、`read_max_lines`、`bash_timeout_seconds`、`bash_max_timeout_seconds` 配置均要求正整数，且默认 Bash 超时不能超过上限。已有显式默认超时仍生效；若大于 600 秒，需同时配置足够大的 `bash_max_timeout_seconds`。启动时读取并固定；`/model`、`/new` 不重新读取这些配置。恢复会话沿用保存的执行限制；旧快照缺少上限时，按 600 秒与原默认时限的较大值补齐，已有显式上限不放宽。调整 YAML 上限后应从新启动的会话使用。单次前台 bash 调用可用合法的 `timeout_seconds` 覆盖默认值。技能 URI 文本使用独立的全文读取例外，不改变普通文件和 HTTP 的限额。
 - 普通请求使用当前原生上下文，其中可能含压缩摘要；追加式 JSONL 与可见对话保留原消息和事件。已接受输入在自动压缩可能失败前保存。网络／协议错误不回滚文件修改，模型调用失败按次数与等待预算重试，耗尽后可使用角色 fallback；此前完整历史和工具结果仍可恢复。
 - `/model` 仅从启动时完整校验的 catalog 选择，不重载或写配置。选择当前引用无操作；解析、客户端初始化或历史转换失败保留当前模型和历史。切换不探测 HTTP、不执行工具或回退协议，兼容性由下一次实际请求验证。
 - 切模型保留用户／助手文字、系统指令、工具 call ID／参数及结果。Completion 之间保留原生消息；同一配置供应商的 Responses 之间保留含加密思考的原生输出。跨协议或跨 Responses 供应商时转换可读历史，去掉 item ID、重放元数据和不透明加密思考；可读思考转为助手文本，交错消息／调用转换为 Completion 批次。不支持的非文本或未知历史会拒绝切换，避免静默丢失记录；加密供应商状态不可移植。

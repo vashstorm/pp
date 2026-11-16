@@ -12,9 +12,14 @@ impl Tools {
     ) -> Result<Value> {
         let args: BashArgs = serde_json::from_str(arguments).context("invalid bash arguments")?;
         ensure!(!args.command.trim().is_empty(), "command must not be blank");
+        let timeout_seconds = args
+            .timeout_seconds
+            .unwrap_or(self.limits.bash_timeout_seconds);
         ensure!(
-            args.timeout_seconds.is_none_or(|seconds| seconds <= 3600),
-            "timeout_seconds must be an integer between 0 and 3600"
+            (1..=self.limits.bash_max_timeout_seconds).contains(&timeout_seconds),
+            "timeout_seconds must be an integer between 1 and {} seconds (bash_max_timeout_seconds); omit it to use {} seconds. Zero cannot disable the timeout.",
+            self.limits.bash_max_timeout_seconds,
+            self.limits.bash_timeout_seconds
         );
         let cache = self.workspace.cache_dir()?;
         match args.mode {
@@ -22,8 +27,7 @@ impl Tools {
                 &self.cwd,
                 &cache,
                 &args.command,
-                args.timeout_seconds
-                    .unwrap_or(self.limits.bash_timeout_seconds),
+                timeout_seconds,
                 call_id,
                 cancellation,
                 emit,

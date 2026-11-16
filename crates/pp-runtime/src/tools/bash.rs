@@ -46,6 +46,7 @@ pub(super) fn run(
     defaults: crate::host_defaults::HostDefaults,
     pipe_store: &PipeStore,
 ) -> Result<Value> {
+    let started = Instant::now();
     let pipes = new_pipe_run(pipe_store, call_id)?;
     pipes.prepare_shell(command);
     if let Some(snapshot) = pipes.shell_snapshot() {
@@ -87,6 +88,13 @@ pub(super) fn run(
     result["exit_code"] = json!(outcome.exit_code);
     result["timed_out"] = json!(timed_out);
     result["cancelled"] = json!(cancelled);
+    result["timeout_seconds"] = json!(timeout_seconds);
+    result["duration_ms"] = json!(started.elapsed().as_millis() as u64);
+    if timed_out {
+        result["error"] = json!(format!(
+            "Command timed out after {timeout_seconds} seconds. Inspect captured output for interactive input, network stalls, or excessive test/build scope before choosing a longer timeout. Side effects were not rolled back; do not automatically rerun commands with side effects."
+        ));
+    }
     if cancelled {
         result["error"] = json!("Command cancelled; side effects were not rolled back.");
     }

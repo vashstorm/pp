@@ -385,7 +385,7 @@ fn plan_file_isolation_and_is_plan_path() {
 fn plan_write_uses_common_write_schema_and_rejects_removed_tool_and_old_arguments() {
     let dir = tempfile::tempdir().unwrap();
     let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-    let ordinary = Tools::definitions(EditMode::Replace)
+    let ordinary = Tools::definitions(EditMode::Replace, ToolLimits::default())
         .into_iter()
         .find(|tool| tool.name == "write")
         .unwrap();
