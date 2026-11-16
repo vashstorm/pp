@@ -24,61 +24,65 @@ pub(in crate::tui) fn sidebar_width(width: u16) -> u16 {
     }
 }
 
+fn tab_label(tab: Tab) -> String {
+    let icon = match (crate::tui::themes::is_ascii(), tab) {
+        (false, Tab::General) => "\u{f013}",
+        (false, Tab::Roles) => "\u{f0c0}",
+        (false, Tab::Themes) => "\u{f1fc}",
+        (false, Tab::Skills) => "\u{f0e7}",
+        (true, Tab::General) => "*",
+        (true, Tab::Roles) => "@",
+        (true, Tab::Themes) => "~",
+        (true, Tab::Skills) => "+",
+    };
+    format!("{icon} {}", tab.label())
+}
+
 fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &'static str, bool) {
     let avail = usize::from(area.width.saturating_sub(2));
     let full_slots: Vec<_> = Tab::ALL
         .into_iter()
-        .map(|tab| {
-            if tab == active {
-                format!("[{}]", tab.label())
-            } else {
-                format!(" {} ", tab.label())
-            }
-        })
+        .map(|tab| format!(" {} ", tab_label(tab)))
         .collect();
-    // " " + slots joined by " · " + optional " · <suffix>" + " "
-    let suffix_len = suffix.map_or(0, |s| 3 + s.chars().count());
-    let full_width =
-        2 + full_slots.iter().map(|s| s.chars().count()).sum::<usize>() + (Tab::ALL.len() - 1) * 3;
+    // 首尾空格、标签间分隔符，以及可选的后缀。
+    let suffix_len = suffix.map_or(0, |s| 3 + Line::from(s).width());
+    let full_width = 2
+        + full_slots
+            .iter()
+            .map(|s| Line::from(s.as_str()).width())
+            .sum::<usize>()
+        + (Tab::ALL.len() - 1) * 3;
     if avail >= full_width + suffix_len {
         return build_slots(full_slots, " · ", area.x, active);
     }
-    let compact_slots: Vec<_> = Tab::ALL
-        .into_iter()
-        .map(|tab| {
-            if tab == active {
-                format!("[{}]", tab.label())
-            } else {
-                format!(" {} ", tab.label())
-            }
-        })
-        .collect();
+    let compact_slots = full_slots;
     let compact_width = 2
         + compact_slots
             .iter()
-            .map(|s| s.chars().count())
+            .map(|s| Line::from(s.as_str()).width())
             .sum::<usize>()
         + (Tab::ALL.len() - 1);
     if avail >= compact_width + suffix_len || avail >= compact_width {
         return build_slots(compact_slots, " ", area.x, active);
     }
-    let tight_slots: Vec<_> = Tab::ALL
-        .into_iter()
-        .map(|tab| tab.label().to_owned())
-        .collect();
-    let tight_width =
-        2 + tight_slots.iter().map(|s| s.chars().count()).sum::<usize>() + (Tab::ALL.len() - 1);
+    let tight_slots: Vec<_> = Tab::ALL.into_iter().map(tab_label).collect();
+    let tight_width = 2
+        + tight_slots
+            .iter()
+            .map(|s| Line::from(s.as_str()).width())
+            .sum::<usize>()
+        + (Tab::ALL.len() - 1);
     if avail >= tight_width {
         return build_slots(tight_slots, " ", area.x, active);
     }
     // 窄终端仅渲染当前激活标签名，确保在极端小屏下仍不溢出。
-    let single = vec![active.label().to_owned()];
+    let text = tab_label(active);
     (
         vec![TabSlot {
             tab: active,
             start_col: area.x + 2,
-            end_col: area.x + 2 + active.label().chars().count() as u16,
-            text: single.into_iter().next().unwrap_or_default(),
+            end_col: area.x + 2 + Line::from(text.as_str()).width() as u16,
+            text,
         }],
         "",
         false,
@@ -91,14 +95,14 @@ fn build_slots(
     area_x: u16,
     _active: Tab,
 ) -> (Vec<TabSlot>, &'static str, bool) {
-    let sep_len = separator.chars().count() as u16;
+    let sep_len = Line::from(separator).width() as u16;
     let mut cursor = area_x + 2;
     let mut slots = Vec::with_capacity(texts.len());
     for (idx, (tab, text)) in Tab::ALL.into_iter().zip(texts).enumerate() {
         if idx > 0 {
             cursor += sep_len;
         }
-        let w = text.chars().count() as u16;
+        let w = Line::from(text.as_str()).width() as u16;
         slots.push(TabSlot {
             tab,
             text,
@@ -133,9 +137,9 @@ pub(in crate::tui) fn tabs_title(
         spans.push(Span::styled(slot.text.clone(), style));
     }
     if let Some(suffix) = suffix {
-        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        let used: usize = spans.iter().map(Span::width).sum();
         let avail = usize::from(area.width.saturating_sub(2));
-        let extra = 3 + suffix.chars().count() + 1;
+        let extra = 3 + Line::from(suffix).width() + 1;
         if avail >= used + extra {
             spans.push(Span::styled(" · ", Style::default().fg(muted)));
             spans.push(Span::styled(suffix.to_owned(), Style::default().fg(text)));
@@ -263,6 +267,7 @@ impl Panel {
             self.draw_items(frame, cols[2], p);
         } else {
             self.sidebar_area = Rect::default();
+            self.sidebar_focus = false;
             let narrow = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Length(1), Constraint::Min(1)])
@@ -286,13 +291,12 @@ impl Panel {
         let mut lines = Vec::with_capacity(Category::ALL.len());
         for (idx, category) in Category::ALL.iter().enumerate() {
             let selected = idx == self.category_index;
-            let prefix = if selected { "❯ " } else { "  " };
-            let style = if selected && self.sidebar_focus {
-                Style::default()
-                    .bg(p.panel_selected_bg)
-                    .fg(p.panel_selected_fg)
-                    .add_modifier(Modifier::BOLD)
-            } else if selected {
+            let prefix = if selected && self.sidebar_focus {
+                "❯ "
+            } else {
+                "  "
+            };
+            let style = if selected {
                 Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(p.text)
@@ -348,10 +352,7 @@ impl Panel {
             };
             let prefix = if selected { "❯ " } else { "  " };
             let row_style = if selected {
-                Style::default()
-                    .bg(p.panel_selected_bg)
-                    .fg(p.panel_selected_fg)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(p.text)
             };

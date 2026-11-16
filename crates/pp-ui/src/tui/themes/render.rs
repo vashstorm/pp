@@ -147,18 +147,17 @@ impl Panel {
         ];
         let mut lines = Vec::with_capacity(items.len());
         for (active, icon, name, count) in items {
-            let prefix = if active { "❯ " } else { "  " };
             let label_style = if active {
                 Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(p.text)
             };
-            let used = Line::from(format!("{prefix}{icon} {name}{count}")).width();
+            let used = Line::from(format!("  {icon} {name}{count}")).width();
             let gap = usize::from(area.width.saturating_sub(1))
                 .saturating_sub(used)
                 .max(1);
             lines.push(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(p.accent)),
+                Span::raw("  "),
                 Span::styled(format!("{icon} "), label_style),
                 Span::styled(name, label_style),
                 Span::styled(

@@ -49,11 +49,11 @@ fn setting_aliases_and_tab_arguments_open_expected_tabs_and_complete() {
     app.current_model = Some(app.choices[0].clone());
 
     for (cmd, expected_tab, marker) in [
-        ("/setting", settings::Tab::General, "[General]"),
-        ("/config", settings::Tab::General, "[General]"),
-        ("/settings", settings::Tab::General, "[General]"),
-        ("/setting roles", settings::Tab::Roles, "[Roles]"),
-        ("/config themes", settings::Tab::Themes, "[Themes]"),
+        ("/setting", settings::Tab::General, "\u{f013} General"),
+        ("/config", settings::Tab::General, "\u{f013} General"),
+        ("/settings", settings::Tab::General, "\u{f013} General"),
+        ("/setting roles", settings::Tab::Roles, "\u{f0c0} Roles"),
+        ("/config themes", settings::Tab::Themes, "\u{f1fc} Themes"),
     ] {
         app.insert_input(cmd.into());
         app.submit(PendingKind::Steering);
@@ -61,6 +61,8 @@ fn setting_aliases_and_tab_arguments_open_expected_tabs_and_complete() {
         assert!(app.needs_alternate());
         let screen = draw(&mut app, 110, 30);
         assert!(screen.contains(marker), "{cmd}:\n{screen}");
+        let title = screen.lines().next().unwrap();
+        assert!(!title.contains(['[', ']']), "{title}");
         app.handle(key(KeyCode::Esc), &mut false);
         assert_eq!(app.active_settings_tab(), None, "{cmd}");
     }
@@ -245,25 +247,23 @@ fn setting_tabs_switch_by_keys_click_guard_typing_and_revert_unsaved_theme_previ
     app.handle(key(KeyCode::Right), &mut false);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::Themes));
     let bar = draw(&mut app, 110, 30);
-    assert!(bar.contains("[Themes]"), "{bar}");
+    assert!(bar.contains("\u{f1fc} Themes"), "{bar}");
     app.handle(key(KeyCode::Down), &mut false);
     assert_eq!(
         crate::tui::themes::current(),
         (Theme::Default, IconMode::Ascii)
     );
 
-    // 点击顶部标签 `[General]` 离开 Themes：未保存的预览应回滚。
-    let first_line = bar.lines().next().unwrap();
-    let general_col = first_line.find("General").unwrap() as u16;
-    let panel_top_y = bar
-        .lines()
-        .position(|line| line.contains("[Themes]"))
-        .unwrap() as u16;
+    // 点击顶部 General 图标离开 Themes：ASCII 预览改变图标后仍应命中并回滚。
+    let preview = draw_buffer(&mut app, 110, 30);
+    let general_col = (0..preview.area.width)
+        .find(|&x| preview[(x, 0)].symbol() == "*")
+        .unwrap();
     app.handle(
         Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: general_col,
-            row: panel_top_y,
+            row: 0,
             modifiers: KeyModifiers::NONE,
         }),
         &mut false,
@@ -493,4 +493,72 @@ fn themes_and_skills_sidebars_switch_categories_and_toggle_by_mouse() {
         &mut false,
     );
     assert!(!app.skill_panel.as_ref().unwrap().entries[0].enabled);
+}
+
+#[test]
+fn setting_tabs_show_arrow_only_on_focused_pane() {
+    let _guard = ThemeGuard::reset_default();
+    let (mut app, _requests, _events) = plan_app();
+
+    let pane_arrows = |screen: &str| -> (usize, usize) {
+        let mut left = 0;
+        let mut right = 0;
+        for line in screen.lines() {
+            let trimmed = line.trim_start_matches('│').trim_end_matches('│');
+            if let Some((sidebar, content)) = trimmed.split_once('│') {
+                left += sidebar.matches('❯').count();
+                right += content.matches('❯').count();
+            }
+        }
+        (left, right)
+    };
+
+    // 1. General：默认焦点在右侧列表，Tab 切到左侧栏后仅左侧显示箭头，且不使用选中高亮背景。
+    let palette = crate::tui::themes::palette();
+    let assert_no_selected_bg = |buf: &ratatui::buffer::Buffer| {
+        let mut arrows = 0;
+        for cell in buf.content() {
+            assert_ne!(cell.bg, palette.panel_selected_bg);
+            if cell.symbol() == "❯" {
+                arrows += 1;
+                assert_eq!(cell.bg, palette.panel_bg);
+                assert_eq!(cell.fg, palette.accent);
+            }
+        }
+        assert_eq!(arrows, 1);
+    };
+    app.insert_input("/config".into());
+    app.submit(PendingKind::Steering);
+    flush_settings(&mut app);
+    let general_right = draw(&mut app, 110, 30);
+    assert_eq!(pane_arrows(&general_right), (0, 1), "{general_right}");
+    assert_no_selected_bg(&draw_buffer(&mut app, 110, 30));
+    app.handle(key(KeyCode::Tab), &mut false);
+    let general_left = draw(&mut app, 110, 30);
+    assert_eq!(pane_arrows(&general_left), (1, 0), "{general_left}");
+    assert_no_selected_bg(&draw_buffer(&mut app, 110, 30));
+
+    // 2. Themes：Step 1 与 Step 2 均只在右侧列表显示箭头，左侧栏不显示。
+    app.open_settings(settings::Tab::Themes);
+    let themes_icons = draw(&mut app, 110, 30);
+    assert_eq!(pane_arrows(&themes_icons), (0, 1), "{themes_icons}");
+    app.handle(key(KeyCode::Tab), &mut false);
+    let themes_colors = draw(&mut app, 110, 30);
+    assert_eq!(pane_arrows(&themes_colors), (0, 1), "{themes_colors}");
+
+    // 3. Skills：Sources 与 Global management 均只在右侧列表显示箭头，左侧栏不显示。
+    let mut snapshot = pp_config::skills::Skills::default();
+    snapshot.entries.push(pp_config::skills::Skill {
+        name: "rust".into(),
+        description: "Rust skill".into(),
+        path: "/skills/rust/SKILL.md".into(),
+        enabled: true,
+    });
+    app.clear_other_settings_tabs(Some(settings::Tab::Skills));
+    app.skill_panel = Some(skills::Panel::new(snapshot));
+    let skills_sources = draw(&mut app, 110, 30);
+    assert_eq!(pane_arrows(&skills_sources), (0, 1), "{skills_sources}");
+    app.handle(key(KeyCode::Tab), &mut false);
+    let skills_global = draw(&mut app, 110, 30);
+    assert_eq!(pane_arrows(&skills_global), (0, 1), "{skills_global}");
 }
