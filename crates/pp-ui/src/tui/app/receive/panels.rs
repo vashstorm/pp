@@ -24,7 +24,11 @@ impl App {
                     self.state = State::Ready;
                 }
                 match result {
-                    Ok(report) => {
+                    Ok(mut report) => {
+                        if let Some(settings) = &self.cached_settings {
+                            report.auto_compact = settings.auto_compact;
+                            report.threshold_percent = settings.auto_compact_threshold_percent;
+                        }
                         if let Some(panel) = &mut self.context_panel {
                             panel.set_report(report);
                         }

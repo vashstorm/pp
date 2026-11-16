@@ -42,6 +42,12 @@ impl Agent {
         })
     }
 
+    /// 实时同步 `/setting` 修改的自动压缩策略与阈值（下一次请求与 `/context` 立即生效）。
+    pub fn set_compaction_policy(&mut self, auto_compact: bool, threshold_percent: u8) {
+        self.auto_compact = auto_compact;
+        self.auto_compact_threshold_percent = threshold_percent;
+    }
+
     /// 会话根变化（新建、恢复、树导航、Plan 交接）同时丢弃最近请求指标与
     /// 会话累计输出；切模型、effort 和压缩只清最近请求指标。
     pub(in crate::agent) fn clear_session_usage(&mut self) {

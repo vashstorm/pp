@@ -1,5 +1,5 @@
 //! `/context` 上下文诊断独立 TUI 面板：
-//! 顶部三行容量摘要 + 左侧 20×10 网格 + 右侧 12 行分类/容量列表，支持原地展开与收起内部条目。
+//! 顶部三行容量摘要 + 左侧 25×16 网格 + 右侧 12 行分类/容量列表，支持原地展开与收起内部条目。
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
@@ -77,6 +77,17 @@ impl Panel {
         self.loading = false;
         self.error = None;
         self.clamp_cursor();
+    }
+
+    pub(in crate::tui) fn update_compaction_policy(
+        &mut self,
+        auto_compact: bool,
+        threshold_percent: u8,
+    ) {
+        if let Some(report) = &mut self.report {
+            report.auto_compact = auto_compact;
+            report.threshold_percent = threshold_percent;
+        }
     }
 
     pub(in crate::tui) fn handle(&mut self, event: Event) -> Action {

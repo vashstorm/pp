@@ -64,6 +64,10 @@ impl App {
     }
 
     fn read_context_snapshot(&mut self) {
+        let cached_policy = self
+            .cached_settings
+            .as_ref()
+            .map(|s| (s.auto_compact, s.auto_compact_threshold_percent));
         let Some(panel) = &mut self.context_panel else {
             return;
         };
@@ -72,7 +76,14 @@ impl App {
             .as_ref()
             .and_then(|snapshot| snapshot.read())
         {
-            Some(Ok(report)) => panel.set_report((*report).clone()),
+            Some(Ok(report)) => {
+                let mut report = (*report).clone();
+                if let Some((auto_compact, threshold_percent)) = cached_policy {
+                    report.auto_compact = auto_compact;
+                    report.threshold_percent = threshold_percent;
+                }
+                panel.set_report(report);
+            }
             Some(Err(error)) => panel.set_error(error),
             None => panel
                 .set_error("Context diagnostics are not available yet; press r to refresh.".into()),

@@ -53,6 +53,10 @@ pub(super) enum WorkerCommand {
     Compact {
         cancellation: CancellationToken,
     },
+    UpdateCompactionPolicy {
+        auto_compact: bool,
+        threshold_percent: u8,
+    },
     InspectContext,
     Reset,
     /// 会话根切换（/resume、/tree、/new）会停掉旧子 Agent 根；Hub 打开时按需重建。

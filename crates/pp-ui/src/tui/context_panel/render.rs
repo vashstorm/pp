@@ -1,5 +1,5 @@
 //! `/context` 独立 TUI 面板渲染：
-//! 顶部三行摘要 + 左侧 20×10 占比网格 + 右侧紧凑 12 行列表（数值紧跟文字）+ 原地展开子项。
+//! 顶部三行摘要 + 左侧 25×16 占比网格 + 右侧紧凑 12 行列表（数值紧跟文字）+ 原地展开子项。
 
 use super::*;
 use crate::tui::{
@@ -15,8 +15,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-const GRID_COLS: usize = 20;
-const GRID_ROWS: usize = 10;
+const GRID_COLS: usize = 25;
+const GRID_ROWS: usize = 16;
 const GRID_CELLS: usize = GRID_COLS * GRID_ROWS;
 const GRID_COLUMN_WIDTH: u16 = (GRID_COLS as u16) * 2 + 1;
 

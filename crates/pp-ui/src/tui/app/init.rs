@@ -379,6 +379,19 @@ impl App {
                             push_runtime_snapshot(&agent, &mut snapshots);
                             WorkerEvent::Compacted(result)
                         }
+                        WorkerCommand::UpdateCompactionPolicy {
+                            auto_compact,
+                            threshold_percent,
+                        } => {
+                            agent.set_compaction_policy(auto_compact, threshold_percent);
+                            if let Some(event) = usage_snapshot(&agent)
+                                && sender.send(event).is_err()
+                            {
+                                break;
+                            }
+                            agent.publish_context_snapshot();
+                            continue;
+                        }
                         WorkerCommand::InspectContext => {
                             WorkerEvent::ContextInspected(agent.diagnose_context())
                         }

@@ -316,14 +316,14 @@ fn empty_session_renders_grid_and_compact_inline_metrics() {
     assert!(screen.contains("⛝"));
     let grid_only: String = screen
         .lines()
-        .map(|line| line.chars().take(42).collect::<String>())
+        .map(|line| line.chars().take(52).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n");
     let total_cells = grid_only.matches('⛁').count()
         + grid_only.matches('⛶').count()
         + grid_only.matches('⛝').count();
-    assert_eq!(total_cells, 200);
-    assert_eq!(grid_only.matches('⛝').count(), 30);
+    assert_eq!(total_cells, 400);
+    assert_eq!(grid_only.matches('⛝').count(), 60);
 
     // 具体大小与占比紧跟在分类文字后方（2 空格间隔），绝不推到窗口右边缘对齐。
     assert!(screen.contains("> ⛁ System Prompt  2.5K  0.5%"));
@@ -333,12 +333,16 @@ fn empty_session_renders_grid_and_compact_inline_metrics() {
     assert!(screen.contains("  ⛁ Custom Tools  0  0.0%"));
     assert!(screen.contains("  ⛝ Auto-Compact Buffer  75K  15.0%"));
     assert!(screen.contains("  ⛶ Free Space  417.3K  83.5%"));
-    let normalized: String = screen
+    let right_normalized: String = screen
+        .lines()
+        .map(|line| line.chars().skip(53).collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" ")
         .replace('│', " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    assert!(normalized.contains(
+    assert!(right_normalized.contains(
         "Category totals split Used by estimated share; the entries inside may not add up to them."
     ));
 }
@@ -350,7 +354,7 @@ fn categories_expand_and_collapse_in_place_and_ascii_mode_uses_ascii_glyphs() {
 
     // 在 System Prompt 按 Enter 原地展开 2 个子项。
     assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
-    let expanded_screen = draw_panel(&mut panel, 120, 26);
+    let expanded_screen = draw_panel(&mut panel, 130, 26);
     assert!(expanded_screen.contains("> ⛁ System Prompt ▾  2.5K  0.5%"));
     assert!(expanded_screen.contains("Base System Prompt (bundled) · bundled  1.8K  0.4%"));
     assert!(
@@ -467,4 +471,64 @@ fn app_submits_context_command_opens_alternate_panel_and_closes_on_escape() {
 
     assert!(!app.handle(key(KeyCode::Esc), &mut dirty));
     assert!(!app.needs_alternate());
+}
+
+#[test]
+fn settings_save_syncs_compaction_policy_to_worker_usage_and_open_context_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings_path = dir.path().join("settings.yml");
+    std::fs::write(&settings_path, "auto_compact_threshold_percent: 80\n").unwrap();
+
+    let mut app = crate::tui::App::new(Err(anyhow::anyhow!("no cfg"))).unwrap();
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
+    app.commands = Some(cmd_tx);
+    app.settings_path = Some(settings_path.clone());
+    app.usage = Some(pp_core::context::ContextUsage {
+        estimated_tokens: 10_000,
+        context_window: Some(100_000),
+        last_request: None,
+        session_output_tokens: 0,
+        auto_compact: true,
+        threshold_percent: 80,
+    });
+    let mut panel = Panel::new();
+    panel.set_report(sample_empty_report());
+    app.context_panel = Some(panel);
+
+    app.settings_worker
+        .save(
+            &settings_path,
+            pp_config::config::SettingPatch::AutoCompactThresholdPercent(90),
+        )
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !app.receive_settings() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert!(matches!(
+        cmd_rx.try_recv(),
+        Ok(crate::tui::WorkerCommand::UpdateCompactionPolicy {
+            auto_compact: true,
+            threshold_percent: 90,
+        })
+    ));
+    let usage = app.usage.unwrap();
+    assert!(usage.auto_compact);
+    assert_eq!(usage.threshold_percent, 90);
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 26)).unwrap();
+    terminal
+        .draw(|frame| app.draw(frame, &crate::tui::StatusContext::default()))
+        .unwrap();
+    let rendered: String = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(rendered.contains("Auto-Compact Buffer  50K  10.0%"));
+    assert!(rendered.contains("Free Space  442.3K  88.5%"));
 }

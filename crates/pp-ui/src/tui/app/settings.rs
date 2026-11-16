@@ -259,6 +259,26 @@ impl App {
                         self.conversation
                             .set_bash_timeout(saved.bash_timeout_seconds);
                         self.pending_max_fps = Some(saved.tui.max_fps);
+                        if let Some(usage) = &mut self.usage {
+                            usage.auto_compact = saved.auto_compact;
+                            usage.threshold_percent = saved.auto_compact_threshold_percent;
+                        }
+                        if let Some(panel) = &mut self.context_panel {
+                            panel.update_compaction_policy(
+                                saved.auto_compact,
+                                saved.auto_compact_threshold_percent,
+                            );
+                        }
+                        if let Some(commands) = &self.commands
+                            && commands
+                                .send(crate::tui::WorkerCommand::UpdateCompactionPolicy {
+                                    auto_compact: saved.auto_compact,
+                                    threshold_percent: saved.auto_compact_threshold_percent,
+                                })
+                                .is_err()
+                        {
+                            self.fail_worker();
+                        }
                         if let Some(panel) = &mut self.settings_panel {
                             panel.apply_saved(Ok(saved));
                         }
