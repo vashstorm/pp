@@ -336,14 +336,7 @@ impl Transcript {
                             };
                             ratatui::text::Line::from(vec![
                                 Span::styled(
-                                    " Eval · ",
-                                    Style::default()
-                                        .fg(palette::eval_title())
-                                        .bg(card_bg)
-                                        .add_modifier(Modifier::BOLD),
-                                ),
-                                Span::styled(
-                                    lang.icon(icons).to_owned(),
+                                    format!(" {}", lang.icon(icons)),
                                     Style::default()
                                         .fg(lang.icon_color())
                                         .bg(card_bg)

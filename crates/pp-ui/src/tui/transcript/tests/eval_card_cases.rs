@@ -122,8 +122,11 @@ fn eval_card_distinguishes_python_javascript_and_fallback_from_bash() {
         transcript.invalidate_theme();
         let buffer = render(&mut transcript, 90, 14);
         let text = screen(&buffer);
-        let expected_header = format!("Eval · {} {} · done", case.nerd_icon, case.expected_label);
+        let expected_header = format!("╭─ {} {} · done", case.nerd_icon, case.expected_label);
         assert!(text.contains(&expected_header), "{text}");
+        if case.expected_label != "Eval" {
+            assert!(!text.contains("Eval · "), "{text}");
+        }
         assert!(!text.contains("Bash"), "{text}");
         assert_eq!(buffer[(0, 0)].fg, eval_border());
         assert_eq!(buffer[(2, 1)].bg, eval_background());
@@ -145,8 +148,11 @@ fn eval_card_distinguishes_python_javascript_and_fallback_from_bash() {
         crate::tui::themes::set_active(prev.0, pp_config::config::IconMode::Ascii);
         transcript.invalidate_theme();
         let ascii_text = screen(&render(&mut transcript, 90, 14));
-        let expected_ascii = format!("Eval · {} {} · done", case.ascii_icon, case.expected_label);
+        let expected_ascii = format!("╭─ {} {} · done", case.ascii_icon, case.expected_label);
         assert!(ascii_text.contains(&expected_ascii), "{ascii_text}");
+        if case.expected_label != "Eval" {
+            assert!(!ascii_text.contains("Eval · "), "{ascii_text}");
+        }
         crate::tui::themes::set_active(prev.0, prev.1);
     }
 }
@@ -162,8 +168,8 @@ fn eval_card_lifecycle_hides_empty_output_and_renders_repl_footer_and_errors() {
         json!({"language": "py", "code": "x = 1", "reset": true, "timeout_seconds": 25}),
     );
     let running_text = screen(&render(&mut transcript, 90, 12));
-    assert!(running_text.contains("Eval · "), "{running_text}");
-    assert!(running_text.contains("· running"), "{running_text}");
+    assert!(running_text.contains("Python · running"), "{running_text}");
+    assert!(!running_text.contains("Eval · "), "{running_text}");
     assert!(running_text.contains("├─ Output ─"), "{running_text}");
     assert!(running_text.contains("Elapsed:"), "{running_text}");
     assert!(running_text.contains("Timeout: 25s"), "{running_text}");
@@ -298,7 +304,11 @@ fn eval_card_folds_long_code_and_output_expands_with_toggle_and_replays_identica
             .is_none()
     );
     let replayed_folded = screen(&render(&mut replayed, 90, 30));
-    assert!(replayed_folded.contains("Eval · "), "{replayed_folded}");
+    assert!(
+        replayed_folded.contains("Python · done"),
+        "{replayed_folded}"
+    );
+    assert!(!replayed_folded.contains("Eval · "), "{replayed_folded}");
     assert!(replayed_folded.contains("Cell #2"), "{replayed_folded}");
     assert!(replayed_folded.contains("out-17"), "{replayed_folded}");
     assert!(!replayed_folded.contains("out-00"), "{replayed_folded}");

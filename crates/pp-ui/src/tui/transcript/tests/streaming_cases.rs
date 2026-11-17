@@ -320,11 +320,7 @@ fn eval_card_renders_title_code_and_streaming_output() {
             .to_string(),
     });
     assert_eq!(transcript.entries[0].kind, EntryKind::Eval);
-    assert!(
-        transcript.entries[0]
-            .title
-            .contains("Eval · Python · sum check")
-    );
+    assert!(transcript.entries[0].title.contains("Python · sum check"));
 
     transcript.progress(AgentEvent::ToolOutputSnapshot {
         id: "eval-1".into(),
@@ -336,8 +332,8 @@ fn eval_card_renders_title_code_and_streaming_output() {
     });
 
     let view = screen(&render(&mut transcript, 80, 12));
-    assert!(view.contains("Eval · "), "{view}");
-    assert!(view.contains("Python"), "{view}");
+    assert!(view.contains("Python · done"), "{view}");
+    assert!(!view.contains("Eval · "), "{view}");
     assert!(view.contains("sum check"), "{view}");
     assert!(view.contains("42"), "{view}");
     assert!(!view.contains("Bash"), "{view}");

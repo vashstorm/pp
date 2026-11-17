@@ -311,8 +311,8 @@ impl Transcript {
                         .map(str::trim)
                         .filter(|s| !s.is_empty());
                     match label {
-                        Some(label) => format!("Eval · {} · {label}", lang.label()),
-                        None => format!("Eval · {}", lang.label()),
+                        Some(label) => format!("{} · {label}", lang.label()),
+                        None => lang.label().to_owned(),
                     }
                 } else if name == "bash_task" {
                     let args = arguments.as_ref();
