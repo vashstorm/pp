@@ -97,6 +97,7 @@ impl Agent {
         let think_level = selection.effort;
         let model_source = models.source();
         tools.limits = config.settings.tool_limits();
+        tools.configure_eval(catalog.eval_settings());
         tools.approval.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
         // 进程级单例：启动期后台建连，不再阻塞首个界面；首个任务入口等它结束。
@@ -208,6 +209,7 @@ impl Agent {
         for result in [
             self.stop_subagents(),
             self.tools.stop_background_tasks(),
+            self.tools.stop_eval(),
             self.tools.mcp.shutdown(),
             self.stop_lsp(),
         ] {

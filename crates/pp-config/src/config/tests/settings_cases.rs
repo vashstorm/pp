@@ -916,3 +916,49 @@ fn cost_display_settings_are_strict_and_default_to_usd() {
     };
     assert!(report(&error).contains("Move currency and exchange_rate to the top-level cost"));
 }
+
+#[test]
+fn eval_settings_defaults_validation_and_checkpoint_compatibility() {
+    let defaults: Settings = yaml::parse("{}", "settings").unwrap();
+    assert!(defaults.eval.enabled);
+    assert_eq!(defaults.eval.interpreter, None);
+    assert_eq!(defaults.eval.timeout_seconds, 30);
+    assert_eq!(defaults.eval.max_timeout_seconds, 600);
+
+    let custom = load(
+        Some("eval:\n  enabled: false\n  interpreter: /usr/bin/python3\n  timeout_seconds: 15\n  max_timeout_seconds: 120\ntools:\n  approval:\n    eval: prompt\n"),
+        Some(VALID_MODELS),
+    )
+    .unwrap();
+    assert!(!custom.settings.eval.enabled);
+    assert_eq!(
+        custom.settings.eval.interpreter.as_deref(),
+        Some("/usr/bin/python3")
+    );
+    assert_eq!(custom.settings.tool_limits().eval_timeout_seconds, 15);
+    assert_eq!(custom.settings.tool_limits().eval_max_timeout_seconds, 120);
+    assert_eq!(
+        custom.settings.tools.approval.get("eval"),
+        Some(&ApprovalPolicy::Prompt)
+    );
+
+    for bad in [
+        "eval: {interpreter: '   '}",
+        "eval: {timeout_seconds: 0}",
+        "eval: {max_timeout_seconds: 0}",
+        "eval: {timeout_seconds: 120, max_timeout_seconds: 60}",
+        "eval: {extra: 1}",
+    ] {
+        assert!(load(Some(bad), Some(VALID_MODELS)).is_err(), "{bad}");
+    }
+
+    // 历史 checkpoint 缺少 eval_* 字段时应正常恢复并补齐默认超时与上限。
+    let legacy: ToolLimits = serde_json::from_value(json!({
+        "read_max_bytes": 1024,
+        "read_max_lines": 100,
+        "bash_timeout_seconds": 60
+    }))
+    .unwrap();
+    assert_eq!(legacy.eval_timeout_seconds, 30);
+    assert_eq!(legacy.eval_max_timeout_seconds, 600);
+}

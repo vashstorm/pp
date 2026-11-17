@@ -224,6 +224,47 @@ impl pp_tools::ToolHookCall for ToolHookCall<'_> {
             stop_reason: effect.stop_reason,
         }))
     }
+
+    fn run_pre_nested_tool(
+        &self,
+        name: &str,
+        call_id: &str,
+        arguments: &str,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<Option<pp_tools::PreToolOutcome>> {
+        if !self.session.enabled(HookEvent::PreToolUse) {
+            return Ok(None);
+        }
+        let input = serde_json::from_str::<Value>(arguments)
+            .ok()
+            .filter(Value::is_object);
+        let Some(input) = input else {
+            return Ok(None);
+        };
+        let effect = self.session.run(
+            HookEvent::PreToolUse,
+            &Payload::PreTool {
+                name,
+                input: Some(&input),
+                call_id,
+            },
+            cancellation,
+            emit,
+        )?;
+        let updated_arguments = effect
+            .updated_input
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        Ok(Some(pp_tools::PreToolOutcome {
+            deny_reason: effect.deny_reason,
+            ask_reason: effect.ask_reason,
+            additional_context: effect.additional_context,
+            updated_arguments,
+            stop_reason: effect.stop_reason,
+        }))
+    }
 }
 
 /// 执行器一侧可用的最简调用描述：名称、call ID 与原始参数。

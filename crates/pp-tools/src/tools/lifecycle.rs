@@ -9,6 +9,7 @@ pub(super) fn tool_metric_name(name: &str) -> &'static str {
         "write" => "write",
         "bash" => "bash",
         "bash_task" => "bash_task",
+        "eval" => "eval",
         "wait" => "wait",
         "rg" => "rg",
         "glob" => "glob",

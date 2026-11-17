@@ -28,6 +28,16 @@ pub struct PostToolOutcome {
     pub stop_reason: Option<String>,
 }
 
+/// 嵌套工具执行的前置 Hook 决定。
+#[derive(Default)]
+pub struct PreToolOutcome {
+    pub deny_reason: Option<String>,
+    pub ask_reason: Option<String>,
+    pub additional_context: Vec<String>,
+    pub updated_arguments: Option<String>,
+    pub stop_reason: Option<String>,
+}
+
 /// 单次工具执行携带的 hook 上下文。
 pub trait ToolHookCall {
     fn deny_reason(&self) -> Option<&str>;
@@ -39,6 +49,17 @@ pub trait ToolHookCall {
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<Option<PostToolOutcome>>;
+    /// `eval` 等复合工具内部发起的嵌套工具调用；默认不触发前置 Hook。
+    fn run_pre_nested_tool(
+        &self,
+        _name: &str,
+        _call_id: &str,
+        _arguments: &str,
+        _cancellation: &CancellationToken,
+        _emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<Option<PreToolOutcome>> {
+        Ok(None)
+    }
 }
 
 /// `plan_submit` 的队列封闭检查边界，由运行中输入队列实现。

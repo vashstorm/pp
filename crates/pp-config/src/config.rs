@@ -21,7 +21,7 @@ pub use hooks::{
 
 mod sections;
 pub use sections::{
-    ApprovalMode, ApprovalPolicy, CostDisplay, EditMode, LspSettings, OutputSettings,
+    ApprovalMode, ApprovalPolicy, CostDisplay, EditMode, EvalSettings, LspSettings, OutputSettings,
     ReadDisplaySettings, TaskSettings,
 };
 
@@ -35,6 +35,7 @@ mod general;
 pub use general::{SettingPatch, update_general_setting};
 
 mod limits;
+pub use limits::{RgSettings, ToolLimits, ToolsSettings};
 
 // Deliberately not Debug: this owns the API credential.
 pub struct Config {
@@ -80,105 +81,17 @@ pub struct ModelSelection {
     pub effort: ThinkLevel,
 }
 
-#[derive(Clone, Copy, Serialize)]
-pub struct ToolLimits {
-    pub output: crate::config::OutputSettings,
-    pub read_max_bytes: usize,
-    pub read_max_lines: usize,
-    pub bash_timeout_seconds: u64,
-    pub bash_max_timeout_seconds: u64,
-    pub rg: RgSettings,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct RgSettings {
-    #[serde(rename = "contextBefore")]
-    pub context_before: usize,
-    #[serde(rename = "contextAfter")]
-    pub context_after: usize,
-}
-
-impl Default for RgSettings {
-    fn default() -> Self {
-        Self {
-            context_before: 1,
-            context_after: 3,
-        }
-    }
-}
-
-/// settings.yml 的 `tools:` 小节；字段语义由 `crate::tools::approval` 解释。
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct ToolsSettings {
-    #[serde(flatten)]
-    pub output: crate::config::OutputSettings,
-    #[serde(rename = "approvalMode")]
-    pub approval_mode: crate::config::ApprovalMode,
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub approval: std::collections::BTreeMap<String, crate::config::ApprovalPolicy>,
-}
-
-impl ToolLimits {
-    pub fn validate(&self) -> Result<()> {
-        self.output.validate()?;
-        ensure!(
-            self.read_max_bytes > 0,
-            "read_max_bytes must be greater than zero"
-        );
-        ensure!(
-            self.read_max_lines > 0,
-            "read_max_lines must be greater than zero"
-        );
-        ensure!(
-            self.bash_timeout_seconds > 0,
-            "bash_timeout_seconds must be greater than zero"
-        );
-        ensure!(
-            self.bash_max_timeout_seconds > 0,
-            "bash_max_timeout_seconds must be greater than zero"
-        );
-        ensure!(
-            self.bash_timeout_seconds <= self.bash_max_timeout_seconds,
-            "bash_timeout_seconds must not exceed bash_max_timeout_seconds"
-        );
-        ensure!(
-            std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(
-                    self.bash_max_timeout_seconds
-                ))
-                .is_some(),
-            "bash_max_timeout_seconds is too large"
-        );
-        Ok(())
-    }
-}
-
-impl Default for ToolLimits {
-    fn default() -> Self {
-        Self {
-            read_max_bytes: default_read_max_bytes(),
-            read_max_lines: default_read_max_lines(),
-            bash_timeout_seconds: default_bash_timeout_seconds(),
-            bash_max_timeout_seconds: default_bash_max_timeout_seconds(),
-            rg: RgSettings::default(),
-            output: Default::default(),
-        }
-    }
-}
-
-fn default_read_max_bytes() -> usize {
+pub(crate) fn default_read_max_bytes() -> usize {
     65_536
 }
-fn default_read_max_lines() -> usize {
+pub(crate) fn default_read_max_lines() -> usize {
     2_000
 }
-fn default_bash_timeout_seconds() -> u64 {
+pub(crate) fn default_bash_timeout_seconds() -> u64 {
     60
 }
 
-fn default_bash_max_timeout_seconds() -> u64 {
+pub(crate) fn default_bash_max_timeout_seconds() -> u64 {
     600
 }
 
@@ -254,6 +167,8 @@ pub struct Settings {
     #[serde(default)]
     pub tools: ToolsSettings,
     #[serde(default)]
+    pub eval: EvalSettings,
+    #[serde(default)]
     pub lsp: crate::config::LspSettings,
     #[serde(default)]
     pub debug: bool,
@@ -299,6 +214,8 @@ impl Settings {
             read_max_lines: self.read_max_lines,
             bash_timeout_seconds: self.bash_timeout_seconds,
             bash_max_timeout_seconds: self.bash_max_timeout_seconds,
+            eval_timeout_seconds: self.eval.timeout_seconds,
+            eval_max_timeout_seconds: self.eval.max_timeout_seconds,
             rg: self.rg,
             output: self.tools.output,
         }
@@ -306,6 +223,7 @@ impl Settings {
 
     pub(crate) fn validate(&self) -> Result<()> {
         self.lsp.validate()?;
+        self.eval.validate()?;
         ensure!(
             self.cost.icon().is_some(),
             "cost.currency must be one of {}",
@@ -381,6 +299,7 @@ const APPROVAL_TOOL_NAMES: &[&str] = &[
     "write",
     "bash",
     "bash_task",
+    "eval",
     "task",
     "wait",
 ];
@@ -413,6 +332,7 @@ fn default_settings() -> Settings {
         tui: TuiSettings::default(),
         cost: CostDisplay::default(),
         tools: ToolsSettings::default(),
+        eval: EvalSettings::default(),
         lsp: Default::default(),
         debug: false,
         notification_show_countdown: default_notification_show_countdown(),
@@ -477,6 +397,10 @@ impl ModelCatalog {
 
     pub fn lsp_settings(&self) -> crate::config::LspSettings {
         self.settings.lsp
+    }
+
+    pub fn eval_settings(&self) -> &crate::config::EvalSettings {
+        &self.settings.eval
     }
 
     /// 用户级 hooks 配置与 settings.yml 放在同一配置目录。

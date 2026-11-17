@@ -6,6 +6,7 @@
 mod ask;
 mod bash_tool;
 mod edit_tool;
+mod eval_tool;
 mod read_tool;
 mod subagent;
 mod write;

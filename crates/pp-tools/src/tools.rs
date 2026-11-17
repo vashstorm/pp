@@ -96,6 +96,10 @@ pub struct Tools {
     snapshots: RefCell<hashline::Store>,
     project_instructions: RefCell<Option<crate::project_instructions::State>>,
     background_tasks: pp_bash::TaskManager,
+    eval: pp_eval::Session,
+    eval_enabled: bool,
+    eval_interpreter: Option<String>,
+    eval_available: bool,
     wait_state: RefCell<wait::State>,
     pub limits: ToolLimits,
     host_defaults: pp_workspace::host_defaults::HostDefaults,
@@ -211,6 +215,23 @@ struct BashTaskArgs {
 enum BashTaskAction {
     Status,
     Stop,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EvalArgs {
+    language: EvalLanguage,
+    code: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_bash_timeout")]
+    timeout_seconds: Option<u64>,
+    #[serde(default)]
+    reset: bool,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum EvalLanguage {
+    Py,
 }
 
 const PLAN_WRITE_DESC: &str = concat!(
@@ -447,6 +468,50 @@ fn bash_task_definition() -> FunctionObject {
     )
 }
 
+fn eval_definition(limits: ToolLimits) -> FunctionObject {
+    let default_timeout = limits.eval_timeout_seconds;
+    let max_timeout = limits.eval_max_timeout_seconds;
+    let description = format!(
+        concat!(
+            "Execute one Python cell in a persistent, stateful Python 3.9+ kernel. State ",
+            "(variables, imports, functions) survives across calls in this session unless ",
+            "reset: true is passed. Prefer eval over python -c via bash for stateful computation, ",
+            "data inspection, plotting, or multi-step scripts. Supports top-level await, trailing ",
+            "non-None expression echo, %load <path>, %pip <args>, %cd/%pwd/%ls/%env/%time/%who, ",
+            "!cmd, %%bash, and matplotlib/PIL image output. Built-in helpers: tool.<name>(...) ",
+            "(works sync or with await; calls any allowed session tool through normal approval ",
+            "and hooks), read(path, offset?, limit?), write(path, content), rg(pattern, path?), ",
+            "glob(pattern, path?), sh(command, timeout_seconds?), env(key?, value?). Timeout ",
+            "defaults to {default_timeout}s (1-{max_timeout}s); host tool bridge calls pause the ",
+            "compute timeout window."
+        ),
+        default_timeout = default_timeout,
+        max_timeout = max_timeout
+    );
+    let timeout_desc = format!(
+        "Active compute timeout: 1-{max_timeout} seconds. Omit to use default {default_timeout}s."
+    );
+    tool_def(
+        "eval",
+        description,
+        object_schema(
+            json!({
+                "language": {"type": "string", "enum": ["py"]},
+                "code": {"type": "string"},
+                "title": {"type": "string"},
+                "timeout_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": max_timeout,
+                    "description": timeout_desc
+                },
+                "reset": {"type": "boolean"}
+            }),
+            &["language", "code"],
+        ),
+    )
+}
+
 pub(super) struct ExecuteCall<'a, 'f> {
     pub(super) name: &'a str,
     pub(super) arguments: &'a str,
@@ -455,6 +520,8 @@ pub(super) struct ExecuteCall<'a, 'f> {
     pub(super) cancellation: &'a CancellationToken,
     pub(super) emit: &'a mut dyn FnMut(AgentEvent),
     pub(super) fetch: &'a mut read::Fetch<'f>,
+    pub(super) nested_hook_context: Vec<String>,
+    pub(super) nested_hook_halt: Option<HookHalt>,
 }
 
 struct AuthorizedAccess {
@@ -482,7 +549,10 @@ impl Tools {
     }
 
     fn mode_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
-        let base = Self::definitions(self.edit_mode, self.limits);
+        let mut base = Self::definitions(self.edit_mode, self.limits);
+        if self.eval_available && mode == WorkMode::Execute {
+            base.push(eval_definition(self.limits));
+        }
         let mut definitions = match mode {
             WorkMode::Execute => base,
             // Plan 和 Review 共用只读搜索工具。
@@ -594,6 +664,8 @@ impl Tools {
             cancellation,
             emit,
             fetch,
+            nested_hook_context: Vec::new(),
+            nested_hook_halt: None,
         };
         let started = Instant::now();
         let pid = std::process::id();
@@ -609,7 +681,7 @@ impl Tools {
         let mut images = Vec::new();
         let (mut value, stop_error, plan_change, todo_change) =
             self.run_checked(&mut call, hook, &mut images);
-        let (hook_context, hook_halt, serialized) = finalize_tool_execution(
+        let (mut hook_context, mut hook_halt, serialized) = finalize_tool_execution(
             &mut call,
             hook,
             pid,
@@ -618,6 +690,12 @@ impl Tools {
             &mut value,
             stop_error.is_some(),
         );
+        if !call.nested_hook_context.is_empty() {
+            hook_context.extend(call.nested_hook_context);
+        }
+        if hook_halt.is_none() {
+            hook_halt = call.nested_hook_halt;
+        }
         ToolExecution {
             output: serialized,
             images,
@@ -659,7 +737,7 @@ impl Tools {
                 None,
             );
         }
-        match self.execute_inner(call, hook_ask, images) {
+        match self.execute_inner(call, hook, hook_ask, images) {
             Ok((result, change, todo)) => {
                 if call.name == "task" {
                     self.reserve_task_results(&result);
@@ -765,6 +843,9 @@ impl Tools {
                 }
             );
         }
+        if name == "eval" && !self.eval_enabled {
+            bail!("eval is disabled in settings.");
+        }
         // 未安装（enabled=false 或 Agent 未初始化 LSP）时显式调用直接失败，
         // 既不进入审批也不尝试发现服务器。
         if name == "lsp" && self.lsp.is_none() {
@@ -806,6 +887,7 @@ impl Tools {
     fn execute_inner(
         &self,
         call: &mut ExecuteCall<'_, '_>,
+        hook: Option<&dyn ToolHookCall>,
         hook_ask: Option<&str>,
         images: &mut Vec<read::ToolImage>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
@@ -846,6 +928,7 @@ impl Tools {
             }
             "bash" => self.run_bash(call.arguments, call.call_id, call.cancellation, call.emit),
             "bash_task" => self.run_bash_task(call.arguments, call.call_id, call.emit),
+            "eval" => return self.run_eval(call, hook, images),
             "rg" => rg::run(
                 &self.cwd,
                 self.limits.rg,

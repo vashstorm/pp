@@ -309,3 +309,33 @@ fn streaming_single_long_logical_line_uses_bounded_grapheme_windows() {
     // CJK and emoji need two cells; show the same tail at a useful width.
     assert!(screen(&render(&mut transcript, 30, 5)).contains("tail中"));
 }
+
+#[test]
+fn eval_card_renders_title_code_and_streaming_output() {
+    let mut transcript = Transcript::new();
+    transcript.progress(AgentEvent::ToolStarted {
+        id: "eval-1".into(),
+        name: "eval".into(),
+        arguments: json!({"language":"py","title":"sum check","code":"x = 20\nprint(x + 22)"})
+            .to_string(),
+    });
+    assert_eq!(transcript.entries[0].kind, EntryKind::Bash);
+    assert!(
+        transcript.entries[0]
+            .title
+            .contains("eval · py · sum check")
+    );
+
+    transcript.progress(AgentEvent::ToolOutputSnapshot {
+        id: "eval-1".into(),
+        output: "42\n".into(),
+    });
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "eval-1".into(),
+        result: json!({"ok":true,"language":"py","output":"42\n","duration_ms":12}),
+    });
+
+    let view = screen(&render(&mut transcript, 80, 12));
+    assert!(view.contains("sum check"), "{view}");
+    assert!(view.contains("42"), "{view}");
+}

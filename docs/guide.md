@@ -138,6 +138,11 @@ read:
   toolResultPreview: false # 兼容旧配置；read 始终隐藏正文，此值不再影响展示
 bash_timeout_seconds: 60
 bash_max_timeout_seconds: 600 # 前台单次调用的硬上限；默认超时不能超过此值
+eval:
+  enabled: true
+  # interpreter: ~/.venv/bin/python # 可选；默认依次探测虚拟环境与 PATH 上的 python3/python (>= 3.9)
+  timeout_seconds: 30
+  max_timeout_seconds: 600
 # 内置 rg 工具的默认上下文行数；调用参数可覆盖
 rg:
   contextBefore: 1
@@ -962,6 +967,7 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 - `glob({"pattern":"**/*.rs","path":"src"})` 查找路径；`pattern` 必填，`path` 为可选搜索目录（默认当前工作目录），不能传 glob 或多个范围；另支持 `hidden`、`gitignore`、`limit`；默认包含隐藏路径、遵守忽略规则，最多返回 200 项和 50 KiB。扫描在文件操作之间检查取消及五秒期限，超时返回不完整结果；没有文件系统沙箱。
 - 默认前台 `bash({"command":"..."})`：以启动目录执行 `bash -c`，关闭 stdin，建立独立进程组。stdout/stderr 按收集器接收顺序合并，不保证跨流真实写入顺序；无需等待换行即可显示有界头尾快照。返回合并的 `output`、退出码、输出计数、截断标记、`timed_out` 与 `cancelled`，信号退出的退出码为 null。超限日志通过下述 artifact 机制继续读取，旧会话的 stdout/stderr 分流结果仍可回放。
 - 嵌入式 Bash 会拒绝直接重定向到命名管道（FIFO），包括指向 FIFO 的符号链接。需要使用 FIFO 时，将重定向放在外部 `bash -c` 的命令字符串中，由受管子进程执行。
+- 持久 Python 执行环境 `eval({"language":"py","code":"..."})`：单会话独占常驻 Python 3.9+ 子进程（跨多轮对话保留变量、导入与函数，支持 `reset: true` 或 `/new` 重建，不支持 Plan／Review 模式或只读子 Agent；未配置且未探测到 Python 时自动从工具列表隐藏）。支持顶层 `await`、末尾非 `None` 表达式回显、`%load`／`%pip`／`%cd`／`%pwd`／`%ls`／`%env`／`%time`／`%who`／`!cmd`／`%%bash` 以及 `matplotlib`／`PIL` 图片自动解码附着。单元内可通过 `tool.<name>(...)`（同时支持同步调用与 `await`）及便捷函数 `read`/`write`/`rg`/`glob`/`sh`/`env` 经受保护私有 NDJSON 控制描述符零网络监听回调宿主允许的内置或 MCP 工具，嵌套调用复用同一 `ToolPolicy`、审批门、`AGENTS.md` 修改范围门禁与 `PreToolUse`／`PostToolUse` Hooks；嵌套回调期间暂停 Python 计算超时计时。超时默认 `eval.timeout_seconds`（30 秒，范围 `1..=eval.max_timeout_seconds` 默认 600 秒）；超时或 Esc 取消先发 `SIGINT` 触发 `KeyboardInterrupt` 以尽量保留内核状态，逾宽限期未响应则强杀进程组并在下次调用报告 `Kernel restarted`。
 - 工具参数严格校验：缺失／额外字段、非法 JSON、空白路径／命令、未知工具及文件／进程错误均返回 `ok:false`，供模型修正。bash 非零退出同样失败并保留输出。
 - 前台 bash 接受可选的 `timeout_seconds` 正整数参数，范围为 1 至 `bash_max_timeout_seconds`（默认 600 秒），0 不能关闭超时；例如 `{"command":"cargo build --locked","timeout_seconds":180}`。通常省略此参数，使用 `bash_timeout_seconds` 配置（默认 60 秒）；简单查询／小脚本建议 10–30 秒，构建／测试／安装按实际范围使用 120–300 秒，仅已知耗时较长的完整验证才使用更长时限。超过上限的调用在启动命令前被拒绝并返回允许范围；如确有需要，在 `settings.yml` 中显式提高 `bash_max_timeout_seconds`。后台模式忽略合法的超时参数，继续仅按常驻服务生命周期管理。`{"command":"..."}` 和显式 `"mode":"foreground"` 保持相同契约，超时与模型请求超时独立。独立监督线程在超时时向进程组发送 TERM，等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。前台结果包含实际采用的 `timeout_seconds` 与包含启动、回收的 `duration_ms`；超时返回 `ok:false, timed_out:true` 与诊断提示，保留已捕获输出，不回滚 shell 修改。应先检查交互输入、网络阻塞和验证范围，再决定是否延长，不要自动重跑有副作用的命令。正常结束也清理同一进程组的残留后代；主动脱离进程组的进程不受保证。TUI Esc 取消通过 TERM→1 秒宽限→KILL／wait 停止受控进程组；前台结果为 `ok:false, cancelled:true, timed_out:false`，正常／超时前台结果的 `cancelled` 为 false。
 - 跨工具调用验证服务时使用 `bash({"command":"exec server ...","mode":"background"})`，保存返回的 `task_id`（如 `bg-1`）。后台没有固定执行超时，但只属于当前用户任务：最终回答、拒绝、请求预算耗尽、错误、Esc 取消或 TUI 受控退出前自动停止并清理。运行中补充沿用当前任务的后台服务；独立 FollowUp 结束时单独收尾。不会跨独立任务、会话恢复或应用重启保留；历史 ID 不会复活进程。服务应保持在受管进程组内，优先 `exec server`，不要 daemonize／setsid。shell `&` 不是受管理后台模式。

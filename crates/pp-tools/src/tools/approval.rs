@@ -22,7 +22,7 @@ pub fn tier_of(name: &str) -> Tier {
     match name {
         "read" | "rg" | "glob" | "todo" | "ask" => Tier::Read,
         "edit" | "write" => Tier::Write,
-        "bash" | "bash_task" | "task" => Tier::Exec,
+        "bash" | "bash_task" | "eval" | "task" => Tier::Exec,
         "wait" => Tier::Read,
         other if other.starts_with("mcp__") => Tier::Write,
         _ => Tier::Exec,

@@ -204,3 +204,70 @@ pub struct ReadDisplaySettings {
     #[serde(default, rename = "toolResultPreview")]
     pub(crate) tool_result_preview: bool,
 }
+
+pub fn default_eval_enabled() -> bool {
+    true
+}
+
+pub fn default_eval_timeout_seconds() -> u64 {
+    30
+}
+
+pub fn default_eval_max_timeout_seconds() -> u64 {
+    600
+}
+
+/// `settings.yml` 的 `eval:` 小节，控制持久 Python 内核的可用性与超时窗口。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EvalSettings {
+    #[serde(default = "default_eval_enabled")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interpreter: Option<String>,
+    #[serde(default = "default_eval_timeout_seconds")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_eval_max_timeout_seconds")]
+    pub max_timeout_seconds: u64,
+}
+
+impl Default for EvalSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_eval_enabled(),
+            interpreter: None,
+            timeout_seconds: default_eval_timeout_seconds(),
+            max_timeout_seconds: default_eval_max_timeout_seconds(),
+        }
+    }
+}
+
+impl EvalSettings {
+    pub fn validate(&self) -> Result<()> {
+        if let Some(interpreter) = &self.interpreter {
+            ensure!(
+                !interpreter.trim().is_empty(),
+                "eval.interpreter must not be blank"
+            );
+        }
+        ensure!(
+            self.timeout_seconds > 0,
+            "eval.timeout_seconds must be greater than zero"
+        );
+        ensure!(
+            self.max_timeout_seconds > 0,
+            "eval.max_timeout_seconds must be greater than zero"
+        );
+        ensure!(
+            self.timeout_seconds <= self.max_timeout_seconds,
+            "eval.timeout_seconds must not exceed eval.max_timeout_seconds"
+        );
+        ensure!(
+            std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(self.max_timeout_seconds))
+                .is_some(),
+            "eval.max_timeout_seconds is too large"
+        );
+        Ok(())
+    }
+}

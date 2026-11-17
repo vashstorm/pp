@@ -36,6 +36,8 @@ Foreground Bash normally uses `bash_timeout_seconds` (default: 60 seconds). Opti
 
 Model-facing Bash results also include a recovery notice with a concrete `read` example when an artifact is available, or explain when capture failed. Notices distinguish complete logs, growing snapshots, and incomplete head/tail samples.
 
+`eval` provides a persistent, stateful Python 3.9+ kernel (`language: "py"`) across turns in Execute mode (hidden automatically when `eval.enabled` is false or no working interpreter is detected). It supports top-level `await`, trailing expression echo, magics (`%load`, `%pip`, `%cd`, `%env`, `!cmd`, `%%bash`), `matplotlib`/`PIL` image capture, and an in-process duplex NDJSON bridge (`tool.<name>(...)`, `read`, `write`, `rg`, `glob`, `sh`, `env`) that enforces the same approval, `AGENTS.md`, and hook gates as top-level calls. Configure `eval` (`enabled`, `interpreter`, `timeout_seconds`, `max_timeout_seconds`) in `~/.pp/agent/settings.yml`.
+
 ## Quick start
 
 ### 1. Build

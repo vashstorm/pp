@@ -12,6 +12,7 @@ pp-workspace = { path = "../pp-workspace" }
 pp-mcp = { path = "../pp-mcp" }
 pp-lsp = { path = "../pp-lsp" }
 pp-bash = { path = "../pp-bash" }
+pp-eval = { path = "../pp-eval" }
 pp-llm = { path = "../pp-llm" }
 anyhow = { workspace = true }
 async-openai = { workspace = true }

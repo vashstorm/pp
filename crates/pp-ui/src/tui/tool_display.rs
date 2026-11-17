@@ -182,7 +182,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     if view.name == "glob" {
         return glob_body(&view, width);
     }
-    if view.context.full && !matches!(view.name, "bash" | "bash_task") {
+    if view.context.full && !matches!(view.name, "bash" | "bash_task" | "eval") {
         let text = if view.name == "write" && !view.failed {
             view.arguments
                 .get("content")
@@ -194,7 +194,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
         return wrap(logical(text).into_iter().map(str::to_owned), width, style);
     }
     if view.failed
-        && !matches!(view.name, "bash" | "bash_task" | "rg" | "find")
+        && !matches!(view.name, "bash" | "bash_task" | "eval" | "rg" | "find")
         && !view.name.starts_with("mcp__")
     {
         return wrap(logical(text).into_iter().map(str::to_owned), width, style);
@@ -233,7 +233,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
             rows
         }
         "plan_search" => plan_search(&view, width, style),
-        "bash" | "bash_task" => {
+        "bash" | "bash_task" | "eval" => {
             let mut stderr = false;
             let mut rows: Vec<_> = logical(text)
                 .into_iter()

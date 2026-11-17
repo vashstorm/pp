@@ -134,6 +134,7 @@ impl Agent {
             tools.artifacts = artifacts.clone();
             tools.share_pipe_store(&pipe_store);
             tools.limits = config.settings.tool_limits();
+            tools.configure_eval(catalog.eval_settings());
             tools.skills = skills.clone();
             if !record.spec.isolated {
                 tools.write_lock = write_lock.clone();

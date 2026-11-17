@@ -1,0 +1,23 @@
+[package]
+name = "pp-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pp-core = { path = "../pp-core" }
+pp-config = { path = "../pp-config" }
+pp-workspace = { path = "../pp-workspace" }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+xxhash-rust = { workspace = true }
+
+[dev-dependencies]
+pp-workspace = { path = "../pp-workspace", features = ["test-support"] }
+image = { workspace = true }
+tempfile = { workspace = true }

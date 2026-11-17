@@ -5,6 +5,7 @@ members = [
     "crates/pp-bash",
     "crates/pp-core",
     "crates/pp-config",
+    "crates/pp-eval",
     "crates/pp-stats",
     "crates/pp-llm",
     "crates/pp-lsp",

@@ -31,6 +31,7 @@ impl Tools {
     /// 测试与 mock 专用构造：空 `McpManager`，不读取真实用户 MCP 定义。
     pub fn new(cwd: PathBuf, edit_mode: EditMode) -> Result<Self> {
         let workspace = save::Workspace::open(&cwd)?;
+        let eval_available = pp_eval::probe_python(&workspace.path, None).is_ok();
         Ok(Self {
             artifacts: Default::default(),
             ask_handler: None,
@@ -55,6 +56,10 @@ impl Tools {
             snapshots: RefCell::default(),
             project_instructions: RefCell::default(),
             background_tasks: Default::default(),
+            eval_available,
+            eval: pp_eval::Session::new(),
+            eval_enabled: true,
+            eval_interpreter: None,
             wait_state: RefCell::default(),
             limits: ToolLimits::default(),
             host_defaults: pp_workspace::host_defaults::current(),
@@ -95,6 +100,25 @@ impl Tools {
 
     pub fn background_cleanup(&self) -> BackgroundCleanup {
         self.background_tasks.cleanup()
+    }
+
+    pub fn configure_eval(&mut self, settings: &pp_config::config::EvalSettings) {
+        self.eval_enabled = settings.enabled;
+        self.eval_interpreter.clone_from(&settings.interpreter);
+        self.eval_available = settings.enabled
+            && pp_eval::probe_python(&self.cwd, self.eval_interpreter.as_deref()).is_ok();
+    }
+
+    pub fn eval_available(&self) -> bool {
+        self.eval_available
+    }
+
+    pub fn stop_eval(&self) -> Result<()> {
+        self.eval.stop()
+    }
+
+    pub fn eval_cleanup(&self) -> pp_eval::EvalCleanup {
+        self.eval.cleanup()
     }
 
     pub fn cwd(&self) -> &Path {

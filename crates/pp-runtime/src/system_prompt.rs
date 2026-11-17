@@ -254,7 +254,7 @@ impl Snapshot {
                 })?,
         };
         let mut runtime = serde_json::to_value(context)?;
-        for name in ["read", "edit", "write", "bash", "rg", "glob"] {
+        for name in ["read", "edit", "write", "bash", "eval", "rg", "glob"] {
             runtime[format!("has_{name}")] = context.tools.iter().any(|tool| tool == name).into();
         }
         runtime["has_mcp"] = context
@@ -270,6 +270,8 @@ impl Snapshot {
         runtime["read_max_lines"] = limits.read_max_lines.into();
         runtime["bash_timeout_seconds"] = limits.bash_timeout_seconds.into();
         runtime["bash_max_timeout_seconds"] = limits.bash_max_timeout_seconds.into();
+        runtime["eval_timeout_seconds"] = limits.eval_timeout_seconds.into();
+        runtime["eval_max_timeout_seconds"] = limits.eval_max_timeout_seconds.into();
         let runtime_text = renderer()
             .render_template(RUNTIME, &runtime)?
             .trim()

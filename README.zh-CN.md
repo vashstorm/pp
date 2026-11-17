@@ -38,6 +38,8 @@ Bash 合并 stdout/stderr，默认返回最多 50 KiB 的头尾预览。超限�
 
 Bash 的模型结果还会在资源可用时附带含具体 `read` 示例的补读提示，或说明保存失败；提示区分完整日志、运行中快照和不完整头尾样本。
 
+`eval` 工具在执行模式下提供持久、有状态的 Python 3.9+ 内核（`language: "py"`，在多次调用及多轮对话间保留变量与导入状态；当 `eval.enabled: false` 或未探测到可用解释器时自动隐藏）。支持顶层 `await`、末尾表达式回显、`%load`/`%pip`/`!cmd`/`%%bash` 等魔术命令、`matplotlib`/`PIL` 图片自动捕获，以及零网络监听的双工 NDJSON 工具回调桥（`tool.<name>(...)` 与 `read`/`write`/`rg`/`glob`/`sh`/`env`，同时兼容同步与 `await` 调用），所有嵌套工具调用经过与顶层一致的审批门、`AGENTS.md` 门禁及生命周期 Hooks。可在 `~/.pp/agent/settings.yml` 的 `eval` 小节配置 `enabled`、`interpreter`、`timeout_seconds`（默认 30 秒）与 `max_timeout_seconds`（默认 600 秒）。
+
 ## 快速开始
 
 ### 1. 构建

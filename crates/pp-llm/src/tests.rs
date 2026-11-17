@@ -112,6 +112,7 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
             rg: Default::default(),
             read: Default::default(),
             tools: Default::default(),
+            eval: Default::default(),
             lsp: Default::default(),
             debug: false,
             notification_show_countdown: true,

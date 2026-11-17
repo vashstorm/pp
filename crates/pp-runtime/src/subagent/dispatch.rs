@@ -128,6 +128,7 @@ impl Binding {
                     "write",
                     "bash",
                     "bash_task",
+                    "eval",
                     "ask",
                     "wait",
                 ]

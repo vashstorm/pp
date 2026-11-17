@@ -72,6 +72,7 @@ impl Agent {
         // hook 配置不从 checkpoint 恢复：始终重新读取用户级与项目级 hooks 文件。
         let hooks = Self::compile_hooks(&catalog, tools.cwd())?;
         tools.limits = checkpoint.tool_limits;
+        tools.configure_eval(catalog.eval_settings());
         // 恢复不承诺旧进程的临时管道正文：显式换一个空 registry。
         tools.reset_pipe_store();
         if let Some(id) = journal.id() {
@@ -304,6 +305,9 @@ impl Agent {
         self.session = session;
         self.reset_lsp_diagnostics();
         self.tools.clear_caches();
+        if let Err(error) = self.tools.stop_eval() {
+            tracing::warn!(error = %error, "stopping Python eval kernel on tree navigation failed");
+        }
         // 导航到另一会话根：旧根的临时管道正文不能跨根复用。
         self.tools.reset_pipe_store();
         self.clear_session_usage();
@@ -333,6 +337,9 @@ impl Agent {
         self.plan_lease = None;
         self.reset_lsp_diagnostics();
         self.tools.clear_caches();
+        if let Err(error) = self.tools.stop_eval() {
+            tracing::warn!(error = %error, "stopping Python eval kernel on reset failed");
+        }
         self.workflow = pp_core::plan::WorkflowState {
             mode: self.workflow.mode,
             ..Default::default()

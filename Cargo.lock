@@ -3351,6 +3351,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pp-eval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "image",
+ "libc",
+ "pp-config",
+ "pp-core",
+ "pp-workspace",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "pp-llm"
 version = "0.1.0"
 dependencies = [
@@ -3525,6 +3543,7 @@ dependencies = [
  "pp-bash",
  "pp-config",
  "pp-core",
+ "pp-eval",
  "pp-llm",
  "pp-lsp",
  "pp-mcp",

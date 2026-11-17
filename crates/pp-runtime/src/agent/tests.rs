@@ -3,6 +3,7 @@ use super::*;
 use pp_test_support::CapturedRequest;
 use serde_json::{Value, json};
 
+mod eval_cases;
 mod hook_cases;
 mod input_tool_cases;
 mod model_role_cases;

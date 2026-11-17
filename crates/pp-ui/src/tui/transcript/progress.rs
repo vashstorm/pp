@@ -280,7 +280,7 @@ impl Transcript {
                             .flatten()
                     })
                 });
-                let kind = if matches!(name.as_str(), "bash" | "bash_task") {
+                let kind = if matches!(name.as_str(), "bash" | "bash_task" | "eval") {
                     EntryKind::Bash
                 } else if name == "rg" {
                     EntryKind::Rg
@@ -300,6 +300,22 @@ impl Transcript {
                     .filter(|args| args.iter().all(Value::is_string));
                 let title = if name == "lsp" {
                     crate::tui::lsp::tool_title(arguments.as_ref().unwrap_or(&Value::Null))
+                } else if name == "eval" {
+                    let args = arguments.as_ref();
+                    let label = args
+                        .and_then(|a| a["title"].as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    let code = args
+                        .and_then(|a| a["code"].as_str())
+                        .unwrap_or("")
+                        .trim_end();
+                    match (label, code.is_empty()) {
+                        (Some(label), false) => format!("eval · py · {label}\n{code}"),
+                        (Some(label), true) => format!("eval · py · {label}"),
+                        (None, false) => format!("eval · py\n{code}"),
+                        (None, true) => "eval · py".to_owned(),
+                    }
                 } else if name == "bash_task" {
                     let args = arguments.as_ref();
                     format!(
@@ -372,6 +388,11 @@ impl Transcript {
                             .as_u64()
                             .unwrap_or(self.bash_timeout_seconds),
                     );
+                } else if entry.tool.as_deref() == Some("eval") {
+                    entry.bash_timeout_seconds =
+                        Some(entry.arguments["timeout_seconds"].as_u64().unwrap_or(
+                            pp_config::config::ToolLimits::default().eval_timeout_seconds,
+                        ));
                 }
                 entry.display = self.display;
                 entry.expanded = self.tools_expanded && entry.is_collapsible_tool();
