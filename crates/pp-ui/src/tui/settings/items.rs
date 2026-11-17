@@ -380,7 +380,7 @@ pub(super) const ITEMS: &[SettingItem] = &[
         category: Category::EditingTools,
         key: "tools.sandbox.mode",
         label: "Sandbox mode",
-        description: "macOS Seatbelt isolation: auto, workspace-write, read-only, or off",
+        description: "OS-level isolation (Seatbelt on macOS, Bubblewrap on Linux): auto, workspace-write, read-only, or off",
         kind: ValueKind::SandboxMode,
     },
     SettingItem {

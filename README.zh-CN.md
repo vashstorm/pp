@@ -125,7 +125,7 @@ printf '说明当前项目的构建方式\n' | pp
 pp --model deepseek/deepseek-flash:high /commit
 ```
 
-> **权限与数据**：接口密钥明文保存在模型配置中。macOS 下 `tools.sandbox.mode` 默认为 `auto`（通过 Seatbelt `sandbox-exec` 启用 `workspace-write`），将 `bash`、`!命令` 与 `eval` 的写入限制在工作目录、临时目录及常用工具链缓存内，保护项目控制路径（`.git/hooks`、`.git/config`、`.pp`、`.mcp.json`、`.claude/.mcp.json`），并在 `read`、`rg`、`glob`、`bash`、`eval` 中拒读敏感凭据目录（如 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.pp/agent` 等）；出站网络默认放行，可通过 `tools.sandbox.network: false` 关闭。嵌套沙盒中 `auto` 会降级关闭并给出提示；Linux 等非 macOS 平台当前 `auto` 等价关闭。MCP stdio 与 LSP 服务进程不在沙盒内。可通过 `--sandbox <auto|workspace-write|read-only|off>` 或 `/sandbox` 查看与覆盖当前模式。默认 YOLO 模式跳过全部工具审批，包括危险命令检查和显式 prompt/deny 规则；写入与编辑工具的保存层限制在工作目录与临时目录（`/tmp`，macOS 的真实路径为 `/private/tmp`，两种拼写是同一目录）内并拒绝符号链接。会话与统计可能包含源码和对话，请按敏感数据保管。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
+> **权限与数据**：接口密钥明文保存在模型配置中。在 macOS 与 Linux 下，`tools.sandbox.mode` 默认为 `auto`（macOS 通过 Seatbelt `sandbox-exec`、Linux 通过 Bubblewrap `bwrap` 启用 `workspace-write`），将 `bash`、`!命令` 与 `eval` 的写入限制在工作目录、临时目录及常用工具链缓存内，保护项目控制路径（`.git/hooks`、`.git/config`、`.pp`、`.mcp.json`、`.claude/.mcp.json`），并在 `read`、`rg`、`glob`、`bash`、`eval` 中拒读敏感凭据目录（如 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.pp/agent` 等）；出站网络默认放行，可通过 `tools.sandbox.network: false` 关闭（macOS 仍放行本地回环；Linux 通过 `--unshare-net` 隔离网络命名空间）。嵌套沙盒、缺少 `bwrap` 或非特权用户命名空间受限时，`auto` 会降级关闭并给出提示；其余平台 `auto` 等价关闭。MCP stdio 与 LSP 服务进程不在沙盒内。可通过 `--sandbox <auto|workspace-write|read-only|off>` 或 `/sandbox` 查看与覆盖当前模式。默认 YOLO 模式跳过全部工具审批，包括危险命令检查和显式 prompt/deny 规则；写入与编辑工具的保存层限制在工作目录与临时目录（`/tmp`，macOS 的真实路径为 `/private/tmp`，两种拼写是同一目录）内并拒绝符号链接。会话与统计可能包含源码和对话，请按敏感数据保管。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
 
 ## 日常使用
 

@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-/// 沙盒运行模式；默认 `Auto`（macOS 开启 `workspace-write`，其余平台关闭）。
+/// 沙盒运行模式；默认 `Auto`（在 macOS 与 Linux 平台可用时开启 `workspace-write`，其余关闭）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxMode {

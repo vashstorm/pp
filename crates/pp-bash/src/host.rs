@@ -387,8 +387,8 @@ async fn run_interpreter(
     set_exported_path(&mut shell, "TMP", scratch)?;
     set_exported_path(&mut shell, "TEMP", scratch)?;
     set_exported_path(&mut shell, "XDG_CACHE_HOME", config.cache)?;
-    if config.sandbox.is_some() {
-        set_exported_env(&mut shell, "PP_SANDBOX", "seatbelt")?;
+    if let Some(policy) = config.sandbox {
+        set_exported_env(&mut shell, "PP_SANDBOX", policy.backend())?;
     }
 
     // run_string does not push this frame itself; mirror run_dash_c_command.

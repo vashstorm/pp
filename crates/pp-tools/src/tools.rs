@@ -583,6 +583,8 @@ impl Tools {
             let mode_str = sandbox_status.effective.as_str();
             let net_note = if sandbox_status.network {
                 "network access is enabled"
+            } else if sandbox_status.backend == "bubblewrap" {
+                "network access is isolated (no outbound or host network access)"
             } else {
                 "outbound network is blocked (loopback allowed)"
             };

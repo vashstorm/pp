@@ -166,7 +166,9 @@ impl App {
                         value: MenuAction::SandboxMode(mode),
                         label: mode.as_str().into(),
                         description: match mode {
-                            SandboxMode::Auto => "Enable workspace-write on macOS when available",
+                            SandboxMode::Auto => {
+                                "Enable workspace-write when sandbox backend is available"
+                            }
                             SandboxMode::WorkspaceWrite => "Allow writes only in cwd and temp",
                             SandboxMode::ReadOnly => "Block writes across workspace",
                             SandboxMode::Off => "Disable sandbox for this session",

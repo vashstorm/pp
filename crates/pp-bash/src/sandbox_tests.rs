@@ -4,6 +4,13 @@ use pp_sandbox::{ProbeResult, Sandbox};
 use std::net::TcpListener;
 use std::time::Duration;
 
+fn runtime_sandbox_available(cwd: &Path) -> bool {
+    Sandbox::new(SandboxSettings::default(), cwd)
+        .status()
+        .effective
+        != pp_sandbox::EffectiveMode::Off
+}
+
 fn test_sandbox(
     cwd: &Path,
     home: &Path,
@@ -46,6 +53,10 @@ fn run_cmd(cwd: &Path, command: &str, policy: Arc<pp_sandbox::Policy>) -> Result
 fn sandbox_bash_enforces_workspace_write_protect_and_read_deny() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = std::fs::canonicalize(dir.path()).unwrap();
+    if !runtime_sandbox_available(&cwd) {
+        eprintln!("skipping sandbox_bash test: platform sandbox unavailable");
+        return;
+    }
     let repo = cwd.join("repo");
     let home = cwd.join("home");
     std::fs::create_dir_all(repo.join(".git/hooks")).unwrap();
@@ -54,8 +65,9 @@ fn sandbox_bash_enforces_workspace_write_protect_and_read_deny() {
     std::fs::write(home.join(".ssh/id_ed25519"), b"PRIVATE-KEY").unwrap();
 
     let policy = test_sandbox(&repo, &home, SandboxMode::WorkspaceWrite, true);
+    let backend = policy.backend();
 
-    // 1. cwd 内可写且 PP_SANDBOX=seatbelt 注入到解释器及外部子进程
+    // 1. cwd 内可写且 PP_SANDBOX 注入到解释器及外部子进程
     let ok = run_cmd(
         &repo,
         "printf \"%s|\" \"$PP_SANDBOX\" && /bin/sh -c 'echo ok > inside.txt && printf \"%s\" \"$PP_SANDBOX\"'",
@@ -63,7 +75,7 @@ fn sandbox_bash_enforces_workspace_write_protect_and_read_deny() {
     )
     .unwrap();
     assert_eq!(ok["ok"], true, "{ok}");
-    assert_eq!(ok["output"], "seatbelt|seatbelt");
+    assert_eq!(ok["output"], format!("{backend}|{backend}"));
     assert_eq!(
         std::fs::read_to_string(repo.join("inside.txt")).unwrap(),
         "ok\n"
@@ -73,6 +85,15 @@ fn sandbox_bash_enforces_workspace_write_protect_and_read_deny() {
     let prot = run_cmd(&repo, "/bin/sh -c 'touch .pp/hooks.yml'", policy.clone()).unwrap();
     assert_eq!(prot["ok"], false, "{prot}");
     assert_eq!(prot["sandbox"]["blocked"], true, "{prot}");
+
+    let git_hook = run_cmd(
+        &repo,
+        "/bin/sh -c 'touch .git/hooks/pre-commit'",
+        policy.clone(),
+    )
+    .unwrap();
+    assert_eq!(git_hook["ok"], false, "{git_hook}");
+    assert_eq!(git_hook["sandbox"]["blocked"], true, "{git_hook}");
 
     // 3. denyRead 里的凭据路径不可读
     let secret = run_cmd(
@@ -150,6 +171,10 @@ fn sandbox_bash_redirects_and_source_blocked_by_in_process_guard() {
 fn sandbox_bash_pipeline_exec_background_and_cancellation_reclaim() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = std::fs::canonicalize(dir.path()).unwrap();
+    if !runtime_sandbox_available(&cwd) {
+        eprintln!("skipping sandbox_bash pipeline test: platform sandbox unavailable");
+        return;
+    }
     let repo = cwd.join("repo");
     let home = cwd.join("home");
     std::fs::create_dir_all(repo.join(".pp")).unwrap();
@@ -221,26 +246,30 @@ fn sandbox_bash_pipeline_exec_background_and_cancellation_reclaim() {
 fn sandbox_bash_network_false_blocks_external_but_allows_loopback() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = std::fs::canonicalize(dir.path()).unwrap();
+    if !runtime_sandbox_available(&cwd) {
+        eprintln!("skipping sandbox_bash network test: platform sandbox unavailable");
+        return;
+    }
     let repo = cwd.join("repo");
     let home = cwd.join("home");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&home).unwrap();
 
-    // 监听器只由测试进程持有、不 accept：loopback 建连在内核完成握手即算成功，
-    // 避免无上界阻塞的 accept 线程在沙盒内进程未启动时永久挂住。
+    // 监听器只由测试进程持有、不 accept：macOS Seatbelt 下 loopback 建连成功、外部地址被拒；
+    // Linux Bubblewrap 下 `--unshare-net` 隔离网络命名空间，宿主 loopback 与外网均不可达。
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
 
     let policy = test_sandbox(&repo, &home, SandboxMode::WorkspaceWrite, false);
-    // connect_ex 以 errno 代替异常：loopback 必须建连成功（0），
-    // 外部地址必须被策略拒绝（EPERM/EACCES）。整条命令受 run 的 15s 看门狗约束。
+    let expected_loopback_ok = if policy.backend() == "seatbelt" { 1 } else { 0 };
     let script = format!(
         "/usr/bin/python3 -c \"\
 import errno, socket, sys; \
 loopback = socket.socket(); loopback.settimeout(2.0); loop = loopback.connect_ex(('127.0.0.1', {port})); loopback.close(); \
 external = socket.socket(); external.settimeout(2.0); ext = external.connect_ex(('93.184.216.34', 80)); external.close(); \
 print('loopback=%d external=%d' % (loop, ext)); \
-sys.exit(0 if loop == 0 and ext in (errno.EPERM, errno.EACCES) else 3)\""
+loop_ok = (loop == 0) if {expected_loopback_ok} else (loop != 0); \
+sys.exit(0 if loop_ok and ext != 0 else 3)\""
     );
     let res = run_cmd(&repo, &script, policy).unwrap();
     assert_eq!(res["ok"], true, "{res}");

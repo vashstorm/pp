@@ -369,11 +369,19 @@ print(a["content"], b["matches"], caught)
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn sandbox_eval_enforces_fs_preserves_control_fds_and_restarts_on_mode_change() {
         let h = Harness::new(65_536);
         let work_canon = fs::canonicalize(h.work.path()).unwrap();
+        if pp_sandbox::Sandbox::new(pp_config::config::SandboxSettings::default(), &work_canon)
+            .status()
+            .effective
+            == pp_sandbox::EffectiveMode::Off
+        {
+            eprintln!("skipping sandbox_eval test: platform sandbox unavailable");
+            return;
+        }
         fs::create_dir_all(work_canon.join(".pp")).unwrap();
         let home = work_canon.join("home");
         fs::create_dir_all(home.join(".ssh")).unwrap();
@@ -390,6 +398,7 @@ print(a["content"], b["matches"], caught)
             pp_sandbox::ProbeResult::Available,
         );
         let ws_policy = sbx.policy().unwrap().unwrap();
+        let backend = ws_policy.backend();
 
         let run_with_policy = |code: &str, policy: Option<Arc<pp_sandbox::Policy>>| {
             h.session
@@ -418,7 +427,7 @@ print(a["content"], b["matches"], caught)
             Some(ws_policy.clone()),
         );
         assert_eq!(ok.value["ok"], true, "{}", ok.value);
-        assert_eq!(ok.value["output"], "seatbelt True\n");
+        assert_eq!(ok.value["output"], format!("{backend} True\n"));
 
         // 写受保护路径与读凭据路径被拦截，并带 sandbox 元数据
         let blocked_write = run_with_policy(

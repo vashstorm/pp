@@ -10,7 +10,10 @@ pub(super) fn build_command_wrapper(policy: &Policy) -> io::Result<CommandWrappe
     Ok(CommandWrapper {
         program: OsString::from(program),
         args,
-        env: vec![(OsString::from("PP_SANDBOX"), OsString::from("seatbelt"))],
+        env: vec![(
+            OsString::from("PP_SANDBOX"),
+            OsString::from(policy.backend()),
+        )],
     })
 }
 

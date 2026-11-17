@@ -250,7 +250,19 @@ impl Agent {
         &mut self,
         mode: Option<pp_config::config::SandboxMode>,
     ) -> Result<()> {
+        let previous = self.tools.sandbox().mode_override();
         self.tools.sandbox().set_mode_override(mode);
+        if matches!(
+            mode,
+            Some(
+                pp_config::config::SandboxMode::WorkspaceWrite
+                    | pp_config::config::SandboxMode::ReadOnly
+            )
+        ) && let Err(error) = self.tools.sandbox().policy()
+        {
+            self.tools.sandbox().set_mode_override(previous);
+            return Err(error);
+        }
         self.refresh_instructions_changed()?;
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));

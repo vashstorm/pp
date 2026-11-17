@@ -100,7 +100,7 @@ fn sandbox_read_rg_and_glob_enforce_credential_denylist() {
     assert!(!glob_text.contains("id_ed25519"), "{glob_parent}");
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn sandbox_bash_tool_reports_sandbox_metadata_and_unavailable_fails_closed() {
     let root = tempfile::tempdir().unwrap();
@@ -114,13 +114,19 @@ fn sandbox_bash_tool_reports_sandbox_metadata_and_unavailable_fails_closed() {
         ProbeResult::Available,
     );
 
-    let blocked = execute(&tools, "bash", json!({"command": "touch .pp/hooks.yml"}));
-    assert_eq!(blocked["ok"], false, "{blocked}");
-    assert_eq!(blocked["sandbox"]["blocked"], true, "{blocked}");
+    let live_supported = Sandbox::new(SandboxSettings::default(), root.path())
+        .status()
+        .effective
+        != pp_sandbox::EffectiveMode::Off;
+    if live_supported {
+        let blocked = execute(&tools, "bash", json!({"command": "touch .pp/hooks.yml"}));
+        assert_eq!(blocked["ok"], false, "{blocked}");
+        assert_eq!(blocked["sandbox"]["blocked"], true, "{blocked}");
 
-    let allowed = execute(&tools, "bash", json!({"command": "echo hi > ok.txt"}));
-    assert_eq!(allowed["ok"], true, "{allowed}");
-    assert!(allowed.get("sandbox").is_none(), "{allowed}");
+        let allowed = execute(&tools, "bash", json!({"command": "echo hi > ok.txt"}));
+        assert_eq!(allowed["ok"], true, "{allowed}");
+        assert!(allowed.get("sandbox").is_none(), "{allowed}");
+    }
 
     // 工具定义随状态更新，不再保留 "No filesystem sandbox"
     let defs = tools.all_definitions(WorkMode::Execute);

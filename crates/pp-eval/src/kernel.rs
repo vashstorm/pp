@@ -234,8 +234,8 @@ impl RunningKernel {
             .stderr(Stdio::piped())
             // 子进程运行在独立进程组，确保超时/强杀时连同派生的外部子进程一并回收。
             .process_group(0);
-        if sandbox.is_some() {
-            cmd.env("PP_SANDBOX", "seatbelt");
+        if let Some(policy) = sandbox {
+            cmd.env("PP_SANDBOX", policy.backend());
         }
 
         let mut child = cmd

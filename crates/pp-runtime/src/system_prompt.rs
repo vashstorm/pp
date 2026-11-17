@@ -77,7 +77,9 @@ pub(crate) struct RenderContext<'a> {
     pub tools: Vec<String>,
     pub sandbox_active: bool,
     pub sandbox_mode: &'static str,
+    pub sandbox_platform: &'static str,
     pub sandbox_network: bool,
+    pub sandbox_network_isolated: bool,
 }
 
 impl<'a> RenderContext<'a> {
@@ -102,14 +104,22 @@ impl<'a> RenderContext<'a> {
             tools,
             sandbox_active: false,
             sandbox_mode: "off",
+            sandbox_platform: "OS",
             sandbox_network: true,
+            sandbox_network_isolated: false,
         }
     }
 
     pub fn with_sandbox(mut self, status: &pp_sandbox::SandboxStatus) -> Self {
         self.sandbox_active = status.effective != pp_sandbox::EffectiveMode::Off;
         self.sandbox_mode = status.effective.as_str();
+        self.sandbox_platform = match status.backend {
+            "seatbelt" => "macOS Seatbelt",
+            "bubblewrap" => "Linux Bubblewrap",
+            _ => "OS",
+        };
         self.sandbox_network = status.network;
+        self.sandbox_network_isolated = status.backend == "bubblewrap";
         self
     }
 }
@@ -639,26 +649,66 @@ mod tests {
             .unwrap();
         assert!(off.contains("bash has no filesystem sandbox"), "{off}");
 
-        let on_status = pp_sandbox::SandboxStatus {
+        let macos_status = pp_sandbox::SandboxStatus {
             configured: pp_config::config::SandboxMode::Auto,
             effective: pp_sandbox::EffectiveMode::WorkspaceWrite,
             degraded_reason: None,
+            backend: "seatbelt",
             network: false,
             writable_summary: vec![],
+            notes: vec![],
         };
-        let on_ctx = RenderContext::new(
+        let macos_ctx = RenderContext::new(
             cwd.path(),
             "model",
             EditMode::Replace,
             "execute",
             vec!["bash".into()],
         )
-        .with_sandbox(&on_status);
-        let on = Snapshot::bundled()
-            .compose(&on_ctx, ToolLimits::default(), "", "", "")
+        .with_sandbox(&macos_status);
+        let macos_on = Snapshot::bundled()
+            .compose(&macos_ctx, ToolLimits::default(), "", "", "")
             .unwrap();
-        assert!(on.contains("macOS workspace-write sandbox"), "{on}");
-        assert!(on.contains("outbound network is blocked"), "{on}");
-        assert!(!on.contains("bash has no filesystem sandbox"), "{on}");
+        assert!(
+            macos_on.contains("macOS Seatbelt workspace-write sandbox"),
+            "{macos_on}"
+        );
+        assert!(
+            macos_on.contains("outbound network is blocked (loopback allowed)"),
+            "{macos_on}"
+        );
+        assert!(
+            !macos_on.contains("bash has no filesystem sandbox"),
+            "{macos_on}"
+        );
+
+        let linux_status = pp_sandbox::SandboxStatus {
+            configured: pp_config::config::SandboxMode::Auto,
+            effective: pp_sandbox::EffectiveMode::WorkspaceWrite,
+            degraded_reason: None,
+            backend: "bubblewrap",
+            network: false,
+            writable_summary: vec![],
+            notes: vec![],
+        };
+        let linux_ctx = RenderContext::new(
+            cwd.path(),
+            "model",
+            EditMode::Replace,
+            "execute",
+            vec!["bash".into()],
+        )
+        .with_sandbox(&linux_status);
+        let linux_on = Snapshot::bundled()
+            .compose(&linux_ctx, ToolLimits::default(), "", "", "")
+            .unwrap();
+        assert!(
+            linux_on.contains("Linux Bubblewrap workspace-write sandbox"),
+            "{linux_on}"
+        );
+        assert!(
+            linux_on.contains("network access is isolated"),
+            "{linux_on}"
+        );
     }
 }

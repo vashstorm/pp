@@ -4,10 +4,8 @@ use anyhow::{Result, ensure};
 
 use crate::ProbeResult;
 
-#[cfg(target_os = "macos")]
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-#[cfg(target_os = "macos")]
 pub(crate) fn probe_platform() -> ProbeResult {
     use std::process::{Command, Stdio};
 
@@ -44,13 +42,6 @@ pub(crate) fn probe_platform() -> ProbeResult {
     ProbeResult::Unavailable { reason }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn probe_platform() -> ProbeResult {
-    ProbeResult::Unavailable {
-        reason: "sandbox is currently only supported on macOS".to_owned(),
-    }
-}
-
 pub(crate) struct SeatbeltSpec<'a> {
     pub mode: crate::EffectiveMode,
     pub cwd: &'a PathBuf,
@@ -78,10 +69,7 @@ pub(crate) fn build_wrapper_prefix(spec: &SeatbeltSpec<'_>) -> Result<(String, V
     }
     args.push(OsString::from("--"));
 
-    #[cfg(target_os = "macos")]
     let bin = SANDBOX_EXEC.to_owned();
-    #[cfg(not(target_os = "macos"))]
-    let bin = "/usr/bin/sandbox-exec".to_owned();
 
     Ok((bin, args))
 }
@@ -290,7 +278,6 @@ mod tests {
         assert_eq!(args[dash_dash + 3], "hi");
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn sandbox_exec_enforces_write_read_and_network_restrictions() {
         assert_eq!(probe_platform(), ProbeResult::Available);

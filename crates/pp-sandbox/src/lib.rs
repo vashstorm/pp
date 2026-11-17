@@ -1,4 +1,7 @@
+#[cfg(target_os = "linux")]
+mod bwrap;
 mod guard;
+#[cfg(target_os = "macos")]
 mod seatbelt;
 
 use std::{
@@ -36,27 +39,67 @@ impl EffectiveMode {
     }
 }
 
+/// 当前平台支持的沙盒后端名称。
+pub fn platform_backend() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "seatbelt"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "bubblewrap"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        "unsupported"
+    }
+}
+
+fn platform_probe(network: bool) -> ProbeResult {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = network;
+        seatbelt::probe_platform()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        bwrap::probe_platform(network)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = network;
+        ProbeResult::Unavailable {
+            reason: "sandbox is currently only supported on macOS and Linux".to_owned(),
+        }
+    }
+}
+
 /// 沙盒当前状态快照，供 `/sandbox`、降级提示和诊断使用。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxStatus {
     pub configured: SandboxMode,
     pub effective: EffectiveMode,
     pub degraded_reason: Option<String>,
+    pub backend: &'static str,
     pub network: bool,
     pub writable_summary: Vec<String>,
+    pub notes: Vec<String>,
 }
 
 impl SandboxStatus {
     pub fn summary(&self) -> String {
+        let net_desc = if self.network {
+            "on"
+        } else if self.backend == "bubblewrap" {
+            "off (isolated network namespace)"
+        } else {
+            "off (loopback only)"
+        };
         let mut lines = vec![format!(
-            "Sandbox: effective={}, configured={}, network={}",
+            "Sandbox: effective={}, configured={}, backend={}, network={net_desc}",
             self.effective.as_str(),
             self.configured.as_str(),
-            if self.network {
-                "on"
-            } else {
-                "off (loopback only)"
-            }
+            self.backend,
         )];
         if let Some(reason) = &self.degraded_reason {
             lines.push(format!("Warning: degraded to off ({reason})"));
@@ -66,6 +109,9 @@ impl SandboxStatus {
                 "Writable roots: {}",
                 self.writable_summary.join(", ")
             ));
+        }
+        for note in &self.notes {
+            lines.push(format!("Note: {note}"));
         }
         lines.join("\n")
     }
@@ -118,12 +164,19 @@ pub struct Policy {
     /// `/tmp` 与 `/private/tmp`），避免未规范化的别名被误判为不相交。
     deny_read_lexical: Vec<PathBuf>,
     allow_read: Vec<PathBuf>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     docker_user_sock: Option<PathBuf>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    docker_sockets: Vec<PathBuf>,
 }
 
 impl Policy {
     pub fn mode(&self) -> EffectiveMode {
         self.mode
+    }
+
+    pub fn backend(&self) -> &'static str {
+        platform_backend()
     }
 
     pub fn network(&self) -> bool {
@@ -181,17 +234,44 @@ impl Policy {
     }
 
     pub fn command_wrapper_prefix(&self) -> Result<(String, Vec<OsString>)> {
-        let spec = seatbelt::SeatbeltSpec {
-            mode: self.mode,
-            cwd: &self.cwd,
-            writable: &self.writable,
-            protect: &self.protect,
-            deny_read: &self.deny_read,
-            allow_read: &self.allow_read,
-            docker_user_sock: self.docker_user_sock.as_ref(),
-            network: self.network,
-        };
-        seatbelt::build_wrapper_prefix(&spec)
+        #[cfg(target_os = "macos")]
+        {
+            let spec = seatbelt::SeatbeltSpec {
+                mode: self.mode,
+                cwd: &self.cwd,
+                writable: &self.writable,
+                protect: &self.protect,
+                deny_read: &self.deny_read,
+                allow_read: &self.allow_read,
+                docker_user_sock: self.docker_user_sock.as_ref(),
+                network: self.network,
+            };
+            seatbelt::build_wrapper_prefix(&spec)
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let spec = bwrap::BwrapSpec {
+                mode: self.mode,
+                cwd: &self.cwd,
+                writable: &self.writable,
+                protect: &self.protect,
+                deny_read: &self.deny_read,
+                allow_read: &self.allow_read,
+                docker_sockets: &self.docker_sockets,
+                network: self.network,
+            };
+            bwrap::build_wrapper_prefix(&spec)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = (
+                &self.docker_user_sock,
+                &self.docker_sockets,
+                self.mode,
+                self.network,
+            );
+            anyhow::bail!("sandbox wrapper is unsupported on this platform")
+        }
     }
 
     pub fn wrap_command(
@@ -206,7 +286,13 @@ impl Policy {
     }
 
     pub fn is_denied_output(output: &str) -> bool {
-        output.contains("Operation not permitted") || output.contains("blocked by sandbox policy")
+        output.contains("blocked by sandbox policy")
+            || output.contains("Operation not permitted")
+            || if cfg!(target_os = "linux") {
+                output.contains("Permission denied") || output.contains("Read-only file system")
+            } else {
+                false
+            }
     }
 
     pub fn denial_metadata(&self) -> DenialMetadata {
@@ -216,11 +302,16 @@ impl Policy {
             .take(8)
             .map(|p| p.display().to_string())
             .collect();
+        let hint = if cfg!(target_os = "linux") {
+            "Command hit the Linux bubblewrap sandbox (Permission denied / Read-only file system). Explain the restriction to the user or suggest adjusting tools.sandbox in settings.yml or using /sandbox."
+        } else {
+            "Command hit the macOS sandbox (Operation not permitted). Explain the restriction to the user or suggest adjusting tools.sandbox in settings.yml or using /sandbox."
+        };
         DenialMetadata {
             mode: self.mode.as_str(),
             network: self.network,
             writable_roots,
-            hint: "Command hit the macOS sandbox (Operation not permitted). Explain the restriction to the user or suggest adjusting tools.sandbox in settings.yml or using /sandbox.".to_owned(),
+            hint: hint.to_owned(),
         }
     }
 
@@ -243,6 +334,8 @@ struct SandboxState {
     cwd: PathBuf,
     home: Option<PathBuf>,
     tmpdir: Option<PathBuf>,
+    xdg_cache_home: Option<PathBuf>,
+    xdg_runtime_dir: Option<PathBuf>,
     /// 平台探测结果；`None` 表示以 `off` 起步、从未探测过，切到需要沙盒的模式时补测。
     probe: Option<ProbeResult>,
     override_mode: Option<SandboxMode>,
@@ -269,10 +362,10 @@ impl SandboxState {
         }
     }
 
-    /// 切到需要沙盒的模式后补一次探测；`off` 保持未探测，避免白起一次 `sandbox-exec`。
+    /// 切到需要沙盒的模式后补一次探测；`off` 保持未探测，避免白起一次沙盒探针子进程。
     fn ensure_probe(&mut self) {
         if self.probe.is_none() && self.configured() != SandboxMode::Off {
-            self.probe = Some(seatbelt::probe_platform());
+            self.probe = Some(platform_probe(self.settings.network));
         }
     }
 }
@@ -285,9 +378,10 @@ pub struct Sandbox {
 
 impl Sandbox {
     /// `mode: off` 不探测平台能力：关闭模式下不会读取探测结果，也省掉启动期一次
-    /// `sandbox-exec` 子进程；之后切到启用模式时才补测。
+    /// 沙盒探针子进程；之后切到启用模式时才补测。
     pub fn new(settings: SandboxSettings, cwd: &Path) -> Self {
-        Self::build_with_probe(settings, cwd, seatbelt::probe_platform)
+        let network = settings.network;
+        Self::build_with_probe(settings, cwd, move || platform_probe(network))
     }
 
     fn build_with_probe(
@@ -302,12 +396,20 @@ impl Sandbox {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
+        let xdg_cache_home = std::env::var_os("XDG_CACHE_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+        let xdg_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
         let probe = (settings.mode != SandboxMode::Off).then(probe);
         Self::with_parts(
             settings,
             cwd,
             home.as_deref(),
             Some(tmpdir.as_path()),
+            xdg_cache_home.as_deref(),
+            xdg_runtime_dir.as_deref(),
             probe,
         )
     }
@@ -322,6 +424,8 @@ impl Sandbox {
             Path::new("/"),
             None,
             None,
+            None,
+            None,
             Some(ProbeResult::Available),
         )
     }
@@ -333,7 +437,7 @@ impl Sandbox {
         tmpdir: Option<&Path>,
         probe: ProbeResult,
     ) -> Self {
-        Self::with_parts(settings, cwd, home, tmpdir, Some(probe))
+        Self::with_parts(settings, cwd, home, tmpdir, None, None, Some(probe))
     }
 
     fn with_parts(
@@ -341,21 +445,34 @@ impl Sandbox {
         cwd: &Path,
         home: Option<&Path>,
         tmpdir: Option<&Path>,
+        xdg_cache_home: Option<&Path>,
+        xdg_runtime_dir: Option<&Path>,
         probe: Option<ProbeResult>,
     ) -> Self {
         let norm_cwd = guard::normalize_path(cwd);
         let norm_home = home.map(guard::normalize_path);
         let norm_tmpdir = tmpdir.map(guard::normalize_path);
+        let norm_xdg_cache = xdg_cache_home.map(guard::normalize_path);
+        let norm_xdg_runtime = xdg_runtime_dir.map(guard::normalize_path);
         Self {
             state: RwLock::new(SandboxState {
                 settings,
                 cwd: norm_cwd,
                 home: norm_home,
                 tmpdir: norm_tmpdir,
+                xdg_cache_home: norm_xdg_cache,
+                xdg_runtime_dir: norm_xdg_runtime,
                 probe,
                 override_mode: None,
             }),
         }
+    }
+
+    pub fn mode_override(&self) -> Option<SandboxMode> {
+        self.state
+            .read()
+            .expect("sandbox state lock poisoned")
+            .override_mode
     }
 
     pub fn set_mode_override(&self, mode: Option<SandboxMode>) {
@@ -379,6 +496,8 @@ impl Sandbox {
                 cwd: guard::normalize_path(cwd),
                 home: state.home.clone(),
                 tmpdir: state.tmpdir.clone(),
+                xdg_cache_home: state.xdg_cache_home.clone(),
+                xdg_runtime_dir: state.xdg_runtime_dir.clone(),
                 probe: state.probe.clone(),
                 override_mode: state.override_mode,
             }),
@@ -390,20 +509,42 @@ impl Sandbox {
         let configured = state.configured();
         let probe = state.probe_or_available();
         let (effective, degraded_reason) = resolve_effective(configured, &probe);
-        let writable_summary = match effective {
-            EffectiveMode::Off => Vec::new(),
-            mode => build_policy(&state, mode)
-                .writable
-                .into_iter()
-                .map(|p| p.display().to_string())
-                .collect(),
+        let (writable_summary, notes) = match effective {
+            EffectiveMode::Off => (Vec::new(), Vec::new()),
+            mode => {
+                let policy = build_policy(&state, mode);
+                #[cfg(target_os = "linux")]
+                let notes = {
+                    let spec = bwrap::BwrapSpec {
+                        mode: policy.mode,
+                        cwd: &policy.cwd,
+                        writable: &policy.writable,
+                        protect: &policy.protect,
+                        deny_read: &policy.deny_read,
+                        allow_read: &policy.allow_read,
+                        docker_sockets: &policy.docker_sockets,
+                        network: policy.network,
+                    };
+                    bwrap::policy_notes(&spec)
+                };
+                #[cfg(not(target_os = "linux"))]
+                let notes = Vec::new();
+                let roots = policy
+                    .writable
+                    .into_iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
+                (roots, notes)
+            }
         };
         SandboxStatus {
             configured,
             effective,
             degraded_reason,
+            backend: platform_backend(),
             network: state.settings.network,
             writable_summary,
+            notes,
         }
     }
 
@@ -415,7 +556,7 @@ impl Sandbox {
         match configured {
             SandboxMode::Off => Ok(None),
             SandboxMode::Auto => {
-                if !cfg!(target_os = "macos") {
+                if !cfg!(any(target_os = "macos", target_os = "linux")) {
                     return Ok(None);
                 }
                 match &probe {
@@ -483,7 +624,7 @@ fn resolve_effective(
     match configured {
         SandboxMode::Off => (EffectiveMode::Off, None),
         SandboxMode::Auto => {
-            if !cfg!(target_os = "macos") {
+            if !cfg!(any(target_os = "macos", target_os = "linux")) {
                 return (EffectiveMode::Off, None);
             }
             match probe {
@@ -514,7 +655,12 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
     if let Some(tmpdir) = &state.tmpdir {
         push_unique(&mut writable, tmpdir.clone());
     }
-    push_unique(&mut writable, PathBuf::from("/private/tmp"));
+    if cfg!(target_os = "macos") {
+        push_unique(&mut writable, PathBuf::from("/private/tmp"));
+    } else if cfg!(target_os = "linux") {
+        push_unique(&mut writable, guard::normalize_path(Path::new("/tmp")));
+        push_unique(&mut writable, guard::normalize_path(Path::new("/var/tmp")));
+    }
     push_unique(&mut writable, state.cwd.join(".pp-cache"));
 
     if mode == EffectiveMode::WorkspaceWrite {
@@ -525,13 +671,23 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
                 ".cargo/git",
                 ".cargo/.package-cache",
                 ".cache",
-                "Library/Caches",
                 ".npm",
                 ".bun/install/cache",
                 "go/pkg/mod",
             ] {
                 push_unique(&mut writable, guard::normalize_path(&home.join(rel)));
             }
+            if cfg!(target_os = "macos") {
+                push_unique(
+                    &mut writable,
+                    guard::normalize_path(&home.join("Library/Caches")),
+                );
+            }
+        }
+        if cfg!(target_os = "linux")
+            && let Some(xdg_cache) = &state.xdg_cache_home
+        {
+            push_unique(&mut writable, xdg_cache.clone());
         }
         for raw in &state.settings.writable {
             if let Some(path) = guard::expand_tilde(raw, home) {
@@ -569,13 +725,21 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
             ".npmrc",
             ".pypirc",
             ".git-credentials",
-            "Library/Keychains",
-            "Library/Cookies",
             ".claude/.credentials.json",
             ".codex/auth.json",
             ".pp/agent",
         ] {
             push_unique(&mut deny_read, guard::normalize_path(&home.join(rel)));
+        }
+        if cfg!(target_os = "macos") {
+            for rel in ["Library/Keychains", "Library/Cookies"] {
+                push_unique(&mut deny_read, guard::normalize_path(&home.join(rel)));
+            }
+        } else if cfg!(target_os = "linux") {
+            push_unique(
+                &mut deny_read,
+                guard::normalize_path(&home.join(".local/share/keyrings")),
+            );
         }
     }
     for raw in &state.settings.deny_read {
@@ -603,6 +767,26 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
     }
 
     let docker_user_sock = home.map(|h| guard::normalize_path(&h.join(".docker/run/docker.sock")));
+    let mut docker_sockets = Vec::new();
+    if cfg!(target_os = "linux") {
+        push_unique(
+            &mut docker_sockets,
+            guard::normalize_path(Path::new("/run/docker.sock")),
+        );
+        push_unique(
+            &mut docker_sockets,
+            guard::normalize_path(Path::new("/var/run/docker.sock")),
+        );
+        if let Some(sock) = &docker_user_sock {
+            push_unique(&mut docker_sockets, sock.clone());
+        }
+        if let Some(runtime_dir) = &state.xdg_runtime_dir {
+            push_unique(
+                &mut docker_sockets,
+                guard::normalize_path(&runtime_dir.join("docker.sock")),
+            );
+        }
+    }
 
     // 词法快路径的“可能命中”集合：拒绝根本身加系统别名（`/tmp` ↔ `/private/tmp`）。
     let mut deny_read_lexical = deny_read.clone();
@@ -624,6 +808,7 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
         deny_read_lexical,
         allow_read,
         docker_user_sock,
+        docker_sockets,
     }
 }
 
@@ -695,7 +880,7 @@ mod tests {
         assert!(auto.policy().unwrap().is_none());
         let st = auto.status();
         assert_eq!(st.effective, EffectiveMode::Off);
-        if cfg!(target_os = "macos") {
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
             assert_eq!(st.degraded_reason.as_deref(), Some("nested sandbox"));
         }
 
