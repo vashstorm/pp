@@ -1,11 +1,42 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 
+/// 表、索引与补列的期望形态；`schema_current` 据此只读判断是否需要补结构。
+const TABLES: [&str; 5] = [
+    "requests",
+    "request_contexts",
+    "request_tools",
+    "tool_calls",
+    "hook_runs",
+];
+const INDEXES: [&str; 7] = [
+    "requests_time",
+    "requests_failed_time",
+    "requests_session",
+    "tool_calls_time",
+    "request_tools_request",
+    "hook_runs_time",
+    "hook_runs_event",
+];
+const COLUMNS: [(&str, &[&str]); 2] = [
+    (
+        "requests",
+        &["cache_write_tokens", "cost_json", "rate_json"],
+    ),
+    ("tool_calls", &["result_chars"]),
+];
+/// 已退役、需要在旧库里删除的索引。
+const DEPRECATED_INDEXES: [&str; 1] = ["tool_calls_error_time"];
+
 /// 建表、补列、建索引并在结构发生变化时刷新 planner 统计。
 ///
-/// 不读写 `PRAGMA user_version`：旧库按缺列／缺索引幂等补齐，历史行保持不变；
-/// 结构齐全时只做几次廉价查询，不执行 `ANALYZE`。
+/// 不读写 `PRAGMA user_version`：旧库按缺列／缺索引幂等补齐，历史行保持不变。
+/// 结构齐全时整段降级为只读探测——不取写锁、不执行 DDL、不写 `ANALYZE`，
+/// 因此每次写库打开统计库都不再进入写事务。
 pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
+    if schema_current(conn)? {
+        return Ok(());
+    }
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS requests (
@@ -108,6 +139,49 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+/// 只读判断建表、索引与补列是否都已就绪，并确认退役索引已被删除。
+///
+/// 与 [`ensure_schema`] 的慢路径共用同一组期望形态常量，因此两者不会漂移。
+fn schema_current(conn: &Connection) -> Result<bool> {
+    let mut tables = Vec::with_capacity(TABLES.len());
+    let mut indexes = Vec::with_capacity(INDEXES.len());
+    {
+        let mut statement = conn.prepare("SELECT type,name FROM sqlite_master")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let kind: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            match kind.as_str() {
+                "table" => tables.push(name),
+                "index" => indexes.push(name),
+                _ => {}
+            }
+        }
+    }
+    let missing = TABLES
+        .iter()
+        .any(|expected| !tables.iter().any(|table| table == expected))
+        || INDEXES
+            .iter()
+            .any(|expected| !indexes.iter().any(|index| index == expected))
+        || DEPRECATED_INDEXES
+            .iter()
+            .any(|retired| indexes.iter().any(|index| index == retired));
+    if missing {
+        return Ok(false);
+    }
+    for (table, expected) in COLUMNS {
+        let columns = table_columns(conn, table)?;
+        if expected
+            .iter()
+            .any(|column| !columns.iter().any(|name| name == column))
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn index_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
@@ -400,6 +474,34 @@ mod tests {
         let store = open_store(&path).unwrap();
         // 结构齐全时再次 open 不改变 schema。
         assert_eq!(structure(&store), before);
+    }
+
+    #[test]
+    fn stats_schema_probe_follows_tables_indexes_columns_and_deprecated_index() {
+        let fresh = || {
+            let dir = tempfile::tempdir().unwrap();
+            let store = open_store(&dir.path().join("stats.db")).unwrap();
+            (dir, store)
+        };
+        // 新建库的形态必须被探测认定完整；常量与 DDL 漂移会让稳态打开重新写库。
+        let (_dir, store) = fresh();
+        assert!(schema_current(&store.conn).unwrap());
+        drop(store);
+        for drift in [
+            "DROP TABLE hook_runs;",
+            "DROP TABLE request_contexts;",
+            "DROP INDEX requests_time;",
+            "DROP INDEX requests_session;",
+            "DROP INDEX hook_runs_event;",
+            "ALTER TABLE requests DROP COLUMN rate_json;",
+            "ALTER TABLE requests DROP COLUMN cache_write_tokens;",
+            "ALTER TABLE tool_calls DROP COLUMN result_chars;",
+            "CREATE INDEX tool_calls_error_time ON tool_calls(timestamp DESC,id DESC) WHERE status='error';",
+        ] {
+            let (_dir, store) = fresh();
+            store.conn.execute_batch(drift).unwrap();
+            assert!(!schema_current(&store.conn).unwrap(), "{drift}");
+        }
     }
 
     /// 取 `EXPLAIN QUERY PLAN` 的计划文本（`detail` 列）。

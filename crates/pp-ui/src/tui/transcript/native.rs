@@ -82,11 +82,7 @@ impl Transcript {
                     self.native.commit_layout = None;
                     self.native.commit_full_rows = false;
                 } else {
-                    self.native.commit_layout = Some(Arc::new(EntryLayout {
-                        width,
-                        height: lines.len(),
-                        lines,
-                    }));
+                    self.native.commit_layout = Some(Arc::new(EntryLayout::owned(width, lines)));
                     self.native.commit_full_rows = true;
                 }
                 self.native.row = 0;

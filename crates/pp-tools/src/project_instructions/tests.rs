@@ -1,10 +1,85 @@
 use super::*;
-use std::{fs, os::unix::fs::symlink};
+use std::{
+    fs,
+    os::unix::fs::{PermissionsExt, symlink},
+    time::{Duration, SystemTime},
+};
 
 fn directory(root: &Path, name: &str) -> PathBuf {
     let directory = root.join(name);
     fs::create_dir_all(&directory).unwrap();
     directory
+}
+
+fn contents(documents: &[Document]) -> Vec<&str> {
+    documents
+        .iter()
+        .map(|document| document.content.as_str())
+        .collect()
+}
+
+#[test]
+fn project_instructions_unchanged_sources_are_not_reread() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let path = root.join("AGENTS.md");
+    fs::write(&path, "root-rule").unwrap();
+    let mut state = State::new(&root);
+    let first = state.refresh_shared().unwrap();
+    assert_eq!(contents(&first), ["root-rule"]);
+    // 未变化的来源共享同一份快照：既不重新读盘，也不重建正文。
+    assert!(Arc::ptr_eq(&first, &state.refresh_shared().unwrap()));
+    // 撤掉读权限时 mtime、长度与 inode 都不变：再读一次就必然失败。
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    assert_eq!(contents(&state.refresh_shared().unwrap()), ["root-rule"]);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    // 正文变化必须重读，不能继续返回缓存。
+    fs::write(&path, "updated-rule").unwrap();
+    assert_eq!(contents(&state.refresh_shared().unwrap()), ["updated-rule"]);
+}
+
+#[test]
+fn project_instructions_fingerprint_change_forces_reread() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let path = root.join("AGENTS.md");
+    fs::write(&path, "root-rule").unwrap();
+    let mut state = State::new(&root);
+    assert_eq!(contents(&state.refresh_shared().unwrap()), ["root-rule"]);
+    // 只改 mtime（正文、长度与 inode 都不变）也必须重新读取。
+    let file = fs::File::options().append(true).open(&path).unwrap();
+    file.set_times(
+        fs::FileTimes::new()
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000)),
+    )
+    .unwrap();
+    drop(file);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+    // 重读失败按读取错误上抛，不能当成“规则缺失”而静默成功。
+    assert!(state.refresh_shared().is_err());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(contents(&state.refresh_shared().unwrap()), ["root-rule"]);
+}
+
+#[test]
+fn project_instructions_deleting_child_rules_keeps_parent_rules() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let child = directory(&root, "child");
+    fs::write(root.join("AGENTS.md"), "root-rule").unwrap();
+    let path = child.join("AGENTS.md");
+    fs::write(&path, "child-rule").unwrap();
+    let mut state = State::new(&root);
+    state.activate(child.clone()).unwrap();
+    assert_eq!(
+        contents(&state.refresh_shared().unwrap()),
+        ["root-rule", "child-rule"]
+    );
+    fs::remove_file(&path).unwrap();
+    let documents = state.refresh_shared().unwrap();
+    // 删除子规则只移除该来源，父规则保留，也不追加空正文块。
+    assert_eq!(contents(&documents), ["root-rule"]);
+    assert!(!render(&documents).contains(&child.display().to_string()));
 }
 
 #[test]

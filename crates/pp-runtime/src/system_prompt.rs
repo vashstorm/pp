@@ -6,8 +6,12 @@ use pp_config::config::ToolLimits;
 use pp_tools::project_instructions;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 const RUNTIME: &str = include_str!("prompts/runtime.md");
+/// 已注册的模板名：base（用户模板）与 runtime 只在快照校验时注册一次。
+const BASE_TEMPLATE: &str = "base";
+const RUNTIME_TEMPLATE: &str = "runtime";
 
 /// 用于区分不可降级的提示词启动错误和可交互修复的模型配置错误。
 #[derive(Debug)]
@@ -34,12 +38,30 @@ struct Source {
     origin: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
     version: u32,
     base: Source,
     append: Option<Source>,
+    /// 校验时注册一次 base 与 runtime 模板；Clone 共享同一份，不重新解析。
+    #[serde(skip)]
+    renderer: OnceLock<Arc<Handlebars<'static>>>,
+}
+
+impl Clone for Snapshot {
+    fn clone(&self) -> Self {
+        let renderer = OnceLock::new();
+        if let Some(existing) = self.renderer.get() {
+            let _ = renderer.set(Arc::clone(existing));
+        }
+        Self {
+            version: self.version,
+            base: self.base.clone(),
+            append: self.append.clone(),
+            renderer,
+        }
+    }
 }
 
 /// 用户模板的第一版公开上下文，不包含自动生成的指令块。
@@ -112,6 +134,19 @@ fn renderer() -> Handlebars<'static> {
     renderer
 }
 
+/// 模板错误只保留来源、位置与语法原因：库的完整错误会附带源码片段。
+fn template_error(origin: &str, error: handlebars::TemplateError) -> anyhow::Error {
+    let reason = match error.reason() {
+        handlebars::TemplateErrorReason::InvalidSyntax(_) => "invalid Handlebars syntax".to_owned(),
+        reason => reason.to_string(),
+    };
+    let position = error
+        .pos()
+        .map(|(line, column)| format!(" at line {line}, column {column}"))
+        .unwrap_or_default();
+    anyhow!("invalid system prompt template: {origin}{position}: {reason}")
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PromptParts {
     pub base_origin: String,
@@ -134,6 +169,7 @@ impl Snapshot {
                 origin: "bundled system prompt".into(),
             },
             append: None,
+            renderer: OnceLock::new(),
         }
     }
 
@@ -210,9 +246,8 @@ impl Snapshot {
             self.version == 1,
             "unsupported system prompt snapshot version"
         );
-        if !matches!(self.base.kind, SourceKind::Text) {
-            self.base_renderer()?;
-        }
+        // 模板只在此处注册一次；`compose`／`inspect_parts` 之后只做渲染。
+        self.renderer()?;
         if let Some(append) = &self.append {
             ensure!(
                 matches!(append.kind, SourceKind::Text),
@@ -223,32 +258,33 @@ impl Snapshot {
         Ok(())
     }
 
-    fn base_renderer(&self) -> Result<Handlebars<'static>> {
-        ensure!(
-            !self.base.content.trim().is_empty(),
-            "system prompt template must not be empty: {}",
-            self.base.origin
-        );
+    /// 已注册 base（若为模板）与 runtime 模板的渲染器：首次使用时构造并缓存。
+    fn renderer(&self) -> Result<&Arc<Handlebars<'static>>> {
+        if let Some(renderer) = self.renderer.get() {
+            return Ok(renderer);
+        }
+        // 并发下可能已有另一线程写入；两侧注册内容一致，取已有结果即可。
+        let _ = self.renderer.set(Arc::new(self.build_renderer()?));
+        self.renderer
+            .get()
+            .context("system prompt renderer unavailable")
+    }
+
+    fn build_renderer(&self) -> Result<Handlebars<'static>> {
         let mut renderer = renderer();
+        if !matches!(self.base.kind, SourceKind::Text) {
+            ensure!(
+                !self.base.content.trim().is_empty(),
+                "system prompt template must not be empty: {}",
+                self.base.origin
+            );
+            renderer
+                .register_template_string(BASE_TEMPLATE, &self.base.content)
+                .map_err(|error| template_error(&self.base.origin, error))?;
+        }
         renderer
-            .register_template_string("base", &self.base.content)
-            .map_err(|error| {
-                // 库的完整错误会附带源码片段；这里只保留来源、位置和语法原因。
-                let reason = match error.reason() {
-                    handlebars::TemplateErrorReason::InvalidSyntax(_) => {
-                        "invalid Handlebars syntax".to_owned()
-                    }
-                    reason => reason.to_string(),
-                };
-                let position = error
-                    .pos()
-                    .map(|(line, column)| format!(" at line {line}, column {column}"))
-                    .unwrap_or_default();
-                anyhow!(
-                    "invalid system prompt template: {}{position}: {reason}",
-                    self.base.origin
-                )
-            })?;
+            .register_template_string(RUNTIME_TEMPLATE, RUNTIME)
+            .context("registering runtime prompt template")?;
         Ok(renderer)
     }
 
@@ -257,14 +293,12 @@ impl Snapshot {
         context: &RenderContext<'_>,
         limits: ToolLimits,
     ) -> Result<(String, String)> {
+        let renderer = self.renderer()?;
         let base = match self.base.kind {
             SourceKind::Text => self.base.content.clone(),
-            _ => self
-                .base_renderer()?
-                .render("base", context)
-                .with_context(|| {
-                    format!("rendering system prompt template: {}", self.base.origin)
-                })?,
+            _ => renderer.render(BASE_TEMPLATE, context).with_context(|| {
+                format!("rendering system prompt template: {}", self.base.origin)
+            })?,
         };
         let mut runtime = serde_json::to_value(context)?;
         for name in ["read", "edit", "write", "bash", "eval", "rg", "glob"] {
@@ -285,8 +319,8 @@ impl Snapshot {
         runtime["bash_max_timeout_seconds"] = limits.bash_max_timeout_seconds.into();
         runtime["eval_timeout_seconds"] = limits.eval_timeout_seconds.into();
         runtime["eval_max_timeout_seconds"] = limits.eval_max_timeout_seconds.into();
-        let runtime_text = renderer()
-            .render_template(RUNTIME, &runtime)?
+        let runtime_text = renderer
+            .render(RUNTIME_TEMPLATE, &runtime)?
             .trim()
             .to_owned();
         Ok((base, runtime_text))

@@ -181,6 +181,7 @@ impl App {
         };
         // 恢复历史会重建 Transcript，启动诊断须在安装完成后追加。
         let history_error = app.start_history(history_path);
+        pp_core::logging::perf::mark("history_started");
         match agent {
             Ok(agent) => app.install_agent(agent)?,
             Err(error) => {

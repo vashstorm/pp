@@ -119,7 +119,11 @@ impl SessionJournal {
                 if let Some(key) = self.pending_stats.take()
                     && let Some(id) = self.id()
                 {
-                    pp_stats::link(&self.stats_db, &key, &self.dir.join(format!("{id}.jsonl")));
+                    pp_stats::link(
+                        self.stats_handle(),
+                        &key,
+                        &self.dir.join(format!("{id}.jsonl")),
+                    );
                 }
                 Ok(())
             })();

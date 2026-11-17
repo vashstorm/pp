@@ -70,11 +70,15 @@ fn title_field(text: &str, width: usize) -> Line<'static> {
     let truncated = Line::from(text).width() > width;
     let budget = width.saturating_sub(usize::from(truncated));
     let mut title = String::new();
+    // 逐字素累加列宽，不再为每个前缀重新度量整串。
+    let mut columns = 0;
     for grapheme in text.graphemes(true) {
-        if Line::from(format!("{title}{grapheme}")).width() > budget {
+        let size = Span::raw(grapheme).width();
+        if columns + size > budget {
             break;
         }
         title.push_str(grapheme);
+        columns += size;
     }
     if truncated {
         title.push('…');
@@ -134,7 +138,31 @@ pub(super) fn join_fields(fields: &[Option<Line<'static>>]) -> Line<'static> {
 }
 
 fn metric_separator() -> Span<'static> {
-    Span::styled(" · ", Style::default().fg(Color::DarkGray))
+    Span::styled(METRIC_SEPARATOR, Style::default().fg(Color::DarkGray))
+}
+
+/// 指标之间的分隔符；拼接与宽度预算共用同一文本。
+const METRIC_SEPARATOR: &str = " · ";
+
+/// 已存在的字段拼成整行的列宽：字段宽度之和 + 首尾空格与分隔符。
+fn joined_width(fields: &[Option<Line<'static>>]) -> usize {
+    let mut width = 0;
+    let mut count = 0;
+    for line in fields.iter().flatten() {
+        width += line.width();
+        count += 1;
+    }
+    if count == 0 {
+        return 0;
+    }
+    width + 2 + (count - 1) * Line::raw(METRIC_SEPARATOR).width()
+}
+
+/// 状态栏指标簇的用量输入：`context` 由调用方构造一次后复用，
+/// 避免同一帧为同一个字段做两遍格式化。
+pub(in crate::tui) struct Metrics<'a> {
+    pub usage: &'a ContextUsage,
+    pub context: Line<'static>,
 }
 
 pub(super) fn speed_field(rate: Option<f64>, running_subagents: usize) -> Line<'static> {
@@ -168,7 +196,7 @@ pub(super) fn speed_field(rate: Option<f64>, running_subagents: usize) -> Line<'
 
 /// 所有指标共享显示列预算：先缩短标题，再按整组降级，最后保留 Ctx。
 pub(in crate::tui) fn metric_fields(
-    usage: &ContextUsage,
+    metrics: Metrics<'_>,
     speed: Option<(f64, bool)>,
     running_subagents: usize,
     live_output: Option<u64>,
@@ -179,6 +207,7 @@ pub(in crate::tui) fn metric_fields(
     elapsed: Option<&str>,
     width: u16,
 ) -> Line<'static> {
+    let usage = metrics.usage;
     let icons = themes::current_icons();
     let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
     let last = usage.last_request;
@@ -194,7 +223,7 @@ pub(in crate::tui) fn metric_fields(
         Some(speed_field(speed.map(|(rate, _)| rate), running_subagents)),
         task.and_then(|(t, _)| t.title.as_ref())
             .map(|title| title_field(title, 32)),
-        Some(context_field(usage)),
+        Some(metrics.context),
         Some(pair_field(
             io_icon(icons),
             count(last.map(|u| u.input_tokens)),
@@ -211,25 +240,24 @@ pub(in crate::tui) fn metric_fields(
         elapsed.map(|text| field(timer_icon(icons), text.replace(' ', ""), context_color())),
     ];
     let budget = usize::from(width);
-    let mut line = join_fields(&fields);
-    if line.width() > budget
+    // 先按列宽预算决定保留哪些字段，最后只拼接一次。
+    let mut total = joined_width(&fields);
+    if total > budget
         && let Some(title) = fields[1].as_ref()
     {
         let text = title.spans[1].content.as_ref();
-        let available = Line::from(text)
-            .width()
-            .saturating_sub(line.width() - budget);
+        let available = Line::from(text).width().saturating_sub(total - budget);
         fields[1] = (available >= 2).then(|| title_field(text, available));
-        line = join_fields(&fields);
+        total = joined_width(&fields);
     }
     for remove in [1, 4, 3, 0, 5, 6, 2] {
-        if line.width() <= budget {
-            return line;
+        if total <= budget {
+            break;
         }
         fields[remove] = None;
-        line = join_fields(&fields);
+        total = joined_width(&fields);
     }
-    line
+    join_fields(&fields)
 }
 
 #[cfg(test)]
@@ -237,6 +265,14 @@ mod tests {
     use super::super::fixtures::*;
     use super::*;
     use pp_core::context::TokenUsage;
+
+    /// 测试按调用方已构造 ctx 字段的方式调用指标簇。
+    fn metrics(usage: &ContextUsage) -> Metrics<'_> {
+        Metrics {
+            usage,
+            context: context_field(usage),
+        }
+    }
 
     #[test]
     fn context_abbreviation_uses_thousands_and_millions_with_one_decimal() {
@@ -270,7 +306,7 @@ mod tests {
             ..Default::default()
         };
         let line = metric_fields(
-            &usage,
+            metrics(&usage),
             Some((30.2, true)),
             0,
             None,
@@ -323,12 +359,28 @@ mod tests {
         let mut usage = status_usage();
         usage.last_request = None;
         usage.session_output_tokens = 0;
-        let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
+        let text = line_text(&metric_fields(
+            metrics(&usage),
+            None,
+            0,
+            None,
+            None,
+            None,
+            240,
+        ));
         assert!(text.contains(&format!("{io} —/—")));
         assert!(text.contains(&format!("{cache} —/—")));
         // 切模型或压缩清空最近请求指标，会话累计输出继续显示。
         usage.session_output_tokens = 45_678;
-        let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
+        let text = line_text(&metric_fields(
+            metrics(&usage),
+            None,
+            0,
+            None,
+            None,
+            None,
+            240,
+        ));
         assert!(text.contains(&format!("{io} —/45.7K")), "{text}");
         usage.session_output_tokens = 0;
         for (read, write, expected) in [
@@ -342,7 +394,15 @@ mod tests {
                 cached_tokens: read,
                 cache_write_tokens: write,
             });
-            let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
+            let text = line_text(&metric_fields(
+                metrics(&usage),
+                None,
+                0,
+                None,
+                None,
+                None,
+                240,
+            ));
             assert!(text.contains(&format!("{io} 0/0")));
             assert!(text.contains(&format!("{cache} {expected}")));
         }
@@ -355,11 +415,27 @@ mod tests {
         let cache = cache_icon(icons);
         let usage = status_usage();
         // 生成中：out 在会话累计上叠加实时估算，in 与缓存仍是最近一次完成的请求。
-        let text = line_text(&metric_fields(&usage, None, 0, Some(4200), None, None, 240));
+        let text = line_text(&metric_fields(
+            metrics(&usage),
+            None,
+            0,
+            Some(4200),
+            None,
+            None,
+            240,
+        ));
         assert!(text.contains(&format!("{io} 12.3K/49.9K")), "{text}");
         assert!(text.contains(&format!("{cache} 8K/0")), "{text}");
         // 没有估算时 out 就是会话累计，不回到单次请求的输出量。
-        let text = line_text(&metric_fields(&usage, None, 0, None, None, None, 240));
+        let text = line_text(&metric_fields(
+            metrics(&usage),
+            None,
+            0,
+            None,
+            None,
+            None,
+            240,
+        ));
         assert!(text.contains(&format!("{io} 12.3K/45.7K")), "{text}");
         // 首个请求没有历史 usage 时，in/缓存保持未知，out 也只是本次实时估算。
         let first = ContextUsage {
@@ -367,7 +443,15 @@ mod tests {
             session_output_tokens: 0,
             ..usage
         };
-        let text = line_text(&metric_fields(&first, None, 0, Some(260), None, None, 240));
+        let text = line_text(&metric_fields(
+            metrics(&first),
+            None,
+            0,
+            Some(260),
+            None,
+            None,
+            240,
+        ));
         assert!(text.contains(&format!("{io} —/260")), "{text}");
     }
 
@@ -393,7 +477,7 @@ mod tests {
             assert_eq!(Line::from(icon).width(), 1, "{icon}");
         }
         let text = line_text(&metric_fields(
-            &status_usage(),
+            metrics(&status_usage()),
             Some((61.5, true)),
             0,
             None,
@@ -415,7 +499,7 @@ mod tests {
         ] {
             assert!(
                 line_text(&metric_fields(
-                    &usage,
+                    metrics(&usage),
                     Some((rate, false)),
                     0,
                     None,
@@ -550,7 +634,7 @@ mod tests {
         let rate = 30.2;
         let render = |width, task| {
             metric_fields(
-                &usage,
+                metrics(&usage),
                 Some((rate, false)),
                 3,
                 None,

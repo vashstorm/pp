@@ -162,7 +162,7 @@ fn wait_card_updates_background_original_and_marks_timeout_and_interruption() {
         for width in [1, 7, 8, 24] {
             last.layout = None;
             last.ensure_layout(width);
-            for line in &last.layout.as_ref().unwrap().lines {
+            for line in last.layout.as_ref().unwrap().iter() {
                 assert!(last.line(line).width() <= usize::from(width));
             }
         }

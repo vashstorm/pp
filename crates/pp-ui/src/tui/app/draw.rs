@@ -1,22 +1,7 @@
 use crate::tui::{
-    Alignment, App, Block, Borders, Color, Frame, Line, Rect, StatusContext, Style, Transcript,
-    menu, pipes, plan_list, platform_text, statusline, transcript_style, tree, welcome,
+    Alignment, App, Block, Borders, Color, Frame, Line, MainLayout, Rect, StatusContext, Style,
+    Transcript, menu, pipes, plan_list, platform_text, statusline, transcript_style, tree, welcome,
 };
-
-/// 主屏幕和原生历史提交共用的几何结果，TODO 永远不进入对话 viewport。
-pub(in crate::tui) struct MainLayout {
-    pub conversation: Rect,
-    todo: Rect,
-    subagents: Rect,
-    ask: Rect,
-    activity: Rect,
-    // 自动重试固定信息框；始终位于输入框上方，不进入对话区。
-    retry: Rect,
-    pub(in crate::tui) input: Rect,
-    attachments: Rect,
-    status: Rect,
-    bordered: bool,
-}
 
 impl App {
     fn input_transcript(&self) -> &Transcript {
@@ -117,7 +102,21 @@ impl App {
         }
     }
 
+    /// 单元测试直接绘制的入口；生产路径统一经 `paint_surface` 复用预计算布局。
+    #[cfg(test)]
     pub(in crate::tui) fn draw(&mut self, frame: &mut Frame, context: &StatusContext) {
+        self.draw_with_layout(frame, context, None, false);
+    }
+
+    /// `layout` 由 `paint_surface` 先行计算时复用，避免每帧重复排版输入框；
+    /// `exiting` 时额外保留整帧快照供退出绘制，其余帧不再多余拷贝。
+    pub(in crate::tui) fn draw_with_layout(
+        &mut self,
+        frame: &mut Frame,
+        context: &StatusContext,
+        known: Option<&MainLayout>,
+        exiting: bool,
+    ) {
         self.conversation.set_terminal_rows(frame.area().height);
         if let Some(review) = &mut self.review_transcript {
             review.set_terminal_rows(frame.area().height);
@@ -303,6 +302,14 @@ impl App {
 
             return;
         }
+        let computed;
+        let layout = match known {
+            Some(layout) => layout,
+            None => {
+                computed = self.main_layout(area);
+                &computed
+            }
+        };
         let MainLayout {
             conversation,
             todo,
@@ -314,7 +321,7 @@ impl App {
             attachments,
             status,
             bordered,
-        } = self.main_layout(area);
+        } = *layout;
         let images = if self.resources.images.is_empty() {
             Vec::new()
         } else {
@@ -504,7 +511,7 @@ impl App {
                 status,
             );
         }
-        if self.native_render {
+        if self.native_render && exiting {
             self.normal_snapshot = Some(frame.buffer_mut().clone());
         }
         if self.resource_input_available() && self.menu.is_none() {
@@ -528,8 +535,10 @@ impl App {
     pub(in crate::tui) fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
         let usage_style = Style::default().bg(statusline::input_status_bg());
         let mut right = area.right();
-        let context_width = self.usage.as_ref().map_or(0, |usage| {
-            u16::try_from(statusline::context_field(usage).width() + 2).unwrap_or(u16::MAX)
+        // ctx 字段每帧只构造一次，宽度预算与实际指标簇共享同一行。
+        let context = self.usage.as_ref().map(statusline::context_field);
+        let context_width = context.as_ref().map_or(0, |context| {
+            u16::try_from(context.width() + 2).unwrap_or(u16::MAX)
         });
         let extra = self
             .secondary_status
@@ -573,7 +582,10 @@ impl App {
         }
         if let Some(usage) = self.usage.as_ref() {
             let metrics = statusline::metric_fields(
-                usage,
+                statusline::Metrics {
+                    usage,
+                    context: context.expect("ctx 字段已随用量构造"),
+                },
                 self.token_speed.value(),
                 self.subagent_status.map_or(0, |(_, count)| count),
                 self.token_speed.live_output_tokens(),

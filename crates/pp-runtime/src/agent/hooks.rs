@@ -91,7 +91,7 @@ pub(crate) struct HookSession {
     session_id: String,
     transcript: PathBuf,
     cwd: PathBuf,
-    stats_db: PathBuf,
+    stats: pp_stats::Database,
 }
 
 impl HookSession {
@@ -104,14 +104,14 @@ impl HookSession {
         workflow: &pp_core::plan::WorkflowState,
         cwd: &Path,
     ) -> Result<Self> {
-        let stats_db = journal.stats_database().to_path_buf();
+        let stats = journal.stats_handle().clone();
         let (session_id, transcript) = journal.prepare_hooks(metadata, session, workflow)?;
         Ok(Self {
             scope,
             session_id,
             transcript,
             cwd: cwd.to_owned(),
-            stats_db,
+            stats,
         })
     }
 
@@ -137,7 +137,7 @@ impl HookSession {
         let input = crate::hooks::protocol::input(event, &context, payload);
         self.scope
             .runner
-            .run_with_stats(event, &input, Some(&self.stats_db), cancellation, emit)
+            .run_with_stats(event, &input, Some(&self.stats), cancellation, emit)
     }
 }
 

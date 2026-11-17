@@ -6,6 +6,7 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use crate::{models, yaml};
@@ -61,6 +62,9 @@ pub struct ModelCatalog {
     settings: Settings,
     settings_path: PathBuf,
     agent_db_path: PathBuf,
+    /// 构造时打开的 agent.db 连接：`model_usage` 这类只读访问复用它，不再逐次重开；
+    /// 写入仍各自打开独立连接与事务，跨线程读由 `Mutex` 串行化。
+    agent_store: Arc<Mutex<crate::agent_store::AgentStore>>,
     providers: Vec<models::ValidatedProvider>,
     pricing: models::ModelPricing,
     preferences: ModelPreferences,
@@ -419,8 +423,22 @@ impl ModelCatalog {
         Self::load(settings_path, models_path, false)
     }
 
+    /// 启动期入口：调用方已完成一次性迁移并解析、校验过 `settings.yml`。
+    ///
+    /// 与 [`Self::from_files`] 的区别只有两步已在调用方完成的工作：不再重读
+    /// `settings.yml`，也不再打开 agent.db 做第二遍迁移检查。agent.db 只在这里打开一次，
+    /// 随后由 [`Self::model_usage`] 复用同一连接。
+    pub fn from_migrated_settings(
+        settings: Settings,
+        settings_path: &Path,
+        models_path: &Path,
+    ) -> Result<Self> {
+        Self::with_settings(settings, settings_path, models_path, false)
+    }
+
     fn load(settings_path: &Path, models_path: &Path, allow_empty: bool) -> Result<Self> {
         // 一次性迁移先于任何 settings.yml 解析：旧四字段由迁移导入 agent.db 并从文件剥离。
+        // 启动期已由 `main::run` 完成迁移的路径改走 [`Self::from_migrated_settings`]。
         let dir = settings_path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -483,6 +501,7 @@ impl ModelCatalog {
             settings,
             settings_path: settings_path.to_path_buf(),
             agent_db_path,
+            agent_store: Arc::new(Mutex::new(agent_store)),
             providers,
             pricing,
             preferences,
@@ -731,10 +750,14 @@ impl ModelCatalog {
         })
     }
 
-    /// 读取按逻辑请求累计的使用次数；打开或读取失败都是固定脱敏错误。
+    /// 读取按逻辑请求累计的使用次数；读取失败仍是固定脱敏错误。
+    ///
+    /// 复用构造时打开的连接，模型面板刷新不会再打开一次 agent.db。
     pub fn model_usage(&self) -> Result<std::collections::BTreeMap<String, u64>> {
-        crate::agent_store::AgentStore::open(&self.agent_db_path)
-            .and_then(|store| store.model_usage())
+        self.agent_store
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .model_usage()
     }
 }
 

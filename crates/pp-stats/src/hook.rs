@@ -1,4 +1,4 @@
-use super::{Range, Store, save::project_name, warn};
+use super::{Database, Range, Store, save::project_name, warn};
 use anyhow::Result;
 use pp_config::config::HookEvent;
 use rusqlite::params;
@@ -36,9 +36,9 @@ pub struct HookRun<'a> {
     pub duration_ms: f64,
 }
 
-/// 记录一次 Hook handler 执行；存储失败只提示，不改变 Hook 决策。
-pub fn hook(database: &Path, run: &HookRun<'_>) {
-    if (|| -> Result<()> { Store::open(database)?.hook(run) })().is_err() {
+/// 记录一次 Hook handler 执行；复用句柄内的连接，存储失败只提示，不改变 Hook 决策。
+pub fn hook(database: &Database, run: &HookRun<'_>) {
+    if database.with_store(|store| store.hook(run)).is_err() {
         warn();
     }
 }

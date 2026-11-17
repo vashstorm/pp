@@ -105,13 +105,22 @@ impl Bootstrap {
     }
 
     pub fn build(&self) -> Result<Agent> {
+        self.build_with_stats(pp_stats::Database::new(pp_stats::database_path()?))
+    }
+
+    /// 注入进程级统计库句柄：请求、工具、hook、标题与子 Agent 复用同一连接。
+    ///
+    /// 根 `main::run` 构造句柄后走这里；[`Self::build`] 保留自解析路径入口。
+    pub fn build_with_stats(&self, stats: pp_stats::Database) -> Result<Agent> {
         let models = self.model_state()?;
         let catalog = models.catalog_snapshot();
         let mut tools = Tools::with_mcp(self.cwd.clone(), catalog.edit_mode(), self.mcp.clone())?;
+        pp_core::logging::perf::mark("tools_ready");
         tools.skills = self.skills.clone();
         let sandbox = self
             .sandbox
             .get_or_init(catalog.sandbox_settings(), &self.cwd);
+        pp_core::logging::perf::mark("sandbox_ready");
         if let Some(mode) = self.sandbox_override {
             sandbox.set_mode_override(Some(mode));
         }
@@ -122,7 +131,7 @@ impl Bootstrap {
             self.dir.join("sessions"),
             persistence::locks::directory()?,
             self.prompt.clone(),
-            pp_stats::database_path()?,
+            stats,
         )?;
         if let Some(mode) = self.approval {
             agent.set_approval_override(mode);

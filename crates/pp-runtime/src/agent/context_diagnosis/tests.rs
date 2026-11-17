@@ -514,7 +514,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
     let stats_db = sessions.join(".stats/stats.db");
     let ctx = pp_stats::RequestContext {
         model_reference: "test/demo".into(),
-        database: stats_db.clone(),
+        database: stats_db.clone().into(),
         cwd: work.clone(),
         purpose: "task",
         session_file: Some(session_file),
@@ -624,4 +624,298 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
     assert_eq!(extracted.len(), 1);
     assert_eq!(extracted[0].thinking, "successful thought");
     let _ = CancellationToken::new();
+}
+
+/// 追加一次工具调用 + 结果到原生历史（两种协议共用同一形状）。
+fn push_tool_exchange(agent: &mut Agent, call_id: &str, path: &str, output: &str) {
+    let arguments = format!(r#"{{"path":"{path}"}}"#);
+    match &mut agent.session {
+        Session::Completion(request) => {
+            request.messages.push(
+                async_openai::types::chat::ChatCompletionRequestMessage::Assistant(
+                    async_openai::types::chat::ChatCompletionRequestAssistantMessage {
+                        tool_calls: Some(vec![
+                            async_openai::types::chat::ChatCompletionMessageToolCalls::Function(
+                                async_openai::types::chat::ChatCompletionMessageToolCall {
+                                    id: call_id.into(),
+                                    function: async_openai::types::chat::FunctionCall {
+                                        name: "read".into(),
+                                        arguments,
+                                    },
+                                },
+                            ),
+                        ]),
+                        ..Default::default()
+                    },
+                ),
+            );
+            request.messages.push(
+                async_openai::types::chat::ChatCompletionRequestMessage::Tool(
+                    async_openai::types::chat::ChatCompletionRequestToolMessage {
+                        content: output.into(),
+                        tool_call_id: call_id.into(),
+                    },
+                ),
+            );
+        }
+        Session::Response(request) => {
+            let InputParam::Items(items) = &mut request.input else {
+                panic!("expected items");
+            };
+            items.push(InputItem::Item(Item::FunctionCall(
+                async_openai::types::responses::FunctionToolCall {
+                    arguments,
+                    call_id: call_id.into(),
+                    name: "read".into(),
+                    id: None,
+                    status: None,
+                    namespace: None,
+                    caller: None,
+                    r#async: None,
+                },
+            )));
+            items.push(InputItem::Item(Item::FunctionCallOutput(
+                FunctionCallOutputItemParam {
+                    call_id: Some(call_id.into()),
+                    output: FunctionCallOutput::Text(output.into()),
+                    id: None,
+                    status: None,
+                    name: None,
+                    namespace: None,
+                    caller: None,
+                },
+            )));
+        }
+    }
+}
+
+fn in_context_tokens(report: &ContextReport) -> u64 {
+    report
+        .categories
+        .iter()
+        .filter(|category| category.in_context)
+        .map(|category| category.tokens)
+        .sum()
+}
+
+#[test]
+fn json_body_preview_skips_parsing_above_the_preview_budget() {
+    let within = format!(r#"{{"content":"{}"}}"#, "a".repeat(MAX_PREVIEW_BYTES - 32));
+    assert!(within.len() < MAX_PREVIEW_BYTES);
+    assert!(
+        super::sections::json_body_preview(&within).contains("\n  \"content\""),
+        "预算内的 JSON 正文仍按既有口径美化"
+    );
+
+    let over = format!(r#"{{"content":"{}"}}"#, "a".repeat(MAX_PREVIEW_BYTES));
+    assert!(over.len() > MAX_PREVIEW_BYTES);
+    let preview = super::sections::json_body_preview(&over);
+    assert_eq!(preview, super::sections::oversized_preview(over.len()));
+    assert!(!preview.contains('a'), "超大正文不再复制、解析或美化");
+}
+
+#[test]
+fn oversized_tool_output_is_summarized_but_still_accounted() {
+    for protocol in [Protocol::Response, Protocol::Completion] {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("cfg");
+        let work = dir.path().join("work");
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&sessions).unwrap();
+        fs::write(work.join("AGENTS.md"), "Keep diagnostics bounded.").unwrap();
+
+        let catalog = test_catalog(&cfg, protocol, Some(200_000));
+        let mut agent = Agent::new(
+            catalog,
+            Tools::new(work.clone(), EditMode::Replace).unwrap(),
+            sessions,
+        )
+        .unwrap();
+        agent.refresh_instructions().unwrap();
+        agent.append_user("read the big file");
+
+        let huge = format!(r#"{{"ok":true,"content":"{}"}}"#, "A".repeat(80_000));
+        push_tool_exchange(&mut agent, "call_big", "big.txt", &huge);
+        push_tool_exchange(
+            &mut agent,
+            "call_small",
+            "small.txt",
+            r#"{"ok":true,"content":"small"}"#,
+        );
+
+        let report = agent.diagnose_context().unwrap();
+        assert_eq!(report.categories.len(), 10);
+        let outputs = category(&report, CategoryKey::ToolOutput);
+        let big = outputs
+            .items
+            .iter()
+            .find(|item| item.subtitle == "big.txt")
+            .expect("big tool output item");
+        assert!(big.bytes > MAX_PREVIEW_BYTES as u64);
+        assert_eq!(
+            big.preview,
+            super::sections::oversized_preview(huge.len()),
+            "超过预算的工具输出只给字节摘要"
+        );
+        let small = outputs
+            .items
+            .iter()
+            .find(|item| item.subtitle == "small.txt")
+            .expect("small tool output item");
+        assert!(
+            small.preview.contains("\n  \"ok\": true"),
+            "预算内的工具输出仍按既有口径美化：{}",
+            small.preview
+        );
+        // 大正文按原始字节计入分类与总额，不因预览摘要而缩水。
+        assert!(outputs.tokens > MAX_PREVIEW_BYTES as u64 / 3);
+        assert_eq!(in_context_tokens(&report), report.active_tokens);
+    }
+}
+
+#[test]
+fn published_snapshot_reuses_cached_prefix_without_duplicating_items() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("cfg");
+    let work = dir.path().join("work");
+    let sessions = dir.path().join("sessions");
+    fs::create_dir_all(&cfg).unwrap();
+    fs::create_dir_all(&work).unwrap();
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(work.join("AGENTS.md"), "Keep diagnostics cached.").unwrap();
+
+    let catalog = test_catalog(&cfg, Protocol::Response, Some(200_000));
+    let mut agent = Agent::new(
+        catalog,
+        Tools::new(work.clone(), EditMode::Replace).unwrap(),
+        sessions,
+    )
+    .unwrap();
+    let snapshot = agent.observe_context();
+    agent.refresh_instructions().unwrap();
+    agent.append_user("first");
+    push_tool_exchange(&mut agent, "call_1", "AGENTS.md", r#"{"ok":true,"rule":1}"#);
+
+    agent.publish_context_snapshot();
+    let first = snapshot_read(&snapshot);
+    assert_eq!(category(&first, CategoryKey::UserMessages).item_count, 1);
+    assert_eq!(category(&first, CategoryKey::ToolCalls).item_count, 1);
+    let output_title = category(&first, CategoryKey::ToolOutput).items[0]
+        .title
+        .clone();
+    assert!(
+        output_title.contains("read"),
+        "工具输出按前缀调用表标注工具名：{output_title}"
+    );
+
+    // 相同状态再次发布：复用缓存前缀，不能重复追加同一条消息的分类。
+    agent.publish_context_snapshot();
+    let repeat = snapshot_read(&snapshot);
+    assert_eq!(repeat.categories.len(), 10);
+    for (left, right) in first.categories.iter().zip(&repeat.categories) {
+        assert_eq!(left.key, right.key);
+        assert_eq!(left.item_count, right.item_count, "category {:?}", left.key);
+        assert_eq!(left.bytes, right.bytes, "category {:?}", left.key);
+        assert_eq!(left.tokens, right.tokens, "category {:?}", left.key);
+    }
+    assert_eq!(in_context_tokens(&repeat), repeat.active_tokens);
+
+    // 追加尾部：只新增尾部消息的分类，前缀里的调用表仍被复用。
+    agent.append_user("second");
+    push_tool_exchange(&mut agent, "call_2", "AGENTS.md", r#"{"ok":true,"rule":2}"#);
+    agent.publish_context_snapshot();
+    let extended = snapshot_read(&snapshot);
+    assert_eq!(category(&extended, CategoryKey::UserMessages).item_count, 2);
+    assert_eq!(category(&extended, CategoryKey::ToolCalls).item_count, 2);
+    assert_eq!(category(&extended, CategoryKey::ToolOutput).item_count, 2);
+    assert_eq!(
+        category(&extended, CategoryKey::ToolOutput).items[0].title,
+        output_title
+    );
+    assert!(
+        category(&extended, CategoryKey::ToolOutput).items[1]
+            .title
+            .contains("read")
+    );
+    assert_eq!(in_context_tokens(&extended), extended.active_tokens);
+
+    // 工具表指纹变化（新增 MCP 工具）必须重算 Custom Tools。
+    assert_eq!(category(&extended, CategoryKey::CustomTools).item_count, 0);
+    let mut defs = agent.tools.all_definitions(agent.workflow.mode);
+    defs.push(async_openai::types::chat::FunctionObject {
+        name: "mcp__docs__search".into(),
+        description: Some("Search docs via MCP".into()),
+        parameters: Some(serde_json::json!({"type": "object", "properties": {}})),
+        strict: Some(false),
+    });
+    agent.session.set_tools(defs);
+    agent.publish_context_snapshot();
+    let with_mcp = snapshot_read(&snapshot);
+    assert_eq!(category(&with_mcp, CategoryKey::CustomTools).item_count, 1);
+    assert_eq!(in_context_tokens(&with_mcp), with_mcp.active_tokens);
+}
+
+#[test]
+fn reported_project_load_change_recomputes_instruction_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("cfg");
+    let work = dir.path().join("work");
+    let sessions = dir.path().join("sessions");
+    fs::create_dir_all(&cfg).unwrap();
+    fs::create_dir_all(work.join("nested")).unwrap();
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(work.join("AGENTS.md"), "Root sent rule.").unwrap();
+
+    let catalog = test_catalog(&cfg, Protocol::Response, Some(200_000));
+    let mut agent = Agent::new(
+        catalog,
+        Tools::new(work.clone(), EditMode::Replace).unwrap(),
+        sessions,
+    )
+    .unwrap();
+    let snapshot = agent.observe_context();
+    agent.refresh_instructions().unwrap();
+    agent.tools.project_request_sent();
+    for doc in std::mem::take(&mut agent.pending_project_load) {
+        agent
+            .reported_project_load
+            .insert(doc.path.display().to_string(), doc.content);
+    }
+    agent.append_user("first");
+
+    agent.publish_context_snapshot();
+    let first = snapshot_read(&snapshot);
+    let sent = category(&first, CategoryKey::InstructionFiles).item_count;
+    assert!(sent >= 1, "已发送的规则必须计入 Instruction Files");
+
+    // 第二轮又发送一份规则：项目指令指纹变化必须重算该分区。
+    let nested = work.join("nested/AGENTS.md");
+    fs::write(&nested, "Nested rule.").unwrap();
+    agent
+        .reported_project_load
+        .insert(nested.display().to_string(), "Nested rule.".into());
+    agent.publish_context_snapshot();
+    let second = snapshot_read(&snapshot);
+    assert_eq!(
+        category(&second, CategoryKey::InstructionFiles).item_count,
+        sent + 1
+    );
+    assert!(
+        category(&second, CategoryKey::InstructionFiles)
+            .items
+            .iter()
+            .any(|item| item.title.ends_with("nested/AGENTS.md"))
+    );
+    assert_eq!(in_context_tokens(&second), second.active_tokens);
+}
+
+fn snapshot_read(snapshot: &Snapshot) -> ContextReport {
+    snapshot
+        .read()
+        .expect("report published")
+        .expect("diagnosis succeeded")
+        .as_ref()
+        .clone()
 }

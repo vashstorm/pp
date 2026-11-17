@@ -32,9 +32,10 @@ pub fn edit_path(arguments: &Value) -> Option<&str> {
 
 impl Tools {
     /// 测试与 mock 专用构造：空 `McpManager`，不读取真实用户 MCP 定义。
+    /// `eval` 可用性保守关闭，只由 `configure_eval` 按配置唯一赋值，
+    /// 因此这里不探测 Python（避免构造期多起一次子进程）。
     pub fn new(cwd: PathBuf, edit_mode: EditMode) -> Result<Self> {
         let workspace = save::Workspace::open(&cwd)?;
-        let eval_available = pp_eval::probe_python(&workspace.path, None).is_ok();
         Ok(Self {
             artifacts: Default::default(),
             ask_handler: None,
@@ -59,7 +60,7 @@ impl Tools {
             snapshots: RefCell::default(),
             project_instructions: RefCell::default(),
             background_tasks: Default::default(),
-            eval_available,
+            eval_available: false,
             eval: pp_eval::Session::new(),
             eval_enabled: true,
             eval_interpreter: None,
@@ -114,6 +115,7 @@ impl Tools {
         self.background_tasks.cleanup()
     }
 
+    /// `eval` 可用性的唯一赋值点：按 `settings.yml` 的 `eval` 节探测一次解释器。
     pub fn configure_eval(&mut self, settings: &pp_config::config::EvalSettings) {
         self.eval_enabled = settings.enabled;
         self.eval_interpreter.clone_from(&settings.interpreter);

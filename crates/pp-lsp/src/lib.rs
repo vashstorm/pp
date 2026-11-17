@@ -53,7 +53,10 @@ struct Inner {
     /// 用户级 `lsp.json` 的实际路径；由 Agent 从配置目录注入，测试不读真实 HOME。
     config_path: Option<PathBuf>,
     settings: LspSettings,
-    config: Mutex<Result<Arc<config::Config>, String>>,
+    /// 惰性配置与发现快照：`None` 表示还没有任何查询。首次查询在锁内装载
+    /// 用户/项目 `lsp.json` 并做本地发现，之后复用同一快照，只有 `reload`
+    /// 才会重新读盘。
+    config: Mutex<Option<Result<Arc<config::Config>, String>>>,
     /// 保存联动与迟到诊断的受管协调器；生命周期跟随本 Registry。
     diagnostics: writethrough::Coordinator,
     /// 身份 → 客户端：同一工作区内同身份（无论配置里用哪个名字）共享一个进程。
@@ -72,23 +75,32 @@ struct Inner {
     generation: AtomicU64,
 }
 
-impl Registry {
-    /// `user_config` 是用户级 `lsp.json` 的完整路径；由 Agent 依据配置目录注入，
-    /// 不能在 Registry 内部再次读取 HOME。
-    pub fn new(cwd: PathBuf, user_config: Option<PathBuf>, settings: LspSettings) -> Self {
-        let config: Result<Arc<config::Config>, String> = if settings.enabled {
-            match config::Config::load_with(&cwd, user_config.as_deref()) {
-                Ok(config) => Ok(Arc::new(config)),
-                Err(error) => Err(format!("{error:#}")),
-            }
-        } else {
-            Ok(Arc::new(config::Config {
+impl Inner {
+    /// 读取用户/项目 `lsp.json`、合并内置定义并做本地发现。
+    ///
+    /// 首次查询或 `reload` 才执行；错误保持脱敏后的说明。
+    fn load_config(&self) -> Result<Arc<config::Config>, String> {
+        if !self.settings.enabled {
+            return Ok(Arc::new(config::Config {
                 servers: Vec::new(),
                 definitions: Vec::new(),
                 idle_timeout_ms: None,
-            }))
-        };
-        Self::assemble(cwd, settings, config, user_config)
+            }));
+        }
+        config::Config::load_with(&self.cwd, self.config_path.as_deref())
+            .map(Arc::new)
+            .map_err(|error| format!("{error:#}"))
+    }
+}
+
+impl Registry {
+    /// `user_config` 是用户级 `lsp.json` 的完整路径；由 Agent 依据配置目录注入，
+    /// 不能在 Registry 内部再次读取 HOME。
+    ///
+    /// 构造只保留发现输入（cwd、用户配置路径与 settings）：`lsp.json` 的读取、
+    /// 合并与本地发现推迟到首次查询，结果按这三项缓存到 `reload` 为止。
+    pub fn new(cwd: PathBuf, user_config: Option<PathBuf>, settings: LspSettings) -> Self {
+        Self::assemble(cwd, user_config, settings, None)
     }
 
     /// 测试入口：显式提供已经解析好的配置，且不读取任何用户级文件。
@@ -98,18 +110,18 @@ impl Registry {
         settings: LspSettings,
         config: Result<Arc<config::Config>, String>,
     ) -> Self {
-        Self::assemble(cwd, settings, config, None)
+        Self::assemble(cwd, None, settings, Some(config))
     }
 
     fn assemble(
         cwd: PathBuf,
-        settings: LspSettings,
-        config: Result<Arc<config::Config>, String>,
         config_path: Option<PathBuf>,
+        settings: LspSettings,
+        config: Option<Result<Arc<config::Config>, String>>,
     ) -> Self {
         let names = match &config {
-            Ok(config) => alias_index(config, &cwd),
-            Err(_) => HashMap::new(),
+            Some(Ok(config)) => alias_index(config, &cwd),
+            _ => HashMap::new(),
         };
         let registry = Self {
             inner: Arc::new(Inner {
@@ -163,7 +175,7 @@ impl Registry {
                         .config
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) =
-                        Err("LSP maintenance thread could not be started".into())
+                        Some(Err("LSP maintenance thread could not be started".into()))
                 }
             }
         }
@@ -213,23 +225,35 @@ impl Registry {
             .is_some()
     }
 
-    /// 当前配置；配置错误时返回同一个脱敏说明。
+    /// 当前配置；首次调用装载并做一次本地发现，之后复用同一快照。
+    /// 配置错误时返回同一个脱敏说明。
     pub(crate) fn config(&self) -> Result<Arc<config::Config>> {
-        let guard = self.inner.config.lock().unwrap_or_else(|e| e.into_inner());
-        match guard.as_ref() {
-            Ok(config) => Ok(config.clone()),
-            Err(message) => bail!("{message}"),
-        }
+        self.cached_config()
+            .map_err(|message| anyhow::anyhow!("{message}"))
     }
 
     pub(crate) fn config_error(&self) -> Option<String> {
-        self.inner
-            .config
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .err()
-            .cloned()
+        self.cached_config().err()
+    }
+
+    /// 惰性配置槽：只有首次查询与 `reload` 会读盘，并发查询共用一次装载。
+    ///
+    /// 装载成功时同步重建服务器名 → 身份的索引，使 `ensure_client` 不再依赖
+    /// 构造期解析。
+    fn cached_config(&self) -> Result<Arc<config::Config>, String> {
+        let mut slot = self.inner.config.lock().unwrap_or_else(|e| e.into_inner());
+        let state = slot.get_or_insert_with(|| {
+            let loaded = self.inner.load_config();
+            if let Ok(config) = &loaded {
+                *self.inner.names.lock().unwrap_or_else(|e| e.into_inner()) =
+                    alias_index(config, &self.inner.cwd);
+            }
+            loaded
+        });
+        match state {
+            Ok(config) => Ok(config.clone()),
+            Err(message) => Err(message.clone()),
+        }
     }
 
     pub(crate) fn definitions(&self) -> Vec<config::ServerDefinition> {
@@ -740,7 +764,7 @@ impl Registry {
             }
         }
         cleanup_result(errors)?;
-        *self.inner.config.lock().unwrap_or_else(|e| e.into_inner()) = Ok(candidate);
+        *self.inner.config.lock().unwrap_or_else(|e| e.into_inner()) = Some(Ok(candidate));
         *self.inner.names.lock().unwrap_or_else(|e| e.into_inner()) = fresh;
         self.inner
             .negative
@@ -810,6 +834,11 @@ impl Registry {
             .lifecycle
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // 没有已启动客户端时无需超时配置：也避免惰性发现被后台扫描提前触发。
+        let clients = self.started();
+        if clients.is_empty() {
+            return Ok(Vec::new());
+        }
         let Some(timeout) = self
             .config()
             .ok()
@@ -820,7 +849,7 @@ impl Registry {
         };
         let timeout = Duration::from_millis(timeout);
         let mut stopped = Vec::new();
-        for client in self.started() {
+        for client in clients {
             if client.shutdown_if_idle(timeout)? {
                 self.evict_identity(&client.identity, &client)?;
                 stopped.push(client.name.clone());

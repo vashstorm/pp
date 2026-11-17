@@ -156,7 +156,7 @@ impl Runner {
         &self,
         event: HookEvent,
         input: &Value,
-        stats_db: Option<&Path>,
+        stats: Option<&pp_stats::Database>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<HookEffect> {
@@ -219,7 +219,7 @@ impl Runner {
                             return Err(error);
                         }
                         record_stat(
-                            stats_db,
+                            stats,
                             session_file,
                             cwd,
                             event,
@@ -265,7 +265,7 @@ impl Runner {
                         || output.updated_output.is_some()
                         || !output.context.is_empty());
                 record_stat(
-                    stats_db,
+                    stats,
                     session_file,
                     cwd,
                     event,
@@ -340,7 +340,7 @@ fn merge(event: HookEvent, effect: &mut HookEffect, output: Output) {
 
 #[expect(clippy::too_many_arguments)]
 fn record_stat(
-    stats_db: Option<&Path>,
+    stats: Option<&pp_stats::Database>,
     session_file: Option<&Path>,
     cwd: &Path,
     event: HookEvent,
@@ -349,7 +349,7 @@ fn record_stat(
     modified: bool,
     duration_ms: f64,
 ) {
-    let Some(database) = stats_db else {
+    let Some(database) = stats else {
         return;
     };
     let Some(session_file) = session_file.filter(|path| !path.as_os_str().is_empty()) else {

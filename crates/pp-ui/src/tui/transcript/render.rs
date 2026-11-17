@@ -145,7 +145,7 @@ impl Transcript {
                 skip -= layout.height + 1;
                 continue;
             }
-            for line in &layout.lines {
+            for line in layout.iter() {
                 if skip >= line.height {
                     skip -= line.height;
                     continue;

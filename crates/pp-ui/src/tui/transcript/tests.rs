@@ -26,7 +26,6 @@ fn entry_text(entry: &mut TranscriptEntry, width: u16) -> String {
         .layout
         .as_ref()
         .unwrap()
-        .lines
         .iter()
         .map(|line| entry.line(line).to_string())
         .collect::<Vec<_>>()

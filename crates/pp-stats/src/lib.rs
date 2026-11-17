@@ -2,6 +2,7 @@
 mod activity;
 mod analytics;
 mod cost;
+mod database;
 mod hook;
 mod insights;
 mod maintenance;
@@ -15,6 +16,7 @@ mod store;
 mod tool;
 
 pub(crate) use cost::{CostSnapshot, RateSnapshot, Rates};
+pub use database::Database;
 pub use hook::{HookRun, HookStatus, hook};
 pub use maintenance::gc;
 pub(crate) use maintenance::maintain;
@@ -43,8 +45,9 @@ use std::{
 #[derive(Clone)]
 pub struct RequestContext {
     pub model_reference: String,
-    /// 统计库路径。生产由 [`database_path`] 解析，测试可指向临时库以免写真实 HOME。
-    pub database: PathBuf,
+    /// 统计库句柄：进程内复用一个连接，`Store::open` 失败不缓存以便下次重试；
+    /// 生产由 [`database_path`] 解析后构造，测试可指向临时库以免写真实 HOME。
+    pub database: Database,
     pub cwd: PathBuf,
     pub purpose: &'static str,
     pub session_file: Option<PathBuf>,
@@ -116,8 +119,8 @@ impl Default for Observation {
 
 /// 生产环境的统计库路径：`$HOME/.pp/stats/stats.db`。
 ///
-/// 采集入口不直接调用它——路径随 [`RequestContext::database`] 与 `link`/`tool`
-/// 参数传入，测试因此能把写入限制在临时目录。
+/// 采集入口不直接调用它——`main::run` 用它构造 [`Database`] 句柄，经 [`RequestContext`]
+/// 与 `link`/`tool`/`hook` 参数向下传递，测试因此能把写入限制在临时目录。
 pub fn database_path() -> Result<PathBuf> {
     let agent = pp_config::config::global_dir()?;
     Ok(agent

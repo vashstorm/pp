@@ -22,6 +22,17 @@ pub(super) struct Line {
 
 /// 与展示和编辑共用；CRLF 与独立 CR 都代表一个换行。
 pub(super) fn scan(source: &str) -> Vec<Line> {
+    scan_lines(source, None)
+}
+
+/// 快照路径：一次遍历同时产出行索引与标签，不再为 hash 重扫全文。
+pub(super) fn scan_with_tag(source: &str) -> (Vec<Line>, String) {
+    let mut hasher = Xxh32::new(0);
+    let lines = scan_lines(source, Some(&mut hasher));
+    (lines, finish_tag(hasher))
+}
+
+fn scan_lines(source: &str, mut hasher: Option<&mut Xxh32>) -> Vec<Line> {
     let bytes = source.as_bytes();
     let mut start = usize::from(bytes.starts_with(b"\xef\xbb\xbf")) * 3;
     let mut lines = Vec::new();
@@ -36,6 +47,17 @@ pub(super) fn scan(source: &str) -> Vec<Line> {
         } else {
             body_end + usize::from(body_end < bytes.len())
         };
+        if let Some(hasher) = hasher.as_deref_mut() {
+            // BOM 已由起始偏移跳过；标签只压缩行尾空白，与 `file_hash` 逐字节一致。
+            hasher.update(
+                source[start..body_end]
+                    .trim_end_matches([' ', '\t'])
+                    .as_bytes(),
+            );
+            if end > body_end {
+                hasher.update(b"\n");
+            }
+        }
         lines.push(Line {
             start,
             body_end,
@@ -79,6 +101,23 @@ pub(super) fn file_hash(source: &str) -> String {
                 1
             };
     }
+    finish_tag(hasher)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// 计数替身：一次快照写入只应计算一次标签。
+    static TAG_COMPUTATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn take_tag_computations() -> usize {
+    TAG_COMPUTATIONS.with(|count| count.replace(0))
+}
+
+fn finish_tag(hasher: Xxh32) -> String {
+    #[cfg(test)]
+    TAG_COMPUTATIONS.with(|count| count.set(count.get() + 1));
     format!("{:04X}", hasher.digest() & 0xffff)
 }
 
@@ -119,6 +158,22 @@ struct Entry {
     touched: u64,
 }
 
+/// 合并已读行范围；`record` 与 `extend_seen` 共用同一套区间语义。
+fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    ranges.sort_unstable_by_key(|r| r.start);
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if let Some(last) = merged.last_mut()
+            && range.start <= last.end
+        {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    merged
+}
+
 pub(super) struct Store {
     entries: HashMap<PathBuf, Entry>,
     clock: u64,
@@ -145,9 +200,12 @@ impl Store {
             entry.seen.clear();
         }
     }
+    /// 写入一份快照。`tag` 由调用方在同一次读取上算好（`file_hash`），
+    /// 这里不再重算，也不再为探测重复写入整份正文。
     pub(super) fn record(
         &mut self,
         path: PathBuf,
+        tag: &str,
         raw: Arc<str>,
         ranges: Vec<Range<usize>>,
     ) -> bool {
@@ -156,7 +214,6 @@ impl Store {
             return false;
         }
         self.clock += 1;
-        let tag = file_hash(&raw);
         let previous = self.entries.remove(&path);
         let mut collisions = previous
             .as_ref()
@@ -167,42 +224,47 @@ impl Store {
             .map(|e| e.versions.clone())
             .unwrap_or_default();
         if versions.iter().any(|(old_tag, old)| {
-            old_tag == &tag && old != &raw && hash_input(old) != hash_input(&raw)
+            old_tag == tag && old != &raw && hash_input(old) != hash_input(&raw)
         }) {
-            collisions.insert(tag.clone());
+            collisions.insert(tag.to_owned());
         }
         versions.retain(|(_, old)| old != &raw);
-        versions.insert(0, (tag.clone(), raw.clone()));
+        versions.insert(0, (tag.to_owned(), raw.clone()));
         versions.truncate(4);
         let mut seen = previous
             .filter(|e| e.active && e.raw == raw)
             .map(|e| e.seen)
             .unwrap_or_default();
         seen.extend(ranges);
-        seen.sort_unstable_by_key(|r| r.start);
-        let mut merged: Vec<Range<usize>> = Vec::new();
-        for range in seen {
-            if let Some(last) = merged.last_mut()
-                && range.start <= last.end
-            {
-                last.end = last.end.max(range.end);
-            } else {
-                merged.push(range);
-            }
-        }
-        let active = !collisions.contains(&tag);
+        let active = !collisions.contains(tag);
         self.entries.insert(
             path.clone(),
             Entry {
                 raw,
-                tag,
-                seen: merged,
+                tag: tag.to_owned(),
+                seen: merge_ranges(seen),
                 collisions,
                 versions,
                 active,
                 touched: self.clock,
             },
         );
+        self.evict();
+        active && self.entries.contains_key(&path)
+    }
+    /// `record` 已写入正文与标签；这里只补记实际展示给模型的行范围，
+    /// 不重算 hash、不重建版本链。
+    pub(super) fn extend_seen(&mut self, path: &Path, ranges: Vec<Range<usize>>) {
+        let Some(entry) = self.entries.get_mut(path) else {
+            return;
+        };
+        self.clock += 1;
+        entry.touched = self.clock;
+        let mut seen = std::mem::take(&mut entry.seen);
+        seen.extend(ranges);
+        entry.seen = merge_ranges(seen);
+    }
+    fn evict(&mut self) {
         while self.entries.len() > self.max_paths
             || self
                 .entries
@@ -222,7 +284,6 @@ impl Store {
             };
             self.entries.remove(&oldest);
         }
-        active && self.entries.contains_key(&path)
     }
     pub(super) fn validate(
         &mut self,
@@ -487,6 +548,34 @@ mod tests {
         assert_ne!(file_hash(" hello\n"), file_hash("hello\n"));
     }
 
+    #[test]
+    fn hashline_scan_with_tag_matches_separate_passes() {
+        // 合并遍历必须与既有 `scan` / `file_hash` 逐字节一致：BOM、CRLF、独立 CR、
+        // 行尾空白、无末尾换行与空正文都要覆盖。
+        for source in [
+            "",
+            "\u{feff}",
+            "hello\n",
+            "a \n b\t\r\nc",
+            "\u{feff}one\r\ntwo\rthree",
+            "trailing  \t",
+            "one\n\n\n",
+            "中文\r\n",
+        ] {
+            let (lines, tag) = scan_with_tag(source);
+            let separate = scan(source);
+            assert_eq!(tag, file_hash(source), "{source:?}");
+            assert_eq!(lines.len(), separate.len(), "{source:?}");
+            for (merged, expected) in lines.iter().zip(&separate) {
+                assert_eq!(
+                    (merged.start, merged.body_end, merged.end),
+                    (expected.start, expected.body_end, expected.end),
+                    "{source:?}"
+                );
+            }
+        }
+    }
+
     fn apply_patch(source: &str, operations: &str) -> Result<String> {
         let patch = parse(&format!("[file#A1B2]\n{operations}"))?;
         apply(source, &patch.edits)
@@ -530,28 +619,49 @@ mod tests {
         };
         let raw: Arc<str> = Arc::from("a\nb\nc\n");
         let patch = parse(&format!("[a#{}]\nCUT 1.=3", file_hash(&raw))).unwrap();
-        assert!(store.record("a".into(), raw.clone(), vec![1..2, 3..4]));
+        assert!(store.record("a".into(), &patch.tag, raw.clone(), vec![1..2, 3..4]));
         assert!(
             store
                 .validate(Path::new("a"), &patch.tag, &raw, &patch.edits)
                 .is_err()
         );
-        store.record("a".into(), raw.clone(), std::iter::once(2..3).collect());
+        store.record(
+            "a".into(),
+            &patch.tag,
+            raw.clone(),
+            std::iter::once(2..3).collect(),
+        );
         store
             .validate(Path::new("a"), &patch.tag, &raw, &patch.edits)
             .unwrap();
-        store.record("b".into(), raw.clone(), std::iter::once(1..4).collect());
+        store.record(
+            "b".into(),
+            &patch.tag,
+            raw.clone(),
+            std::iter::once(1..4).collect(),
+        );
         store
             .validate(Path::new("a"), &patch.tag, &raw, &patch.edits)
             .unwrap();
-        store.record("c".into(), raw.clone(), std::iter::once(1..4).collect());
+        store.record(
+            "c".into(),
+            &patch.tag,
+            raw.clone(),
+            std::iter::once(1..4).collect(),
+        );
         assert!(store.entries.contains_key(Path::new("a")));
         assert!(!store.entries.contains_key(Path::new("b")));
         store.max_bytes = 5;
-        assert!(!store.record("d".into(), raw.clone(), std::iter::once(1..4).collect()));
+        assert!(!store.record(
+            "d".into(),
+            &patch.tag,
+            raw.clone(),
+            std::iter::once(1..4).collect()
+        ));
         assert!(store.entries.is_empty());
         assert!(!store.record(
             "large".into(),
+            &patch.tag,
             Arc::from("x".repeat(MAX_FILE_BYTES + 1)),
             std::iter::once(1..2).collect()
         ));
@@ -570,18 +680,22 @@ mod tests {
             })
             .expect("65537 个不同文本必定碰撞四位标签");
         let mut store = Store::default();
+        let intermediate = "intermediate version\n";
         store.record(
             "file".into(),
+            &tag,
             Arc::from(first),
             std::iter::once(1..2).collect(),
         );
         store.record(
             "file".into(),
-            Arc::from("intermediate version\n"),
+            &file_hash(intermediate),
+            Arc::from(intermediate),
             std::iter::once(1..2).collect(),
         );
         assert!(!store.record(
             "file".into(),
+            &tag,
             Arc::from(second.as_str()),
             std::iter::once(1..2).collect()
         ));

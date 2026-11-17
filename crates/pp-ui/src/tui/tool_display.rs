@@ -287,6 +287,34 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
 }
 
+/// 逻辑行（丢弃末尾换行造成的空行），可双向迭代且不分配。
+fn logical_lines(text: &str) -> impl DoubleEndedIterator<Item = &str> {
+    let text = (!text.is_empty()).then(|| text.strip_suffix('\n').unwrap_or(text));
+    text.into_iter().flat_map(|text| text.split('\n'))
+}
+
+/// 与 `wrap` 行数完全一致的统计：常见日志行走长度快路径，其余逐字素换行但不保留行。
+fn wrapped_rows(line: &str, width: u16) -> usize {
+    if line.len() <= usize::from(width)
+        && line
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+    {
+        return 1;
+    }
+    let mut rows = 0;
+    visit_wrapped_rows(
+        block_line(line.to_owned(), Style::default()),
+        width,
+        "",
+        |_| {
+            rows += 1;
+            true
+        },
+    );
+    rows
+}
+
 pub(super) fn tail_output(
     text: &str,
     max_lines: usize,
@@ -296,38 +324,74 @@ pub(super) fn tail_output(
     style: Style,
     stdout_color: ratatui::style::Color,
 ) -> Vec<Line<'static>> {
-    let mut stderr = false;
-    let mut rows: Vec<_> = logical(text)
-        .into_iter()
-        .flat_map(|line| {
-            if line == "[stderr]" {
-                stderr = true;
-            }
-            let color = if stderr {
-                palette::removed()
-            } else {
-                stdout_color
-            };
-            wrap([line.to_owned()], width, style.fg(color))
-        })
-        .collect();
-    let total = rows.len();
-    let limit = max_lines.min(context.window());
-    if !expanded && total > limit {
-        rows.drain(..total - limit);
-        let marker = format!(
-            "… ({} earlier lines, showing {limit} of {total}) (Ctrl + O to expand)",
-            total - limit
-        );
-        let mut prefix = wrap(
-            [clip(&marker, usize::from(width), true)],
-            width,
-            style.fg(palette::muted()),
-        );
-        prefix.append(&mut rows);
-        rows = prefix;
+    if expanded {
+        // `[stderr]` 分隔行与其后的所有行使用错误色。
+        let mut stderr = false;
+        return logical_lines(text)
+            .flat_map(|line| {
+                if line == "[stderr]" {
+                    stderr = true;
+                }
+                let color = if stderr {
+                    palette::removed()
+                } else {
+                    stdout_color
+                };
+                wrap([line.to_owned()], width, style.fg(color))
+            })
+            .collect();
     }
-    rows
+    // 尾部预览必须先知道总行数与首个 `[stderr]` 位置：这一遍只数换行。
+    let mut lines = 0;
+    let mut marker = None;
+    for (index, line) in logical_lines(text).enumerate() {
+        lines = index + 1;
+        if marker.is_none() && line == "[stderr]" {
+            marker = Some(index);
+        }
+    }
+    // 从后往前只生成 limit 个屏幕行，头部只统计行数。
+    let limit = max_lines.min(context.window());
+    let mut rows: VecDeque<Line<'static>> = VecDeque::new();
+    let mut hidden = 0;
+    let mut index = lines;
+    for line in logical_lines(text).rev() {
+        index -= 1;
+        if rows.len() >= limit {
+            hidden += wrapped_rows(line, width);
+            continue;
+        }
+        let color = if marker.is_some_and(|marker| index >= marker) {
+            palette::removed()
+        } else {
+            stdout_color
+        };
+        let mut wrapped = wrap([line.to_owned()], width, style.fg(color));
+        // 本行最前面的屏幕行落在额度之外，只计入省略行数。
+        let overflow = (wrapped.len() + rows.len()).saturating_sub(limit);
+        if overflow > 0 {
+            hidden += overflow;
+            wrapped.drain(..overflow);
+        }
+        for row in wrapped.into_iter().rev() {
+            rows.push_front(row);
+        }
+    }
+    if hidden == 0 {
+        return rows.into_iter().collect();
+    }
+    let total = hidden + rows.len();
+    let marker = format!(
+        "… ({hidden} earlier lines, showing {} of {total}) (Ctrl + O to expand)",
+        rows.len()
+    );
+    let mut prefix = wrap(
+        [clip(&marker, usize::from(width), true)],
+        width,
+        style.fg(palette::muted()),
+    );
+    prefix.extend(rows);
+    prefix
 }
 
 fn head(

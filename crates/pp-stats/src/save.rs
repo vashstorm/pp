@@ -1,4 +1,4 @@
-use super::{Observation, Rates, RequestContext, RequestRow, Store, warn};
+use super::{Database, Observation, RequestContext, RequestRow, warn};
 use anyhow::Result;
 use std::path::Path;
 use std::time::Instant;
@@ -78,23 +78,24 @@ pub fn save(
             cost: None,
             rates: None,
         };
-        let mut store = Store::open(&context.database)?;
-        // 费用与费率在采集时按当次模型配置固定下来，读取路径不再回算。
-        let (cost, rates) = Rates::load(&store.models_path).snapshot(
-            &record.model_reference,
-            &record.model,
-            record.input_tokens,
-            record.output_tokens,
-            record.cached_tokens,
-            record.cache_write_tokens,
-        );
-        record.cost = cost;
-        record.rates = rates;
-        store.insert_with_context(
-            &record,
-            &observation.output,
-            observation.request_context.as_ref(),
-        )?;
+        // 复用进程级连接与计价快照；费用与费率仍在采集时固定，读取路径不再回算。
+        context.database.with_store_and_rates(|store, rates| {
+            let (cost, rate) = rates.snapshot(
+                &record.model_reference,
+                &record.model,
+                record.input_tokens,
+                record.output_tokens,
+                record.cached_tokens,
+                record.cache_write_tokens,
+            );
+            record.cost = cost;
+            record.rates = rate;
+            store.insert_with_context(
+                &record,
+                &observation.output,
+                observation.request_context.as_ref(),
+            )
+        })?;
         if let Some(unlinked) = &context.unlinked_requests
             && context.session_file.is_none()
         {
@@ -113,8 +114,8 @@ pub fn save(
         }
     }
 }
-pub fn link(database: &Path, key: &str, file: &Path) {
-    if (|| -> Result<()> { Store::open(database)?.link(key, file) })().is_err() {
+pub fn link(database: &Database, key: &str, file: &Path) {
+    if database.with_store(|store| store.link(key, file)).is_err() {
         warn();
     }
 }
@@ -123,7 +124,7 @@ pub fn link(database: &Path, key: &str, file: &Path) {
 mod tests {
     use super::super::fixtures::*;
     use super::*;
-    use crate::{Range, RequestSnapshot, ToolCall, ToolStatus, maintain, server};
+    use crate::{Range, RequestSnapshot, Store, ToolCall, ToolStatus, maintain, server};
     use rusqlite::params;
     use serde_json::{Value, json};
 

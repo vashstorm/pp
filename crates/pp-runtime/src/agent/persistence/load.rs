@@ -163,7 +163,7 @@ pub fn load(
         journal: SessionJournal {
             dir: dir.to_owned(),
             lock_dir: lock_dir.to_owned(),
-            stats_db: stats_db.to_owned(),
+            stats: pp_stats::Database::new(stats_db.to_owned()),
             active: Some(Active {
                 id,
                 created_at_ms,

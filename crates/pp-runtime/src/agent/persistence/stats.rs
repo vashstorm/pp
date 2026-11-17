@@ -19,7 +19,7 @@ impl SessionJournal {
         skills: &[pp_config::skills::SkillHeader],
     ) -> pp_stats::RequestContext {
         pp_stats::RequestContext {
-            database: self.stats_db.clone(),
+            database: self.stats_handle().clone(),
             model_reference: metadata.model_reference.to_owned(),
             cwd: metadata.cwd.to_owned(),
             purpose,
@@ -33,8 +33,13 @@ impl SessionJournal {
             },
         }
     }
+    /// 统计库路径；只读查询（`session_usage`／`session_cost`）与 `pp gc` 仍按路径使用。
     pub(in crate::agent) fn stats_database(&self) -> &Path {
-        &self.stats_db
+        self.stats.path()
+    }
+    /// 进程内复用的统计库句柄；请求、工具、hook 与标题共享同一个连接。
+    pub(in crate::agent) fn stats_handle(&self) -> &pp_stats::Database {
+        &self.stats
     }
     pub(in crate::agent) fn unlinked_stats(&self) -> Option<Arc<Mutex<Vec<String>>>> {
         self.id().is_none().then(|| self.unlinked_stats.clone())
@@ -51,7 +56,7 @@ impl SessionJournal {
             if !keys.is_empty() {
                 let file = self.dir.join(format!("{id}.jsonl"));
                 for key in keys {
-                    pp_stats::link(&self.stats_db, &key, &file);
+                    pp_stats::link(self.stats_handle(), &key, &file);
                 }
             }
         }
@@ -124,7 +129,7 @@ impl SessionJournal {
         };
         let file = self.dir.join(format!("{id}.jsonl"));
         pp_stats::tool(
-            &self.stats_db,
+            self.stats_handle(),
             &pp_stats::ToolCall {
                 request_key: Some(&pending.request_key),
                 session_file: &file,

@@ -86,11 +86,16 @@ impl Store {
     pub(super) fn open_with_models(path: &Path, models_path: PathBuf) -> Result<Self> {
         let dir = path.parent().context("statistics directory unavailable")?;
         DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+        let dir_metadata = fs::symlink_metadata(dir)?;
         ensure!(
-            !fs::symlink_metadata(dir)?.file_type().is_symlink(),
+            !dir_metadata.file_type().is_symlink(),
             "statistics directory must not be a symlink"
         );
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        // 权限（含 setuid／setgid／sticky 位）已经正确时不再 chmod：
+        // 稳态写入每次打开都省一次元数据写入。
+        if dir_metadata.permissions().mode() & 0o7777 != 0o700 {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        }
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -99,11 +104,11 @@ impl Store {
             .mode(0o600)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
             .open(path)?;
-        ensure!(
-            file.metadata()?.is_file(),
-            "statistics database must be a file"
-        );
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        let metadata = file.metadata()?;
+        ensure!(metadata.is_file(), "statistics database must be a file");
+        if metadata.permissions().mode() & 0o7777 != 0o600 {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(Duration::from_millis(250))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -369,6 +374,57 @@ mod tests {
             .insert(&fixture("unlocked", 1000), &Value::Null)
             .unwrap();
     }
+    #[test]
+    fn stats_open_uses_ready_schema_without_a_writer_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        let mut writer = open_store(&path).unwrap();
+        let tx = writer
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute("UPDATE requests SET project='pending'", [])
+            .unwrap();
+        // 结构齐全时打开只做只读探测：不会进入 `BEGIN IMMEDIATE`，因此不会
+        // 因为别人的写事务而 busy_timeout 失败。
+        open_store(&path).unwrap();
+        drop(tx);
+        // 写锁仍然只能有一个：同一时刻的写入照旧受限。
+        let tx = writer
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        assert!(
+            open_store(&path)
+                .unwrap()
+                .insert(&fixture("locked", 1000), &Value::Null)
+                .is_err()
+        );
+        drop(tx);
+        writer
+            .insert(&fixture("unlocked", 1000), &Value::Null)
+            .unwrap();
+    }
+
+    #[test]
+    fn stats_open_repairs_directory_and_file_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats/stats.db");
+        drop(open_store(&path).unwrap());
+        let stats_dir = path.parent().unwrap();
+        fs::set_permissions(stats_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        drop(open_store(&path).unwrap());
+        assert_eq!(
+            fs::metadata(stats_dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
     #[test]
     fn stats_symlinks_are_rejected() {
         let dir = tempfile::tempdir().unwrap();

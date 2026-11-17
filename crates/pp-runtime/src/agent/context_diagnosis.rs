@@ -2,6 +2,9 @@
 //! 按 10 个固定分类拆分统计：`System Prompt`、`Instruction Files`、`Skills`、`Built-in Tools`、
 //! `Custom Tools`、`User / Developer Messages`、`Assistant Messages`、`Assistant Thinking`、
 //! `Tool Calls` 与 `Tool Output`。
+//!
+//! 半静态分区按指纹缓存、逐条消息分类按消息身份缓存：追加消息只重算新增尾部，
+//! 整段替换历史时从头重算。缓存由 Agent 持有的 [`Snapshot`] 内 `Mutex` 保护，不使用进程级静态。
 
 mod history;
 mod sections;
@@ -19,10 +22,15 @@ use anyhow::{Result, anyhow};
 use async_openai::types::chat::{
     ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageContent,
 };
-use pp_core::{context::TokenUsage, model::ThinkLevel};
+use pp_core::context::{ContextUsage, TokenUsage};
+use pp_core::model::ThinkLevel;
 use sections::{
-    build_agent_md_items, build_skill_items, build_split_tool_items, build_system_items,
+    SectionWithRanges, SplitToolsBreakdown, build_agent_md_items, build_skill_items,
+    build_split_tool_items, build_system_items,
 };
+use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 use thinking::build_thinking_items;
 
 const MAX_PREVIEW_BYTES: usize = 64 * 1024;
@@ -113,81 +121,374 @@ pub struct DiagnosticItem {
     pub preview: String,
 }
 
+/// 流式指纹写入器：只累计字节数与哈希，不分配序列化副本。
+#[derive(Default)]
+pub(super) struct FingerprintWriter {
+    hasher: DefaultHasher,
+    bytes: u64,
+}
+
+impl FingerprintWriter {
+    /// 已写入的字节数（等于同样内容的原生 JSON 长度）。
+    pub(super) fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    pub(super) fn finish(self) -> u64 {
+        self.hasher.finish()
+    }
+
+    /// 写入一段文本：先写长度，避免相邻字段的边界歧义。
+    pub(super) fn text(&mut self, text: &str) {
+        Hasher::write(&mut self.hasher, b"t");
+        Hasher::write(&mut self.hasher, &(text.len() as u64).to_le_bytes());
+        Hasher::write(&mut self.hasher, text.as_bytes());
+        self.bytes = self.bytes.saturating_add(text.len() as u64);
+    }
+
+    pub(super) fn number(&mut self, value: u64) {
+        Hasher::write(&mut self.hasher, b"n");
+        Hasher::write(&mut self.hasher, &value.to_le_bytes());
+        self.bytes = self.bytes.saturating_add(8);
+    }
+}
+
+impl std::io::Write for FingerprintWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Hasher::write(&mut self.hasher, buf);
+        self.bytes = self.bytes.saturating_add(buf.len() as u64);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) fn hash_text(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    Hasher::write(&mut hasher, text.as_bytes());
+    hasher.finish()
+}
+
+/// 上下文诊断的缓存状态：历史分类前缀 + 半静态分区 + 思考分类。
+///
+/// 由 Agent 持有的 [`Snapshot`] 内 `Mutex` 保护；面板强制刷新与诊断失败会丢弃它。
+#[derive(Default)]
+pub(super) struct DiagnosisCache {
+    history: Option<history::HistoryState>,
+    sections: Option<(sections::SectionFingerprint, ClassifiedSections)>,
+    thinking: Option<(ThinkingKey, ThinkingSnapshot)>,
+}
+
+impl DiagnosisCache {
+    /// 丢弃全部缓存；下一次发布强制全量重算。
+    pub(super) fn invalidate(&mut self) {
+        *self = Self::default();
+    }
+}
+
+#[derive(Clone)]
+struct ClassifiedSections {
+    system: SectionWithRanges,
+    instructions: SectionWithRanges,
+    skills: SectionWithRanges,
+    tools: SplitToolsBreakdown,
+}
+
+/// 思考分类的缓存键：原生消息身份 + 已采集思考记录指纹。
+#[derive(Clone, PartialEq, Eq)]
+struct ThinkingKey {
+    items: Vec<history::MessageId>,
+    history: u64,
+}
+
+#[derive(Clone)]
+struct ThinkingSnapshot {
+    items: Vec<DiagnosticItem>,
+    tokens: u64,
+    bytes: u64,
+    count: usize,
+    in_context: bool,
+}
+
+impl ThinkingSnapshot {
+    fn capture(breakdown: &thinking::ThinkingBreakdown) -> Self {
+        Self {
+            items: breakdown.items.clone(),
+            tokens: breakdown.tokens,
+            bytes: breakdown.bytes,
+            count: breakdown.count,
+            in_context: breakdown.in_context,
+        }
+    }
+
+    fn breakdown(&self) -> thinking::ThinkingBreakdown {
+        thinking::ThinkingBreakdown {
+            items: self.items.clone(),
+            tokens: self.tokens,
+            bytes: self.bytes,
+            count: self.count,
+            in_context: self.in_context,
+        }
+    }
+}
+
+struct Classified {
+    sections: ClassifiedSections,
+    history: history::HistoryBreakdown,
+    thinking: thinking::ThinkingBreakdown,
+}
+
+/// 报告装配的入参：分类结果之外只剩本轮的用量与协议信息。
+struct ReportInputs {
+    usage: ContextUsage,
+    protocol: &'static str,
+    empty_session: bool,
+    thinking_in_context: bool,
+    categories: Vec<CategorySummary>,
+    thinking_tokens: u64,
+    thinking_turns: usize,
+}
+
 impl Agent {
-    /// 生成当前会话上下文的只读诊断报告：
+    /// 生成当前会话上下文的只读诊断报告。
+    ///
+    /// 这是强制重算入口（面板 `r` 刷新走这里），不读取也不写入任何缓存：
     /// 仅基于当前会话已发送/已恢复的真实数据统计；
     /// 尚未开始对话的空会话返回零用量及全零分类，不把未发送的配置基线计入上下文，也不创建会话日志。
     pub fn diagnose_context(&self) -> Result<ContextReport> {
-        let usage = self.context_usage()?;
-        let empty_session = usage.estimated_tokens == 0;
+        self.diagnose_context_with(&mut DiagnosisCache::default(), None)
+    }
+
+    /// 诊断发布路径：`usage` 已由调用方在本轮请求前算好时可复用，避免重复全量估算。
+    pub(super) fn diagnose_context_with(
+        &self,
+        cache: &mut DiagnosisCache,
+        usage: Option<ContextUsage>,
+    ) -> Result<ContextReport> {
+        let usage = match usage {
+            Some(usage) => usage,
+            None => self.context_usage()?,
+        };
         let protocol = match &self.session {
             Session::Completion(_) => "completion",
             Session::Response(_) => "response",
         };
         let thinking_in_context = matches!(&self.session, Session::Response(_));
 
-        if empty_session {
+        if usage.estimated_tokens == 0 {
+            // 空会话不读盘、不建缓存：零用量语义与既有一致。
+            cache.invalidate();
             let categories = CategoryKey::ALL
                 .into_iter()
-                .map(|key| CategorySummary {
-                    key,
-                    name: key.label(),
-                    tokens: 0,
-                    bytes: 0,
-                    item_count: 0,
-                    in_context: key != CategoryKey::Thinking || thinking_in_context,
-                    items: Vec::new(),
+                .map(|key| {
+                    category(
+                        key,
+                        0,
+                        0,
+                        Vec::new(),
+                        key != CategoryKey::Thinking || thinking_in_context,
+                    )
                 })
                 .collect();
-
-            return Ok(ContextReport {
-                model_reference: self.current_model.reference.clone(),
-                model_name: self.current_model.model.clone(),
+            return Ok(self.report(ReportInputs {
+                usage,
                 protocol,
-                work_mode: self.workflow.mode_name(),
-                think_level: self.think_level,
                 empty_session: true,
-                active_tokens: 0,
-                context_window: self.current_model.context_window,
-                auto_compact: self.auto_compact,
-                threshold_percent: self.auto_compact_threshold_percent,
-                last_request: self.last_request,
-                session_output_tokens: self.session_output_tokens,
-                thinking_tokens: 0,
                 thinking_in_context,
-                thinking_turns: 0,
                 categories,
-            });
+                thinking_tokens: 0,
+                thinking_turns: 0,
+            }));
         }
 
-        let actual_system = self.session_system_text().unwrap_or("");
-        let (inspected_docs, _) = self.tools.inspect_project_instructions()?;
-        let agent_md_section = build_agent_md_items(
-            self.tools.cwd(),
-            actual_system,
-            &self.reported_project_load,
-            &inspected_docs,
-        )?;
-        let (agent_md_items, agent_md_tokens, agent_md_bytes, mut excluded_ranges) = (
-            agent_md_section.items,
-            agent_md_section.tokens,
-            agent_md_section.bytes,
-            agent_md_section.ranges,
-        );
+        let classified = self.classify_context(cache)?;
+        let sections = &classified.sections;
+        let history = &classified.history;
+        let thinking = &classified.thinking;
+        let mut categories = vec![
+            category(
+                CategoryKey::System,
+                sections.system.tokens,
+                sections.system.bytes,
+                sections.system.items.clone(),
+                true,
+            ),
+            category(
+                CategoryKey::InstructionFiles,
+                sections.instructions.tokens,
+                sections.instructions.bytes,
+                sections.instructions.items.clone(),
+                true,
+            ),
+            category(
+                CategoryKey::Skills,
+                sections.skills.tokens,
+                sections.skills.bytes,
+                sections.skills.items.clone(),
+                true,
+            ),
+            category(
+                CategoryKey::BuiltInTools,
+                sections.tools.tools_tokens,
+                sections.tools.tools_bytes,
+                sections.tools.tool_items.clone(),
+                true,
+            ),
+            category(
+                CategoryKey::CustomTools,
+                sections.tools.mcp_tokens,
+                sections.tools.mcp_bytes,
+                sections.tools.mcp_items.clone(),
+                true,
+            ),
+            category(
+                CategoryKey::UserMessages,
+                history.user_messages.tokens,
+                history.user_messages.bytes,
+                history.user_messages.items.clone(),
+                true,
+            ),
+            category(
+                CategoryKey::AssistantMessages,
+                history.assistant_messages.tokens,
+                history.assistant_messages.bytes,
+                history.assistant_messages.items.clone(),
+                true,
+            ),
+            category(
+                CategoryKey::Thinking,
+                thinking.tokens,
+                thinking.bytes,
+                thinking.items.clone(),
+                thinking.in_context,
+            ),
+            category(
+                CategoryKey::ToolCalls,
+                history.tool_calls.tokens,
+                history.tool_calls.bytes,
+                history.tool_calls.items.clone(),
+                true,
+            ),
+            category(
+                CategoryKey::ToolOutput,
+                history.tool_outputs.tokens,
+                history.tool_outputs.bytes,
+                history.tool_outputs.items.clone(),
+                true,
+            ),
+        ];
 
+        // 将总占用 `Used` 按各在上下文分类的原始估算份额切分，使分类合计与 `Used` 对账一致。
+        let share_inputs: Vec<Option<u64>> = categories
+            .iter()
+            .map(|cat| cat.in_context.then_some(cat.tokens))
+            .collect();
+        let allocated = split_used_by_share(usage.estimated_tokens, &share_inputs);
+        for (cat, tokens) in categories.iter_mut().zip(allocated) {
+            if cat.in_context {
+                cat.tokens = tokens;
+            }
+        }
+
+        Ok(self.report(ReportInputs {
+            usage,
+            protocol,
+            empty_session: false,
+            thinking_in_context,
+            categories,
+            thinking_tokens: thinking.tokens,
+            thinking_turns: thinking.count,
+        }))
+    }
+
+    fn report(&self, inputs: ReportInputs) -> ContextReport {
+        let usage = inputs.usage;
+        ContextReport {
+            model_reference: self.current_model.reference.clone(),
+            model_name: self.current_model.model.clone(),
+            protocol: inputs.protocol,
+            work_mode: self.workflow.mode_name(),
+            think_level: self.think_level,
+            empty_session: inputs.empty_session,
+            active_tokens: usage.estimated_tokens,
+            context_window: usage.context_window,
+            auto_compact: usage.auto_compact,
+            threshold_percent: usage.threshold_percent,
+            last_request: usage.last_request,
+            session_output_tokens: usage.session_output_tokens,
+            thinking_tokens: inputs.thinking_tokens,
+            thinking_in_context: inputs.thinking_in_context,
+            thinking_turns: inputs.thinking_turns,
+            categories: inputs.categories,
+        }
+    }
+
+    fn classify_context(&self, cache: &mut DiagnosisCache) -> Result<Classified> {
+        let ids = history::message_ids(&self.session);
+
+        let actual_system = self.session_system_text().unwrap_or("");
         let skill_headers = self
             .tools
             .skills
             .lock()
             .map_err(|_| anyhow!("skill registry unavailable"))?
             .headers();
-        let skill_section = build_skill_items(actual_system, &skill_headers)?;
-        let (skill_items, skills_tokens, skills_bytes) = (
-            skill_section.items,
-            skill_section.tokens,
-            skill_section.bytes,
-        );
-        excluded_ranges.extend(skill_section.ranges);
+        let access = pp_mcp::Access::for_mode(self.workflow.mode);
+        let mcp_origins = self.tools.mcp.tool_origins(access);
+        let fingerprint =
+            sections::SectionFingerprint::of(self, actual_system, &skill_headers, &mcp_origins);
+        let sections = match &cache.sections {
+            Some((key, sections)) if *key == fingerprint => sections.clone(),
+            _ => {
+                let built = self.build_sections(actual_system, &skill_headers, &mcp_origins)?;
+                cache.sections = Some((fingerprint, built.clone()));
+                built
+            }
+        };
+
+        let history = self.inspect_history_cached(&mut cache.history, &ids)?;
+
+        let thinking_key = ThinkingKey {
+            items: match &self.session {
+                Session::Response(_) => ids,
+                Session::Completion(_) => Vec::new(),
+            },
+            history: thinking_history_fingerprint(&self.thinking_history),
+        };
+        let thinking = match &cache.thinking {
+            Some((key, snapshot)) if *key == thinking_key => snapshot.breakdown(),
+            _ => {
+                let built = build_thinking_items(&self.session, &self.thinking_history)?;
+                cache.thinking = Some((thinking_key, ThinkingSnapshot::capture(&built)));
+                built
+            }
+        };
+
+        Ok(Classified {
+            sections,
+            history,
+            thinking,
+        })
+    }
+
+    fn build_sections(
+        &self,
+        actual_system: &str,
+        skill_headers: &[pp_config::skills::SkillHeader],
+        mcp_origins: &BTreeMap<String, (String, String)>,
+    ) -> Result<ClassifiedSections> {
+        let (inspected_docs, _) = self.tools.inspect_project_instructions()?;
+        let agent_md = build_agent_md_items(
+            self.tools.cwd(),
+            actual_system,
+            &self.reported_project_load,
+            &inspected_docs,
+        )?;
+        let skill_section = build_skill_items(actual_system, skill_headers)?;
+        let mut excluded_ranges = agent_md.ranges.clone();
+        excluded_ranges.extend(skill_section.ranges.iter().copied());
 
         let workflow_text = crate::subagent::catalog::workflow_instructions(&self.workflow);
         let (base_title, base_subtitle, base_text, runtime_text, append_part) =
@@ -230,136 +531,18 @@ impl Agent {
             &excluded_ranges,
         )?;
 
-        let access = pp_mcp::Access::for_mode(self.workflow.mode);
-        let mcp_origins = self.tools.mcp.tool_origins(access);
-        let split_tools = build_split_tool_items(&self.session, &mcp_origins)?;
+        let split_tools = build_split_tool_items(&self.session, mcp_origins)?;
 
-        let history = self.inspect_history()?;
-        let thinking = build_thinking_items(&self.session, &self.thinking_history)?;
-        let active_tokens = usage.estimated_tokens;
-
-        let mut categories = vec![
-            CategorySummary {
-                key: CategoryKey::System,
-                name: CategoryKey::System.label(),
+        Ok(ClassifiedSections {
+            system: SectionWithRanges {
+                items: system_items,
                 tokens: system_tokens,
                 bytes: system_bytes,
-                item_count: system_items.len(),
-                in_context: true,
-                items: system_items,
+                ranges: Vec::new(),
             },
-            CategorySummary {
-                key: CategoryKey::InstructionFiles,
-                name: CategoryKey::InstructionFiles.label(),
-                tokens: agent_md_tokens,
-                bytes: agent_md_bytes,
-                item_count: agent_md_items.len(),
-                in_context: true,
-                items: agent_md_items,
-            },
-            CategorySummary {
-                key: CategoryKey::Skills,
-                name: CategoryKey::Skills.label(),
-                tokens: skills_tokens,
-                bytes: skills_bytes,
-                item_count: skill_items.len(),
-                in_context: true,
-                items: skill_items,
-            },
-            CategorySummary {
-                key: CategoryKey::BuiltInTools,
-                name: CategoryKey::BuiltInTools.label(),
-                tokens: split_tools.tools_tokens,
-                bytes: split_tools.tools_bytes,
-                item_count: split_tools.tool_items.len(),
-                in_context: true,
-                items: split_tools.tool_items,
-            },
-            CategorySummary {
-                key: CategoryKey::CustomTools,
-                name: CategoryKey::CustomTools.label(),
-                tokens: split_tools.mcp_tokens,
-                bytes: split_tools.mcp_bytes,
-                item_count: split_tools.mcp_items.len(),
-                in_context: true,
-                items: split_tools.mcp_items,
-            },
-            CategorySummary {
-                key: CategoryKey::UserMessages,
-                name: CategoryKey::UserMessages.label(),
-                tokens: history.user_messages.tokens,
-                bytes: history.user_messages.bytes,
-                item_count: history.user_messages.items.len(),
-                in_context: true,
-                items: history.user_messages.items,
-            },
-            CategorySummary {
-                key: CategoryKey::AssistantMessages,
-                name: CategoryKey::AssistantMessages.label(),
-                tokens: history.assistant_messages.tokens,
-                bytes: history.assistant_messages.bytes,
-                item_count: history.assistant_messages.items.len(),
-                in_context: true,
-                items: history.assistant_messages.items,
-            },
-            CategorySummary {
-                key: CategoryKey::Thinking,
-                name: CategoryKey::Thinking.label(),
-                tokens: thinking.tokens,
-                bytes: thinking.bytes,
-                item_count: thinking.items.len(),
-                in_context: thinking.in_context,
-                items: thinking.items,
-            },
-            CategorySummary {
-                key: CategoryKey::ToolCalls,
-                name: CategoryKey::ToolCalls.label(),
-                tokens: history.tool_calls.tokens,
-                bytes: history.tool_calls.bytes,
-                item_count: history.tool_calls.items.len(),
-                in_context: true,
-                items: history.tool_calls.items,
-            },
-            CategorySummary {
-                key: CategoryKey::ToolOutput,
-                name: CategoryKey::ToolOutput.label(),
-                tokens: history.tool_outputs.tokens,
-                bytes: history.tool_outputs.bytes,
-                item_count: history.tool_outputs.items.len(),
-                in_context: true,
-                items: history.tool_outputs.items,
-            },
-        ];
-
-        // 将总占用 `Used` 按各在上下文分类的原始估算份额切分，使分类合计与 `Used` 对账一致。
-        let share_inputs: Vec<Option<u64>> = categories
-            .iter()
-            .map(|cat| cat.in_context.then_some(cat.tokens))
-            .collect();
-        let allocated = split_used_by_share(active_tokens, &share_inputs);
-        for (cat, tokens) in categories.iter_mut().zip(allocated) {
-            if cat.in_context {
-                cat.tokens = tokens;
-            }
-        }
-
-        Ok(ContextReport {
-            model_reference: self.current_model.reference.clone(),
-            model_name: self.current_model.model.clone(),
-            protocol,
-            work_mode: self.workflow.mode_name(),
-            think_level: self.think_level,
-            empty_session,
-            active_tokens,
-            context_window: self.current_model.context_window,
-            auto_compact: self.auto_compact,
-            threshold_percent: self.auto_compact_threshold_percent,
-            last_request: self.last_request,
-            session_output_tokens: self.session_output_tokens,
-            thinking_tokens: thinking.tokens,
-            thinking_in_context: thinking.in_context,
-            thinking_turns: thinking.count,
-            categories,
+            instructions: agent_md,
+            skills: skill_section,
+            tools: split_tools,
         })
     }
 
@@ -375,6 +558,34 @@ impl Agent {
             Session::Response(request) => request.instructions.as_deref(),
         }
     }
+}
+
+fn category(
+    key: CategoryKey,
+    tokens: u64,
+    bytes: u64,
+    items: Vec<DiagnosticItem>,
+    in_context: bool,
+) -> CategorySummary {
+    CategorySummary {
+        key,
+        name: key.label(),
+        tokens,
+        bytes,
+        item_count: items.len(),
+        in_context,
+        items,
+    }
+}
+
+fn thinking_history_fingerprint(history: &[ThinkingEntry]) -> u64 {
+    let mut writer = FingerprintWriter::default();
+    writer.number(history.len() as u64);
+    for entry in history {
+        writer.text(&entry.thinking);
+        writer.text(&entry.summary);
+    }
+    writer.finish()
 }
 
 fn split_used_by_share(used: u64, raw_tokens: &[Option<u64>]) -> Vec<u64> {

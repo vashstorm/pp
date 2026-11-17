@@ -443,3 +443,72 @@ fn lsp_diagnostics_malformed_pull_never_clean() {
         cleanup.stop().unwrap();
     }
 }
+
+/// 惰性项目只依赖根标记与 PATH 上的命令：发现不启动任何进程。
+fn lazy_project() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("marker.toml"), "").unwrap();
+    dir
+}
+
+fn write_lazy_config(dir: &Path, name: &str) {
+    std::fs::write(
+        dir.join("lsp.json"),
+        format!(
+            "{{\"servers\":{{\"{name}\":{{\"command\":\"python3\",\"fileTypes\":[\".fake\"],\"rootMarkers\":[\"marker.toml\"]}}}}}}"
+        ),
+    )
+    .unwrap();
+}
+
+fn discovered_names(registry: &Registry) -> Vec<String> {
+    registry
+        .discovered()
+        .into_iter()
+        .map(|server| server.name)
+        .collect()
+}
+
+#[test]
+fn lsp_registry_discovers_on_first_query_then_keeps_the_snapshot() {
+    let dir = lazy_project();
+    let config_path = dir.path().join("lsp.json");
+    write_lazy_config(dir.path(), "alpha");
+    let registry = Registry::new(
+        dir.path().to_path_buf(),
+        Some(config_path.clone()),
+        LspSettings::default(),
+    );
+    // 构造不读盘：首次查询看到的是构造之后写入的内容。
+    write_lazy_config(dir.path(), "beta");
+    assert_eq!(discovered_names(&registry), vec!["beta".to_owned()]);
+    // 首次查询后快照冻结：磁盘变化只由 reload 采纳。
+    write_lazy_config(dir.path(), "gamma");
+    assert_eq!(discovered_names(&registry), vec!["beta".to_owned()]);
+    registry.reload_config().unwrap();
+    assert_eq!(discovered_names(&registry), vec!["gamma".to_owned()]);
+    registry.stop_all().unwrap();
+}
+
+#[test]
+fn lsp_registry_first_query_loads_config_and_starts_server() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".pp")).unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lsp_server.py");
+    let log = dir.path().join("requests.jsonl");
+    std::fs::write(
+        dir.path().join(".pp/lsp.json"),
+        json!({"servers": {"fixture": {
+            "command":"python3", "args":[script, "--log", log], "fileTypes":[".fixture"], "rootMarkers":[".pp"]
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    let registry = Registry::new(dir.path().to_path_buf(), None, LspSettings::default());
+    let mut cleanup = registry.cleanup();
+    let client = ensure(&registry);
+    assert!(!client.is_closed());
+    assert!(Arc::ptr_eq(&registry.client("fixture").unwrap(), &client));
+    assert_eq!(starts(dir.path()), 1);
+    cleanup.stop().unwrap();
+}

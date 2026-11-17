@@ -3,7 +3,10 @@
 use brush_core::ManagedGroup;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Condvar, Mutex, Weak},
+    sync::{
+        Arc, Condvar, Mutex, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Instant,
 };
 
@@ -13,6 +16,30 @@ use super::process::ProcessRecord;
 pub(super) struct Shared {
     pub(super) state: Mutex<State>,
     pub(super) wake: Condvar,
+    /// monitor 唤醒计数：每次触发唤醒都会递增。monitor 用它区分“被事件唤醒”
+    /// 与“轮询超时”，从而在状态变化后回到 5ms 基线而不是继续退避。
+    generation: AtomicU64,
+}
+
+impl Shared {
+    pub(super) fn new(deadline: Option<Instant>) -> Self {
+        Self {
+            state: Mutex::new(State::new(deadline)),
+            wake: Condvar::new(),
+            generation: AtomicU64::new(0),
+        }
+    }
+
+    /// 唤醒 monitor 并记下一次状态变化事件（新注册、显式停止、解释器结束、
+    /// 进程组租约释放）。只递增原子计数并唤醒条件变量，不取注册表锁。
+    pub(super) fn notify(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
+        self.wake.notify_all();
+    }
+
+    pub(super) fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +132,7 @@ impl ManagedGroup for GroupLease {
 impl Drop for GroupLease {
     fn drop(&mut self) {
         if let Some(shared) = self.shared.upgrade() {
-            shared.wake.notify_all();
+            shared.notify();
         }
     }
 }

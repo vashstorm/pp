@@ -108,7 +108,9 @@ impl Read for FileReader {
                             !source.contains('\0'),
                             "read requires text or a supported image"
                         );
-                        let lines = crate::tools::hashline::scan(source);
+                        // 一次遍历同时得到行索引与标签：tail 范围直接复用行数，
+                        // 不再为 hash 或分页行数第二次扫描全文。
+                        let (lines, tag) = crate::tools::hashline::scan_with_tag(source);
                         let ranges = target.resolved_ranges(|| Ok(lines.len()))?;
                         let mut value = page_text(
                             &target,
@@ -156,11 +158,10 @@ impl Read for FileReader {
                                     ..range["end"].as_u64().expect("结束行") as usize + 1
                             })
                             .collect();
-                        let tag = crate::tools::hashline::file_hash(source);
                         let display = key.to_string_lossy();
                         let encodable = !display.contains(['[', ']', '\r', '\n']);
                         let registered = encodable
-                            && store.record(key.clone(), std::sync::Arc::from(source), seen);
+                            && store.record(key.clone(), &tag, std::sync::Arc::from(source), seen);
                         if registered {
                             let header = format!("[{display}#{tag}]");
                             value["content"] = serde_json::json!(format!(
@@ -188,6 +189,7 @@ impl Read for FileReader {
                 );
             }
         }
+        // 纯文本回退路径没有已知行数：只有 tail 选择器才需要重开文件统计行数。
         let ranges = target.resolved_ranges(|| count_lines(BufReader::new(open(&local)?)))?;
         let mut value = page_text(
             &target,
@@ -219,4 +221,51 @@ pub fn open(path: &Path) -> Result<std::fs::File> {
 
 pub(super) fn read(path: &Path, offset: usize, limit: usize, max_bytes: usize) -> Result<Page> {
     read_from(BufReader::new(open(path)?), offset, limit, max_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::run_with_snapshots;
+    use crate::tools::hashline;
+    use pp_config::config::{EditMode, ToolLimits};
+    use pp_core::cancellation::CancellationToken;
+    use pp_workspace::save::Workspace;
+    use std::path::Path;
+
+    #[test]
+    fn hashline_read_tags_disk_bytes_with_one_computation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("file"), "hello\n").unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        let workspace = Workspace::open(&cwd).unwrap();
+        let mut store = hashline::Store::default();
+        hashline::take_tag_computations();
+        let value = run_with_snapshots(
+            "file",
+            &cwd,
+            ToolLimits::default(),
+            EditMode::Hashline,
+            &pp_config::skills::Skills::default().shared(),
+            &mut crate::tools::read::WebCache::default(),
+            Some((&workspace, &mut store)),
+            &mut |_, _| unreachable!(),
+            &CancellationToken::new(),
+        )
+        .unwrap()
+        .value;
+        // 上游向量：file_hash("hello\n") == 5BF9。行索引与标签共用一次遍历，只算一次。
+        assert_eq!(
+            value["content"].as_str().unwrap(),
+            "[file#5BF9]\n1:hello\n",
+            "{value}"
+        );
+        assert_eq!(hashline::take_tag_computations(), 1, "{value}");
+        // 快照正文就是磁盘当前字节。
+        let shown = hashline::parse("[file#5BF9]\nCUT 1.=1").unwrap();
+        assert!(
+            store
+                .validate(Path::new("file"), "5BF9", "hello\n", &shown.edits)
+                .is_ok()
+        );
+    }
 }

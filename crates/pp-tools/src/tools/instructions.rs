@@ -1,10 +1,11 @@
 //! 项目规则的工具接入；复用保存层路径校验，不扩展任何读写权限。
 use super::*;
 use crate::project_instructions::{Document, InspectedDocument, State};
+use std::sync::Arc;
 
 impl Tools {
     pub fn inspect_project_instructions(&self) -> Result<(Vec<InspectedDocument>, String)> {
-        if let Some(state) = self.project_instructions.borrow().as_ref() {
+        if let Some(state) = self.project_instructions.borrow_mut().as_mut() {
             state.inspect()
         } else {
             State::new(&self.cwd).inspect()
@@ -20,23 +21,26 @@ impl Tools {
         *self.project_instructions.borrow_mut() = Some(state);
     }
 
-    pub fn project_documents(&self) -> Result<Vec<Document>> {
+    /// 当前规则快照；未变化时共享上一份，不复制正文。
+    pub fn project_documents(&self) -> Result<Arc<[Document]>> {
         let mut state = self.project_instructions.borrow_mut();
-        state.get_or_insert_with(|| State::new(&self.cwd)).refresh()
+        state
+            .get_or_insert_with(|| State::new(&self.cwd))
+            .refresh_shared()
     }
 
     /// 只读读取指定历史路径的活跃 `AGENTS.md` 链与范围摘要，不改变当前工具状态。
     pub fn preview_project_documents(
         &self,
         paths: impl IntoIterator<Item = PathBuf>,
-    ) -> Result<(Vec<Document>, String)> {
+    ) -> Result<(Arc<[Document]>, String)> {
         let mut state = State::new(&self.cwd);
         for path in paths {
             if let Some(parent) = path.parent() {
                 state.remember(parent.to_owned());
             }
         }
-        let docs = state.refresh()?;
+        let docs = state.refresh_shared()?;
         let scope = state.scope_summary();
         Ok((docs, scope))
     }

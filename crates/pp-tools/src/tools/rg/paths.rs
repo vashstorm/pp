@@ -41,6 +41,17 @@ fn glob(pattern: &str) -> Result<GlobMatcher> {
 fn glob_path(path: &str) -> bool {
     path.contains(['*', '?', '[', '{'])
 }
+
+/// 遍历剪枝：普通 entry 走词法快路径；symlink 与无法取得类型的 entry 取规范化
+/// 结果，避免链接指向拒绝根时被词法前缀误放行（`follow_links(false)` 已保证
+/// 不跨越目录链接）。
+fn sandbox_denied_entry(sandbox: &pp_sandbox::Sandbox, entry: &ignore::DirEntry) -> bool {
+    match entry.file_type() {
+        Some(kind) if !kind.is_symlink() => sandbox.is_read_denied(entry.path()),
+        _ => sandbox.is_read_denied_resolved(entry.path()),
+    }
+}
+
 fn split_top_level(input: &str, delimiter: u8) -> Vec<&str> {
     let bytes = input.as_bytes();
     let mut result = Vec::new();
@@ -298,7 +309,7 @@ pub(super) fn parse_paths(
                 let path = entry.path();
                 if filter_sandbox
                     .as_ref()
-                    .is_some_and(|sbx| sbx.is_read_denied(path))
+                    .is_some_and(|sbx| sandbox_denied_entry(sbx, entry))
                 {
                     return false;
                 }
@@ -391,4 +402,69 @@ pub(super) fn parse_paths(
             .next()
             .is_some_and(|target| target.explicit);
     Ok((targets.into_values().collect(), single, missing))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pp_config::config::{SandboxMode, SandboxSettings};
+    use pp_sandbox::{ProbeResult, Sandbox};
+
+    fn denied(entries: &[ignore::DirEntry], sandbox: &Sandbox, name: &str) -> bool {
+        entries
+            .iter()
+            .find(|entry| entry.file_name() == name)
+            .map(|entry| sandbox_denied_entry(sandbox, entry))
+            .unwrap_or_else(|| panic!("missing walk entry {name}"))
+    }
+
+    #[test]
+    fn rg_sandbox_prunes_symlinks_into_deny_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::write(home.join(".ssh/id_rsa"), "secret\n").unwrap();
+        std::fs::write(home.join("public.txt"), "public\n").unwrap();
+        std::fs::write(root.join("a.rs"), "needle\n").unwrap();
+        std::os::unix::fs::symlink(home.join(".ssh"), root.join("secret-link")).unwrap();
+        std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), root.join("dangling")).unwrap();
+
+        let sandbox = Sandbox::with_probe_for_test(
+            SandboxSettings {
+                mode: SandboxMode::WorkspaceWrite,
+                ..Default::default()
+            },
+            &root,
+            Some(&home),
+            None,
+            ProbeResult::Available,
+        );
+        let entries: Vec<ignore::DirEntry> = ignore::WalkBuilder::new(&root)
+            .hidden(false)
+            .follow_links(false)
+            .require_git(false)
+            .build()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.depth() > 0)
+            .collect();
+
+        // 普通 entry 不得被词法误杀；拒绝根祖先目录仍可继续遍历。
+        assert!(!denied(&entries, &sandbox, "a.rs"));
+        assert!(!denied(&entries, &sandbox, "public.txt"));
+        assert!(!denied(&entries, &sandbox, "home"));
+        // symlink 与悬空链接必须取规范化结果并仍被拒绝。
+        let secret_link = entries
+            .iter()
+            .find(|entry| entry.file_name() == "secret-link")
+            .unwrap();
+        assert!(
+            secret_link
+                .file_type()
+                .is_some_and(|kind| kind.is_symlink()),
+            "fixture 必须是 symlink entry"
+        );
+        assert!(denied(&entries, &sandbox, "secret-link"));
+        assert!(denied(&entries, &sandbox, "dangling"));
+    }
 }

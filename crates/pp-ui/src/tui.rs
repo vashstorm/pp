@@ -126,8 +126,10 @@ pub fn run(
     // 初始化中途失败和 panic 同样恢复终端模式。
     let _guard = TerminalGuard;
     surface::initialize().context("initializing terminal")?;
+    pp_core::logging::perf::mark("surface_ready");
     // 能力探测独占 stdin，必须在 crossterm 首次读取事件之前完成。
     let (picker, mut initial_events, pending_reply) = image_terminal::detect();
+    pp_core::logging::perf::mark("image_probe_ready");
     // tmux 默认以 xterm modifyOtherKeys 编码回报扩展按键，这里接管 fd 0 把它
     // 翻译成 crossterm 支持的 CSI-u；探测结束后安装，避免争抢原始终端。
     input_shim::install(pending_reply).context("installing input translator")?;
@@ -142,6 +144,7 @@ pub fn run(
         .as_ref()
         .map(|bootstrap| bootstrap.dir.join("settings.yml"));
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, history_path)?;
+    pp_core::logging::perf::mark("app_ready");
     app.apply_appearance(options.theme, options.icons);
     app.theme = options.theme;
     app.icons = options.icons;
@@ -180,6 +183,7 @@ pub fn run(
     let mut generation = app.conversation.native_generation();
     let mut rebuilding_history = true;
     let mut clock = frame_clock::FrameClock::new(options.max_fps);
+    let mut first_frame = false;
     loop {
         // 先采纳已经到达的后台结果，再用最新状态解释下一批按键。
         dirty |= app.receive();
@@ -265,6 +269,10 @@ pub fn run(
                 false,
             )
             .context("drawing terminal")?;
+            if !first_frame {
+                first_frame = true;
+                pp_core::logging::perf::mark("first_frame");
+            }
         }
         let wait = if dirty {
             clock
@@ -290,6 +298,21 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// 主屏幕和原生历史提交共用的几何结果，TODO 永远不进入对话 viewport。
+pub(in crate::tui) struct MainLayout {
+    pub(in crate::tui) conversation: Rect,
+    todo: Rect,
+    subagents: Rect,
+    ask: Rect,
+    activity: Rect,
+    // 自动重试固定信息框；始终位于输入框上方，不进入对话区。
+    retry: Rect,
+    pub(in crate::tui) input: Rect,
+    attachments: Rect,
+    status: Rect,
+    bordered: bool,
+}
+
 fn paint_surface(
     app: &mut App,
     context: &StatusContext,
@@ -310,8 +333,10 @@ fn paint_surface(
     }
     let alternate = !exiting && app.needs_alternate();
     app.native_render = !alternate;
+    // 输入框与面板排版每帧只做一次：原生批次与整帧绘制共用同一几何结果。
+    let layout = (!alternate).then(|| app.main_layout(area));
     if !alternate {
-        let conversation_height = app.main_layout(area).conversation.height;
+        let conversation_height = layout.as_ref().expect("native layout").conversation.height;
         loop {
             let Some(batch) =
                 app.conversation
@@ -328,11 +353,7 @@ fn paint_surface(
                 break;
             };
             app.conversation.preview_native_batch(&batch);
-            let mut rendered = None;
-            canvas.draw(|frame| {
-                app.draw(frame, context);
-                rendered = Some(frame.buffer_mut().clone());
-            })?;
+            let rendered = draw_frame(app, canvas, context, layout.as_ref(), exiting)?;
             let buffer = if exiting {
                 app.normal_snapshot.as_ref().expect("normal frame")
             } else {
@@ -348,11 +369,7 @@ fn paint_surface(
             }
         }
     }
-    let mut rendered = None;
-    canvas.draw(|frame| {
-        app.draw(frame, context);
-        rendered = Some(frame.buffer_mut().clone());
-    })?;
+    let rendered = draw_frame(app, canvas, context, layout.as_ref(), exiting)?;
     let cursor = (canvas.backend().cursor_visible() && (alternate || !*rebuilding_history))
         .then(|| canvas.backend().cursor_position());
     let buffer = if exiting {
@@ -362,6 +379,24 @@ fn paint_surface(
     };
     surface.paint_images(buffer, cursor, alternate, &[], &app.image_view.graphics)?;
     Ok(false)
+}
+
+/// 绘制一帧：退出路径写入整帧快照，其余路径只保留一份拷贝。
+fn draw_frame(
+    app: &mut App,
+    canvas: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    context: &StatusContext,
+    layout: Option<&MainLayout>,
+    exiting: bool,
+) -> Result<Option<Buffer>> {
+    let mut rendered = None;
+    canvas.draw(|frame| {
+        app.draw_with_layout(frame, context, layout, exiting);
+        if !exiting {
+            rendered = Some(frame.buffer_mut().clone());
+        }
+    })?;
+    Ok(rendered)
 }
 
 #[derive(Clone, Copy)]

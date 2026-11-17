@@ -8,6 +8,7 @@ use super::{
         self, RequestUpdate, TurnOutcome, TurnResources, append_developer_to, completion_turn,
         response_input, response_turn,
     },
+    usage::SessionEstimate,
 };
 use anyhow::{Result, bail};
 use async_openai::types::chat::ChatCompletionRequestMessage;
@@ -43,6 +44,8 @@ impl Agent {
         let mut stop_hook_active = false;
         let mut stop_continues = 0u8;
         let mut cached_usage: Option<pp_core::context::ContextUsage> = None;
+        // 本次任务运行的增量用量记账：只有新增消息会被序列化，整段替换历史时显式失效。
+        let mut estimate = SessionEstimate::default();
         loop {
             self.journal.check()?;
             self.ensure_subagents()?;
@@ -62,6 +65,8 @@ impl Agent {
             }
             if self.apply_runtime_models_changed()? {
                 cached_usage = None;
+                // 切模型可能跨协议重建历史，旧的手工累计不再对应原生请求。
+                estimate.invalidate();
             }
             plan_sync::sync_plan_todos(
                 &self.tools,
@@ -72,6 +77,8 @@ impl Agent {
             )?;
             if self.refresh_instructions_changed()? {
                 cached_usage = None;
+                // 系统提示词就地重写首条消息，字节数必须重新累计。
+                estimate.invalidate();
             }
             if self.receive_lsp_diagnostics(emit)? {
                 cached_usage = None;
@@ -88,7 +95,7 @@ impl Agent {
             }
             let usage = match cached_usage.take() {
                 Some(usage) => usage,
-                None => self.context_usage()?,
+                None => self.context_usage_cached(&mut estimate)?,
             };
             emit(AgentEvent::ContextUpdated { usage });
             let should_compact = usage.auto_compact
@@ -101,6 +108,8 @@ impl Agent {
                 // quota checks can fail. Never journal the temporary summary.
                 self.persist_pending_input(user.take())?;
                 self.compact_impl(true, cancellation, emit)?;
+                // 压缩整段替换历史，下一次估算必须全量重算。
+                estimate.invalidate();
                 cancellation::check(cancellation)?;
                 // 摘要期间文件也可能被修改；重新加载、估算并检查阈值后再发普通请求。
                 continue;
@@ -123,6 +132,8 @@ impl Agent {
                 debug::DebugState::warn_unavailable();
                 self.debug = None;
             }
+            // 本轮请求前的用量已在本轮入口算好，诊断发布直接复用，避免重复全量估算。
+            let mut published_usage = Some(usage);
             if let Some(binding) = &self.subagent
                 && binding.depth > 0
             {
@@ -134,9 +145,11 @@ impl Agent {
                 }
                 if budget > 0 && request_count == budget {
                     append_developer_to(&mut self.session,"Request budget reached. Finish your current work and return the partial findings now.".into());
+                    // 历史在用量估算之后变化，发布路径必须重新估算。
+                    published_usage = None;
                 }
             }
-            self.publish_context_snapshot();
+            self.publish_context_snapshot_with_usage(published_usage);
             request_count += 1;
             emit(AgentEvent::AssistantStarted);
             let update = RequestUpdate {
@@ -177,6 +190,8 @@ impl Agent {
                     if self.activate_fallback(emit)? {
                         claim_boundary = false;
                         request_count -= 1;
+                        // 备用模型可能换协议并重建历史。
+                        estimate.invalidate();
                         continue;
                     }
                     return Err(error);
@@ -186,11 +201,14 @@ impl Agent {
             self.pending_instructions = None;
             self.journal.commit((&self.session).into())?;
             self.tools.commit_wait_results()?;
-            self.apply_runtime_models()?;
+            if self.apply_runtime_models_changed()? {
+                // 与循环入口相同：切模型后历史可能已被跨协议重建。
+                estimate.invalidate();
+            }
             if plan_dirty {
                 self.refresh_plan_progress(emit)?;
             }
-            let usage = self.context_usage()?;
+            let usage = self.context_usage_cached(&mut estimate)?;
             emit(AgentEvent::ContextUpdated { usage });
             cached_usage = Some(usage);
             if self.tools.yielded.borrow().is_some() {

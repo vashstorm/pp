@@ -372,7 +372,7 @@ fn native_client_mock_requests_do_not_persist_stats_or_model_usage() {
     client.set_stats_context(pp_stats::RequestContext {
         model_reference: "mock-root/primary".into(),
         cwd: dir.path().to_path_buf(),
-        database: dir.path().join("stats/stats.db"),
+        database: pp_stats::Database::new(dir.path().join("stats/stats.db")),
         purpose: "agent",
         session_file: None,
         unlinked_requests: None,

@@ -147,7 +147,22 @@ impl Skills {
     }
 
     pub fn from_dir(dir: &Path) -> Self {
-        let mut skills = Self {
+        let mut skills = Self::rooted(dir);
+        if let Err(error) = skills.reload() {
+            skills.diagnostics.push(format!("{error:#}"));
+        }
+        skills
+    }
+
+    /// 启动期入口：复用调用方已解析并校验的 `settings.yml` 快照发现技能。
+    ///
+    /// 发现逻辑与 [`Self::from_dir`] 完全一致，区别只在于不再重复读取、解析同一份配置。
+    pub fn from_settings(settings: &config::Settings, dir: &Path) -> Self {
+        Self::rooted(dir).discover(settings)
+    }
+
+    fn rooted(dir: &Path) -> Self {
+        Self {
             settings_path: dir.join("settings.yml"),
             home: dir
                 .parent()
@@ -155,11 +170,7 @@ impl Skills {
                 .unwrap_or(dir)
                 .to_path_buf(),
             ..Self::default()
-        };
-        if let Err(error) = skills.reload() {
-            skills.diagnostics.push(format!("{error:#}"));
         }
-        skills
     }
 
     fn resolve(&self, input: &str) -> PathBuf {
@@ -182,12 +193,16 @@ impl Skills {
 
     pub fn reload(&mut self) -> Result<()> {
         let settings = config::read_settings(&self.settings_path)?;
-        *self = self.discover(settings);
+        *self = self.discover(&settings);
         Ok(())
     }
 
-    fn discover(&self, settings: config::Settings) -> Self {
-        let disabled: HashSet<_> = settings.disabled_skills.into_iter().collect();
+    fn discover(&self, settings: &config::Settings) -> Self {
+        let disabled: HashSet<&str> = settings
+            .disabled_skills
+            .iter()
+            .map(String::as_str)
+            .collect();
         let mut next = Self {
             settings_path: self.settings_path.clone(),
             home: self.home.clone(),
@@ -201,7 +216,8 @@ impl Skills {
         let mut files = HashSet::new();
         let roots = settings
             .skill_dirs
-            .into_iter()
+            .iter()
+            .cloned()
             .chain(
                 next.sources
                     .iter()
@@ -232,7 +248,7 @@ impl Skills {
                         );
                     }
                     Ok(Some(Skill {
-                        enabled: !disabled.contains(&meta.name),
+                        enabled: !disabled.contains(meta.name.as_str()),
                         name: meta.name,
                         description: meta.description,
                         path,
@@ -406,7 +422,7 @@ impl Skills {
     pub fn preview(&self, selection: &Selection) -> Result<Self> {
         let mut settings = config::read_settings(&self.settings_path)?;
         Self::apply_selection(&mut settings, selection);
-        Ok(self.discover(settings))
+        Ok(self.discover(&settings))
     }
 
     pub fn save_management(&mut self, selection: &Selection) -> Result<()> {
@@ -423,7 +439,7 @@ impl Skills {
                     serde_yaml::to_value(&settings.disabled_skills)?,
                 ),
             ];
-            next = Some(self.discover(settings));
+            next = Some(self.discover(&settings));
             Ok(fields)
         })?;
         *self = next.context("Skill selection was not prepared")?;
@@ -438,7 +454,7 @@ impl Skills {
                 settings.skill_sources.push(source);
             }
             let value = serde_yaml::to_value(&settings.skill_sources)?;
-            next = Some(self.discover(settings));
+            next = Some(self.discover(&settings));
             Ok(("skill_sources", value))
         })?;
         *self = next.context("Skill source selection was not prepared")?;
@@ -806,5 +822,27 @@ mod tests {
         assert!(skills.entries[0].enabled);
         assert_eq!(fs::read_to_string(path).unwrap(), "{} # 原始配置\n");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn from_settings_discovers_from_the_caller_snapshot_without_reparsing() {
+        let (_home, dir) = fixture();
+        skill(&dir.join("skills"), "a", "rust", "body");
+        fs::write(dir.join("settings.yml"), "disabled_skills: [rust]\n").unwrap();
+        let settings = config::read_settings(&dir.join("settings.yml")).unwrap();
+        // 同一份 settings 快照与按需重读的入口得到同一发现结果。
+        let snapshot = Skills::from_settings(&settings, &dir);
+        let reread = Skills::from_dir(&dir);
+        assert_eq!(snapshot.entries.len(), reread.entries.len());
+        assert_eq!(snapshot.entries[0].path, reread.entries[0].path);
+        assert!(!snapshot.entries[0].enabled);
+        assert!(snapshot.diagnostics.is_empty());
+        // 发现依据是调用方的快照：随后损坏的文件不影响本次结果，也不产生诊断；
+        // 按需重读的入口仍看到损坏配置并如实报告。
+        fs::write(dir.join("settings.yml"), "invalid yaml").unwrap();
+        let again = Skills::from_settings(&settings, &dir);
+        assert!(!again.entries[0].enabled);
+        assert!(again.diagnostics.is_empty());
+        assert_eq!(Skills::from_dir(&dir).diagnostics.len(), 1);
     }
 }

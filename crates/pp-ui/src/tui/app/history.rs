@@ -9,10 +9,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// 固定每页 100 条；与持久输入回忆的翻页约定一致，不新增配置项。
 const HISTORY_PAGE: usize = 100;
 
+/// `history.db` 不可用时唯一的用户可见提示：启动期与运行期共用，只提示一次。
+const HISTORY_UNAVAILABLE: &str = "Input history is unavailable; recall is limited to this run.";
+
 impl App {
     /// 构造期启动 history worker 并投递第一页 LoadInputs。
     ///
     /// 必须在任何 `remember_text` 之前调用，FIFO 保证启动加载不包含本进程追加。
+    /// 不阻塞主线程：`Store::open` 在 worker 内完成，失败经 `Reply::Unavailable`
+    /// 由 [`App::handle_history_reply`] 转成同一句提示。
     /// 返回启动提示：失败时明确只保留进程内回忆，绝不改用其他 HOME。
     pub(in crate::tui) fn start_history(&mut self, path: Option<PathBuf>) -> Option<String> {
         let Some(path) = path else {
@@ -20,9 +25,7 @@ impl App {
         };
         let worker = match history::Worker::new(path) {
             Ok(worker) => worker,
-            Err(_) => {
-                return Some("Input history is unavailable; recall is limited to this run.".into());
-            }
+            Err(_) => return Some(HISTORY_UNAVAILABLE.into()),
         };
         self.history_request_id = 1;
         let request = Request::LoadInputs {
@@ -31,7 +34,7 @@ impl App {
             before_id: None,
         };
         if worker.requests.send(request).is_err() {
-            return Some("Input history is unavailable; recall is limited to this run.".into());
+            return Some(HISTORY_UNAVAILABLE.into());
         }
         self.history_page_pending = Some(1);
         self.history_worker = Some(worker);
@@ -72,32 +75,48 @@ impl App {
             return false;
         }
         for reply in replies {
-            match reply {
-                Reply::InputAppended(result) => {
-                    if result.is_err() {
-                        self.notify_history_failure(
-                            "Could not save input history; the input was still accepted.",
-                        );
-                    }
-                }
-                Reply::InputsLoaded {
-                    request_id,
-                    before_id,
-                    result,
-                } => self.apply_history_page(request_id, before_id, result),
-                Reply::SessionsSearched {
-                    panel_generation,
-                    request_id,
-                    result,
-                } => self.receive_session_search(panel_generation, request_id, result),
-                Reply::SessionPinned {
-                    panel_generation,
-                    request_id,
-                    result,
-                } => self.receive_session_pin(panel_generation, request_id, result),
-            }
+            self.handle_history_reply(reply);
         }
         true
+    }
+
+    /// 单条 history 回复的落地；`Unavailable` 之外的变体保持既有处理。
+    fn handle_history_reply(&mut self, reply: Reply) {
+        match reply {
+            Reply::Unavailable => self.receive_history_unavailable(),
+            Reply::InputAppended(result) => {
+                if result.is_err() {
+                    self.notify_history_failure(
+                        "Could not save input history; the input was still accepted.",
+                    );
+                }
+            }
+            Reply::InputsLoaded {
+                request_id,
+                before_id,
+                result,
+            } => self.apply_history_page(request_id, before_id, result),
+            Reply::SessionsSearched {
+                panel_generation,
+                request_id,
+                result,
+            } => self.receive_session_search(panel_generation, request_id, result),
+            Reply::SessionPinned {
+                panel_generation,
+                request_id,
+                result,
+            } => self.receive_session_pin(panel_generation, request_id, result),
+        }
+    }
+
+    /// `history.db` 打开失败：停用持久回忆并释放 worker，避免追加继续排队；
+    /// 已接受的输入仍在进程内历史，提示文案与启动期失败完全一致。
+    fn receive_history_unavailable(&mut self) {
+        self.history_page_pending = None;
+        self.history_waiting_up = false;
+        self.history_has_more = false;
+        self.history_worker = None;
+        self.notify_history_failure(HISTORY_UNAVAILABLE);
     }
 
     /// 发往 history worker 的会话搜索；worker 不可用时只提示，不阻塞 UI。
@@ -400,6 +419,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::tui::history::Reply;
     use crate::tui::{App, editor};
 
     fn page(start: i64, count: i64) -> Vec<pp_runtime::history::InputEntry> {
@@ -410,6 +430,85 @@ mod tests {
                 images: Vec::new(),
             })
             .collect()
+    }
+
+    #[test]
+    fn sqlite_input_history_unavailable_reply_notifies_once_and_keeps_input() {
+        let directory = tempfile::tempdir().unwrap();
+        // 父路径是普通文件：`history.db` 的目录无法创建，`Store::open` 必然失败。
+        let blocker = directory.path().join("blocked");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let mut app = App::new_with_skills(
+            Err(anyhow::anyhow!("fixture")),
+            pp_config::skills::Skills::default().shared(),
+            crate::commands::FileCommands::default(),
+            std::path::Path::new("."),
+            Some(blocker.join("history.db")),
+        )
+        .unwrap();
+        let before = app.conversation.entry_count();
+
+        // 构造不再阻塞握手：打开失败由 worker 线程经回复通道告知。
+        let reply = app
+            .history_worker
+            .as_ref()
+            .unwrap()
+            .replies
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(matches!(reply, Reply::Unavailable));
+        app.handle_history_reply(reply);
+        assert!(app.history_failure_notified);
+        assert!(app.history_worker.is_none());
+        assert!(app.history_page_pending.is_none());
+        assert!(!app.history_waiting_up);
+        // 启动提示只生成一条错误卡片，重复的不可用回复不再提示。
+        assert_eq!(app.conversation.entry_count(), before + 1);
+        app.handle_history_reply(Reply::Unavailable);
+        assert_eq!(app.conversation.entry_count(), before + 1);
+
+        // 历史库不可用不影响输入：仍可接受新输入并从进程内历史回填。
+        app.input = editor();
+        app.insert_input("still accepted".into());
+        app.remember_input();
+        assert_eq!(app.input_history, ["still accepted"]);
+        // 提交后输入框已清空：Up 从进程内历史回填，Down 回到空草稿。
+        app.input = editor();
+        app.navigate_history(true);
+        assert_eq!(app.input.lines(), &["still accepted"]);
+        app.navigate_history(false);
+        assert_eq!(app.input.lines(), &[""]);
+    }
+
+    #[test]
+    fn sqlite_input_history_first_page_arrives_through_reply_after_construction() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.db");
+        let cwd = std::path::Path::new(".");
+        pp_runtime::history::Store::open(&path)
+            .unwrap()
+            .append_input_images(cwd, "previous process", &[], 0)
+            .unwrap();
+        let mut app = App::new_with_skills(
+            Err(anyhow::anyhow!("fixture")),
+            pp_config::skills::Skills::default().shared(),
+            crate::commands::FileCommands::default(),
+            cwd,
+            Some(path),
+        )
+        .unwrap();
+        // 构造期已排队第一页：打开成功后回复经同一条通道回到主线程。
+        let reply = app
+            .history_worker
+            .as_ref()
+            .unwrap()
+            .replies
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        app.handle_history_reply(reply);
+        assert_eq!(app.input_history, ["previous process"]);
+        assert!(app.history_page_pending.is_none());
+        assert!(!app.history_failure_notified);
     }
 
     #[test]

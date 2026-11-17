@@ -201,7 +201,7 @@ impl Agent {
     ) -> Result<(
         String,
         Vec<pp_config::skills::SkillHeader>,
-        Vec<project_instructions::Document>,
+        std::sync::Arc<[project_instructions::Document]>,
     )> {
         let documents = self.tools.project_documents()?;
         let project =

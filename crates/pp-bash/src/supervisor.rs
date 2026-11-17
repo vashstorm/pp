@@ -24,7 +24,7 @@ use std::{
     path::Path,
     process::Command,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
@@ -44,8 +44,12 @@ use process::{CellInner, ProcessCell, ProcessHandle, ProcessRecord};
 use state::{GroupLease, GroupRecord, Phase, Shared, State, StopReason};
 
 /// How often the monitor checks child state while a direct child is unobserved
-/// or a stop is in progress.
+/// or a stop is in progress; this is also the interval every wakeup resets to.
 const ACTIVE_POLL: Duration = Duration::from_millis(5);
+/// Upper bound of the active poll backoff. Without any registry change the
+/// monitor doubles the interval up to this cap, so a long-running command
+/// (for example `sleep 30`) wakes the monitor ~20 times per second instead of 200.
+const ACTIVE_POLL_MAX: Duration = Duration::from_millis(50);
 /// Idle poll interval when there is nothing to reap.
 const IDLE_POLL: Duration = Duration::from_millis(50);
 /// Grace period between the TERM/cleanup permit deadline and SIGKILL.
@@ -98,10 +102,7 @@ impl Supervisor {
         stop_cancellation: CancellationToken,
         sandbox: Option<Arc<Policy>>,
     ) -> io::Result<Arc<Self>> {
-        let shared = Arc::new(Shared {
-            state: Mutex::new(State::new(deadline)),
-            wake: Condvar::new(),
-        });
+        let shared = Arc::new(Shared::new(deadline));
         let execution = CancellationToken::new();
         let cancelled_at_start = parent_cancellation.is_cancelled();
         let supervisor = Arc::new(Self {
@@ -182,7 +183,7 @@ impl Supervisor {
         // An explicit request is also visible through the host-facing stop
         // token; the monitor still publishes the permit and sends TERM first.
         self.stop.cancel();
-        self.shared.wake.notify_all();
+        self.shared.notify();
     }
 
     /// Marks the interpreter (all shell/logical tasks and output writes) as
@@ -190,7 +191,7 @@ impl Supervisor {
     /// reach `Finished`.
     pub(crate) fn interpreter_finished(&self) {
         lock(&self.shared.state).interpreter_done = true;
-        self.shared.wake.notify_all();
+        self.shared.notify();
     }
 
     #[cfg(test)]
@@ -244,7 +245,7 @@ impl Drop for Supervisor {
             state.interpreter_done = true;
         }
         self.execution.cancel();
-        self.shared.wake.notify_all();
+        self.shared.notify();
         if let Some(handle) = lock(&self.monitor).take() {
             let _ = handle.join();
         }
@@ -397,7 +398,7 @@ impl ProcessSupervisor for Supervisor {
             }
         };
         drop(state);
-        self.shared.wake.notify_all();
+        self.shared.notify();
 
         let process: Arc<dyn ManagedProcess> = Arc::new(ProcessHandle { cell });
         Ok(SpawnedProcess {
@@ -669,6 +670,41 @@ mod tests {
                 .spawn(command("exit 0"), SpawnGroup::New, None)
                 .is_err()
         );
+
+        drop(spawned.group);
+        drop(spawned.process);
+        supervisor.interpreter_finished();
+        let outcome = supervisor.wait();
+        assert_eq!(outcome.termination, Termination::Stopped);
+        assert!(outcome.cleanup_error.is_none());
+        wait_until(|| !process_exists(pid));
+    }
+
+    /// active 轮询在无状态变化时会退避到上限；但任一状态变化必须立即回到
+    /// 基线，因此停止请求的 TERM→KILL 升级不会被推到下一个长间隔之后。
+    #[test]
+    fn embedded_shell_supervisor_backoff_keeps_stop_escalation_prompt() {
+        let supervisor = supervisor();
+        let spawned = supervisor
+            .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
+            .expect("spawn");
+        let pid = spawned.process.pid();
+        // 静置到退避上限：子进程一直不退出，注册表没有任何变化。
+        thread::sleep(Duration::from_millis(300));
+
+        supervisor.request_stop();
+        let permit = loop {
+            if let Some(permit) = supervisor.cleanup_permit() {
+                break permit;
+            }
+            assert!(
+                !supervisor.is_finished(),
+                "stop finished before a permit existed"
+            );
+            thread::sleep(Duration::from_millis(1));
+        };
+        // 宽限期内的 TERM 被 trap 吸收，升级仍由基线轮询驱动到 SIGKILL。
+        wait_until(|| permit.is_revoked());
 
         drop(spawned.group);
         drop(spawned.process);

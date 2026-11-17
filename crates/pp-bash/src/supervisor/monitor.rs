@@ -15,7 +15,67 @@ use std::{
 };
 
 use super::process::CellOutcome;
-use super::{ACTIVE_POLL, GRACE, IDLE_POLL, Permit, Phase, Shared, State, StopReason};
+use super::{
+    ACTIVE_POLL, ACTIVE_POLL_MAX, GRACE, IDLE_POLL, Permit, Phase, Shared, State, StopReason,
+};
+
+/// active 轮询的指数退避：基线 5ms，无状态变化时逐轮翻倍到 50ms 上限。
+/// 退避只是为了减少空转唤醒，任何注册表或事件变化都让它回到基线。
+struct Backoff {
+    next: Duration,
+}
+
+impl Backoff {
+    const fn new() -> Self {
+        Self { next: ACTIVE_POLL }
+    }
+
+    fn reset(&mut self) {
+        self.next = ACTIVE_POLL;
+    }
+
+    /// 取本轮间隔，并为下一轮翻倍（不超过上限）。
+    fn advance(&mut self) -> Duration {
+        let interval = self.next;
+        self.next = interval.saturating_mul(2).min(ACTIVE_POLL_MAX);
+        interval
+    }
+}
+
+/// 本轮应等待的时长。
+///
+/// `active` 为真（有未观察的子进程，或正在 TERM/KILL 升级）时使用会退避的
+/// active 间隔；否则固定用空闲间隔。`changed` 为真表示自上一轮以来注册表被
+/// 观察/回收改变，或发生过一次唤醒事件（新注册、显式停止、解释器结束、租约
+/// 释放）：此时立即回到基线，不把刚发生的变化推到下一个长间隔之后。
+fn poll_interval(active: bool, changed: bool, backoff: &mut Backoff) -> Duration {
+    if changed {
+        backoff.reset();
+    }
+    if active {
+        backoff.advance()
+    } else if changed {
+        // 空闲阶段也只在事件后立刻复查一次，随后回到空闲间隔。
+        ACTIVE_POLL
+    } else {
+        IDLE_POLL
+    }
+}
+
+/// 退避不能推迟 TERM/KILL 升级或超时判定：本轮睡眠不跨过最近的待处理截止
+/// 时间，并保留下限 `ACTIVE_POLL` 以免截止时间已过时忙等。
+fn clamp_to_pending_deadline(state: &State, now: Instant, interval: Duration) -> Duration {
+    let deadline = match state.phase {
+        // `Killing` 沿用已过的 grace 截止时间，因此仍按基线重发 SIGKILL。
+        Phase::Stopping | Phase::Killing => state.grace_deadline,
+        Phase::Running if !state.interpreter_done => state.deadline,
+        _ => None,
+    };
+    match deadline {
+        Some(deadline) => interval.min(deadline.saturating_duration_since(now).max(ACTIVE_POLL)),
+        None => interval,
+    }
+}
 
 pub(super) fn monitor(
     shared: Arc<Shared>,
@@ -23,9 +83,14 @@ pub(super) fn monitor(
     parent: CancellationToken,
     stop: CancellationToken,
 ) {
+    let mut backoff = Backoff::new();
+    // 上一轮结束时观察到的唤醒计数；跨轮对比即可覆盖“唤醒发生在采样之后、
+    // 等待之前”这种不会让条件变量再唤醒一次的窗口。
+    let mut seen = shared.generation();
     loop {
         let mut state = lock(&shared.state);
-        reap(&mut state);
+        let progressed = reap(&mut state);
+        let phase_before = state.phase;
 
         let now = Instant::now();
         match state.phase {
@@ -101,13 +166,13 @@ pub(super) fn monitor(
         if state.phase == Phase::Finished {
             break;
         }
-        let interval = if matches!(state.phase, Phase::Stopping | Phase::Killing)
-            || state.procs.values().any(|process| !process.observed)
-        {
-            ACTIVE_POLL
-        } else {
-            IDLE_POLL
-        };
+        let active = matches!(state.phase, Phase::Stopping | Phase::Killing)
+            || state.procs.values().any(|process| !process.observed);
+        let generation = shared.generation();
+        let changed = progressed || state.phase != phase_before || generation != seen;
+        seen = generation;
+        let interval = poll_interval(active, changed, &mut backoff);
+        let interval = clamp_to_pending_deadline(&state, Instant::now(), interval);
         state = wait_timeout(&shared, state, interval);
     }
 }
@@ -245,7 +310,11 @@ pub(super) fn spawn_closed(reason: &str) -> io::Error {
 
 /// Observes and reaps direct children. Leader anchors are reaped only after the
 /// group has no live members and no spawn leases.
-fn reap(state: &mut State) {
+///
+/// 返回本轮是否改动了注册表（观察/回收/清理失败）：供 monitor 决定继续退避
+/// 还是回到 5ms 基线。常态的空转轮询（子进程仍在跑、组还有成员）不算变化。
+fn reap(state: &mut State) -> bool {
+    let mut changed = false;
     // Observe exits without reaping them so a leader remains a WNOWAIT anchor.
     let pids: Vec<i32> = state
         .procs
@@ -266,6 +335,7 @@ fn reap(state: &mut State) {
                 if let Some(record) = state.procs.get_mut(&pid) {
                     record.cell.complete(CellOutcome::Status(status));
                     record.observed = true;
+                    changed = true;
                 }
             }
             Ok(None) => {}
@@ -287,11 +357,14 @@ fn reap(state: &mut State) {
                 state.errors.insert(format!(
                     "observing external process {pid}: no child process"
                 ));
+                changed = true;
             }
             Err(error) => {
                 state
                     .errors
                     .insert(format!("observing external process {pid}: {error}"));
+                // 观察失败不在退避范围内反复推迟：按基线重试并上报。
+                changed = true;
             }
         }
     }
@@ -306,20 +379,24 @@ fn reap(state: &mut State) {
     for pid in reaps {
         let Some(raw) = Pid::from_raw(pid) else {
             state.procs.remove(&pid);
+            changed = true;
             continue;
         };
         match waitpid(Some(raw), WaitOptions::empty()) {
             Ok(_) => {
                 state.procs.remove(&pid);
+                changed = true;
             }
             Err(rustix::io::Errno::INTR) => {}
             Err(rustix::io::Errno::CHILD) => {
                 state.procs.remove(&pid);
+                changed = true;
             }
             Err(error) => {
                 state
                     .errors
                     .insert(format!("reaping external process {pid}: {error}"));
+                changed = true;
             }
         }
     }
@@ -340,6 +417,7 @@ fn reap(state: &mut State) {
                 // (only possible after a reaping failure); drop the untrackable
                 // group record.
                 state.groups.remove(&key);
+                changed = true;
                 continue;
             }
         };
@@ -351,6 +429,7 @@ fn reap(state: &mut State) {
             // safe to query or signal.
             state.procs.remove(&leader);
             state.groups.remove(&key);
+            changed = true;
             continue;
         }
         let pending_direct_child = state
@@ -372,11 +451,13 @@ fn reap(state: &mut State) {
                 Ok(()) => {
                     state.procs.remove(&leader);
                     state.groups.remove(&key);
+                    changed = true;
                 }
                 Err(error) => {
                     state
                         .errors
                         .insert(format!("reaping process group leader {leader}: {error}"));
+                    changed = true;
                 }
             },
             Ok(true) => {}
@@ -404,9 +485,11 @@ fn reap(state: &mut State) {
                             .insert(format!("reaping process group leader {leader}: {error}"));
                     }
                 }
+                changed = true;
             }
         }
     }
+    changed
 }
 
 fn reap_pid(pid: i32) -> io::Result<()> {
@@ -620,4 +703,77 @@ fn group_members_live(_pgid: i32, _pinned: &BTreeSet<i32>) -> io::Result<bool> {
         io::ErrorKind::Unsupported,
         "process group liveness is not implemented on this platform",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn millis(duration: Duration) -> u64 {
+        duration.as_millis() as u64
+    }
+
+    /// 空闲期轮询间隔必须逐轮提升到上界，并在任何状态变化后立刻回到基线。
+    #[test]
+    fn supervisor_poll_backoff_escalates_and_resets_on_state_change() {
+        let mut backoff = Backoff::new();
+        let quiet_polls: Vec<u64> = (0..6)
+            .map(|_| millis(poll_interval(true, false, &mut backoff)))
+            .collect();
+        assert_eq!(quiet_polls, vec![5, 10, 20, 40, 50, 50]);
+
+        assert_eq!(
+            millis(poll_interval(true, true, &mut backoff)),
+            5,
+            "a state change must return to the baseline interval"
+        );
+        assert_eq!(millis(poll_interval(true, false, &mut backoff)), 10);
+
+        // 空闲阶段不受 active 退避影响；事件后的第一次复查仍用基线间隔。
+        assert_eq!(millis(poll_interval(false, false, &mut backoff)), 50);
+        assert_eq!(millis(poll_interval(false, true, &mut backoff)), 5);
+        assert_eq!(
+            millis(poll_interval(true, true, &mut backoff)),
+            5,
+            "an idle event must also reset the active backoff"
+        );
+    }
+
+    /// 退避的睡眠不得跨过待处理截止时间，也不能因为截止时间已过而忙等。
+    #[test]
+    fn supervisor_poll_interval_never_passes_a_pending_deadline() {
+        let now = Instant::now();
+
+        let mut running = State::new(Some(now + Duration::from_millis(30)));
+        assert_eq!(
+            millis(clamp_to_pending_deadline(&running, now, ACTIVE_POLL_MAX)),
+            30
+        );
+
+        // 解释器已结束时超时截止不再需要精确唤醒。
+        running.interpreter_done = true;
+        assert_eq!(
+            clamp_to_pending_deadline(&running, now, ACTIVE_POLL_MAX),
+            ACTIVE_POLL_MAX
+        );
+
+        // TERM/KILL 升级窗口：截止时间临近就按时唤醒；已经过时按基线重发 KILL。
+        let mut stopping = State::new(None);
+        stopping.phase = Phase::Stopping;
+        stopping.grace_deadline = Some(now + Duration::from_millis(400));
+        assert_eq!(
+            clamp_to_pending_deadline(&stopping, now, ACTIVE_POLL_MAX),
+            ACTIVE_POLL_MAX
+        );
+        stopping.grace_deadline = Some(now - Duration::from_millis(1));
+        assert_eq!(
+            clamp_to_pending_deadline(&stopping, now, ACTIVE_POLL_MAX),
+            ACTIVE_POLL
+        );
+        stopping.phase = Phase::Killing;
+        assert_eq!(
+            clamp_to_pending_deadline(&stopping, now, ACTIVE_POLL_MAX),
+            ACTIVE_POLL
+        );
+    }
 }

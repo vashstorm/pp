@@ -302,7 +302,6 @@ fn streaming_single_long_logical_line_uses_bounded_grapheme_windows() {
     let layout = transcript.entries[0].layout.as_ref().unwrap();
     assert!(
         layout
-            .lines
             .iter()
             .all(|line| line.height <= usize::from(u16::MAX))
     );

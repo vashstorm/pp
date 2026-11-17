@@ -6,14 +6,74 @@ use std::{
 
 const MAX_SYMLINK_DEPTH: usize = 16;
 
+// 测试用 `canonicalize` 计数：nextest 每个用例独立进程，线程局部计数让
+// “常规 entry 不触发规范化”的断言不受同进程并行用例干扰。
+#[cfg(test)]
+thread_local! {
+    static CANONICALIZE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn canonicalize(path: &Path) -> io::Result<PathBuf> {
+    #[cfg(test)]
+    CANONICALIZE_CALLS.with(|calls| calls.set(calls.get() + 1));
+    std::fs::canonicalize(path)
+}
+
+#[cfg(test)]
+pub(crate) fn canonicalize_calls() -> usize {
+    CANONICALIZE_CALLS.with(|calls| calls.get())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_canonicalize_calls() {
+    CANONICALIZE_CALLS.with(|calls| calls.set(0));
+}
+
 /// 规范化路径：尽可能通过 `canonicalize` 折叠符号链接（如 `/tmp` → `/private/tmp`），
 /// 对尚不存在的后半段做词法折叠；遇到悬空符号链接时追踪其目标路径以防绕过。
 pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     normalize_with_depth(path, 0)
 }
 
+/// 词法快路径：`target` 已是绝对路径且各分量均可直接比较（无 `..`/前缀；`.` 由
+/// `Path::components` 自行归一）时，只要它与所有拒绝根在路径分量层面互不为祖先也
+/// 互不为后代，规范化就不可能把它移入拒绝集合，可跳过 `canonicalize`。
+///
+/// 前提是调用方保证路径已存在的祖先已解析（`rg`/`glob` 的 walk 根已
+/// `canonicalize` 且 `follow_links(false)`）；symlink entry 必须改用
+/// `Policy::is_read_denied_resolved`。其余情况返回 `false`，调用方必须走
+/// `normalize_path` 的完整判定。
+pub(crate) fn lexically_outside_deny(target: &Path, deny_read: &[PathBuf]) -> bool {
+    let mut components = target.components();
+    if !matches!(components.next(), Some(Component::RootDir)) {
+        return false;
+    }
+    if components.any(|component| !matches!(component, Component::Normal(_))) {
+        return false;
+    }
+    !deny_read
+        .iter()
+        .any(|denied| target.starts_with(denied) || denied.starts_with(target))
+}
+
+/// 拒绝根在建策略时已经规范化；macOS 上 `/tmp`、`/var`、`/etc` 是指向
+/// `/private/...` 的符号链接，词法快路径需要把未规范化的系统别名同样视为
+/// “可能命中”，否则 `/tmp/x` 会绕过规范化为 `/private/tmp/x` 的拒绝根。
+pub(crate) fn lexical_aliases(root: &Path) -> Vec<PathBuf> {
+    let Ok(rest) = root.strip_prefix("/private") else {
+        return Vec::new();
+    };
+    let Some(Component::Normal(first)) = rest.components().next() else {
+        return Vec::new();
+    };
+    if !matches!(first.to_str(), Some("tmp" | "var" | "etc")) {
+        return Vec::new();
+    }
+    vec![Path::new("/").join(rest)]
+}
+
 fn normalize_with_depth(path: &Path, depth: usize) -> PathBuf {
-    if let Ok(canon) = std::fs::canonicalize(path) {
+    if let Ok(canon) = canonicalize(path) {
         return canon;
     }
 
@@ -29,7 +89,7 @@ fn normalize_with_depth(path: &Path, depth: usize) -> PathBuf {
             Component::ParentDir => {
                 if !broken {
                     acc.push("..");
-                    if let Ok(canon) = std::fs::canonicalize(&acc) {
+                    if let Ok(canon) = canonicalize(&acc) {
                         acc = canon;
                     } else {
                         acc.pop();
@@ -38,7 +98,7 @@ fn normalize_with_depth(path: &Path, depth: usize) -> PathBuf {
                     }
                 } else {
                     acc.pop();
-                    if let Ok(canon) = std::fs::canonicalize(&acc) {
+                    if let Ok(canon) = canonicalize(&acc) {
                         acc = canon;
                         broken = false;
                     }
@@ -47,7 +107,7 @@ fn normalize_with_depth(path: &Path, depth: usize) -> PathBuf {
             Component::Normal(seg) => {
                 acc.push(seg);
                 if !broken {
-                    if let Ok(canon) = std::fs::canonicalize(&acc) {
+                    if let Ok(canon) = canonicalize(&acc) {
                         acc = canon;
                     } else if depth < MAX_SYMLINK_DEPTH
                         && std::fs::symlink_metadata(&acc)
@@ -268,5 +328,44 @@ mod tests {
             normalize_path(&root.join("missing/../sub/file.txt")),
             root.join("sub/file.txt")
         );
+    }
+
+    #[test]
+    fn sandbox_lexical_fast_path_only_skips_component_disjoint_paths() {
+        let deny = vec![PathBuf::from("/work/repo/.ssh")];
+        let cases = [
+            ("/work/repo/src/main.rs", true),
+            ("/work/repo/.ssh_backup/key", true),
+            ("/work/repo/.ssh", false),
+            ("/work/repo/.ssh/id_rsa", false),
+            ("/work/repo", false),
+            ("/work", false),
+            ("work/repo/src", false),
+            ("/work/repo/../repo/src", false),
+            // `.` 由 `Path::components` 归一，不改变安全性
+            ("/work/./repo/src", true),
+        ];
+        for (path, outside) in cases {
+            assert_eq!(
+                lexically_outside_deny(Path::new(path), &deny),
+                outside,
+                "path={path}"
+            );
+        }
+        assert!(lexically_outside_deny(Path::new("/work/repo/src"), &[]));
+    }
+
+    #[test]
+    fn sandbox_lexical_aliases_cover_private_prefix_folding() {
+        assert_eq!(
+            lexical_aliases(Path::new("/private/tmp/secret")),
+            vec![PathBuf::from("/tmp/secret")]
+        );
+        assert_eq!(
+            lexical_aliases(Path::new("/private/var/folders/x/T")),
+            vec![PathBuf::from("/var/folders/x/T")]
+        );
+        assert!(lexical_aliases(Path::new("/Users/u/.ssh")).is_empty());
+        assert!(lexical_aliases(Path::new("/private/tmpx/secret")).is_empty());
     }
 }

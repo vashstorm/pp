@@ -19,6 +19,17 @@ TUI 按帧合并同一目标、类型和轮次的文本分片；达到 64 KiB �
 
 向上滚动后，浏览位置按“条目索引＋条目内物理行”保存，上一帧几何信息独立于正在更新的布局。后台重排和前面条目的高度变化不会把浏览位置推走；临时预览过短时只裁切当前画面，不永久改写目标行。正文确实缩短且精确排版完成后才裁剪条目内锚点；用户主动滚动更新锚点，回到底部恢复跟随，会话重置清空锚点。首次预览切换为完整 Markdown、窗口改宽或 Markdown 语义重排允许合理的布局变化。
 
+## 帧成本机制（本轮改动）
+
+本节只描述机制与可重复验证的确定性断言，不引入新的本机数字；上文“本机测量”的数字来自既有基线，本轮未重新采集。本轮执行环境禁止创建伪终端（`openpty: Operation not permitted`），`PP_TUI_PERF_ASSERT=1` 的 release PTY 断言与全部 `cli_agent` `tui::` 用例无法运行；作为替代，整帧拷贝、预览回退、输入框排版与状态栏字段的复用均有 `-p pp-ui` 的确定性用例覆盖，但 CPU 与输出字节的前后对比仍须在真实终端复测。
+
+- **整帧缓冲只保留一份**：`surface.rs` 的差分基线与主屏幕基线改为 `Arc<Buffer>`，普通帧的 `previous` 与 `main` 共享同一块内存；`App::draw_with_layout` 只在退出路径写 `normal_snapshot`，`paint_surface` 只在非退出帧保留一份整帧拷贝。此前普通帧每帧最多产生 4 次整帧克隆，现在固定为 2 次（一份交给差分基线，一份是帧本身的拷贝）。`cleaned`／`scrolled` 分支仍在需要时另行构造清理后的基线，语义未变。
+- **输入框几何每帧只算一次**：`paint_surface` 先算 `App::main_layout`，原生批次与整帧绘制共用同一 `MainLayout`；`App::main_layout` 签名保持不变，仍可由测试直接调用。此前每帧会经 `input_rows` 把主输入框排版 3 次（布局一次、绘制一次、原生批次路径再一次）。
+- **预览回退只复制续接行**：`EntryLayout` 改为“已排版前缀 `Option<Arc<EntryLayout>>` + 预览尾部 `Vec<LayoutLine>`”，按 `len()`／`iter()`／`get(i)` 读取；“续接末行”由 `EntryLayout::appended` 复制一次，其余前缀行跨帧共享 `Arc`。因此已进入原生历史的前缀行不会被预览改写，滚动锚点保持稳定。确定性断言：`layout_worker_preview_reuses_rendered_prefix_without_copying_lines` 用 `std::ptr::eq` 断言首行仍是同一块内存、末行被复制，并用 `Arc::ptr_eq` 断言无新增正文时整份布局直接复用。
+- **排版背压**：`render_worker::Ticket` 记录 `in_flight`；上一任务未回写前不再排队新任务，流式增量只让 `version` 单调自增，回写后同一帧内补发最新版本。避免每个分片都排成一次全量重解析。
+- **bash 尾部预览只生成尾部**：`tail_output` 从末尾逻辑行反向生成，攒满 `limit` 个屏幕行即停止，头部只统计行数（可打印 ASCII 且不超宽时走长度快路径），`[stderr]` 分隔后的着色与“N earlier lines, showing L of T”的计数口径保持不变；展开视图仍完整换行。
+- **状态栏**：`title_field` 按字素增量累加列宽，不再为每个前缀重新度量整串；`metric_fields` 先按列宽预算决定保留哪些字段，最后只调用一次 `join_fields`（此前每降一级都重建整行并克隆全部 span）；`context_field` 由 `draw_input_status` 每帧构造一次后经 `statusline::Metrics` 传入。
+
 ## 本机测量
 
 使用 release 构建、160×48 PTY、隔离 HOME 和回环模拟模型服务。负载为 400 段含中文和样式的文本、100 行 Rust 代码，随后发送 1500 个分片，分片间隔约 2ms。优化前使用既有 33ms 刷新间隔，优化后设为 30 FPS；交替运行三组，取中位数。CPU 时间包含进程启动及取消收尾，输出量覆盖流式阶段及退出。
@@ -35,6 +46,12 @@ TUI 按帧合并同一目标、类型和轮次的文本分片；达到 64 KiB �
 这些结果来自本机模拟负载，不代表所有终端或供应商。
 
 ## 验证命令与边界
+
+本轮新增的确定性断言：
+
+```sh
+cargo nextest run --locked -p pp-ui -E 'test(layout_worker_) | test(bash_card) | test(metric_fields) | test(context_field)'
+```
 
 ```sh
 cargo nextest run --locked --workspace -E 'test(frame_clock) | test(stream_buffer) | test(markdown_block_cache) | test(layout_worker_) | test(tui_max_fps) | test(streaming_frame_batches)'

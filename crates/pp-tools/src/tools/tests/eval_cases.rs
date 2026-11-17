@@ -85,6 +85,8 @@ impl ToolHookCall for StubHook {
 fn eval_schema_respects_mode_and_settings() {
     let dir = tempfile::tempdir().unwrap();
     let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    // `Tools::new` 不再探测 Python：按生产顺序由 `configure_eval` 决定可用性。
+    tools.configure_eval(&EvalSettings::default());
     if !tools.eval_available() {
         return;
     }
@@ -134,6 +136,7 @@ fn eval_nested_tools_keep_approval_instructions_and_hooks() {
     fs::write(dir.path().join("sub/note.txt"), "initial\n").unwrap();
 
     let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    tools.configure_eval(&EvalSettings::default());
     if !tools.eval_available() {
         return;
     }

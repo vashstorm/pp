@@ -1,5 +1,4 @@
-use super::{Store, warn};
-use anyhow::Result;
+use super::{Database, warn};
 use serde_json::Value;
 use std::path::Path;
 
@@ -89,9 +88,9 @@ pub(super) fn saved_tool_calls(entry: &Value) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// 记录一次工具执行；存储失败只提示，不改变工具结果。
-pub fn tool(database: &Path, call: &ToolCall<'_>) {
-    if (|| -> Result<()> { Store::open(database)?.tool(call) })().is_err() {
+/// 记录一次工具执行；复用句柄内的连接，存储失败只提示，不改变工具结果。
+pub fn tool(database: &Database, call: &ToolCall<'_>) {
+    if database.with_store(|store| store.tool(call)).is_err() {
         warn();
     }
 }

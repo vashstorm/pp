@@ -89,7 +89,7 @@ impl Agent {
         sessions_dir: PathBuf,
         lock_dir: PathBuf,
         prompt_source: crate::system_prompt::Snapshot,
-        stats_db: PathBuf,
+        stats: impl Into<pp_stats::Database>,
     ) -> Result<Self> {
         tools.reset_project_instructions([]);
         let catalog = models.catalog_snapshot();
@@ -103,7 +103,9 @@ impl Agent {
         // 进程级单例：启动期后台建连，不再阻塞首个界面；首个任务入口等它结束。
         // 连接失败不是启动失败：失败只落到 `/mcp list` 与提示行。
         tools.mcp.start_connect(pp_mcp::Access::Full);
+        pp_core::logging::perf::mark("mcp_connect_started");
         Self::install_lsp(&mut tools, &catalog);
+        pp_core::logging::perf::mark("lsp_installed");
         let current_model = ModelChoice {
             reference: selection.reference.clone(),
             model: config.model.clone(),
@@ -170,7 +172,7 @@ impl Agent {
             pending_project_load: Vec::new(),
             reported_project_load: Default::default(),
             request_skills: Vec::new(),
-            journal: SessionJournal::with_locks(sessions_dir, lock_dir, stats_db),
+            journal: SessionJournal::with_locks(sessions_dir, lock_dir, stats),
             replay: Vec::new(),
             debug: debug::DebugState::new(config.settings.debug, false),
             workflow: pp_core::plan::WorkflowState::default(),
@@ -306,13 +308,15 @@ impl Agent {
                 .iter()
                 .any(|document| document.path.to_string_lossy() == path.as_str())
         });
+        // 快照按引用计数共享；只为本轮新增或变化的规则建立待发布副本。
         self.pending_project_load = project
-            .into_iter()
+            .iter()
             .filter(|document| {
                 self.reported_project_load
                     .get(&document.path.display().to_string())
                     != Some(&document.content)
             })
+            .cloned()
             .collect();
         let unchanged = match &self.session {
             Session::Completion(request) => {

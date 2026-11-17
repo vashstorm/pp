@@ -114,6 +114,9 @@ pub struct Policy {
     writable: Vec<PathBuf>,
     protect: Vec<PathBuf>,
     deny_read: Vec<PathBuf>,
+    /// 词法快路径的“可能命中”集合：拒绝根本身加系统别名（如 macOS 的
+    /// `/tmp` 与 `/private/tmp`），避免未规范化的别名被误判为不相交。
+    deny_read_lexical: Vec<PathBuf>,
     allow_read: Vec<PathBuf>,
     docker_user_sock: Option<PathBuf>,
 }
@@ -150,7 +153,24 @@ impl Policy {
         guard::check_read_path(&abs, &self.deny_read, &self.allow_read)
     }
 
+    /// 遍历剪枝判定：绝对且与拒绝根不相交的路径直接放行，其余情况规范化后判定。
+    /// 路径已存在的祖先必须已解析（walk 根 `canonicalize` + `follow_links(false)`）；
+    /// symlink entry 使用 `is_read_denied_resolved`。
     pub fn is_read_denied(&self, path: &Path) -> bool {
+        let joined = self.join_cwd(path);
+        if guard::lexically_outside_deny(&joined, &self.deny_read_lexical) {
+            return false;
+        }
+        guard::is_read_denied_path(
+            &guard::normalize_path(&joined),
+            &self.deny_read,
+            &self.allow_read,
+        )
+    }
+
+    /// 精确判定：总是先规范化（含 symlink 与 `/tmp` 折叠）。遍历剪枝只对
+    /// symlink entry 使用，因为词法快路径无法预知链接目标。
+    pub fn is_read_denied_resolved(&self, path: &Path) -> bool {
         let abs = self.absolutize(path);
         guard::is_read_denied_path(&abs, &self.deny_read, &self.allow_read)
     }
@@ -204,13 +224,16 @@ impl Policy {
         }
     }
 
-    fn absolutize(&self, path: &Path) -> PathBuf {
-        let joined = if path.is_absolute() {
+    fn join_cwd(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
             path.to_path_buf()
         } else {
             self.cwd.join(path)
-        };
-        guard::normalize_path(&joined)
+        }
+    }
+
+    fn absolutize(&self, path: &Path) -> PathBuf {
+        guard::normalize_path(&self.join_cwd(path))
     }
 }
 
@@ -220,8 +243,38 @@ struct SandboxState {
     cwd: PathBuf,
     home: Option<PathBuf>,
     tmpdir: Option<PathBuf>,
-    probe: ProbeResult,
+    /// 平台探测结果；`None` 表示以 `off` 起步、从未探测过，切到需要沙盒的模式时补测。
+    probe: Option<ProbeResult>,
     override_mode: Option<SandboxMode>,
+}
+
+impl SandboxState {
+    /// 当前生效模式：会话级覆盖优先于 settings 里的值。
+    fn configured(&self) -> SandboxMode {
+        self.override_mode.unwrap_or(self.settings.mode)
+    }
+
+    /// 探测结果的只读投影；`None` 只可能出现在 `off` 状态，而 `off` 分支不消费该值。
+    fn probe_or_available(&self) -> ProbeResult {
+        match &self.probe {
+            Some(probe) => probe.clone(),
+            None => {
+                debug_assert_eq!(
+                    self.configured(),
+                    SandboxMode::Off,
+                    "未探测的状态只允许出现在 off 模式"
+                );
+                ProbeResult::Available
+            }
+        }
+    }
+
+    /// 切到需要沙盒的模式后补一次探测；`off` 保持未探测，避免白起一次 `sandbox-exec`。
+    fn ensure_probe(&mut self) {
+        if self.probe.is_none() && self.configured() != SandboxMode::Off {
+            self.probe = Some(seatbelt::probe_platform());
+        }
+    }
 }
 
 /// 进程级沙盒句柄，由 `main::run` 构造并向下传递给 `Bootstrap` / `Tools`。
@@ -231,7 +284,17 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
+    /// `mode: off` 不探测平台能力：关闭模式下不会读取探测结果，也省掉启动期一次
+    /// `sandbox-exec` 子进程；之后切到启用模式时才补测。
     pub fn new(settings: SandboxSettings, cwd: &Path) -> Self {
+        Self::build_with_probe(settings, cwd, seatbelt::probe_platform)
+    }
+
+    fn build_with_probe(
+        settings: SandboxSettings,
+        cwd: &Path,
+        probe: impl FnOnce() -> ProbeResult,
+    ) -> Self {
         let home = std::env::var_os("HOME")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from);
@@ -239,7 +302,7 @@ impl Sandbox {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        let probe = seatbelt::probe_platform();
+        let probe = (settings.mode != SandboxMode::Off).then(probe);
         Self::with_parts(
             settings,
             cwd,
@@ -254,7 +317,13 @@ impl Sandbox {
             mode: SandboxMode::Off,
             ..SandboxSettings::default()
         };
-        Self::with_parts(settings, Path::new("/"), None, None, ProbeResult::Available)
+        Self::with_parts(
+            settings,
+            Path::new("/"),
+            None,
+            None,
+            Some(ProbeResult::Available),
+        )
     }
 
     pub fn with_probe_for_test(
@@ -264,7 +333,7 @@ impl Sandbox {
         tmpdir: Option<&Path>,
         probe: ProbeResult,
     ) -> Self {
-        Self::with_parts(settings, cwd, home, tmpdir, probe)
+        Self::with_parts(settings, cwd, home, tmpdir, Some(probe))
     }
 
     fn with_parts(
@@ -272,7 +341,7 @@ impl Sandbox {
         cwd: &Path,
         home: Option<&Path>,
         tmpdir: Option<&Path>,
-        probe: ProbeResult,
+        probe: Option<ProbeResult>,
     ) -> Self {
         let norm_cwd = guard::normalize_path(cwd);
         let norm_home = home.map(guard::normalize_path);
@@ -292,12 +361,14 @@ impl Sandbox {
     pub fn set_mode_override(&self, mode: Option<SandboxMode>) {
         let mut state = self.state.write().expect("sandbox state lock poisoned");
         state.override_mode = mode;
+        state.ensure_probe();
     }
 
     pub fn update_settings_mode(&self, mode: SandboxMode) {
         let mut state = self.state.write().expect("sandbox state lock poisoned");
         state.settings.mode = mode;
         state.override_mode = None;
+        state.ensure_probe();
     }
 
     pub fn for_cwd(&self, cwd: &Path) -> Arc<Self> {
@@ -316,8 +387,9 @@ impl Sandbox {
 
     pub fn status(&self) -> SandboxStatus {
         let state = self.state.read().expect("sandbox state lock poisoned");
-        let configured = state.override_mode.unwrap_or(state.settings.mode);
-        let (effective, degraded_reason) = resolve_effective(configured, &state.probe);
+        let configured = state.configured();
+        let probe = state.probe_or_available();
+        let (effective, degraded_reason) = resolve_effective(configured, &probe);
         let writable_summary = match effective {
             EffectiveMode::Off => Vec::new(),
             mode => build_policy(&state, mode)
@@ -338,14 +410,15 @@ impl Sandbox {
     /// 取得当前生效策略；显式开启但平台不可用时 fail-closed 返回错误。
     pub fn policy(&self) -> Result<Option<Arc<Policy>>> {
         let state = self.state.read().expect("sandbox state lock poisoned");
-        let configured = state.override_mode.unwrap_or(state.settings.mode);
+        let configured = state.configured();
+        let probe = state.probe_or_available();
         match configured {
             SandboxMode::Off => Ok(None),
             SandboxMode::Auto => {
                 if !cfg!(target_os = "macos") {
                     return Ok(None);
                 }
-                match &state.probe {
+                match &probe {
                     ProbeResult::Available => Ok(Some(Arc::new(build_policy(
                         &state,
                         EffectiveMode::WorkspaceWrite,
@@ -353,7 +426,7 @@ impl Sandbox {
                     ProbeResult::Unavailable { .. } => Ok(None),
                 }
             }
-            SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly => match &state.probe {
+            SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly => match &probe {
                 ProbeResult::Available => {
                     let mode = if configured == SandboxMode::WorkspaceWrite {
                         EffectiveMode::WorkspaceWrite
@@ -387,6 +460,17 @@ impl Sandbox {
             Ok(Some(policy)) => policy.is_read_denied(path),
             Ok(None) => false,
             // fail-closed：显式开启却不可用时不悄悄暴露敏感目录
+            Err(_) => true,
+        }
+    }
+
+    /// 精确判定：总会先规范化（含 symlink 解析）。遍历剪枝只对 symlink entry
+    /// 使用；普通 entry 走 `is_read_denied` 的词法快路径。
+    pub fn is_read_denied_resolved(&self, path: &Path) -> bool {
+        match self.policy() {
+            Ok(Some(policy)) => policy.is_read_denied_resolved(path),
+            Ok(None) => false,
+            // fail-closed：无法取得策略时与 `is_read_denied` 保持一致
             Err(_) => true,
         }
     }
@@ -520,6 +604,16 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
 
     let docker_user_sock = home.map(|h| guard::normalize_path(&h.join(".docker/run/docker.sock")));
 
+    // 词法快路径的“可能命中”集合：拒绝根本身加系统别名（`/tmp` ↔ `/private/tmp`）。
+    let mut deny_read_lexical = deny_read.clone();
+    for root in &deny_read {
+        for alias in guard::lexical_aliases(root) {
+            if !deny_read_lexical.contains(&alias) {
+                deny_read_lexical.push(alias);
+            }
+        }
+    }
+
     Policy {
         mode,
         network: state.settings.network,
@@ -527,6 +621,7 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
         writable,
         protect,
         deny_read,
+        deny_read_lexical,
         allow_read,
         docker_user_sock,
     }
@@ -535,6 +630,48 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn off_mode_skips_the_platform_probe() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut probes = 0;
+        let off = Sandbox::build_with_probe(
+            SandboxSettings {
+                mode: SandboxMode::Off,
+                ..Default::default()
+            },
+            dir.path(),
+            || {
+                probes += 1;
+                ProbeResult::Unavailable {
+                    reason: "off mode must not probe".into(),
+                }
+            },
+        );
+        assert_eq!(probes, 0, "mode=off 不得调用平台探测");
+        let status = off.status();
+        assert_eq!(status.configured, SandboxMode::Off);
+        assert_eq!(status.effective, EffectiveMode::Off);
+        assert_eq!(status.degraded_reason, None);
+        assert!(off.policy().unwrap().is_none());
+
+        // 同一个探测入口在启用模式下必须恰好调用一次：跳过逻辑不能变成探测整体失效。
+        let mut probes = 0;
+        let enabled = Sandbox::build_with_probe(
+            SandboxSettings {
+                mode: SandboxMode::WorkspaceWrite,
+                ..Default::default()
+            },
+            dir.path(),
+            || {
+                probes += 1;
+                ProbeResult::Available
+            },
+        );
+        assert_eq!(probes, 1);
+        assert_eq!(enabled.status().effective, EffectiveMode::WorkspaceWrite);
+    }
 
     #[test]
     fn probe_degradation_differs_between_auto_and_explicit_modes() {
@@ -636,5 +773,84 @@ mod tests {
         assert!(ro.check_write(&cwd.join(".pp-cache/x")).is_ok());
         let ro_scratch = ro.with_extra_writable(&cwd.join(".pp-tmp-123"));
         assert!(ro_scratch.check_write(&cwd.join(".pp-tmp-123/out")).is_ok());
+    }
+
+    #[test]
+    fn sandbox_lexical_fast_path_skips_canonicalize_for_disjoint_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let cwd = root.join("repo");
+        let home = root.join("home");
+        std::fs::create_dir_all(cwd.join("src")).unwrap();
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::write(home.join(".ssh/id_rsa"), "").unwrap();
+
+        let sbx = Sandbox::with_probe_for_test(
+            SandboxSettings {
+                mode: SandboxMode::WorkspaceWrite,
+                ..Default::default()
+            },
+            &cwd,
+            Some(&home),
+            Some(&root),
+            ProbeResult::Available,
+        );
+        let policy = sbx.policy().unwrap().unwrap();
+
+        crate::guard::reset_canonicalize_calls();
+        assert!(!policy.is_read_denied(&cwd.join("src/main.rs")));
+        assert_eq!(
+            crate::guard::canonicalize_calls(),
+            0,
+            "与拒绝根不相交的绝对路径不得触发 canonicalize"
+        );
+
+        // 词法上可能命中（拒绝根后代）时必须回退到规范化，且判定仍为拒绝。
+        crate::guard::reset_canonicalize_calls();
+        assert!(policy.is_read_denied(&home.join(".ssh/id_rsa")));
+        assert!(
+            crate::guard::canonicalize_calls() > 0,
+            "可能命中时必须走 normalize_path"
+        );
+    }
+
+    #[test]
+    fn sandbox_resolved_denial_keeps_symlink_and_tmp_alias_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let cwd = root.join("repo");
+        let home = root.join("home");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::write(home.join(".ssh/id_rsa"), "").unwrap();
+
+        let alias_root = std::env::temp_dir().join("pp-sandbox-lexical-alias");
+        let sbx = Sandbox::with_probe_for_test(
+            SandboxSettings {
+                mode: SandboxMode::WorkspaceWrite,
+                deny_read: vec![alias_root.to_string_lossy().into_owned()],
+                ..Default::default()
+            },
+            &cwd,
+            Some(&home),
+            Some(&root),
+            ProbeResult::Available,
+        );
+        let policy = sbx.policy().unwrap().unwrap();
+
+        let link = cwd.join("secret-link");
+        std::os::unix::fs::symlink(home.join(".ssh"), &link).unwrap();
+        let dangling = cwd.join("dangling-link");
+        std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), &dangling).unwrap();
+        let relative = cwd.join("relative-link");
+        std::os::unix::fs::symlink("../home/.ssh", &relative).unwrap();
+        assert!(policy.is_read_denied_resolved(&link));
+        assert!(policy.is_read_denied_resolved(&dangling));
+        assert!(policy.is_read_denied_resolved(&relative));
+        assert!(!policy.is_read_denied_resolved(&cwd.join("src/main.rs")));
+
+        // 系统别名（macOS `/tmp` ↔ `/private/tmp`、TMPDIR 的 `/var` ↔ `/private/var`）
+        // 不得因词法不相交而被放行。
+        assert!(policy.is_read_denied(&alias_root.join("id_rsa")));
     }
 }

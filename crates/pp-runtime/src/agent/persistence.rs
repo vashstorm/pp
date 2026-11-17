@@ -139,8 +139,8 @@ struct Active {
 pub(super) struct SessionJournal {
     dir: PathBuf,
     lock_dir: PathBuf,
-    /// 统计库路径；由 `Agent` 构造方从 `pp_stats::database_path` 或临时目录传入。
-    stats_db: PathBuf,
+    /// 统计库句柄；由 `Agent` 构造方从 `pp_stats::database_path` 或临时目录传入。
+    stats: pp_stats::Database,
     active: Option<Active>,
     committed: usize,
     capture: replay::Capture,
@@ -176,11 +176,15 @@ impl SessionJournal {
         Self::with_locks(dir, lock_dir, stats_db)
     }
 
-    pub(super) fn with_locks(dir: PathBuf, lock_dir: PathBuf, stats_db: PathBuf) -> Self {
+    pub(super) fn with_locks(
+        dir: PathBuf,
+        lock_dir: PathBuf,
+        stats: impl Into<pp_stats::Database>,
+    ) -> Self {
         Self {
             dir,
             lock_dir,
-            stats_db,
+            stats: stats.into(),
             active: None,
             committed: 0,
             capture: replay::Capture::default(),
@@ -211,7 +215,7 @@ impl SessionJournal {
         *self = Self::with_locks(
             std::mem::take(&mut self.dir),
             std::mem::take(&mut self.lock_dir),
-            std::mem::take(&mut self.stats_db),
+            self.stats.clone(),
         );
     }
     pub(super) fn lock_dir(&self) -> &Path {
@@ -237,38 +241,54 @@ impl SessionJournal {
         }
         let result = (|| -> Result<()> {
             let timestamp = timestamp(now_ms()?)?;
-            let active = self.active.as_ref().expect("active journal checked");
-            let id = loop {
-                let mut bytes = [0; 4];
-                getrandom::fill(&mut bytes)
-                    .map_err(|_| anyhow::anyhow!("session OS random source failed"))?;
-                const HEX: &[u8; 16] = b"0123456789abcdef";
-                let mut id = String::with_capacity(8);
-                for byte in bytes {
-                    id.push(char::from(HEX[usize::from(byte >> 4)]));
-                    id.push(char::from(HEX[usize::from(byte & 15)]));
-                }
-                if !active.used_ids.contains(&id) {
-                    break id;
-                }
+            let id = self.next_id()?;
+            let parent = self.active.as_ref().and_then(|active| active.tail.clone());
+            let entry = EntryRef {
+                id: &id,
+                parent_id: parent.as_deref(),
+                timestamp: &timestamp,
+                payload,
             };
-            self.buffer.clear();
-            let serialized = serde_json::to_writer(
-                &mut self.buffer,
-                &EntryRef {
-                    id: &id,
-                    parent_id: active.tail.as_deref(),
-                    timestamp: &timestamp,
-                    payload,
-                },
-            );
-            self.append_serialized(serialized, sync)?;
+            let physical = {
+                let active = self.active.as_mut().expect("active journal checked");
+                let mut line = if active.header_written {
+                    // 单次序列化：记录值直接进入共享值表，不再回读字节重建 Value。
+                    let value =
+                        serde_json::to_value(&entry).context("serializing session record")?;
+                    active
+                        .storage
+                        .encode(&value)
+                        .context("serializing session record")?
+                } else {
+                    serde_json::to_vec(&entry).context("serializing session record")?
+                };
+                line.push(b'\n');
+                line
+            };
+            self.append_physical(&physical, sync)?;
             let active = self.active.as_mut().expect("active journal checked");
             active.used_ids.insert(id.clone());
             active.tail = Some(id);
             Ok(())
         })();
         self.latch(result)
+    }
+    fn next_id(&self) -> Result<String> {
+        let active = self.active.as_ref().expect("active journal checked");
+        loop {
+            let mut bytes = [0; 4];
+            getrandom::fill(&mut bytes)
+                .map_err(|_| anyhow::anyhow!("session OS random source failed"))?;
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let mut id = String::with_capacity(8);
+            for byte in bytes {
+                id.push(char::from(HEX[usize::from(byte >> 4)]));
+                id.push(char::from(HEX[usize::from(byte & 15)]));
+            }
+            if !active.used_ids.contains(&id) {
+                return Ok(id);
+            }
+        }
     }
     fn latch(&mut self, result: Result<()>) -> Result<()> {
         if let Err(error) = result {
@@ -282,30 +302,16 @@ impl SessionJournal {
     fn custom(&mut self, custom: CustomRef<'_>, sync: bool) -> Result<()> {
         self.record(PayloadRef::Custom { custom }, sync)
     }
-    fn append_serialized(&mut self, serialized: serde_json::Result<()>, sync: bool) -> Result<()> {
-        let active = self
-            .active
-            .as_mut()
-            .expect("active journal checked before serialization");
+    /// 落盘一条已编码的记录：先处理待截断的未完成尾部，再按需 fsync。
+    fn append_physical(&mut self, physical: &[u8], sync: bool) -> Result<()> {
         let result = (|| -> Result<()> {
-            serialized.context("serializing session record")?;
-            self.buffer.push(b'\n');
+            let active = self.active.as_mut().expect("active journal checked");
             if let Some(offset) = active.truncate_to {
                 active.file.set_len(offset)?;
                 active.file.seek(SeekFrom::End(0))?;
                 active.truncate_to = None;
             }
-            let mut physical = if active.header_written {
-                active
-                    .storage
-                    .encode(&serde_json::from_slice(&self.buffer)?)?
-            } else {
-                self.buffer.clone()
-            };
-            if !physical.ends_with(b"\n") {
-                physical.push(b'\n');
-            }
-            active.file.write_all(&physical)?;
+            active.file.write_all(physical)?;
             if sync {
                 active.file.flush()?;
                 active.file.sync_data()?;
@@ -313,20 +319,24 @@ impl SessionJournal {
             Ok(())
         })();
         if let Err(error) = result {
-            let message = format!("persisting session {}: {error:#}", active.id);
+            let id = self.active.as_ref().map_or("", |active| active.id.as_str());
+            let message = format!("persisting session {id}: {error:#}");
             self.first_error = Some(message.clone());
             bail!("{message}");
         }
         Ok(())
     }
+    /// 头部记录按原样写入：首行不是共享值表记录。
+    fn append_serialized(&mut self, serialized: serde_json::Result<()>, sync: bool) -> Result<()> {
+        serialized.context("serializing session record")?;
+        self.buffer.push(b'\n');
+        let physical = std::mem::take(&mut self.buffer);
+        self.append_physical(&physical, sync)
+    }
 
     /// 新上下文复用会话目录与锁目录，独立持有新会话的锁。
     pub(super) fn fork_empty(&self) -> Self {
-        Self::with_locks(
-            self.dir.clone(),
-            self.lock_dir.clone(),
-            self.stats_db.clone(),
-        )
+        Self::with_locks(self.dir.clone(), self.lock_dir.clone(), self.stats.clone())
     }
 
     /// Test-only fault injection: swap the active descriptor for a read-only
@@ -392,12 +402,6 @@ pub(super) fn load_test(
     )
 }
 
-#[cfg(test)]
-pub(crate) mod tests;
-
-#[cfg(test)]
-mod slimming_tests;
-
 /// 冻结的展示格式 fixture 通过与生产读取相同的投影器进入 UI 测试。
 #[cfg(feature = "test-support")]
 pub fn replay_fixture(lines: &str) -> Result<Vec<ReplayRecord>> {
@@ -408,4 +412,188 @@ pub fn replay_fixture(lines: &str) -> Result<Vec<ReplayRecord>> {
         projector.feed(&entry.payload, line.as_bytes())?;
     }
     projector.finish()
+}
+
+#[cfg(test)]
+pub(crate) mod tests;
+
+#[cfg(test)]
+mod slimming_tests;
+
+/// 写入路径的回归面：单次序列化只能减少编码次数，不能改变磁盘字节与落盘边界。
+#[cfg(test)]
+mod write_path_tests {
+    use super::format::{Content, Message, StateRef};
+    use super::*;
+    use pp_config::models::Protocol;
+    use pp_core::session_jsonl::Reader as SessionReader;
+    use serde_json::{Value, json};
+    use std::borrow::Cow;
+    use std::fs;
+    use std::io::BufReader;
+
+    fn metadata(cwd: &Path) -> Metadata<'_> {
+        Metadata {
+            role_route: None,
+            cwd,
+            model_reference: "fixture/primary",
+            think_level: ThinkLevel::None,
+            edit_mode: EditMode::Replace,
+            tool_limits: ToolLimits::default(),
+            base_system: "system",
+            prompt_source: None,
+        }
+    }
+
+    fn session() -> Session {
+        let mut session = Session::new(
+            "fixture".into(),
+            Protocol::Completion,
+            "system".into(),
+            EditMode::Replace,
+        );
+        session.set_think_level(ThinkLevel::None);
+        session
+    }
+
+    fn open(dir: &Path) -> (SessionJournal, PathBuf) {
+        let mut journal = SessionJournal::new(dir.to_owned());
+        journal
+            .sent(
+                &metadata(dir),
+                (&session()).into(),
+                &WorkflowState::default(),
+                None,
+                None,
+            )
+            .unwrap();
+        let path = dir.join(format!("{}.jsonl", journal.id().unwrap()));
+        (journal, path)
+    }
+
+    /// 旧路径先序列化成字节再回读成 `Value`，新路径直接 intern 记录值。
+    /// 两者必须逐字节相同：既有的解码入口与冻结日志依赖同一份磁盘格式。
+    #[test]
+    fn record_encoding_matches_the_legacy_byte_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = metadata(dir.path());
+        let session = session();
+        let workflow = WorkflowState::default();
+        let state = StateRef::new(&metadata, (&session).into(), &workflow);
+        let output = String::from("{\"ok\":false}");
+        let tool_result = Message::ToolResult {
+            tool_call_id: "call",
+            tool_name: Some("read"),
+            content: vec![Content::Text {
+                text: Cow::Borrowed(&output),
+            }],
+            is_error: true,
+            timestamp: 1_700_000_000_123,
+        };
+        let display = json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "共享正文"}],
+            "note": {"text": "共享正文"},
+            "usage": {"input": 12, "output": 34, "total": 46.5},
+        });
+        let event = AgentEvent::ThinkingDelta {
+            text: "thought".into(),
+        };
+        let payloads = [
+            PayloadRef::Message {
+                message: &tool_result,
+            },
+            PayloadRef::DisplayMessage { message: &display },
+            PayloadRef::Custom {
+                custom: CustomRef::State(state),
+            },
+            PayloadRef::Custom {
+                custom: CustomRef::Event { event: &event },
+            },
+        ];
+        for payload in payloads {
+            let entry = EntryRef {
+                id: "01234567",
+                parent_id: Some("76543210"),
+                timestamp: "2026-11-12T01:02:03.456Z",
+                payload,
+            };
+            let legacy: Value =
+                serde_json::from_slice(&serde_json::to_vec(&entry).unwrap()).unwrap();
+            let mut legacy_storage = Storage::default();
+            let mut storage = Storage::default();
+            assert_eq!(
+                storage
+                    .encode(&serde_json::to_value(&entry).unwrap())
+                    .unwrap(),
+                legacy_storage.encode(&legacy).unwrap()
+            );
+        }
+    }
+
+    /// 用生产读取路径解码整份日志。
+    fn read_records(path: &Path) -> Vec<Value> {
+        let mut reader = SessionReader::new(BufReader::new(File::open(path).unwrap()));
+        let mut line = Vec::new();
+        let mut decoded = Vec::new();
+        while reader.read_record(&mut line).unwrap() != 0 {
+            decoded.push(serde_json::from_slice::<Value>(&line).unwrap());
+        }
+        decoded
+    }
+
+    /// `sync=true` 是落盘边界：返回前记录必须已经写入文件，不能停在用户态缓冲里。
+    #[test]
+    fn synced_record_is_on_disk_before_it_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut journal, path) = open(dir.path());
+        journal.think(ThinkLevel::High).unwrap();
+        let records = read_records(&path);
+        let last = records.last().unwrap();
+        assert_eq!(last["type"], "thinking_level_change");
+        assert_eq!(last["thinkingLevel"], "high");
+    }
+
+    /// 新写入路径落盘的文件必须能被读取路径完整读回，且共享值仍然只写一次。
+    #[test]
+    fn written_records_read_back_through_the_session_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let metadata = metadata(dir.path());
+        let session = session();
+        let shared = "共享值表正文".repeat(64);
+        let display = json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": shared}],
+            "note": {"text": shared},
+        });
+        let mut journal = SessionJournal::new(dir.path().to_owned());
+        journal
+            .sent(
+                &metadata,
+                (&session).into(),
+                &WorkflowState::default(),
+                Some("user"),
+                None,
+            )
+            .unwrap();
+        let id = journal.id().unwrap().to_owned();
+        let path = dir.path().join(format!("{id}.jsonl"));
+        journal
+            .record(PayloadRef::DisplayMessage { message: &display }, true)
+            .unwrap();
+        let records = read_records(&path);
+        let record = records.last().unwrap();
+        assert_eq!(record["type"], "message");
+        assert_eq!(record["message"], display);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap().matches(&shared).count(),
+            1
+        );
+        drop(journal);
+        let restored = load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored.checkpoint.session).unwrap(),
+            serde_json::to_value(&session).unwrap()
+        );
+    }
 }

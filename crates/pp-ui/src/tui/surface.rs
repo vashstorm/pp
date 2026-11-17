@@ -22,7 +22,7 @@ use ratatui::{
 use std::{
     io::{self, Write},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -162,8 +162,9 @@ pub(super) fn copy_row(cells: &[Cell], target: &mut Buffer, x: u16, y: u16, widt
 
 pub(super) struct Surface<W: Write> {
     writer: W,
-    previous: Option<Buffer>,
-    main: Option<Buffer>,
+    // 差分基线共享同一份整帧缓冲：主屏幕帧的 previous 与 main 是同一块内存。
+    previous: Option<Arc<Buffer>>,
+    main: Option<Arc<Buffer>>,
     alternate: bool,
     reset_pending: bool,
     started: bool,
@@ -250,14 +251,14 @@ impl<W: Write> Surface<W> {
             .map(|old| GraphicsCleanup::from_frame(old, &removed))
             .unwrap_or_default();
         let clear_graphics = !removed.is_empty();
-        let previous = if reset {
+        let previous: Option<&Buffer> = if reset {
             None
         } else if switch && !alternate {
-            self.main.as_ref()
+            self.main.as_deref()
         } else if switch {
             None
         } else {
-            self.previous.as_ref()
+            self.previous.as_deref()
         };
         let unknown = Buffer::empty(buffer.area);
         let previous = previous.filter(|old| old.area == buffer.area);
@@ -396,7 +397,9 @@ impl<W: Write> Surface<W> {
             self.writer.write_all(&output)?;
             self.writer.flush()?;
         }
-        self.previous = Some(buffer.clone());
+        // 主屏幕帧的差分基线与 main 共享同一份整帧缓冲，只复制一次。
+        let snapshot = Arc::new(buffer.clone());
+        self.previous = Some(snapshot.clone());
         if reset
             || clear_graphics
             || self
@@ -408,7 +411,7 @@ impl<W: Write> Surface<W> {
             self.main = None;
         }
         if !alternate {
-            self.main = Some(buffer.clone());
+            self.main = Some(snapshot);
         }
         self.alternate = alternate;
         ALTERNATE_ACTIVE.store(alternate, Ordering::SeqCst);

@@ -18,6 +18,7 @@ use std::fmt;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 const DEFAULT_DEFINITIONS: &str = include_str!("defaults.json");
 
@@ -253,15 +254,42 @@ fn read_source(path: &Path) -> Result<Option<String>> {
 type RawFields = Vec<(String, Raw)>;
 type LayerEntry = (String, RawFields, String);
 
+/// 内置层的来源标签；保持与改动前相同的错误文案。
+const BUILTIN_LABEL: &str = "<builtin lsp defaults>";
+
+/// 内置默认层（`defaults.json`）的解析与字段校验结果。
+///
+/// 它是编译期常量，与 cwd、`lsp.json` 内容和设置都无关，因此整个进程只
+/// 解析一次；每个 Registry 仍各自读取用户/项目层并做本地发现。
+static BUILTIN_ENTRIES: OnceLock<Vec<LayerEntry>> = OnceLock::new();
+
+fn builtin_entries() -> Result<&'static [LayerEntry]> {
+    if let Some(entries) = BUILTIN_ENTRIES.get() {
+        return Ok(entries);
+    }
+    let source = Source::new(BUILTIN_LABEL.to_owned(), DEFAULT_DEFINITIONS);
+    let raw = parse_raw(&source.text, source.path())?;
+    let (servers, _) = split_layer(&raw, &source)?;
+    let mut entries = Vec::with_capacity(servers.len());
+    for (name, value) in servers {
+        validate_server_shape(&name, &value, &source)?;
+        entries.push((name, object_fields(&value), BUILTIN_LABEL.to_owned()));
+    }
+    // 内置层自身必须是完整定义；错误归属与逐层校验保持一致。
+    for (name, fields, label) in &entries {
+        finish_definition(name, fields, label)?;
+    }
+    Ok(BUILTIN_ENTRIES.get_or_init(|| entries))
+}
+
 struct MergedEntry {
     definition: ServerDefinition,
 }
 
 /// 合并内置 → 用户 → 项目三层定义。
 fn merge_layers(paths: &LayerPaths) -> Result<Vec<MergedEntry>> {
-    let builtin = Source::new("<builtin lsp defaults>".to_owned(), DEFAULT_DEFINITIONS);
-    let mut entries: Vec<LayerEntry> = Vec::new();
-    apply_layer(&mut entries, &builtin)?;
+    // 内置层来自进程级缓存：这里只克隆字段表，不再重复解析 53 个定义。
+    let mut entries: Vec<LayerEntry> = builtin_entries()?.to_vec();
     for path in paths.iter() {
         let Some(text) = read_source(path)? else {
             continue;

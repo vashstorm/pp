@@ -298,6 +298,8 @@ pub(super) struct Ticket {
     displayed: Option<Rendered>,
     width: u16,
     streaming: bool,
+    /// 已交给排版线程但尚未回写的版本；非空时不再排队新任务。
+    in_flight: Option<u64>,
     slot: Arc<Mutex<Option<Rendered>>>,
     pub exact: bool,
 }
@@ -317,6 +319,7 @@ impl Default for Ticket {
             displayed: None,
             width: 0,
             streaming: false,
+            in_flight: None,
             slot: Arc::new(Mutex::new(None)),
             exact: false,
         }
@@ -365,14 +368,15 @@ impl Ticket {
                     .displayed
                     .as_ref()
                     .is_some_and(|result| result.table_tail_start.is_some()));
-        if self.revision != self.snapshot_revision
+        let source_changed = self.revision != self.snapshot_revision;
+        if source_changed
             || width != self.width
             || self.version == 0
             || needs_layout_for_mode
             || appearance_changed
         {
             self.version += 1;
-            if self.revision != self.snapshot_revision {
+            if source_changed {
                 self.source = Arc::from(text);
                 self.snapshot_revision = self.revision;
             }
@@ -384,28 +388,60 @@ impl Ticket {
             self.theme = theme;
             self.icons = icons;
             self.exact = false;
-            CURRENT.with(|current| {
-                if let Some(shared) = current.borrow().as_ref() {
-                    let mut jobs = shared.jobs.lock().unwrap_or_else(|e| e.into_inner());
-                    jobs.push(Job {
-                        id: self.id,
-                        epoch: self.epoch,
-                        version: self.version,
-                        theme,
-                        icons,
-                        text: self.source.clone(),
-                        width,
-                        muted,
-                        streaming,
-                        slot: Arc::downgrade(&self.slot),
-                    });
-                    shared.wake.notify_one();
-                }
-            });
         }
+        self.absorb(width);
+        // 上一任务未回写前不排队：版本仍递增，避免把每次流式增量都排成一次
+        // 全量重解析；回写后同一帧内立即补发最新版本。
+        if self.in_flight.is_none() && self.unrendered() {
+            self.spawn(muted);
+        }
+        if let Some(result) = &self.displayed {
+            self.exact = result.version == self.version;
+            if self.exact && result.table_tail_start.is_none() {
+                return result.layout.clone();
+            }
+        }
+        if let Some(layout) = &self.fallback {
+            return layout.clone();
+        }
+        // 已排版前缀保持样式，新增尾部立即预览，不等待后台排版。
+        // 预览只复用前缀并生成有限尾部，不能用于历史提交。
+        let layout: Arc<EntryLayout> = match &self.displayed {
+            Some(result)
+                if (result.ends_with_table || result.table_tail_start.is_some())
+                    && text.starts_with(result.source.as_ref()) =>
+            {
+                // 表格布局只包含已收齐的行，预览始终另外占一行。
+                let start = result.table_tail_start.unwrap_or(result.source.len());
+                match table_tail_preview(&text[start..], width, muted) {
+                    Some(line) => Arc::new(EntryLayout::appended(
+                        result.layout.clone(),
+                        false,
+                        vec![LayoutLine {
+                            content: LayoutContent::Styled(line),
+                            height: 1,
+                        }],
+                    )),
+                    None => result.layout.clone(),
+                }
+            }
+            Some(result) if text.starts_with(result.source.as_ref()) => {
+                append_preview(result, &text[result.source.len()..], width, muted)
+            }
+            _ => Arc::new(prepared(plain(preview_tail(text), width, muted), width)),
+        };
+        self.fallback = Some(layout.clone());
+        layout
+    }
+
+    /// 吸收后台回写：更新的结果成为预览基线，并释放排队位。
+    fn absorb(&mut self, width: u16) {
         let result = self.slot.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(result) = result.as_ref().filter(|r| {
-            r.epoch == self.epoch && r.width == width && r.theme == theme && r.icons == icons
+        if let Some(result) = result.as_ref().filter(|result| {
+            result.epoch == self.epoch
+                && result.width == width
+                && result.theme == self.theme
+                && result.icons == self.icons
         }) && self
             .displayed
             .as_ref()
@@ -420,42 +456,45 @@ impl Ticket {
             }
             self.displayed = Some(result.clone());
         }
-        drop(result);
-        if let Some(result) = &self.displayed {
-            self.exact = result.version == self.version;
-            if self.exact && result.table_tail_start.is_none() {
-                return result.layout.clone();
-            }
+        // 排队位只看版本：替换与换宽都会让旧回写失效，但任务确实已经结束。
+        if let Some(in_flight) = self.in_flight
+            && result
+                .as_ref()
+                .is_some_and(|result| result.version >= in_flight)
+        {
+            self.in_flight = None;
         }
-        if let Some(layout) = &self.fallback {
-            return layout.clone();
-        }
-        // 已排版前缀保持样式，新增尾部立即预览，不等待后台排版。
-        // 预览只处理有限尾部，不能用于历史提交。
-        let layout =
-            match &self.displayed {
-                Some(result)
-                    if (result.ends_with_table || result.table_tail_start.is_some())
-                        && text.starts_with(result.source.as_ref()) =>
-                {
-                    // 表格布局只包含已收齐的行，预览始终另外占一行。
-                    let start = result.table_tail_start.unwrap_or(result.source.len());
-                    match table_tail_preview(&text[start..], width, muted) {
-                        Some(line) => {
-                            let mut lines = rendered_lines(result);
-                            lines.push(line);
-                            Arc::new(prepared(lines, width))
-                        }
-                        None => result.layout.clone(),
-                    }
-                }
-                Some(result) if text.starts_with(result.source.as_ref()) => Arc::new(
-                    append_preview(result, &text[result.source.len()..], width, muted),
-                ),
-                _ => Arc::new(prepared(plain(preview_tail(text), width, muted), width)),
-            };
-        self.fallback = Some(layout.clone());
-        layout
+    }
+
+    /// 最新版本还没有交给排版线程，也还没有回写。
+    fn unrendered(&self) -> bool {
+        self.displayed
+            .as_ref()
+            .is_none_or(|result| result.version < self.version)
+    }
+
+    fn spawn(&mut self, muted: bool) {
+        let job = Job {
+            id: self.id,
+            epoch: self.epoch,
+            version: self.version,
+            theme: self.theme,
+            icons: self.icons,
+            text: self.source.clone(),
+            width: self.width,
+            muted,
+            streaming: self.streaming,
+            slot: Arc::downgrade(&self.slot),
+        };
+        let version = self.version;
+        self.in_flight = CURRENT.with(|current| {
+            let shared = current.borrow();
+            let shared = shared.as_ref()?;
+            let mut jobs = shared.jobs.lock().unwrap_or_else(|e| e.into_inner());
+            jobs.push(job);
+            shared.wake.notify_one();
+            Some(version)
+        });
     }
 }
 
@@ -473,26 +512,21 @@ pub(super) fn table_tail_preview(text: &str, width: u16, muted: bool) -> Option<
         .then(|| super::markdown::table_tail_line(preview_tail(last), width, text_style(muted)))
 }
 
-fn rendered_lines(result: &Rendered) -> Vec<Line<'static>> {
-    result
-        .layout
-        .lines
-        .iter()
-        .map(|line| match &line.content {
-            LayoutContent::Styled(line) => line.clone(),
-            _ => unreachable!("后台正文排版仅包含样式行"),
-        })
-        .collect()
-}
-
-fn append_preview(result: &Rendered, suffix: &str, width: u16, muted: bool) -> EntryLayout {
-    let mut lines = rendered_lines(result);
+/// 预览尾部：复用已排版前缀，只复制需要续接的最后一行。
+fn append_preview(result: &Rendered, suffix: &str, width: u16, muted: bool) -> Arc<EntryLayout> {
     if suffix.is_empty() {
-        return prepared(lines, width);
+        return result.layout.clone();
     }
     let tail = preview_tail(suffix);
-    let mut line = if tail.len() == suffix.len() && !result.source.ends_with('\n') {
-        lines.pop().unwrap_or_default()
+    let continuation = tail.len() == suffix.len() && !result.source.ends_with('\n');
+    let mut line = if continuation {
+        match result.layout.get(result.layout.len().saturating_sub(1)) {
+            Some(LayoutLine {
+                content: LayoutContent::Styled(line),
+                ..
+            }) => line.clone(),
+            _ => Line::default(),
+        }
     } else {
         Line::default()
     };
@@ -501,21 +535,31 @@ fn append_preview(result: &Rendered, suffix: &str, width: u16, muted: bool) -> E
     }
     line.spans
         .push(Span::styled(tail.to_owned(), text_style(muted)));
-    lines.extend(super::transcript::wrap_block(line, width, ""));
-    prepared(lines, width)
+    let rows = super::transcript::wrap_block(line, width, "")
+        .into_iter()
+        .map(|line| LayoutLine {
+            content: LayoutContent::Styled(line),
+            height: 1,
+        })
+        .collect();
+    Arc::new(EntryLayout::appended(
+        result.layout.clone(),
+        continuation,
+        rows,
+    ))
 }
+
 fn prepared(lines: Vec<Line<'static>>, width: u16) -> EntryLayout {
-    EntryLayout {
+    EntryLayout::owned(
         width,
-        height: lines.len(),
-        lines: lines
+        lines
             .into_iter()
             .map(|line| LayoutLine {
                 content: LayoutContent::Styled(line),
                 height: 1,
             })
             .collect(),
-    }
+    )
 }
 fn text_style(muted: bool) -> Style {
     if muted {
@@ -561,7 +605,6 @@ mod tests {
         let preview = ticket.layout(&text, 8, false, false);
         pause.wait();
         let rows = preview
-            .lines
             .iter()
             .map(|line| {
                 let LayoutContent::Styled(line) = &line.content else {
@@ -589,10 +632,21 @@ mod tests {
         ticket.invalidate(false);
         ticket.layout("**first**\n\nsecond", 80, false, false);
         drop(first);
+        // 上一任务未回写前不排队：泵到回写被吸收、最新版本交给排版线程为止。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ticket.in_flight != Some(ticket.version) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "最新版本应交给排版线程"
+            );
+            ticket.layout("**first**\n\nsecond", 80, false, false);
+            std::thread::yield_now();
+        }
         second.wait();
         let intermediate = ticket.layout("**first**\n\nsecond", 80, false, false);
         assert!(!ticket.exact);
-        let LayoutContent::Styled(line) = &intermediate.lines[0].content else {
+        let LayoutContent::Styled(line) = &intermediate.get(0).expect("预览首行").content
+        else {
             panic!("应为 Markdown 行");
         };
         assert_eq!(line.to_string(), "first");
@@ -628,7 +682,6 @@ mod tests {
 
     fn layout_text(layout: &EntryLayout) -> String {
         layout
-            .lines
             .iter()
             .map(|line| match &line.content {
                 LayoutContent::Styled(line) => line.to_string(),
@@ -695,7 +748,9 @@ mod tests {
         assert!(text.ends_with("🙂\n\nlatest"));
         assert!(!text.contains('\u{fffd}'));
         assert!(text.len() < 9000);
-        let LayoutContent::Styled(last) = &preview.lines.last().unwrap().content else {
+        let LayoutContent::Styled(last) =
+            &preview.get(preview.len() - 1).expect("预览末行").content
+        else {
             panic!("应为样式行");
         };
         assert_eq!(
@@ -706,6 +761,37 @@ mod tests {
             layout_text(&append_preview(&result, "", 80, true)),
             "prefix"
         );
+    }
+
+    #[test]
+    fn layout_worker_preview_reuses_rendered_prefix_without_copying_lines() {
+        let result = Rendered {
+            epoch: 0,
+            version: 1,
+            theme: Theme::Default,
+            icons: IconMode::Nerd,
+            width: 80,
+            source: Arc::from("**first**\n\nsecond"),
+            layout: Arc::new(prepared(vec![Line::raw("first"), Line::raw("second")], 80)),
+            ends_with_table: false,
+            table_tail_start: None,
+        };
+        let preview = append_preview(&result, "\n\nthird", 80, false);
+        // 已排版前缀不复制：首行仍是同一块内存，只有续接的末行与尾部是新的。
+        assert!(std::ptr::eq(
+            result.layout.get(0).expect("前缀首行"),
+            preview.get(0).expect("预览首行")
+        ));
+        assert!(!std::ptr::eq(
+            result.layout.get(1).expect("前缀末行"),
+            preview.get(1).expect("续接行")
+        ));
+        assert_eq!(layout_text(&preview), "first\nsecond\n\nthird");
+        // 无新增正文时直接复用整份布局。
+        assert!(Arc::ptr_eq(
+            &append_preview(&result, "", 80, false),
+            &result.layout
+        ));
     }
 
     #[test]
@@ -782,7 +868,7 @@ mod tests {
             table_tail_start: None,
         });
         let rows = ticket.layout("new", 80, false, false);
-        let LayoutContent::Styled(line) = &rows.lines[0].content else {
+        let LayoutContent::Styled(line) = &rows.get(0).expect("首行").content else {
             panic!("应为已排版行")
         };
         assert_eq!(line.to_string(), "new");

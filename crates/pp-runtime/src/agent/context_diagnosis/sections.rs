@@ -1,17 +1,20 @@
 //! 基于当前会话真实数据的半静态上下文分块构建：
 //! 系统提示词、已发送的指令文件（AGENTS.md）、技能索引、内置工具 Schema 与自定义/MCP 工具 Schema。
 
-use super::{DiagnosticItem, MAX_PREVIEW_BYTES};
-use crate::agent::Session;
+use super::{DiagnosticItem, FingerprintWriter, MAX_PREVIEW_BYTES};
+use crate::agent::{Agent, Session};
 use anyhow::Result;
 use async_openai::types::{
     chat::{ChatCompletionTools, FunctionObject},
     responses::Tool,
 };
+use pp_config::config::EditMode;
 use pp_core::context::estimate_bytes;
 use pp_tools::project_instructions::{self, InspectedDocument};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+#[derive(Clone)]
 pub(super) struct SectionWithRanges {
     pub items: Vec<DiagnosticItem>,
     pub tokens: u64,
@@ -454,6 +457,7 @@ fn strip_ranges(source: &str, ranges: &[(usize, usize)]) -> String {
     out.trim().to_owned()
 }
 
+#[derive(Clone)]
 pub(super) struct SplitToolsBreakdown {
     pub tool_items: Vec<DiagnosticItem>,
     pub tools_tokens: u64,
@@ -565,10 +569,14 @@ fn parse_mcp_fallback_name(name: &str) -> Option<(String, String)> {
 pub(super) fn first_line_preview(text: &str) -> String {
     let first = text.lines().next().unwrap_or("").trim();
     let mut out = String::new();
-    for ch in first.chars().take(72) {
+    for (shown, ch) in first.chars().enumerate() {
+        if shown == 72 {
+            break;
+        }
         out.push(ch);
     }
-    if first.chars().count() > 72 || text.contains('\n') {
+    // 只探测第 73 个字符，不为超长单行统计全部字符。
+    if first.chars().nth(72).is_some() || text.contains('\n') {
         out.push('…');
     }
     out
@@ -588,4 +596,126 @@ pub(super) fn truncate_preview(text: &str) -> String {
         end,
         text.len()
     )
+}
+
+/// 超过预览预算的正文摘要：不保留正文，只报告原始字节数。
+pub(super) fn oversized_preview(bytes: usize) -> String {
+    format!("<{bytes} bytes; preview skipped: exceeds {MAX_PREVIEW_BYTES} bytes>")
+}
+
+/// 正文预览：预算内保持原样，超过预算只给字节摘要（不复制正文）。
+pub(super) fn body_preview(text: &str) -> String {
+    if text.len() > MAX_PREVIEW_BYTES {
+        return oversized_preview(text.len());
+    }
+    text.to_owned()
+}
+
+/// JSON 形态正文预览：先按原始字节判断预算，超过预算不再解析大对象；
+/// 预算内才美化，并沿用既有截断口径。
+pub(super) fn json_body_preview(text: &str) -> String {
+    if text.len() > MAX_PREVIEW_BYTES {
+        return oversized_preview(text.len());
+    }
+    truncate_preview(&pretty_json(text))
+}
+
+/// 多段正文按 `"\n"` 拼接后的字节数（不拼接）。
+pub(super) fn parts_total(parts: &[Cow<'_, str>]) -> usize {
+    parts
+        .iter()
+        .map(|part| part.len())
+        .sum::<usize>()
+        .saturating_add(parts.len().saturating_sub(1))
+}
+
+fn pretty_json(text: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| text.to_owned()),
+        Err(_) => text.to_owned(),
+    }
+}
+
+/// 半静态上下文分区的缓存指纹：系统提示词正文、项目指令输入、技能索引、工具表与渲染输入。
+///
+/// 指纹只用内存中的已发送数据计算，不读盘：相同指纹表示这些分区的分类结果可以整体复用。
+/// 项目规则变化会改变 `reported_project_load` 或作用域摘要，工具增删或 schema 变化会改变
+/// `tools`，模型／编辑模式／工作流／沙箱／限额变化会改变 `render`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SectionFingerprint {
+    system: u64,
+    instructions: u64,
+    skills: u64,
+    tools: u64,
+    render: u64,
+}
+
+impl SectionFingerprint {
+    pub(super) fn of(
+        agent: &Agent,
+        actual_system: &str,
+        headers: &[pp_config::skills::SkillHeader],
+        mcp_origins: &BTreeMap<String, (String, String)>,
+    ) -> Self {
+        let mut instructions = FingerprintWriter::default();
+        for (path, content) in &agent.reported_project_load {
+            instructions.text(path);
+            instructions.text(content);
+        }
+        instructions.text(&agent.tools.project_scope_summary());
+
+        let mut skills = FingerprintWriter::default();
+        for header in headers {
+            skills.text(&header.name);
+            skills.text(&header.uri);
+            skills.text(&header.description);
+        }
+
+        let mut tools = FingerprintWriter::default();
+        match &agent.session {
+            Session::Completion(request) => {
+                for tool in request.tools.as_deref().unwrap_or_default() {
+                    let _ = serde_json::to_writer(&mut tools, tool);
+                }
+            }
+            Session::Response(request) => {
+                for tool in request.tools.as_deref().unwrap_or_default() {
+                    let _ = serde_json::to_writer(&mut tools, tool);
+                }
+            }
+        }
+        for (name, (server, original)) in mcp_origins {
+            tools.text(name);
+            tools.text(server);
+            tools.text(original);
+        }
+
+        let mut render = FingerprintWriter::default();
+        render.text(&agent.current_model.model);
+        render.text(match agent.tools.edit_mode() {
+            EditMode::Replace => "replace",
+            EditMode::Hashline => "hashline",
+        });
+        render.text(agent.workflow.mode_name());
+        let status = agent.tools.sandbox().status();
+        render.text(status.effective.as_str());
+        render.number(u64::from(status.network));
+        let limits = agent.tools.limits;
+        render.number(limits.read_max_bytes as u64);
+        render.number(limits.read_max_lines as u64);
+        render.number(limits.bash_timeout_seconds);
+        render.number(limits.bash_max_timeout_seconds);
+        render.number(limits.eval_timeout_seconds);
+        render.number(limits.eval_max_timeout_seconds);
+        render.number(u64::from(agent.prompt_source.is_some()));
+        render.number(agent.base_system.len() as u64);
+
+        Self {
+            system: super::hash_text(actual_system),
+            instructions: instructions.finish(),
+            skills: skills.finish(),
+            tools: tools.finish(),
+            render: render.finish(),
+        }
+    }
 }

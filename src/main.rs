@@ -157,6 +157,7 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    logging::perf::mark("start");
     pp_runtime::raise_file_limit();
     host_defaults::install(host_defaults::capture());
     let args = Args::parse();
@@ -362,17 +363,27 @@ fn run(args: Args) -> Result<()> {
     // configuration for a fresh `pp`. Load the journal before tools, skills, and
     // the TUI workspace so everything runs from the saved working directory.
     let global_dir = config::global_dir();
+    // 进程级统计库句柄：请求、工具、hook 与标题复用同一个连接；
+    // 解析失败不在这里致命，由既有配置错误路径呈现。
+    let stats_database = pp_stats::database_path().map(pp_stats::Database::new);
     let migration_error = global_dir.as_ref().ok().and_then(|dir| {
         agent_store::initialize(dir, &cancellation::CancellationToken::new()).err()
     });
-    // 显示设置独立于模型初始化；无效设置的诊断仍由既有启动路径呈现。
-    let (tui_settings, cost_display) = global_dir
+    logging::perf::mark("agent_db_ready");
+    // 启动期只解析一次 settings.yml：TUI 外观、费用显示、技能发现与模型目录共用同一份快照。
+    // 一次性迁移已在上一步完成（旧字段已从文件剥离），所以这里读到的是迁移后的配置；
+    // 读取失败仍按既有方式呈现：外观回落默认值，错误进入技能 diagnostics 与配置错误路径。
+    let settings = match &global_dir {
+        Ok(dir) => {
+            config::read_settings(&dir.join("settings.yml")).map(|settings| (dir.clone(), settings))
+        }
+        Err(error) => Err(anyhow::anyhow!("{error:#}")),
+    };
+    let (tui_settings, cost_display) = settings
         .as_ref()
-        .ok()
-        .filter(|_| use_tui)
-        .and_then(|dir| config::read_settings(&dir.join("settings.yml")).ok())
-        .map(|settings| (settings.tui, settings.cost))
+        .map(|(_, settings)| (settings.tui, settings.cost.clone()))
         .unwrap_or_default();
+    logging::perf::mark("settings_ready");
     let file_commands = if args.prompt.is_none() {
         match &global_dir {
             Ok(dir) => commands::FileCommands::from_dir(dir),
@@ -394,7 +405,10 @@ fn run(args: Args) -> Result<()> {
             resume_id,
             // 加载记录用于会话级去重，CLI 恢复同样需要有效回放。
             true,
-            &pp_stats::database_path()?,
+            stats_database
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!("{error:#}"))?
+                .path(),
         )?)
     } else {
         None
@@ -421,6 +435,20 @@ fn run(args: Args) -> Result<()> {
     });
     // 提示词错误必须在交互兜底之前返回，不能静默禁用或替换用户设定。
     let manager = mcp.clone();
+    // 模型目录启动期只装载一次：迁移与 settings 解析都已完成，这里复用同一份快照，
+    // 不再重读 settings.yml、也不再打开 agent.db 做第二遍迁移检查。
+    // 装载失败不在这里呈现，交给既有启动路径（`Bootstrap::model_state`）重新加载并上报同一错误。
+    let models = pp_config::model_state::SharedModels::default();
+    if migration_error.is_none()
+        && let Ok((dir, catalog_settings)) = &settings
+        && let Ok(catalog) = config::ModelCatalog::from_migrated_settings(
+            catalog_settings.clone(),
+            &dir.join("settings.yml"),
+            &dir.join("models.yml"),
+        )
+    {
+        models.install(pp_config::model_state::ModelState::shared(catalog));
+    }
     let result = (move || -> Result<()> {
         let prompt_source = if restored.is_none() {
             global_dir
@@ -439,8 +467,8 @@ fn run(args: Args) -> Result<()> {
         } else {
             None
         };
-        let skills = match &global_dir {
-            Ok(dir) => skills::Skills::from_dir(dir),
+        let skills = match &settings {
+            Ok((dir, settings)) => skills::Skills::from_settings(settings, dir),
             Err(error) => {
                 let mut skills = skills::Skills::default();
                 skills.diagnostics.push(format!("{error:#}"));
@@ -448,6 +476,7 @@ fn run(args: Args) -> Result<()> {
             }
         }
         .shared();
+        logging::perf::mark("skills_ready");
         let sandbox = pp_sandbox::SharedSandbox::default();
         let sandbox_override = args.sandbox.map(Into::into);
         let bootstrap = global_dir.as_ref().ok().map(|dir| agent::Bootstrap {
@@ -461,7 +490,7 @@ fn run(args: Args) -> Result<()> {
             sandbox_override,
             sandbox: sandbox.clone(),
             mcp: manager.clone(),
-            models: pp_config::model_state::SharedModels::default(),
+            models: models.clone(),
         });
         let mut agent = if let Some(error) = migration_error {
             Err(error)
@@ -493,9 +522,17 @@ fn run(args: Args) -> Result<()> {
                     .ok_or_else(|| {
                         anyhow::anyhow!("Unable to locate global configuration directory")
                     })
-                    .and_then(agent::Bootstrap::build),
+                    .and_then(|bootstrap| {
+                        bootstrap.build_with_stats(
+                            stats_database
+                                .as_ref()
+                                .map_err(|error| anyhow::anyhow!("{error:#}"))?
+                                .clone(),
+                        )
+                    }),
             }
         };
+        logging::perf::mark("bootstrap_ready");
         if agent
             .as_ref()
             .err()

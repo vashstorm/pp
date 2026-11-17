@@ -59,7 +59,47 @@ impl ContextUsage {
 /// 原生 JSON 文本按三字节估一 token，内嵌图片每张估 4096 token。
 /// 这只是容量启发式，既不是计费依据，也不分配完整历史的序列化副本。
 pub fn estimate_tokens(value: &impl Serialize) -> Result<u64> {
-    estimate_bytes(value).map(|bytes| bytes.div_ceil(3))
+    estimate_bytes(value).map(estimate_tokens_from_bytes)
+}
+
+/// 把估算字节数折算成 token：每三字节一 token，向上取整。
+///
+/// 全量估算与增量累加共用这一条折算规则，不允许各自取整。
+pub fn estimate_tokens_from_bytes(bytes: u64) -> u64 {
+    bytes.div_ceil(3)
+}
+
+/// 逐条消息累加的估算字节数：单条估算之和，加上 `n - 1` 个 JSON 数组逗号。
+///
+/// 它与 [`estimate_bytes`] 可组合：请求骨架（其余字段与数组方括号）的字节数加上
+/// 本累计，等于整棵请求序列化后的字节数。空切片为 0。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MessageBytes {
+    bytes: u64,
+    count: usize,
+}
+
+impl MessageBytes {
+    /// 追加一条已用 [`estimate_bytes`] 估算过的消息。
+    pub fn push(&mut self, bytes: u64) {
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.count = self.count.saturating_add(1);
+    }
+
+    /// 丢弃全部累计；整段替换历史后必须重算。
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// 消息数组内部（不含方括号）的估算字节数。
+    pub fn total(&self) -> u64 {
+        self.bytes
+            .saturating_add(self.count.saturating_sub(1) as u64)
+    }
 }
 
 /// 统计原生 JSON 文本的估算字节数（内嵌图片等价 4096 * 3 字节）。
@@ -207,6 +247,49 @@ mod tests {
             estimate_tokens(&Invalid).unwrap_err().to_string(),
             "estimating context usage failed"
         );
+    }
+
+    #[test]
+    fn message_bytes_compose_with_request_skeleton() {
+        let cases = [
+            ("empty", serde_json::json!([])),
+            (
+                "plain",
+                serde_json::json!([{"role": "user", "content": "hello"}]),
+            ),
+            (
+                "escaped",
+                serde_json::json!([{"content": "quote \" backslash \\ tab \t bell \u{7}"}]),
+            ),
+            (
+                "image",
+                serde_json::json!([{"image_url": format!("data:image/png;base64,{}", "A".repeat(5_000))}]),
+            ),
+            (
+                "mixed",
+                serde_json::json!([
+                    {"role": "user", "content": "hi"},
+                    {"image_url": "data:image/jpeg;base64,AAAA"},
+                    {"tool_call": {"id": "c1", "arguments": "{\"path\": \"a.rs\"}"}}
+                ]),
+            ),
+        ];
+        let skeleton = serde_json::json!({"model": "m", "messages": [], "tools": [{"name": "t"}]});
+        for (name, messages) in cases {
+            let items = messages.as_array().expect("case fixture is an array");
+            let full =
+                serde_json::json!({"model": "m", "messages": messages, "tools": [{"name": "t"}]});
+            let mut accumulated = MessageBytes::default();
+            for item in items {
+                accumulated.push(estimate_bytes(item).unwrap());
+            }
+            assert_eq!(accumulated.count(), items.len(), "{name}");
+            assert_eq!(
+                estimate_bytes(&skeleton).unwrap() + accumulated.total(),
+                estimate_bytes(&full).unwrap(),
+                "{name}"
+            );
+        }
     }
 
     #[test]

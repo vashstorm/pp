@@ -17,10 +17,17 @@ enum Node {
     Object(std::collections::BTreeMap<String, usize>),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
     values: Vec<Node>,
+    root: usize,
+}
+
+/// 编码视图：直接借用刚插入的节点，不再为每条记录克隆整段值表。
+#[derive(Serialize)]
+struct RecordRef<'a> {
+    values: &'a [Node],
     root: usize,
 }
 
@@ -70,11 +77,12 @@ impl Storage {
         self.insert(node)
     }
 
+    /// 唯一写入口：直接 intern 已构造的值，返回本条记录（不含换行）。
     pub fn encode(&mut self, value: &Value) -> io::Result<Vec<u8>> {
         let first = self.nodes.len();
         let root = self.intern(value);
-        serde_json::to_vec(&Record {
-            values: self.nodes[first..].to_vec(),
+        serde_json::to_vec(&RecordRef {
+            values: &self.nodes[first..],
             root,
         })
         .map_err(io::Error::other)

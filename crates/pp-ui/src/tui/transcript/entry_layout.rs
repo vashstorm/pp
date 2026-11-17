@@ -55,11 +55,7 @@ impl TranscriptEntry {
             || (self.kind == EntryKind::Ask && self.status == EntryStatus::Running)
             || (self.tool.as_deref() == Some("todo") && self.status != EntryStatus::Failed)
         {
-            self.layout = Some(std::sync::Arc::new(EntryLayout {
-                width,
-                height: 0,
-                lines: Vec::new(),
-            }));
+            self.layout = Some(std::sync::Arc::new(EntryLayout::owned(width, Vec::new())));
             return;
         }
         if matches!(self.kind, EntryKind::Error | EntryKind::Notice) {
@@ -121,11 +117,7 @@ impl TranscriptEntry {
                     height: 1,
                 })
                 .collect();
-            self.layout = Some(std::sync::Arc::new(EntryLayout {
-                width,
-                height: lines.len(),
-                lines,
-            }));
+            self.layout = Some(std::sync::Arc::new(EntryLayout::owned(width, lines)));
             return;
         }
         if self.is_wait_card() {
@@ -148,11 +140,7 @@ impl TranscriptEntry {
                 height: 1,
             })
             .collect::<Vec<_>>();
-            self.layout = Some(std::sync::Arc::new(EntryLayout {
-                width,
-                height: lines.len(),
-                lines,
-            }));
+            self.layout = Some(std::sync::Arc::new(EntryLayout::owned(width, lines)));
             return;
         }
         let mut lines = Vec::new();
@@ -352,23 +340,34 @@ impl TranscriptEntry {
             && !matches!(self.body, EntryBody::Lsp(_))
             && eval_has_output;
         if tool_body {
-            let mut text = self.visible_text().to_owned();
-            if !self.stdout.is_empty() {
-                if !text.is_empty() {
-                    text.push('\n');
+            // 正文只由 stdout 组成时直接借用，避免每帧复制整段工具输出。
+            let joined;
+            let text: &str = if self.visible_text().is_empty()
+                && self.stderr.is_empty()
+                && self.pipeline_preview.is_none()
+            {
+                self.stdout.strip_suffix('\n').unwrap_or(&self.stdout)
+            } else {
+                let mut text = self.visible_text().to_owned();
+                if !self.stdout.is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(self.stdout.strip_suffix('\n').unwrap_or(&self.stdout));
                 }
-                text.push_str(self.stdout.strip_suffix('\n').unwrap_or(&self.stdout));
-            }
-            if !self.stderr.is_empty() {
-                if !text.is_empty() {
-                    text.push('\n');
+                if !self.stderr.is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str("[stderr]\n");
+                    text.push_str(self.stderr.strip_suffix('\n').unwrap_or(&self.stderr));
                 }
-                text.push_str("[stderr]\n");
-                text.push_str(self.stderr.strip_suffix('\n').unwrap_or(&self.stderr));
-            }
-            if let Some(preview) = &self.pipeline_preview {
-                text.clone_from(preview);
-            }
+                if let Some(preview) = &self.pipeline_preview {
+                    text.clone_from(preview);
+                }
+                joined = text;
+                &joined
+            };
             let style = if bash {
                 Style::default().fg(muted_text()).bg(bash_background())
             } else if eval {
@@ -380,7 +379,7 @@ impl TranscriptEntry {
                 tool_display::body(
                     tool_display::View {
                         name: self.tool.as_deref().unwrap_or_default(),
-                        text: &text,
+                        text,
                         arguments: &self.arguments,
                         result: self.result.as_ref(),
                         running: self.status == EntryStatus::Running,
@@ -588,7 +587,6 @@ impl TranscriptEntry {
         if edit {
             lines.push(border(Source::Bottom));
         }
-        let mut height = 0;
         for line in &mut lines {
             line.height = if self.kind == EntryKind::Activity
                 // 边框行必须保持单行，窄宽度下标题按现有规则裁剪。
@@ -602,13 +600,8 @@ impl TranscriptEntry {
                     .line_count(width)
                     .max(1)
             };
-            height += line.height;
         }
-        self.layout = Some(std::sync::Arc::new(EntryLayout {
-            width,
-            height,
-            lines,
-        }));
+        self.layout = Some(std::sync::Arc::new(EntryLayout::owned(width, lines)));
     }
 
     pub(super) fn add_lines(&self, source: Source, lines: &mut Vec<LayoutLine>) {

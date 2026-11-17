@@ -271,6 +271,8 @@ pub(super) fn run_with_sandbox(
                             .any(|pair| pair[0] == b'\r' && pair[1] != b'\n')
                         && !raw.ends_with('\r') =>
                 {
+                    // 搜索已读过正文；这里只重读一次以证明快照对应磁盘当前字节，
+                    // 标签在同一次比对结果上算好，不再由 `record` 重算。
                     workspace
                         .target(&file.target.path, false)
                         .ok()
@@ -283,8 +285,9 @@ pub(super) fn run_with_sandbox(
         } else {
             None
         };
-        let editable =
-            editable.filter(|(key, raw, _)| snapshots.record(key.clone(), raw.clone(), Vec::new()));
+        // 一次写入即完成登记；具体展示行由 `extend_seen` 在行渲染后补记。
+        let editable = editable
+            .filter(|(key, raw, tag)| snapshots.record(key.clone(), tag, raw.clone(), Vec::new()));
         let mut header = if single {
             editable
                 .as_ref()
@@ -344,8 +347,8 @@ pub(super) fn run_with_sandbox(
             line_cut |= row.truncated;
             last = Some(row.number);
         }
-        if let Some((key, raw, _)) = editable {
-            let _ = snapshots.record(key, raw, seen);
+        if let Some((key, _, _)) = &editable {
+            snapshots.extend_seen(key, seen);
         }
         file_details.push(json!({"path":file.target.display,"count":file.matches}));
         if byte_cut || budget.reached {
@@ -602,6 +605,42 @@ mod tests {
         assert!(
             file["content"].as_str().unwrap().contains("[00.txt#"),
             "{file}"
+        );
+    }
+
+    #[test]
+    fn rg_hashline_header_tag_matches_disk_bytes_with_one_computation() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("file"), "hello\n").unwrap();
+        let mut store = hashline::Store::default();
+        hashline::take_tag_computations();
+        let result = execute(
+            d.path(),
+            json!({"pattern":"hello","path":"file"}),
+            EditMode::Hashline,
+            &mut store,
+        );
+        // 上游向量：file_hash("hello\n") == 5BF9。标签必须来自磁盘字节，且一次写入只算一次。
+        assert!(
+            result["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("[file#5BF9]\n"),
+            "{result}"
+        );
+        assert_eq!(hashline::take_tag_computations(), 1, "{result}");
+        // 快照正文等于磁盘当前字节：已展示行可编，未展示行不可。
+        let shown = hashline::parse("[file#5BF9]\nCUT 1.=1").unwrap();
+        let hidden = hashline::parse("[file#5BF9]\nCUT 2.=2").unwrap();
+        assert!(
+            store
+                .validate(Path::new("file"), "5BF9", "hello\n", &shown.edits)
+                .is_ok()
+        );
+        assert!(
+            store
+                .validate(Path::new("file"), "5BF9", "hello\n", &hidden.edits)
+                .is_err()
         );
     }
 }

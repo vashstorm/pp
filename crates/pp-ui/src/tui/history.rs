@@ -5,7 +5,7 @@ use pp_runtime::agent::persistence::SessionListing;
 use pp_runtime::history::InputEntry;
 use pp_runtime::history::Store;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
 };
@@ -47,6 +47,8 @@ pub(super) enum Request {
 }
 
 pub(super) enum Reply {
+    /// `history.db` 打开失败：主线程不再阻塞等待握手，改由本条回复告知并停用持久回忆。
+    Unavailable,
     InputAppended(Result<i64>),
     InputsLoaded {
         request_id: u64,
@@ -73,116 +75,24 @@ pub(super) struct Worker {
 }
 
 impl Worker {
+    /// 只构造通道与线程后立即返回：`history.db` 在 worker 内打开。
+    ///
+    /// 打开失败经 [`Reply::Unavailable`] 回报，主线程不再为首帧等待握手。
     pub(super) fn new(path: PathBuf) -> Result<Self> {
         let (requests, receiver) = mpsc::channel();
         let (sender, replies) = mpsc::channel();
-        let (ready_sender, ready) = mpsc::sync_channel(1);
         let scan_cancellation = CancellationToken::new();
         let cancellation = scan_cancellation.clone();
         let thread = thread::Builder::new()
             .name("pp-history".into())
-            .spawn(move || {
-                let opened = Store::open(&path);
-                let mut store = match opened {
-                    Ok(store) => {
-                        let _ = ready_sender.send(Ok(()));
-                        store
-                    }
-                    Err(error) => {
-                        let _ = ready_sender.send(Err(error));
-                        return;
-                    }
-                };
-                let sessions = path.with_file_name("sessions");
-                while let Ok(request) = receiver.recv() {
-                    let reply = match request {
-                        Request::AppendInput {
-                            cwd,
-                            text,
-                            images,
-                            created_at_ms,
-                        } => Reply::InputAppended(store.append_input_images(
-                            &cwd,
-                            &text,
-                            &images,
-                            created_at_ms,
-                        )),
-                        Request::LoadInputs {
-                            request_id,
-                            cwd,
-                            before_id,
-                        } => Reply::InputsLoaded {
-                            request_id,
-                            before_id,
-                            result: store.load_inputs(&cwd, before_id, INPUT_PAGE_SIZE),
-                        },
-                        Request::SyncAndSearch {
-                            panel_generation,
-                            request_id,
-                            cwd,
-                            query,
-                        } => {
-                            let result = store.sync_sessions(&sessions, &cancellation).and_then(
-                                |diagnostics| {
-                                    Ok(SessionListing {
-                                        sessions: store.search_sessions(cwd.as_deref(), &query)?,
-                                        diagnostics,
-                                    })
-                                },
-                            );
-                            Reply::SessionsSearched {
-                                panel_generation,
-                                request_id,
-                                result,
-                            }
-                        }
-                        Request::Search {
-                            panel_generation,
-                            request_id,
-                            cwd,
-                            query,
-                        } => Reply::SessionsSearched {
-                            panel_generation,
-                            request_id,
-                            result: store
-                                .search_sessions(cwd.as_deref(), &query)
-                                .map(|sessions| SessionListing {
-                                    sessions,
-                                    diagnostics: Vec::new(),
-                                }),
-                        },
-                        Request::SetSessionPinned {
-                            panel_generation,
-                            request_id,
-                            id,
-                            pinned,
-                        } => Reply::SessionPinned {
-                            panel_generation,
-                            request_id,
-                            result: store.set_session_pinned(&id, pinned),
-                        },
-                        Request::Shutdown => break,
-                    };
-                    // 回复接收者退出也不能丢弃已接受、排在 Shutdown 前的 append。
-                    let _ = sender.send(reply);
-                }
-            })
+            .spawn(move || run(path, receiver, sender, cancellation))
             .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
-        match ready.recv() {
-            Ok(Ok(())) => Ok(Self {
-                requests,
-                replies,
-                scan_cancellation,
-                thread: Some(thread),
-            }),
-            result => {
-                let _ = thread.join();
-                match result {
-                    Ok(Err(error)) => Err(error),
-                    _ => Err(anyhow::anyhow!(UNAVAILABLE)),
-                }
-            }
-        }
+        Ok(Self {
+            requests,
+            replies,
+            scan_cancellation,
+            thread: Some(thread),
+        })
     }
 
     pub(super) fn shutdown(&mut self) -> Result<()> {
@@ -206,6 +116,110 @@ impl Drop for Worker {
             tracing::warn!(event = "history_worker_unavailable");
         }
     }
+}
+
+/// worker 主体：先打开数据库，再按 FIFO 逐条处理请求。
+///
+/// 打开失败经 `Reply::Unavailable` 报告一次，然后只排空请求直到 `Shutdown`：
+/// 调用方收到该回复即释放 worker，不会有请求悬空等待，也不会有后续追加被排队。
+fn run(
+    path: PathBuf,
+    receiver: Receiver<Request>,
+    sender: Sender<Reply>,
+    cancellation: CancellationToken,
+) {
+    let sessions = path.with_file_name("sessions");
+    let mut store = match Store::open(&path) {
+        Ok(store) => store,
+        Err(_) => {
+            let _ = sender.send(Reply::Unavailable);
+            while let Ok(request) = receiver.recv() {
+                if matches!(request, Request::Shutdown) {
+                    break;
+                }
+            }
+            return;
+        }
+    };
+    while let Ok(request) = receiver.recv() {
+        let Some(reply) = reply_to(&mut store, &sessions, &cancellation, request) else {
+            break;
+        };
+        // 回复接收者退出也不能丢弃已接受、排在 Shutdown 前的 append。
+        let _ = sender.send(reply);
+    }
+}
+
+/// 单条请求 → 单条回复；`Shutdown` 返回 `None` 结束循环。
+fn reply_to(
+    store: &mut Store,
+    sessions: &Path,
+    cancellation: &CancellationToken,
+    request: Request,
+) -> Option<Reply> {
+    Some(match request {
+        Request::AppendInput {
+            cwd,
+            text,
+            images,
+            created_at_ms,
+        } => Reply::InputAppended(store.append_input_images(&cwd, &text, &images, created_at_ms)),
+        Request::LoadInputs {
+            request_id,
+            cwd,
+            before_id,
+        } => Reply::InputsLoaded {
+            request_id,
+            before_id,
+            result: store.load_inputs(&cwd, before_id, INPUT_PAGE_SIZE),
+        },
+        Request::SyncAndSearch {
+            panel_generation,
+            request_id,
+            cwd,
+            query,
+        } => {
+            let result = store
+                .sync_sessions(sessions, cancellation)
+                .and_then(|diagnostics| {
+                    Ok(SessionListing {
+                        sessions: store.search_sessions(cwd.as_deref(), &query)?,
+                        diagnostics,
+                    })
+                });
+            Reply::SessionsSearched {
+                panel_generation,
+                request_id,
+                result,
+            }
+        }
+        Request::Search {
+            panel_generation,
+            request_id,
+            cwd,
+            query,
+        } => Reply::SessionsSearched {
+            panel_generation,
+            request_id,
+            result: store
+                .search_sessions(cwd.as_deref(), &query)
+                .map(|sessions| SessionListing {
+                    sessions,
+                    diagnostics: Vec::new(),
+                }),
+        },
+        Request::SetSessionPinned {
+            panel_generation,
+            request_id,
+            id,
+            pinned,
+        } => Reply::SessionPinned {
+            panel_generation,
+            request_id,
+            result: store.set_session_pinned(&id, pinned),
+        },
+        Request::Shutdown => return None,
+    })
 }
 
 #[cfg(test)]
@@ -316,5 +330,38 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["previous process", "this process"]
         );
+    }
+
+    #[test]
+    fn history_worker_reports_unavailable_without_blocking_construction() {
+        let directory = tempfile::tempdir().unwrap();
+        // 父路径是普通文件：`history.db` 的目录既不能创建也不能打开。
+        let blocker = directory.path().join("blocked");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let mut worker = Worker::new(blocker.join("history.db")).unwrap();
+        worker
+            .requests
+            .send(Request::LoadInputs {
+                request_id: 1,
+                cwd: blocker.clone(),
+                before_id: None,
+            })
+            .unwrap();
+        assert!(matches!(
+            worker.replies.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Reply::Unavailable
+        ));
+        // 打开失败后只排空请求、不再回失败页：调用方收到 Unavailable 即释放 worker。
+        assert!(
+            worker
+                .requests
+                .send(Request::LoadInputs {
+                    request_id: 2,
+                    cwd: blocker,
+                    before_id: None,
+                })
+                .is_ok()
+        );
+        worker.shutdown().unwrap();
     }
 }
