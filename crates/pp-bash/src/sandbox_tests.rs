@@ -226,21 +226,22 @@ fn sandbox_bash_network_false_blocks_external_but_allows_loopback() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&home).unwrap();
 
+    // 监听器只由测试进程持有、不 accept：loopback 建连在内核完成握手即算成功，
+    // 避免无上界阻塞的 accept 线程在沙盒内进程未启动时永久挂住。
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let handle = thread::spawn(move || {
-        let _ = listener.accept();
-    });
 
     let policy = test_sandbox(&repo, &home, SandboxMode::WorkspaceWrite, false);
+    // connect_ex 以 errno 代替异常：loopback 必须建连成功（0），
+    // 外部地址必须被策略拒绝（EPERM/EACCES）。整条命令受 run 的 15s 看门狗约束。
     let script = format!(
         "/usr/bin/python3 -c \"\
-import socket, sys; \
-s = socket.socket(); s.settimeout(1.0); s.connect(('127.0.0.1', {port})); s.close(); \
-s2 = socket.socket(); s2.settimeout(1.0); \
-\ntry:\n s2.connect(('93.184.216.34', 80)); sys.exit(2)\nexcept PermissionError:\n pass\""
+import errno, socket, sys; \
+loopback = socket.socket(); loopback.settimeout(2.0); loop = loopback.connect_ex(('127.0.0.1', {port})); loopback.close(); \
+external = socket.socket(); external.settimeout(2.0); ext = external.connect_ex(('93.184.216.34', 80)); external.close(); \
+print('loopback=%d external=%d' % (loop, ext)); \
+sys.exit(0 if loop == 0 and ext in (errno.EPERM, errno.EACCES) else 3)\""
     );
     let res = run_cmd(&repo, &script, policy).unwrap();
-    let _ = handle.join();
     assert_eq!(res["ok"], true, "{res}");
 }
