@@ -184,7 +184,7 @@ impl Binding {
             *lock(&self.inner.accounting) = ledger;
         }
     }
-    pub(crate) fn directory(&self) -> PathBuf {
+    pub fn directory(&self) -> PathBuf {
         self.inner.directory()
     }
     pub(crate) fn bind_session(&self, dir: &Path, id: &str) {

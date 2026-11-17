@@ -19,14 +19,13 @@ impl Agent {
     pub fn ensure_subagents(&mut self) -> Result<()> {
         let plan_mode = self.workflow.mode == pp_core::plan::WorkMode::Plan;
         if self
-            .tools
             .subagent
             .as_ref()
             .is_some_and(|b| b.depth == 0 && b.plan_mode() != plan_mode)
         {
             self.stop_subagents()?;
         }
-        if let Some(binding) = &mut self.tools.subagent {
+        if let Some(binding) = &mut self.subagent {
             binding.set_accounting(self.task_status.accounting.clone());
             binding.set_runtime_models(self.runtime_models.clone());
             if let Some(catalog) = self
@@ -140,14 +139,16 @@ impl Agent {
                 tools.write_lock = write_lock.clone();
             }
             tools.approval = approval.clone();
-            tools.approval.label(record.name.clone(), binding.clone());
+            tools
+                .approval
+                .label(record.name.clone(), binding.owner.clone());
             if !record.spec.isolated
                 && let Some(parent) = lsp.as_ref()
                 && same_workspace(&record.spec.cwd, parent.cwd())
             {
                 tools.install_shared_lsp(parent.clone());
             } else if lsp_settings.enabled {
-                tools.install_lsp(crate::lsp::Registry::new(
+                tools.install_lsp(pp_lsp::Registry::new(
                     record.spec.cwd.clone(),
                     Some(lsp_path.clone()),
                     lsp_settings,
@@ -174,7 +175,7 @@ impl Agent {
             });
             tools.allowed_tools = Some(allowed);
             tools.yield_schema = record.spec.output_schema.clone();
-            tools.subagent = Some(binding.clone());
+            tools.subagent = Some(Arc::new(binding.clone()));
             let interaction_binding = binding.clone();
             if let Some(handler) = &ask {
                 let handler = handler.clone();
@@ -201,6 +202,7 @@ impl Agent {
                     .as_ref()
                     .map(|runtime| runtime.child(record.spec.model_role, record.id.clone())),
                 subagent_control: Default::default(),
+                subagent: Some(binding.clone()),
                 task_status: Default::default(),
                 client: OpenAiClient::new(&config)?,
                 tools,
@@ -297,9 +299,10 @@ impl Agent {
                     )?;
                 }
             }
-            if let Some(binding) = &mut child.tools.subagent {
+            if let Some(binding) = &mut child.subagent {
                 binding.model = child.current_model.reference.clone();
                 binding.thinking = child.think_level;
+                child.tools.subagent = Some(Arc::new(binding.clone()));
             }
             child.session.set_tools(
                 child
@@ -350,8 +353,8 @@ impl Agent {
                 .collect()
         };
         binding.allow_mcp(
-            mcp_names(crate::mcp::Access::for_mode(self.workflow.mode)),
-            mcp_names(crate::mcp::Access::ReadOnly),
+            mcp_names(pp_mcp::Access::for_mode(self.workflow.mode)),
+            mcp_names(pp_mcp::Access::ReadOnly),
         );
         binding.set_model_roles(self.catalog.subagent_roles());
         binding.set_runtime_models(self.runtime_models.clone());
@@ -360,7 +363,8 @@ impl Agent {
             .subagent_control
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(binding.clone());
-        self.tools.subagent = Some(binding);
+        self.tools.subagent = Some(Arc::new(binding.clone()));
+        self.subagent = Some(binding);
         Ok(())
     }
     fn subagent_user_dir(&self, _agent_db_path: &Path) -> Result<std::path::PathBuf> {
@@ -375,12 +379,13 @@ impl Agent {
     }
 
     pub fn subagents(&self) -> Option<Binding> {
-        self.tools.subagent.clone()
+        self.subagent.clone()
     }
     pub(super) fn stop_subagents(&mut self) -> Result<()> {
-        if let Some(binding) = self.tools.subagent.as_ref().filter(|b| b.depth == 0) {
+        if let Some(binding) = self.subagent.as_ref().filter(|b| b.depth == 0) {
             binding.shutdown()?;
-            self.tools.subagent = None;
+            self.subagent = None;
+            self.subagent = None;
             *self
                 .subagent_control
                 .lock()
@@ -406,7 +411,7 @@ impl Agent {
     }
     /// 隐式等待也在整批完成后才交付结果；补充输入不能越过屏障。
     pub(super) fn wait_owned_subagents(&mut self, token: &CancellationToken) -> Result<()> {
-        let Some(binding) = self.tools.subagent.clone() else {
+        let Some(binding) = self.subagent.clone() else {
             return Ok(());
         };
         let ids = binding
@@ -425,11 +430,11 @@ impl Agent {
             if !binding
                 .wait_jobs(&ids)?
                 .iter()
-                .any(crate::tools::wait::Job::pending)
+                .any(pp_tools::wait::Job::pending)
             {
                 break;
             }
-            if started.elapsed() >= crate::tools::wait::TIMEOUT {
+            if started.elapsed() >= pp_tools::wait::TIMEOUT {
                 binding.cancel_runs(&ids)?;
                 binding.reap_runs(&ids)?;
                 append_developer_to(&mut self.session,
@@ -444,7 +449,7 @@ impl Agent {
     }
 
     pub(super) fn receive_subagents(&mut self) -> Result<bool> {
-        let Some(binding) = self.tools.subagent.clone() else {
+        let Some(binding) = self.subagent.clone() else {
             return Ok(false);
         };
         binding.check_lsp_cleanup()?;

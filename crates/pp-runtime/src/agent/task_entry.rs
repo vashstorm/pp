@@ -18,7 +18,7 @@ impl Agent {
             let result = self
                 .tools
                 .mcp
-                .connect_enabled(cancellation, crate::mcp::Access::ReadOnly);
+                .connect_enabled(cancellation, pp_mcp::Access::ReadOnly);
             if let Err(error) = result {
                 if error.is::<pp_core::cancellation::CleanupError>() {
                     self.plan_cleanup_error = Some(format!(
@@ -56,7 +56,7 @@ impl Agent {
             return Ok(());
         }
         self.plan_lease = None;
-        self.plan_lease = Some(crate::tools::plan_catalog::PlanLease::acquire(
+        self.plan_lease = Some(pp_tools::plan_catalog::PlanLease::acquire(
             self.tools.plan_workspace(),
             &document.id,
         )?);
@@ -310,7 +310,7 @@ impl Agent {
             self.cancel_lsp_diagnostics();
         }
         if cancellation.is_cancelled() {
-            if let Some(binding) = &self.tools.subagent
+            if let Some(binding) = &self.subagent
                 && let Err(cleanup) = binding.cancel_owned()
             {
                 result = Err(cleanup);
@@ -330,7 +330,7 @@ impl Agent {
             &result,
             Ok(RunOutcome::Completed | RunOutcome::AwaitingPlanReview)
         ) {
-            if let Some(binding) = &self.tools.subagent {
+            if let Some(binding) = &self.subagent {
                 match binding.reap_owned() {
                     Ok(()) => result,
                     Err(cleanup) => Err(cleanup.context(format!(

@@ -6,7 +6,7 @@ use crate::tui::{
 
 impl App {
     /// 同一 Registry 重装只移交清理权；换 Registry 时旧 guard 在赋值时 Drop 回收。
-    pub(in crate::tui) fn install_lsp_cleanup(&mut self, cleanup: pp_runtime::lsp::Cleanup) {
+    pub(in crate::tui) fn install_lsp_cleanup(&mut self, cleanup: pp_lsp::Cleanup) {
         if let Some(previous) = &mut self.lsp_cleanup {
             previous.supersede(&cleanup);
         }

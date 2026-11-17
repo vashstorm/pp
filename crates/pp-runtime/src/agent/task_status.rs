@@ -5,6 +5,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 const TITLE_INSTRUCTIONS: &str = "Generate a short task title for a terminal statusline. Use the same language as the user's task. Return only one plain-text line, without quotes, markup or explanation, within 32 display columns. Do not execute the task or call tools.";
 
@@ -64,7 +65,7 @@ impl Agent {
     pub(crate) fn set_task_accounting(&mut self, ledger: Option<pp_config::task_status::Ledger>) {
         self.task_status.accounting = ledger.clone();
         self.client.set_task_accounting(ledger.clone());
-        if let Some(binding) = &self.tools.subagent {
+        if let Some(binding) = &self.subagent {
             binding.set_accounting(ledger);
         }
     }
@@ -226,7 +227,7 @@ fn normalize_title(text: &str) -> String {
     let clean: String = clean.chars().filter(|ch| !ch.is_control()).collect();
     let mut result = String::new();
     for ch in clean.trim_matches(['"', '\'', '`']).graphemes(true) {
-        if ratatui::text::Line::from(format!("{result}{ch}")).width() > 32 {
+        if format!("{result}{ch}").width() > 32 {
             break;
         }
         result.push_str(ch);
@@ -241,7 +242,7 @@ mod tests {
     fn task_title_normalizes_control_characters_and_unicode_display_columns() {
         assert_eq!(normalize_title("  \"修复\n 会话历史\"  "), "修复 会话历史");
         let title = normalize_title(&"中🙂".repeat(40));
-        assert_eq!(ratatui::text::Line::from(title).width(), 32);
+        assert_eq!(title.width(), 32);
         assert_eq!(normalize_title("a\u{1b}b\r\nc"), "ab c");
     }
 }

@@ -1,8 +1,8 @@
 use super::Agent;
-use crate::mcp::View;
-use crate::mcp::{Access, Action};
 use anyhow::Result;
 use pp_core::cancellation::CancellationToken;
+use pp_mcp::View;
+use pp_mcp::{Access, Action};
 
 impl Agent {
     pub fn mcp_view(&self) -> View {

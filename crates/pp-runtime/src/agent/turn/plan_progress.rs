@@ -35,7 +35,7 @@ pub(super) fn apply_plan_change(
     workflow: &mut pp_core::plan::WorkflowState,
     journal: &mut SessionJournal,
     sealed: &mut bool,
-    change: Option<crate::tools::PlanChange>,
+    change: Option<pp_tools::PlanChange>,
     emit: &mut dyn FnMut(AgentEvent),
 ) -> Result<()> {
     let Some(change) = change else { return Ok(()) };
@@ -43,7 +43,7 @@ pub(super) fn apply_plan_change(
         workflow.mode == pp_core::plan::WorkMode::Plan && !*sealed,
         "Invalid plan tool transition."
     );
-    if matches!(change, crate::tools::PlanChange::Submitted) {
+    if matches!(change, pp_tools::PlanChange::Submitted) {
         *sealed = true;
         return Ok(());
     }
@@ -52,7 +52,7 @@ pub(super) fn apply_plan_change(
         .plan
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("No current plan."))?;
-    if let crate::tools::PlanChange::Written {
+    if let pp_tools::PlanChange::Written {
         title,
         file_name,
         content,
@@ -131,7 +131,7 @@ pub(in crate::agent) fn publish_plan_progress(
 pub(in crate::agent) fn apply_todo_change(
     workflow: &mut pp_core::plan::WorkflowState,
     journal: &mut SessionJournal,
-    change: Option<crate::tools::todo::TodoChange>,
+    change: Option<pp_tools::todo::TodoChange>,
 ) -> Result<()> {
     let Some(change) = change else { return Ok(()) };
     if let Some(plan_change) = &change.plan {

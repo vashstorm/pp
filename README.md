@@ -246,7 +246,7 @@ The linked guides below are in Chinese.
 
 ## Development
 
-The repository is a Cargo workspace with seven packages. The root `pp` package keeps `src/main.rs` (startup arguments, logging, working-directory restore, mode dispatch, and exit code) plus the root `tests/`; it is the only default member and assembles the internal libraries below.
+The repository is a Cargo workspace with thirteen packages (plus `pp-test-support` as a dev-only loopback HTTP crate). The root `pp` package keeps `src/main.rs` (startup arguments, logging, working-directory restore, mode dispatch, and exit code) plus the root `tests/`; it is the only default member and assembles the internal libraries below.
 
 | Package | Responsibility |
 | --- | --- |
@@ -254,7 +254,13 @@ The repository is a Cargo workspace with seven packages. The root `pp` package k
 | `pp-config` | Settings and model YAML, model catalog, authentication with its HTTP client, agent store, and skills |
 | `pp-stats` | Request snapshots, aggregation, and the statistics server with embedded assets and a saved style preference |
 | `pp-llm` | Chat Completions and Responses requests, retry, streaming, parsing, and the shared HTTP response type |
-| `pp-runtime` | Agent, tools, subagents, MCP/LSP, sessions and history, model control, and prompts |
+| `pp-workspace` | Managed workspace safe saves, diffs, image decoding, bounded output/artifact store, host defaults, and shared tool value types |
+| `pp-mcp` | MCP clients (stdio/HTTP/SSE), configuration discovery, background connections, lifecycle, and tool proxying |
+| `pp-lsp` | LSP registry, stdio transport, diagnostics, writethrough, readonly edit preview, and the `lsp` tool |
+| `pp-bash` | Embedded Bash host, external process supervision, background task manager, pipe store, and AST shell display |
+| `pp-tools` | Synchronous tool executor, built-in tools, layered project instructions, and port traits (`ToolHookCall`, `PlanSubmitGate`, `SubagentHost`) |
+| `pp-runtime` | Agent loop, subagents, hooks wiring, sessions and history, model control, and prompts |
+| `pp-mock-ai` | Debug-only local Responses mock server and built-in test scenarios (`/test-*`) |
 | `pp-ui` | TUI, CLI, commands, shortcuts, and tips |
 | `pp` (root) | Startup assembly and the root `cli_agent` integration tests |
 

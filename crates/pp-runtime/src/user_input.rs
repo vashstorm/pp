@@ -1,9 +1,9 @@
 //! 主聊天输入的资源快照；协议层只接收已准备好的内容。
-use crate::tools::read;
 use anyhow::{Context, Result, ensure};
 use pp_config::config::ToolLimits;
 use pp_core::cancellation::CancellationToken;
 use pp_core::cancellation::Cancelled;
+use pp_tools::read;
 use serde::{Deserialize, Serialize};
 use std::{
     io::Read,

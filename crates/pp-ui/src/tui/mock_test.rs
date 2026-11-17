@@ -13,6 +13,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use pp_bash::PipeStore;
 use pp_config::config::ModelChoice;
 use pp_core::{
     cancellation::CancellationToken,
@@ -20,11 +21,10 @@ use pp_core::{
     interaction::{DialogQueue, SharedAskHandler},
     model::ThinkLevel,
 };
-use pp_runtime::{
-    mock_ai::{MockEndpoint, MockTest, MockTestEvent, MockTestReport, MockTestSnapshot, run_test},
-    subagent::Binding,
-    tools::PipeStore,
+use pp_mock_ai::{
+    MockEndpoint, MockTest, MockTestEvent, MockTestReport, MockTestSnapshot, run_test,
 };
+use pp_runtime::subagent::Binding;
 
 use super::{App, Level, State, WorkerEvent, dialog_guard, request_ask, todo};
 
@@ -122,7 +122,7 @@ impl Drop for Worker {
 impl App {
     /// 启动一场独立 mock 测试；成功时返回 true，失败只发本地错误。
     pub(in crate::tui) fn start_mock_test(&mut self, test: MockTest) -> bool {
-        let endpoint = match pp_runtime::mock_ai::current_endpoint() {
+        let endpoint = match pp_mock_ai::current_endpoint() {
             Ok(endpoint) => endpoint,
             Err(error) => {
                 self.notify(Level::Error, format!("{error:#}"));

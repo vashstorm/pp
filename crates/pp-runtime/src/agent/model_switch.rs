@@ -141,7 +141,7 @@ impl Agent {
 
     /// 把当前模型同步给子 Agent 监督绑定；失败上报并终止本次切换。
     fn persist_active_model(&mut self, target: &crate::model_control::Target) -> Result<()> {
-        let Some(supervisor) = &mut self.tools.subagent else {
+        let Some(supervisor) = &mut self.subagent else {
             return Ok(());
         };
         supervisor.model = self.current_model.reference.clone();

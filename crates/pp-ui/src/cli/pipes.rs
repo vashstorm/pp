@@ -1,9 +1,7 @@
 //! 行模式 `/pipes`：有界的 run／流列表与补读 URI，不输出阶段正文。
 
-use pp_runtime::tools;
-
 /// 行模式 `/pipes`：有界的 run/流列表与补读 URI，不输出阶段正文。
-pub(crate) fn cli_pipes_list(store: &tools::PipeStore, run: Option<&str>) -> String {
+pub(crate) fn cli_pipes_list(store: &pp_bash::PipeStore, run: Option<&str>) -> String {
     const MAX_RUNS: usize = 8;
     const MAX_STREAMS: usize = 8;
     let runs = store

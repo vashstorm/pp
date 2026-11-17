@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 #[test]
 fn todo_tree_navigation_restores_standalone_and_retains_current_plan_authority() {
-    use crate::tools::todo::project_plan_todos;
     use pp_core::todo::TodoStatus;
+    use pp_tools::todo::project_plan_todos;
     for protocol in ["completion", "response"] {
         for plan_bound in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
             let (_, change) =
-                crate::tools::todo::run(&[], r#"{"op":"init","items":["Historical standalone"]}"#);
+                pp_tools::todo::run(&[], r#"{"op":"init","items":["Historical standalone"]}"#);
             apply_todo_change(&mut agent.workflow, &mut agent.journal, change).unwrap();
             seed_session(&mut agent, "first history boundary");
             let target = agent.session_tree().unwrap().tree.nodes[0].id.clone();
@@ -30,8 +30,7 @@ fn todo_tree_navigation_restores_standalone_and_retains_current_plan_authority()
                 agent.reconcile_plan_location().unwrap();
                 agent.journal.write_workflow(&agent.workflow).unwrap();
             } else {
-                let (_, change) =
-                    crate::tools::todo::run(&agent.workflow.todos, r#"{"op":"done"}"#);
+                let (_, change) = pp_tools::todo::run(&agent.workflow.todos, r#"{"op":"done"}"#);
                 apply_todo_change(&mut agent.workflow, &mut agent.journal, change).unwrap();
             }
             seed_session(&mut agent, "second history boundary");
@@ -115,7 +114,7 @@ fn plan_todo_committed_checkbox_survives_failed_journal_and_recovers_from_disk()
             "todo",
             r#"{"op":"done","task":"first"}"#,
             "saved-progress",
-            crate::tools::ToolPolicy::Execute {
+            pp_tools::ToolPolicy::Execute {
                 workflow: &agent.workflow,
             },
             &CancellationToken::new(),
@@ -175,7 +174,7 @@ fn todo_failed_journal_commit_restores_trusted_runtime() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
     seed_session(&mut agent, "seed durable history");
-    let (_, change) = crate::tools::todo::run(&[], r#"{"op":"init","items":["A","B"]}"#);
+    let (_, change) = pp_tools::todo::run(&[], r#"{"op":"init","items":["A","B"]}"#);
     apply_todo_change(&mut agent.workflow, &mut agent.journal, change).unwrap();
     let previous = agent.workflow.clone();
     let path = dir
@@ -183,7 +182,7 @@ fn todo_failed_journal_commit_restores_trusted_runtime() {
         .join("sessions")
         .join(format!("{}.jsonl", agent.session_id().unwrap()));
     agent.journal.use_read_only_file(&path);
-    let (_, change) = crate::tools::todo::run(&agent.workflow.todos, r#"{"op":"done","task":"A"}"#);
+    let (_, change) = pp_tools::todo::run(&agent.workflow.todos, r#"{"op":"done","task":"A"}"#);
     assert!(apply_todo_change(&mut agent.workflow, &mut agent.journal, change).is_err());
     assert_eq!(agent.workflow, previous);
     assert!(agent.journal.check().is_err());
@@ -269,7 +268,7 @@ fn todo_tree_navigation_in_plan_standby_never_restores_execution_tasks() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
-        let (_, change) = crate::tools::todo::run(
+        let (_, change) = pp_tools::todo::run(
             &[],
             r#"{"op":"init","items":["Historical execution task"]}"#,
         );

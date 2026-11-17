@@ -15,13 +15,13 @@ impl Agent {
 
     /// TUI 后台预热使用的 Registry 克隆；`enabled=false` 时为 `None`。
     /// 克隆共享同一批受管理进程，不转移任何清理权。
-    pub fn lsp_registry(&self) -> Option<crate::lsp::Registry> {
+    pub fn lsp_registry(&self) -> Option<pp_lsp::Registry> {
         self.tools.lsp_registry().cloned()
     }
 
     /// TUI/CLI 可持有的共享清理句柄；每次调用返回新的 armed 句柄，
     /// supersede 只能解除同一 Registry 的旧句柄。
-    pub fn lsp_cleanup(&self) -> Option<crate::lsp::Cleanup> {
+    pub fn lsp_cleanup(&self) -> Option<pp_lsp::Cleanup> {
         self.tools.lsp_cleanup()
     }
 
@@ -35,12 +35,12 @@ impl Agent {
         }
     }
 
-    pub fn background_cleanup(&self) -> crate::tools::BackgroundCleanup {
+    pub fn background_cleanup(&self) -> pp_bash::BackgroundCleanup {
         self.tools.background_cleanup()
     }
 
     /// 根会话临时管道 registry；子 Agent 共享同一实例。
-    pub fn pipe_store(&self) -> crate::tools::PipeStore {
+    pub fn pipe_store(&self) -> pp_bash::PipeStore {
         self.tools.pipe_store()
     }
 
@@ -49,7 +49,7 @@ impl Agent {
     }
 
     /// 进程级 MCP 单例的只读句柄：UI 只看建连进度与 `/mcp` 快照，不拥有回收权。
-    pub fn mcp(&self) -> std::sync::Arc<crate::mcp::McpManager> {
+    pub fn mcp(&self) -> std::sync::Arc<pp_mcp::McpManager> {
         std::sync::Arc::clone(&self.tools.mcp)
     }
 
@@ -69,7 +69,7 @@ impl Agent {
             "bash",
             &arguments,
             call_id,
-            crate::tools::ToolPolicy::Execute {
+            pp_tools::ToolPolicy::Execute {
                 workflow: &self.workflow,
             },
             // 人工 shell 不是模型工具调用，永不触发 hook。

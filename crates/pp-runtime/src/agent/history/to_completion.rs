@@ -1,10 +1,10 @@
 use super::portable::{PortableItem, visit_response};
 use crate::agent::Session;
-use crate::tools::read::ToolImage;
 use anyhow::Result;
 use async_openai::types::{chat as c, responses as r};
 use pp_config::config::EditMode;
 use pp_config::models::Protocol;
+use pp_tools::read::ToolImage;
 use std::borrow::Cow;
 use std::collections::HashSet;
 

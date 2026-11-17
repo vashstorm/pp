@@ -7,7 +7,7 @@ fn read_image_history_roundtrip_keeps_attachment_in_complete_exchange() {
     let image = response_item(PortableItem::Output {
         id: "image",
         text: Cow::Owned(image_result),
-        images: vec![crate::tools::read::ToolImage {
+        images: vec![pp_tools::read::ToolImage {
             data_url: "data:image/png;base64,AAAA".into(),
         }],
     });

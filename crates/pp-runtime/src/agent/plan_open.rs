@@ -237,9 +237,7 @@ impl Agent {
 mod tests {
     use super::*;
     use crate::agent::tests::{EXPLORATION, err_message, runtime_input_agent, seed_session};
-    use crate::tools::plan_catalog::{
-        PlanCatalogEntry, PlanCatalogLock, load_catalog, save_catalog,
-    };
+    use pp_tools::plan_catalog::{PlanCatalogEntry, PlanCatalogLock, load_catalog, save_catalog};
     use std::os::unix::fs::PermissionsExt;
 
     const LISTED_CONTENT: &str =

@@ -199,6 +199,6 @@ pub fn delete(dir: &Path, lock_dir: &Path, id: &str) -> Result<()> {
         "session changed before deletion"
     );
     fs::remove_file(path).context("deleting session")?;
-    crate::tools::output::Store::remove(dir, id)
+    pp_workspace::output::Store::remove(dir, id)
         .context("session deleted, but artifact cleanup failed")
 }

@@ -24,7 +24,7 @@ pub(super) struct RequestUpdate<'a> {
     pub(super) user: Option<&'a str>,
     pub(super) instructions: Option<&'a str>,
     pub(super) debug: &'a mut Option<debug::DebugState>,
-    pub(super) pending_project_load: &'a mut Vec<crate::project_instructions::Document>,
+    pub(super) pending_project_load: &'a mut Vec<pp_tools::project_instructions::Document>,
     pub(super) reported_project_load: &'a mut ReportedProjectLoads,
 }
 
@@ -61,16 +61,16 @@ fn tool_policy<'a>(
     workflow: &'a pp_core::plan::WorkflowState,
     sealed: bool,
     input: Option<&'a InputQueue>,
-) -> Result<crate::tools::ToolPolicy<'a>> {
+) -> Result<pp_tools::ToolPolicy<'a>> {
     Ok(match workflow.mode {
-        pp_core::plan::WorkMode::Execute => crate::tools::ToolPolicy::Execute { workflow },
-        pp_core::plan::WorkMode::Plan => crate::tools::ToolPolicy::Plan {
+        pp_core::plan::WorkMode::Execute => pp_tools::ToolPolicy::Execute { workflow },
+        pp_core::plan::WorkMode::Plan => pp_tools::ToolPolicy::Plan {
             document: workflow
                 .plan
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("No current plan."))?,
             sealed,
-            input,
+            input: input.map(|q| q as &dyn pp_tools::PlanSubmitGate),
         },
     })
 }

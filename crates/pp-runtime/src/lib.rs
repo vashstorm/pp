@@ -1,16 +1,9 @@
 pub mod agent;
 pub mod history;
 mod hooks;
-pub mod host_defaults;
-pub mod lsp;
-pub mod mcp;
-#[cfg(debug_assertions)]
-pub mod mock_ai;
 pub mod model_control;
-pub mod project_instructions;
 pub mod subagent;
 pub mod system_prompt;
-pub mod tools;
 pub mod user_input;
 
 /// 子 Agent、MCP 与 LSP 会同时持有多个文件描述符；macOS 默认 soft 上限只有 256，

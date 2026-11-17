@@ -229,7 +229,7 @@ impl Agent {
             &excluded_ranges,
         )?;
 
-        let access = crate::mcp::Access::for_mode(self.workflow.mode);
+        let access = pp_mcp::Access::for_mode(self.workflow.mode);
         let mcp_origins = self.tools.mcp.tool_origins(access);
         let split_tools = build_split_tool_items(&self.session, &mcp_origins)?;
 

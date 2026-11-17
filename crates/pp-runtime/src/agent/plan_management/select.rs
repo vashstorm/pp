@@ -1,11 +1,11 @@
 use super::{CHANGED, DELETED_PLAN, NOT_FOUND, PlanSelection, VerifiedSelection, read_plan_bytes};
 use crate::agent::Agent;
-use crate::tools::plan_catalog::{self, PlanCatalogLock, PlanLease};
-use crate::tools::save::Workspace;
 use anyhow::{Result, anyhow, bail, ensure};
 use pp_core::plan::PlanLocation;
 use pp_core::plan::path_for;
 use pp_core::plan::valid_id;
+use pp_tools::plan_catalog::{self, PlanCatalogLock, PlanLease};
+use pp_workspace::save::Workspace;
 use std::path::Path;
 
 impl Agent {

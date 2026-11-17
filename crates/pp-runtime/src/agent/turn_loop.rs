@@ -35,7 +35,7 @@ impl Agent {
         // 只借用 `hooks` 字段；identity 与资格在进入循环时固定。
         let hooks = super::hooks::scope(
             &self.hooks,
-            self.tools.subagent.as_ref(),
+            self.subagent.as_ref(),
             &self.workflow,
             &self.tools.approval,
             self.hook_agent_type.as_deref(),
@@ -123,7 +123,7 @@ impl Agent {
                 debug::DebugState::warn_unavailable();
                 self.debug = None;
             }
-            if let Some(binding) = &self.tools.subagent
+            if let Some(binding) = &self.subagent
                 && binding.depth > 0
             {
                 let budget = binding.request_budget();
@@ -194,7 +194,7 @@ impl Agent {
             emit(AgentEvent::ContextUpdated { usage });
             cached_usage = Some(usage);
             if self.tools.yielded.borrow().is_some() {
-                if let Some(binding) = self.tools.subagent.clone()
+                if let Some(binding) = self.subagent.clone()
                     && binding.pending()
                 {
                     cached_usage = None;
@@ -235,7 +235,7 @@ impl Agent {
                     emit,
                     true,
                 )?;
-                if let Some(binding) = self.tools.subagent.clone()
+                if let Some(binding) = self.subagent.clone()
                     && binding.pending()
                 {
                     self.wait_owned_subagents(cancellation)?;

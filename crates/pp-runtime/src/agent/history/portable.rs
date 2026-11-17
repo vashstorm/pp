@@ -15,7 +15,7 @@ pub(super) enum PortableItem<'a> {
     Output {
         id: &'a str,
         text: Cow<'a, str>,
-        images: Vec<crate::tools::read::ToolImage>,
+        images: Vec<pp_tools::read::ToolImage>,
     },
 }
 
@@ -217,7 +217,7 @@ fn parse_function_output(output: &r::FunctionCallOutputItemParam) -> Result<Port
                             bail!(UNSUPPORTED);
                         };
                         ensure!(part.file_id.is_none(), UNSUPPORTED);
-                        images.push(crate::tools::read::ToolImage {
+                        images.push(pp_tools::read::ToolImage {
                             data_url: url.clone(),
                         });
                     }

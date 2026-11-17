@@ -17,8 +17,6 @@ use super::{
     Agent, ExecutionPreparation, ModelChoice, OpenAiClient, Protocol, Session, ThinkLevel, history,
     persistence::{self, Metadata},
 };
-use crate::mcp::Access;
-use crate::project_instructions;
 use anyhow::{Result, anyhow};
 use pp_config::config::{ModelRole, RoleRoute};
 use pp_config::model_state::Selection;
@@ -27,6 +25,8 @@ use pp_core::cancellation::CancellationToken;
 use pp_core::model::ModelSource;
 use pp_core::plan::WorkMode;
 use pp_core::plan::WorkflowState;
+use pp_mcp::Access;
+use pp_tools::project_instructions;
 
 const NOT_CURRENT: &str = "Plan review is no longer current.";
 const CHANGED: &str = "Plan changed; review the new revision before executing.";
@@ -48,7 +48,7 @@ struct ExecutionModel {
 impl ExecutionModel {
     fn metadata<'a>(
         &'a self,
-        tools: &'a crate::tools::Tools,
+        tools: &'a pp_tools::Tools,
         base_system: &'a str,
         prompt_source: Option<&'a crate::system_prompt::Snapshot>,
     ) -> Metadata<'a> {

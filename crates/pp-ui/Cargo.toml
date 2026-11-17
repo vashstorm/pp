@@ -7,8 +7,14 @@ publish = false
 
 [dependencies]
 pp-core = { path = "../pp-core" }
+pp-bash = { path = "../pp-bash" }
 pp-config = { path = "../pp-config" }
+pp-mcp = { path = "../pp-mcp" }
+pp-lsp = { path = "../pp-lsp" }
+pp-workspace = { path = "../pp-workspace" }
+pp-tools = { path = "../pp-tools" }
 pp-runtime = { path = "../pp-runtime" }
+pp-mock-ai = { path = "../pp-mock-ai" }
 anyhow = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
@@ -32,3 +38,4 @@ image = { workspace = true }
 vt100 = { workspace = true }
 tempfile = { workspace = true }
 pp-runtime = { path = "../pp-runtime", features = ["test-support"] }
+pp-workspace = { path = "../pp-workspace", features = ["test-support"] }

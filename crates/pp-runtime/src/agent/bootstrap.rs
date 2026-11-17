@@ -1,6 +1,5 @@
 //! Agent 构造入口、共享模型状态与提示词快照刷新。
 use super::{Agent, Session, debug, persistence::SessionJournal};
-use crate::tools::Tools;
 use anyhow::{Context, Result, ensure};
 use async_openai::types::chat::ChatCompletionRequestMessage;
 use pp_config::config::ModelCatalog;
@@ -9,6 +8,7 @@ use pp_config::model_state::{ModelState, Selection};
 #[cfg(debug_assertions)]
 use pp_core::cancellation;
 use pp_llm::OpenAiClient;
+use pp_tools::Tools;
 use std::path::PathBuf;
 
 impl Agent {
@@ -33,7 +33,7 @@ impl Agent {
         if !catalog.lsp_settings().enabled || tools.lsp_registry().is_some() {
             return;
         }
-        let registry = crate::lsp::Registry::new(
+        let registry = pp_lsp::Registry::new(
             tools.cwd().to_path_buf(),
             Some(catalog.lsp_path()),
             catalog.lsp_settings(),
@@ -53,7 +53,7 @@ impl Agent {
         // 单测各自持有配置化管理器：Plan 交接测试的 `/mcp reload` 读的是本
         // catalog 指向的临时 `mcp.json`，不能落到真实用户配置。
         let cwd = tools.cwd().to_owned();
-        tools.mcp = std::sync::Arc::new(crate::mcp::McpManager::new(catalog.mcp_path(), cwd));
+        tools.mcp = std::sync::Arc::new(pp_mcp::McpManager::new(catalog.mcp_path(), cwd));
         Self::new_with_prompt(
             ModelState::shared(catalog),
             tools,
@@ -101,7 +101,7 @@ impl Agent {
         let client = OpenAiClient::new(&config)?;
         // 进程级单例：启动期后台建连，不再阻塞首个界面；首个任务入口等它结束。
         // 连接失败不是启动失败：失败只落到 `/mcp list` 与提示行。
-        tools.mcp.start_connect(crate::mcp::Access::Full);
+        tools.mcp.start_connect(pp_mcp::Access::Full);
         Self::install_lsp(&mut tools, &catalog);
         let current_model = ModelChoice {
             reference: selection.reference.clone(),
@@ -147,6 +147,7 @@ impl Agent {
             client,
             runtime_models: None,
             subagent_control: Default::default(),
+            subagent: None,
             task_status: Default::default(),
             context_snapshot: None,
             session,
@@ -180,7 +181,7 @@ impl Agent {
     }
 
     #[cfg(debug_assertions)]
-    pub(crate) fn new_mock(
+    pub fn new_mock(
         catalog: ModelCatalog,
         mut tools: Tools,
         sessions_dir: PathBuf,
@@ -188,7 +189,7 @@ impl Agent {
         scripts: pp_llm::MockScripts,
     ) -> Result<Self> {
         // mock 场景固定空管理器：不读取真实用户 MCP 定义。
-        tools.mcp = std::sync::Arc::new(crate::mcp::McpManager::empty());
+        tools.mcp = std::sync::Arc::new(pp_mcp::McpManager::empty());
         let mut agent = Self::new_with_prompt(
             ModelState::shared(catalog),
             tools,
@@ -202,7 +203,7 @@ impl Agent {
     }
 
     #[cfg(debug_assertions)]
-    pub(crate) fn stop_mock(&mut self) -> Result<()> {
+    pub fn stop_mock(&mut self) -> Result<()> {
         let mut failure: Option<anyhow::Error> = None;
         for result in [
             self.stop_subagents(),
@@ -236,7 +237,7 @@ impl Agent {
     }
 
     /// 审批 handler 镜像 ask：不改变 schema 列表，无需刷新工具定义。
-    pub fn set_approval_handler(&mut self, handler: crate::tools::approval::ApprovalHandler) {
+    pub fn set_approval_handler(&mut self, handler: pp_tools::approval::ApprovalHandler) {
         self.tools.approval.set_handler(handler);
     }
 

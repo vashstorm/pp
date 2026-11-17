@@ -5,7 +5,6 @@ use super::{
     plan_sync,
     turn::{reported_project_load, response_input},
 };
-use crate::tools::Tools;
 use anyhow::{Context, Result};
 use async_openai::types::chat::ChatCompletionRequestMessage;
 use pp_config::config::ModelChoice;
@@ -13,6 +12,7 @@ use pp_config::model_state::ModelState;
 use pp_config::models::Protocol;
 use pp_core::model::ModelSource;
 use pp_llm::OpenAiClient;
+use pp_tools::Tools;
 use std::path::PathBuf;
 
 impl Agent {
@@ -84,7 +84,7 @@ impl Agent {
         // 首个任务入口统一等待并刷新工具，切换会话不阻塞界面。
         tools
             .mcp
-            .start_connect(crate::mcp::Access::for_mode(checkpoint.workflow.mode));
+            .start_connect(pp_mcp::Access::for_mode(checkpoint.workflow.mode));
         Self::install_lsp(&mut tools, &catalog);
         checkpoint
             .session
@@ -101,6 +101,7 @@ impl Agent {
             client,
             runtime_models: None,
             subagent_control: Default::default(),
+            subagent: None,
             task_status: Default::default(),
             context_snapshot: None,
             tools,

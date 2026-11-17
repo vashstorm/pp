@@ -304,6 +304,12 @@ impl InputQueue {
     }
 }
 
+impl pp_tools::PlanSubmitGate for InputQueue {
+    fn seal_for_plan_review(&self) -> Result<bool> {
+        self.seal_for_plan_review()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

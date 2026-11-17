@@ -82,10 +82,7 @@ pub(crate) fn cli_lsp_report(
     broken: &mut bool,
     first_error: &mut Option<io::Error>,
 ) {
-    let body = pp_runtime::lsp::diagnostics::render(
-        report,
-        Some(pp_runtime::lsp::diagnostics::AUTO_MESSAGE_LIMIT),
-    );
+    let body = pp_lsp::diagnostics::render(report, Some(pp_lsp::diagnostics::AUTO_MESSAGE_LIMIT));
     let label = if late {
         "LSP diagnostics (late)"
     } else {

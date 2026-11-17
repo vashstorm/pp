@@ -19,7 +19,7 @@ pub(in crate::agent) fn reported_project_load(
 }
 
 pub(in crate::agent) fn publish_project_load(
-    pending: &mut Vec<crate::project_instructions::Document>,
+    pending: &mut Vec<pp_tools::project_instructions::Document>,
     reported: &mut ReportedProjectLoads,
     journal: &mut SessionJournal,
     emit: &mut dyn FnMut(AgentEvent),

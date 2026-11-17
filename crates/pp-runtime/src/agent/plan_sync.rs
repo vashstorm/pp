@@ -1,6 +1,4 @@
 use super::persistence::SessionJournal;
-use crate::tools::Tools;
-use crate::tools::plan_catalog;
 use anyhow::{Result, bail, ensure};
 use pp_core::plan;
 use pp_core::plan::PlanDocument;
@@ -8,6 +6,8 @@ use pp_core::plan::PlanLocation;
 use pp_core::plan::PlanStatus;
 use pp_core::plan::WorkMode;
 use pp_core::plan::WorkflowState;
+use pp_tools::Tools;
+use pp_tools::plan_catalog;
 use std::path::Path;
 
 const DELETED_PLAN: &str = "Plan was deleted; choose another plan from /plan-list.";
@@ -47,7 +47,7 @@ enum PlanReconciliation {
 /// Completed，不重新授权。墓碑、路径/正文缺失一律报错，绝不从历史
 /// 快照恢复，也不让历史 Draft/Ready 绑定把已提升的位置退回 drafts。
 pub(super) fn reconcile_plan_state(
-    workspace: &crate::tools::save::Workspace,
+    workspace: &pp_workspace::save::Workspace,
     journal: &mut SessionJournal,
     workflow: &mut WorkflowState,
 ) -> Result<()> {
@@ -373,7 +373,7 @@ pub(super) fn sync_plan_todos(
         if workflow.mode == WorkMode::Plan {
             Ok(Vec::new())
         } else if executing {
-            crate::tools::todo::project_plan_todos(document, &workflow.todos, bound)
+            pp_tools::todo::project_plan_todos(document, &workflow.todos, bound)
         } else {
             readonly_phases(document)
         }

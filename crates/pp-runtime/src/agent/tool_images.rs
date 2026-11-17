@@ -1,7 +1,7 @@
 //! 工具图片在原生协议中的适配。Chat 的附件必须放在完整结果批次之后。
-use crate::tools::read::ToolImage;
 use anyhow::{Result, bail, ensure};
 use async_openai::types::{chat as c, responses as r};
+use pp_tools::read::ToolImage;
 
 const PREFIX: &str = "pp.read_image:";
 

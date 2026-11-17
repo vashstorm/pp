@@ -119,7 +119,7 @@ impl TranscriptEntry {
             .result
             .as_ref()
             .and_then(|result| result.get("pipes"))
-            .and_then(pp_runtime::tools::output::pipes_status)
+            .and_then(pp_workspace::output::pipes_status)
             .map(|status| super::PipesBadge { status, restored });
     }
 
@@ -158,7 +158,7 @@ impl TranscriptEntry {
     pub(super) fn edit_path(&self) -> &str {
         self.arguments["path"]
             .as_str()
-            .or_else(|| pp_runtime::tools::edit_path(&self.arguments))
+            .or_else(|| pp_tools::edit_path(&self.arguments))
             .unwrap_or_default()
     }
 

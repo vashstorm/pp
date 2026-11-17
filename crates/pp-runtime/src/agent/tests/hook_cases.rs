@@ -635,7 +635,7 @@ fn hooks_pre_tool_use_allow_keeps_the_original_approval_denial() {
             Some(&hook_yaml("PreToolUse", &script)),
         );
         agent.set_approval_handler(Box::new(|_request, _cancellation| {
-            Ok(crate::tools::approval::ApprovalDecision::Deny)
+            Ok(pp_tools::approval::ApprovalDecision::Deny)
         }));
         let serving = protocol.to_owned();
         let worker = Arc::clone(&server);
@@ -1270,9 +1270,13 @@ fi"#,
         let worker = Arc::clone(&server);
         let handle = std::thread::spawn(move || {
             let mut count = 0;
-            while let Ok(Some(request)) = worker.recv_timeout(Duration::from_millis(500)) {
+            if let Ok(Some(request)) = worker.recv_timeout(Duration::from_secs(10)) {
                 count += 1;
                 final_for(&serving, request, "final reply", true);
+                while let Ok(Some(request)) = worker.recv_timeout(Duration::from_millis(500)) {
+                    count += 1;
+                    final_for(&serving, request, "final reply", true);
+                }
             }
             count
         });

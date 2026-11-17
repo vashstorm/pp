@@ -1,6 +1,6 @@
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseEventKind};
-use pp_runtime::mcp::View;
-use pp_runtime::mcp::help;
+use pp_mcp::View;
+use pp_mcp::help;
 use ratatui::{
     Frame,
     layout::Rect,
@@ -204,7 +204,7 @@ mod tests {
     fn mcp_panel_groups_status_colors_scrolls_and_closes() {
         let view = View {
             entries: (0..24)
-                .map(|i| pp_runtime::mcp::EntryView {
+                .map(|i| pp_mcp::EntryView {
                     name: format!("server{i:02}"),
                     source: "Claude Code".into(),
                     path: "/fixture/.claude.json".into(),

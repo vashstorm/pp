@@ -906,7 +906,7 @@ fn runtime_subagent_roles_switch_at_next_request_mid_run() {
             "wait",
             "{}",
             "wait-role-switch",
-            crate::tools::ToolPolicy::Execute {
+            pp_tools::ToolPolicy::Execute {
                 workflow: &agent.workflow,
             },
             &Default::default(),

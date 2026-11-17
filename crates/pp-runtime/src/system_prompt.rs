@@ -1,9 +1,9 @@
 //! 系统指令来源快照、模板渲染和按块拼装。
-use crate::project_instructions;
 use anyhow::{Context, Result, anyhow, ensure};
 use handlebars::Handlebars;
 use pp_config::config::EditMode;
 use pp_config::config::ToolLimits;
+use pp_tools::project_instructions;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

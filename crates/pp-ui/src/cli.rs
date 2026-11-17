@@ -209,8 +209,8 @@ pub fn run_line_mode(
                 continue;
             }
             Some(commands::Command::Mcp(action)) => {
-                if matches!(action, pp_runtime::mcp::Action::Help) {
-                    writeln!(stderr, "{}", pp_runtime::mcp::help())?;
+                if matches!(action, pp_mcp::Action::Help) {
+                    writeln!(stderr, "{}", pp_mcp::help())?;
                 } else {
                     match agent.as_mut() {
                         Ok(agent) => match agent

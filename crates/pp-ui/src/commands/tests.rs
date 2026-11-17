@@ -151,7 +151,7 @@ fn slash_valid_commands_and_model_reference_boundaries() {
         (" /ctx ", Command::Context),
         (
             " /init ",
-            Command::Prompt(pp_runtime::project_instructions::INIT_PROMPT.to_owned()),
+            Command::Prompt(pp_tools::project_instructions::INIT_PROMPT.to_owned()),
         ),
         ("/resume", Command::Resume),
         ("/tree", Command::Tree),

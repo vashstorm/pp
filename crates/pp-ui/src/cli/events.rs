@@ -7,7 +7,6 @@ use pp_core::cancellation;
 use pp_core::context;
 use pp_core::events;
 use pp_runtime::agent;
-use pp_runtime::tools;
 
 // Display failures must not interrupt recording results of tools that already ran.
 pub(crate) fn cli_write(
@@ -82,13 +81,13 @@ pub(crate) fn cli_output_result(
         true,
         label,
     );
-    let notice = tools::output::notice(value);
+    let notice = pp_workspace::output::notice(value);
     if !notice.is_empty() {
         text.push_str(&notice);
         text.push('\n');
     }
     // 阶段正文不进入主输出；这里只追加有界状态与补读 URI。
-    if let Some(status) = tools::output::pipes_status(&value["pipes"]) {
+    if let Some(status) = pp_workspace::output::pipes_status(&value["pipes"]) {
         text.push_str(&status.notice());
         text.push('\n');
     }

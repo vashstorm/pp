@@ -56,7 +56,7 @@ pub(in crate::agent) fn completion_turn(
             if tools
                 .subagent
                 .as_ref()
-                .is_none_or(|binding| binding.depth == 0)
+                .is_none_or(|binding| binding.is_root())
                 && let Some(id) = journal.id()
             {
                 let _ = tools.artifacts.bind(journal.directory(), id);
@@ -86,7 +86,7 @@ pub(in crate::agent) fn completion_turn(
         };
         client.set_stats_context(journal.borrow().stats_context(
             metadata,
-            if tools.subagent.as_ref().is_some_and(|b| b.depth > 0) {
+            if tools.subagent.as_ref().is_some_and(|b| !b.is_root()) {
                 "subagent"
             } else {
                 "task"
@@ -243,7 +243,7 @@ pub(in crate::agent) fn completion_turn(
                     &call.function.arguments,
                     &call.id,
                     tool_policy(workflow, sealed, queue)?,
-                    hook,
+                    hook.as_ref().map(|h| h as &dyn pp_tools::ToolHookCall),
                     cancellation,
                     &mut progress,
                     &mut |url, token| client.fetch_read_url(url, token),

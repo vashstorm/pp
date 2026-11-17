@@ -120,8 +120,8 @@ fn read_image_execution_is_allowed_in_plan_and_review() {
             .unwrap();
         let document = pp_core::plan::PlanDocument::new().unwrap();
         for policy in [
-            crate::tools::ToolPolicy::Review,
-            crate::tools::ToolPolicy::Plan {
+            pp_tools::ToolPolicy::Review,
+            pp_tools::ToolPolicy::Plan {
                 document: &document,
                 sealed: false,
                 input: None,
@@ -165,15 +165,15 @@ fn skill_read_execution_and_disablement_apply_to_every_workflow() {
         let execute_workflow = pp_core::plan::WorkflowState::default();
         for workflow in ["execute", "plan", "review"] {
             let policy = || match workflow {
-                "execute" => crate::tools::ToolPolicy::Execute {
+                "execute" => pp_tools::ToolPolicy::Execute {
                     workflow: &execute_workflow,
                 },
-                "plan" => crate::tools::ToolPolicy::Plan {
+                "plan" => pp_tools::ToolPolicy::Plan {
                     document: &document,
                     sealed: false,
                     input: None,
                 },
-                "review" => crate::tools::ToolPolicy::Review,
+                "review" => pp_tools::ToolPolicy::Review,
                 _ => unreachable!(),
             };
             for (uri, expected) in [
@@ -252,11 +252,11 @@ fn skill_read_execution_and_disablement_apply_to_every_workflow() {
         ] {
             for (policy, error) in [
                 (
-                    crate::tools::ToolPolicy::Review,
+                    pp_tools::ToolPolicy::Review,
                     "Tool is not available during Plan review.",
                 ),
                 (
-                    crate::tools::ToolPolicy::Plan {
+                    pp_tools::ToolPolicy::Plan {
                         document: &document,
                         sealed: false,
                         input: None,

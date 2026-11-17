@@ -6,8 +6,8 @@ fn mcp_list_preserves_draft_and_viewport_and_subcommands_complete() {
     app.state = State::Ready;
     app.input.insert_str("pending draft");
     app.conversation.append("You", "previous conversation");
-    let view = pp_runtime::mcp::View {
-        entries: vec![pp_runtime::mcp::EntryView {
+    let view = pp_mcp::View {
+        entries: vec![pp_mcp::EntryView {
             name: "context7".into(),
             source: "Claude Code".into(),
             path: "/fixture/.claude.json".into(),

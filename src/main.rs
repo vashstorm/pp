@@ -2,9 +2,9 @@ use pp_config::agent_store;
 use pp_config::config;
 use pp_core::cancellation;
 use pp_runtime::agent;
-use pp_runtime::host_defaults;
 use pp_ui::cli;
 use pp_ui::commands;
+use pp_workspace::host_defaults;
 
 use pp_core::logging;
 use pp_core::plan;
@@ -13,7 +13,6 @@ use pp_config::skills;
 use pp_runtime::system_prompt;
 use pp_stats as stats;
 
-use pp_runtime::tools;
 use pp_ui::tui;
 
 use anyhow::{Context, Result, ensure};
@@ -311,8 +310,8 @@ fn run(args: Args) -> Result<()> {
     };
     #[cfg(debug_assertions)]
     let _mock_server = {
-        let server = pp_runtime::mock_ai::MockServer::start()?;
-        pp_runtime::mock_ai::install_endpoint(server.endpoint())?;
+        let server = pp_mock_ai::MockServer::start()?;
+        pp_mock_ai::install_endpoint(server.endpoint())?;
         server
     };
     if let Some(prompt) = &args.prompt {
@@ -394,8 +393,8 @@ fn run(args: Args) -> Result<()> {
     };
     // 进程级 MCP 单例：根 Agent、子 Agent 与恢复会话共享同一实例，所有模式返回后统一收尾。
     let mcp = std::sync::Arc::new(match global_dir.as_ref() {
-        Ok(dir) => pp_runtime::mcp::McpManager::new(dir.join("mcp.json"), cwd.clone()),
-        Err(_) => pp_runtime::mcp::McpManager::empty(),
+        Ok(dir) => pp_mcp::McpManager::new(dir.join("mcp.json"), cwd.clone()),
+        Err(_) => pp_mcp::McpManager::empty(),
     });
     // 提示词错误必须在交互兜底之前返回，不能静默禁用或替换用户设定。
     let manager = mcp.clone();
@@ -448,8 +447,11 @@ fn run(args: Args) -> Result<()> {
                     let models = bootstrap
                         .model_state()
                         .context("loading configuration for saved session")?;
-                    let mut tools =
-                        tools::Tools::with_mcp(cwd.clone(), session.edit_mode(), manager.clone())?;
+                    let mut tools = pp_tools::Tools::with_mcp(
+                        cwd.clone(),
+                        session.edit_mode(),
+                        manager.clone(),
+                    )?;
                     tools.skills = skills.clone();
                     Ok(agent::Agent::restore(models, tools, session)?)
                 }
@@ -546,7 +548,7 @@ fn run(args: Args) -> Result<()> {
 
 /// 所有模式返回后停止进程级 MCP 服务；`CleanupError` 保持类型并合并进返回错误，
 /// 不能只依赖 `McpManager::Drop` 兜底。
-fn stop_mcp(mcp: &pp_runtime::mcp::McpManager, result: Result<()>) -> Result<()> {
+fn stop_mcp(mcp: &pp_mcp::McpManager, result: Result<()>) -> Result<()> {
     let stop = mcp.shutdown();
     match (result, stop) {
         (Ok(()), Ok(())) => Ok(()),

@@ -51,12 +51,9 @@ fn todo_sync_clears_legacy_plan_previews_and_initializes_only_execution() {
         let plan_id = agent.workflow.plan.as_ref().unwrap().id.clone();
 
         // 旧版本草稿带有预览缓存；同步后必须清空并持久化。
-        agent.workflow.todos = crate::tools::todo::project_plan_todos(
-            agent.workflow.plan.as_ref().unwrap(),
-            &[],
-            false,
-        )
-        .unwrap();
+        agent.workflow.todos =
+            pp_tools::todo::project_plan_todos(agent.workflow.plan.as_ref().unwrap(), &[], false)
+                .unwrap();
         agent.workflow.todo_plan_id = Some(plan_id.clone());
         sync_plan_todos(
             &agent.tools,
@@ -478,7 +475,7 @@ fn todo_plan_restore_clears_legacy_cache_with_or_without_a_bound_plan() {
             let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
             agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
             write_plan_file(&agent, PLAN_CONTENT);
-            agent.workflow.todos = crate::tools::todo::project_plan_todos(
+            agent.workflow.todos = pp_tools::todo::project_plan_todos(
                 agent.workflow.plan.as_ref().unwrap(),
                 &[],
                 false,
@@ -512,7 +509,7 @@ fn todo_plan_legacy_cleanup_rolls_back_when_journal_fails() {
     let mut agent = runtime_input_agent(dir.path(), "response", "127.0.0.1:1", "");
     agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
     agent.workflow.todos =
-        crate::tools::todo::project_plan_todos(agent.workflow.plan.as_ref().unwrap(), &[], false)
+        pp_tools::todo::project_plan_todos(agent.workflow.plan.as_ref().unwrap(), &[], false)
             .unwrap();
     agent.workflow.todo_plan_id = Some(agent.workflow.plan.as_ref().unwrap().id.clone());
     seed_session(&mut agent, "legacy planning cache");

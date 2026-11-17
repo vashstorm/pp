@@ -1,0 +1,22 @@
+[package]
+name = "pp-workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pp-core = { path = "../pp-core" }
+pp-config = { path = "../pp-config" }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+image = { workspace = true }
+libc = { workspace = true }
+rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+similar = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+test-support = []

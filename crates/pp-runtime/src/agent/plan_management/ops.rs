@@ -3,8 +3,6 @@ use super::{
     is_missing, read_plan_bytes,
 };
 use crate::agent::Agent;
-use crate::tools::plan_catalog::{self, PlanCatalogLock, PlanFileIdentity, PlanLease};
-use crate::tools::save::Workspace;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use pp_core::plan::PLAN_MAX_BYTES;
 use pp_core::plan::PlanLocation;
@@ -12,6 +10,8 @@ use pp_core::plan::path_for;
 use pp_core::plan::valid_id;
 use pp_core::plan::validate_file_name;
 use pp_core::plan::validate_stored_file_name;
+use pp_tools::plan_catalog::{self, PlanCatalogLock, PlanFileIdentity, PlanLease};
+use pp_workspace::save::Workspace;
 use rustix::fs::Dir;
 use std::ffi::OsString;
 use std::path::Path;
@@ -398,12 +398,9 @@ mod tests {
         let target = entry(&listing, "delete-me.md").clone();
         agent.workflow = bound_workflow(&target.id, "delete-me.md", content);
         // 模拟旧版本载入详情后留下的计划预览缓存。
-        agent.workflow.todos = crate::tools::todo::project_plan_todos(
-            agent.workflow.plan.as_ref().unwrap(),
-            &[],
-            false,
-        )
-        .unwrap();
+        agent.workflow.todos =
+            pp_tools::todo::project_plan_todos(agent.workflow.plan.as_ref().unwrap(), &[], false)
+                .unwrap();
         agent.workflow.todo_plan_id = Some(target.id.clone());
         seed_session(&mut agent, "delete fixture");
         let selection = agent.read_listed_plan(&target.id).unwrap();

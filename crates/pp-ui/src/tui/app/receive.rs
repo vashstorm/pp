@@ -49,10 +49,7 @@ impl App {
     }
 
     /// 安装根会话临时管道 registry；换实例时递增 epoch 并关闭旧面板。
-    pub(in crate::tui) fn install_pipe_store(
-        &mut self,
-        store: Option<pp_runtime::tools::PipeStore>,
-    ) -> bool {
+    pub(in crate::tui) fn install_pipe_store(&mut self, store: Option<pp_bash::PipeStore>) -> bool {
         let changed = match (&self.pipe_store, &store) {
             (Some(current), Some(next)) => !current.same_instance(next),
             (None, None) => false,

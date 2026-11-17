@@ -3,14 +3,14 @@ use super::{
     plan_display_title, read_plan_bytes,
 };
 use crate::agent::Agent;
-use crate::tools::plan_catalog::{self, PlanCatalogEntry, PlanCatalogLock, PlanFileIdentity};
-use crate::tools::save::Workspace;
 use anyhow::{Context, Result, anyhow};
 use pp_core::plan::PlanLocation;
 use pp_core::plan::path_for;
 use pp_core::plan::task_progress;
 use pp_core::plan::valid_id;
 use pp_core::plan::validate_stored_file_name;
+use pp_tools::plan_catalog::{self, PlanCatalogEntry, PlanCatalogLock, PlanFileIdentity};
+use pp_workspace::save::Workspace;
 use rustix::fs::Dir;
 use std::ffi::OsString;
 use std::path::Path;

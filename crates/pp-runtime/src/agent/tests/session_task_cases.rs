@@ -284,7 +284,7 @@ fn background_finish_run_reclaims_processes_for_every_outcome() {
     let mut previous = None;
     for outcome in [0, 1, 2] {
         let token = CancellationToken::new();
-        let started = agent.tools.execute("bash", &json!({"command":"sh -c 'printf \"%s\\n%s\" \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60'","mode":"background"}).to_string(), "start", crate::tools::ToolPolicy::Execute { workflow: &agent.workflow }, &token, &mut |_| {});
+        let started = agent.tools.execute("bash", &json!({"command":"sh -c 'printf \"%s\\n%s\" \"$$\" \"$TMPDIR\" > marker.pending; mv marker.pending marker; exec sleep 60'","mode":"background"}).to_string(), "start", pp_tools::ToolPolicy::Execute { workflow: &agent.workflow }, &token, &mut |_| {});
         let snapshot: serde_json::Value = serde_json::from_str(&started.output).unwrap();
         let id = snapshot["task_id"].as_str().unwrap().to_owned();
         assert_ne!(previous.as_ref(), Some(&id));
@@ -324,7 +324,7 @@ fn background_finish_run_reclaims_processes_for_every_outcome() {
             "bash_task",
             &json!({"task_id":id,"action":"status"}).to_string(),
             "status",
-            crate::tools::ToolPolicy::Execute {
+            pp_tools::ToolPolicy::Execute {
                 workflow: &agent.workflow,
             },
             &CancellationToken::new(),
@@ -338,10 +338,10 @@ fn background_finish_run_reclaims_processes_for_every_outcome() {
 
 #[test]
 fn finish_task_archives_completed_plan_only_on_success_boundary() {
-    use crate::tools::plan_catalog::{self, PlanCatalogEntry, PlanCatalogLock};
     use pp_core::plan::PlanLocation;
     use pp_core::plan::PlanStatus;
     use pp_core::plan::plan_tasks;
+    use pp_tools::plan_catalog::{self, PlanCatalogEntry, PlanCatalogLock};
 
     let archive_agent = |dir: &std::path::Path, protocol: &str| -> Agent {
         let mut agent = runtime_input_agent(dir, protocol, "127.0.0.1:1", "");

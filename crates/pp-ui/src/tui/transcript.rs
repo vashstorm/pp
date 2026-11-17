@@ -202,7 +202,7 @@ struct TranscriptEntry {
 /// Bash 卡片的管道入口：只保留有界元数据，不复制阶段正文。
 #[derive(Clone, PartialEq, Eq)]
 struct PipesBadge {
-    status: pp_runtime::tools::output::PipesStatus,
+    status: pp_workspace::output::PipesStatus,
     /// 恢复的历史结果不再保留临时正文，仅保留阶段状态。
     restored: bool,
 }

@@ -19,7 +19,7 @@ impl Agent {
         &mut self,
         emit: &mut dyn FnMut(Option<&str>, AgentEvent),
     ) -> Result<()> {
-        if let Some(binding) = &self.tools.subagent {
+        if let Some(binding) = &self.subagent {
             binding.check_lsp_cleanup()?;
         }
         let Some(registry) = self.tools.lsp_registry() else {
@@ -67,9 +67,9 @@ impl Agent {
             ids.push(delivery.id);
             if self.lsp_injected.insert(delivery.id) {
                 text.push('\n');
-                text.push_str(&crate::lsp::diagnostics::render(
+                text.push_str(&pp_lsp::diagnostics::render(
                     &delivery.report,
-                    Some(crate::lsp::diagnostics::AUTO_MESSAGE_LIMIT),
+                    Some(pp_lsp::diagnostics::AUTO_MESSAGE_LIMIT),
                 ));
                 text.push('\n');
             }

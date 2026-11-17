@@ -276,7 +276,7 @@ impl Transcript {
                     .and_then(Value::as_str)
                     .or_else(|| {
                         (name == "edit")
-                            .then(|| pp_runtime::tools::edit_path(args))
+                            .then(|| pp_tools::edit_path(args))
                             .flatten()
                     })
                 });
@@ -450,12 +450,11 @@ impl Transcript {
                             entry.pipeline_preview = preview;
                             entry.layout = None;
                         }
-                        let badge = pp_runtime::tools::output::pipes_status(&pipes).map(|status| {
-                            PipesBadge {
+                        let badge =
+                            pp_workspace::output::pipes_status(&pipes).map(|status| PipesBadge {
                                 status,
                                 restored: replaying,
-                            }
-                        });
+                            });
                         if entry.pipes_badge != badge {
                             entry.pipes_badge = badge;
                             entry.update_bash_footer(

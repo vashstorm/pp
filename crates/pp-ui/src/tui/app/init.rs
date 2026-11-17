@@ -260,7 +260,7 @@ impl App {
             options.push(serde_json::json!({"label":"Deny","description":"Return tool approval denied"}));
             let args=pp_core::interaction::AskArgs::parse(&serde_json::json!({"questions":[{"id":"approval","question":format!("{}: {}",request.tool,request.reason),"options":options}]}).to_string())?;
             let answers=request_ask(&approval_events,pp_core::interaction::AskRequest{call_id:request.agent.as_ref().map(|id|format!("subagent-{id}-approval")).unwrap_or_else(||"approval-dialog".into()),args:std::sync::Arc::new(args)},token)?;
-            Ok(match answers.first().and_then(|a|a.selected_options.first()).map(String::as_str){Some("Approve once")=>pp_runtime::tools::approval::ApprovalDecision::Approve,Some("Allow for this session")if request.session_grant=>pp_runtime::tools::approval::ApprovalDecision::ApproveSession,_=>pp_runtime::tools::approval::ApprovalDecision::Deny})
+            Ok(match answers.first().and_then(|a|a.selected_options.first()).map(String::as_str){Some("Approve once")=>pp_tools::approval::ApprovalDecision::Approve,Some("Allow for this session")if request.session_grant=>pp_tools::approval::ApprovalDecision::ApproveSession,_=>pp_tools::approval::ApprovalDecision::Deny})
         }));
         agent.ensure_subagents()?;
         let usage = agent.context_usage().ok();
@@ -314,7 +314,7 @@ impl App {
                             WorkerEvent::McpManaged {
                                 result,
                                 view: agent.mcp_view(),
-                                show: matches!(action, pp_runtime::mcp::Action::List),
+                                show: matches!(action, pp_mcp::Action::List),
                             }
                         }
                         WorkerCommand::ReloadModels => WorkerEvent::ModelsReloaded(
@@ -711,7 +711,7 @@ impl App {
 
 /// `lazy=false` 时的后台预热：只启动已发现的真实 language server，
 /// 不运行 CLI adapter/工作区 checker，也不阻塞 UI 或模型任务。
-fn prewarm_lsp(registry: Option<pp_runtime::lsp::Registry>, events: mpsc::SyncSender<WorkerEvent>) {
+fn prewarm_lsp(registry: Option<pp_lsp::Registry>, events: mpsc::SyncSender<WorkerEvent>) {
     let Some(registry) = registry else { return };
     if !registry.enabled() || registry.is_lazy() {
         return;

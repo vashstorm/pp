@@ -245,7 +245,7 @@ pp stats
 
 ## 开发
 
-仓库是按功能拆分的 Cargo workspace，共七个包。根包 `pp` 只保留 `src/main.rs`（启动参数、日志初始化、工作目录恢复、模式分发与退出码）和根 `tests/`，并且是唯一的默认成员；业务实现由以下内部库承载：
+仓库是按功能拆分的 Cargo workspace，共十三个包（另含仅用于 dev-dependency 的 `pp-test-support`）。根包 `pp` 只保留 `src/main.rs`（启动参数、日志初始化、工作目录恢复、模式分发与退出码）和根 `tests/`，并且是唯一的默认成员；业务实现由以下内部库承载：
 
 | 包 | 职责 |
 | --- | --- |
@@ -253,7 +253,13 @@ pp stats
 | `pp-config` | 设置与模型 YAML、模型目录、认证及认证 HTTP、agent 数据库与技能 |
 | `pp-stats` | 请求快照、聚合，以及内嵌资源的统计服务与风格偏好保存 |
 | `pp-llm` | 聊天补全与响应接口请求、重试、流式、解析和共享 HTTP 返回类型 |
-| `pp-runtime` | Agent、工具、子 Agent、MCP／LSP、会话与历史、模型控制和提示词 |
+| `pp-workspace` | 工作区安全保存、diff、图片编码、有界输出/artifact 存储、宿主默认值与共享工具值类型 |
+| `pp-mcp` | MCP 客户端（stdio/HTTP/SSE）、配置发现、后台建连、生命周期与工具代理 |
+| `pp-lsp` | LSP 注册表、stdio 传输、诊断、保存联动、只读修改预览与 `lsp` 工具 |
+| `pp-bash` | 嵌入式 Bash 宿主、进程组监督、后台任务管理、管道流存储与 AST 命令展示 |
+| `pp-tools` | 同步工具执行器、内置工具、分层项目指令与端口 trait |
+| `pp-runtime` | Agent 循环、子 Agent、Hooks 接线、会话与历史、模型控制和提示词 |
+| `pp-mock-ai` | 仅 debug 构建启用的本地 Responses mock 服务与内嵌调试场景（`/test-*`） |
 | `pp-ui` | TUI、CLI、命令、快捷键与 tips |
 | `pp`（根包） | 启动组装与根 `cli_agent` 集成测试 |
 

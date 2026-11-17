@@ -319,7 +319,7 @@ impl App {
                     Level::Error,
                     "Finish or cancel the current task before managing MCP".into(),
                 );
-            } else if matches!(action, pp_runtime::mcp::Action::Help) {
+            } else if matches!(action, pp_mcp::Action::Help) {
                 self.remember_input();
                 self.clear_input();
                 self.mcp_panel = Some(crate::tui::mcp::Panel::help());
@@ -811,7 +811,7 @@ impl App {
                 self.load_image_references(false, PendingKind::Steering);
             }
             MenuAction::McpSubcommand(index) => {
-                let (name, _, argument) = pp_runtime::mcp::SUBCOMMANDS[index];
+                let (name, _, argument) = pp_mcp::SUBCOMMANDS[index];
                 self.input = editor();
                 self.input
                     .insert_str(format!("/mcp {name}{}", if argument { " " } else { "" }));

@@ -8,9 +8,9 @@ use super::events::{cli_context_event, cli_output_result, cli_output_text, cli_w
 use super::mcp_status;
 use pp_core::cancellation;
 use pp_core::events;
-use pp_runtime::agent;
 #[cfg(debug_assertions)]
-use pp_runtime::mock_ai;
+use pp_mock_ai as mock_ai;
+use pp_runtime::agent;
 
 /// 行模式下单个执行单元：正常 Agent 任务，或 dev 构建的内嵌 mock 场景。
 enum CliExecution<'a> {
@@ -340,7 +340,7 @@ fn run_cli_execution(
                     stderr,
                     &format!(
                         "Plan tasks · {status:?} · r{revision}{preview}\n{}\n",
-                        pp_core::text::display_text(&pp_runtime::tools::todo::format_summary(
+                        pp_core::text::display_text(&pp_tools::todo::format_summary(
                             &phases,
                             &[],
                             true

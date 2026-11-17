@@ -297,19 +297,19 @@ fn plan_reconcile_refuses_tombstones_and_missing_files_without_registration() {
         let id = agent.workflow.plan.as_ref().unwrap().id.clone();
         {
             let workspace = agent.tools.plan_workspace();
-            let _lock = crate::tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
-            let snapshot = crate::tools::plan_catalog::load_catalog(workspace).unwrap();
+            let _lock = pp_tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
+            let snapshot = pp_tools::plan_catalog::load_catalog(workspace).unwrap();
             let mut catalog = snapshot.catalog;
             catalog
                 .entries
-                .push(crate::tools::plan_catalog::PlanCatalogEntry {
+                .push(pp_tools::plan_catalog::PlanCatalogEntry {
                     id: id.clone(),
                     file_name: format!("{id}.md"),
                     location: PlanLocation::Plans,
                     deleted: true,
                     deleted_file_identity: None,
                 });
-            crate::tools::plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog)
+            pp_tools::plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog)
                 .unwrap();
         }
         let error = err_message(agent.reconcile_plan_location());
@@ -328,8 +328,8 @@ fn plan_reconcile_refuses_tombstones_and_missing_files_without_registration() {
         assert!(!error.is_empty());
         assert_eq!(agent.workflow, previous);
         let workspace = agent.tools.plan_workspace();
-        let _lock = crate::tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
-        let snapshot = crate::tools::plan_catalog::load_catalog(workspace).unwrap();
+        let _lock = pp_tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
+        let snapshot = pp_tools::plan_catalog::load_catalog(workspace).unwrap();
         assert!(snapshot.catalog.active_by_id(&missing_id).is_none());
     }
 }

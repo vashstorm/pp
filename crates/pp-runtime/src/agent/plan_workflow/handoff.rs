@@ -3,7 +3,6 @@ use super::super::ExecutionPreparation;
 use super::super::{context, turn};
 use super::{NO_PLAN, NO_TASKS, NOT_CURRENT, NOT_PLAN};
 use crate::agent::input::InputQueue;
-use crate::tools::plan_catalog;
 use anyhow::{Result, anyhow, ensure};
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
@@ -14,6 +13,7 @@ use pp_core::plan::PlanStatus;
 use pp_core::plan::ReviewToken;
 use pp_core::plan::WorkMode;
 use pp_core::plan::WorkflowState;
+use pp_tools::plan_catalog;
 
 /// 生命周期搬迁的待清理端点：源/目标各自的 (文件名, 位置)。
 pub(super) type PlanMoveEndpoints = ((String, PlanLocation), (String, PlanLocation));
@@ -199,8 +199,8 @@ impl Agent {
                 ExecutionContext::Keep
             };
             let prompt = plan::execution_prompt(document, prompt_context);
-            let mut todos = crate::tools::todo::project_plan_todos(document, &[], false)?;
-            crate::tools::todo::normalize_in_progress(&mut todos);
+            let mut todos = pp_tools::todo::project_plan_todos(document, &[], false)?;
+            pp_tools::todo::normalize_in_progress(&mut todos);
             workflow.todos = todos;
             workflow.todo_plan_id = Some(document.id.clone());
             let mut session = self.execution_session(&model, &workflow, !fresh)?;

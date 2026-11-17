@@ -382,8 +382,8 @@ fn plan_keep_approval_appends_one_message_and_rolls_back_on_failure() {
         );
         {
             let workspace = agent.tools.plan_workspace();
-            let _lock = crate::tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
-            let snapshot = crate::tools::plan_catalog::load_catalog(workspace).unwrap();
+            let _lock = pp_tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
+            let snapshot = pp_tools::plan_catalog::load_catalog(workspace).unwrap();
             let entry = snapshot.catalog.active_by_id(&id).unwrap();
             assert_eq!(entry.file_name, format!("{id}.md"));
             assert_eq!(entry.location, PlanLocation::Plans);
@@ -644,7 +644,7 @@ fn enter_plan_with_mcp(agent: &mut Agent, dir: &std::path::Path, servers: serde_
     agent.enter_plan(&CancellationToken::new()).unwrap();
     write_mcp_config(dir, servers);
     agent
-        .manage_mcp(&crate::mcp::Action::Reload, &CancellationToken::new())
+        .manage_mcp(&pp_mcp::Action::Reload, &CancellationToken::new())
         .unwrap();
 }
 
@@ -671,7 +671,7 @@ fn plan_exit_reuses_connected_mcp_service_without_reinitializing() {
         }),
     );
     agent
-        .manage_mcp(&crate::mcp::Action::Reload, &CancellationToken::new())
+        .manage_mcp(&pp_mcp::Action::Reload, &CancellationToken::new())
         .unwrap();
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&extra_log), 1);
@@ -792,7 +792,7 @@ fn plan_handoff_ignores_external_config_until_reload() {
 
     // 只有显式 /mcp reload 才加载新配置：旧服务停止，新服务首次握手。
     agent
-        .manage_mcp(&crate::mcp::Action::Reload, &CancellationToken::new())
+        .manage_mcp(&pp_mcp::Action::Reload, &CancellationToken::new())
         .unwrap();
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&replacement_log), 1);

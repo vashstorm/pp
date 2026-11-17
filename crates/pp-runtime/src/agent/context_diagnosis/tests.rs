@@ -1,6 +1,5 @@
 use super::*;
 use crate::agent::persistence::ReplayRecord;
-use crate::tools::Tools;
 use async_openai::types::responses::{
     EasyInputContent, FunctionCallOutput, FunctionCallOutputItemParam, InputContent, InputItem,
     InputParam, Item, ReasoningItem, Role, SummaryPart,
@@ -11,6 +10,7 @@ use pp_config::models::Protocol;
 use pp_core::cancellation::CancellationToken;
 use pp_core::context::TokenUsage;
 use pp_core::events::AgentEvent;
+use pp_tools::Tools;
 use std::fs;
 
 fn test_catalog(
@@ -219,7 +219,7 @@ fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
         "read",
         r#"{"path":"nested/file.txt"}"#,
         "call_nested",
-        crate::tools::ToolPolicy::Execute {
+        pp_tools::ToolPolicy::Execute {
             workflow: &agent.workflow,
         },
         &CancellationToken::new(),

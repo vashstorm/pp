@@ -13,7 +13,7 @@ impl Agent {
         self.stop_subagents()?;
         self.models.reload_models()?;
         self.catalog = self.models.catalog_snapshot();
-        if let Some(binding) = &self.tools.subagent {
+        if let Some(binding) = &self.subagent {
             binding.set_model_roles(self.catalog.subagent_roles());
         }
         if self.task_status.accounting.is_some() {
@@ -70,7 +70,7 @@ impl Agent {
     ) -> Result<()> {
         self.models.set_role(role, assignment)?;
         self.catalog = self.models.catalog_snapshot();
-        if let Some(binding) = &self.tools.subagent {
+        if let Some(binding) = &self.subagent {
             binding.set_model_roles(self.catalog.subagent_roles());
         }
         Ok(())

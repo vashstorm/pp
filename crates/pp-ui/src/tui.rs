@@ -565,7 +565,7 @@ struct App {
     hub_sends: BTreeMap<u64, app::hub::HubSend>,
     child_drafts: subagents::Drafts,
     /// worker 最近发布的根会话临时管道 registry；面板据此判断换根。
-    pipe_store: Option<pp_runtime::tools::PipeStore>,
+    pipe_store: Option<pp_bash::PipeStore>,
     /// 根会话实例代次；每次 `same_instance` 判定为换根时递增。
     pipe_store_epoch: u64,
     pipes_panel: Option<pipes::Panel>,
@@ -591,10 +591,10 @@ struct App {
     task_status_view: pp_config::task_status::View,
     task_status: Option<pp_config::task_status::Snapshot>,
     cost_display: pp_config::config::CostDisplay,
-    lsp_cleanup: Option<pp_runtime::lsp::Cleanup>,
-    mcp_view: pp_runtime::mcp::View,
+    lsp_cleanup: Option<pp_lsp::Cleanup>,
+    mcp_view: pp_mcp::View,
     mcp_panel: Option<mcp::Panel>,
-    background_cleanup: Option<pp_runtime::tools::BackgroundCleanup>,
+    background_cleanup: Option<pp_bash::BackgroundCleanup>,
     file_worker: files::Worker,
     file_paths: Vec<String>,
     file_directory: String,

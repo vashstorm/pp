@@ -29,7 +29,7 @@ impl Binding {
             .cloned()
             .collect()
     }
-    pub(crate) fn wait_jobs(&self, ids: &[String]) -> Result<Vec<crate::tools::wait::Job>> {
+    pub(crate) fn wait_jobs(&self, ids: &[String]) -> Result<Vec<pp_tools::wait::Job>> {
         let state = lock(&self.inner.state);
         for id in ids {
             ensure!(
@@ -46,7 +46,7 @@ impl Binding {
             .runs
             .values()
             .filter(|r| r.owner == self.owner && (ids.is_empty() || ids.contains(&r.id)))
-            .map(|r| crate::tools::wait::Job {
+            .map(|r| pp_tools::wait::Job {
                 id: r.id.clone(),
                 r#type: "task".into(),
                 label: r.task.chars().take(200).collect(),

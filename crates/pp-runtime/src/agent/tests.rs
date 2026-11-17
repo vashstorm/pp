@@ -4,6 +4,7 @@ use pp_test_support::CapturedRequest;
 use serde_json::{Value, json};
 
 mod hook_cases;
+mod input_tool_cases;
 mod model_role_cases;
 mod plan_model_cases;
 mod runtime_model_cases;

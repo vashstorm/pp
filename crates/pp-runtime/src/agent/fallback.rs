@@ -90,7 +90,7 @@ impl Agent {
         self.switch_model_with_effort(reference, Some(effort))?;
         self.model_source = source;
         self.role_route = None;
-        if let Some(binding) = &mut self.tools.subagent {
+        if let Some(binding) = &mut self.subagent {
             binding.model = self.current_model.reference.clone();
             binding.thinking = self.think_level;
             if binding.depth > 0 {

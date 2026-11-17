@@ -2,12 +2,18 @@
 resolver = "3"
 members = [
     ".",
+    "crates/pp-bash",
     "crates/pp-core",
     "crates/pp-config",
     "crates/pp-stats",
     "crates/pp-llm",
+    "crates/pp-lsp",
+    "crates/pp-mcp",
+    "crates/pp-mock-ai",
     "crates/pp-runtime",
+    "crates/pp-tools",
     "crates/pp-ui",
+    "crates/pp-workspace",
     "crates/pp-test-support",
 ]
 default-members = ["."]
@@ -54,6 +60,7 @@ ratatui-textarea = "0.9.3"
 ratatui-image = { version = "=10.0.0", default-features = false, features = ["crossterm"] }
 unicode-normalization = "0.1"
 unicode-segmentation = "1"
+unicode-width = "0.2"
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh32"] }
 rustix = { version = "1", features = ["fs", "process"] }
 tempfile = "3"
@@ -85,10 +92,16 @@ brush-builtins = { path = "vendor/brush-builtins" }
 
 [dependencies]
 pp-core = { path = "crates/pp-core" }
+pp-bash = { path = "crates/pp-bash" }
 pp-config = { path = "crates/pp-config" }
 pp-stats = { path = "crates/pp-stats" }
+pp-mcp = { path = "crates/pp-mcp" }
+pp-lsp = { path = "crates/pp-lsp" }
+pp-mock-ai = { path = "crates/pp-mock-ai" }
 pp-runtime = { path = "crates/pp-runtime" }
 pp-ui = { path = "crates/pp-ui" }
+pp-workspace = { path = "crates/pp-workspace" }
+pp-tools = { path = "crates/pp-tools" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 chrono = { workspace = true }

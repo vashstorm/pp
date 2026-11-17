@@ -1,7 +1,7 @@
 use super::*;
 
-fn pipe_store() -> (pp_runtime::tools::PipeStore, String) {
-    let store = pp_runtime::tools::PipeStore::new();
+fn pipe_store() -> (pp_bash::PipeStore, String) {
+    let store = pp_bash::PipeStore::new();
     let id = "a".repeat(32);
     drop(store.start_run(id.clone(), "root").expect("pipe run"));
     (store, id)
@@ -114,7 +114,7 @@ fn pane_store_root_change_closes_panel_and_worker() {
             .is_some_and(|panel| !panel.runs().is_empty())
     });
     assert!(app.pipes_worker.is_some());
-    let replacement = pp_runtime::tools::PipeStore::new();
+    let replacement = pp_bash::PipeStore::new();
     drop(replacement.start_run("c".repeat(32), "root").expect("run"));
     let before = app.pipe_store_epoch;
     app.receive_event_for_test(WorkerEvent::PipeStoreBound { store: replacement });

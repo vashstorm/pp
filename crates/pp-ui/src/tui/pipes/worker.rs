@@ -4,8 +4,8 @@
 //! 带根 epoch、view epoch 与 run/stream id；面板关闭后旧线程直接结束。
 
 use super::{BodyUpdate, RunView};
-use pp_runtime::tools::PipeStore;
-use pp_runtime::tools::output::Normalizer;
+use pp_bash::PipeStore;
+use pp_workspace::output::Normalizer;
 use std::{
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError},
     thread,

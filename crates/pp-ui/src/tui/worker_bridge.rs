@@ -27,7 +27,7 @@ use std::{
 };
 pub(super) enum WorkerCommand {
     Mcp {
-        action: pp_runtime::mcp::Action,
+        action: pp_mcp::Action,
         cancellation: CancellationToken,
     },
     ReloadModels,
@@ -123,10 +123,10 @@ pub(super) enum WorkerCommand {
 pub(super) enum WorkerEvent {
     McpManaged {
         result: Result<()>,
-        view: pp_runtime::mcp::View,
+        view: pp_mcp::View,
         show: bool,
     },
-    McpSnapshot(pp_runtime::mcp::View),
+    McpSnapshot(pp_mcp::View),
     DialogFinished {
         call_id: String,
     },
@@ -139,10 +139,10 @@ pub(super) enum WorkerEvent {
     Progress(AgentEvent),
     ShellCompleted(Result<()>),
     #[cfg(debug_assertions)]
-    MockPrepared(pp_runtime::mock_ai::MockTestSnapshot),
+    MockPrepared(pp_mock_ai::MockTestSnapshot),
     #[cfg(debug_assertions)]
     MockCompleted {
-        result: Result<pp_runtime::mock_ai::MockTestReport>,
+        result: Result<pp_mock_ai::MockTestReport>,
         elapsed: Duration,
         finished_at: chrono::DateTime<chrono::Local>,
     },
@@ -155,7 +155,7 @@ pub(super) enum WorkerEvent {
     /// 根会话临时管道 registry 绑定。启动与换根后发布；接收端用
     /// `same_instance` 判断是否真正换根并递增打开面板的 epoch。
     PipeStoreBound {
-        store: pp_runtime::tools::PipeStore,
+        store: pp_bash::PipeStore,
     },
     // 压缩终态：与普通任务 Completed 是不同的判别值，不触发任务收尾展示。
     Compacted(Result<CompactionOutcome>),

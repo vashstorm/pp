@@ -54,7 +54,7 @@ pub(crate) fn scope(
     runner: &std::sync::Arc<Runner>,
     binding: Option<&crate::subagent::Binding>,
     workflow: &pp_core::plan::WorkflowState,
-    approval: &crate::tools::approval::Gate,
+    approval: &pp_tools::approval::Gate,
     agent_type: Option<&str>,
 ) -> HookScope {
     let execute = workflow.mode == pp_core::plan::WorkMode::Execute;
@@ -153,11 +153,7 @@ pub(crate) struct PreparedCall {
     pub(crate) updated_arguments: Option<String>,
 }
 
-/// 必须中止本批的行为：`continue:false` 或无法放行的 hook 故障。
-pub(crate) enum HookHalt {
-    Stop(String),
-    Failure(anyhow::Error),
-}
+pub(crate) use pp_tools::HookHalt;
 
 pub(crate) struct PreparedBatch {
     pub(crate) calls: Vec<PreparedCall>,
@@ -168,6 +164,66 @@ pub(crate) struct PreparedBatch {
 pub(crate) struct ToolHookCall<'a> {
     pub(crate) session: &'a HookSession,
     pub(crate) call: &'a PreparedCall,
+}
+
+impl pp_tools::ToolHookCall for ToolHookCall<'_> {
+    fn deny_reason(&self) -> Option<&str> {
+        self.call.deny_reason.as_deref()
+    }
+
+    fn ask_reason(&self) -> Option<&str> {
+        self.call.ask_reason.as_deref()
+    }
+
+    fn pre_context(&self) -> &[String] {
+        &self.call.context
+    }
+
+    fn run_post_tool(
+        &self,
+        call: pp_tools::PostToolCall<'_>,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<Option<pp_tools::PostToolOutcome>> {
+        let event = if call.is_error {
+            HookEvent::PostToolUseFailure
+        } else {
+            HookEvent::PostToolUse
+        };
+        if !self.session.enabled(event) {
+            return Ok(None);
+        }
+        let error = call
+            .value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        // 参数不是 JSON 对象时 tool_input 为 null，不回显原文。
+        let input: Option<Value> = serde_json::from_str(call.arguments)
+            .ok()
+            .filter(Value::is_object);
+        let payload = if event == HookEvent::PostToolUse {
+            Payload::PostTool {
+                name: call.name,
+                input: input.as_ref(),
+                call_id: call.call_id,
+                response: call.value,
+            }
+        } else {
+            Payload::PostToolFailure {
+                name: call.name,
+                input: input.as_ref(),
+                call_id: call.call_id,
+                error,
+            }
+        };
+        let effect = self.session.run(event, &payload, cancellation, emit)?;
+        Ok(Some(pp_tools::PostToolOutcome {
+            additional_context: effect.additional_context,
+            updated_output: effect.updated_output,
+            stop_reason: effect.stop_reason,
+        }))
+    }
 }
 
 /// 执行器一侧可用的最简调用描述：名称、call ID 与原始参数。
@@ -296,7 +352,7 @@ impl super::Agent {
         // 只借用 `hooks` 字段：身份与资格在 scope 构造时固定。
         let scope = scope(
             &self.hooks,
-            self.tools.subagent.as_ref(),
+            self.subagent.as_ref(),
             &self.workflow,
             &self.tools.approval,
             self.hook_agent_type.as_deref(),

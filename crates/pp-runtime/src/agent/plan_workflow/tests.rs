@@ -6,12 +6,12 @@ use crate::agent::tests::{
     EXPLORATION, ORIGIN, PLAN_CONTENT, err_message, journal_workflow, plan_workflow,
     runtime_input_agent, seed_session, write_plan_file,
 };
-use crate::tools::Tools;
-use crate::tools::plan_catalog;
 use pp_config::config::EditMode;
 use pp_config::config::ModelCatalog;
 use pp_core::plan;
 use pp_core::plan::{ExecutionContext, PlanLocation, PlanStatus, ReviewToken};
+use pp_tools::Tools;
+use pp_tools::plan_catalog;
 use serde_json::json;
 
 mod handoff_cases;
@@ -109,25 +109,25 @@ fn archive_error(agent: &mut Agent, content: &str) -> String {
 // --- 按 ID 协调（reconcile_plan_location）的定向回归 ---
 fn register_entry(agent: &Agent, id: &str, file_name: &str, location: PlanLocation) {
     let workspace = agent.tools.plan_workspace();
-    let _lock = crate::tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
-    let snapshot = crate::tools::plan_catalog::load_catalog(workspace).unwrap();
+    let _lock = pp_tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
+    let snapshot = pp_tools::plan_catalog::load_catalog(workspace).unwrap();
     let mut catalog = snapshot.catalog;
     catalog
         .entries
-        .push(crate::tools::plan_catalog::PlanCatalogEntry {
+        .push(pp_tools::plan_catalog::PlanCatalogEntry {
             id: id.to_owned(),
             file_name: file_name.to_owned(),
             location,
             deleted: false,
             deleted_file_identity: None,
         });
-    crate::tools::plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog).unwrap();
+    pp_tools::plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog).unwrap();
 }
 
 fn registered_entry(agent: &Agent, id: &str) -> (String, PlanLocation) {
     let workspace = agent.tools.plan_workspace();
-    let _lock = crate::tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
-    let snapshot = crate::tools::plan_catalog::load_catalog(workspace).unwrap();
+    let _lock = pp_tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
+    let snapshot = pp_tools::plan_catalog::load_catalog(workspace).unwrap();
     let entry = snapshot.catalog.active_by_id(id).expect("entry registered");
     (entry.file_name.clone(), entry.location)
 }

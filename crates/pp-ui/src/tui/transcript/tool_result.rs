@@ -44,7 +44,7 @@ pub(super) fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String
         if let Some(output) = result["output"].as_str() {
             lines.push(output.trim_end_matches('\n').to_owned());
         }
-        let notice = pp_runtime::tools::output::notice(result);
+        let notice = pp_workspace::output::notice(result);
         if !notice.is_empty() {
             lines.push(notice);
         }

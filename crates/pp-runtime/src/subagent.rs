@@ -176,7 +176,7 @@ struct Inner {
     appends: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     observe_errors: Mutex<BTreeMap<String, String>>,
     /// 独立子 Registry 清理失败后保留可重试句柄，并向父 Agent 传播 typed error。
-    lsp_cleanup: Mutex<Vec<crate::lsp::Cleanup>>,
+    lsp_cleanup: Mutex<Vec<pp_lsp::Cleanup>>,
     cleanup_errors: Mutex<Vec<anyhow::Error>>,
     output_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
     /// 管道阶段预览与主输出快照分开保留；种类之间不互相覆盖。
@@ -266,7 +266,16 @@ pub(crate) struct RootOptions {
     pub plan_mode: bool,
 }
 
-fn function(name: &str, description: &str, properties: Value, required: &[&str]) -> FunctionObject {
+#[cfg(test)]
+pub(crate) use pp_tools::validate_output;
+pub(crate) use pp_tools::validate_schema;
+
+pub(super) fn function(
+    name: &str,
+    description: &str,
+    properties: Value,
+    required: &[&str],
+) -> FunctionObject {
     FunctionObject {
         name: name.into(),
         description: Some(description.into()),
@@ -276,29 +285,86 @@ fn function(name: &str, description: &str, properties: Value, required: &[&str])
         ..Default::default()
     }
 }
-pub(crate) fn yield_definition() -> FunctionObject {
-    function(
-        "yield",
-        "Submit the final structured result in data. Successful submission completes the assigned run.",
-        json!({"data":{}}),
-        &["data"],
-    )
-}
-pub(crate) fn is_uri(path: &str) -> bool {
-    ["agent://", "history://", "proc://"]
-        .iter()
-        .any(|p| path.starts_with(p))
-}
 
-pub(crate) fn validate_schema(schema: &Value) -> Result<()> {
-    jsonschema::validator_for(schema)
-        .map(|_| ())
-        .map_err(|error| anyhow::anyhow!("invalid output schema: {error}"))
-}
-pub(crate) fn validate_output(schema: &Value, data: &Value) -> Result<()> {
-    let validator = jsonschema::validator_for(schema)
-        .map_err(|error| anyhow::anyhow!("invalid output schema: {error}"))?;
-    validator
-        .validate(data)
-        .map_err(|error| anyhow::anyhow!("output does not match schema: {error}"))
+impl pp_tools::SubagentHost for Binding {
+    fn definitions(&self, mode: pp_core::plan::WorkMode) -> Vec<FunctionObject> {
+        self.definitions(mode)
+    }
+
+    fn pending(&self) -> bool {
+        self.pending()
+    }
+
+    fn plan_mode(&self) -> bool {
+        self.plan_mode()
+    }
+
+    fn is_root(&self) -> bool {
+        self.depth == 0
+    }
+
+    fn bind_session(&self, dir: &Path, id: &str) {
+        self.bind_session(dir, id);
+    }
+
+    fn execute_task(
+        &self,
+        arguments: &str,
+        plan: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<Value> {
+        self.execute("task", arguments, plan, cancellation)
+    }
+
+    fn uri(
+        &self,
+        tool: &str,
+        path: &str,
+        content: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<Value> {
+        self.uri(tool, path, content, cancellation)
+    }
+
+    fn read_agent_result(
+        &self,
+        source: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<(Value, Option<Value>)> {
+        self.read_agent_result(source, cancellation)
+    }
+
+    fn wait_jobs(&self, ids: &[String]) -> Result<Vec<pp_workspace::WaitJob>> {
+        self.wait_jobs(ids)
+    }
+
+    fn deliveries(&self, ids: &[String]) -> Vec<pp_tools::SubagentDelivery> {
+        self.deliveries(ids)
+            .into_iter()
+            .map(|run| pp_tools::SubagentDelivery {
+                id: run.id.clone(),
+                run: serde_json::to_value(run).unwrap_or(Value::Null),
+            })
+            .collect()
+    }
+
+    fn acknowledge(&self, ids: &[String]) -> Result<()> {
+        self.acknowledge(ids)
+    }
+
+    fn check_lsp_cleanup(&self) -> Result<()> {
+        self.check_lsp_cleanup()
+    }
+
+    fn cancel_runs(&self, ids: &[String]) -> Result<()> {
+        self.cancel_runs(ids)
+    }
+
+    fn reap_runs(&self, ids: &[String]) -> Result<()> {
+        self.reap_runs(ids)
+    }
+
+    fn shutdown(&self) -> Result<()> {
+        self.shutdown()
+    }
 }

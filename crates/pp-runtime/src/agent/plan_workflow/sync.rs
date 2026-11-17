@@ -1,13 +1,13 @@
 use super::super::Agent;
 use super::super::plan_sync::sync_plan_todos;
 use super::{NO_PLAN, TASKS_CHANGED};
-use crate::tools::plan_catalog;
 use anyhow::{Result, anyhow, ensure};
 use pp_core::plan;
 use pp_core::plan::PlanLocation;
 use pp_core::plan::PlanStatus;
 use pp_core::plan::WorkMode;
 use pp_core::plan::WorkflowState;
+use pp_tools::plan_catalog;
 
 impl Agent {
     /// Persist a workflow change; on failure restore the whole `previous`

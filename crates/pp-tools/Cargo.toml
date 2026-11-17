@@ -1,0 +1,41 @@
+[package]
+name = "pp-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pp-core = { path = "../pp-core" }
+pp-config = { path = "../pp-config" }
+pp-workspace = { path = "../pp-workspace" }
+pp-mcp = { path = "../pp-mcp" }
+pp-lsp = { path = "../pp-lsp" }
+pp-bash = { path = "../pp-bash" }
+pp-llm = { path = "../pp-llm" }
+anyhow = { workspace = true }
+async-openai = { workspace = true }
+dom_smoothie = { workspace = true }
+globset = { workspace = true }
+grep-matcher = { workspace = true }
+grep-pcre2 = { workspace = true }
+grep-regex = { workspace = true }
+grep-searcher = { workspace = true }
+html2text = { workspace = true }
+ignore = { workspace = true }
+jsonschema = { workspace = true }
+regex = { workspace = true }
+rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+unicode-normalization = { workspace = true }
+unicode-segmentation = { workspace = true }
+xxhash-rust = { workspace = true }
+
+[dev-dependencies]
+pp-workspace = { path = "../pp-workspace", features = ["test-support"] }
+base64 = { workspace = true }
+image = { workspace = true }
+serde_yaml = { workspace = true }

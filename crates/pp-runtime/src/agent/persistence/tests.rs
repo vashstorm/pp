@@ -15,9 +15,9 @@ use std::time::UNIX_EPOCH;
 
 #[test]
 fn wait_native_commit_failure_does_not_acknowledge_background_delivery() {
-    use crate::tools::ToolPolicy;
-    use crate::tools::Tools;
     use pp_core::cancellation::CancellationToken;
+    use pp_tools::ToolPolicy;
+    use pp_tools::Tools;
     for protocol in [Protocol::Completion, Protocol::Response] {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
@@ -534,9 +534,9 @@ fn incomplete_native_commit_never_restores_projections_or_model_audit() {
 #[test]
 fn context_failed_history_replacement_restores_native_memory_and_disk() {
     use crate::agent::Agent;
-    use crate::tools::Tools;
     use pp_config::config::ModelCatalog;
     use pp_core::cancellation::CancellationToken;
+    use pp_tools::Tools;
     use serde_json::json;
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
@@ -672,8 +672,8 @@ fn context_failed_history_replacement_restores_native_memory_and_disk() {
 #[test]
 fn write_failure_preserves_settings_and_blocks_requests_until_reset() {
     use crate::agent::Agent;
-    use crate::tools::Tools;
     use pp_config::config::ModelCatalog;
+    use pp_tools::Tools;
     let dir = tempfile::tempdir().unwrap();
     let models = dir.path().join("models.yml");
     let server = TestServer::start().unwrap();
@@ -930,7 +930,7 @@ fn instruction_loading_cards_journal_failure_keeps_unpublished_snapshot() {
         // 用只读句柄制造真实写入失败，不能把未落盘的加载报告为成功。
         journal.active.as_mut().unwrap().file = File::open(&path).unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "frozen project body").unwrap();
-        let mut state = crate::project_instructions::State::new(dir.path());
+        let mut state = pp_tools::project_instructions::State::new(dir.path());
         state.activate(dir.path().to_owned()).unwrap();
         let mut pending = state.refresh().unwrap();
         let mut reported = Default::default();

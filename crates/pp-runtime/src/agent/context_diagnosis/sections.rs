@@ -3,13 +3,13 @@
 
 use super::{DiagnosticItem, MAX_PREVIEW_BYTES};
 use crate::agent::Session;
-use crate::project_instructions::{self, InspectedDocument};
 use anyhow::Result;
 use async_openai::types::{
     chat::{ChatCompletionTools, FunctionObject},
     responses::Tool,
 };
 use pp_core::context::estimate_bytes;
+use pp_tools::project_instructions::{self, InspectedDocument};
 use std::collections::BTreeMap;
 
 pub(super) struct SectionWithRanges {

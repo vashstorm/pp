@@ -1,5 +1,5 @@
 #[cfg(debug_assertions)]
-use pp_runtime::mock_ai::MockTest;
+use pp_mock_ai::MockTest;
 mod templates;
 pub use templates::{FileCommand, FileCommands};
 
@@ -423,7 +423,7 @@ pub(crate) enum Command<'a> {
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
     Skills(SkillCommand<'a>),
-    Mcp(pp_runtime::mcp::Action),
+    Mcp(pp_mcp::Action),
     Shell(&'a str),
     Prompt(String),
     /// 未注册的斜杠命令；消费者必须静默丢弃，不发送模型请求。
@@ -455,7 +455,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/tips" => Command::Tips,
         "/stats" => return Ok(Some(Command::Stats(argument))),
         "/new" => Command::New,
-        "/init" => Command::Prompt(pp_runtime::project_instructions::INIT_PROMPT.to_owned()),
+        "/init" => Command::Prompt(pp_tools::project_instructions::INIT_PROMPT.to_owned()),
         "/compact" => Command::Compact,
         "/context" | "/ctx" => Command::Context,
         "/resume" => Command::Resume,
@@ -515,7 +515,7 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
             )));
         }
         "/mcp" => {
-            use pp_runtime::mcp::Action;
+            use pp_mcp::Action;
             let words: Vec<_> = argument.split_whitespace().collect();
             let action = match words.as_slice() {
                 [] | ["help"] => Action::Help,

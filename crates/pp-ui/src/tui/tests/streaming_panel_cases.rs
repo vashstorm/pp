@@ -63,7 +63,7 @@ fn init_menu_submits_model_task_and_displays_command() {
     app.handle(key(KeyCode::Enter), &mut dirty);
     assert!(
         matches!(requests.try_recv(), Ok(WorkerCommand::Run { prompt, .. })
-            if prompt == pp_runtime::project_instructions::INIT_PROMPT)
+            if prompt == pp_tools::project_instructions::INIT_PROMPT)
     );
     let screen = draw(&mut app, 100, 30);
     assert!(screen.contains("/init"));

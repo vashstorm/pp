@@ -1165,7 +1165,7 @@ pp gc [天数]
 
 ### 源码与测试模块边界
 
-项目按功能边界拆为 Cargo workspace：根包 `pp` 只保留 `src/main.rs` 的启动参数、日志初始化、工作目录切换、模式分发与退出码，以及根 `tests/`；业务实现位于六个内部库，每个库都可作为独立编译单元。根包是默认成员，因此 `cargo run`、`cargo build` 和不带包选择的测试只作用于根包；跨库验证须显式使用 `--workspace`。
+项目按功能边界拆为 Cargo workspace：根包 `pp` 只保留 `src/main.rs` 的启动参数、日志初始化、工作目录切换、模式分发与退出码，以及根 `tests/`；业务实现位于十二个内部库（外加仅 dev-dependency 的 `pp-test-support`），每个库都可作为独立编译单元。根包是默认成员，因此 `cargo run`、`cargo build` 和不带包选择的测试只作用于根包；跨库验证须显式使用 `--workspace`。
 
 | 包 / 目录 | 职责边界 |
 |---|---|
@@ -1173,17 +1173,23 @@ pp gc [天数]
 | `pp-config` / `crates/pp-config/src/` | `config`、`models`、`auth`（含 `auth/http`）、`agent_store`、`skills`、严格 YAML 与顶层 `task_status`；`prompts/skills.md` 随实现。 |
 | `pp-stats` / `crates/pp-stats/src/` | 统计快照、聚合与 HTTP 服务（统计只读，风格偏好可保存）；原 `stats.rs`、`stats/` 分别成为 `lib.rs` 与同目录模块，内嵌 HTML／JS／CSS／图标／字体与实现同目录。 |
 | `pp-llm` / `crates/pp-llm/src/` | Chat Completions／Responses 请求、重试、流式、解析与共享 HTTP 返回类型；原 `llm.rs`、`llm/` 分别成为 `lib.rs` 与同目录模块。 |
-| `pp-runtime` / `crates/pp-runtime/src/` | Agent、Tools、子 Agent、MCP、LSP、会话与历史、模型控制、host defaults、项目指令与系统提示词；`prompts/` 保留 system、runtime、plan-review。 |
+| `pp-workspace` / `crates/pp-workspace/src/` | 受管工作区安全保存、diff、图片编解码、输出与 artifact 存储、宿主环境默认值及共享工具值类型。 |
+| `pp-mcp` / `crates/pp-mcp/src/` | stdio／HTTP／SSE MCP 客户端、配置发现、后台建连、生命周期管理与工具代理。 |
+| `pp-lsp` / `crates/pp-lsp/src/` | LSP 客户端注册表、stdio JSON-RPC 传输、诊断、保存联动、只读预览与 `lsp` 工具。 |
+| `pp-bash` / `crates/pp-bash/src/` | 嵌入式 Bash 宿主（`brush-core`/`brush-builtins`）、外部程序进程组监督、后台任务管理、管道流存储与 AST 命令展示。 |
+| `pp-tools` / `crates/pp-tools/src/` | 同步工具执行器、内置工具（read/rg/glob/edit/write/todo/wait/plan/approval）、分层项目指令与端口 trait（`ToolHookCall`、`PlanSubmitGate`、`SubagentHost`）。 |
+| `pp-runtime` / `crates/pp-runtime/src/` | Agent 循环、子 Agent、Hooks 接线、会话与历史、模型控制与系统提示词；`prompts/` 保留 system、runtime、plan-review 与内置角色提示词。 |
+| `pp-mock-ai` / `crates/pp-mock-ai/src/` | 仅 `debug_assertions` 构建启用的本地 Responses mock 服务与内嵌调试场景（`/test-*`）。 |
 | `pp-ui` / `crates/pp-ui/src/` | TUI、CLI、命令、快捷键与 tips；TUI 子模块边界保持在包内。 |
 | 根包 `pp` / `src/`、`tests/` | `main.rs` 组装入口与根 `tests/cli_agent` 集成测试。 |
 
-内部依赖方向固定：`pp-core` 不依赖其他内部库；`pp-config` 依赖 core；`pp-stats` 依赖 core/config；`pp-llm` 依赖 core/config/stats；`pp-runtime` 依赖 core/config/stats/llm；`pp-ui` 依赖 core/config/runtime；根包依赖 core/config/stats/runtime/ui。不使用反向依赖、复制类型或兼容重导出来消除跨包引用。以下边界仍在包内保持：
+内部依赖方向固定：`pp-core` 不依赖其他内部库；`pp-config` 依赖 core；`pp-stats` 依赖 core/config；`pp-llm` 依赖 core/config/stats；`pp-workspace`/`pp-mcp` 依赖 core/config；`pp-lsp`/`pp-bash` 依赖 core/config/workspace；`pp-tools` 依赖 core/config/workspace/mcp/lsp/bash/llm；`pp-runtime` 依赖上述各执行前导库并通过窄端口 trait 解耦反向调用；`pp-mock-ai` 依赖 runtime；`pp-ui` 直接显式依赖所需的各内部库（不依赖 `pp-llm`/`pp-stats`）；根包按需组装。以下边界仍在包内保持：
 
 | 模块 | 职责边界 |
 |---|---|
 | `crates/pp-runtime/src/agent.rs`、`agent/turn.rs` | Agent／Session 生命周期与任务协调留在入口；请求生命周期、双协议轮次、工具结果提交和原生历史追加在 `turn`。 |
 | `crates/pp-runtime/src/agent/plan_workflow.rs`、`agent/plan_sync.rs` | 审批／Keep/Fresh 交接及 MCP 生命周期留在 workflow；登记协调、磁盘修订导入、Todo 投影与恢复同步在 `plan_sync`。 |
-| `crates/pp-runtime/src/tools.rs`、`tools/todo/plan_adapter.rs` | schema、授权策略与分发留在工具入口；普通 Todo 状态机留在 `todo.rs`，计划适配复用其解析、转换与格式化逻辑。 |
+| `crates/pp-tools/src/tools.rs`、`tools/todo/plan_adapter.rs` | schema、授权策略与分发留在工具入口；普通 Todo 状态机留在 `todo.rs`，计划适配复用其解析、转换与格式化逻辑。 |
 | `crates/pp-ui/src/tui.rs`、`tui/app/` | App 的唯一状态定义与 worker 协议留在入口；初始化、状态、事件接收、输入、导航、面板、事件处理和绘制使用跨文件 `impl App`。 |
 | `crates/pp-ui/src/tui/transcript.rs`、`tui/transcript/` | 类型、事件／回放状态机和共享 diff／包装函数留在入口；entry、native、tree_layout、render 分担布局实现，仍操作同一个 Transcript。 |
 | `crates/pp-core/src/sqlite.rs`、`crates/pp-config/src/agent_store.rs`、`crates/pp-runtime/src/history.rs` | 两库的安全打开、WAL、schema 版本检查集中在 core 的 `sqlite`；`agent_store` 拥有偏好、收藏、Role、usage 与授权行，一次性迁移在其 `migration` 子模块；`history` 拥有输入历史、会话投影和 FTS，JSONL 增量索引在 `crates/pp-runtime/src/agent/persistence/index.rs`。 |
@@ -1197,7 +1203,7 @@ pp gc [天数]
 
 ### read 模块分层
 
-`crates/pp-runtime/src/tools/read.rs` 保留统一入口、同步 `Read` trait、`ReadContext` 和结果类型。trait 使用关联类型 `Input`，`crates/pp-runtime/src/tools/read/` 下的 `FileReader`、`ImageReader`、`UrlReader` 分别接收本地文件目标、来源与图片字节、URL 目标。文件和 URL 读取识别图片后都移交同一个 `ImageReader`，通过移动字节缓冲区复用图片校验与编码，不复制完整图片。
+`crates/pp-tools/src/tools/read.rs` 保留统一入口、同步 `Read` trait、`ReadContext` 和结果类型。trait 使用关联类型 `Input`，`crates/pp-tools/src/tools/read/` 下的 `FileReader`、`ImageReader`、`UrlReader` 分别接收本地文件目标、来源与图片字节、URL 目标。文件和 URL 读取识别图片后都移交同一个 `ImageReader`，通过移动字节缓冲区复用图片校验与编码，不复制完整图片。
 
 `selector` 模块统一解析真实文件名、范围、尾部读取和 raw，`text` 模块共享完整行分页与续读路径，hashline 快照使用同一份完整原始字节分页并生成文件头，本地文件打开由 `file` 模块负责；`url` 模块持有网页转换与会话缓存。`ReadContext` 借用当前工作目录、限制、编辑模式、取消令牌、缓存和 fetch 回调，HTTP 请求复用 `pp-llm` 的同步可取消边界（`OpenAiClient::fetch_read_url` 与 `http::HttpResponse`），不在 reader 内创建运行时。新增读取类型时增加 trait 实现并接入相应分派，继续返回现有 JSON 与图片附件；工具权限检查仍由 `Tools` 在分派前执行。
 

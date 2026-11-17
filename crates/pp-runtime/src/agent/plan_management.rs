@@ -8,11 +8,11 @@ mod list;
 mod ops;
 mod select;
 
-use crate::tools::plan_catalog::{PlanFileIdentity, PlanLease};
-use crate::tools::save::Workspace;
 use anyhow::{Result, anyhow, ensure};
 use pp_core::plan::PLAN_MAX_BYTES;
 use pp_core::plan::PlanLocation;
+use pp_tools::plan_catalog::{PlanFileIdentity, PlanLease};
+use pp_workspace::save::Workspace;
 use rustix::io::Errno;
 use std::path::Path;
 use std::time::SystemTime;
@@ -104,10 +104,10 @@ fn is_missing(error: &anyhow::Error) -> bool {
 mod fixtures {
     use super::super::Agent;
     use super::*;
-    use crate::tools::Tools;
-    use crate::tools::plan_catalog::{self, PlanCatalogLock};
     use pp_config::config::EditMode;
     use pp_config::config::ModelCatalog;
+    use pp_tools::Tools;
+    use pp_tools::plan_catalog::{self, PlanCatalogLock};
     use serde_json::json;
 
     /// An agent journaled into the fixture's global sessions directory, as
@@ -157,7 +157,7 @@ mod fixtures {
     pub(super) fn registered(
         agent: &Agent,
         file_name: &str,
-    ) -> crate::tools::plan_catalog::PlanCatalogEntry {
+    ) -> pp_tools::plan_catalog::PlanCatalogEntry {
         let workspace = agent.tools.plan_workspace();
         let _lock = PlanCatalogLock::acquire(workspace).unwrap();
         let snapshot = plan_catalog::load_catalog(workspace).unwrap();

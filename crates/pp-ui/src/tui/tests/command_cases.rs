@@ -405,7 +405,7 @@ fn notification_startup_and_worker_errors_remain_in_message_history() {
 fn pipe_store_binding_is_idempotent_and_bumps_epoch_only_on_new_root() {
     let mut app = app();
     app.state = State::Ready;
-    let first = pp_runtime::tools::PipeStore::new();
+    let first = pp_bash::PipeStore::new();
     app.receive_event_for_test(WorkerEvent::PipeStoreBound {
         store: first.clone(),
     });
@@ -420,7 +420,7 @@ fn pipe_store_binding_is_idempotent_and_bumps_epoch_only_on_new_root() {
         store: first.clone(),
     });
     assert_eq!(app.pipe_store_epoch, 1);
-    let second = pp_runtime::tools::PipeStore::new();
+    let second = pp_bash::PipeStore::new();
     app.receive_event_for_test(WorkerEvent::PipeStoreBound {
         store: second.clone(),
     });

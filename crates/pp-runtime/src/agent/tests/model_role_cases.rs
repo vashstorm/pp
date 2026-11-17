@@ -178,7 +178,7 @@ fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
             "wait",
             "{}",
             "wait-roles",
-            crate::tools::ToolPolicy::Execute {
+            pp_tools::ToolPolicy::Execute {
                 workflow: &agent.workflow,
             },
             &Default::default(),

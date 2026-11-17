@@ -18,12 +18,12 @@ fn wait_fixture_run(id: &str, status: &str) -> Run {
     }
 }
 
-fn unified_wait(tools: &crate::tools::Tools, args: Value) -> Value {
+fn unified_wait(tools: &pp_tools::Tools, args: Value) -> Value {
     let result = tools.execute(
         "wait",
         &args.to_string(),
         "wait",
-        crate::tools::ToolPolicy::Execute {
+        pp_tools::ToolPolicy::Execute {
             workflow: &Default::default(),
         },
         &Default::default(),
@@ -37,8 +37,8 @@ fn wait_subagent_reservations_acknowledge_only_after_commit_and_reject_other_own
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());
     let mut tools =
-        crate::tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    tools.subagent = Some(binding.clone());
+        pp_tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(Arc::new(binding.clone()));
     let mut foreign = wait_fixture_run("foreign", "completed");
     foreign.owner = "other".into();
     {
@@ -94,8 +94,8 @@ fn wait_wrong_id_kinds_explain_selectors_without_reserving_results() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());
     let mut tools =
-        crate::tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    tools.subagent = Some(binding.clone());
+        pp_tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(Arc::new(binding.clone()));
     let mut run = wait_fixture_run("r1", "completed");
     run.agent_id = "a1".into();
     lock(&binding.inner.state)
@@ -138,14 +138,14 @@ fn wait_mixed_targets_wait_for_child_and_background_bash() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());
     let mut tools =
-        crate::tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    tools.subagent = Some(binding.clone());
+        pp_tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(Arc::new(binding.clone()));
     lock(&binding.inner.state)
         .disk
         .runs
         .insert("r1".into(), wait_fixture_run("r1", "running"));
     let workflow = pp_core::plan::WorkflowState::default();
-    let policy = || crate::tools::ToolPolicy::Execute {
+    let policy = || pp_tools::ToolPolicy::Execute {
         workflow: &workflow,
     };
     tools.execute(
@@ -212,8 +212,8 @@ fn wait_timeout_cancels_only_selected_runs_and_their_descendant_tokens() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());
     let mut tools =
-        crate::tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    tools.subagent = Some(binding.clone());
+        pp_tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(Arc::new(binding.clone()));
     let selected = CancellationToken::new();
     let descendant = selected.child_token();
     let unselected = CancellationToken::new();
@@ -260,7 +260,7 @@ fn wait_timeout_cancels_only_selected_runs_and_their_descendant_tokens() {
             "timeout",
             &Default::default(),
             &mut |_| panic!("超时必须进入回收路径"),
-            || crate::tools::wait::TIMEOUT,
+            || pp_tools::wait::TIMEOUT,
         )
         .unwrap();
     worker.join().unwrap();
@@ -285,8 +285,8 @@ fn wait_cleanup_failure_is_a_stop_error_and_does_not_reserve_results() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());
     let mut tools =
-        crate::tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    tools.subagent = Some(binding.clone());
+        pp_tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(Arc::new(binding.clone()));
     lock(&binding.inner.cleanup_errors).push(
         pp_core::cancellation::CleanupError(anyhow::anyhow!("fixture cleanup failure")).into(),
     );
@@ -296,7 +296,7 @@ fn wait_cleanup_failure_is_a_stop_error_and_does_not_reserve_results() {
         "bash",
         r#"{"command":"sleep 30","mode":"background"}"#,
         "start",
-        crate::tools::ToolPolicy::Execute {
+        pp_tools::ToolPolicy::Execute {
             workflow: &workflow,
         },
         &token,
@@ -307,7 +307,7 @@ fn wait_cleanup_failure_is_a_stop_error_and_does_not_reserve_results() {
         "wait",
         "{}",
         "wait",
-        crate::tools::ToolPolicy::Execute {
+        pp_tools::ToolPolicy::Execute {
             workflow: &workflow,
         },
         &token,
@@ -890,8 +890,8 @@ fn task_argument_errors_explain_nesting_without_dispatching_children() {
     let dir = tempfile::tempdir().unwrap();
     let binding = binding(dir.path(), TaskSettings::default());
     let mut tools =
-        crate::tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
-    tools.subagent = Some(binding.clone());
+        pp_tools::Tools::new(dir.path().into(), pp_config::config::EditMode::Replace).unwrap();
+    tools.subagent = Some(Arc::new(binding.clone()));
     for arguments in [
         json!({"context":"test","role":"fast","task":"flat task"}).to_string(),
         json!({"context":"test","tasks":[{"role":"fast","task":"valid"}],"role":"fast"})
@@ -905,7 +905,7 @@ fn task_argument_errors_explain_nesting_without_dispatching_children() {
             "task",
             &arguments,
             "invalid-task",
-            crate::tools::ToolPolicy::Execute {
+            pp_tools::ToolPolicy::Execute {
                 workflow: &Default::default(),
             },
             &Default::default(),

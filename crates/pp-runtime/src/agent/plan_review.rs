@@ -11,7 +11,6 @@
 
 use super::turn::{append_user_to, response_input};
 use super::{Agent, Session, input::InputQueue, persistence::Metadata};
-use crate::tools::ToolPolicy;
 use anyhow::{Result, bail, ensure};
 use async_openai::types::{
     chat::{
@@ -35,6 +34,7 @@ use pp_core::plan::ReviewToken;
 use pp_llm::CompletionTurn;
 use pp_llm::OpenAiClient;
 use pp_llm::ResponseTurn;
+use pp_tools::ToolPolicy;
 
 const REVIEW_REFUSED: &str = "Plan review was refused by the model.";
 const REVIEW_CONTEXT: &str = "Plan review context limit reached.";

@@ -39,7 +39,7 @@ impl Binding {
                 || !self
                     .wait_jobs(ids)?
                     .iter()
-                    .any(crate::tools::wait::Job::pending)
+                    .any(pp_tools::wait::Job::pending)
             {
                 return Ok(());
             }

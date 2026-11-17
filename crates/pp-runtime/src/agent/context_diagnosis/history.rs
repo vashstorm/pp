@@ -496,7 +496,7 @@ fn summarize_tool_args(name: &str, raw: &str) -> String {
             .get("action")
             .and_then(Value::as_str)
             .or_else(|| value.get("file").and_then(Value::as_str)),
-        "edit" => crate::tools::edit_path(&value),
+        "edit" => pp_tools::edit_path(&value),
         _ => None,
     };
     match picked {

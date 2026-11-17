@@ -145,7 +145,7 @@ fn auth_panel_mouse_selects_and_opens_wrapped_urls_during_wait() {
 #[test]
 fn auth_first_login_bootstraps_agent_without_restarting_ui_or_losing_draft() {
     use super::{App, State};
-    pp_runtime::host_defaults::install(pp_runtime::host_defaults::capture());
+    pp_workspace::host_defaults::install(pp_workspace::host_defaults::capture());
     let dir = tempfile::tempdir().unwrap();
     let global = dir.path().join("agent");
     std::fs::create_dir(&global).unwrap();
@@ -182,7 +182,7 @@ fn auth_first_login_bootstraps_agent_without_restarting_ui_or_losing_draft() {
         skills: pp_config::skills::Skills::default().shared(),
         prompt: pp_runtime::system_prompt::Snapshot::bundled(),
         approval: None,
-        mcp: std::sync::Arc::new(pp_runtime::mcp::McpManager::empty()),
+        mcp: std::sync::Arc::new(pp_mcp::McpManager::empty()),
         models: Default::default(),
     };
     let mut app = App::new(Err(anyhow::anyhow!("No models configured"))).unwrap();

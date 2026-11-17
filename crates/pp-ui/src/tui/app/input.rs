@@ -106,7 +106,7 @@ impl App {
                         })
                         .collect()
                 } else {
-                    pp_runtime::mcp::SUBCOMMANDS
+                    pp_mcp::SUBCOMMANDS
                         .iter()
                         .enumerate()
                         .filter(|(_, (name, _, _))| name.starts_with(argument.trim()))

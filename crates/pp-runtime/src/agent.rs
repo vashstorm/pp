@@ -31,7 +31,6 @@ mod usage;
 #[cfg(test)]
 mod read_tests;
 
-use crate::tools::Tools;
 #[cfg(debug_assertions)]
 use anyhow::Context;
 use anyhow::{Result, bail, ensure};
@@ -67,6 +66,7 @@ use pp_core::events::AgentEvent;
 use pp_core::model::ModelSource;
 use pp_core::model::ThinkLevel;
 use pp_llm::OpenAiClient;
+use pp_tools::Tools;
 use std::cell::RefCell;
 use std::path::PathBuf;
 #[cfg(test)]
@@ -89,7 +89,7 @@ pub struct Bootstrap {
     pub prompt: crate::system_prompt::Snapshot,
     pub approval: Option<pp_config::config::ApprovalMode>,
     /// 进程级共享的 MCP 单例；根 Agent、子 Agent 与恢复的会话都用它。
-    pub mcp: std::sync::Arc<crate::mcp::McpManager>,
+    pub mcp: std::sync::Arc<pp_mcp::McpManager>,
     /// 进程级共享的模型状态：首次成功加载后一直复用，重建 Agent 不丢失手动覆盖。
     pub models: pp_config::model_state::SharedModels,
 }
@@ -127,6 +127,7 @@ pub struct Agent {
     role_route: Option<pp_config::config::RoleRoute>,
     pub runtime_models: Option<crate::model_control::Binding>,
     pub subagent_control: std::sync::Arc<std::sync::Mutex<Option<crate::subagent::Binding>>>,
+    pub(crate) subagent: Option<crate::subagent::Binding>,
     client: OpenAiClient,
     tools: Tools,
     session: Session,
@@ -147,7 +148,7 @@ pub struct Agent {
     base_system: String,
     prompt_source: Option<crate::system_prompt::Snapshot>,
     pending_instructions: Option<String>,
-    pending_project_load: Vec<crate::project_instructions::Document>,
+    pending_project_load: Vec<pp_tools::project_instructions::Document>,
     reported_project_load: turn::ReportedProjectLoads,
     request_skills: Vec<pp_config::skills::SkillHeader>,
     journal: persistence::SessionJournal,
@@ -157,7 +158,7 @@ pub struct Agent {
     /// Fail-closed gate set when stopping MCP for Plan mode failed; blocked
     /// run/continue until a successful `/plan` retry clears it.
     plan_cleanup_error: Option<String>,
-    plan_lease: Option<crate::tools::plan_catalog::PlanLease>,
+    plan_lease: Option<pp_tools::plan_catalog::PlanLease>,
     /// 本次运行已追加但尚未完成 native commit 的迟到报告，避免错误重试复制正文。
     lsp_injected: std::collections::HashSet<u64>,
     /// 进程内冻结的用户级 hook 配置；子 Agent 克隆同一份。
