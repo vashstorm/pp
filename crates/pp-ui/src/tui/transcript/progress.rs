@@ -280,8 +280,10 @@ impl Transcript {
                             .flatten()
                     })
                 });
-                let kind = if matches!(name.as_str(), "bash" | "bash_task" | "eval") {
+                let kind = if matches!(name.as_str(), "bash" | "bash_task") {
                     EntryKind::Bash
+                } else if name == "eval" {
+                    EntryKind::Eval
                 } else if name == "rg" {
                     EntryKind::Rg
                 } else if matches!(name.as_str(), "edit" | "write") {
@@ -302,19 +304,15 @@ impl Transcript {
                     crate::tui::lsp::tool_title(arguments.as_ref().unwrap_or(&Value::Null))
                 } else if name == "eval" {
                     let args = arguments.as_ref();
+                    let lang =
+                        tool_display::EvalLang::from_raw(args.and_then(|a| a["language"].as_str()));
                     let label = args
                         .and_then(|a| a["title"].as_str())
                         .map(str::trim)
                         .filter(|s| !s.is_empty());
-                    let code = args
-                        .and_then(|a| a["code"].as_str())
-                        .unwrap_or("")
-                        .trim_end();
-                    match (label, code.is_empty()) {
-                        (Some(label), false) => format!("eval · py · {label}\n{code}"),
-                        (Some(label), true) => format!("eval · py · {label}"),
-                        (None, false) => format!("eval · py\n{code}"),
-                        (None, true) => "eval · py".to_owned(),
+                    match label {
+                        Some(label) => format!("Eval · {} · {label}", lang.label()),
+                        None => format!("Eval · {}", lang.label()),
                     }
                 } else if name == "bash_task" {
                     let args = arguments.as_ref();
@@ -373,7 +371,7 @@ impl Transcript {
                 } else {
                     title
                 };
-                let title = if name == "bash" || name == "lsp" {
+                let title = if matches!(name.as_str(), "bash" | "lsp" | "eval") {
                     title
                 } else {
                     format!("{} {title}", palette::tool_icon(&name))
@@ -389,7 +387,7 @@ impl Transcript {
                             .unwrap_or(self.bash_timeout_seconds),
                     );
                 } else if entry.tool.as_deref() == Some("eval") {
-                    entry.bash_timeout_seconds =
+                    entry.eval_timeout_seconds =
                         Some(entry.arguments["timeout_seconds"].as_u64().unwrap_or(
                             pp_config::config::ToolLimits::default().eval_timeout_seconds,
                         ));
@@ -520,7 +518,7 @@ impl Transcript {
                         }
                         return;
                     }
-                    if entry.kind == EntryKind::Bash {
+                    if matches!(entry.kind, EntryKind::Bash | EntryKind::Eval) {
                         entry.text.clear();
                     }
                     entry.stdout = output;
@@ -542,10 +540,10 @@ impl Transcript {
                     self.merge_background_bash_result(index, &mut result);
                     let entry = &mut self.entries[index];
                     entry.status = if result.get("ok").and_then(Value::as_bool) == Some(false)
+                        || (matches!(entry.kind, EntryKind::Bash | EntryKind::Eval)
+                            && (result["timed_out"] == true || result["cancelled"] == true))
                         || (entry.kind == EntryKind::Bash
-                            && (result["exit_code"].as_i64().is_some_and(|code| code != 0)
-                                || result["timed_out"] == true
-                                || result["cancelled"] == true))
+                            && result["exit_code"].as_i64().is_some_and(|code| code != 0))
                     {
                         EntryStatus::Failed
                     } else if entry.kind == EntryKind::Bash && result["status"] == "running" {
@@ -640,6 +638,13 @@ impl Transcript {
                         // 最终结果优先于运行中的瞬时快照；没有真实管道时清空入口。
                         entry.sync_pipes_badge(self.replaying);
                         entry.update_bash_footer(
+                            entry
+                                .started
+                                .filter(|_| !self.replaying)
+                                .map(|started| started.elapsed()),
+                        );
+                    } else if entry.kind == EntryKind::Eval {
+                        entry.update_eval_footer(
                             entry
                                 .started
                                 .filter(|_| !self.replaying)

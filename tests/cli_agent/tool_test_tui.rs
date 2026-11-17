@@ -156,9 +156,12 @@ fn tui_mock_eval_py_streams_running_state_and_returns_to_unavailable() {
     pty.input("/test-eval-py\r");
     pty.wait_for("eval cell enters running state with streaming output", |screen| {
         let text = screen.contents();
-        text.contains("eval · py · streaming stdout/stderr")
+        text.contains("Eval · ")
+            && text.contains("Python")
+            && text.contains("streaming stdout/stderr")
             && text.contains("Timeout: 15s")
             && text.contains("[01/14] streaming step=1")
+            && !text.contains("Bash")
             && !text.contains("Eval Python fixture complete.")
     });
     pty.text("Eval Python fixture complete.");

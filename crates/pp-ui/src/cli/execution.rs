@@ -176,10 +176,16 @@ fn run_cli_execution(
             }
             AgentEvent::FileChanged { .. } => {}
             AgentEvent::ToolOutputSnapshot { id, output } => {
-                if !current_tool.as_ref().is_some_and(|(current_id, name)| {
-                    current_id == &id && matches!(name.as_str(), "wait" | "read")
-                }) {
-                    let delta = cli_output_text(&output, &mut streamed_output, false, "bash");
+                let name = current_tool
+                    .as_ref()
+                    .filter(|(current_id, _)| current_id == &id)
+                    .map_or("tool", |(_, name)| name.as_str());
+                if !matches!(name, "wait" | "read") {
+                    let label = match name {
+                        "bash" | "bash_task" => "bash",
+                        other => other,
+                    };
+                    let delta = cli_output_text(&output, &mut streamed_output, false, label);
                     cli_write(stderr, &delta, &mut err_broken, &mut first_error);
                 }
             }
@@ -232,10 +238,18 @@ fn run_cli_execution(
                         &mut first_error,
                     );
                 }
+                let output_label = match current_tool
+                    .as_ref()
+                    .filter(|(current_id, _)| current_id == &id)
+                    .map_or("tool", |(_, name)| name.as_str())
+                {
+                    "bash" | "bash_task" => "bash",
+                    other => other,
+                };
                 if !is_read && result["output"].is_string() {
                     cli_write(
                         stderr,
-                        &cli_output_result(&result, &mut streamed_output, "bash"),
+                        &cli_output_result(&result, &mut streamed_output, output_label),
                         &mut err_broken,
                         &mut first_error,
                     );

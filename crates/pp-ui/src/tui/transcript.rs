@@ -74,6 +74,12 @@ fn bash_background() -> Color {
 fn bash_border() -> Color {
     palette::tool_border()
 }
+fn eval_background() -> Color {
+    palette::eval_bg()
+}
+fn eval_border() -> Color {
+    palette::eval_border()
+}
 fn muted_text() -> Color {
     super::themes::palette().welcome_muted
 }
@@ -89,6 +95,7 @@ pub(super) enum EntryKind {
     User,
     Assistant,
     Bash,
+    Eval,
     Think,
     Rg,
     Diff,
@@ -189,6 +196,7 @@ struct TranscriptEntry {
     shell: Option<pp_core::shell_display::ShellPresentation>,
     started: Option<Instant>,
     bash_timeout_seconds: Option<u64>,
+    eval_timeout_seconds: Option<u64>,
     read_clock: &'static str,
     arguments: Value,
     result: Option<Value>,
@@ -451,6 +459,12 @@ impl Transcript {
                         .started
                         .map(|started| now.saturating_duration_since(started)),
                 );
+            } else if entry.kind == EntryKind::Eval && entry.status == EntryStatus::Running {
+                changed |= entry.update_eval_footer(
+                    entry
+                        .started
+                        .map(|started| now.saturating_duration_since(started)),
+                );
             }
         }
         changed
@@ -694,6 +708,14 @@ impl Transcript {
             if self.entries[index].kind == EntryKind::Bash {
                 let entry = &mut self.entries[index];
                 entry.update_bash_footer(
+                    entry
+                        .started
+                        .filter(|_| !self.replaying)
+                        .map(|started| started.elapsed()),
+                );
+            } else if self.entries[index].kind == EntryKind::Eval {
+                let entry = &mut self.entries[index];
+                entry.update_eval_footer(
                     entry
                         .started
                         .filter(|_| !self.replaying)

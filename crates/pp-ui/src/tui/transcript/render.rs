@@ -1,7 +1,7 @@
 use super::{
-    Activity, Buffer, DisplayContext, EntryKind, EntryStatus, LayoutContent, Paragraph, Rect,
-    Source, Span, Style, Transcript, TranscriptEntry, Widget, Wrap, bash_background, bash_border,
-    palette, tool_display,
+    Activity, Buffer, DisplayContext, EntryKind, EntryStatus, LayoutContent, Modifier, Paragraph,
+    Rect, Source, Span, Style, Transcript, TranscriptEntry, Widget, Wrap, bash_background,
+    bash_border, eval_background, eval_border, palette, tool_display,
 };
 
 impl Transcript {
@@ -44,7 +44,7 @@ impl Transcript {
             || matches!(entry.kind, EntryKind::Error | EntryKind::Notice)
         {
             0
-        } else if entry.kind == EntryKind::Bash || entry.is_search() {
+        } else if matches!(entry.kind, EntryKind::Bash | EntryKind::Eval) || entry.is_search() {
             4
         } else {
             2
@@ -165,6 +165,7 @@ impl Transcript {
                     continue;
                 }
                 let bash = entry.kind == EntryKind::Bash;
+                let eval = entry.kind == EntryKind::Eval;
                 let edit = entry.is_edit();
                 let file_read = entry.is_file_read();
                 // 自带完整外框的条目：不再叠加左侧竖线，也不缩进正文。
@@ -173,6 +174,8 @@ impl Transcript {
                 let think = entry.kind == EntryKind::Think;
                 let background = if bash {
                     Some(bash_background())
+                } else if eval {
+                    Some(eval_background())
                 } else if edit {
                     Some(palette::edit_bg())
                 } else if search {
@@ -198,7 +201,7 @@ impl Transcript {
                     if compact {
                         continue;
                     }
-                    if bash || search {
+                    if bash || eval || search {
                         let (left, right, label) = match line.source() {
                             Some(Source::Top) => ("╭", "╮", ""),
                             Some(Source::Divider) => ("├", "┤", " Output "),
@@ -207,6 +210,8 @@ impl Transcript {
                         };
                         let card_bg = if bash {
                             bash_background()
+                        } else if eval {
+                            eval_background()
                         } else {
                             palette::rg_bg()
                         };
@@ -214,6 +219,8 @@ impl Transcript {
                             palette::removed()
                         } else if bash {
                             bash_border()
+                        } else if eval {
+                            eval_border()
                         } else {
                             palette::rg_border()
                         };
@@ -232,7 +239,7 @@ impl Transcript {
                                 .render(Rect::new(area.right() - 1, row, 1, 1), buffer);
                         }
                         if !label.is_empty() && area.width > 4 {
-                            let label_color = if bash {
+                            let label_color = if bash || eval {
                                 palette::text()
                             } else {
                                 palette::muted()
@@ -240,7 +247,10 @@ impl Transcript {
                             Span::styled(label, Style::default().fg(label_color).bg(card_bg))
                                 .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
-                        if bash && matches!(line.source(), Some(Source::Bottom)) && area.width > 4 {
+                        if (bash || eval)
+                            && matches!(line.source(), Some(Source::Bottom))
+                            && area.width > 4
+                        {
                             let available = usize::from(area.width.saturating_sub(6));
                             let warning_needed = !entry.footer_warning.is_empty();
                             let warning_width =
@@ -310,6 +320,48 @@ impl Transcript {
                                 ),
                             ])
                             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
+                        } else if eval
+                            && matches!(line.source(), Some(Source::Top))
+                            && area.width > 4
+                        {
+                            let lang = tool_display::EvalLang::from_entry(
+                                &entry.arguments,
+                                entry.result.as_ref(),
+                            );
+                            let icons = super::super::themes::current_icons();
+                            let (status, color) = match entry.status {
+                                EntryStatus::Running => ("running", palette::accent()),
+                                EntryStatus::Complete => ("done", palette::added()),
+                                EntryStatus::Failed => ("failed", palette::removed()),
+                            };
+                            ratatui::text::Line::from(vec![
+                                Span::styled(
+                                    " Eval · ",
+                                    Style::default()
+                                        .fg(palette::eval_title())
+                                        .bg(card_bg)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    lang.icon(icons).to_owned(),
+                                    Style::default()
+                                        .fg(lang.icon_color())
+                                        .bg(card_bg)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!(" {} ", lang.label()),
+                                    Style::default()
+                                        .fg(lang.accent())
+                                        .bg(card_bg)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    format!("· {status} "),
+                                    Style::default().fg(color).bg(card_bg),
+                                ),
+                            ])
+                            .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
                         }
                     } else if edit {
                         let (left, right, horizontal, label) = match line.source() {
@@ -362,7 +414,11 @@ impl Transcript {
                 }
                 let padding = if compact || file_read || framed {
                     0
-                } else if bash || search || (edit && matches!(line.source(), Some(Source::Title))) {
+                } else if bash
+                    || eval
+                    || search
+                    || (edit && matches!(line.source(), Some(Source::Title)))
+                {
                     4
                 } else {
                     inset

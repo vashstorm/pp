@@ -8,6 +8,7 @@ impl EntryKind {
             Self::User => Color::Blue,
             Self::Assistant => palette::md_text(),
             Self::Bash => Color::Yellow,
+            Self::Eval => palette::eval_title(),
             Self::Think | Self::Activity => muted_text(),
             Self::Rg => Color::Cyan,
             Self::Diff | Self::Ask => palette::accent(),
@@ -93,7 +94,7 @@ impl TranscriptEntry {
             Source::Title => &self.title,
             Source::Text => self.visible_text(),
             Source::StdoutLabel => "[stdout]",
-            Source::Stdout if self.kind == EntryKind::Bash => {
+            Source::Stdout if matches!(self.kind, EntryKind::Bash | EntryKind::Eval) => {
                 self.stdout.strip_suffix('\n').unwrap_or(&self.stdout)
             }
             Source::Stdout => &self.stdout,
@@ -137,7 +138,7 @@ impl TranscriptEntry {
                     .add_modifier(Modifier::BOLD),
             );
         }
-        if self.kind == EntryKind::Bash {
+        if matches!(self.kind, EntryKind::Bash | EntryKind::Eval) {
             let color = if matches!(source, Source::Title) {
                 palette::tool_command()
             } else if matches!(source, Source::Footer) && self.status == EntryStatus::Failed {
@@ -147,7 +148,12 @@ impl TranscriptEntry {
             } else {
                 muted_text()
             };
-            return Line::styled(text, Style::default().fg(color).bg(bash_background()));
+            let bg = if self.kind == EntryKind::Eval {
+                eval_background()
+            } else {
+                bash_background()
+            };
+            return Line::styled(text, Style::default().fg(color).bg(bg));
         }
         if matches!(source, Source::Title) {
             let mut spans = if self.tool.is_some() {

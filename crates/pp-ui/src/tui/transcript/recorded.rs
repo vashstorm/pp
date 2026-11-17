@@ -43,6 +43,8 @@ impl Transcript {
             entry.started = recorded_start(timestamp_ms, now_ms, now);
             if entry.kind == EntryKind::Bash {
                 entry.update_bash_footer(entry.started.map(|started| now.duration_since(started)));
+            } else if entry.kind == EntryKind::Eval {
+                entry.update_eval_footer(entry.started.map(|started| now.duration_since(started)));
             }
         }
     }

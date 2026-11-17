@@ -319,11 +319,11 @@ fn eval_card_renders_title_code_and_streaming_output() {
         arguments: json!({"language":"py","title":"sum check","code":"x = 20\nprint(x + 22)"})
             .to_string(),
     });
-    assert_eq!(transcript.entries[0].kind, EntryKind::Bash);
+    assert_eq!(transcript.entries[0].kind, EntryKind::Eval);
     assert!(
         transcript.entries[0]
             .title
-            .contains("eval · py · sum check")
+            .contains("Eval · Python · sum check")
     );
 
     transcript.progress(AgentEvent::ToolOutputSnapshot {
@@ -336,6 +336,9 @@ fn eval_card_renders_title_code_and_streaming_output() {
     });
 
     let view = screen(&render(&mut transcript, 80, 12));
+    assert!(view.contains("Eval · "), "{view}");
+    assert!(view.contains("Python"), "{view}");
     assert!(view.contains("sum check"), "{view}");
     assert!(view.contains("42"), "{view}");
+    assert!(!view.contains("Bash"), "{view}");
 }

@@ -67,6 +67,27 @@ pub(super) fn tool_bg() -> Color {
 pub(super) fn tool_border() -> Color {
     themes::palette().tool_border
 }
+pub(super) fn eval_bg() -> Color {
+    themes::palette().eval_bg
+}
+pub(super) fn eval_border() -> Color {
+    themes::palette().eval_border
+}
+pub(super) fn eval_title() -> Color {
+    themes::palette().eval_title
+}
+pub(super) fn eval_py_title() -> Color {
+    themes::palette().eval_py_title
+}
+pub(super) fn eval_py_icon() -> Color {
+    themes::palette().eval_py_icon
+}
+pub(super) fn eval_js_title() -> Color {
+    themes::palette().eval_js_title
+}
+pub(super) fn eval_js_icon() -> Color {
+    themes::palette().eval_js_icon
+}
 #[cfg(test)]
 pub(super) fn search_title() -> Color {
     themes::palette().search_title
@@ -229,7 +250,8 @@ pub(super) fn tool_accent(name: &str) -> Color {
         "find" | "glob" | "plan_find" => p.glob_title,
         "edit" => p.edit_title,
         "write" => p.write_title,
-        "bash" | "bash_task" | "eval" => p.shell_title,
+        "bash" | "bash_task" => p.shell_title,
+        "eval" => p.eval_title,
         "ask" => p.ask_title,
         "todo" | "plan_submit" => p.todo_title,
         name if name.starts_with("mcp__") => p.mcp_title,
@@ -246,7 +268,7 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "edit" => "\u{f03eb}",
             "write" => "\u{f0193}",
             "bash_task" => "\u{f08d6}",
-            "eval" => "\u{f0320}",
+            "eval" => "\u{f0169}",
             "rg" => "\u{f002}",
             "find" | "glob" => "\u{f024b}",
             "ask" => "\u{f02d7}",
@@ -262,7 +284,7 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "edit" => "E",
             "write" => "W",
             "bash_task" => "&",
-            "eval" => "P",
+            "eval" => "E",
             "rg" => "/",
             "find" | "glob" => "*",
             "ask" => "?",

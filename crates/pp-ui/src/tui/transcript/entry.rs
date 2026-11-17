@@ -29,6 +29,7 @@ impl TranscriptEntry {
             shell: None,
             started: Some(Instant::now()),
             bash_timeout_seconds: None,
+            eval_timeout_seconds: None,
             read_clock: palette::waiting_clock(0),
             arguments: Value::Null,
             result: None,

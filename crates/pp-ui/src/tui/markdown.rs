@@ -27,11 +27,18 @@ use pp_core::text::display_text;
 
 mod highlight;
 
-pub(super) fn highlight_shell_document(
+pub(super) fn highlight_code_document(
     language: &str,
     text: &str,
 ) -> Option<std::sync::Arc<Vec<Vec<Span<'static>>>>> {
     highlight::highlight(Some(language), text)
+}
+
+pub(super) fn highlight_shell_document(
+    language: &str,
+    text: &str,
+) -> Option<std::sync::Arc<Vec<Vec<Span<'static>>>>> {
+    highlight_code_document(language, text)
 }
 
 pub(super) fn highlight_shell_segment(language: &str, text: &str) -> Option<Vec<Span<'static>>> {

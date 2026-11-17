@@ -25,6 +25,11 @@ impl TranscriptEntry {
             && self.footer.is_empty()
         {
             self.update_bash_footer(self.started.map(|started| started.elapsed()));
+        } else if self.kind == EntryKind::Eval
+            && self.status == EntryStatus::Running
+            && self.footer.is_empty()
+        {
+            self.update_eval_footer(self.started.map(|started| started.elapsed()));
         }
         if !self.hidden && self.tool.as_deref() == Some("read") && self.display_title.is_none() {
             self.display_title = Some(Self::read_summary(std::slice::from_ref(self)));
@@ -152,6 +157,7 @@ impl TranscriptEntry {
         }
         let mut lines = Vec::new();
         let bash = self.kind == EntryKind::Bash;
+        let eval = self.kind == EntryKind::Eval;
         let user = self.kind == EntryKind::User;
         let edit = self.is_edit();
         let search = self.is_search();
@@ -163,7 +169,7 @@ impl TranscriptEntry {
             },
             height: 1,
         };
-        if bash || search {
+        if bash || search || eval {
             lines.push(border(Source::Top));
         }
         if user {
@@ -261,6 +267,25 @@ impl TranscriptEntry {
                         }),
                 );
             }
+        } else if eval {
+            let lang = tool_display::EvalLang::from_entry(&self.arguments, self.result.as_ref());
+            let title_arg = self.arguments["title"].as_str();
+            let code = self.arguments["code"].as_str().unwrap_or("");
+            lines.extend(
+                tool_display::eval_code_lines(
+                    &lang,
+                    title_arg,
+                    code,
+                    self.expanded,
+                    self.display,
+                    width,
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
+            );
         } else if search {
             let view = tool_display::View {
                 name: self.tool.as_deref().unwrap_or_default(),
@@ -313,13 +338,19 @@ impl TranscriptEntry {
         {
             self.add_lines(Source::Title, &mut lines);
         }
-        if bash {
+        let eval_has_output = !eval
+            || self.status != EntryStatus::Complete
+            || !self.visible_text().is_empty()
+            || !self.stdout.is_empty()
+            || !self.stderr.is_empty();
+        if bash || (eval && eval_has_output) {
             lines.push(border(Source::Divider));
         }
         let tool_body = (self.is_collapsible_tool() || self.is_file_read())
             && !self.is_argument_preview()
             && !(self.tool.as_deref() == Some("edit") && matches!(self.body, EntryBody::Diff(_)))
-            && !matches!(self.body, EntryBody::Lsp(_));
+            && !matches!(self.body, EntryBody::Lsp(_))
+            && eval_has_output;
         if tool_body {
             let mut text = self.visible_text().to_owned();
             if !self.stdout.is_empty() {
@@ -340,6 +371,8 @@ impl TranscriptEntry {
             }
             let style = if bash {
                 Style::default().fg(muted_text()).bg(bash_background())
+            } else if eval {
+                Style::default().fg(palette::muted()).bg(eval_background())
             } else {
                 Style::default().add_modifier(Modifier::DIM)
             };
@@ -533,10 +566,7 @@ impl TranscriptEntry {
                 }),
             );
         }
-        if bash {
-            lines.push(border(Source::Bottom));
-        }
-        if search {
+        if bash || search || eval {
             lines.push(border(Source::Bottom));
         }
         if self.tool.as_deref() == Some("write") && self.status == EntryStatus::Complete {

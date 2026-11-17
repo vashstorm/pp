@@ -39,21 +39,39 @@ impl TranscriptEntry {
             || (self.tool.is_some() && self.kind != EntryKind::Ask && !self.is_file_read())
     }
 
+    fn format_elapsed(&self, elapsed: std::time::Duration) -> String {
+        if self.status == EntryStatus::Running {
+            format!("Elapsed: {}s", elapsed.as_secs())
+        } else {
+            format!("Wall: {:.2}s", elapsed.as_secs_f64())
+        }
+    }
+
+    fn format_timeout(seconds: u64) -> String {
+        if seconds == 0 {
+            "Timeout: none".into()
+        } else {
+            format!("Timeout: {seconds}s")
+        }
+    }
+
+    fn apply_footer(&mut self, footer: String, footer_warning: String) -> bool {
+        if self.footer == footer && self.footer_warning == footer_warning {
+            return false;
+        }
+        self.footer = footer;
+        self.footer_warning = footer_warning;
+        self.layout = None;
+        true
+    }
+
     pub(super) fn update_bash_footer(&mut self, elapsed: Option<std::time::Duration>) -> bool {
         let mut parts = Vec::new();
         if let Some(elapsed) = elapsed {
-            parts.push(if self.status == EntryStatus::Running {
-                format!("Elapsed: {}s", elapsed.as_secs())
-            } else {
-                format!("Wall: {:.2}s", elapsed.as_secs_f64())
-            });
+            parts.push(self.format_elapsed(elapsed));
         }
         if let Some(seconds) = self.bash_timeout_seconds {
-            parts.push(if seconds == 0 {
-                "Timeout: none".into()
-            } else {
-                format!("Timeout: {seconds}s")
-            });
+            parts.push(Self::format_timeout(seconds));
         }
         if let Some(result) = &self.result {
             if let Some(artifact) = result.get("artifact_id").filter(|value| !value.is_null()) {
@@ -103,14 +121,63 @@ impl TranscriptEntry {
             }
             warnings.join(" · ")
         });
-        let footer = parts.join(" · ");
-        if self.footer == footer && self.footer_warning == footer_warning {
-            return false;
+        self.apply_footer(parts.join(" · "), footer_warning)
+    }
+
+    pub(super) fn update_eval_footer(&mut self, elapsed: Option<std::time::Duration>) -> bool {
+        let mut parts = Vec::new();
+        if let Some(count) = self
+            .result
+            .as_ref()
+            .and_then(|result| result["execution_count"].as_u64())
+            .filter(|count| *count > 0)
+        {
+            parts.push(format!("Cell #{count}"));
         }
-        self.footer = footer;
-        self.footer_warning = footer_warning;
-        self.layout = None;
-        true
+        if let Some(elapsed) = elapsed {
+            parts.push(self.format_elapsed(elapsed));
+        }
+        if let Some(seconds) = self.eval_timeout_seconds {
+            parts.push(Self::format_timeout(seconds));
+        }
+        if self.arguments["reset"] == true {
+            parts.push("reset".into());
+        }
+        if let Some(result) = &self.result {
+            if let Some(uri) = result["artifact"]["uri"].as_str() {
+                let id = uri.strip_prefix("artifact://").unwrap_or(uri);
+                parts.push(format!("Artifact: {}", pp_core::text::display_text(id)));
+            } else if let Some(artifact) =
+                result.get("artifact_id").filter(|value| !value.is_null())
+            {
+                let artifact = artifact
+                    .as_str()
+                    .map_or_else(|| artifact.to_string(), str::to_owned);
+                parts.push(format!(
+                    "Artifact: {}",
+                    pp_core::text::display_text(&artifact)
+                ));
+            }
+            if result["cancelled"] == true {
+                parts.push("cancelled".into());
+            } else if result["timed_out"] == true {
+                parts.push("timed out".into());
+            } else if self.status == EntryStatus::Failed {
+                parts.push("failed".into());
+            }
+        } else if self.status == EntryStatus::Failed {
+            parts.push("failed".into());
+        }
+        let footer_warning = if self
+            .result
+            .as_ref()
+            .is_some_and(|result| result["kernel_restarted"] == true)
+        {
+            "Kernel restarted".to_owned()
+        } else {
+            String::new()
+        };
+        self.apply_footer(parts.join(" · "), footer_warning)
     }
 
     /// 以最终 `result.pipes` 为准重建 `/pipes` 入口；没有真实管道时清空。

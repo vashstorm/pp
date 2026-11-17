@@ -39,10 +39,12 @@ pub(super) fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String
         }
         return String::new();
     }
-    if kind == EntryKind::Bash || matches!(name, "rg" | "find") {
+    if matches!(kind, EntryKind::Bash | EntryKind::Eval) || matches!(name, "rg" | "find") {
         let mut lines = Vec::new();
-        if let Some(output) = result["output"].as_str() {
-            lines.push(output.trim_end_matches('\n').to_owned());
+        let mut has_stderr = false;
+        let output = result["output"].as_str().map(|s| s.trim_end_matches('\n'));
+        if let Some(output) = output {
+            lines.push(output.to_owned());
         }
         let notice = pp_workspace::output::notice(result);
         if !notice.is_empty() {
@@ -55,6 +57,9 @@ pub(super) fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
             {
+                if field == "stderr" {
+                    has_stderr = true;
+                }
                 lines.push(if field == "stdout" {
                     text.strip_suffix('\n').unwrap_or(text).to_owned()
                 } else {
@@ -70,11 +75,19 @@ pub(super) fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String
             }
         }
         if let Some(error) = result.get("error") {
-            lines.push(
-                error
-                    .as_str()
-                    .map_or_else(|| error.to_string(), str::to_owned),
-            );
+            let error_text = error
+                .as_str()
+                .map_or_else(|| error.to_string(), str::to_owned);
+            let duplicated = kind == EntryKind::Eval
+                && !error_text.is_empty()
+                && output.is_some_and(|out| out.contains(&error_text));
+            if !duplicated {
+                if kind == EntryKind::Eval && !has_stderr {
+                    lines.push(format!("[stderr]\n{error_text}"));
+                } else {
+                    lines.push(error_text);
+                }
+            }
         }
         if let Some(warning) = result.get("warning").and_then(Value::as_str) {
             lines.push(format!("Warning: {warning}"));

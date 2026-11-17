@@ -10,9 +10,11 @@ use ratatui::{
 use serde_json::Value;
 use std::collections::VecDeque;
 
+mod eval;
 mod mcp_preview;
 mod search;
 mod shell;
+pub(super) use eval::{EvalLang, eval_body, eval_code_lines};
 pub(super) use shell::command as shell_command;
 mod todo;
 mod wait;
@@ -233,40 +235,16 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
             rows
         }
         "plan_search" => plan_search(&view, width, style),
-        "bash" | "bash_task" | "eval" => {
-            let mut stderr = false;
-            let mut rows: Vec<_> = logical(text)
-                .into_iter()
-                .flat_map(|line| {
-                    if line == "[stderr]" {
-                        stderr = true;
-                    }
-                    let color = if stderr {
-                        palette::removed()
-                    } else {
-                        palette::muted()
-                    };
-                    wrap([line.to_owned()], width, style.fg(color))
-                })
-                .collect();
-            let total = rows.len();
-            let limit = BASH_LINES.min(view.context.window());
-            if !expanded && total > limit {
-                rows.drain(..total - limit);
-                let marker = format!(
-                    "… ({} earlier lines, showing {limit} of {total}) (Ctrl + O to expand)",
-                    total - limit
-                );
-                let mut prefix = wrap(
-                    [clip(&marker, usize::from(width), true)],
-                    width,
-                    style.fg(palette::muted()),
-                );
-                prefix.append(&mut rows);
-                rows = prefix;
-            }
-            rows
-        }
+        "bash" | "bash_task" => tail_output(
+            text,
+            BASH_LINES,
+            expanded,
+            view.context,
+            width,
+            style,
+            palette::muted(),
+        ),
+        "eval" => eval_body(&view, width, style),
         "write" => {
             let content = view.arguments["content"].as_str().unwrap_or(text);
             write_body(content, width, expanded, style)
@@ -307,6 +285,49 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
             style,
         ),
     }
+}
+
+pub(super) fn tail_output(
+    text: &str,
+    max_lines: usize,
+    expanded: bool,
+    context: Context,
+    width: u16,
+    style: Style,
+    stdout_color: ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    let mut stderr = false;
+    let mut rows: Vec<_> = logical(text)
+        .into_iter()
+        .flat_map(|line| {
+            if line == "[stderr]" {
+                stderr = true;
+            }
+            let color = if stderr {
+                palette::removed()
+            } else {
+                stdout_color
+            };
+            wrap([line.to_owned()], width, style.fg(color))
+        })
+        .collect();
+    let total = rows.len();
+    let limit = max_lines.min(context.window());
+    if !expanded && total > limit {
+        rows.drain(..total - limit);
+        let marker = format!(
+            "… ({} earlier lines, showing {limit} of {total}) (Ctrl + O to expand)",
+            total - limit
+        );
+        let mut prefix = wrap(
+            [clip(&marker, usize::from(width), true)],
+            width,
+            style.fg(palette::muted()),
+        );
+        prefix.append(&mut rows);
+        rows = prefix;
+    }
+    rows
 }
 
 fn head(
