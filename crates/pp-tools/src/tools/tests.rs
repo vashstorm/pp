@@ -3,6 +3,7 @@ use pp_core::plan::PlanLocation;
 use std::{fs, sync::mpsc::sync_channel};
 mod artifact_cases;
 mod eval_cases;
+mod sandbox_cases;
 mod wait_cases;
 
 fn execute(tools: &Tools, name: &str, args: Value) -> Value {

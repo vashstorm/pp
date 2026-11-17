@@ -88,6 +88,9 @@ pub struct Bootstrap {
     pub skills: pp_config::skills::SharedSkills,
     pub prompt: crate::system_prompt::Snapshot,
     pub approval: Option<pp_config::config::ApprovalMode>,
+    pub sandbox_override: Option<pp_config::config::SandboxMode>,
+    /// 进程级共享的沙盒单例；首次加载配置时初始化，认证/重建保留会话覆盖。
+    pub sandbox: pp_sandbox::SharedSandbox,
     /// 进程级共享的 MCP 单例；根 Agent、子 Agent 与恢复的会话都用它。
     pub mcp: std::sync::Arc<pp_mcp::McpManager>,
     /// 进程级共享的模型状态：首次成功加载后一直复用，重建 Agent 不丢失手动覆盖。
@@ -106,6 +109,13 @@ impl Bootstrap {
         let catalog = models.catalog_snapshot();
         let mut tools = Tools::with_mcp(self.cwd.clone(), catalog.edit_mode(), self.mcp.clone())?;
         tools.skills = self.skills.clone();
+        let sandbox = self
+            .sandbox
+            .get_or_init(catalog.sandbox_settings(), &self.cwd);
+        if let Some(mode) = self.sandbox_override {
+            sandbox.set_mode_override(Some(mode));
+        }
+        tools.set_sandbox(sandbox);
         let mut agent = Agent::new_with_prompt(
             models,
             tools,

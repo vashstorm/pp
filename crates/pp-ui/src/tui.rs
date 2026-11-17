@@ -405,6 +405,7 @@ enum MenuAction {
     FileCommand(usize),
     Model(usize),
     Effort(ThinkLevel),
+    SandboxMode(pp_config::config::SandboxMode),
     SettingTab(settings::Tab),
     ThemeIcon(pp_config::config::IconMode),
     ThemeColor(pp_config::config::Theme),

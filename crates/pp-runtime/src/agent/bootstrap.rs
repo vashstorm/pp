@@ -123,7 +123,8 @@ impl Agent {
                 .into_iter()
                 .map(|tool| tool.name)
                 .collect(),
-        );
+        )
+        .with_sandbox(&tools.sandbox().status());
         let system = prompt_source
             .compose(
                 &context,
@@ -236,6 +237,34 @@ impl Agent {
     /// `--approval-mode` 覆盖 settings.yml 的 `tools.approvalMode`。
     pub fn set_approval_override(&mut self, mode: pp_config::config::ApprovalMode) {
         self.tools.approval.set_override(mode);
+    }
+
+    pub fn sandbox_status(&self) -> pp_sandbox::SandboxStatus {
+        self.tools.sandbox().status()
+    }
+
+    /// `--sandbox` 或 `/sandbox <mode>` 的会话级内存覆盖，刷新提示词与工具描述。
+    pub fn set_sandbox_override(
+        &mut self,
+        mode: Option<pp_config::config::SandboxMode>,
+    ) -> Result<()> {
+        self.tools.sandbox().set_mode_override(mode);
+        self.refresh_instructions_changed()?;
+        self.session
+            .set_tools(self.tools.all_definitions(self.workflow.mode));
+        Ok(())
+    }
+
+    /// `/setting` 写回 `tools.sandbox.mode` 后同步运行时默认配置。
+    pub fn update_sandbox_mode_from_settings(
+        &mut self,
+        mode: pp_config::config::SandboxMode,
+    ) -> Result<()> {
+        self.tools.sandbox().update_settings_mode(mode);
+        self.refresh_instructions_changed()?;
+        self.session
+            .set_tools(self.tools.all_definitions(self.workflow.mode));
+        Ok(())
     }
 
     /// 审批 handler 镜像 ask：不改变 schema 列表，无需刷新工具定义。

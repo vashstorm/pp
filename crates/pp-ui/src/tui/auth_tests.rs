@@ -182,6 +182,8 @@ fn auth_first_login_bootstraps_agent_without_restarting_ui_or_losing_draft() {
         skills: pp_config::skills::Skills::default().shared(),
         prompt: pp_runtime::system_prompt::Snapshot::bundled(),
         approval: None,
+        sandbox_override: None,
+        sandbox: Default::default(),
         mcp: std::sync::Arc::new(pp_mcp::McpManager::empty()),
         models: Default::default(),
     };

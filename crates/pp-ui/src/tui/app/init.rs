@@ -227,6 +227,10 @@ impl App {
         // 后台建连失败由欢迎页多行 MCP tip 统一展示，不因竞态弹窗覆盖欢迎页；
         // 配置诊断（如非法条目）仍作为启动错误提示。
         let mut startup_errors = self.mcp_view.diagnostics.clone();
+        if let Some(reason) = agent.sandbox_status().degraded_reason {
+            tracing::warn!(event = "sandbox_degraded", reason = %reason);
+            startup_errors.push(format!("Sandbox degraded to off: {reason}"));
+        }
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
         self.favorite_models = agent.favorite_models();
@@ -390,6 +394,24 @@ impl App {
                                 break;
                             }
                             agent.publish_context_snapshot();
+                            continue;
+                        }
+                        WorkerCommand::Sandbox(mode) => {
+                            let result = match mode {
+                                Some(target) => agent
+                                    .set_sandbox_override(Some(target))
+                                    .map(|()| (agent.sandbox_status(), true)),
+                                None => Ok((agent.sandbox_status(), false)),
+                            };
+                            WorkerEvent::SandboxStatus(result)
+                        }
+                        WorkerCommand::SyncSandboxSettings(mode) => {
+                            if let Err(error) = agent.update_sandbox_mode_from_settings(mode) {
+                                tracing::warn!(
+                                    error = %error,
+                                    "failed to refresh instructions after sandbox setting update"
+                                );
+                            }
                             continue;
                         }
                         WorkerCommand::InspectContext => {

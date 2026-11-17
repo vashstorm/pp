@@ -37,7 +37,7 @@ impl Default for RgSettings {
     }
 }
 
-/// settings.yml 的 `tools:` 小节；字段语义由 `crate::tools::approval` 解释。
+/// settings.yml 的 `tools:` 小节；字段语义由 `crate::tools::approval` 与 `pp-sandbox` 解释。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolsSettings {
@@ -47,6 +47,11 @@ pub struct ToolsSettings {
     pub approval_mode: crate::config::ApprovalMode,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub approval: std::collections::BTreeMap<String, crate::config::ApprovalPolicy>,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::config::SandboxSettings::is_default"
+    )]
+    pub sandbox: crate::config::SandboxSettings,
 }
 
 impl ToolLimits {

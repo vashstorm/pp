@@ -266,6 +266,7 @@ impl App {
             | WorkerEvent::SubagentsEnsured(_)
             | WorkerEvent::McpSnapshot(_)
             | WorkerEvent::McpManaged { .. }
+            | WorkerEvent::SandboxStatus(_)
             | WorkerEvent::LspWarmupFailed { .. }
             | WorkerEvent::LspPollFailed(_) => self.on_panel_event(event),
             WorkerEvent::PlansListed(_)

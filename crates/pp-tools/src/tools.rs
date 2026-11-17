@@ -104,6 +104,7 @@ pub struct Tools {
     pub limits: ToolLimits,
     host_defaults: pp_workspace::host_defaults::HostDefaults,
     pipe_store: pp_bash::PipeStore,
+    sandbox: std::sync::Arc<pp_sandbox::Sandbox>,
 }
 
 /// Separates a tool's serialized result from a process cleanup failure that
@@ -149,13 +150,13 @@ pub enum ToolPolicy<'a> {
 }
 
 /// In-process research tools; also used by the independent reviewer.
-const PLAN_SEARCH_TOOLS: &[&str] = &["glob"];
+pub(super) const PLAN_SEARCH_TOOLS: &[&str] = &["glob"];
 /// Plan-mode-only tools that mutate the review boundary.
 const PLAN_WRITE_TOOLS: &[&str] = &["plan_submit"];
 /// Research tools Plan mode keeps from the ordinary Execute list.
-const PLAN_BASE_TOOLS: &[&str] = &["read", "rg"];
+pub(super) const PLAN_BASE_TOOLS: &[&str] = &["read", "rg"];
 
-fn is_plan_tool(name: &str) -> bool {
+pub(super) fn is_plan_tool(name: &str) -> bool {
     PLAN_WRITE_TOOLS.contains(&name)
 }
 
@@ -524,11 +525,6 @@ pub(super) struct ExecuteCall<'a, 'f> {
     pub(super) nested_hook_halt: Option<HookHalt>,
 }
 
-struct AuthorizedAccess {
-    mcp_access: pp_mcp::Access,
-    lsp_access: pp_lsp::tool::Access,
-}
-
 impl Tools {
     pub fn all_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
         let mut definitions = self.mode_definitions(mode);
@@ -581,6 +577,33 @@ impl Tools {
         }
         if let Some(definition) = self.lsp_definition(lsp_readonly) {
             definitions.push(definition);
+        }
+        let sandbox_status = self.sandbox.status();
+        if sandbox_status.effective != pp_sandbox::EffectiveMode::Off {
+            let mode_str = sandbox_status.effective.as_str();
+            let net_note = if sandbox_status.network {
+                "network access is enabled"
+            } else {
+                "outbound network is blocked (loopback allowed)"
+            };
+            if let Some(bash) = definitions.iter_mut().find(|d| d.name == "bash")
+                && let Some(desc) = &mut bash.description
+            {
+                *desc = desc.replace(
+                    "No filesystem sandbox or independent shell PID:",
+                    &format!(
+                        "Sandboxed ({mode_str}; writes restricted to workspace/tmp, credential paths unreadable, {net_note}). No independent shell PID:"
+                    ),
+                );
+            }
+            if let Some(glob) = definitions.iter_mut().find(|d| d.name == "glob")
+                && let Some(desc) = &mut glob.description
+            {
+                *desc = desc.replace(
+                    "No filesystem sandbox.",
+                    "Protected credential paths are excluded by sandbox policy.",
+                );
+            }
         }
         definitions
     }
@@ -766,124 +789,6 @@ impl Tools {
         }
     }
 
-    fn authorize_call(
-        &self,
-        call: &ExecuteCall<'_, '_>,
-        hook_ask: Option<&str>,
-    ) -> Result<AuthorizedAccess> {
-        let name = call.name;
-        let arguments = call.arguments;
-        ensure!(
-            self.yielded.borrow().is_none(),
-            "subagent task is complete; further tools were not executed"
-        );
-        if name == "plan_submit"
-            && let Some(binding) = &self.subagent
-        {
-            ensure!(
-                !binding.pending(),
-                "wait for the subagent result to complete and commit to context before submitting a plan."
-            );
-        }
-        if let Some(allowed) = &self.allowed_tools {
-            ensure!(
-                allowed.iter().any(|tool| tool == name)
-                    || name == "yield" && self.yield_schema.is_some(),
-                "Tool is outside this agent capability set."
-            );
-        }
-        // A sealed batch (plan already submitted) refuses every call before
-        // any parsing or dispatch, while still producing one result per call
-        // ID through the ordinary ToolStarted/ToolFinished path.
-        if let ToolPolicy::Plan { sealed: true, .. } = call.policy {
-            bail!("Not executed: plan submitted for review.");
-        }
-        // Execution-layer policy gate. It runs before argument parsing, file
-        // access, process creation and MCP dispatch, so denied tools have no
-        // side effects even with malformed arguments, and unknown names
-        // (including unseen MCP tools) cannot bypass it via the fallback.
-        let mcp_readonly_tool = self.mcp.is_read_only(name);
-        let mcp_access = match call.policy {
-            ToolPolicy::Execute { .. } => self.mcp_access(WorkMode::Execute),
-            _ => pp_mcp::Access::ReadOnly,
-        };
-        let allowed = match &call.policy {
-            ToolPolicy::Execute { .. } => {
-                !is_plan_tool(name)
-                    && (mcp_access == pp_mcp::Access::Full
-                        || !name.starts_with("mcp__")
-                        || mcp_readonly_tool)
-            }
-            ToolPolicy::Review => {
-                PLAN_BASE_TOOLS.contains(&name)
-                    || PLAN_SEARCH_TOOLS.contains(&name)
-                    || name == "lsp" && self.lsp.is_some()
-                    || mcp_readonly_tool
-            }
-            ToolPolicy::Plan { .. } => {
-                PLAN_BASE_TOOLS.contains(&name)
-                    || PLAN_SEARCH_TOOLS.contains(&name)
-                    || name == "lsp" && self.lsp.is_some()
-                    || mcp_readonly_tool
-                    || self.subagent.is_some() && matches!(name, "task" | "wait")
-                    || name == "write"
-                    || is_plan_tool(name)
-                    || name == "ask" && self.ask_handler.is_some()
-            }
-        };
-        if !allowed {
-            bail!(
-                "{}",
-                match &call.policy {
-                    ToolPolicy::Execute { .. } => {
-                        format!("{name} is only available in Plan mode.")
-                    }
-                    ToolPolicy::Review => "Tool is not available during Plan review.".to_owned(),
-                    ToolPolicy::Plan { .. } => "Tool is not available in Plan mode.".to_owned(),
-                }
-            );
-        }
-        if name == "eval" && !self.eval_enabled {
-            bail!("eval is disabled in settings.");
-        }
-        // 未安装（enabled=false 或 Agent 未初始化 LSP）时显式调用直接失败，
-        // 既不进入审批也不尝试发现服务器。
-        if name == "lsp" && self.lsp.is_none() {
-            bail!("lsp is not available; LSP is disabled or not installed.");
-        }
-        // LSP 的动作级授权在执行层完成：受限模式（Plan/Review/readonly
-        // 子 Agent）连写动作的参数都不解析就拒绝，且必须先于审批门，
-        // 避免受限 Agent 通过审批提示绕过白名单。schema 裁剪只是提示。
-        let lsp_access = match &call.policy {
-            ToolPolicy::Execute { .. } if !self.lsp_readonly => pp_lsp::tool::Access::Execute,
-            _ => pp_lsp::tool::Access::ReadOnly,
-        };
-        if name == "lsp" {
-            pp_lsp::tool::validate_access(arguments, lsp_access)?;
-        }
-        if let Some(message) = self.instruction_batch_blocked() {
-            bail!("{message}");
-        }
-        // 审批门只作用于 Execute；Plan/Review 的白名单门禁已是完整授权边界。
-        // 与 Plan/Review 门禁一样在参数解析与分发之前执行，失败由
-        // execute_with_fetch 统一回填为 ok:false 的工具结果。
-        if matches!(call.policy, ToolPolicy::Execute { .. })
-            && !(mcp_readonly_tool && self.subagent.as_ref().is_some_and(|b| b.plan_mode()))
-        {
-            let tier = if mcp_readonly_tool {
-                approval::Tier::Read
-            } else {
-                approval::tier_of_arguments(name, arguments)
-            };
-            self.approval
-                .enforce(name, arguments, tier, hook_ask, call.cancellation)?;
-        }
-        Ok(AuthorizedAccess {
-            mcp_access,
-            lsp_access,
-        })
-    }
-
     fn execute_inner(
         &self,
         call: &mut ExecuteCall<'_, '_>,
@@ -929,7 +834,7 @@ impl Tools {
             "bash" => self.run_bash(call.arguments, call.call_id, call.cancellation, call.emit),
             "bash_task" => self.run_bash_task(call.arguments, call.call_id, call.emit),
             "eval" => return self.run_eval(call, hook, images),
-            "rg" => rg::run(
+            "rg" => rg::run_with_sandbox(
                 &self.cwd,
                 self.limits.rg,
                 self.edit_mode,
@@ -938,8 +843,11 @@ impl Tools {
                 call.arguments,
                 call.cancellation,
                 Some(&self.artifacts),
+                &self.sandbox,
             ),
-            "glob" => glob::run(&self.cwd, call.arguments, call.cancellation),
+            "glob" => {
+                glob::run_with_sandbox(&self.cwd, call.arguments, call.cancellation, &self.sandbox)
+            }
             "lsp" => pp_lsp::tool::run(
                 self,
                 call.arguments,

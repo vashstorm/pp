@@ -30,6 +30,8 @@ mod lsp;
 mod mcp;
 #[path = "cli_agent/mcp_remote.rs"]
 mod mcp_remote;
+#[path = "cli_agent/sandbox.rs"]
+mod sandbox;
 #[path = "cli_agent/subagents.rs"]
 mod subagents;
 
@@ -170,13 +172,26 @@ impl Drop for Cli {
 }
 
 fn fixture_settings() -> &'static str {
-    "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\n"
+    "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n"
+}
+
+fn fixture_settings_with_tools(tools_yaml: &str) -> String {
+    format!(
+        "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n{tools_yaml}"
+    )
 }
 
 const FIXTURE_FAST_ROLE: &str = "model_roles:\n  fast: {model: fixture/primary, effort: none}\n";
 
 fn task_fixture_settings() -> String {
     format!("{}{FIXTURE_FAST_ROLE}", fixture_settings())
+}
+
+fn task_fixture_settings_with_tools(tools_yaml: &str) -> String {
+    format!(
+        "{}{FIXTURE_FAST_ROLE}",
+        fixture_settings_with_tools(tools_yaml)
+    )
 }
 
 fn fixture_models(server: &TestServer) -> String {

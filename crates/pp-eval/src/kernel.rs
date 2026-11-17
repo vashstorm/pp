@@ -9,6 +9,7 @@ use pp_workspace::output::OutputSink;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    ffi::OsString,
     fs,
     io::{BufRead, BufReader, Read, Write},
     os::unix::process::CommandExt,
@@ -127,6 +128,7 @@ pub struct CellRequest<'a> {
     pub call_id: &'a str,
     pub timeout_seconds: u64,
     pub reset: bool,
+    pub sandbox: Option<Arc<pp_sandbox::Policy>>,
 }
 
 pub struct CellOutcome {
@@ -199,12 +201,29 @@ fn parse_frame(line: &str) -> Option<KernelFrame> {
 }
 
 impl RunningKernel {
-    fn spawn(runtime: &PythonRuntime, cwd: &Path, cache_dir: &Path) -> Result<Self> {
+    fn spawn(
+        runtime: &PythonRuntime,
+        cwd: &Path,
+        cache_dir: &Path,
+        sandbox: Option<&pp_sandbox::Policy>,
+    ) -> Result<Self> {
         let script = ensure_runner_script(cache_dir)?;
-        let mut cmd = Command::new(&runtime.python_path);
-        cmd.arg("-u")
-            .arg(&script)
-            .current_dir(cwd)
+        let mut cmd = if let Some(policy) = sandbox {
+            let (wrapper_bin, wrapper_args) = policy
+                .wrap_command(
+                    &runtime.python_path.to_string_lossy(),
+                    &[OsString::from("-u"), script.as_os_str().to_os_string()],
+                )
+                .context("building sandbox wrapper for Python kernel")?;
+            let mut c = Command::new(wrapper_bin);
+            c.args(wrapper_args);
+            c
+        } else {
+            let mut c = Command::new(&runtime.python_path);
+            c.arg("-u").arg(&script);
+            c
+        };
+        cmd.current_dir(cwd)
             .env_clear()
             .envs(&runtime.env)
             .env("PYTHONUNBUFFERED", "1")
@@ -215,6 +234,9 @@ impl RunningKernel {
             .stderr(Stdio::piped())
             // 子进程运行在独立进程组，确保超时/强杀时连同派生的外部子进程一并回收。
             .process_group(0);
+        if sandbox.is_some() {
+            cmd.env("PP_SANDBOX", "seatbelt");
+        }
 
         let mut child = cmd
             .spawn()
@@ -384,6 +406,7 @@ pub(crate) struct KernelState {
     pub(crate) next_req_id: u64,
     pub(crate) restarted_notice: bool,
     pub(crate) closed: bool,
+    pub(crate) sandbox_fingerprint: Option<(pp_sandbox::EffectiveMode, bool)>,
 }
 
 pub(crate) fn run_cell(
@@ -398,11 +421,22 @@ pub(crate) fn run_cell(
     pp_core::cancellation::check(cancellation)?;
 
     let started = Instant::now();
+    let desired_fp = req.sandbox.as_deref().map(|p| (p.mode(), p.network()));
+    let mut notice: Option<String> = None;
+
     if req.reset {
         if let Some(kernel) = state.running.take() {
             kernel.shutdown()?;
         }
         state.restarted_notice = false;
+    } else if state.running.is_some() && state.sandbox_fingerprint != desired_fp {
+        if let Some(kernel) = state.running.take() {
+            kernel.shutdown()?;
+        }
+        state.restarted_notice = false;
+        notice = Some(
+            "Kernel restarted: sandbox mode changed; earlier state is unavailable.".to_owned(),
+        );
     } else if let Some(kernel) = state.running.as_mut()
         && !kernel.is_alive()
         && let Some(dead) = state.running.take()
@@ -411,11 +445,12 @@ pub(crate) fn run_cell(
         state.restarted_notice = true;
     }
 
-    let mut notice: Option<String> = None;
     if state.running.is_none() {
         let runtime = probe_python(req.cwd, req.interpreter)?;
-        let kernel = RunningKernel::spawn(&runtime, req.cwd, req.cache_dir)?;
+        let kernel =
+            RunningKernel::spawn(&runtime, req.cwd, req.cache_dir, req.sandbox.as_deref())?;
         state.running = Some(kernel);
+        state.sandbox_fingerprint = desired_fp;
         if state.restarted_notice {
             notice = Some(
                 "Kernel restarted: the previous Python kernel died; earlier state is unavailable."
@@ -696,6 +731,24 @@ pub(crate) fn run_cell(
     } else if !ok {
         result["error"] =
             json!(error_summary.unwrap_or_else(|| "Python execution failed.".to_owned()));
+    }
+    if !ok
+        && let Some(policy) = req.sandbox.as_deref()
+        && (result["error"]
+            .as_str()
+            .is_some_and(pp_sandbox::Policy::is_denied_output)
+            || result["output"]
+                .as_str()
+                .is_some_and(pp_sandbox::Policy::is_denied_output))
+    {
+        let meta = policy.denial_metadata();
+        result["sandbox"] = json!({
+            "blocked": true,
+            "mode": meta.mode,
+            "network": meta.network,
+            "writable_roots": meta.writable_roots,
+            "hint": meta.hint,
+        });
     }
 
     Ok(CellOutcome {

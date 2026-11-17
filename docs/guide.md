@@ -147,6 +147,14 @@ eval:
 rg:
   contextBefore: 1
   contextAfter: 3
+tools:
+  sandbox:
+    mode: auto # auto（macOS 默认 workspace-write，其余平台关闭）| workspace-write | read-only | off
+    network: true
+    # writable: ["~/extra-dir"]
+    # protect: [".env"]
+    # denyRead: ["~/secrets"]
+    # allowRead: ["~/.pp/agent/skills"]
 ```
 
 `default_model`、`favorite_models`、`model_roles` 与 `think_level` 已不再是 `settings.yml` 字段：首次迁移会移除它们，之后重新写入会作为未知字段被拒绝，配置也不会被静默忽略。默认模型与收藏通过 `/model` 的 Ctrl + S、Ctrl + F 保存；全局默认 effort 在 `/effort ` 菜单中用 ⌥ + S / Ctrl + S 保存，单独执行 `/effort LEVEL` 只切换当前会话档位。七项 Role 通过 `/roles` 配置。这些偏好保存到 `agent.db`；模型 Role 的运行时应用遵循下述安全边界规则，菜单的默认值保存仍不切换当前会话；其余 YAML 字段仍按原规则严格校验。
@@ -271,6 +279,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/init` | 使用当前模型创建或更新项目 `AGENTS.md` | TUI / 行模式 |
 | `/compact` | 摘要较早上下文，保留近期交互和可见记录 | TUI / 行模式 |
 | `/skills` | 管理技能来源与逐项启停；另支持 `sources [enable\|disable claude\|codex]`、`enable 名称` / `disable 名称` | TUI / 行模式 |
+| `/sandbox [auto\|workspace-write\|read-only\|off]` | 查看当前沙盒生效模式、网络状态、可写根及降级原因，或在当前会话临时覆盖模式（支持在设置中调整默认 `tools.sandbox` 后按运行时策略切换） | TUI / 行模式 |
 | `/resume` | 选择已保存会话；命令行 `pp -r` 直接打开本面板，按 ID 恢复使用 `pp -r ID` | 仅 TUI |
 | `/tree` | 浏览并回退当前有效历史，不回滚文件 | 仅 TUI |
 | `/plan [view\|prompt]` | 切换 Plan 模式待命，可查看当前计划或附带任务立即发送，显式批准后执行 | 仅 TUI |
@@ -284,7 +293,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/test-fail` | 前两次请求按脚本返回 503 与 429，第三次正常回答；用于验证自动重试、固定重试信息框与恢复，不访问真实 provider | TUI / 行模式，仅 dev/test |
 | `/quit` | 退出 | TUI / 行模式 |
 
-输入 `!命令` 在项目目录运行本地非交互 bash，不请求模型，命令和输出不进入模型上下文或会话文件。需要有效的 Agent 配置和 Execute 模式；Plan、忙碌或有待处理消息时不可运行。每条命令使用独立 shell，`cd` 和环境变量不跨命令保留；以当前用户权限执行，无文件系统沙箱。TUI 首个 `!` 仅进入 shell 模式，不显示在输入框中；后续 `!` 作为命令正文保留，历史回填会恢复模式并隐藏切换前缀。编辑时按 Esc 或在空输入框按 Backspace 退出模式，清空命令也会退出；命令运行时按 Esc 取消并等待进程回收。行模式仍输入完整的 `!命令`，输出写入 stderr，stdout 仍保留给模型回复。
+输入 `!命令` 在项目目录运行本地非交互 bash，不请求模型，命令和输出不进入模型上下文或会话文件。需要有效的 Agent 配置和 Execute 模式；Plan、忙碌或有待处理消息时不可运行。每条命令使用独立 shell，`cd` 和环境变量不跨命令保留；遵循当前 `bash` 沙盒策略（沙盒关闭时以当前用户权限执行）。TUI 首个 `!` 仅进入 shell 模式，不显示在输入框中；后续 `!` 作为命令正文保留，历史回填会恢复模式并隐藏切换前缀。编辑时按 Esc 或在空输入框按 Backspace 退出模式，清空命令也会退出；命令运行时按 Esc 取消并等待进程回收。行模式仍输入完整的 `!命令`，输出写入 stderr，stdout 仍保留给模型回复。
 
 以下快捷键用于 TUI；macOS / Linux 分列显示。
 
@@ -941,7 +950,11 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 
 ## 工具执行与权限
 
-**write/edit 只修改启动目录内文件与 macOS/Linux 临时目录（`/tmp`，macOS 的真实路径为 `/private/tmp`），按单次调用原子提交。macOS/Linux 的 bash 无文件权限隔离，仍可修改当前用户有权限访问的目录外文件；glob 只读但可搜索工作区外路径；rg 可以读取工作区外的本地文件；默认 YOLO 模式不进行工具审批。请在可信或临时目录中运行。**
+**write/edit 只修改启动目录内文件与 macOS/Linux 临时目录（`/tmp`，macOS 的真实路径为 `/private/tmp`），按单次调用原子提交。macOS 下默认启用 `tools.sandbox.mode: auto`（即 `workspace-write` Seatbelt 沙盒）约束 `bash`、`!命令` 与 Python `eval`，并在 `read`/`rg`/`glob` 中拒读凭据路径；Linux 等非 macOS 平台目前无内核沙盒，`auto` 等价关闭；MCP stdio 与 LSP 服务进程不在沙盒内；默认 YOLO 模式不进行工具审批。请在可信或临时目录中运行。**
+
+- **沙盒配置与覆盖**：`settings.yml` 的 `tools.sandbox` 支持 `mode`（`auto`｜`workspace-write`｜`read-only`｜`off`，默认 `auto`）、`network`（默认 `true`）、`writable`、`protect`、`denyRead` 与 `allowRead`。命令行可通过 `pp --sandbox <mode>` 指定本次运行模式；交互模式可通过 `/sandbox [mode]` 查看详情或在当前会话覆盖，`/setting general` 也支持修改并持久化默认 `tools.sandbox.mode`。平台探针通过 `/usr/bin/sandbox-exec` 探测嵌套/系统权限限制：macOS 下若处于外层沙盒中，`auto` 会自动降级关闭并给出提示，而显式设置 `workspace-write`/`read-only` 会在不可用时 fail-closed 拒绝工具执行。
+- **macOS Seatbelt 边界**：`workspace-write` 放行启动目录、系统临时目录（含当次 `.pp-tmp-*` scratch 与 `.pp-cache`）、常见包管理/构建缓存（`~/.cargo/registry`、`~/.cargo/git`、`~/.cargo/.package-cache`、`~/.cache`、`~/Library/Caches`、`~/.npm`、`~/.bun/install/cache`、`~/go/pkg/mod`）以及 `writable`；`read-only` 仅允许临时 scratch 与 `.pp-cache` 写入。两种开启模式均保护工作区内敏感控制路径（`.git/hooks`、`.git/config`、`.pp`、`.mcp.json`、`.claude/.mcp.json` 及 `protect`）防写入，并拒绝读取凭据与敏感目录（`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.azure`、`~/.kube`、`~/.config/gcloud`、`~/.config/gh`、`~/.docker/config.json`、`~/.netrc`、`~/.npmrc`、`~/.pypirc`、`~/.git-credentials`、`~/Library/Keychains`、`~/Library/Cookies`、`~/.claude/.credentials.json`、`~/.codex/auth.json`、`~/.pp/agent` 及 `denyRead`），同时例外放行 `~/.pp/agent/{python-env,skills,commands,hooks,cache}` 与 `allowRead`。设置 `network: false` 后会阻止除 `localhost:*` 与常规 Unix domain socket 外的出站 IP 访问，并继续拒绝 `~/.docker/run/docker.sock` 与 `/var/run/docker.sock`。命中沙盒拒绝时工具结果返回 `ok: false` 并附带 `sandbox` 诊断元数据（不提供模型单次绕过参数）。
+- **已知平台与实现边界**：(1) 受 macOS `(allow default)` + LaunchServices XPC（`com.apple.lsd`）机制限制，`open` 等通过系统服务拉起外部 App 的调用无法仅靠 Seatbelt 文件/exec 规则完全阻断；(2) `bash` 中外部命令与 `exec` 由内核级 `sandbox-exec` 强制执行，而嵌入式 `brush` 进程内的重定向、`source` 与内置文件操作由宿主在 `open_file` 前做规范路径守卫，极高并发符号链接切换存在理论 TOCTOU 窗口；(3) 上述保护面向防止模型误操作与常见凭据外泄，不构成对抗恶意本地提权的完全隔离边界。
 
 `tools.approvalMode` 默认为 `yolo`：跳过全部工具审批，包括 bash 危险命令确认及 `tools.approval` 中的 `prompt`／`deny` 规则；无需交互界面或会话授权。`pp --approval-mode yolo` 可在本次运行中覆盖配置模式。`write` 模式放行只读和写入档工具、审批执行档工具；`always-ask` 模式只放行只读档工具。在这两种模式下，显式 `allow`／`deny`／`prompt` 规则及 bash 危险命令检查仍生效，需要审批但没有交互界面时返回工具错误。YOLO 只影响工具审批，不改变 Plan／Review 工作流白名单或 write/edit 的保存限制。
 
@@ -965,10 +978,10 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 - `rg` 新增与 rg 一致的语义参数：`-F: true` 按字面量匹配，跳过元字符宽松编译与 PCRE2 回退，此时 `\n` 是反斜杠加 n，只有真实换行才启用多行匹配；`-w: true` 要求整词匹配，可与 `-F` 组合。`-t` 接受文件类型字符串或数组（`!name` 排除，`all` 合法），未知名返回 `invalid rg type: <name>`；`-g` 接受 override glob 字符串或数组（`!` 前缀排除，优先于 `.gitignore` 等 ignore 文件，不含 `/` 的模式匹配任意层级文件名），`glob` 是无短横线别名，与 `-g` 同时给出时合并；非法 glob 返回 `invalid -g glob: <glob>`。`-t` 与 `-g` 只过滤目录遍历，`path` 中显式给出的文件始终被搜索，路径里的 `!` 排除语义不变并与 `-g` 叠加。`max_count` 按文件限制匹配数（对齐 rg `-m`），`0` 不执行搜索并返回 `No matches found` 与 `details.fileCount: 0`；它不改变 `details.truncated`／`perFileLimitReached` 的既有含义。
 - 工具名统一为 `rg`：`settings.yml` 顶层键为 `rg:`，旧 `grep:` 会在严格解析下失败；`tools.approval` 的键同样使用 `rg`。
 - `rg` 的可选 `max_output_tokens` 接受正整数，省略或 `null` 保持默认行为；例如 `rg({"pattern":"Barrier","max_output_tokens":2000})`。预算覆盖 `content` 正文及提示，以 JSON 编码字节数每三字节估算一个 token，不包含结构化元数据，也不保证供应商精确计数；三种输出模式均遵守原有 50 KiB 硬上限。预算不足时仅返回完整渲染行，标记 `details.tokenLimitReached: true` 与 `details.truncated: true`，极小预算可返回空正文。统计扫描不受此展示预算影响，计数总量保存在元数据中；Hashline 只授权实际返回的完整源代码行。
-- `glob({"pattern":"**/*.rs","path":"src"})` 查找路径；`pattern` 必填，`path` 为可选搜索目录（默认当前工作目录），不能传 glob 或多个范围；另支持 `hidden`、`gitignore`、`limit`；默认包含隐藏路径、遵守忽略规则，最多返回 200 项和 50 KiB。扫描在文件操作之间检查取消及五秒期限，超时返回不完整结果；没有文件系统沙箱。
+- `glob({"pattern":"**/*.rs","path":"src"})` 查找路径；`pattern` 必填，`path` 为可选搜索目录（默认当前工作目录），不能传 glob 或多个范围；另支持 `hidden`、`gitignore`、`limit`；默认包含隐藏路径、遵守忽略规则，最多返回 200 项和 50 KiB。扫描在文件操作之间检查取消及五秒期限，超时返回不完整结果；启用沙盒后会跳过被沙盒拒读的凭据路径，未单独限制项目外普通路径读取。
 - 默认前台 `bash({"command":"..."})`：以启动目录执行 `bash -c`，关闭 stdin，建立独立进程组。stdout/stderr 按收集器接收顺序合并，不保证跨流真实写入顺序；无需等待换行即可显示有界头尾快照。返回合并的 `output`、退出码、输出计数、截断标记、`timed_out` 与 `cancelled`，信号退出的退出码为 null。超限日志通过下述 artifact 机制继续读取，旧会话的 stdout/stderr 分流结果仍可回放。
 - 嵌入式 Bash 会拒绝直接重定向到命名管道（FIFO），包括指向 FIFO 的符号链接。需要使用 FIFO 时，将重定向放在外部 `bash -c` 的命令字符串中，由受管子进程执行。
-- 持久 Python 执行环境 `eval({"language":"py","code":"..."})`：单会话独占常驻 Python 3.9+ 子进程（跨多轮对话保留变量、导入与函数，支持 `reset: true` 或 `/new` 重建，不支持 Plan／Review 模式或只读子 Agent；未配置且未探测到 Python 时自动从工具列表隐藏）。支持顶层 `await`、末尾非 `None` 表达式回显、`%load`／`%pip`／`%cd`／`%pwd`／`%ls`／`%env`／`%time`／`%who`／`!cmd`／`%%bash` 以及 `matplotlib`／`PIL` 图片自动解码附着。单元内可通过 `tool.<name>(...)`（同时支持同步调用与 `await`）及便捷函数 `read`/`write`/`rg`/`glob`/`sh`/`env` 经受保护私有 NDJSON 控制描述符零网络监听回调宿主允许的内置或 MCP 工具，嵌套调用复用同一 `ToolPolicy`、审批门、`AGENTS.md` 修改范围门禁与 `PreToolUse`／`PostToolUse` Hooks；嵌套回调期间暂停 Python 计算超时计时。超时默认 `eval.timeout_seconds`（30 秒，范围 `1..=eval.max_timeout_seconds` 默认 600 秒）；超时或 Esc 取消先发 `SIGINT` 触发 `KeyboardInterrupt` 以尽量保留内核状态，逾宽限期未响应则强杀进程组并在下次调用报告 `Kernel restarted`。
+- 持久 Python 执行环境 `eval({"language":"py","code":"..."})`：单会话独占常驻 Python 3.9+ 子进程（跨多轮对话保留变量、导入与函数，支持 `reset: true` 或 `/new` 重建，不支持 Plan／Review 模式或只读子 Agent；未配置且未探测到 Python 时自动从工具列表隐藏）。启用沙盒时 Python 内核进程本身同样经当前 `pp-sandbox` Seatbelt 策略启动（模式或网络配置变更时自动重启内核，受限写入或读凭据报错附带 `sandbox` 诊断元数据）。支持顶层 `await`、末尾非 `None` 表达式回显、`%load`／`%pip`／`%cd`／`%pwd`／`%ls`／`%env`／`%time`／`%who`／`!cmd`／`%%bash` 以及 `matplotlib`／`PIL` 图片自动解码附着。单元内可通过 `tool.<name>(...)`（同时支持同步调用与 `await`）及便捷函数 `read`/`write`/`rg`/`glob`/`sh`/`env` 经受保护私有 NDJSON 控制描述符零网络监听回调宿主允许的内置或 MCP 工具，嵌套调用复用同一 `ToolPolicy`、审批门、`AGENTS.md` 修改范围门禁与 `PreToolUse`／`PostToolUse` Hooks；嵌套回调期间暂停 Python 计算超时计时。超时默认 `eval.timeout_seconds`（30 秒，范围 `1..=eval.max_timeout_seconds` 默认 600 秒）；超时或 Esc 取消先发 `SIGINT` 触发 `KeyboardInterrupt` 以尽量保留内核状态，逾宽限期未响应则强杀进程组并在下次调用报告 `Kernel restarted`。
 - 工具参数严格校验：缺失／额外字段、非法 JSON、空白路径／命令、未知工具及文件／进程错误均返回 `ok:false`，供模型修正。bash 非零退出同样失败并保留输出。
 - 前台 bash 接受可选的 `timeout_seconds` 正整数参数，范围为 1 至 `bash_max_timeout_seconds`（默认 600 秒），0 不能关闭超时；例如 `{"command":"cargo build --locked","timeout_seconds":180}`。通常省略此参数，使用 `bash_timeout_seconds` 配置（默认 60 秒）；简单查询／小脚本建议 10–30 秒，构建／测试／安装按实际范围使用 120–300 秒，仅已知耗时较长的完整验证才使用更长时限。超过上限的调用在启动命令前被拒绝并返回允许范围；如确有需要，在 `settings.yml` 中显式提高 `bash_max_timeout_seconds`。后台模式忽略合法的超时参数，继续仅按常驻服务生命周期管理。`{"command":"..."}` 和显式 `"mode":"foreground"` 保持相同契约，超时与模型请求超时独立。独立监督线程在超时时向进程组发送 TERM，等待 1 秒后发送 KILL 并回收直接子进程；可停止的非阻塞管道读取避免后代持有管道导致无限等待。前台结果包含实际采用的 `timeout_seconds` 与包含启动、回收的 `duration_ms`；超时返回 `ok:false, timed_out:true` 与诊断提示，保留已捕获输出，不回滚 shell 修改。应先检查交互输入、网络阻塞和验证范围，再决定是否延长，不要自动重跑有副作用的命令。正常结束也清理同一进程组的残留后代；主动脱离进程组的进程不受保证。TUI Esc 取消通过 TERM→1 秒宽限→KILL／wait 停止受控进程组；前台结果为 `ok:false, cancelled:true, timed_out:false`，正常／超时前台结果的 `cancelled` 为 false。
 - 跨工具调用验证服务时使用 `bash({"command":"exec server ...","mode":"background"})`，保存返回的 `task_id`（如 `bg-1`）。后台没有固定执行超时，但只属于当前用户任务：最终回答、拒绝、请求预算耗尽、错误、Esc 取消或 TUI 受控退出前自动停止并清理。运行中补充沿用当前任务的后台服务；独立 FollowUp 结束时单独收尾。不会跨独立任务、会话恢复或应用重启保留；历史 ID 不会复活进程。服务应保持在受管进程组内，优先 `exec server`，不要 daemonize／setsid。shell `&` 不是受管理后台模式。
@@ -1172,7 +1185,7 @@ pp gc [天数]
 
 ### 源码与测试模块边界
 
-项目按功能边界拆为 Cargo workspace：根包 `pp` 只保留 `src/main.rs` 的启动参数、日志初始化、工作目录切换、模式分发与退出码，以及根 `tests/`；业务实现位于十二个内部库（外加仅 dev-dependency 的 `pp-test-support`），每个库都可作为独立编译单元。根包是默认成员，因此 `cargo run`、`cargo build` 和不带包选择的测试只作用于根包；跨库验证须显式使用 `--workspace`。
+项目按功能边界拆为 Cargo workspace：根包 `pp` 只保留 `src/main.rs` 的启动参数、日志初始化、工作目录切换、模式分发与退出码，以及根 `tests/`；业务实现位于十四个内部库（外加仅 dev-dependency 的 `pp-test-support`），每个库都可作为独立编译单元。根包是默认成员，因此 `cargo run`、`cargo build` 和不带包选择的测试只作用于根包；跨库验证须显式使用 `--workspace`。
 
 | 包 / 目录 | 职责边界 |
 |---|---|
@@ -1181,16 +1194,18 @@ pp gc [天数]
 | `pp-stats` / `crates/pp-stats/src/` | 统计快照、聚合与 HTTP 服务（统计只读，风格偏好可保存）；原 `stats.rs`、`stats/` 分别成为 `lib.rs` 与同目录模块，内嵌 HTML／JS／CSS／图标／字体与实现同目录。 |
 | `pp-llm` / `crates/pp-llm/src/` | Chat Completions／Responses 请求、重试、流式、解析与共享 HTTP 返回类型；原 `llm.rs`、`llm/` 分别成为 `lib.rs` 与同目录模块。 |
 | `pp-workspace` / `crates/pp-workspace/src/` | 受管工作区安全保存、diff、图片编解码、输出与 artifact 存储、宿主环境默认值及共享工具值类型。 |
+| `pp-sandbox` / `crates/pp-sandbox/src/` | macOS Seatbelt（`sandbox-exec`）沙盒策略解析、平台探测、命令行包装与路径读写守卫。 |
 | `pp-mcp` / `crates/pp-mcp/src/` | stdio／HTTP／SSE MCP 客户端、配置发现、后台建连、生命周期管理与工具代理。 |
 | `pp-lsp` / `crates/pp-lsp/src/` | LSP 客户端注册表、stdio JSON-RPC 传输、诊断、保存联动、只读预览与 `lsp` 工具。 |
 | `pp-bash` / `crates/pp-bash/src/` | 嵌入式 Bash 宿主（`brush-core`/`brush-builtins`）、外部程序进程组监督、后台任务管理、管道流存储与 AST 命令展示。 |
+| `pp-eval` / `crates/pp-eval/src/` | 持久 Python REPL 内核宿主、探测缓存、进程组监督与双工 NDJSON 回调桥。 |
 | `pp-tools` / `crates/pp-tools/src/` | 同步工具执行器、内置工具（read/rg/glob/edit/write/todo/wait/plan/approval）、分层项目指令与端口 trait（`ToolHookCall`、`PlanSubmitGate`、`SubagentHost`）。 |
 | `pp-runtime` / `crates/pp-runtime/src/` | Agent 循环、子 Agent、Hooks 接线、会话与历史、模型控制与系统提示词；`prompts/` 保留 system、runtime、plan-review 与内置角色提示词。 |
 | `pp-mock-ai` / `crates/pp-mock-ai/src/` | 仅 `debug_assertions` 构建启用的本地 Responses mock 服务与内嵌调试场景（`/test-*`）。 |
 | `pp-ui` / `crates/pp-ui/src/` | TUI、CLI、命令、快捷键与 tips；TUI 子模块边界保持在包内。 |
 | 根包 `pp` / `src/`、`tests/` | `main.rs` 组装入口与根 `tests/cli_agent` 集成测试。 |
 
-内部依赖方向固定：`pp-core` 不依赖其他内部库；`pp-config` 依赖 core；`pp-stats` 依赖 core/config；`pp-llm` 依赖 core/config/stats；`pp-workspace`/`pp-mcp` 依赖 core/config；`pp-lsp`/`pp-bash` 依赖 core/config/workspace；`pp-tools` 依赖 core/config/workspace/mcp/lsp/bash/llm；`pp-runtime` 依赖上述各执行前导库并通过窄端口 trait 解耦反向调用；`pp-mock-ai` 依赖 runtime；`pp-ui` 直接显式依赖所需的各内部库（不依赖 `pp-llm`/`pp-stats`）；根包按需组装。以下边界仍在包内保持：
+内部依赖方向固定：`pp-core` 不依赖其他内部库；`pp-config` 依赖 core；`pp-stats` 依赖 core/config；`pp-llm` 依赖 core/config/stats；`pp-workspace`/`pp-mcp` 依赖 core/config；`pp-sandbox` 依赖 config；`pp-lsp` 依赖 core/config/workspace；`pp-bash`/`pp-eval` 依赖 core/config/workspace/sandbox；`pp-tools` 依赖 core/config/workspace/sandbox/mcp/lsp/bash/eval/llm；`pp-runtime` 依赖上述各执行前导库并通过窄端口 trait 解耦反向调用；`pp-mock-ai` 依赖 runtime；`pp-ui` 直接显式依赖所需的各内部库（不依赖 `pp-llm`/`pp-stats`）；根包按需组装。以下边界仍在包内保持：
 
 | 模块 | 职责边界 |
 |---|---|

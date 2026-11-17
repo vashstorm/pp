@@ -74,6 +74,14 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Open Settings TUI (/config, /settings)",
     },
     CommandSpec {
+        name: "/sandbox",
+        display_label: None,
+        aliases: &[],
+        category: CommandCategory::Config,
+        usage: "/sandbox [auto|workspace-write|read-only|off]",
+        description: "Show sandbox status or override mode for this session",
+    },
+    CommandSpec {
         name: "/roles",
         display_label: None,
         aliases: &[],
@@ -431,6 +439,7 @@ pub(crate) enum Command<'a> {
     Quit,
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
+    Sandbox(Option<pp_config::config::SandboxMode>),
     Skills(SkillCommand<'a>),
     Mcp(pp_mcp::Action),
     Shell(&'a str),
@@ -579,6 +588,13 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         }
         "/effort" | "/think" => {
             return Ok(Some(Command::Think(
+                (!argument.is_empty())
+                    .then(|| argument.parse())
+                    .transpose()?,
+            )));
+        }
+        "/sandbox" => {
+            return Ok(Some(Command::Sandbox(
                 (!argument.is_empty())
                     .then(|| argument.parse())
                     .transpose()?,

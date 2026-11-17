@@ -53,6 +53,9 @@ pub(crate) struct RenderContext<'a> {
     pub edit_mode: &'static str,
     pub work_mode: &'a str,
     pub tools: Vec<String>,
+    pub sandbox_active: bool,
+    pub sandbox_mode: &'static str,
+    pub sandbox_network: bool,
 }
 
 impl<'a> RenderContext<'a> {
@@ -75,7 +78,17 @@ impl<'a> RenderContext<'a> {
             },
             work_mode: mode,
             tools,
+            sandbox_active: false,
+            sandbox_mode: "off",
+            sandbox_network: true,
         }
+    }
+
+    pub fn with_sandbox(mut self, status: &pp_sandbox::SandboxStatus) -> Self {
+        self.sandbox_active = status.effective != pp_sandbox::EffectiveMode::Off;
+        self.sandbox_mode = status.effective.as_str();
+        self.sandbox_network = status.network;
+        self
     }
 }
 
@@ -575,5 +588,43 @@ mod tests {
             "{disabled}"
         );
         assert!(!disabled.contains("not a filesystem sandbox"), "{disabled}");
+    }
+
+    #[test]
+    fn system_prompt_bash_sandbox_section_follows_status() {
+        let cwd = tempfile::tempdir().unwrap();
+        let off_ctx = RenderContext::new(
+            cwd.path(),
+            "model",
+            EditMode::Replace,
+            "execute",
+            vec!["bash".into()],
+        );
+        let off = Snapshot::bundled()
+            .compose(&off_ctx, ToolLimits::default(), "", "", "")
+            .unwrap();
+        assert!(off.contains("bash has no filesystem sandbox"), "{off}");
+
+        let on_status = pp_sandbox::SandboxStatus {
+            configured: pp_config::config::SandboxMode::Auto,
+            effective: pp_sandbox::EffectiveMode::WorkspaceWrite,
+            degraded_reason: None,
+            network: false,
+            writable_summary: vec![],
+        };
+        let on_ctx = RenderContext::new(
+            cwd.path(),
+            "model",
+            EditMode::Replace,
+            "execute",
+            vec!["bash".into()],
+        )
+        .with_sandbox(&on_status);
+        let on = Snapshot::bundled()
+            .compose(&on_ctx, ToolLimits::default(), "", "", "")
+            .unwrap();
+        assert!(on.contains("macOS workspace-write sandbox"), "{on}");
+        assert!(on.contains("outbound network is blocked"), "{on}");
+        assert!(!on.contains("bash has no filesystem sandbox"), "{on}");
     }
 }

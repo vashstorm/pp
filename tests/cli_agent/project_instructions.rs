@@ -1014,8 +1014,12 @@ fn agents_manual_and_auto_compaction_refresh_before_summary_and_followup_both_pr
             let mut models: Value =
                 serde_json::from_str(&response_models(&server, Some(protocol))).unwrap();
             models["providers"]["fixture"]["models"]["primary"]["context_window"] = json!(80000);
-            let settings =
-                json!({"auto_compact":automatic,"auto_compact_threshold_percent":50}).to_string();
+            let settings = json!({
+                "auto_compact": automatic,
+                "auto_compact_threshold_percent": 50,
+                "tools": {"sandbox": {"mode": "off"}}
+            })
+            .to_string();
             let mut cli = LiveCli::new(Cli::start_with(
                 cwd.path(),
                 None,
@@ -1093,7 +1097,7 @@ fn agents_growing_during_auto_summary_rechecks_capacity_before_followup_both_pro
         let mut cli = LiveCli::new(Cli::start_with(
             cwd.path(),
             None,
-            r#"{"auto_compact_threshold_percent":50}"#,
+            r#"{"auto_compact_threshold_percent":50,"tools":{"sandbox":{"mode":"off"}}}"#,
             &models.to_string(),
         ));
         cli.input("old-task\n");

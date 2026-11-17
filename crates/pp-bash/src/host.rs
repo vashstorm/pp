@@ -17,6 +17,7 @@ use brush_core::{
 use pp_core::cancellation::CancellationToken;
 use pp_core::events::AgentEvent;
 use pp_core::events::OutputStream;
+use pp_sandbox::Policy;
 use pp_workspace::output::OutputSink;
 use std::{
     collections::HashMap,
@@ -53,6 +54,7 @@ pub(crate) struct HostConfig<'a> {
     pub(crate) stop: &'a CancellationToken,
     pub(crate) umask: u32,
     pub(crate) pipes: &'a PipeRun,
+    pub(crate) sandbox: Option<&'a Arc<Policy>>,
 }
 
 /// 解释器的真实终态；`Termination` 由监督器判定，不能从输出或退出码反推。
@@ -60,6 +62,7 @@ pub(crate) struct HostOutcome {
     pub(crate) exit_code: Option<i32>,
     pub(crate) termination: Termination,
     pub(crate) output_drained: bool,
+    pub(crate) sandbox_blocked: bool,
 }
 
 struct SinkShared {
@@ -191,9 +194,16 @@ fn run_host_inner(
                 .context("command timeout is too large")?,
         )
     };
-    let supervisor =
-        Supervisor::new_with_stop(deadline, config.cancellation.clone(), config.stop.clone())
-            .context("starting command supervisor")?;
+    let run_policy = config
+        .sandbox
+        .map(|policy| policy.with_extra_writable(scratch.path()));
+    let supervisor = Supervisor::new_with_stop(
+        deadline,
+        config.cancellation.clone(),
+        config.stop.clone(),
+        run_policy,
+    )
+    .context("starting command supervisor")?;
     let readers = spawn_readers(stdout_reader, stderr_reader, shared.clone())?;
 
     let report = runtime.block_on(run_interpreter(
@@ -213,6 +223,7 @@ fn run_host_inner(
     let supervisor_outcome = supervisor.wait();
     let cleanup_error = supervisor_outcome.cleanup_error;
     let termination = supervisor_outcome.termination;
+    let sandbox_blocked = supervisor_outcome.sandbox_blocked;
     if let Err(error) = scratch.close() {
         tracing::warn!(
             event = "embedded_shell_scratch_cleanup_failed",
@@ -273,6 +284,7 @@ fn run_host_inner(
         exit_code,
         termination,
         output_drained: drained,
+        sandbox_blocked,
     })
 }
 
@@ -375,6 +387,9 @@ async fn run_interpreter(
     set_exported_path(&mut shell, "TMP", scratch)?;
     set_exported_path(&mut shell, "TEMP", scratch)?;
     set_exported_path(&mut shell, "XDG_CACHE_HOME", config.cache)?;
+    if config.sandbox.is_some() {
+        set_exported_env(&mut shell, "PP_SANDBOX", "seatbelt")?;
+    }
 
     // run_string does not push this frame itself; mirror run_dash_c_command.
     shell.start_command_string_mode();
@@ -451,7 +466,11 @@ async fn run_interpreter(
 }
 
 fn set_exported_path(shell: &mut Shell, name: &str, value: &Path) -> Result<()> {
-    let mut variable = ShellVariable::new(value.to_string_lossy().into_owned());
+    set_exported_env(shell, name, &value.to_string_lossy())
+}
+
+fn set_exported_env(shell: &mut Shell, name: &str, value: &str) -> Result<()> {
+    let mut variable = ShellVariable::new(value.to_owned());
     variable.export();
     shell
         .set_env_global(name, variable)

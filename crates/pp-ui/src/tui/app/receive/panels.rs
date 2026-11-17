@@ -163,6 +163,21 @@ impl App {
                 self.mcp_view = view;
                 changed = true;
             }
+            WorkerEvent::SandboxStatus(result) => {
+                match result {
+                    Ok((status, updated)) => {
+                        self.append("Sandbox", &status.summary());
+                        if updated {
+                            self.notify(
+                                Level::Normal,
+                                format!("Sandbox mode set to {}", status.effective.as_str()),
+                            );
+                        }
+                    }
+                    Err(error) => self.notify(Level::Error, format!("{error:#}")),
+                }
+                changed = true;
+            }
             WorkerEvent::McpManaged { result, view, show } => {
                 self.mcp_view = view;
                 self.active_cancellation = None;

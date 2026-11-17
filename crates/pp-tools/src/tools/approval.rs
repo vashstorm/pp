@@ -381,6 +381,7 @@ mod tests {
                 .iter()
                 .map(|(name, policy)| ((*name).to_owned(), *policy))
                 .collect(),
+            ..Default::default()
         }
     }
 

@@ -159,6 +159,7 @@ mod tests {
                         call_id: "call-1",
                         timeout_seconds,
                         reset,
+                        sandbox: None,
                     },
                     cancellation,
                     OutputSink::new(self.settings, self.store.clone()),
@@ -365,6 +366,95 @@ print(a["content"], b["matches"], caught)
                 .as_str()
                 .unwrap()
                 .starts_with("artifact://")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_eval_enforces_fs_preserves_control_fds_and_restarts_on_mode_change() {
+        let h = Harness::new(65_536);
+        let work_canon = fs::canonicalize(h.work.path()).unwrap();
+        fs::create_dir_all(work_canon.join(".pp")).unwrap();
+        let home = work_canon.join("home");
+        fs::create_dir_all(home.join(".ssh")).unwrap();
+        fs::write(home.join(".ssh/id_ed25519"), b"SECRET").unwrap();
+
+        let sbx = pp_sandbox::Sandbox::with_probe_for_test(
+            pp_config::config::SandboxSettings {
+                mode: pp_config::config::SandboxMode::WorkspaceWrite,
+                ..Default::default()
+            },
+            &work_canon,
+            Some(&home),
+            Some(std::path::Path::new("/tmp")),
+            pp_sandbox::ProbeResult::Available,
+        );
+        let ws_policy = sbx.policy().unwrap().unwrap();
+
+        let run_with_policy = |code: &str, policy: Option<Arc<pp_sandbox::Policy>>| {
+            h.session
+                .execute(
+                    CellRequest {
+                        cwd: &work_canon,
+                        cache_dir: h.cache.path(),
+                        interpreter: None,
+                        code,
+                        call_id: "eval-sbx",
+                        timeout_seconds: 10,
+                        reset: false,
+                        sandbox: policy,
+                    },
+                    &CancellationToken::new(),
+                    OutputSink::new(h.settings, h.store.clone()),
+                    &mut |_| {},
+                    &mut |name, args| Ok(json!({"ok": true, "echo": [name, args]})),
+                )
+                .unwrap()
+        };
+
+        // cwd 写入 + 桥接往返 + PP_SANDBOX 均正常（控制 FD 未污染）
+        let ok = run_with_policy(
+            "import os\nopen('ok.txt', 'w').write('hello')\nres = tool.read(path='ok.txt')\nprint(os.environ.get('PP_SANDBOX'), res['ok'])",
+            Some(ws_policy.clone()),
+        );
+        assert_eq!(ok.value["ok"], true, "{}", ok.value);
+        assert_eq!(ok.value["output"], "seatbelt True\n");
+
+        // 写受保护路径与读凭据路径被拦截，并带 sandbox 元数据
+        let blocked_write = run_with_policy(
+            "open('.pp/hooks.yml', 'w').write('bad')",
+            Some(ws_policy.clone()),
+        );
+        assert_eq!(blocked_write.value["ok"], false, "{}", blocked_write.value);
+        assert_eq!(
+            blocked_write.value["sandbox"]["blocked"], true,
+            "{}",
+            blocked_write.value
+        );
+
+        let blocked_read = run_with_policy(
+            &format!("open({:?}).read()", home.join(".ssh/id_ed25519")),
+            Some(ws_policy),
+        );
+        assert_eq!(blocked_read.value["ok"], false, "{}", blocked_read.value);
+        assert_eq!(
+            blocked_read.value["sandbox"]["blocked"], true,
+            "{}",
+            blocked_read.value
+        );
+
+        // 切换沙盒模式自动重启内核
+        sbx.set_mode_override(Some(pp_config::config::SandboxMode::ReadOnly));
+        let ro_policy = sbx.policy().unwrap().unwrap();
+        let ro_res = run_with_policy("print(1 + 1)", Some(ro_policy));
+        assert_eq!(ro_res.value["ok"], true, "{}", ro_res.value);
+        assert!(
+            ro_res.value["notice"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("sandbox mode changed"),
+            "{}",
+            ro_res.value
         );
     }
 }

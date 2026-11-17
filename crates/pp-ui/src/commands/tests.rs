@@ -523,3 +523,20 @@ fn slash_mcp_strict_arguments_and_core_commands() {
         assert!(parse(input, &files).is_err());
     }
 }
+
+#[test]
+fn slash_sandbox_parses_modes_and_rejects_invalid_args() {
+    let files = FileCommands::default();
+    assert_eq!(
+        parse("/sandbox", &files).unwrap(),
+        Some(Command::Sandbox(None))
+    );
+    for mode in ["auto", "workspace-write", "read-only", "off"] {
+        assert_eq!(
+            parse(&format!("/sandbox {mode}"), &files).unwrap(),
+            Some(Command::Sandbox(Some(mode.parse().unwrap())))
+        );
+    }
+    assert!(parse("/sandbox invalid", &files).is_err());
+    assert!(parse("/sandbox off extra", &files).is_err());
+}

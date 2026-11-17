@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::json;
 
+mod sandbox_cases;
 mod settings_cases;
 
 const VALID_SETTINGS: &str = "{}";

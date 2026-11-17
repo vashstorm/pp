@@ -146,7 +146,8 @@ impl Agent {
                 agent.tools.edit_mode(),
                 agent.workflow.mode_name(),
                 agent.session.tool_names(),
-            );
+            )
+            .with_sandbox(&agent.tools.sandbox().status());
             source
                 .compose(
                     &context,

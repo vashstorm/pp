@@ -181,14 +181,27 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
     args: &[S],
     empty_env: bool,
 ) -> Result<std::process::Command, error::Error> {
-    let mut cmd = std::process::Command::new(command_name);
+    let wrapper = match resolve_supervisor(context.shell, &context.params) {
+        Some(supervisor) => supervisor.command_wrapper()?,
+        None => None,
+    };
 
-    // Override argv[0].
-    // NOTE: Not supported on all platforms.
-    cmd.arg0(argv0);
-
-    // Pass through args.
-    cmd.args(args);
+    let (mut cmd, wrapper_env) = if let Some(wrapper) = wrapper {
+        let mut cmd = std::process::Command::new(&wrapper.program);
+        cmd.arg0(&wrapper.program);
+        cmd.args(&wrapper.args);
+        cmd.arg(command_name);
+        cmd.args(args);
+        (cmd, wrapper.env)
+    } else {
+        let mut cmd = std::process::Command::new(command_name);
+        // Override argv[0].
+        // NOTE: Not supported on all platforms.
+        cmd.arg0(argv0);
+        // Pass through args.
+        cmd.args(args);
+        (cmd, Vec::new())
+    };
 
     // Use the shell's current working dir.
     cmd.current_dir(context.shell.working_dir());
@@ -208,6 +221,9 @@ pub fn compose_std_command<S: AsRef<OsStr>, SE: extensions::ShellExtensions>(
         }
         // Set _ to the resolved command path for external commands.
         cmd.env("_", command_name);
+        for (k, v) in wrapper_env {
+            cmd.env(k, v);
+        }
     }
 
     // Add in exported functions.

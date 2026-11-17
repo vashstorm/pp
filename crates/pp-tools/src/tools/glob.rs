@@ -189,14 +189,29 @@ fn grouped(items: &[Entry]) -> String {
     lines.join("\n")
 }
 
-pub(super) fn run(cwd: &Path, arguments: &str, token: &CancellationToken) -> Result<Value> {
-    run_with_timeout(cwd, arguments, token, TIMEOUT)
+pub(super) fn run_with_sandbox(
+    cwd: &Path,
+    arguments: &str,
+    token: &CancellationToken,
+    sandbox: &std::sync::Arc<pp_sandbox::Sandbox>,
+) -> Result<Value> {
+    run_with_timeout(cwd, arguments, token, TIMEOUT, sandbox)
+}
+#[cfg(test)]
+fn run(cwd: &Path, arguments: &str, token: &CancellationToken) -> Result<Value> {
+    run_with_sandbox(
+        cwd,
+        arguments,
+        token,
+        &std::sync::Arc::new(pp_sandbox::Sandbox::disabled()),
+    )
 }
 fn run_with_timeout(
     cwd: &Path,
     arguments: &str,
     token: &CancellationToken,
     timeout: Duration,
+    sandbox: &std::sync::Arc<pp_sandbox::Sandbox>,
 ) -> Result<Value> {
     cancellation::check(token)?;
     let args: Args = serde_json::from_str(arguments).context("invalid glob arguments")?;
@@ -223,11 +238,12 @@ fn run_with_timeout(
     );
     let target = parse_target(&directory, &args.pattern);
     let deadline = Instant::now() + timeout;
-    search(cwd, args, target, token, requested, limit, || {
+    search(cwd, args, target, token, requested, limit, sandbox, || {
         Instant::now() >= deadline
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search(
     cwd: &Path,
     args: Args,
@@ -235,6 +251,7 @@ fn search(
     token: &CancellationToken,
     requested: f64,
     limit: usize,
+    sandbox: &std::sync::Arc<pp_sandbox::Sandbox>,
     mut expired: impl FnMut() -> bool,
 ) -> Result<Value> {
     let mut entries = BTreeMap::new();
@@ -254,6 +271,8 @@ fn search(
         ensure!(metadata.is_dir(), "glob search path is not a directory");
         let matcher = compile(&target.pattern)?;
         let walk_root = fs::canonicalize(&root).context("cannot resolve glob search path")?;
+        sandbox.check_read(&walk_root)?;
+        let filter_sandbox = std::sync::Arc::clone(sandbox);
         let in_repo = walk_root
             .ancestors()
             .any(|ancestor| ancestor.join(".git").exists());
@@ -286,7 +305,8 @@ fn search(
             .filter_entry(move |entry| {
                 entry.depth() == 0
                     || (entry.file_name() != ".git"
-                        && (allow_node_modules || entry.file_name() != "node_modules"))
+                        && (allow_node_modules || entry.file_name() != "node_modules")
+                        && !filter_sandbox.is_read_denied(entry.path()))
             });
         for result in builder.build() {
             cancellation::check(token)?;
@@ -517,11 +537,13 @@ mod tests {
                 .unwrap_err()
                 .is::<pp_core::cancellation::Cancelled>()
         );
+        let disabled = std::sync::Arc::new(pp_sandbox::Sandbox::disabled());
         let timeout = run_with_timeout(
             root,
             r#"{"pattern":"**/*"}"#,
             &CancellationToken::new(),
             Duration::ZERO,
+            &disabled,
         )
         .unwrap();
         assert_eq!(timeout["timed_out"], true);
@@ -549,6 +571,7 @@ mod tests {
         assert!(!text(&result).contains("b.rs"));
         let args: Args = serde_json::from_value(json!({"pattern":"**/*"})).unwrap();
         let mut checkpoints = 0;
+        let disabled = std::sync::Arc::new(pp_sandbox::Sandbox::disabled());
         let result = search(
             root,
             args,
@@ -556,6 +579,7 @@ mod tests {
             &CancellationToken::new(),
             200.0,
             200,
+            &disabled,
             || {
                 checkpoints += 1;
                 checkpoints > 2

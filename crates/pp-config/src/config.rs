@@ -37,6 +37,9 @@ pub use general::{SettingPatch, update_general_setting};
 mod limits;
 pub use limits::{RgSettings, ToolLimits, ToolsSettings};
 
+mod sandbox;
+pub use sandbox::{SandboxMode, SandboxSettings};
+
 // Deliberately not Debug: this owns the API credential.
 pub struct Config {
     pub auth: Option<crate::auth::Config>,
@@ -276,6 +279,7 @@ impl Settings {
             "task.max_recursion_depth must not exceed 8"
         );
         self.tool_limits().validate()?;
+        self.tools.sandbox.validate()?;
         ensure!(
             self.tools.approval.iter().all(|(name, _)| {
                 !name.trim().is_empty()
@@ -493,6 +497,10 @@ impl ModelCatalog {
 
     pub fn edit_mode(&self) -> EditMode {
         self.settings.edit
+    }
+
+    pub fn sandbox_settings(&self) -> &crate::config::SandboxSettings {
+        &self.settings.tools.sandbox
     }
 
     pub fn default_think_level(&self) -> ThinkLevel {

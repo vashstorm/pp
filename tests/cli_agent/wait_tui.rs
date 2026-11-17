@@ -280,6 +280,7 @@ fn wait_tui_esc_reaps_subagent_background_process_before_restoring_input() {
         assert!(hub_is_child(&body));
         background_reply_call(parent.take().unwrap(), protocol, "child-wait", "wait", json!({"run_ids":["r1"]}));
         pty.text("0/1 settled");
+        cancel_wait_pid_files(project.path(), &["child-wait.pid"]);
         pty.input("\x1b");
         cancel_wait_pid_dead(&project.path().join("child-wait.pid"));
         cancel_wait_cancelled_ready(&mut pty);

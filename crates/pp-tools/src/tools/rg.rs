@@ -35,6 +35,7 @@ const MAX_FILE: u64 = 4 * 1024 * 1024;
 const MAX_OUTPUT: usize = 50 * 1024;
 const MAX_LINE: usize = 512;
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     cwd: &Path,
@@ -45,6 +46,31 @@ pub(super) fn run(
     arguments: &str,
     token: &CancellationToken,
     artifacts: Option<&pp_workspace::output::Store>,
+) -> Result<Value> {
+    run_with_sandbox(
+        cwd,
+        settings,
+        mode,
+        workspace,
+        snapshots,
+        arguments,
+        token,
+        artifacts,
+        &std::sync::Arc::new(pp_sandbox::Sandbox::disabled()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_with_sandbox(
+    cwd: &Path,
+    settings: RgSettings,
+    mode: EditMode,
+    workspace: &save::Workspace,
+    snapshots: &mut hashline::Store,
+    arguments: &str,
+    token: &CancellationToken,
+    artifacts: Option<&pp_workspace::output::Store>,
+    sandbox: &std::sync::Arc<pp_sandbox::Sandbox>,
 ) -> Result<Value> {
     let mut args: Args = serde_json::from_str(arguments).context("invalid rg arguments")?;
     let mut budget = Budget::new(args.max_output_tokens)?;
@@ -98,6 +124,7 @@ pub(super) fn run(
             types.as_ref(),
             token,
             deadline,
+            artifact.is_none().then_some(sandbox),
         )?
     };
     let multiline = args.pattern.contains('\n') || (!fixed && args.pattern.contains("\\n"));

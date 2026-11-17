@@ -198,6 +198,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
         options: &std::fs::OpenOptions,
         path: impl AsRef<Path>,
         params: &ExecutionParameters,
+        intent: crate::supervisor::OpenIntent,
     ) -> Result<openfiles::OpenFile, std::io::Error> {
         // Give platform-specific code a chance to handle special files
         // (e.g. /dev/null on Windows, which needs to open NUL instead).
@@ -211,7 +212,12 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
             return result;
         }
 
-        Ok(options.open(self.absolute_path(path.as_ref()))?.into())
+        let abs_path = self.absolute_path(path.as_ref());
+        if let Some(supervisor) = crate::commands::resolve_supervisor(self, params) {
+            supervisor.check_open(&abs_path, intent)?;
+        }
+
+        Ok(options.open(abs_path)?.into())
     }
 
     /// Opens a redirect target, honoring the shell's virtual umask.
@@ -233,6 +239,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
         path: impl AsRef<Path>,
         params: &ExecutionParameters,
         creation: Option<RedirectCreation>,
+        intent: crate::supervisor::OpenIntent,
     ) -> Result<openfiles::OpenFile, std::io::Error> {
         let path = path.as_ref();
 
@@ -245,6 +252,9 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
         }
 
         let path_to_open = self.absolute_path(path);
+        if let Some(supervisor) = crate::commands::resolve_supervisor(self, params) {
+            supervisor.check_open(&path_to_open, intent)?;
+        }
         let Some(creation) = creation else {
             return self.open_existing_redirect(options, &path_to_open);
         };

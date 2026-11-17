@@ -22,6 +22,7 @@ impl Tools {
             self.limits.bash_timeout_seconds
         );
         let cache = self.workspace.cache_dir()?;
+        let policy = self.sandbox.policy()?;
         match args.mode {
             BashMode::Foreground => pp_bash::run(
                 &self.cwd,
@@ -34,6 +35,7 @@ impl Tools {
                 output::OutputSink::new(self.limits.output, self.artifacts.clone()),
                 self.host_defaults,
                 &self.pipe_store,
+                policy,
             ),
             BashMode::Background => {
                 let snapshot = self.background_tasks.start_with_output(
@@ -45,6 +47,7 @@ impl Tools {
                     self.host_defaults,
                     &self.pipe_store,
                     output::OutputSink::new(self.limits.output, self.artifacts.clone()),
+                    policy,
                 )?;
                 emit_background_snapshot(call_id, &snapshot, emit);
                 Ok(snapshot)

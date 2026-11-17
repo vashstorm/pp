@@ -57,6 +57,8 @@ pub(super) enum WorkerCommand {
         auto_compact: bool,
         threshold_percent: u8,
     },
+    Sandbox(Option<pp_config::config::SandboxMode>),
+    SyncSandboxSettings(pp_config::config::SandboxMode),
     InspectContext,
     Reset,
     /// 会话根切换（/resume、/tree、/new）会停掉旧子 Agent 根；Hub 打开时按需重建。
@@ -159,6 +161,7 @@ pub(super) enum WorkerEvent {
     },
     // 压缩终态：与普通任务 Completed 是不同的判别值，不触发任务收尾展示。
     Compacted(Result<CompactionOutcome>),
+    SandboxStatus(Result<(pp_sandbox::SandboxStatus, bool)>),
     ContextInspected(Result<pp_runtime::agent::context_diagnosis::ContextReport>),
     Reset,
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),

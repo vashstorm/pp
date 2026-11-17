@@ -313,6 +313,26 @@ impl App {
             }
             return false;
         }
+        if let Some(Command::Sandbox(mode)) = &command {
+            if matches!(self.state, State::Unavailable) {
+                if let Some(error) = self.unavailable.clone() {
+                    self.notify(Level::Error, error);
+                }
+            } else if !matches!(self.state, State::Ready) || self.has_pending() {
+                self.notify(
+                    Level::Error,
+                    "Finish or cancel the current task before using /sandbox".into(),
+                );
+            } else if let Some(commands) = &self.commands {
+                if commands.send(WorkerCommand::Sandbox(*mode)).is_err() {
+                    self.fail_worker();
+                } else {
+                    self.remember_input();
+                    self.clear_input();
+                }
+            }
+            return false;
+        }
         if let Some(Command::Mcp(action)) = &command {
             if !matches!(self.state, State::Ready) || self.has_pending() {
                 self.notify(
@@ -594,6 +614,7 @@ impl App {
                     | Command::Themes(_)
                     | Command::Skills(_)
                     | Command::Mcp(_)
+                    | Command::Sandbox(_)
                     | Command::Login
                     | Command::Logout,
                 ) => {
@@ -856,6 +877,12 @@ impl App {
             MenuAction::Effort(level) => {
                 self.input = editor();
                 self.input.insert_str(format!("/effort {}", level.as_str()));
+                self.refresh_candidates(true);
+                return confirm && self.submit(PendingKind::Steering);
+            }
+            MenuAction::SandboxMode(mode) => {
+                self.input = editor();
+                self.input.insert_str(format!("/sandbox {}", mode.as_str()));
                 self.refresh_candidates(true);
                 return confirm && self.submit(PendingKind::Steering);
             }

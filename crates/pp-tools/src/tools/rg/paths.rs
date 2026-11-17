@@ -77,6 +77,7 @@ fn reject_symlink_components(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) fn parse_paths(
     cwd: &Path,
     input: &str,
@@ -85,6 +86,7 @@ pub(super) fn parse_paths(
     types: Option<&ignore::types::Types>,
     token: &CancellationToken,
     deadline: Instant,
+    sandbox: Option<&std::sync::Arc<pp_sandbox::Sandbox>>,
 ) -> Result<(Vec<Target>, bool, Vec<String>)> {
     let input = if input.trim().is_empty() { "." } else { input };
     let normalized = if cwd.join(input).exists() {
@@ -222,6 +224,9 @@ pub(super) fn parse_paths(
                     .to_string_lossy()
                     .into_owned();
                 let abs = fs::canonicalize(&abs)?;
+                if let Some(sbx) = sandbox {
+                    sbx.check_read(&abs)?;
+                }
                 add_target(
                     &mut targets,
                     Target {
@@ -264,12 +269,16 @@ pub(super) fn parse_paths(
         }
         reject_symlink_components(&root)?;
         let root = fs::canonicalize(root)?;
+        if let Some(sbx) = sandbox {
+            sbx.check_read(&root)?;
+        }
         let matcher = pat.as_deref().map(glob).transpose()?;
         let exclude: Vec<_> = exclusions.iter().map(|e| glob(e)).collect::<Result<_>>()?;
         let filter_exclude = exclude.clone();
         let filter_patterns = exclusions.clone();
         let filter_root = root.clone();
         let filter_cwd = cwd.to_owned();
+        let filter_sandbox = sandbox.cloned();
         let mut builder = ignore::WalkBuilder::new(&root);
         builder
             .hidden(false)
@@ -287,6 +296,12 @@ pub(super) fn parse_paths(
                     return false;
                 }
                 let path = entry.path();
+                if filter_sandbox
+                    .as_ref()
+                    .is_some_and(|sbx| sbx.is_read_denied(path))
+                {
+                    return false;
+                }
                 let rel = path.strip_prefix(&filter_root).unwrap_or(path);
                 !filter_exclude
                     .iter()

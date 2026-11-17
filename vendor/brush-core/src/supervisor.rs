@@ -72,6 +72,28 @@ pub trait CleanupPermit: Send + Sync {
     fn is_revoked(&self) -> bool;
 }
 
+/// Wrapper command injected ahead of an external command by the supervisor.
+#[derive(Clone, Debug)]
+pub struct CommandWrapper {
+    /// Program executable to spawn (e.g. `/usr/bin/sandbox-exec`).
+    pub program: std::ffi::OsString,
+    /// Arguments prepended before the real command name and arguments.
+    pub args: Vec<std::ffi::OsString>,
+    /// Extra environment variables applied after `env_clear` (for non-empty environments).
+    pub env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+}
+
+/// Access intent for an in-process shell file open (redirection or builtin).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenIntent {
+    /// Opening for reading (e.g. `<file` or `source`).
+    Read,
+    /// Opening for writing/creating/appending (e.g. `>file`, `>>file`, `&>file`).
+    Write,
+    /// Opening for both reading and writing (e.g. `<>file`).
+    ReadWrite,
+}
+
 /// Spawns, tracks, signals, and reaps child processes on behalf of the shell.
 pub trait ProcessSupervisor: Send + Sync {
     /// Spawns the given command in a new or existing process group.
@@ -93,4 +115,14 @@ pub trait ProcessSupervisor: Send + Sync {
 
     /// Issues a cleanup permit for the current stop, if one is available.
     fn cleanup_permit(&self) -> Option<Arc<dyn CleanupPermit>>;
+
+    /// Optionally wraps external commands with a supervisor-chosen prefix (such as a sandbox).
+    fn command_wrapper(&self) -> std::io::Result<Option<CommandWrapper>> {
+        Ok(None)
+    }
+
+    /// Validates an in-process shell file open (redirections, `source`, history).
+    fn check_open(&self, _path: &std::path::Path, _intent: OpenIntent) -> std::io::Result<()> {
+        Ok(())
+    }
 }

@@ -198,7 +198,8 @@ impl Agent {
                     self.tools.edit_mode(),
                     self.workflow.mode_name(),
                     self.session.tool_names(),
-                );
+                )
+                .with_sandbox(&self.tools.sandbox().status());
                 let parts = source.inspect_parts(&context, self.tools.limits)?;
                 let append_part = parts.append_origin.zip(parts.append_text);
                 (

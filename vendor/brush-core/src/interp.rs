@@ -2386,10 +2386,25 @@ pub(crate) async fn setup_redirect(
                         }
                     }
 
+                    let intent = match kind {
+                        ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::DuplicateInput => {
+                            crate::supervisor::OpenIntent::Read
+                        }
+                        ast::IoFileRedirectKind::ReadAndWrite => {
+                            crate::supervisor::OpenIntent::ReadWrite
+                        }
+                        ast::IoFileRedirectKind::Write
+                        | ast::IoFileRedirectKind::Append
+                        | ast::IoFileRedirectKind::Clobber
+                        | ast::IoFileRedirectKind::DuplicateOutput => {
+                            crate::supervisor::OpenIntent::Write
+                        }
+                    };
+
                     let fd_num = specified_fd_num.unwrap_or(default_fd_if_unspecified);
 
                     let opened_file = shell
-                        .open_redirect_file(&options, &expanded_file_path, params, creation)
+                        .open_redirect_file(&options, &expanded_file_path, params, creation, intent)
                         .map_err(|err| {
                             error::ErrorKind::RedirectionFailure(
                                 expanded_file_path.to_string_lossy().to_string(),
@@ -2563,7 +2578,13 @@ fn setup_redirect_output_and_error_to(
     };
 
     let stdout_file = shell
-        .open_redirect_file(&file_options, &abs_file_path, params, Some(creation))
+        .open_redirect_file(
+            &file_options,
+            &abs_file_path,
+            params,
+            Some(creation),
+            crate::supervisor::OpenIntent::Write,
+        )
         .map_err(|err| {
             error::ErrorKind::RedirectionFailure(
                 abs_file_path.to_string_lossy().to_string(),

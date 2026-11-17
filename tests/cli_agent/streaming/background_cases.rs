@@ -56,7 +56,7 @@ fn background_service_lifecycle_in_both_protocols() {
     for protocol in PROTOCOLS {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
-        let settings = r#"{"default_model":"fixture/primary","bash_timeout_seconds":1}"#;
+        let settings = r#"{"default_model":"fixture/primary","bash_timeout_seconds":1,"tools":{"sandbox":{"mode":"off"}}}"#;
         let cli =
             protocol.start_with_settings(&server, dir.path(), Some("background service"), settings);
         let service_pid = dir.path().join("service.pid");

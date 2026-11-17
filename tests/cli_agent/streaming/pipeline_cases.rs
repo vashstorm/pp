@@ -374,10 +374,7 @@ fn pipeline_transient_snapshots_do_not_reach_journal_stats_or_artifacts() {
         .unwrap();
         let command = "{ cat secret.txt; : > started; while [ ! -f gate ]; do sleep 0.05; done; printf 'done-line\\n'; } | tail -n 1";
         // Force an artifact spill so the storage check covers a real file.
-        let settings = format!(
-            "{}tools:\n  artifactSpillThreshold: 1\n",
-            fixture_settings()
-        );
+        let settings = fixture_settings_with_tools("  artifactSpillThreshold: 1\n");
         let cli =
             protocol.start_with_settings(&server, dir.path(), Some("journal pipeline"), &settings);
         let (request, _) = protocol.receive(&server);

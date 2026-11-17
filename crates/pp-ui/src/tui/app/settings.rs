@@ -270,12 +270,17 @@ impl App {
                             );
                         }
                         if let Some(commands) = &self.commands
-                            && commands
+                            && (commands
                                 .send(crate::tui::WorkerCommand::UpdateCompactionPolicy {
                                     auto_compact: saved.auto_compact,
                                     threshold_percent: saved.auto_compact_threshold_percent,
                                 })
                                 .is_err()
+                                || commands
+                                    .send(crate::tui::WorkerCommand::SyncSandboxSettings(
+                                        saved.tools.sandbox.mode,
+                                    ))
+                                    .is_err())
                         {
                             self.fail_worker();
                         }

@@ -3,13 +3,16 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_yaml::Value;
 
-use super::{ApprovalMode, EditMode, Settings, StatsStyle, update_settings_fields_returning};
+use super::{
+    ApprovalMode, EditMode, SandboxMode, Settings, StatsStyle, update_settings_fields_returning,
+};
 
 /// `/setting` 面板 `General` 页可编辑的运行参数补丁。
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingPatch {
     Edit(EditMode),
     ApprovalMode(ApprovalMode),
+    SandboxMode(SandboxMode),
     ReadMaxLines(usize),
     ReadMaxBytes(usize),
     BashTimeoutSeconds(u64),
@@ -45,6 +48,14 @@ impl SettingPatch {
             ),
             Self::ApprovalMode(value) => {
                 settings.tools.approval_mode = value;
+                (
+                    "tools",
+                    serde_yaml::to_value(&settings.tools)
+                        .context("Failed to serialize tools settings")?,
+                )
+            }
+            Self::SandboxMode(value) => {
+                settings.tools.sandbox.mode = value;
                 (
                     "tools",
                     serde_yaml::to_value(&settings.tools)

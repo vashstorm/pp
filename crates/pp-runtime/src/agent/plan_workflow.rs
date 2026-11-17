@@ -220,7 +220,8 @@ impl Agent {
                 self.tools.edit_mode(),
                 mode,
                 tool_names,
-            );
+            )
+            .with_sandbox(&self.tools.sandbox().status());
             source.compose(
                 &context,
                 self.tools.limits,
@@ -489,7 +490,8 @@ impl Agent {
                     self.tools.edit_mode(),
                     checkpoint.workflow.mode_name(),
                     definitions.iter().map(|tool| tool.name.clone()).collect(),
-                );
+                )
+                .with_sandbox(&self.tools.sandbox().status());
                 source.compose(
                     &context,
                     self.tools.limits,

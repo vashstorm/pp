@@ -12,13 +12,16 @@
 //! still-registered process group or rejected after it has been dismantled.
 
 use brush_core::{
-    CleanupPermit, ManagedGroup, ManagedProcess, ProcessSupervisor, SpawnGroup, SpawnedProcess,
+    CleanupPermit, CommandWrapper, ManagedGroup, ManagedProcess, OpenIntent, ProcessSupervisor,
+    SpawnGroup, SpawnedProcess,
 };
 use pp_core::cancellation::CancellationToken;
 use pp_core::cancellation::CleanupError;
+use pp_sandbox::Policy;
 use std::{
     io,
     os::unix::process::CommandExt,
+    path::Path,
     process::Command,
     sync::{
         Arc, Condvar, Mutex,
@@ -30,6 +33,7 @@ use std::{
 
 mod monitor;
 mod process;
+mod sandbox;
 mod state;
 
 use monitor::{
@@ -63,6 +67,7 @@ pub(crate) struct SupervisorOutcome {
     /// Failure to observe, signal or reap an external process. Hosts must
     /// surface this as an error instead of reporting a clean run.
     pub(crate) cleanup_error: Option<CleanupError>,
+    pub(crate) sandbox_blocked: bool,
 }
 
 /// One supervisor per shell run.
@@ -77,6 +82,8 @@ pub(crate) struct Supervisor {
     /// Cancelled by the monitor when a stop is selected. The core's cooperative
     /// cancellation checks observe this token.
     execution: CancellationToken,
+    sandbox: Option<Arc<Policy>>,
+    sandbox_blocked: AtomicBool,
     /// Host-supplied explicit stop input (`Termination::Stopped`).
     #[cfg(test)]
     stop: CancellationToken,
@@ -89,6 +96,7 @@ impl Supervisor {
         deadline: Option<Instant>,
         parent_cancellation: CancellationToken,
         stop_cancellation: CancellationToken,
+        sandbox: Option<Arc<Policy>>,
     ) -> io::Result<Arc<Self>> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::new(deadline)),
@@ -99,6 +107,8 @@ impl Supervisor {
         let supervisor = Arc::new(Self {
             shared: shared.clone(),
             execution: execution.clone(),
+            sandbox,
+            sandbox_blocked: AtomicBool::new(false),
             #[cfg(test)]
             stop: stop_cancellation.clone(),
             monitor: Mutex::new(None),
@@ -135,6 +145,7 @@ impl Supervisor {
             Some(deadline),
             parent_cancellation,
             CancellationToken::new(),
+            None,
         )
     }
 
@@ -216,6 +227,7 @@ impl Supervisor {
         SupervisorOutcome {
             termination,
             cleanup_error,
+            sandbox_blocked: self.sandbox_blocked.load(Ordering::Acquire),
         }
     }
 }
@@ -446,6 +458,26 @@ impl ProcessSupervisor for Supervisor {
         let permit: Arc<dyn CleanupPermit> = permit.clone();
         Some(permit)
     }
+
+    fn command_wrapper(&self) -> io::Result<Option<CommandWrapper>> {
+        self.sandbox
+            .as_deref()
+            .map(sandbox::build_command_wrapper)
+            .transpose()
+    }
+
+    fn check_open(&self, path: &Path, intent: OpenIntent) -> io::Result<()> {
+        match self.sandbox.as_deref() {
+            Some(policy) => {
+                let res = sandbox::check_open(policy, path, intent);
+                if res.is_err() {
+                    self.sandbox_blocked.store(true, Ordering::Release);
+                }
+                res
+            }
+            None => Ok(()),
+        }
+    }
 }
 
 struct Permit {
@@ -651,7 +683,7 @@ mod tests {
     fn embedded_shell_supervisor_parent_cancellation_reports_cancelled() {
         let cancellation = CancellationToken::new();
         let stop = CancellationToken::new();
-        let supervisor = Supervisor::new_with_stop(None, cancellation.clone(), stop.clone())
+        let supervisor = Supervisor::new_with_stop(None, cancellation.clone(), stop.clone(), None)
             .expect("supervisor");
         let spawned = supervisor
             .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
@@ -673,8 +705,9 @@ mod tests {
     #[test]
     fn embedded_shell_supervisor_stop_token_reports_stopped() {
         let stop = CancellationToken::new();
-        let supervisor = Supervisor::new_with_stop(None, CancellationToken::new(), stop.clone())
-            .expect("supervisor");
+        let supervisor =
+            Supervisor::new_with_stop(None, CancellationToken::new(), stop.clone(), None)
+                .expect("supervisor");
         let spawned = supervisor
             .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
             .expect("spawn");

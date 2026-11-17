@@ -419,6 +419,7 @@ const TIPS_COMMANDS: &[&str] = &[
     "/quit",
     "/resume",
     "/roles",
+    "/sandbox",
     "/setting",
     "/skills",
     "/stats",

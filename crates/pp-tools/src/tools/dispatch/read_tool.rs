@@ -48,6 +48,9 @@ impl Tools {
             )
             .map(|result| (result.value, None, None));
         }
+        if let Some(local) = read::local_path(&args.path, &self.cwd)? {
+            self.sandbox.check_read(&local)?;
+        }
         self.activate_read_instructions(&args.path)?;
         let result = read::run_with_snapshots(
             &args.path,

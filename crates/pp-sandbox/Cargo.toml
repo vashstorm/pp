@@ -1,0 +1,13 @@
+[package]
+name = "pp-sandbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+pp-config = { path = "../pp-config" }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

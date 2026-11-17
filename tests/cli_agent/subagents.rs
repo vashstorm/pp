@@ -948,9 +948,8 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
         let mut config = remote.config("http", 3000);
         config["mcpServers"]["remote"]["read_only_tools"] = json!(["echo"]);
         std::fs::write(config_path(dir.path(), "mcp.json"), config.to_string()).unwrap();
-        let settings = format!(
-            "{}tools:\n  approvalMode: always-ask\n  approval: {{task: allow}}\n",
-            task_fixture_settings()
+        let settings = task_fixture_settings_with_tools(
+            "  approvalMode: always-ask\n  approval: {task: allow}\n",
         );
         let models = if protocol == "completion" {
             fixture_models(&server)
@@ -1064,10 +1063,8 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
 fn subagent_inherits_headless_approval_and_does_not_start_denied_shell() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
-    let settings = format!(
-        "{}tools:\n  approvalMode: write\n  approval: {{task: allow}}\n",
-        task_fixture_settings()
-    );
+    let settings =
+        task_fixture_settings_with_tools("  approvalMode: write\n  approval: {task: allow}\n");
     let cli = Cli::start_with(
         dir.path(),
         Some("approval task"),

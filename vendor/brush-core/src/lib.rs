@@ -69,6 +69,7 @@ pub use shell::{
 };
 pub use sourceinfo::SourceInfo;
 pub use supervisor::{
-    CleanupPermit, ManagedGroup, ManagedProcess, ProcessSupervisor, SpawnGroup, SpawnedProcess,
+    CleanupPermit, CommandWrapper, ManagedGroup, ManagedProcess, OpenIntent, ProcessSupervisor,
+    SpawnGroup, SpawnedProcess,
 };
 pub use variables::{ShellValue, ShellVariable};

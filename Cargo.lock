@@ -3273,6 +3273,7 @@ dependencies = [
  "pp-mcp",
  "pp-mock-ai",
  "pp-runtime",
+ "pp-sandbox",
  "pp-stats",
  "pp-test-support",
  "pp-tools",
@@ -3298,6 +3299,7 @@ dependencies = [
  "libc",
  "pp-config",
  "pp-core",
+ "pp-sandbox",
  "pp-workspace",
  "rustix 1.1.5",
  "serde",
@@ -3360,6 +3362,7 @@ dependencies = [
  "libc",
  "pp-config",
  "pp-core",
+ "pp-sandbox",
  "pp-workspace",
  "serde",
  "serde_json",
@@ -3475,6 +3478,7 @@ dependencies = [
  "pp-llm",
  "pp-lsp",
  "pp-mcp",
+ "pp-sandbox",
  "pp-stats",
  "pp-test-support",
  "pp-tools",
@@ -3490,6 +3494,15 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "pp-sandbox"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "pp-config",
+ "tempfile",
 ]
 
 [[package]]
@@ -3547,6 +3560,7 @@ dependencies = [
  "pp-llm",
  "pp-lsp",
  "pp-mcp",
+ "pp-sandbox",
  "pp-workspace",
  "regex",
  "rustix 1.1.5",
@@ -3580,6 +3594,7 @@ dependencies = [
  "pp-mcp",
  "pp-mock-ai",
  "pp-runtime",
+ "pp-sandbox",
  "pp-tools",
  "pp-workspace",
  "pulldown-cmark",

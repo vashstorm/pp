@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 pp-core = { path = "../pp-core" }
 pp-config = { path = "../pp-config" }
+pp-sandbox = { path = "../pp-sandbox" }
 pp-workspace = { path = "../pp-workspace" }
 anyhow = { workspace = true }
 brush-builtins = { workspace = true }

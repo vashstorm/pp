@@ -12,6 +12,7 @@ members = [
     "crates/pp-mcp",
     "crates/pp-mock-ai",
     "crates/pp-runtime",
+    "crates/pp-sandbox",
     "crates/pp-tools",
     "crates/pp-ui",
     "crates/pp-workspace",
@@ -100,6 +101,7 @@ pp-mcp = { path = "crates/pp-mcp" }
 pp-lsp = { path = "crates/pp-lsp" }
 pp-mock-ai = { path = "crates/pp-mock-ai" }
 pp-runtime = { path = "crates/pp-runtime" }
+pp-sandbox = { path = "crates/pp-sandbox" }
 pp-ui = { path = "crates/pp-ui" }
 pp-workspace = { path = "crates/pp-workspace" }
 pp-tools = { path = "crates/pp-tools" }

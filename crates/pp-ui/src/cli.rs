@@ -395,6 +395,15 @@ pub fn run_line_mode(
                 }
                 writeln!(stderr, ")")?;
             }
+            Some(commands::Command::Sandbox(mode)) => {
+                if let Some(mode) = mode
+                    && let Err(error) = agent.set_sandbox_override(Some(mode))
+                {
+                    writeln!(stderr, "error: {error:#}")?;
+                    continue;
+                }
+                writeln!(stderr, "{}", agent.sandbox_status().summary())?;
+            }
             Some(commands::Command::Compact) => {
                 if let Err(error) = run_cli_compaction(agent, &mut stderr) {
                     writeln!(stderr, "error: {error:#}")?;

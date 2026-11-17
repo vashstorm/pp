@@ -1,6 +1,8 @@
 mod display;
 mod host;
 mod relay;
+#[cfg(all(test, target_os = "macos"))]
+mod sandbox_tests;
 mod streams;
 mod supervisor;
 
@@ -10,6 +12,7 @@ use anyhow::{Context, Result};
 use pp_core::cancellation::CancellationToken;
 use pp_core::cancellation::CleanupError;
 use pp_core::events::AgentEvent;
+use pp_sandbox::Policy;
 use pp_workspace::output::OutputSink;
 use serde_json::{Value, json};
 use std::{
@@ -45,6 +48,7 @@ pub fn run(
     sink: OutputSink,
     defaults: pp_workspace::host_defaults::HostDefaults,
     pipe_store: &PipeStore,
+    sandbox: Option<Arc<Policy>>,
 ) -> Result<Value> {
     let started = Instant::now();
     let pipes = new_pipe_run(pipe_store, call_id)?;
@@ -68,6 +72,7 @@ pub fn run(
             stop: &stop,
             umask: defaults.umask,
             pipes: &pipes,
+            sandbox: sandbox.as_ref(),
         },
         sink.clone(),
         Some(emit),
@@ -103,7 +108,27 @@ pub fn run(
             "Command ended, but an inherited output descriptor remained open; captured output may be incomplete."
         );
     }
+    if !ok
+        && let Some(policy) = sandbox.as_deref()
+        && (outcome.sandbox_blocked
+            || result["output"]
+                .as_str()
+                .is_some_and(Policy::is_denied_output))
+    {
+        attach_sandbox_denial(&mut result, policy);
+    }
     Ok(result)
+}
+
+fn attach_sandbox_denial(result: &mut Value, policy: &Policy) {
+    let meta = policy.denial_metadata();
+    result["sandbox"] = json!({
+        "blocked": true,
+        "mode": meta.mode,
+        "network": meta.network,
+        "writable_roots": meta.writable_roots,
+        "hint": meta.hint,
+    });
 }
 
 #[derive(Default)]
@@ -148,12 +173,14 @@ struct BackgroundRun {
     umask: u32,
     sink: Arc<Mutex<OutputSink>>,
     cancellation: CancellationToken,
+    sandbox: Option<Arc<Policy>>,
 }
 
 struct BackgroundTask {
     label: String,
     started: Instant,
     stop: CancellationToken,
+    sandbox: Option<Arc<Policy>>,
     /// 运行中的管道 run 句柄；任务完成后由 [`BackgroundState::final_pipes`]
     /// 取代并释放，避免已从 registry 淘汰的环形缓存仍被任务永久强引用。
     pipes: Mutex<Option<streams::PipeRun>>,
@@ -169,6 +196,7 @@ struct BackgroundState {
     error: Option<String>,
     warning: Option<String>,
     cleanup_error: Option<String>,
+    sandbox_blocked: bool,
     /// 完成时从 run 复制出的有界阶段/流元数据（不含阶段正文）。
     final_pipes: Option<Value>,
     final_shell: Option<pp_core::shell_display::ShellPresentation>,
@@ -197,9 +225,20 @@ impl BackgroundTask {
         if let Some(warning) = &state.warning {
             value["warning"] = json!(warning);
         }
+        let failed = state.status == "failed";
+        let sandbox_blocked = state.sandbox_blocked;
         let final_pipes = state.final_pipes.clone();
         let final_shell = state.final_shell.clone();
         drop(state);
+        if failed
+            && let Some(policy) = self.sandbox.as_deref()
+            && (sandbox_blocked
+                || value["output"]
+                    .as_str()
+                    .is_some_and(Policy::is_denied_output))
+        {
+            attach_sandbox_denial(&mut value, policy);
+        }
         // 运行中读同一份 live run；完成后只读有界元数据，不重新持有已可淘汰的
         // run 状态与环形缓存。
         let pipes =
@@ -288,6 +327,7 @@ impl TaskManager {
             pp_workspace::host_defaults::HostDefaults::test_default(),
             &PipeStore::new(),
             OutputSink::new(Default::default(), Default::default()),
+            None,
         )
     }
 
@@ -302,6 +342,7 @@ impl TaskManager {
         defaults: pp_workspace::host_defaults::HostDefaults,
         pipe_store: &PipeStore,
         sink: OutputSink,
+        sandbox: Option<Arc<Policy>>,
     ) -> Result<Value> {
         let mut registry = lock(&self.registry);
         anyhow::ensure!(!registry.closed, "Background task manager is closed.");
@@ -319,6 +360,7 @@ impl TaskManager {
             label: command.chars().take(200).collect(),
             started: Instant::now(),
             stop: CancellationToken::new(),
+            sandbox: sandbox.clone(),
             pipes: Mutex::new(Some(pipes)),
             state: Mutex::new(BackgroundState {
                 duration_ms: None,
@@ -328,6 +370,7 @@ impl TaskManager {
                 error: None,
                 warning: None,
                 cleanup_error: None,
+                sandbox_blocked: false,
                 final_pipes: None,
                 final_shell: None,
             }),
@@ -342,6 +385,7 @@ impl TaskManager {
             umask: defaults.umask,
             sink: output,
             cancellation: cancellation.clone(),
+            sandbox,
         };
         let worker = match thread::Builder::new()
             .name(format!("pp-{id}"))
@@ -458,6 +502,7 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
             stop: &task.stop,
             umask: run.umask,
             pipes: &pipes,
+            sandbox: run.sandbox.as_ref(),
         },
         run.sink.clone(),
         None,
@@ -475,6 +520,7 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
     match result {
         Ok(outcome) => {
             state.exit_code = outcome.exit_code;
+            state.sandbox_blocked = outcome.sandbox_blocked;
             match outcome.termination {
                 host::Termination::Exited => {
                     let succeeded = outcome.exit_code == Some(0);
@@ -751,6 +797,7 @@ mod tests {
                     pp_workspace::host_defaults::HostDefaults::test_default(),
                     &store,
                     OutputSink::new(Default::default(), Default::default()),
+                    None,
                 )
                 .unwrap();
             let id = snapshot["task_id"].as_str().unwrap().to_owned();

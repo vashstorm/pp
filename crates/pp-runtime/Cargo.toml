@@ -13,6 +13,7 @@ pp-stats = { path = "../pp-stats" }
 pp-llm = { path = "../pp-llm" }
 pp-mcp = { path = "../pp-mcp" }
 pp-lsp = { path = "../pp-lsp" }
+pp-sandbox = { path = "../pp-sandbox" }
 pp-workspace = { path = "../pp-workspace" }
 pp-tools = { path = "../pp-tools" }
 anyhow = { workspace = true }

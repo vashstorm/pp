@@ -87,6 +87,10 @@ struct Args {
     #[arg(long, value_enum, value_name = "MODE")]
     approval_mode: Option<ApprovalModeCli>,
 
+    /// Override tools.sandbox.mode from settings.yml for this run
+    #[arg(long, value_enum, value_name = "MODE")]
+    sandbox: Option<SandboxModeCli>,
+
     /// 本次运行使用的模型，写法为 [provider/]model[:effort]；不写入偏好
     #[arg(long, value_name = "MODEL")]
     model: Option<String>,
@@ -105,6 +109,25 @@ impl From<ApprovalModeCli> for pp_config::config::ApprovalMode {
             ApprovalModeCli::Yolo => Self::Yolo,
             ApprovalModeCli::Write => Self::Write,
             ApprovalModeCli::AlwaysAsk => Self::AlwaysAsk,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum SandboxModeCli {
+    Auto,
+    WorkspaceWrite,
+    ReadOnly,
+    Off,
+}
+
+impl From<SandboxModeCli> for pp_config::config::SandboxMode {
+    fn from(value: SandboxModeCli) -> Self {
+        match value {
+            SandboxModeCli::Auto => Self::Auto,
+            SandboxModeCli::WorkspaceWrite => Self::WorkspaceWrite,
+            SandboxModeCli::ReadOnly => Self::ReadOnly,
+            SandboxModeCli::Off => Self::Off,
         }
     }
 }
@@ -425,6 +448,8 @@ fn run(args: Args) -> Result<()> {
             }
         }
         .shared();
+        let sandbox = pp_sandbox::SharedSandbox::default();
+        let sandbox_override = args.sandbox.map(Into::into);
         let bootstrap = global_dir.as_ref().ok().map(|dir| agent::Bootstrap {
             dir: dir.clone(),
             cwd: cwd.clone(),
@@ -433,6 +458,8 @@ fn run(args: Args) -> Result<()> {
                 .clone()
                 .unwrap_or_else(system_prompt::Snapshot::bundled),
             approval: args.approval_mode.map(Into::into),
+            sandbox_override,
+            sandbox: sandbox.clone(),
             mcp: manager.clone(),
             models: pp_config::model_state::SharedModels::default(),
         });
@@ -453,6 +480,12 @@ fn run(args: Args) -> Result<()> {
                         manager.clone(),
                     )?;
                     tools.skills = skills.clone();
+                    let sbx =
+                        sandbox.get_or_init(models.catalog_snapshot().sandbox_settings(), &cwd);
+                    if let Some(mode) = sandbox_override {
+                        sbx.set_mode_override(Some(mode));
+                    }
+                    tools.set_sandbox(sbx);
                     Ok(agent::Agent::restore(models, tools, session)?)
                 }
                 None => bootstrap
@@ -479,6 +512,16 @@ fn run(args: Args) -> Result<()> {
         }
         if let (Some(mode), Ok(agent)) = (args.approval_mode, agent.as_mut()) {
             agent.set_approval_override(mode.into());
+        }
+        if !use_tui
+            && let Ok(agent) = &agent
+            && let Some(reason) = agent.sandbox_status().degraded_reason
+        {
+            tracing::warn!(event = "sandbox_degraded", reason = %reason);
+            writeln!(
+                io::stderr().lock(),
+                "warning: sandbox degraded to off ({reason})"
+            )?;
         }
         // `--model` 只在本次运行生效；显式给出却无法解析时必须致命，不静默回退默认模型。
         // 配置本身不可用时 `agent` 为 Err，此时没有 catalog 可校验，沿用既有交互修复流程。

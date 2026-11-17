@@ -80,6 +80,8 @@ impl Agent {
         let lsp = self.tools.lsp.clone();
         let lsp_settings = self.catalog.lsp_settings();
         let lsp_path = self.catalog.lsp_path();
+        let sandbox = Arc::clone(self.tools.sandbox());
+        let parent_cwd = self.tools.cwd().to_path_buf();
         let root_dir = self.journal.directory().join(format!("{id}.subagents"));
         // 子 Agent 的请求与工具记录写入父级同一个统计库。
         let stats_db = self.journal.stats_database().to_owned();
@@ -131,6 +133,13 @@ impl Agent {
             );
             let mut tools =
                 Tools::with_mcp(record.spec.cwd.clone(), config.settings.edit, mcp.clone())?;
+            tools.set_sandbox(
+                if !record.spec.isolated && same_workspace(&record.spec.cwd, &parent_cwd) {
+                    Arc::clone(&sandbox)
+                } else {
+                    sandbox.for_cwd(&record.spec.cwd)
+                },
+            );
             tools.artifacts = artifacts.clone();
             tools.share_pipe_store(&pipe_store);
             tools.limits = config.settings.tool_limits();

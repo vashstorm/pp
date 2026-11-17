@@ -1,6 +1,8 @@
 //! `General` 设置页的分类、字段元数据与校验/步进规则单源定义。
 use anyhow::{Context, Result, ensure};
-use pp_config::config::{ApprovalMode, CostDisplay, EditMode, SettingPatch, Settings, StatsStyle};
+use pp_config::config::{
+    ApprovalMode, CostDisplay, EditMode, SandboxMode, SettingPatch, Settings, StatsStyle,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Category {
@@ -40,6 +42,7 @@ pub(super) enum ValueKind {
     Bool,
     EditMode,
     ApprovalMode,
+    SandboxMode,
     StatsStyle,
     Currency,
     Int {
@@ -56,6 +59,7 @@ pub(super) enum ValueKind {
 pub(super) enum SettingId {
     Edit,
     ApprovalMode,
+    SandboxMode,
     ReadMaxLines,
     ReadMaxBytes,
     BashTimeoutSeconds,
@@ -96,6 +100,7 @@ impl SettingItem {
         match self.id {
             SettingId::Edit => settings.edit.as_str().to_owned(),
             SettingId::ApprovalMode => settings.tools.approval_mode.as_str().to_owned(),
+            SettingId::SandboxMode => settings.tools.sandbox.mode.as_str().to_owned(),
             SettingId::ReadMaxLines => settings.read_max_lines.to_string(),
             SettingId::ReadMaxBytes => settings.read_max_bytes.to_string(),
             SettingId::BashTimeoutSeconds => format!("{}s", settings.bash_timeout_seconds),
@@ -271,6 +276,19 @@ impl SettingItem {
                 };
                 Ok(SettingPatch::ApprovalMode(modes[next]))
             }
+            ValueKind::SandboxMode => {
+                let modes = SandboxMode::ALL;
+                let idx = modes
+                    .iter()
+                    .position(|mode| *mode == settings.tools.sandbox.mode)
+                    .unwrap_or(0);
+                let next = if forward {
+                    (idx + 1) % modes.len()
+                } else {
+                    (idx + modes.len() - 1) % modes.len()
+                };
+                Ok(SettingPatch::SandboxMode(modes[next]))
+            }
             ValueKind::StatsStyle => Ok(SettingPatch::StatsStyle(match settings.stats.style {
                 StatsStyle::Default => StatsStyle::Modern,
                 StatsStyle::Modern => StatsStyle::Default,
@@ -356,6 +374,14 @@ pub(super) const ITEMS: &[SettingItem] = &[
         label: "Approval mode",
         description: "Tool confirmation policy: yolo, write, or always-ask; next task",
         kind: ValueKind::ApprovalMode,
+    },
+    SettingItem {
+        id: SettingId::SandboxMode,
+        category: Category::EditingTools,
+        key: "tools.sandbox.mode",
+        label: "Sandbox mode",
+        description: "macOS Seatbelt isolation: auto, workspace-write, read-only, or off",
+        kind: ValueKind::SandboxMode,
     },
     SettingItem {
         id: SettingId::ReadMaxLines,

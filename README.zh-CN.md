@@ -125,7 +125,7 @@ printf '说明当前项目的构建方式\n' | pp
 pp --model deepseek/deepseek-flash:high /commit
 ```
 
-> **权限与数据**：接口密钥明文保存在模型配置中。读取、命令执行、搜索与 MCP 工具按当前用户权限运行，没有文件系统沙箱。默认 YOLO 模式跳过全部工具审批，包括危险命令检查和显式 prompt/deny 规则；写入与编辑工具的保存层限制在工作目录与临时目录（`/tmp`，macOS 的真实路径为 `/private/tmp`，两种拼写是同一目录）内并拒绝符号链接。会话与统计可能包含源码和对话，请按敏感数据保管。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
+> **权限与数据**：接口密钥明文保存在模型配置中。macOS 下 `tools.sandbox.mode` 默认为 `auto`（通过 Seatbelt `sandbox-exec` 启用 `workspace-write`），将 `bash`、`!命令` 与 `eval` 的写入限制在工作目录、临时目录及常用工具链缓存内，保护项目控制路径（`.git/hooks`、`.git/config`、`.pp`、`.mcp.json`、`.claude/.mcp.json`），并在 `read`、`rg`、`glob`、`bash`、`eval` 中拒读敏感凭据目录（如 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.pp/agent` 等）；出站网络默认放行，可通过 `tools.sandbox.network: false` 关闭。嵌套沙盒中 `auto` 会降级关闭并给出提示；Linux 等非 macOS 平台当前 `auto` 等价关闭。MCP stdio 与 LSP 服务进程不在沙盒内。可通过 `--sandbox <auto|workspace-write|read-only|off>` 或 `/sandbox` 查看与覆盖当前模式。默认 YOLO 模式跳过全部工具审批，包括危险命令检查和显式 prompt/deny 规则；写入与编辑工具的保存层限制在工作目录与临时目录（`/tmp`，macOS 的真实路径为 `/private/tmp`，两种拼写是同一目录）内并拒绝符号链接。会话与统计可能包含源码和对话，请按敏感数据保管。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
 
 ## 日常使用
 
@@ -159,12 +159,13 @@ pp --model deepseek/deepseek-flash:high /commit
 | `/test-write` | 仅 dev/test：12.5 mock token/s 的打字机回复；24/28 行正文以 240 mock token/s 写入 `/tmp/pp-test-write/demo.txt`，写入卡片可见尾部滚动；随后越界失败，最后用 bash 工具删除 |
 | `/test-ui` | 仅 dev/test：以 12.5 mock token/s 输出原生 Responses SSE 思考与 Markdown／代码分片 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
+| `/sandbox [auto\|workspace-write\|read-only\|off]` | 查看当前沙盒状态与平台支持，或在当前会话内临时覆盖沙盒模式 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
 | `/context` | 在独立 TUI 面板中以 25×16 占比网格与 10 项分类（`System Prompt`、`Instruction Files`、`Skills`、`Built-in Tools`、`Custom Tools`、`User / Developer Messages`、`Assistant Messages`、`Assistant Thinking`、`Tool Calls`、`Tool Output`）加 `Auto-Compact Buffer`／`Free Space` 展示上下文占用，支持原地展开子项查看详情（别名 `/ctx`）；空会话及主任务运行中均可打开，按 `r` 刷新 |
 | `/resume`、`/tree` | 恢复会话，或回退当前历史（仅终端界面） |
 | `/skills`、`/quit` | 管理技能，或退出 |
 
-输入 `!命令` 可在项目目录运行本地非交互 bash；输出仅在当前界面显示，不发送给模型，也不写入会话历史。需要有效的 Agent 配置和 Execute 模式；命令以当前用户权限运行，没有沙箱，每次启动独立 shell。终端界面中，首个 `!` 进入 shell 模式且不显示在输入框中，后续 `!` 保留为命令正文。编辑时按 Esc 退出 shell 模式，空输入框按 Backspace 也可退出；命令运行时按 Esc 取消，等待清理完成后再继续。
+输入 `!命令` 可在项目目录运行本地非交互 bash；输出仅在当前界面显示，不发送给模型，也不写入会话历史。需要有效的 Agent 配置和 Execute 模式；命令遵循当前 `bash` 沙盒策略（沙盒关闭时以当前用户权限运行），每次启动独立 shell。终端界面中，首个 `!` 进入 shell 模式且不显示在输入框中，后续 `!` 保留为命令正文。编辑时按 Esc 退出 shell 模式，空输入框按 Backspace 也可退出；命令运行时按 Esc 取消，等待清理完成后再继续。
 
 <details>
 <summary><strong>终端界面常用快捷键</strong></summary>
@@ -200,7 +201,7 @@ pp --model deepseek/deepseek-flash:high /commit
 
 `output_mode` 默认 `content`，返回正文；`files_with_matches` 只返回路径；`count` 返回各文件计数与所有已搜索文件的总计。单行模式按命中行计数，多行模式按不重叠的匹配计数。上下文参数仅影响 `content`。所有模式保留 `skip` 按文件分页；计数总计包含当前页之外的文件，不受正文匹配条数上限限制，但仍遵守扫描范围限制，`details.countComplete: false` 表示统计不完整。仅 `content` 创建或更新 Hashline 编辑快照，路径与计数模式保留已有快照且不新增已读行。
 
-`glob` 在 Execute、Plan 和 Review 中查找本地路径，接受必填匹配表达式 `pattern`、可选搜索目录 `path`（默认当前工作目录），以及 `hidden`、`gitignore` 和 `limit`；例如 `glob({"pattern":"**/*.rs","path":"src"})`。`path` 仅接受单个字面目录，不再承载 glob 或多个搜索范围；默认包含隐藏文件并遵守忽略规则。裸 `*.rs` 递归查找，`src/*.rs` 只查找直接子项。结果按修改时间排序，最多返回 200 个路径和 50 KiB；五秒协作式扫描超时或结果截断时应缩小目录。取消与超时在文件系统操作之间检查。`glob` 只读，但没有文件系统沙箱。
+`glob` 在 Execute、Plan 和 Review 中查找本地路径，接受必填匹配表达式 `pattern`、可选搜索目录 `path`（默认当前工作目录），以及 `hidden`、`gitignore` 和 `limit`；例如 `glob({"pattern":"**/*.rs","path":"src"})`。`path` 仅接受单个字面目录，不再承载 glob 或多个搜索范围；默认包含隐藏文件并遵守忽略规则。裸 `*.rs` 递归查找，`src/*.rs` 只查找直接子项。结果按修改时间排序，最多返回 200 个路径和 50 KiB；五秒协作式扫描超时或结果截断时应缩小目录。取消与超时在文件系统操作之间检查。`glob` 只读，启用沙盒后会跳过被沙盒拒读的凭据路径。
 
 TODO 区固定在输入框正上方，使用灰色树形连线，不再绘制底部封口线；标题显示进度与展开／收起快捷键，窄窗口优先精简状态文字以保留快捷键。收起时保留可见任务的阶段行，空间允许便显示连续三项，进行项尽量居中，清单首尾用相邻项补齐；不足三项时全部显示。待办为灰色，进行中为亮黄色加粗，完成项保持绿色、仅勾选而不划线；选择框加宽为三列 `[ ]`／`[]`，阻塞项使用金色 `[!]`。展开后阶段与任务通过树枝相连，进行中阶段为亮黄色，已完成阶段为绿色，换行正文与任务文字对齐。macOS 使用 ⌥ + T、其他平台使用 Ctrl + T 原位向上展开，最多占终端高度的三分之一；展开和状态更新时尽量将当前任务滚动至中部，在清单内使用滚轮或同一功能修饰键配合 PgUp/PgDn 翻页。全部完成后保留用户选择的展开状态，收起时仍显示最后三项及绿色  Complete 标题；含放弃项时显示 Closed。小窗口按可用空间显示任务，空清单不占空间。完整清单仅在固定区展示，对话历史保留操作状态和错误；Ctrl + O 不控制 TODO。恢复和树跳转按最终任务状态重建固定区，并默认收起。
 

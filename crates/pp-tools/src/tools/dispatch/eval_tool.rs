@@ -27,6 +27,7 @@ impl Tools {
             self.limits.eval_timeout_seconds
         );
         let cache_dir = self.workspace.cache_dir()?;
+        let sandbox_policy = self.sandbox.policy()?;
         let sink = output::OutputSink::new(self.limits.output, self.artifacts.clone());
 
         let policy = call.policy;
@@ -50,6 +51,7 @@ impl Tools {
                     call_id: outer_call_id,
                     timeout_seconds,
                     reset: args.reset,
+                    sandbox: sandbox_policy,
                 },
                 cancellation,
                 sink,

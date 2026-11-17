@@ -156,6 +156,27 @@ impl App {
                 preferred = items.iter().position(|item| item.current).unwrap_or(0);
                 items
             }
+            Some(("/sandbox", argument)) => {
+                use pp_config::config::SandboxMode;
+                let prefix = argument.trim().to_ascii_lowercase();
+                SandboxMode::ALL
+                    .into_iter()
+                    .filter(|mode| mode.as_str().starts_with(&prefix))
+                    .map(|mode| MenuItem {
+                        value: MenuAction::SandboxMode(mode),
+                        label: mode.as_str().into(),
+                        description: match mode {
+                            SandboxMode::Auto => "Enable workspace-write on macOS when available",
+                            SandboxMode::WorkspaceWrite => "Allow writes only in cwd and temp",
+                            SandboxMode::ReadOnly => "Block writes across workspace",
+                            SandboxMode::Off => "Disable sandbox for this session",
+                        }
+                        .into(),
+                        icon: None,
+                        current: false,
+                    })
+                    .collect()
+            }
             Some(("/settings" | "/setting" | "/config", argument)) => {
                 if argument.split_whitespace().count() > 1 {
                     Vec::new()
@@ -867,6 +888,7 @@ fn completion_text(item: &MenuItem<MenuAction>) -> &str {
         MenuAction::Command(index) => COMMANDS[index].name,
         MenuAction::File(_) | MenuAction::FileDirectory(_) => &item.description,
         MenuAction::Effort(level) => level.as_str(),
+        MenuAction::SandboxMode(mode) => mode.as_str(),
         MenuAction::SettingTab(tab) => tab.slug(),
         MenuAction::ThemeIcon(mode) => mode.as_str(),
         MenuAction::ThemeColor(theme) => theme.as_str(),

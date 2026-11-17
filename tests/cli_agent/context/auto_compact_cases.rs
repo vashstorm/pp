@@ -795,7 +795,7 @@ fn context_auto_compact_failures_never_retry_or_send_the_normal_request() {
             let mut cli = protocol.start(
                 &server,
                 dir.path(),
-                &[("primary", Some(32768))],
+                &[("primary", Some(36000))],
                 r#"{"default_model":"fixture/primary","rate_limit_retry_budget_seconds":0}"#,
             );
             context_auto_grow_two_batches(protocol, &server, &mut cli, true);
