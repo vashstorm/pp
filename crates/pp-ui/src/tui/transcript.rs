@@ -298,6 +298,10 @@ impl Transcript {
         }
     }
 
+    pub(super) fn has_entries(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
     pub(super) fn with_read_preview(read_preview: bool) -> Self {
         Self {
             display: DisplayContext {

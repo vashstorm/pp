@@ -382,3 +382,4 @@ mod mcp_tip_cases;
 
 mod resource_cases;
 mod theme_cases;
+mod welcome_cases;

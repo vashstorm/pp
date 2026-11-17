@@ -365,9 +365,22 @@ impl App {
         );
         self.todo_panel.draw(frame, todo);
         let preview_area = conversation;
+        let has_trailing = self
+            .review_transcript
+            .as_ref()
+            .filter(|_| !self.native_render)
+            .unwrap_or(&self.conversation)
+            .has_entries();
         let conversation =
             if self.show_welcome && self.plan_panel.is_none() && self.mcp_panel.is_none() {
-                welcome::draw(frame, conversation, &self.mcp_tip)
+                welcome::draw(
+                    frame,
+                    conversation,
+                    welcome::WelcomeContext {
+                        mcp_tips: &self.mcp_tip,
+                        reserve_trailing: has_trailing,
+                    },
+                )
             } else {
                 conversation
             };
