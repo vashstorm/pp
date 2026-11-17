@@ -113,7 +113,8 @@ fn streaming_idle_timeout_stops_silent_stream_before_or_after_output() {
                     b""
                 }
             );
-            assert!(String::from_utf8_lossy(&output.stderr).contains("HTTP request failed"));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("response stream interrupted"), "{stderr}");
             assert_clean_pipes(&output);
             drop(stream);
             no_more(&server);

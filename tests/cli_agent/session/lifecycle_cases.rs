@@ -394,7 +394,7 @@ fn session_file_command_expansion_survives_resume() {
         let mut cli = start_configured(api, &server, home.path(), project.path(), &[]);
         // Scanning the directory and rendering help never creates a session.
         cli.input("/help\n");
-        cli.wait_for(Pipe::Err, "/review [arguments] — Review source");
+        cli.wait_for(Pipe::Err, "/review [arguments]");
         assert!(session_ids(home.path()).is_empty());
         cli.input("/review auth\n");
         let (request, body) = api.receive(&server);

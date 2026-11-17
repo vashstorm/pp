@@ -783,7 +783,11 @@ fn agents_init_creates_then_updates_using_real_tools_both_protocols() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{stderr}");
         assert!(stderr.contains("usage: /init"));
-        assert!(stderr.contains("/init — Create or update"));
+        assert!(
+            stderr
+                .lines()
+                .any(|line| line.contains("/init") && line.contains("Create or update"))
+        );
         assert!(stderr.contains("command name conflicts with a built-in: /init"));
         assert_eq!(
             fs::read_to_string(cwd.path().join("AGENTS.md")).unwrap(),

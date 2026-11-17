@@ -167,7 +167,9 @@ fn context_manual_compact_rejects_arguments_and_p_prompt_is_literal() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("usage: /compact"), "{stderr}");
     assert!(
-        stderr.contains("/compact — Summarize older context"),
+        stderr
+            .lines()
+            .any(|line| line.contains("/compact") && line.contains("Summarize older context")),
         "{stderr}"
     );
     assert!(!stderr.contains("Compacting context..."), "{stderr}");

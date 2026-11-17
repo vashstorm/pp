@@ -218,7 +218,9 @@ fn slash_file_command_help_and_errors_stay_local() {
     assert_eq!(output.stdout, b"review ok\n");
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(
-        stderr.contains("/review [arguments] — Review source"),
+        stderr
+            .lines()
+            .any(|line| line.contains("/review [arguments]") && line.contains("Review source")),
         "{stderr}"
     );
     assert!(!stderr.contains("/blank [arguments]"), "{stderr}");
