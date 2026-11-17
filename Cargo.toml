@@ -125,10 +125,11 @@ vt100 = { workspace = true }
 
 [profile.dev]
 opt-level = 0
-strip = "symbols"
+incremental = false
 debug = 1
 
 [profile.release]
+incremental = false
 codegen-units = 16
 opt-level = "z"
 strip = true
