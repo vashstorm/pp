@@ -279,6 +279,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/test-tools` | 顺序运行 read → write → edit-replace → edit-hashline → rg → glob → bash → bash-task → wait → todo → ask | TUI / 行模式，仅 dev/test |
 | `/test-write` | 12.5 mock token/s 的打字机正文；24/28 行的固定 `/tmp/pp-test-write/demo.txt` 写入以 240 mock token/s 逐 token 送达，写入卡片可见尾部滚动；随后越界失败，最后用 bash 删除 | TUI / 行模式，仅 dev/test |
 | `/test-read`、`/test-edit`、`/test-rg`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 对应的隔离真实工具场景；ask 在 TUI 答题，CLI 非交互失败仍继续 | TUI / 行模式，仅 dev/test |
+| `/test-eval-py` | 真实 Python `eval` 场景：流式 stdout/stderr 与尾部滚动、跨单元状态保持、嵌套工具桥、预期异常及 `reset: true` 恢复 | TUI / 行模式，仅 dev/test |
 | `/test-ui` | 12.5 mock token/s 的原生 Responses SSE 思考与 Markdown／代码分片 | TUI / 行模式，仅 dev/test |
 | `/test-fail` | 前两次请求按脚本返回 503 与 429，第三次正常回答；用于验证自动重试、固定重试信息框与恢复，不访问真实 provider | TUI / 行模式，仅 dev/test |
 | `/quit` | 退出 | TUI / 行模式 |

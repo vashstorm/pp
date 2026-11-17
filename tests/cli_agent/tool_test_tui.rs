@@ -146,3 +146,28 @@ fn tui_mock_ask_answers_three_questions_and_keeps_normalized_results() {
     pty.finish();
     assert!(mock_tui_session_jsonl(home.path()).is_empty());
 }
+
+#[test]
+fn tui_mock_eval_py_streams_running_state_and_returns_to_unavailable() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut pty = mock_tui_empty_start(home.path(), project.path());
+    pty.resize(90, 120);
+    pty.input("/test-eval-py\r");
+    pty.wait_for("eval cell enters running state with streaming output", |screen| {
+        let text = screen.contents();
+        text.contains("eval · py · streaming stdout/stderr")
+            && text.contains("Timeout: 15s")
+            && text.contains("[01/14] streaming step=1")
+            && !text.contains("Eval Python fixture complete.")
+    });
+    pty.text("Eval Python fixture complete.");
+    let screen = pty.contents();
+    assert!(screen.contains("state=eval-py-state-42 sum=42"), "{screen}");
+    assert!(screen.contains("ZeroDivisionError"), "{screen}");
+    assert!(screen.contains("after_reset_has_state=False"), "{screen}");
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    assert!(mock_tui_session_jsonl(home.path()).is_empty());
+}

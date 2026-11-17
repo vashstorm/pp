@@ -37,6 +37,7 @@ pub enum MockTest {
     Glob,
     Bash,
     BashTask,
+    EvalPy,
     Wait,
     Todo,
     Ask,
@@ -44,7 +45,7 @@ pub enum MockTest {
 }
 
 impl MockTest {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Task,
         Self::Ui,
         Self::All,
@@ -55,6 +56,7 @@ impl MockTest {
         Self::Glob,
         Self::Bash,
         Self::BashTask,
+        Self::EvalPy,
         Self::Wait,
         Self::Todo,
         Self::Ask,
@@ -73,6 +75,7 @@ impl MockTest {
             Self::Glob => "/test-glob",
             Self::Bash => "/test-bash",
             Self::BashTask => "/test-bash-task",
+            Self::EvalPy => "/test-eval-py",
             Self::Wait => "/test-wait",
             Self::Todo => "/test-todo",
             Self::Ask => "/test-ask",
@@ -163,6 +166,7 @@ const RG: &str = include_str!("scenarios/rg.json");
 const GLOB: &str = include_str!("scenarios/glob.json");
 const BASH: &str = include_str!("scenarios/bash.json");
 const BASH_TASK: &str = include_str!("scenarios/bash-task.json");
+const EVAL_PY: &str = include_str!("scenarios/eval-py.json");
 const WAIT: &str = include_str!("scenarios/wait.json");
 const TODO: &str = include_str!("scenarios/todo.json");
 const ASK: &str = include_str!("scenarios/ask.json");
@@ -192,6 +196,7 @@ fn scenarios(test: MockTest) -> &'static [&'static str] {
         MockTest::Glob => &[GLOB],
         MockTest::Bash => &[BASH],
         MockTest::BashTask => &[BASH_TASK],
+        MockTest::EvalPy => &[EVAL_PY],
         MockTest::Wait => &[WAIT],
         MockTest::Todo => &[TODO],
         MockTest::Ask => &[ASK],

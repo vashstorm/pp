@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const COMMANDS: [&str; 14] = [
+const COMMANDS: [&str; 15] = [
     "/test-task",
     "/test-ui",
     "/test-tools",
@@ -24,6 +24,7 @@ const COMMANDS: [&str; 14] = [
     "/test-glob",
     "/test-bash",
     "/test-bash-task",
+    "/test-eval-py",
     "/test-wait",
     "/test-todo",
     "/test-ask",
@@ -72,6 +73,7 @@ fn own_markers(command: &str) -> Vec<&'static str> {
         "/test-glob" => vec!["Glob fixture complete."],
         "/test-bash" => vec!["Bash fixture complete."],
         "/test-bash-task" => vec!["Background Bash fixture complete."],
+        "/test-eval-py" => vec!["Eval Python fixture complete."],
         "/test-wait" => vec!["Wait fixture complete."],
         "/test-todo" => vec![
             "Todo fixture complete.",
@@ -223,6 +225,7 @@ fn mock_test_all_commands_run_in_empty_home_without_models() {
         "glob",
         "bash",
         "bash_task",
+        "eval",
         "wait",
         "todo",
         "ask",
@@ -241,7 +244,7 @@ fn mock_test_all_commands_run_in_empty_home_without_models() {
         "native incomplete-todo reminder missing: {stderr}"
     );
     // 预期工具失败只作为结果展示，后续脚本仍继续到各自完成正文。
-    for tool in ["write", "edit", "rg", "bash", "ask"] {
+    for tool in ["write", "edit", "rg", "bash", "eval", "ask"] {
         assert!(
             stderr.contains(&format!("tool {tool}: failed")),
             "missing expected failure for {tool}: {stderr}"
@@ -278,6 +281,7 @@ fn mock_test_each_command_runs_only_its_own_scenarios() {
         ("/test-glob", &[("glob", 4)]),
         ("/test-bash", &[("bash", 4)]),
         ("/test-bash-task", &[("bash", 1), ("bash_task", 3)]),
+        ("/test-eval-py", &[("eval", 4)]),
         ("/test-wait", &[("bash", 2), ("wait", 2)]),
         ("/test-todo", &[("todo", 9)]),
         ("/test-ask", &[("ask", 1)]),
