@@ -1,6 +1,7 @@
 //! 统一 Setting TUI 协调层：标签切换、通用配置面板交互、预览回滚与命令/补全接线。
 use crate::tui::{
-    App, Event, KeyCode, KeyEventKind, KeyModifiers, Level, PendingKind, editor, settings, skills,
+    App, Event, KeyCode, KeyEventKind, KeyModifiers, Level, PendingKind, editor, roles, settings,
+    skills,
 };
 use crossterm::event::{MouseButton, MouseEventKind};
 use pp_config::config::Settings;
@@ -31,6 +32,12 @@ impl App {
                 .skill_panel
                 .as_ref()
                 .is_some_and(skills::Panel::is_saving)
+    }
+
+    fn roles_picker_open(&self) -> bool {
+        self.roles_panel
+            .as_ref()
+            .is_some_and(roles::Panel::is_picking)
     }
 
     fn settings_typing_input(&self) -> bool {
@@ -196,6 +203,11 @@ impl App {
                     return None;
                 }
                 if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::CONTROL {
+                    return None;
+                }
+                // Roles 页的模型／档位选择器打开时，未修饰的 ←/→ 用于滚动选择项，
+                // 不能切换外层页签；Ctrl + ←/→ 仍是显式切页签手势。
+                if key.modifiers.is_empty() && self.roles_picker_open() {
                     return None;
                 }
                 match key.code {

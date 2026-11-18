@@ -413,6 +413,8 @@ impl Panel {
             &self.message
         } else if self.view == View::Models {
             "↑/↓ rows · Enter pick · Ctrl + F favorite · type to search · Esc back"
+        } else if self.view == View::Effort {
+            "←/→ or Tab to switch effort · Enter pick · Esc back"
         } else {
             "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · Space toggle · Delete remove · Backspace clear override · Esc back"
         };

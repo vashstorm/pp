@@ -199,6 +199,11 @@ impl Panel {
         self.view == View::Models && !self.sidebar_focus
     }
 
+    /// 模型／档位选择器打开时，←/→ 与 Tab 归选择器，外层页签让位。
+    pub(super) fn is_picking(&self) -> bool {
+        self.view != View::Roles
+    }
+
     pub(super) fn update_choices(&mut self, choices: Vec<ModelChoice>) {
         self.providers = choices
             .iter()
@@ -679,6 +684,34 @@ mod tests {
             };
             assert_eq!(updated, value);
         }
+    }
+
+    #[test]
+    fn effort_view_arrow_and_tab_keys_cycle_levels_without_switching_tabs() {
+        let mut panel = panel();
+        key(&mut panel, KeyCode::Enter);
+        key(&mut panel, KeyCode::Enter);
+        key(&mut panel, KeyCode::Enter);
+        assert_eq!(panel.view, View::Effort);
+        assert!(!panel.sidebar_focus);
+        // fixture/one 支持全部档位：←/→ 与 Tab/Shift+Tab 在档位间滚动，不切换侧栏页签。
+        key(&mut panel, KeyCode::Tab);
+        key(&mut panel, KeyCode::Right);
+        assert_eq!(panel.selected, 5);
+        assert!(!panel.sidebar_focus);
+        key(&mut panel, KeyCode::Left);
+        key(&mut panel, KeyCode::BackTab);
+        key(&mut panel, KeyCode::Left);
+        assert_eq!(panel.selected, 2);
+        assert!(!panel.sidebar_focus);
+        key(&mut panel, KeyCode::Left);
+        key(&mut panel, KeyCode::Left);
+        assert_eq!(panel.selected, 0);
+        let Action::Save(ModelRole::Default, Some(assignment)) = key(&mut panel, KeyCode::Enter)
+        else {
+            panic!("应保存滚动后的档位");
+        };
+        assert_eq!(assignment.effort, panel.efforts()[0]);
     }
 
     #[test]

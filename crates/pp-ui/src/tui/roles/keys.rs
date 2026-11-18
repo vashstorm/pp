@@ -96,8 +96,18 @@ impl Panel {
                         key.code == KeyCode::PageDown,
                         usize::from(self.body.height.saturating_sub(3)).max(1),
                     ),
+                    // Effort 视图内 Tab/←/→ 只滚动档位，不切换最外层侧栏页签。
+                    KeyCode::BackTab if self.view == View::Effort => {
+                        self.move_selection(false, 1);
+                    }
+                    KeyCode::Tab if self.view == View::Effort => {
+                        self.move_selection(true, 1);
+                    }
+                    KeyCode::Left | KeyCode::Right if self.view == View::Effort => {
+                        self.move_selection(key.code == KeyCode::Right, 1);
+                    }
                     KeyCode::BackTab => self.sidebar_focus = true,
-                    KeyCode::Tab if self.view != View::Effort => {
+                    KeyCode::Tab => {
                         self.sidebar_focus = !self.sidebar_focus;
                     }
                     KeyCode::Enter if self.sidebar_focus => self.sidebar_focus = false,

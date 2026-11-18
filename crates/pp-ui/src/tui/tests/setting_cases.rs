@@ -32,6 +32,30 @@ fn flush_settings(app: &mut App) {
     );
 }
 
+/// Roles 页 Effort 选择器当前高亮的档位名（选中 chip 使用强调色底色）。
+fn highlighted_effort(app: &mut App) -> String {
+    let accent = crate::tui::themes::palette().accent;
+    let buffer = draw_buffer(app, 110, 30);
+    let area = app
+        .roles_panel
+        .as_ref()
+        .map(|panel| panel.area)
+        .unwrap_or_default();
+    for y in area.top()..area.bottom() {
+        let mut text = String::new();
+        for x in area.left()..area.right() {
+            let cell = &buffer[(x, y)];
+            if cell.bg == accent {
+                text.push_str(cell.symbol());
+            }
+        }
+        if !text.trim().is_empty() {
+            return text.trim().to_owned();
+        }
+    }
+    String::new()
+}
+
 fn wait_for_skills(app: &mut App) {
     let deadline = Instant::now() + Duration::from_secs(3);
     while app.skills_pending && Instant::now() < deadline {
@@ -242,6 +266,39 @@ fn setting_tabs_switch_by_keys_click_guard_typing_and_revert_unsaved_theme_previ
     app.handle(key(KeyCode::Left), &mut false);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
     app.handle(key(KeyCode::Esc), &mut false);
+    assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
+
+    // Effort 选择器内 ←/→ 与 Tab/Shift+Tab 都只滚动档位，不切换外层页签。
+    app.handle(key(KeyCode::Enter), &mut false);
+    app.handle(key(KeyCode::Enter), &mut false);
+    let effort_screen = draw(&mut app, 110, 30);
+    assert!(
+        effort_screen.contains("←/→ or Tab to switch effort"),
+        "{effort_screen}"
+    );
+    let initial = highlighted_effort(&mut app);
+    app.handle(key(KeyCode::Right), &mut false);
+    let after_right = highlighted_effort(&mut app);
+    assert_ne!(after_right, initial, "{after_right}");
+    app.handle(key(KeyCode::Tab), &mut false);
+    let after_tab = highlighted_effort(&mut app);
+    assert_ne!(after_tab, after_right, "{after_tab}");
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+        &mut false,
+    );
+    assert_eq!(highlighted_effort(&mut app), after_right);
+    app.handle(key(KeyCode::Left), &mut false);
+    assert_eq!(highlighted_effort(&mut app), initial);
+    assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
+
+    // Ctrl + ←/→ 仍是显式切页签手势，不被 Effort 选择器吞掉。
+    app.handle(
+        Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL)),
+        &mut false,
+    );
+    assert_eq!(app.active_settings_tab(), Some(settings::Tab::Themes));
+    app.handle(key(KeyCode::Left), &mut false);
     assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
 
     // 按 `→` 切到 Themes 并触发 Icon Style 预览变更（默认 Nerd -> Down 预览 ASCII）。
