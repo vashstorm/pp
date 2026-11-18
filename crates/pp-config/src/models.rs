@@ -469,7 +469,10 @@ fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<Val
                 ensure!(
                     matches!(
                         auth,
-                        crate::auth::Provider::GithubCopilot | crate::auth::Provider::CommandCode
+                        crate::auth::Provider::GithubCopilot
+                            | crate::auth::Provider::CommandCode
+                            | crate::auth::Provider::OpencodeZen
+                            | crate::auth::Provider::OpencodeGo
                     ) || protocol == auth.protocol(),
                     "protocol is incompatible with auth provider"
                 );
@@ -510,6 +513,8 @@ fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<Val
                                     crate::auth::Provider::KimiCode
                                         | crate::auth::Provider::Glm
                                         | crate::auth::Provider::Zai
+                                        | crate::auth::Provider::OpencodeZen
+                                        | crate::auth::Provider::OpencodeGo
                                 )
                             ) {
                                 ensure!(

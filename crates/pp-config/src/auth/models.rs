@@ -44,10 +44,15 @@ impl Catalog {
             ensure!(!entry.models.is_empty(), "subscription model list is empty");
             for (id, model) in &entry.models {
                 ensure!(
-                    matches!(entry.auth, Provider::GithubCopilot | Provider::CommandCode)
-                        || model
-                            .protocol
-                            .is_none_or(|protocol| protocol == entry.protocol),
+                    matches!(
+                        entry.auth,
+                        Provider::GithubCopilot
+                            | Provider::CommandCode
+                            | Provider::OpencodeZen
+                            | Provider::OpencodeGo
+                    ) || model
+                        .protocol
+                        .is_none_or(|protocol| protocol == entry.protocol),
                     "invalid subscription model protocol"
                 );
                 ensure!(
@@ -102,7 +107,11 @@ impl Catalog {
                         context_window: model.context_window,
                         thinking: if matches!(
                             entry.auth,
-                            Provider::KimiCode | Provider::Glm | Provider::Zai
+                            Provider::KimiCode
+                                | Provider::Glm
+                                | Provider::Zai
+                                | Provider::OpencodeZen
+                                | Provider::OpencodeGo
                         ) {
                             ModelThinking::without_reasoning()
                         } else {

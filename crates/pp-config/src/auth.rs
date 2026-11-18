@@ -29,16 +29,20 @@ pub enum Provider {
     Zai,
     #[serde(alias = "commandcode")]
     CommandCode,
+    OpencodeZen,
+    OpencodeGo,
 }
 
 impl Provider {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::OpenaiCodex,
         Self::Zai,
         Self::Glm,
         Self::KimiCode,
         Self::GithubCopilot,
         Self::CommandCode,
+        Self::OpencodeZen,
+        Self::OpencodeGo,
     ];
 
     pub fn id(self) -> &'static str {
@@ -49,6 +53,8 @@ impl Provider {
             Self::Glm => "glm",
             Self::Zai => "zai",
             Self::CommandCode => "command-code",
+            Self::OpencodeZen => "opencode-zen",
+            Self::OpencodeGo => "opencode-go",
         }
     }
 
@@ -60,6 +66,8 @@ impl Provider {
             Self::Glm => "https://open.bigmodel.cn/api/coding/paas/v4",
             Self::Zai => "https://api.z.ai/api/coding/paas/v4",
             Self::CommandCode => "https://api.commandcode.ai/provider/v1",
+            Self::OpencodeZen => "https://opencode.ai/zen/v1",
+            Self::OpencodeGo => "https://opencode.ai/zen/go/v1",
         }
     }
 
@@ -79,6 +87,8 @@ impl Provider {
             Self::Glm => "GLM (Coding Plan)",
             Self::Zai => "Z.AI (GLM Coding Plan)",
             Self::CommandCode => "Command Code",
+            Self::OpencodeZen => "OpenCode Zen",
+            Self::OpencodeGo => "OpenCode Go",
         }
     }
 
@@ -87,6 +97,7 @@ impl Provider {
             Self::Glm => Some("https://bigmodel.cn/coding-plan/personal/overview"),
             Self::Zai => Some("https://z.ai/manage-apikey/apikey-list"),
             Self::CommandCode => Some("https://commandcode.ai/studio/"),
+            Self::OpencodeZen | Self::OpencodeGo => Some("https://opencode.ai/auth"),
             _ => None,
         }
     }
@@ -149,6 +160,14 @@ impl Credential {
             ensure!(
                 self.account_id.as_ref().is_some_and(|id| !id.is_empty()),
                 "Codex credential is missing the account identifier; sign in again"
+            );
+        }
+        if matches!(provider, Provider::OpencodeZen | Provider::OpencodeGo) {
+            ensure!(
+                self.device_id.as_deref().is_some_and(|id| {
+                    !id.trim().is_empty() && reqwest::header::HeaderValue::from_str(id).is_ok()
+                }),
+                "auth credential incomplete; sign in again"
             );
         }
         if let Some(endpoint) = &self.api_endpoint {

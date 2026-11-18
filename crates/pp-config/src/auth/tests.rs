@@ -218,7 +218,13 @@ fn auth_model_protocol_overrides_reject_incompatible_providers() {
         catalog.save(&path).unwrap();
         assert_eq!(
             models::Catalog::load(&path).is_ok(),
-            matches!(provider, Provider::GithubCopilot | Provider::CommandCode)
+            matches!(
+                provider,
+                Provider::GithubCopilot
+                    | Provider::CommandCode
+                    | Provider::OpencodeZen
+                    | Provider::OpencodeGo
+            )
         );
     }
 }
@@ -447,4 +453,73 @@ fn auth_discovery_does_not_create_an_unbound_cache_for_manually_incomplete_crede
     assert!(!update.message.contains("private-marker"));
     assert_eq!(update.logged, [Provider::Zai]);
     assert!(!dir.path().join("models-sub.yml").exists());
+}
+
+#[test]
+fn auth_opencode_manual_models_and_session_validation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("models.yml");
+    for (auth, provider, base_url) in [
+        (
+            "opencode-zen",
+            Provider::OpencodeZen,
+            "https://opencode.ai/zen/v1",
+        ),
+        (
+            "opencode-go",
+            Provider::OpencodeGo,
+            "https://opencode.ai/zen/go/v1",
+        ),
+    ] {
+        assert_eq!(provider.id(), auth);
+        assert_eq!(provider.base_url(), base_url);
+        assert_eq!(provider.key_url(), Some("https://opencode.ai/auth"));
+
+        for protocol in ["completion", "response"] {
+            fs::write(
+                &path,
+                format!(
+                    "providers:\n  custom:\n    auth: {auth}\n    protocol: {protocol}\n    models:\n      main:\n        model: gpt-5\n"
+                ),
+            )
+            .unwrap();
+            let providers = crate::models::load_models(&path).unwrap();
+            assert_eq!(providers[0].auth, Some(provider));
+            assert_eq!(
+                providers[0].models[0].thinking,
+                crate::models::ModelThinking::without_reasoning()
+            );
+        }
+        fs::write(
+            &path,
+            format!(
+                "providers:\n  custom:\n    auth: {auth}\n    models:\n      main:\n        model: gpt-5\n        thinking:\n          efforts: [low]\n"
+            ),
+        )
+        .unwrap();
+        assert!(crate::models::load_models(&path).is_err());
+
+        assert!(
+            Credential::api_key("sk-fixture".into())
+                .validate(provider)
+                .is_err()
+        );
+        let mut invalid_session = Credential::api_key("sk-fixture".into());
+        invalid_session.device_id = Some("bad\nsession".into());
+        assert!(invalid_session.validate(provider).is_err());
+
+        let first = service::api_key_credential(provider, "  sk-fixture  ").unwrap();
+        let second = service::api_key_credential(provider, "sk-fixture").unwrap();
+        assert_eq!(first.access_token, "sk-fixture");
+        assert!(
+            first
+                .device_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("pp-"))
+        );
+        assert_ne!(first.device_id, second.device_id);
+        first.validate(provider).unwrap();
+        assert!(service::api_key_credential(provider, "   ").is_err());
+        assert!(service::api_key_credential(provider, &"x".repeat(16385)).is_err());
+    }
 }

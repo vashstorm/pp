@@ -81,6 +81,23 @@ fn auth_client_reloads_credentials_headers_and_observes_logout() {
     store.credentials.clear();
     store.save(&path).unwrap();
     assert!(client.prepare_auth(&cancellation, "user", false).is_err());
+
+    let mut opencode = Credential::api_key("sk-opencode-fixture".into());
+    opencode.device_id = Some("pp-opencode-session".into());
+    opencode.generation = "gen-opencode".into();
+    store.credentials.insert(Provider::OpencodeGo, opencode);
+    store.save(&path).unwrap();
+    client.auth = Some(pp_config::auth::Config {
+        provider: Provider::OpencodeGo,
+        path,
+        generation: "gen-opencode".into(),
+    });
+    client.prepare_auth(&cancellation, "user", false).unwrap();
+    let sdk = client.client.config();
+    assert_eq!(sdk.api_base(), "https://opencode.ai/zen/go/v1");
+    assert_eq!(sdk.headers()["authorization"], "Bearer sk-opencode-fixture");
+    assert_eq!(sdk.headers()["x-opencode-session"], "pp-opencode-session");
+    assert_eq!(sdk.headers()["x-opencode-client"], "pp");
 }
 
 fn test_client(base_url: &str) -> OpenAiClient {

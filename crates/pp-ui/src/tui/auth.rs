@@ -549,6 +549,8 @@ impl Panel {
                             match provider {
                                 Provider::Zai => "Z.AI",
                                 Provider::CommandCode => "Command Code",
+                                Provider::OpencodeZen => "OpenCode Zen",
+                                Provider::OpencodeGo => "OpenCode Go",
                                 _ => "GLM",
                             }
                         )),

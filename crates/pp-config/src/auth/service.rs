@@ -28,6 +28,18 @@ pub fn list(dir: &Path) -> Result<Vec<Provider>> {
         .collect())
 }
 
+pub(crate) fn api_key_credential(provider: Provider, key: &str) -> Result<Credential> {
+    ensure!(
+        !key.trim().is_empty() && key.len() <= 16384,
+        "API key must contain 1–16384 bytes."
+    );
+    let mut credential = Credential::api_key(key.trim().to_owned());
+    if matches!(provider, Provider::OpencodeZen | Provider::OpencodeGo) {
+        credential.device_id = Some(format!("pp-{}", generation()?));
+    }
+    Ok(credential)
+}
+
 pub fn login(
     dir: &Path,
     provider: Provider,
@@ -37,12 +49,7 @@ pub fn login(
 ) -> Result<Update> {
     let http = crate::auth::http::Http::new()?;
     let credential = if provider.key_url().is_some() {
-        let key = key.unwrap_or_default();
-        ensure!(
-            !key.trim().is_empty() && key.len() <= 16384,
-            "API key must contain 1–16384 bytes."
-        );
-        Credential::api_key(key.trim().to_owned())
+        api_key_credential(provider, key.as_deref().unwrap_or_default())?
     } else {
         http.login(provider, cancellation, |url, code| {
             progress(Progress::Verification {

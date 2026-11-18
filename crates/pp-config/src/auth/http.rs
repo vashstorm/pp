@@ -133,7 +133,9 @@ fn discovered_models(
         if value["visibility"].as_str().is_some_and(|v| v != "list")
             || value["model_picker_enabled"] == false
             || value["capabilities"]["supports"]["tool_calls"] == false
+            || value["capabilities"]["tools"]["supported"] == false
             || value["supports_tool_calls"] == false
+            || value["type"].as_str().is_some_and(|v| v != "chat")
             || value["capabilities"]["type"]
                 .as_str()
                 .is_some_and(|v| v != "chat")
@@ -144,7 +146,17 @@ fn discovered_models(
             continue;
         }
         let mut protocol = provider.protocol();
-        if let Some(endpoints) = value["supported_endpoints"].as_array() {
+        if matches!(provider, Provider::OpencodeZen | Provider::OpencodeGo) {
+            if let Some(apis) = value["api"].as_object() {
+                if apis.contains_key("responses") {
+                    protocol = crate::models::Protocol::Response;
+                } else if apis.contains_key("chat-completions") {
+                    protocol = crate::models::Protocol::Completion;
+                } else {
+                    continue;
+                }
+            }
+        } else if let Some(endpoints) = value["supported_endpoints"].as_array() {
             // 同一目录中的模型可能使用不同协议，优先采用明确声明的 Responses。
             if matches!(provider, Provider::GithubCopilot | Provider::CommandCode)
                 && endpoints.iter().any(|v| v.as_str() == Some("/responses"))
@@ -177,13 +189,20 @@ fn discovered_models(
             .as_u64()
             .or_else(|| value["context_length"].as_u64())
             .or_else(|| value["capabilities"]["limits"]["max_context_window_tokens"].as_u64())
+            .or_else(|| value["limit"]["context"].as_u64())
             .filter(|size| *size > 0);
         models.insert(
             id.to_owned(),
             crate::auth::models::Model {
                 model: id.to_owned(),
-                protocol: matches!(provider, Provider::GithubCopilot | Provider::CommandCode)
-                    .then_some(protocol),
+                protocol: matches!(
+                    provider,
+                    Provider::GithubCopilot
+                        | Provider::CommandCode
+                        | Provider::OpencodeZen
+                        | Provider::OpencodeGo
+                )
+                .then_some(protocol),
                 context_window,
             },
         );
@@ -599,6 +618,13 @@ pub fn headers(
                 insert("x-msh-device-id", id)?;
             }
         }
+        Provider::OpencodeZen | Provider::OpencodeGo => {
+            let session_id = device_id
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("missing session identifier; sign in again"))?;
+            insert("x-opencode-session", session_id)?;
+            insert("x-opencode-client", "pp")?;
+        }
         _ => {}
     }
     Ok(headers)
@@ -674,7 +700,11 @@ pub fn wire_request<T: serde::Serialize>(
             }
         }
     }
-    if provider == Provider::GithubCopilot && body["reasoning_effort"] == "none" {
+    if matches!(
+        provider,
+        Provider::GithubCopilot | Provider::OpencodeZen | Provider::OpencodeGo
+    ) && body["reasoning_effort"] == "none"
+    {
         body.as_object_mut()
             .expect("序列化的请求是对象")
             .remove("reasoning_effort");

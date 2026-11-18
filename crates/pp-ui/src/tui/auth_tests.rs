@@ -86,7 +86,13 @@ fn auth_commandcode_key_panel_masks_input_and_submits_to_correct_provider() {
     let mut panel = Panel::new(false);
     panel.listed(Vec::new());
     assert!(render(&mut panel, 100, 30).contains("Command Code"));
-    panel.handle(key(KeyCode::End));
+    for _ in 0..Provider::ALL
+        .iter()
+        .position(|p| *p == Provider::CommandCode)
+        .unwrap()
+    {
+        panel.handle(key(KeyCode::Down));
+    }
     let url = match panel.handle(key(KeyCode::Enter)) {
         Action::Open(url) => url,
         _ => panic!("必须打开 Command Code 控制台"),
@@ -111,6 +117,47 @@ fn auth_commandcode_key_panel_masks_input_and_submits_to_correct_provider() {
         logout.handle(key(KeyCode::Enter)),
         Action::Logout(Provider::CommandCode)
     ));
+}
+
+#[test]
+fn auth_opencode_key_panel_masks_input_and_submits_to_correct_provider() {
+    for (provider, prompt) in [
+        (Provider::OpencodeZen, "Paste your OpenCode Zen API key"),
+        (Provider::OpencodeGo, "Paste your OpenCode Go API key"),
+    ] {
+        let mut panel = Panel::new(false);
+        panel.listed(Vec::new());
+        assert!(render(&mut panel, 100, 30).contains(provider.label()));
+        for _ in 0..Provider::ALL.iter().position(|p| *p == provider).unwrap() {
+            panel.handle(key(KeyCode::Down));
+        }
+        let url = match panel.handle(key(KeyCode::Enter)) {
+            Action::Open(url) => url,
+            _ => panic!("必须打开 OpenCode 授权页"),
+        };
+        assert_eq!(url, "https://opencode.ai/auth");
+        panel.handle(Event::Paste("sk-private-opencode-key".into()));
+        let screen = render(&mut panel, 100, 30);
+        assert!(screen.contains(prompt));
+        assert!(screen.contains("sk-...") && screen.contains('•'));
+        assert!(!screen.contains("sk-private-opencode-key"));
+        assert!(matches!(
+            panel.handle(key(KeyCode::Enter)),
+            Action::Login(p, Some(value)) if p == provider && value == "sk-private-opencode-key"
+        ));
+        assert!(!render(&mut panel, 100, 30).contains("sk-private-opencode-key"));
+
+        let mut logout = Panel::new(true);
+        logout.listed(vec![provider]);
+        assert!(
+            render(&mut logout, 100, 30)
+                .contains(&format!("{} ● logged in (api key)", provider.label()))
+        );
+        assert!(matches!(
+            logout.handle(key(KeyCode::Enter)),
+            Action::Logout(p) if p == provider
+        ));
+    }
 }
 
 #[test]

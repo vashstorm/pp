@@ -160,26 +160,38 @@ fn auth_discovery_roundtrip_preserves_model_protocols_and_manual_priority() {
     use crate::models::Protocol;
     use pp_core::cancellation::CancellationToken;
 
-    for provider in [Provider::GithubCopilot, Provider::CommandCode] {
+    for provider in [
+        Provider::GithubCopilot,
+        Provider::CommandCode,
+        Provider::OpencodeZen,
+        Provider::OpencodeGo,
+    ] {
         let id = provider.id();
         let dir = tempfile::tempdir().unwrap();
-        service::commit_login(
-            dir.path(),
-            provider,
-            Credential::api_key("private-fixture".into()),
-            &CancellationToken::new(),
-        )
-        .unwrap();
+        let mut fixture = Credential::api_key("private-fixture".into());
+        if matches!(provider, Provider::OpencodeZen | Provider::OpencodeGo) {
+            fixture.device_id = Some("pp-fixture-session".into());
+        }
+        service::commit_login(dir.path(), provider, fixture, &CancellationToken::new()).unwrap();
         let store = Store::load(&dir.path().join("agent.db")).unwrap();
         let credential = &store.credentials[&provider];
         let (_owner, base, server) = mock(vec![(
             200,
-            json!({"data":[
-                {"id":"a-response", "supported_endpoints":["/responses"], "context_window":128000},
-                {"id":"vendor/b-chat", "supported_endpoints":["/chat/completions"]},
-                {"id":"c-response", "supported_endpoints":["/responses"]},
-                {"id":"d-legacy"}
-            ]}),
+            if matches!(provider, Provider::OpencodeZen | Provider::OpencodeGo) {
+                json!({"data":[
+                    {"id":"a-response", "api":{"responses":{}}, "context_window":128000},
+                    {"id":"vendor/b-chat", "api":{"chat-completions":{}}},
+                    {"id":"c-response", "api":{"responses":{}}},
+                    {"id":"d-legacy"}
+                ]})
+            } else {
+                json!({"data":[
+                    {"id":"a-response", "supported_endpoints":["/responses"], "context_window":128000},
+                    {"id":"vendor/b-chat", "supported_endpoints":["/chat/completions"]},
+                    {"id":"c-response", "supported_endpoints":["/responses"]},
+                    {"id":"d-legacy"}
+                ]})
+            },
         )]);
         let discovered = runtime().block_on(async {
             discover_at(
@@ -323,6 +335,20 @@ fn auth_discovery_http_all_providers_use_auth_headers_and_redact_errors() {
         }));
         if provider == Provider::OpenaiCodex {
             assert!(requests[0].headers.iter().any(|(name, value)| name == "chatgpt-account-id" && value == "account-fixture"));
+        }
+        if matches!(provider, Provider::OpencodeZen | Provider::OpencodeGo) {
+            assert!(
+                requests[0]
+                    .headers
+                    .iter()
+                    .any(|(name, value)| name == "x-opencode-session" && value == "device-fixture")
+            );
+            assert!(
+                requests[0]
+                    .headers
+                    .iter()
+                    .any(|(name, value)| name == "x-opencode-client" && value == "pp")
+            );
         }
     }
 }
@@ -620,4 +646,49 @@ fn auth_wire_adaptation_preserves_native_history_and_tool_pairs() {
     assert_eq!(adapted["thinking"]["type"], "disabled");
     assert!(adapted.get("reasoning_effort").is_none());
     assert!(adapted["tools"][0]["function"].get("strict").is_none());
+    for provider in [Provider::OpencodeZen, Provider::OpencodeGo] {
+        let req = json!({"model":"gpt-5","reasoning_effort":"none","messages":[{"role":"user","content":"hi"}]});
+        let adapted = serde_json::to_value(wire_request(&req, Some(provider)).unwrap()).unwrap();
+        assert!(adapted.get("reasoning_effort").is_none());
+        let hdrs = headers(provider, None, Some("pp-session-1")).unwrap();
+        assert_eq!(hdrs["x-opencode-session"], "pp-session-1");
+        assert_eq!(hdrs["x-opencode-client"], "pp");
+        assert!(headers(provider, None, None).is_err());
+    }
+}
+
+#[test]
+fn auth_opencode_discovery_filters_incompatible_protocols_and_capabilities() {
+    use crate::models::Protocol;
+
+    for provider in [Provider::OpencodeZen, Provider::OpencodeGo] {
+        let models = discovered_models(
+            provider,
+            &json!({"object":"list", "data":[
+                {"id":"gpt-5", "type":"chat", "limit":{"context":400000}, "capabilities":{"tools":{"supported":true}}, "api":{"responses":{"base_url":"https://opencode.ai/inference/openai/v1"}}},
+                {"id":"big-pickle", "type":"chat", "limit":{"context":200000}, "capabilities":{"tools":{"supported":true}}, "api":{"chat-completions":{"base_url":"https://opencode.ai/inference/openai/v1"}}},
+                {"id":"claude-sonnet-4-6", "type":"chat", "capabilities":{"tools":{"supported":true}}, "api":{"messages":{"base_url":"https://opencode.ai/inference/anthropic/v1"}}},
+                {"id":"gemini-4-argon", "type":"chat", "capabilities":{"tools":{"supported":true}}, "api":{"generate-content":{"base_url":"https://opencode.ai/inference/google/v1beta"}}},
+                {"id":"no-tools", "type":"chat", "capabilities":{"tools":{"supported":false}}, "api":{"chat-completions":{}}},
+                {"id":"embed", "type":"embedding", "capabilities":{"tools":{"supported":true}}, "api":{"chat-completions":{}}},
+                {"id":"empty-api", "type":"chat", "api":{}}
+            ]}),
+        )
+        .unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models["gpt-5"].protocol, Some(Protocol::Response));
+        assert_eq!(models["gpt-5"].context_window, Some(400_000));
+        assert_eq!(models["big-pickle"].protocol, Some(Protocol::Completion));
+        assert_eq!(models["big-pickle"].context_window, Some(200_000));
+        assert!(
+            discovered_models(
+                provider,
+                &json!({"data":[
+                    {"id":"claude", "type":"chat", "api":{"messages":{}}},
+                    {"id":"gemini", "type":"chat", "api":{"generate-content":{}}}
+                ]})
+            )
+            .is_err()
+        );
+    }
 }
