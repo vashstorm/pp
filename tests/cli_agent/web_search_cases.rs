@@ -157,3 +157,85 @@ fn web_search_roundtrip_both_protocols_and_sandbox_network_denial() {
         no_more(&llm_server);
     }
 }
+
+#[cfg(debug_assertions)]
+#[test]
+fn test_web_search_command_runs_live_without_llm_in_configured_and_unavailable_modes() {
+    use super::streaming::LiveCli;
+
+    for with_models in [false, true] {
+        let llm_server = server();
+        let search_server = server();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        write_settings(
+            &root,
+            format!(
+                "rate_limit_retry_budget_seconds: 0\nwebSearch:\n  provider: public\n  searxng:\n    endpoint: http://{}\n",
+                search_server.addr()
+            ),
+        )
+        .unwrap();
+        if with_models {
+            std::fs::write(
+                config_path(&root, "models.yml"),
+                fixture_models(&llm_server),
+            )
+            .unwrap();
+        }
+
+        let search_worker = {
+            let srv = Arc::clone(&search_server);
+            thread::spawn(move || {
+                let req = srv.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+                assert!(req.target().starts_with("/search?"), "{}", req.target());
+                req.respond(
+                    Response::builder()
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(
+                            r#"{"results":[{"title":"Rust Lang","url":"https://www.rust-lang.org/","content":"A systems programming language"}]}"#,
+                        ))
+                        .unwrap(),
+                )
+                .unwrap();
+            })
+        };
+
+        let mut cli = LiveCli::new(Cli::start_env(&root, &root, &[], &[]));
+        cli.input("/test-web-search --provider searxng rust\n/quit\n");
+        let output = cli.finish_within(Duration::from_secs(20));
+        search_worker.join().unwrap();
+        assert!(output.status.success(), "{output:?}");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("tool web_search: running"), "{stderr}");
+        assert!(
+            stderr.contains("web_search: SearXNG (1 result)"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("https://www.rust-lang.org/"), "{stderr}");
+        assert!(stderr.contains("tool web_search: ok"), "{stderr}");
+        no_more(&llm_server);
+        no_more(&search_server);
+        assert!(!config_path(&root, "sessions").exists());
+    }
+
+    // webSearch.enabled: false 时立即报禁用错误，不发任何 HTTP 请求。
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    write_settings(
+        &root,
+        "rate_limit_retry_budget_seconds: 0\nwebSearch:\n  enabled: false\n",
+    )
+    .unwrap();
+    let mut cli = LiveCli::new(Cli::start_env(&root, &root, &[], &[]));
+    cli.input("/test-web-search rust\n/quit\n");
+    let output = cli.finish_within(Duration::from_secs(20));
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("web_search is disabled in settings."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("tool web_search: failed"), "{stderr}");
+}

@@ -43,6 +43,8 @@ mod tool_display;
 mod transcript;
 mod transcript_style;
 mod tree;
+#[cfg(debug_assertions)]
+mod web_search_test;
 mod welcome;
 mod worker_bridge;
 
@@ -408,6 +410,8 @@ enum State {
     /// 本地测试专用运行态；非 dev/test 构建仍保留状态机形状，仅专用命令已编译排除。
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     RunningTools,
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    RunningWebSearch,
     Cancelling,
     Compacting,
     InspectingContext,
@@ -554,6 +558,8 @@ struct App {
     mock_worker: Option<mock_test::Worker>,
     #[cfg(debug_assertions)]
     mock_saved: Option<mock_test::MockUiSnapshot>,
+    #[cfg(debug_assertions)]
+    web_search_worker: Option<web_search_test::Worker>,
     unavailable: Option<String>,
     choices: Vec<ModelChoice>,
     current_model: Option<ModelChoice>,

@@ -41,6 +41,11 @@ impl App {
                 self.finish_mock_test(result, elapsed, finished_at);
                 changed = true;
             }
+            #[cfg(debug_assertions)]
+            WorkerEvent::WebSearchCompleted(result) => {
+                self.finish_test_web_search(result);
+                changed = true;
+            }
 
             WorkerEvent::Completed {
                 result,

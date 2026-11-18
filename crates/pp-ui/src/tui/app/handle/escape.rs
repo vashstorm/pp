@@ -18,6 +18,7 @@ impl App {
                 State::RunningShell
                     | State::Running
                     | State::RunningTools
+                    | State::RunningWebSearch
                     | State::Compacting
                     | State::ReviewingPlan
             )
@@ -27,10 +28,16 @@ impl App {
             self.escape_tap.reset();
             return;
         }
-        if key.kind == KeyEventKind::Press && matches!(self.state, State::RunningShell) {
+        if key.kind == KeyEventKind::Press
+            && matches!(self.state, State::RunningShell | State::RunningWebSearch)
+        {
             if let Some(cancellation) = &self.active_cancellation {
                 cancellation.cancel();
-                self.secondary_status = Some("Cancelling shell...".into());
+                self.secondary_status = Some(if matches!(self.state, State::RunningShell) {
+                    "Cancelling shell...".into()
+                } else {
+                    "Cancelling web search...".into()
+                });
             }
             self.escape_tap.reset();
             return;

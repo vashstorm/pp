@@ -164,6 +164,60 @@ fn bang_shell_cleanup_failure_disables_future_execution() {
     assert!(requests.try_recv().is_err());
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn test_web_search_dispatches_cancels_and_restores_state() {
+    let mut app = app();
+    app.state = State::Ready;
+    let (commands, requests) = mpsc::channel();
+    let (events, receiver) = mpsc::channel();
+    app.commands = Some(commands);
+    app.events = Some(receiver);
+
+    app.input
+        .insert_str("/test-web-search --provider hackernews rust");
+    app.submit(PendingKind::Steering);
+    assert!(matches!(app.state, State::RunningWebSearch));
+    assert_eq!(app.input.lines(), &[""]);
+    let WorkerCommand::TestWebSearch {
+        query,
+        provider,
+        cancellation,
+        ..
+    } = requests.try_recv().unwrap()
+    else {
+        panic!("expected WorkerCommand::TestWebSearch");
+    };
+    assert_eq!(query, "rust");
+    assert_eq!(
+        provider,
+        Some(pp_config::config::WebSearchProvider::Hackernews)
+    );
+
+    // Esc cancels the in-flight diagnostic search without corrupting input.
+    let mut dirty = false;
+    app.input.insert_str("keep-draft");
+    app.handle(key(KeyCode::Esc), &mut dirty);
+    assert!(cancellation.is_cancelled());
+    assert!(matches!(app.state, State::RunningWebSearch));
+
+    events
+        .send(WorkerEvent::WebSearchCompleted(Ok(())))
+        .unwrap();
+    app.receive();
+    assert!(matches!(app.state, State::Ready));
+    assert_eq!(app.input.lines(), &["keep-draft"]);
+    drop(events);
+
+    // Busy states reject /test-web-search and preserve draft.
+    app.state = State::Running;
+    app.input = editor();
+    app.input.insert_str("/test-web-search rust");
+    app.submit(PendingKind::Steering);
+    assert!(requests.try_recv().is_err());
+    assert_eq!(app.input.lines(), &["/test-web-search rust"]);
+}
+
 #[test]
 fn completed_turn_uses_worker_timing_and_preserves_draft() {
     use chrono::TimeZone;

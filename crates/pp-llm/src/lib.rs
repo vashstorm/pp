@@ -458,41 +458,84 @@ impl OpenAiClient {
         allow_external_network: bool,
         cancellation: &CancellationToken,
     ) -> Result<web_search::WebSearchResponse> {
-        if let Some(searxng) = &settings.searxng {
-            if let Some(token) = &searxng.token {
-                pp_core::logging::register_secret(token);
-            }
-            if let Some(password) = &searxng.basic_password {
-                pp_core::logging::register_secret(password);
-            }
-        }
         self.ensure_ready()?;
         if self.search_http.is_none() {
-            self.search_http = Some(
-                reqwest::Client::builder()
-                    .redirect(Policy::limited(5))
-                    .build()
-                    .map_err(|_| anyhow::anyhow!("initializing web search HTTP client failed"))?,
-            );
+            self.search_http = Some(build_search_http_client()?);
         }
         let client = self
             .search_http
             .as_ref()
             .expect("web search HTTP client initialized");
         let runtime = self.runtime.as_ref().expect("runtime initialized");
-        runtime.block_on(async {
-            cancellation
-                .run_until_cancelled(web_search::execute_search(
-                    client,
-                    request,
-                    settings,
-                    allow_external_network,
-                    cancellation,
-                ))
-                .await
-                .unwrap_or_else(|| Err(Cancelled.into()))
-        })
+        run_search_web(
+            client,
+            runtime,
+            request,
+            settings,
+            allow_external_network,
+            cancellation,
+        )
     }
+}
+
+fn build_search_http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(Policy::limited(5))
+        .build()
+        .map_err(|_| anyhow::anyhow!("initializing web search HTTP client failed"))
+}
+
+fn run_search_web(
+    client: &reqwest::Client,
+    runtime: &Runtime,
+    request: &web_search::WebSearchRequest,
+    settings: &pp_config::config::WebSearchSettings,
+    allow_external_network: bool,
+    cancellation: &CancellationToken,
+) -> Result<web_search::WebSearchResponse> {
+    if let Some(searxng) = &settings.searxng {
+        if let Some(token) = &searxng.token {
+            pp_core::logging::register_secret(token);
+        }
+        if let Some(password) = &searxng.basic_password {
+            pp_core::logging::register_secret(password);
+        }
+    }
+    runtime.block_on(async {
+        cancellation
+            .run_until_cancelled(web_search::execute_search(
+                client,
+                request,
+                settings,
+                allow_external_network,
+                cancellation,
+            ))
+            .await
+            .unwrap_or_else(|| Err(Cancelled.into()))
+    })
+}
+
+/// 开发构建专用：无需模型配置直接执行单次同步网页搜索，供 `/test-web-search` 降级路径复用。
+#[cfg(debug_assertions)]
+pub fn search_web_standalone(
+    request: &web_search::WebSearchRequest,
+    settings: &pp_config::config::WebSearchSettings,
+    allow_external_network: bool,
+    cancellation: &CancellationToken,
+) -> Result<web_search::WebSearchResponse> {
+    let client = build_search_http_client()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| anyhow::anyhow!("initializing web search runtime failed"))?;
+    run_search_web(
+        &client,
+        &runtime,
+        request,
+        settings,
+        allow_external_network,
+        cancellation,
+    )
 }
 
 /// Saturates instead of wrapping: an `elapsed_ms` beyond `u64` is far past any

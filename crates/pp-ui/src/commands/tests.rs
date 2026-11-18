@@ -268,7 +268,7 @@ fn slash_extra_arguments_are_local_errors() {
     }
 }
 
-/// 15 个 `/test-*` 命令名：仅含 debug assertions 的构建注册并解析。
+/// 15 个内嵌 mock 场景命令名：仅含 debug assertions 的构建注册并解析。
 const TEST_COMMAND_NAMES: [&str; 15] = [
     "/test-task",
     "/test-ui",
@@ -286,6 +286,52 @@ const TEST_COMMAND_NAMES: [&str; 15] = [
     "/test-ask",
     "/test-fail",
 ];
+
+#[cfg(debug_assertions)]
+#[test]
+fn slash_test_web_search_parses_provider_and_query() {
+    use pp_config::config::WebSearchProvider;
+
+    let files = FileCommands::default();
+    for (input, expected_provider, expected_query) in [
+        ("/test-web-search", None, "rust programming language"),
+        ("/test-web-search rust async", None, "rust async"),
+        (
+            "/test-web-search --provider duckduckgo",
+            Some(WebSearchProvider::Duckduckgo),
+            "rust programming language",
+        ),
+        (
+            " /test-web-search --provider=SearXNG site:rust-lang.org ownership ",
+            Some(WebSearchProvider::Searxng),
+            "site:rust-lang.org ownership",
+        ),
+        (
+            "/test-web-search -- --literal-query",
+            None,
+            "--literal-query",
+        ),
+    ] {
+        assert_eq!(
+            parse(input, &files).unwrap(),
+            Some(Command::TestWebSearch(WebSearchTestCommand {
+                provider: expected_provider,
+                query: expected_query.to_owned(),
+            })),
+            "{input}"
+        );
+    }
+
+    for invalid in [
+        "/test-web-search --provider",
+        "/test-web-search --provider=",
+        "/test-web-search --provider brave rust",
+        "/test-web-search --provider public --provider auto rust",
+        "/test-web-search --unknown rust",
+    ] {
+        assert!(parse(invalid, &files).is_err(), "{invalid}");
+    }
+}
 
 #[cfg(debug_assertions)]
 #[test]
@@ -329,7 +375,11 @@ fn slash_help_lists_debug_only_commands_in_debug_builds() {
     ] {
         assert!(lines.contains(&title), "missing section {title}\n{text}");
     }
-    for name in TEST_COMMAND_NAMES {
+    for name in TEST_COMMAND_NAMES
+        .iter()
+        .copied()
+        .chain(std::iter::once("/test-web-search"))
+    {
         assert_eq!(
             lines
                 .iter()
@@ -406,7 +456,11 @@ fn slash_themes_parses_icons_and_theme_arguments() {
 #[test]
 fn slash_test_commands_are_unknown_without_debug_assertions() {
     let files = FileCommands::default();
-    for name in TEST_COMMAND_NAMES {
+    for name in TEST_COMMAND_NAMES
+        .iter()
+        .copied()
+        .chain(std::iter::once("/test-web-search"))
+    {
         assert_eq!(
             parse(name, &files).unwrap(),
             Some(Command::Unknown),

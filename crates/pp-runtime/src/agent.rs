@@ -25,6 +25,8 @@ mod model_switch;
 mod session_lifecycle;
 mod task_entry;
 mod tool_access;
+#[cfg(debug_assertions)]
+pub use tool_access::run_web_search_standalone;
 mod turn_loop;
 mod usage;
 

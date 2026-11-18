@@ -207,6 +207,10 @@ impl App {
                 _ => {}
             }
         }
+        #[cfg(debug_assertions)]
+        if let Some(Command::TestWebSearch(test)) = &command {
+            return self.submit_test_web_search(test.clone());
+        }
         // `/test-*` 是开发构建的隔离场景：配置不可用时也允许运行，绝不进入模型请求。
         #[cfg(debug_assertions)]
         if let Some(Command::MockTest(test)) = &command {
@@ -499,6 +503,7 @@ impl App {
             | State::Running
             | State::RunningShell
             | State::RunningTools
+            | State::RunningWebSearch
             | State::Cancelling
             | State::Compacting
             | State::InspectingContext
@@ -534,8 +539,8 @@ impl App {
                 Some(Command::Pipes(_)) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 #[cfg(debug_assertions)]
-                Some(Command::MockTest(_)) => {
-                    unreachable!("mock tests handled before the state match")
+                Some(Command::MockTest(_) | Command::TestWebSearch(_)) => {
+                    unreachable!("debug commands handled before the state match")
                 }
                 Some(Command::Think(Some(_))) => {
                     unreachable!("effort handled before the state match")

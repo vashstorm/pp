@@ -7,6 +7,7 @@ fn completion_states() -> impl Iterator<Item = State> {
         State::Running,
         State::RunningShell,
         State::RunningTools,
+        State::RunningWebSearch,
         State::Cancelling,
         State::Compacting,
         State::InspectingContext,

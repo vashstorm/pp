@@ -101,4 +101,99 @@ impl Agent {
             None => Ok(()),
         }
     }
+
+    /// 开发构建专用：不经过大模型直接以当前运行时配置执行一次 `web_search` 诊断。
+    #[cfg(debug_assertions)]
+    pub fn run_web_search(
+        &mut self,
+        query: &str,
+        provider: Option<pp_config::config::WebSearchProvider>,
+        call_id: &str,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) -> Result<()> {
+        execute_web_search_call(
+            &self.tools,
+            query,
+            provider,
+            call_id,
+            cancellation,
+            emit,
+            &mut |action, token| execute_web_action(&mut self.client, action, token),
+        )
+    }
+}
+
+/// 开发构建专用：在无模型配置（`Unavailable`）时按 `settings.yml` 直接运行一次 `web_search`。
+#[cfg(debug_assertions)]
+pub fn run_web_search_standalone(
+    cwd: &std::path::Path,
+    settings_path: Option<&std::path::Path>,
+    query: &str,
+    provider: Option<pp_config::config::WebSearchProvider>,
+    call_id: &str,
+    cancellation: &CancellationToken,
+    emit: &mut dyn FnMut(AgentEvent),
+) -> Result<()> {
+    let resolved_path = match settings_path {
+        Some(path) => path.to_path_buf(),
+        None => pp_config::config::global_dir()?.join("settings.yml"),
+    };
+    let settings = pp_config::config::read_settings(&resolved_path)?;
+    let sandbox = std::sync::Arc::new(pp_sandbox::Sandbox::new(settings.tools.sandbox, cwd));
+    let mut tools = pp_tools::Tools::new(cwd.to_path_buf(), settings.edit)?;
+    tools.configure_web_search(settings.web_search);
+    tools.set_sandbox(sandbox);
+    execute_web_search_call(
+        &tools,
+        query,
+        provider,
+        call_id,
+        cancellation,
+        emit,
+        &mut |action, token| match action {
+            WebAction::Search {
+                request,
+                settings,
+                allow_external,
+            } => pp_llm::search_web_standalone(request, settings, allow_external, token)
+                .map(WebOutcome::Search),
+            WebAction::Read(_) => anyhow::bail!("unexpected URL read response for web_search"),
+        },
+    )
+}
+
+#[cfg(debug_assertions)]
+fn execute_web_search_call(
+    tools: &pp_tools::Tools,
+    query: &str,
+    provider: Option<pp_config::config::WebSearchProvider>,
+    call_id: &str,
+    cancellation: &CancellationToken,
+    emit: &mut dyn FnMut(AgentEvent),
+    web: &mut pp_tools::web_search::WebHandler<'_>,
+) -> Result<()> {
+    let mut args = serde_json::Map::new();
+    args.insert("query".into(), serde_json::Value::String(query.to_owned()));
+    if let Some(provider) = provider {
+        args.insert(
+            "provider".into(),
+            serde_json::Value::String(provider.as_str().to_owned()),
+        );
+    }
+    let arguments = serde_json::Value::Object(args).to_string();
+    let result = tools.execute_with_web(
+        "web_search",
+        &arguments,
+        call_id,
+        pp_tools::ToolPolicy::Review,
+        None,
+        cancellation,
+        emit,
+        web,
+    );
+    match result.stop_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }

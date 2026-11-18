@@ -45,6 +45,16 @@ impl App {
                 })),
             };
         }
+        #[cfg(debug_assertions)]
+        if let Some(worker) = &self.web_search_worker {
+            return match worker.try_recv() {
+                Ok(event) => Some(Ok(event)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Ok(WorkerEvent::WebSearchCompleted(Err(
+                    anyhow::anyhow!("web search diagnostic worker exited without a result"),
+                )))),
+            };
+        }
         None
     }
 
@@ -270,6 +280,8 @@ impl App {
             WorkerEvent::MockPrepared(_) => self.on_run_event(event),
             #[cfg(debug_assertions)]
             WorkerEvent::MockCompleted { .. } => self.on_run_event(event),
+            #[cfg(debug_assertions)]
+            WorkerEvent::WebSearchCompleted(_) => self.on_run_event(event),
             WorkerEvent::SessionStarted(_)
             | WorkerEvent::PipeStoreBound { .. }
             | WorkerEvent::ContextInspected(_)

@@ -206,6 +206,120 @@ pub(crate) fn run_cli_shell(
     result
 }
 
+#[cfg(debug_assertions)]
+pub(crate) fn run_cli_web_search(
+    agent: &mut agent::Agent,
+    query: &str,
+    provider: Option<pp_config::config::WebSearchProvider>,
+    stderr: &mut impl Write,
+) -> Result<()> {
+    let token = cancellation::CancellationToken::new();
+    run_cli_web_search_with(stderr, |emit| {
+        agent.run_web_search(query, provider, "test-web-search-cli", &token, emit)
+    })
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn run_cli_web_search_standalone(
+    query: &str,
+    provider: Option<pp_config::config::WebSearchProvider>,
+    stderr: &mut impl Write,
+) -> Result<()> {
+    let cwd = std::env::current_dir().context("determining current directory")?;
+    let token = cancellation::CancellationToken::new();
+    run_cli_web_search_with(stderr, |emit| {
+        agent::run_web_search_standalone(
+            &cwd,
+            None,
+            query,
+            provider,
+            "test-web-search-cli",
+            &token,
+            emit,
+        )
+    })
+}
+
+#[cfg(debug_assertions)]
+fn run_cli_web_search_with(
+    stderr: &mut impl Write,
+    run: impl FnOnce(&mut dyn FnMut(events::AgentEvent)) -> Result<()>,
+) -> Result<()> {
+    use events::AgentEvent;
+    let mut broken = false;
+    let mut first_error = None;
+    let mut emit = |event: AgentEvent| match event {
+        AgentEvent::ToolStarted { .. } => cli_write(
+            stderr,
+            "tool web_search: running\n",
+            &mut broken,
+            &mut first_error,
+        ),
+        AgentEvent::ToolFinished { result, .. } => {
+            if result["ok"] == true {
+                if let (Some(provider), Some(count)) = (
+                    result["provider_label"]
+                        .as_str()
+                        .or_else(|| result["provider"].as_str()),
+                    result["details"]["source_count"].as_u64(),
+                ) {
+                    let noun = if count == 1 { "result" } else { "results" };
+                    cli_write(
+                        stderr,
+                        &format!("web_search: {provider} ({count} {noun})\n"),
+                        &mut broken,
+                        &mut first_error,
+                    );
+                }
+                if let Some(content) = result["content"].as_str()
+                    && !content.is_empty()
+                {
+                    cli_write(
+                        stderr,
+                        &format!("{}\n", pp_core::text::display_text(content)),
+                        &mut broken,
+                        &mut first_error,
+                    );
+                }
+                cli_write(
+                    stderr,
+                    "tool web_search: ok\n",
+                    &mut broken,
+                    &mut first_error,
+                );
+            } else {
+                if let Some(error) = result["error"].as_str() {
+                    cli_write(
+                        stderr,
+                        &format!("{}\n", pp_core::text::display_text(error)),
+                        &mut broken,
+                        &mut first_error,
+                    );
+                }
+                cli_write(
+                    stderr,
+                    "tool web_search: failed\n",
+                    &mut broken,
+                    &mut first_error,
+                );
+            }
+        }
+        _ => {}
+    };
+    let result = run(&mut emit);
+    if result.as_ref().is_err_and(|error| {
+        error
+            .chain()
+            .any(|cause| cause.is::<cancellation::CleanupError>())
+    }) {
+        return result;
+    }
+    if let Some(error) = first_error {
+        return Err(error).context("writing web_search output");
+    }
+    result
+}
+
 pub(crate) fn cli_context_event(
     event: events::AgentEvent,
     usage: &mut Option<context::ContextUsage>,

@@ -162,6 +162,7 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 | `/test-task` | Dev/test only: run three real FAST/SLOW/REVIEW subagents against independent local mock lanes; no user roles or provider required |
 | `/test-tools`, `/test-read`, `/test-edit`, `/test-rg`, `/test-glob`, `/test-bash`, `/test-bash-task`, `/test-wait`, `/test-todo`, `/test-ask` | Dev/test only: all or one isolated real-tool scenario; edit covers replace and hashline; ask is interactive in the TUI |
 | `/test-eval-py` | Dev/test only: isolated Python `eval` scenario covering live streaming stdout/stderr, persistent kernel state, nested tool bridge, expected error, and `reset: true` |
+| `/test-web-search [--provider PROVIDER] [QUERY]` | Dev/test only: run a live `web_search` request directly using current `webSearch` settings (or a specified provider) without invoking an LLM |
 | `/test-write` | Dev/test only: typewriter reply at 12.5 mock tokens/s; the two writes of a 24/28-line `/tmp/pp-test-write/demo.txt` stream at 240 mock tokens/s so the write preview scrolls its tail, then an escape failure and bash cleanup |
 | `/test-ui` | Dev/test only: native Responses SSE reasoning and Markdown/code chunks at 12.5 mock tokens/s |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | Manage MCP servers without restarting |

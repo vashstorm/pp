@@ -80,6 +80,8 @@ pub(crate) const SECTIONS: &[Section] = &[
             #[cfg(debug_assertions)]
             tip("/test-wait", "debug wait tool"),
             #[cfg(debug_assertions)]
+            tip("/test-web-search", "debug web search"),
+            #[cfg(debug_assertions)]
             tip("/test-write", "debug write stream"),
             tip("/stats", "open statistics"),
             tip("/themes", "set theme & icons"),

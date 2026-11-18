@@ -368,6 +368,15 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         usage: "/test-ui",
         description: "Debug build: slow mock thinking and Markdown stream",
     },
+    #[cfg(debug_assertions)]
+    CommandSpec {
+        name: "/test-web-search",
+        display_label: None,
+        aliases: &[],
+        category: CommandCategory::Debug,
+        usage: "/test-web-search [--provider PROVIDER] [QUERY]",
+        description: "Debug build: run a live web_search with current settings",
+    },
     CommandSpec {
         name: "/skills",
         display_label: None,
@@ -415,6 +424,13 @@ pub(crate) enum SettingTab {
     Skills,
 }
 
+#[cfg(debug_assertions)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WebSearchTestCommand {
+    pub(crate) provider: Option<pp_config::config::WebSearchProvider>,
+    pub(crate) query: String,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
     Help,
@@ -433,6 +449,8 @@ pub(crate) enum Command<'a> {
     Themes(ThemeCommand),
     #[cfg(debug_assertions)]
     MockTest(MockTest),
+    #[cfg(debug_assertions)]
+    TestWebSearch(WebSearchTestCommand),
     Login,
     Logout,
     Plan(PlanCommand<'a>),
@@ -467,6 +485,12 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
     if let Some(test) = MockTest::ALL.into_iter().find(|test| test.name() == name) {
         ensure!(argument.is_empty(), "usage: {name}");
         return Ok(Some(Command::MockTest(test)));
+    }
+    #[cfg(debug_assertions)]
+    if name == "/test-web-search" {
+        return Ok(Some(Command::TestWebSearch(parse_test_web_search(
+            argument,
+        )?)));
     }
     let command = match name {
         "/help" => Command::Help,
@@ -729,6 +753,65 @@ pub(crate) fn help(files: &FileCommands) -> String {
         }
     }
     lines.join("\n")
+}
+
+#[cfg(debug_assertions)]
+const TEST_WEB_SEARCH_DEFAULT_QUERY: &str = "rust programming language";
+#[cfg(debug_assertions)]
+const TEST_WEB_SEARCH_USAGE: &str = "usage: /test-web-search [--provider auto|public|duckduckgo|startpage|hackernews|searxng] [QUERY]";
+
+#[cfg(debug_assertions)]
+fn parse_web_search_provider(value: &str) -> Result<pp_config::config::WebSearchProvider> {
+    let trimmed = value.trim();
+    pp_config::config::WebSearchProvider::ALL
+        .into_iter()
+        .find(|provider| provider.as_str().eq_ignore_ascii_case(trimmed))
+        .with_context(|| {
+            format!(
+                "unknown web_search provider '{trimmed}'; use auto, public, duckduckgo, startpage, hackernews, or searxng"
+            )
+        })
+}
+
+#[cfg(debug_assertions)]
+fn parse_test_web_search(argument: &str) -> Result<WebSearchTestCommand> {
+    let mut rest = argument.trim();
+    let mut provider = None;
+    while let Some(after) = rest.strip_prefix("--") {
+        if after.is_empty() {
+            rest = "";
+            break;
+        }
+        if let Some(tail) = after.strip_prefix(char::is_whitespace) {
+            rest = tail.trim_start();
+            break;
+        }
+        let (flag, next_rest) = rest
+            .split_once(char::is_whitespace)
+            .map_or((rest, ""), |(head, tail)| (head, tail.trim_start()));
+        if let Some(value) = flag.strip_prefix("--provider=") {
+            ensure!(provider.is_none(), "{TEST_WEB_SEARCH_USAGE}");
+            ensure!(!value.is_empty(), "{TEST_WEB_SEARCH_USAGE}");
+            provider = Some(parse_web_search_provider(value)?);
+            rest = next_rest;
+        } else if flag == "--provider" {
+            ensure!(provider.is_none(), "{TEST_WEB_SEARCH_USAGE}");
+            let (value, tail) = next_rest
+                .split_once(char::is_whitespace)
+                .map_or((next_rest, ""), |(head, tail)| (head, tail.trim_start()));
+            ensure!(!value.is_empty(), "{TEST_WEB_SEARCH_USAGE}");
+            provider = Some(parse_web_search_provider(value)?);
+            rest = tail;
+        } else {
+            bail!("{TEST_WEB_SEARCH_USAGE}");
+        }
+    }
+    let query = if rest.is_empty() {
+        TEST_WEB_SEARCH_DEFAULT_QUERY.to_owned()
+    } else {
+        rest.to_owned()
+    };
+    Ok(WebSearchTestCommand { provider, query })
 }
 
 #[cfg(test)]

@@ -96,6 +96,8 @@ impl App {
             mock_worker: None,
             #[cfg(debug_assertions)]
             mock_saved: None,
+            #[cfg(debug_assertions)]
+            web_search_worker: None,
             unavailable: None,
             choices: Vec::new(),
             current_model: None,
@@ -341,6 +343,34 @@ impl App {
                                     .any(|cause| cause.is::<pp_core::cancellation::CleanupError>())
                             });
                             if sender.send(WorkerEvent::ShellCompleted(result)).is_err()
+                                || cleanup_failed
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+                        #[cfg(debug_assertions)]
+                        WorkerCommand::TestWebSearch {
+                            query,
+                            provider,
+                            call_id,
+                            cancellation,
+                        } => {
+                            let result = agent.run_web_search(
+                                &query,
+                                provider,
+                                &call_id,
+                                &cancellation,
+                                &mut emit,
+                            );
+                            let cleanup_failed = result.as_ref().is_err_and(|error| {
+                                error
+                                    .chain()
+                                    .any(|cause| cause.is::<pp_core::cancellation::CleanupError>())
+                            });
+                            if sender
+                                .send(WorkerEvent::WebSearchCompleted(result))
+                                .is_err()
                                 || cleanup_failed
                             {
                                 break;

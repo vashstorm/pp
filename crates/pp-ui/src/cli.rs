@@ -13,6 +13,8 @@ pub use banner::write_resume_hint;
 use banner::{CLI_IDLE_TICK, CliInput, cli_input_lines};
 use events::{cli_write, run_cli_compaction, run_cli_shell};
 #[cfg(debug_assertions)]
+use events::{run_cli_web_search, run_cli_web_search_standalone};
+#[cfg(debug_assertions)]
 pub use execution::run_cli_mock_test;
 pub use execution::run_cli_task;
 use pipes::cli_pipes_list;
@@ -338,6 +340,23 @@ pub fn run_line_mode(
             }
             _ => {}
         }
+        #[cfg(debug_assertions)]
+        if let Some(commands::Command::TestWebSearch(cmd)) = &command {
+            let result = match &mut agent {
+                Ok(active) => run_cli_web_search(active, &cmd.query, cmd.provider, &mut stderr),
+                Err(_) => run_cli_web_search_standalone(&cmd.query, cmd.provider, &mut stderr),
+            };
+            if let Err(error) = result {
+                if error
+                    .chain()
+                    .any(|cause| cause.is::<cancellation::CleanupError>())
+                {
+                    return stop_cli_lsp(agent.as_ref().ok(), Err(error));
+                }
+                writeln!(stderr, "error: {error:#}")?;
+            }
+            continue;
+        }
         // `/test-*` 不依赖真实配置：启动失败时仍使用内嵌 mock server。
         #[cfg(debug_assertions)]
         if let Some(commands::Command::MockTest(test)) = &command {
@@ -470,7 +489,9 @@ pub fn run_line_mode(
             ) => unreachable!(),
             Some(commands::Command::Unknown) => unreachable!(),
             #[cfg(debug_assertions)]
-            Some(commands::Command::MockTest(_)) => unreachable!(),
+            Some(commands::Command::MockTest(_) | commands::Command::TestWebSearch(_)) => {
+                unreachable!()
+            }
             Some(commands::Command::Prompt(prompt)) => {
                 if let Err(error) = run_cli_task(agent, Some(&prompt), &mut stdout, &mut stderr) {
                     writeln!(stderr, "error: {error:#}")?;

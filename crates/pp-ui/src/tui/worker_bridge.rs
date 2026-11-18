@@ -36,6 +36,13 @@ pub(super) enum WorkerCommand {
         call_id: String,
         cancellation: CancellationToken,
     },
+    #[cfg(debug_assertions)]
+    TestWebSearch {
+        query: String,
+        provider: Option<pp_config::config::WebSearchProvider>,
+        call_id: String,
+        cancellation: CancellationToken,
+    },
     RunInput {
         prepared: pp_runtime::user_input::UserInput,
         cancellation: CancellationToken,
@@ -141,6 +148,8 @@ pub(super) enum WorkerEvent {
     },
     Progress(AgentEvent),
     ShellCompleted(Result<()>),
+    #[cfg(debug_assertions)]
+    WebSearchCompleted(Result<()>),
     #[cfg(debug_assertions)]
     MockPrepared(pp_mock_ai::MockTestSnapshot),
     #[cfg(debug_assertions)]

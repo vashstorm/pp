@@ -174,3 +174,51 @@ fn tui_mock_eval_py_streams_running_state_and_returns_to_unavailable() {
     pty.finish();
     assert!(mock_tui_session_jsonl(home.path()).is_empty());
 }
+
+#[cfg(debug_assertions)]
+#[test]
+fn tui_test_web_search_runs_without_models_and_renders_card() {
+    let search_server = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    write_settings(
+        home.path(),
+        format!(
+            "rate_limit_retry_budget_seconds: 0\nwebSearch:\n  provider: searxng\n  searxng:\n    endpoint: http://{}\n",
+            search_server.addr()
+        ),
+    )
+    .unwrap();
+
+    let search_worker = {
+        let srv = Arc::clone(&search_server);
+        thread::spawn(move || {
+            let req = srv.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+            assert!(req.target().starts_with("/search?"), "{}", req.target());
+            req.respond(
+                Response::builder()
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(
+                        r#"{"results":[{"title":"Rust Lang","url":"https://www.rust-lang.org/","content":"A systems programming language"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .unwrap();
+        })
+    };
+
+    let mut pty = mock_tui_empty_start(home.path(), project.path());
+    pty.resize(40, 110);
+    pty.input("/test-web-search rust\r");
+    pty.wait_for("web_search card renders result from loopback SearXNG", |screen| {
+        let text = screen.contents();
+        text.contains("Web Search: rust · SearXNG · 1 result")
+            && text.contains("https://www.rust-lang.org/")
+    });
+    search_worker.join().unwrap();
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    assert!(mock_tui_session_jsonl(home.path()).is_empty());
+    no_more(&search_server);
+}
