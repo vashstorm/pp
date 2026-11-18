@@ -7,7 +7,7 @@ impl Tools {
         &self,
         arguments: &str,
         cancellation: &CancellationToken,
-        fetch: &mut read::Fetch<'_>,
+        web: &mut web_search::WebHandler<'_>,
         images: &mut Vec<read::ToolImage>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let args: ReadArgs = serde_json::from_str(arguments).context("invalid read arguments")?;
@@ -52,6 +52,15 @@ impl Tools {
             self.sandbox.check_read(&local)?;
         }
         self.activate_read_instructions(&args.path)?;
+        let mut fetch = |url: &str, token: &CancellationToken| match web(
+            web_search::WebAction::Read(url),
+            token,
+        )? {
+            web_search::WebOutcome::Read(resp) => Ok(resp),
+            web_search::WebOutcome::Search(_) => {
+                anyhow::bail!("unexpected web_search response for URL read")
+            }
+        };
         let result = read::run_with_snapshots(
             &args.path,
             &self.cwd,
@@ -60,7 +69,7 @@ impl Tools {
             &self.skills,
             &mut self.web_cache.borrow_mut(),
             Some((&self.workspace, &mut self.snapshots.borrow_mut())),
-            fetch,
+            &mut fetch,
             cancellation,
         )?;
         images.extend(result.images);

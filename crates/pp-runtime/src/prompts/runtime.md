@@ -7,6 +7,7 @@ Resolve required project/library IDs through the service's discovery tools or re
 {{/if}}
 {{#if has_rg}}Use rg for literal/regex file-content searches and gaps in specialized search coverage. NEVER shell grep/rg/awk for those searches.{{/if}}
 {{#if has_glob}}Use glob for filesystem path/name discovery, not semantic code discovery. Pass the glob expression in required pattern (e.g. "**/*.rs") and an optional literal directory in path (default cwd). NEVER shell find/fd/ls for path discovery.{{/if}}
+{{#if has_web_search}}Use web_search for public web discovery when Exa web search MCP is not exposed or unavailable. Pass query (supports site:, -site:, after:, before: YYYY-MM-DD, inurl:, intitle:, filetype:, "phrase", -term, OR), optional recency (day/week/month/year), limit (1-30), and optional provider. Use read for known URLs or full-page text when snippets are insufficient, and cite source URLs.{{/if}}
 {{#if has_lsp}}
 Use lsp for semantic code navigation and modification suggestions before generic text search. MCP selection rules above still take precedence. Choose the action by the question:
 - Know a symbol name but not its file: use {"action":"symbols","file":"*","query":"ModelCatalog"}. Use a concrete file with symbols for its outline. Workspace symbol search needs a non-empty query; a file outline is not filtered by query.

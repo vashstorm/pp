@@ -160,7 +160,7 @@ struct State {
 type Validator = dyn Fn(&mut Spec) -> Result<()> + Send + Sync;
 type Factory = dyn Fn(&Record, Binding) -> Result<Agent> + Send + Sync;
 pub(crate) fn is_read_only_child_tool(name: &str, mcp: impl FnOnce(&str) -> bool) -> bool {
-    matches!(name, "read" | "rg" | "glob" | "lsp") || mcp(name)
+    matches!(name, "read" | "rg" | "glob" | "web_search" | "lsp") || mcp(name)
 }
 
 #[derive(Default)]

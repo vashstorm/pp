@@ -242,3 +242,42 @@ fn glob_card_groups_paths_and_replays_without_changing_results() {
         assert!(entry_text(&mut transcript.entries[0], 56).contains("界面.rs"));
     }
 }
+
+#[test]
+fn web_search_card_renders_header_colors_and_truncation() {
+    let mut transcript = Transcript::new();
+    transcript.progress(AgentEvent::ToolStarted {
+        id: "ws".into(),
+        name: "web_search".into(),
+        arguments: json!({"query": "rust 1.88", "provider": "public"}).to_string(),
+    });
+    let running = screen(&render(&mut transcript, 90, 8));
+    assert!(
+        running.contains("Web Search: rust 1.88 · public · running"),
+        "{running}"
+    );
+
+    let content = (1..=6)
+        .map(|i| format!("[{i}] Title {i}\n    https://example.com/{i}\n    Snippet {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    transcript.progress(AgentEvent::ToolFinished {
+        id: "ws".into(),
+        result: json!({
+            "ok": true,
+            "provider": "public",
+            "provider_label": "Public Web",
+            "content": content,
+            "details": {"source_count": 6}
+        }),
+    });
+    let buffer = render(&mut transcript, 90, 14);
+    let done = screen(&buffer);
+    assert!(
+        done.contains("Web Search: rust 1.88 · Public Web · 6 results"),
+        "{done}"
+    );
+    assert!(done.contains("[1] Title 1"), "{done}");
+    assert!(done.contains("https://example.com/1"), "{done}");
+    assert!(done.contains("more lines (Ctrl + O to expand)"), "{done}");
+}

@@ -288,6 +288,8 @@ impl TranscriptEntry {
             lines.extend(
                 if view.name == "rg" {
                     tool_display::rg_header(&view, width)
+                } else if view.name == "web_search" {
+                    tool_display::web_search_header(&view, width)
                 } else {
                     tool_display::glob_header(&view, width)
                 }

@@ -535,7 +535,7 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
         assert!(
             spec.tools
                 .iter()
-                .all(|name| matches!(name.as_str(), "read" | "rg" | "glob" | "lsp"))
+                .all(|name| matches!(name.as_str(), "read" | "rg" | "glob" | "web_search" | "lsp"))
         );
     }
 }

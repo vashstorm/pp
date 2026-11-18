@@ -169,7 +169,7 @@ fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
                 };
                 assert!(matches!(
                     name.as_str(),
-                    Some("read" | "rg" | "glob" | "lsp")
+                    Some("read" | "rg" | "glob" | "web_search" | "lsp")
                 ));
             }
             final_for(protocol, request, "investigation complete", true);

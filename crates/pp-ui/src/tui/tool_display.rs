@@ -21,9 +21,9 @@ mod wait;
 pub(super) use wait::render as wait_body;
 mod write;
 
-use self::search::{glob_body, plan_search, rg_body};
+use self::search::{glob_body, plan_search, rg_body, web_search_body};
 use self::todo::todo_body;
-pub(super) use search::{glob_header, rg_header};
+pub(super) use search::{glob_header, rg_header, web_search_header};
 pub(super) use todo::{
     todo_checklist, todo_phase_line, todo_phase_prefix, todo_task_prefix, todo_task_styles,
 };
@@ -185,6 +185,9 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
     if view.name == "glob" {
         return glob_body(&view, width);
+    }
+    if view.name == "web_search" {
+        return web_search_body(&view, width);
     }
     if view.context.full && !matches!(view.name, "bash" | "bash_task" | "eval") {
         let text = if view.name == "write" && !view.failed {

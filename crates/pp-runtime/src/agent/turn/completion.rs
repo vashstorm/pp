@@ -238,7 +238,7 @@ pub(in crate::agent) fn completion_turn(
                         call: prepared,
                     })
                 });
-                tools.execute_with_fetch(
+                tools.execute_with_web(
                     &call.function.name,
                     &call.function.arguments,
                     &call.id,
@@ -246,7 +246,9 @@ pub(in crate::agent) fn completion_turn(
                     hook.as_ref().map(|h| h as &dyn pp_tools::ToolHookCall),
                     cancellation,
                     &mut progress,
-                    &mut |url, token| client.fetch_read_url(url, token),
+                    &mut |action, token| {
+                        crate::agent::tool_access::execute_web_action(client, action, token)
+                    },
                 )
             };
             // 结果字符数取最终回填模型的文本：post hook 可能已改写正文。

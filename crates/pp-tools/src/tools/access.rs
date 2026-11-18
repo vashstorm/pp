@@ -69,7 +69,16 @@ impl Tools {
             host_defaults: pp_workspace::host_defaults::current(),
             pipe_store: PipeStore::new(),
             sandbox: std::sync::Arc::new(pp_sandbox::Sandbox::disabled()),
+            web_search: pp_config::config::WebSearchSettings::default(),
         })
+    }
+
+    pub fn configure_web_search(&mut self, settings: pp_config::config::WebSearchSettings) {
+        self.web_search = settings;
+    }
+
+    pub fn web_search_settings(&self) -> &pp_config::config::WebSearchSettings {
+        &self.web_search
     }
 
     pub fn set_sandbox(&mut self, sandbox: std::sync::Arc<pp_sandbox::Sandbox>) {
@@ -271,6 +280,9 @@ impl Tools {
         }
         if name == "eval" && !self.eval_enabled {
             bail!("eval is disabled in settings.");
+        }
+        if name == "web_search" && !self.web_search.enabled {
+            bail!("web_search is disabled in settings.");
         }
         // 未安装（enabled=false 或 Agent 未初始化 LSP）时显式调用直接失败，
         // 既不进入审批也不尝试发现服务器。

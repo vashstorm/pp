@@ -246,7 +246,7 @@ pub(super) fn tool_accent(name: &str) -> Color {
     let p = themes::palette();
     match name {
         "read" => p.read_title,
-        "rg" | "plan_search" => p.search_title,
+        "rg" | "plan_search" | "web_search" => p.search_title,
         "find" | "glob" | "plan_find" => p.glob_title,
         "edit" => p.edit_title,
         "write" => p.write_title,
@@ -270,6 +270,7 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "bash_task" => "\u{f08d6}",
             "eval" => "\u{f0169}",
             "rg" => "\u{f002}",
+            "web_search" => "\u{f059f}",
             "find" | "glob" => "\u{f024b}",
             "ask" => "\u{f02d7}",
             "plan_search" => "\u{f0232}",
@@ -286,6 +287,7 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "bash_task" => "&",
             "eval" => "E",
             "rg" => "/",
+            "web_search" => "S",
             "find" | "glob" => "*",
             "ask" => "?",
             "plan_search" => "/",

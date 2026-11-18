@@ -21,6 +21,7 @@ pub(crate) mod parse;
 mod responses;
 pub mod retry;
 mod streaming;
+pub mod web_search;
 
 use retry::retry_after_code;
 
@@ -42,6 +43,7 @@ pub struct OpenAiClient {
     client: Client<OpenAIConfig>,
     runtime: Option<Runtime>,
     read_http: Option<reqwest::Client>,
+    search_http: Option<reqwest::Client>,
     request_timeout: Duration,
     rate_limit_retry_budget: Duration,
     stats_context: Option<pp_stats::RequestContext>,
@@ -223,6 +225,7 @@ impl OpenAiClient {
             client,
             runtime: Some(runtime),
             read_http: None,
+            search_http: None,
             request_timeout,
             rate_limit_retry_budget,
             stats_context: None,
@@ -367,6 +370,7 @@ impl OpenAiClient {
     /// next request rebuilds everything lazily via `ensure_ready`.
     pub fn cancel_pending_io(&mut self) {
         self.read_http = None;
+        self.search_http = None;
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
@@ -441,6 +445,50 @@ impl OpenAiClient {
             };
             cancellation
                 .run_until_cancelled(fetch)
+                .await
+                .unwrap_or_else(|| Err(Cancelled.into()))
+        })
+    }
+
+    /// 网页搜索使用独立连接池，不携带模型认证头；在 current-thread runtime 内执行并发搜索与软硬超时。
+    pub fn search_web(
+        &mut self,
+        request: &web_search::WebSearchRequest,
+        settings: &pp_config::config::WebSearchSettings,
+        allow_external_network: bool,
+        cancellation: &CancellationToken,
+    ) -> Result<web_search::WebSearchResponse> {
+        if let Some(searxng) = &settings.searxng {
+            if let Some(token) = &searxng.token {
+                pp_core::logging::register_secret(token);
+            }
+            if let Some(password) = &searxng.basic_password {
+                pp_core::logging::register_secret(password);
+            }
+        }
+        self.ensure_ready()?;
+        if self.search_http.is_none() {
+            self.search_http = Some(
+                reqwest::Client::builder()
+                    .redirect(Policy::limited(5))
+                    .build()
+                    .map_err(|_| anyhow::anyhow!("initializing web search HTTP client failed"))?,
+            );
+        }
+        let client = self
+            .search_http
+            .as_ref()
+            .expect("web search HTTP client initialized");
+        let runtime = self.runtime.as_ref().expect("runtime initialized");
+        runtime.block_on(async {
+            cancellation
+                .run_until_cancelled(web_search::execute_search(
+                    client,
+                    request,
+                    settings,
+                    allow_external_network,
+                    cancellation,
+                ))
                 .await
                 .unwrap_or_else(|| Err(Cancelled.into()))
         })

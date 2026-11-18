@@ -9,6 +9,7 @@ mod edit_tool;
 mod eval_tool;
 mod read_tool;
 mod subagent;
+mod web_search_tool;
 mod write;
 
 use super::*;

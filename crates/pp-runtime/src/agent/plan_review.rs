@@ -271,7 +271,7 @@ impl Agent {
             else {
                 bail!("plan review invariant: missing function call");
             };
-            let execution = self.tools.execute_with_fetch(
+            let execution = self.tools.execute_with_web(
                 &call.function.name,
                 &call.function.arguments,
                 &call.id,
@@ -279,7 +279,7 @@ impl Agent {
                 None,
                 cancellation,
                 emit,
-                &mut |url, token| client.fetch_read_url(url, token),
+                &mut |action, token| super::tool_access::execute_web_action(client, action, token),
             );
             if stop_error.is_none() {
                 stop_error = execution.stop_error;
@@ -334,7 +334,7 @@ impl Agent {
             let InputItem::Item(Item::FunctionCall(call)) = &input[index] else {
                 continue;
             };
-            let execution = self.tools.execute_with_fetch(
+            let execution = self.tools.execute_with_web(
                 &call.name,
                 &call.arguments,
                 &call.call_id,
@@ -342,7 +342,7 @@ impl Agent {
                 None,
                 cancellation,
                 emit,
-                &mut |url, token| client.fetch_read_url(url, token),
+                &mut |action, token| super::tool_access::execute_web_action(client, action, token),
             );
             if stop_error.is_none() {
                 stop_error = execution.stop_error;

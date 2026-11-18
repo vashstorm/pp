@@ -123,6 +123,7 @@ impl Binding {
                     "read",
                     "rg",
                     "glob",
+                    "web_search",
                     "lsp",
                     "edit",
                     "write",

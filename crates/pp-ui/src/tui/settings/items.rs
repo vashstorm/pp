@@ -2,6 +2,7 @@
 use anyhow::{Context, Result, ensure};
 use pp_config::config::{
     ApprovalMode, CostDisplay, EditMode, SandboxMode, SettingPatch, Settings, StatsStyle,
+    WebSearchProvider,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +44,7 @@ pub(super) enum ValueKind {
     EditMode,
     ApprovalMode,
     SandboxMode,
+    WebSearchProvider,
     StatsStyle,
     Currency,
     Int {
@@ -65,6 +67,10 @@ pub(super) enum SettingId {
     BashTimeoutSeconds,
     RgContextBefore,
     RgContextAfter,
+    WebSearchEnabled,
+    WebSearchProvider,
+    WebSearchKeyless,
+    WebSearchTimeoutSeconds,
     AutoCompact,
     AutoCompactThresholdPercent,
     RequestTimeoutSeconds,
@@ -106,6 +112,12 @@ impl SettingItem {
             SettingId::BashTimeoutSeconds => format!("{}s", settings.bash_timeout_seconds),
             SettingId::RgContextBefore => settings.rg.context_before.to_string(),
             SettingId::RgContextAfter => settings.rg.context_after.to_string(),
+            SettingId::WebSearchEnabled => bool_label(settings.web_search.enabled),
+            SettingId::WebSearchProvider => settings.web_search.provider.as_str().to_owned(),
+            SettingId::WebSearchKeyless => bool_label(settings.web_search.keyless),
+            SettingId::WebSearchTimeoutSeconds => {
+                format!("{}s", settings.web_search.timeout_seconds)
+            }
             SettingId::AutoCompact => bool_label(settings.auto_compact),
             SettingId::AutoCompactThresholdPercent => {
                 format!("{}%", settings.auto_compact_threshold_percent)
@@ -141,6 +153,7 @@ impl SettingItem {
             SettingId::BashTimeoutSeconds => settings.bash_timeout_seconds.to_string(),
             SettingId::RgContextBefore => settings.rg.context_before.to_string(),
             SettingId::RgContextAfter => settings.rg.context_after.to_string(),
+            SettingId::WebSearchTimeoutSeconds => settings.web_search.timeout_seconds.to_string(),
             SettingId::AutoCompactThresholdPercent => {
                 settings.auto_compact_threshold_percent.to_string()
             }
@@ -166,6 +179,7 @@ impl SettingItem {
             SettingId::BashTimeoutSeconds => settings.bash_timeout_seconds as i128,
             SettingId::RgContextBefore => settings.rg.context_before as i128,
             SettingId::RgContextAfter => settings.rg.context_after as i128,
+            SettingId::WebSearchTimeoutSeconds => settings.web_search.timeout_seconds as i128,
             SettingId::AutoCompactThresholdPercent => {
                 i128::from(settings.auto_compact_threshold_percent)
             }
@@ -206,6 +220,9 @@ impl SettingItem {
             SettingId::RgContextAfter => {
                 SettingPatch::RgContextAfter(usize::try_from(value).context("value too large")?)
             }
+            SettingId::WebSearchTimeoutSeconds => SettingPatch::WebSearchTimeoutSeconds(
+                u64::try_from(value).context("value too large")?,
+            ),
             SettingId::AutoCompactThresholdPercent => SettingPatch::AutoCompactThresholdPercent(
                 u8::try_from(value).context("value out of range")?,
             ),
@@ -240,6 +257,12 @@ impl SettingItem {
     pub(super) fn step_or_cycle(&self, settings: &Settings, forward: bool) -> Result<SettingPatch> {
         match self.kind {
             ValueKind::Bool => Ok(match self.id {
+                SettingId::WebSearchEnabled => {
+                    SettingPatch::WebSearchEnabled(!settings.web_search.enabled)
+                }
+                SettingId::WebSearchKeyless => {
+                    SettingPatch::WebSearchKeyless(!settings.web_search.keyless)
+                }
                 SettingId::AutoCompact => SettingPatch::AutoCompact(!settings.auto_compact),
                 SettingId::LspEnabled => SettingPatch::LspEnabled(!settings.lsp.enabled),
                 SettingId::LspLazy => SettingPatch::LspLazy(!settings.lsp.lazy),
@@ -288,6 +311,19 @@ impl SettingItem {
                     (idx + modes.len() - 1) % modes.len()
                 };
                 Ok(SettingPatch::SandboxMode(modes[next]))
+            }
+            ValueKind::WebSearchProvider => {
+                let providers = WebSearchProvider::ALL;
+                let idx = providers
+                    .iter()
+                    .position(|provider| *provider == settings.web_search.provider)
+                    .unwrap_or(0);
+                let next = if forward {
+                    (idx + 1) % providers.len()
+                } else {
+                    (idx + providers.len() - 1) % providers.len()
+                };
+                Ok(SettingPatch::WebSearchProvider(providers[next]))
             }
             ValueKind::StatsStyle => Ok(SettingPatch::StatsStyle(match settings.stats.style {
                 StatsStyle::Default => StatsStyle::Modern,
@@ -441,6 +477,42 @@ pub(super) const ITEMS: &[SettingItem] = &[
             step: 1,
             min: 0,
             max: None,
+        },
+    },
+    SettingItem {
+        id: SettingId::WebSearchEnabled,
+        category: Category::EditingTools,
+        key: "webSearch.enabled",
+        label: "Web search",
+        description: "Expose built-in web_search tool for public web discovery; applies live",
+        kind: ValueKind::Bool,
+    },
+    SettingItem {
+        id: SettingId::WebSearchProvider,
+        category: Category::EditingTools,
+        key: "webSearch.provider",
+        label: "Search provider",
+        description: "Default backend: auto, public, duckduckgo, startpage, hackernews, or searxng; applies live",
+        kind: ValueKind::WebSearchProvider,
+    },
+    SettingItem {
+        id: SettingId::WebSearchKeyless,
+        category: Category::EditingTools,
+        key: "webSearch.keyless",
+        label: "Keyless search",
+        description: "Allow credential-free public engines (Startpage/DuckDuckGo/HN); applies live",
+        kind: ValueKind::Bool,
+    },
+    SettingItem {
+        id: SettingId::WebSearchTimeoutSeconds,
+        category: Category::EditingTools,
+        key: "webSearch.timeoutSeconds",
+        label: "Search timeout (s)",
+        description: "Hard timeout per web_search request (1..=300s); applies live",
+        kind: ValueKind::Int {
+            step: 10,
+            min: 1,
+            max: Some(300),
         },
     },
     // Context & Model

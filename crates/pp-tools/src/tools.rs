@@ -57,6 +57,7 @@ use stream::{PIPE_CHUNK_SIZE, drain_pipe};
 pub mod todo;
 mod todo_route;
 pub mod wait;
+pub mod web_search;
 
 #[cfg(test)]
 const OUTPUT_LIMIT: usize = 65_536;
@@ -105,6 +106,7 @@ pub struct Tools {
     host_defaults: pp_workspace::host_defaults::HostDefaults,
     pipe_store: pp_bash::PipeStore,
     sandbox: std::sync::Arc<pp_sandbox::Sandbox>,
+    web_search: pp_config::config::WebSearchSettings,
 }
 
 /// Separates a tool's serialized result from a process cleanup failure that
@@ -150,7 +152,7 @@ pub enum ToolPolicy<'a> {
 }
 
 /// In-process research tools; also used by the independent reviewer.
-pub(super) const PLAN_SEARCH_TOOLS: &[&str] = &["glob"];
+pub(super) const PLAN_SEARCH_TOOLS: &[&str] = &["glob", "web_search"];
 /// Plan-mode-only tools that mutate the review boundary.
 const PLAN_WRITE_TOOLS: &[&str] = &["plan_submit"];
 /// Research tools Plan mode keeps from the ordinary Execute list.
@@ -520,7 +522,7 @@ pub(super) struct ExecuteCall<'a, 'f> {
     pub(super) policy: ToolPolicy<'a>,
     pub(super) cancellation: &'a CancellationToken,
     pub(super) emit: &'a mut dyn FnMut(AgentEvent),
-    pub(super) fetch: &'a mut read::Fetch<'f>,
+    pub(super) web: &'a mut web_search::WebHandler<'f>,
     pub(super) nested_hook_context: Vec<String>,
     pub(super) nested_hook_halt: Option<HookHalt>,
 }
@@ -565,6 +567,9 @@ impl Tools {
         }
         definitions.push(glob::definition());
         definitions.push(rg::definition());
+        if self.web_search.enabled {
+            definitions.push(web_search::definition());
+        }
         let lsp_readonly = match mode {
             WorkMode::Execute => self.lsp_readonly,
             WorkMode::Plan => true,
@@ -604,6 +609,14 @@ impl Tools {
                 *desc = desc.replace(
                     "No filesystem sandbox.",
                     "Protected credential paths are excluded by sandbox policy.",
+                );
+            }
+            if let Some(ws) = definitions.iter_mut().find(|d| d.name == "web_search")
+                && let Some(desc) = &mut ws.description
+            {
+                *desc = desc.replace(
+                    "outbound network obeys sandbox network policy.",
+                    &format!("Sandboxed ({mode_str}; {net_note})."),
                 );
             }
         }
@@ -681,6 +694,37 @@ impl Tools {
         emit: &mut dyn FnMut(AgentEvent),
         fetch: &mut read::Fetch<'_>,
     ) -> ToolExecution {
+        self.execute_with_web(
+            name,
+            arguments,
+            call_id,
+            policy,
+            hook,
+            cancellation,
+            emit,
+            &mut |action, token| match action {
+                web_search::WebAction::Read(url) => {
+                    fetch(url, token).map(web_search::WebOutcome::Read)
+                }
+                web_search::WebAction::Search { .. } => {
+                    anyhow::bail!("web search handler unavailable")
+                }
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_with_web(
+        &self,
+        name: &str,
+        arguments: &str,
+        call_id: &str,
+        policy: ToolPolicy<'_>,
+        hook: Option<&dyn ToolHookCall>,
+        cancellation: &CancellationToken,
+        emit: &mut dyn FnMut(AgentEvent),
+        web: &mut web_search::WebHandler<'_>,
+    ) -> ToolExecution {
         let mut call = ExecuteCall {
             name,
             arguments,
@@ -688,7 +732,7 @@ impl Tools {
             policy,
             cancellation,
             emit,
-            fetch,
+            web,
             nested_hook_context: Vec::new(),
             nested_hook_halt: None,
         };
@@ -821,7 +865,7 @@ impl Tools {
                 Ok(json!({"ok":true,"completed":true}))
             }
             "ask" => self.run_ask(call.arguments, call.call_id, call.cancellation),
-            "read" => return self.run_read(call.arguments, call.cancellation, call.fetch, images),
+            "read" => return self.run_read(call.arguments, call.cancellation, call.web, images),
             "edit" => self.run_edit(call.arguments, call.call_id, call.cancellation, call.emit),
             "write" => {
                 return self.run_write(
@@ -849,6 +893,9 @@ impl Tools {
             ),
             "glob" => {
                 glob::run_with_sandbox(&self.cwd, call.arguments, call.cancellation, &self.sandbox)
+            }
+            "web_search" => {
+                return self.run_web_search(call.arguments, call.cancellation, call.web);
             }
             "lsp" => pp_lsp::tool::run(
                 self,

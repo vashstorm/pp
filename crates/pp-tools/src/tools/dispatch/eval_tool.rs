@@ -40,7 +40,7 @@ impl Tools {
 
         let outcome = {
             let emit = RefCell::new(&mut *call.emit);
-            let fetch = &mut *call.fetch;
+            let web = &mut *call.web;
             let mut forward_emit = |event: AgentEvent| (emit.borrow_mut())(event);
             self.eval.execute(
                 pp_eval::CellRequest {
@@ -69,7 +69,7 @@ impl Tools {
                         hook,
                         cancellation,
                         &mut bridge_emit,
-                        fetch,
+                        web,
                         images,
                         &mut todo_change,
                         &mut nested_hook_context,
@@ -108,7 +108,7 @@ impl Tools {
         hook: Option<&dyn ToolHookCall>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
-        fetch: &mut read::Fetch<'_>,
+        web: &mut web_search::WebHandler<'_>,
         images: &mut Vec<read::ToolImage>,
         todo_change: &mut Option<todo::TodoChange>,
         hook_context: &mut Vec<String>,
@@ -169,7 +169,7 @@ impl Tools {
             policy,
             cancellation,
             emit: &mut nested_emit,
-            fetch,
+            web,
             nested_hook_context: Vec::new(),
             nested_hook_halt: None,
         };

@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 mod protocol_cases;
 mod web_cases;
+mod web_search_cases;
 
 fn decode(message: Value, finish: &str) -> Result<CompletionTurn> {
     into_completion_turn(serde_json::from_value(json!({
@@ -131,6 +132,7 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
             tools: Default::default(),
             eval: Default::default(),
             lsp: Default::default(),
+            web_search: Default::default(),
             debug: false,
             notification_show_countdown: true,
             notification_timeout_seconds: 10,

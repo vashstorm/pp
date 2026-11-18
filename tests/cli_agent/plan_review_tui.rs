@@ -90,11 +90,11 @@ fn plan_review_case(action: usize) {
                         .unwrap()
                 })
                 .collect();
-            assert_eq!(names.len(), 5);
+            assert_eq!(names.len(), 6);
             assert!(
                 names.iter().all(|name| matches!(
                     *name,
-                    "read" | "rg" | "glob" | "lsp" | "mcp__remote__echo"
+                    "read" | "rg" | "glob" | "web_search" | "lsp" | "mcp__remote__echo"
                 ))
             );
             let calls = [

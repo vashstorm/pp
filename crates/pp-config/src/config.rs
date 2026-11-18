@@ -41,6 +41,12 @@ pub use limits::{RgSettings, ToolLimits, ToolsSettings};
 mod sandbox;
 pub use sandbox::{SandboxMode, SandboxSettings};
 
+mod web_search;
+pub use web_search::{
+    DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS, MAX_WEB_SEARCH_TIMEOUT_SECONDS, SearxngSettings,
+    WebSearchProvider, WebSearchSettings,
+};
+
 // Deliberately not Debug: this owns the API credential.
 pub struct Config {
     pub auth: Option<crate::auth::Config>,
@@ -177,6 +183,8 @@ pub struct Settings {
     pub eval: EvalSettings,
     #[serde(default)]
     pub lsp: crate::config::LspSettings,
+    #[serde(default, rename = "webSearch")]
+    pub web_search: WebSearchSettings,
     #[serde(default)]
     pub debug: bool,
     /// 已弃用：仅为旧配置保留类型校验，不再控制 TUI 显示。
@@ -231,6 +239,7 @@ impl Settings {
     pub(crate) fn validate(&self) -> Result<()> {
         self.lsp.validate()?;
         self.eval.validate()?;
+        self.web_search.validate()?;
         ensure!(
             self.cost.icon().is_some(),
             "cost.currency must be one of {}",
@@ -300,6 +309,7 @@ const APPROVAL_TOOL_NAMES: &[&str] = &[
     "read",
     "rg",
     "glob",
+    "web_search",
     "lsp",
     "todo",
     "ask",
@@ -342,6 +352,7 @@ fn default_settings() -> Settings {
         tools: ToolsSettings::default(),
         eval: EvalSettings::default(),
         lsp: Default::default(),
+        web_search: WebSearchSettings::default(),
         debug: false,
         notification_show_countdown: default_notification_show_countdown(),
         notification_timeout_seconds: default_notification_timeout_seconds(),
@@ -409,6 +420,10 @@ impl ModelCatalog {
 
     pub fn eval_settings(&self) -> &crate::config::EvalSettings {
         &self.settings.eval
+    }
+
+    pub fn web_search_settings(&self) -> &WebSearchSettings {
+        &self.settings.web_search
     }
 
     /// 用户级 hooks 配置与 settings.yml 放在同一配置目录。

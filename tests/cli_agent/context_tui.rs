@@ -662,7 +662,8 @@ fn context_tui_context_field_stays_white_above_threshold_and_capacity() {
 fn context_tui_auto_compact_cancel_keeps_draft_and_recovers_accepted_history() {
     for protocol in ["completion", "response"] {
         let fixture = server();
-        let (home, mut pty) = context_tui_start_auto(&fixture, protocol, 32768, 80);
+        // 窗口留出余量：保留的最近批次（40KB 只读结果）加系统与工具定义必须低于 80% 阈值。
+        let (home, mut pty) = context_tui_start_auto(&fixture, protocol, 40960, 80);
         let first = "context-auto-cancel-first";
         let second = "context-auto-cancel-second";
         context_tui_write_batch(

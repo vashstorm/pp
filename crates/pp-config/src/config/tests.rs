@@ -3,6 +3,7 @@ use serde_json::json;
 
 mod sandbox_cases;
 mod settings_cases;
+mod web_search_cases;
 
 const VALID_SETTINGS: &str = "{}";
 const VALID_MODELS: &str = r#"{"providers":{"fixture": {"api_key":"secret-marker-fixture-key",

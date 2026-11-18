@@ -415,6 +415,15 @@ impl App {
                             }
                             continue;
                         }
+                        WorkerCommand::SyncWebSearchSettings(web_search) => {
+                            if let Err(error) = agent.update_web_search_settings(web_search) {
+                                tracing::warn!(
+                                    error = %error,
+                                    "failed to refresh instructions after webSearch setting update"
+                                );
+                            }
+                            continue;
+                        }
                         WorkerCommand::InspectContext => {
                             WorkerEvent::ContextInspected(agent.diagnose_context())
                         }

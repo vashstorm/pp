@@ -440,7 +440,7 @@ fn plan_review_rounds_gate_tools_and_persist_report() {
             assert!(
                 tools
                     .iter()
-                    .all(|name| matches!(*name, "read" | "rg" | "glob" | "lsp"))
+                    .all(|name| matches!(*name, "read" | "rg" | "glob" | "web_search" | "lsp"))
             );
             calls_for(
                 &serving,

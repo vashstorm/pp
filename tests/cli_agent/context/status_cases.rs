@@ -165,8 +165,8 @@ fn context_auto_compact_policy_line_reflects_settings() {
             "Auto compact: off",
         ),
         (
-            r#"{"default_model":"fixture/primary","auto_compact_threshold_percent":42}"#,
-            "Auto compact: on at 42%",
+            r#"{"default_model":"fixture/primary","auto_compact_threshold_percent":55}"#,
+            "Auto compact: on at 55%",
         ),
     ] {
         let server = server();

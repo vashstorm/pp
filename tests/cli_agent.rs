@@ -34,6 +34,8 @@ mod mcp_remote;
 mod sandbox;
 #[path = "cli_agent/subagents.rs"]
 mod subagents;
+#[path = "cli_agent/web_search_cases.rs"]
+mod web_search_cases;
 
 // 全部 `/test-*` 命令只在 debug assertions 构建中注册，因此这些用例随同一
 // profile 边界编译，release 测试构建不再要求命令存在。

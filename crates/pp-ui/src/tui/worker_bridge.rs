@@ -59,6 +59,7 @@ pub(super) enum WorkerCommand {
     },
     Sandbox(Option<pp_config::config::SandboxMode>),
     SyncSandboxSettings(pp_config::config::SandboxMode),
+    SyncWebSearchSettings(pp_config::config::WebSearchSettings),
     InspectContext,
     Reset,
     /// 会话根切换（/resume、/tree、/new）会停掉旧子 Agent 根；Hub 打开时按需重建。

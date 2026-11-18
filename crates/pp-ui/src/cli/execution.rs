@@ -255,7 +255,11 @@ fn run_cli_execution(
                     );
                 }
                 if current_tool.as_ref().is_some_and(|(current_id, name)| {
-                    current_id == &id && matches!(name.as_str(), "rg" | "glob" | "todo" | "read")
+                    current_id == &id
+                        && matches!(
+                            name.as_str(),
+                            "rg" | "glob" | "web_search" | "todo" | "read"
+                        )
                 }) {
                     let content = if is_read {
                         result["error"].as_str()

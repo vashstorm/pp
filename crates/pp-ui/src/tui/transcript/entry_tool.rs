@@ -210,7 +210,7 @@ impl TranscriptEntry {
     }
 
     pub(super) fn is_search(&self) -> bool {
-        matches!(self.tool.as_deref(), Some("rg" | "glob"))
+        matches!(self.tool.as_deref(), Some("rg" | "glob" | "web_search"))
     }
 
     pub(super) fn is_wait_card(&self) -> bool {

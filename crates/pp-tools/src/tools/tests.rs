@@ -5,6 +5,7 @@ mod artifact_cases;
 mod eval_cases;
 mod sandbox_cases;
 mod wait_cases;
+mod web_search_cases;
 
 fn execute(tools: &Tools, name: &str, args: Value) -> Value {
     let workflow = WorkflowState::default();

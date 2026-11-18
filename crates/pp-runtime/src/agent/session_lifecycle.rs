@@ -73,6 +73,7 @@ impl Agent {
         let hooks = Self::compile_hooks(&catalog, tools.cwd())?;
         tools.limits = checkpoint.tool_limits;
         tools.configure_eval(catalog.eval_settings());
+        tools.configure_web_search(catalog.web_search_settings().clone());
         // 恢复不承诺旧进程的临时管道正文：显式换一个空 registry。
         tools.reset_pipe_store();
         if let Some(id) = journal.id() {

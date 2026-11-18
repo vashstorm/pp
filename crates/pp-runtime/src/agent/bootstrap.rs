@@ -98,6 +98,7 @@ impl Agent {
         let model_source = models.source();
         tools.limits = config.settings.tool_limits();
         tools.configure_eval(catalog.eval_settings());
+        tools.configure_web_search(catalog.web_search_settings().clone());
         tools.approval.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
         // 进程级单例：启动期后台建连，不再阻塞首个界面；首个任务入口等它结束。
@@ -279,6 +280,18 @@ impl Agent {
         self.refresh_instructions_changed()?;
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
+        Ok(())
+    }
+
+    /// `/setting` 写回 `webSearch` 配置后同步工具开关、搜索设置与系统提示词。
+    pub fn update_web_search_settings(
+        &mut self,
+        settings: pp_config::config::WebSearchSettings,
+    ) -> Result<()> {
+        self.tools.configure_web_search(settings);
+        self.session
+            .set_tools(self.tools.all_definitions(self.workflow.mode));
+        self.refresh_instructions_changed()?;
         Ok(())
     }
 

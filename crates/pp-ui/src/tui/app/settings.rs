@@ -292,6 +292,11 @@ impl App {
                                     .send(crate::tui::WorkerCommand::SyncSandboxSettings(
                                         saved.tools.sandbox.mode,
                                     ))
+                                    .is_err()
+                                || commands
+                                    .send(crate::tui::WorkerCommand::SyncWebSearchSettings(
+                                        saved.web_search.clone(),
+                                    ))
                                     .is_err())
                         {
                             self.fail_worker();

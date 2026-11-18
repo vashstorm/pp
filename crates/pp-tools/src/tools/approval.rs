@@ -20,7 +20,7 @@ pub use pp_workspace::Tier;
 /// 未知名按 exec 处理（安全默认）。
 pub fn tier_of(name: &str) -> Tier {
     match name {
-        "read" | "rg" | "glob" | "todo" | "ask" => Tier::Read,
+        "read" | "rg" | "glob" | "web_search" | "todo" | "ask" => Tier::Read,
         "edit" | "write" => Tier::Write,
         "bash" | "bash_task" | "eval" | "task" => Tier::Exec,
         "wait" => Tier::Read,

@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use serde_yaml::Value;
 
 use super::{
-    ApprovalMode, EditMode, SandboxMode, Settings, StatsStyle, update_settings_fields_returning,
+    ApprovalMode, EditMode, SandboxMode, Settings, StatsStyle, WebSearchProvider,
+    update_settings_fields_returning,
 };
 
 /// `/setting` 面板 `General` 页可编辑的运行参数补丁。
@@ -28,6 +29,10 @@ pub enum SettingPatch {
     LspDiagnosticsOnEdit(bool),
     LspDiagnosticsDeduplicate(bool),
     LspRequestTimeout(u64),
+    WebSearchEnabled(bool),
+    WebSearchProvider(WebSearchProvider),
+    WebSearchKeyless(bool),
+    WebSearchTimeoutSeconds(u64),
     TaskMaxConcurrency(usize),
     TaskMaxRecursionDepth(usize),
     TaskIdleTtlMs(u64),
@@ -117,6 +122,22 @@ impl SettingPatch {
                 settings.lsp.request_timeout = value;
                 serialize_lsp(settings.lsp)?
             }
+            Self::WebSearchEnabled(value) => {
+                settings.web_search.enabled = value;
+                serialize_web_search(&settings.web_search)?
+            }
+            Self::WebSearchProvider(value) => {
+                settings.web_search.provider = value;
+                serialize_web_search(&settings.web_search)?
+            }
+            Self::WebSearchKeyless(value) => {
+                settings.web_search.keyless = value;
+                serialize_web_search(&settings.web_search)?
+            }
+            Self::WebSearchTimeoutSeconds(value) => {
+                settings.web_search.timeout_seconds = value;
+                serialize_web_search(&settings.web_search)?
+            }
             Self::TaskMaxConcurrency(value) => {
                 settings.task.max_concurrency = value;
                 serialize_task(&settings.task)?
@@ -167,6 +188,13 @@ fn serialize_lsp(lsp: super::LspSettings) -> Result<(&'static str, Value)> {
     Ok((
         "lsp",
         serde_yaml::to_value(lsp).context("Failed to serialize lsp settings")?,
+    ))
+}
+
+fn serialize_web_search(web_search: &super::WebSearchSettings) -> Result<(&'static str, Value)> {
+    Ok((
+        "webSearch",
+        serde_yaml::to_value(web_search).context("Failed to serialize webSearch settings")?,
     ))
 }
 

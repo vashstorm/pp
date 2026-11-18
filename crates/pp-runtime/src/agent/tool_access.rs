@@ -3,6 +3,24 @@ use super::Agent;
 use anyhow::{Result, ensure};
 use pp_core::cancellation::CancellationToken;
 use pp_core::events::AgentEvent;
+use pp_tools::web_search::{WebAction, WebOutcome};
+
+pub(in crate::agent) fn execute_web_action(
+    client: &mut pp_llm::OpenAiClient,
+    action: WebAction<'_>,
+    token: &CancellationToken,
+) -> Result<WebOutcome> {
+    match action {
+        WebAction::Read(url) => client.fetch_read_url(url, token).map(WebOutcome::Read),
+        WebAction::Search {
+            request,
+            settings,
+            allow_external,
+        } => client
+            .search_web(request, settings, allow_external, token)
+            .map(WebOutcome::Search),
+    }
+}
 
 impl Agent {
     pub fn bash_timeout_seconds(&self) -> u64 {

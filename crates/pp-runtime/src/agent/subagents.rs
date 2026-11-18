@@ -144,6 +144,7 @@ impl Agent {
             tools.share_pipe_store(&pipe_store);
             tools.limits = config.settings.tool_limits();
             tools.configure_eval(catalog.eval_settings());
+            tools.configure_web_search(catalog.web_search_settings().clone());
             tools.skills = skills.clone();
             if !record.spec.isolated {
                 tools.write_lock = write_lock.clone();

@@ -100,6 +100,99 @@ pub(in crate::tui) fn rg_header(view: &View<'_>, width: u16) -> Vec<Line<'static
     }
 }
 
+pub(in crate::tui) fn web_search_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default().fg(palette::rg_text()).bg(palette::rg_bg());
+    let meta = style.fg(palette::rg_meta());
+    let query = view.arguments["query"].as_str().unwrap_or_default();
+    let provider = view
+        .result
+        .and_then(|r| {
+            r["provider_label"]
+                .as_str()
+                .or_else(|| r["provider"].as_str())
+        })
+        .or_else(|| view.arguments["provider"].as_str());
+    let mut spans = vec![
+        Span::styled(
+            format!("{} Web Search: ", palette::tool_icon("web_search")),
+            style.fg(palette::tool_accent("web_search")),
+        ),
+        Span::styled(pp_core::text::display_text(query).into_owned(), style),
+    ];
+    if let Some(provider) = provider {
+        spans.push(Span::styled(format!(" · {provider}"), meta));
+    }
+    if view.failed {
+        spans.push(Span::styled(" · failed", style.fg(palette::removed())));
+    } else if view.running {
+        spans.push(Span::styled(" · running", style.fg(palette::accent())));
+    } else if let Some(count) = view
+        .result
+        .and_then(|r| r["details"]["source_count"].as_u64())
+    {
+        spans.push(Span::styled(
+            format!(
+                " · {count} {}",
+                if count == 1 { "result" } else { "results" }
+            ),
+            meta,
+        ));
+    }
+    wrap_block(Line::from(spans), width, "  ")
+}
+
+pub(super) fn web_search_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default()
+        .fg(if view.failed {
+            palette::removed()
+        } else {
+            palette::rg_text()
+        })
+        .bg(palette::rg_bg());
+    let meta = style.fg(palette::rg_meta());
+    let rows = if view.context.full || view.failed {
+        wrap(
+            logical(view.text).into_iter().map(str::to_owned),
+            width,
+            style,
+        )
+    } else {
+        head(
+            view.text,
+            if view.expanded {
+                usize::MAX
+            } else {
+                FIND_ITEMS
+            },
+            false,
+            true,
+            width,
+            style,
+            MoreHint::Expand("lines"),
+        )
+    };
+    if view.failed {
+        return rows;
+    }
+    rows.into_iter()
+        .map(|row| {
+            let line = row.to_string();
+            let trimmed = line.trim_start();
+            if line.starts_with("Note:") {
+                Line::styled(line, style.fg(palette::accent()))
+            } else if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                Line::styled(line, style.fg(palette::read_summary_path()))
+            } else if line.starts_with('[') && line.contains(']') {
+                Line::styled(line, style.fg(palette::rg_title()))
+            } else if line.starts_with('…') {
+                Line::styled(line, meta)
+            } else {
+                Line::styled(line, style)
+            }
+        })
+        .collect()
+}
+
 pub(in crate::tui) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     let style = Style::default().fg(palette::rg_text()).bg(palette::rg_bg());
     let (status, color) = if view.failed {

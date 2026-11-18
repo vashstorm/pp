@@ -40,6 +40,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
                         "read"
                             | "rg"
                             | "glob"
+                            | "web_search"
                             | "lsp"
                             | "ask"
                             | "todo"

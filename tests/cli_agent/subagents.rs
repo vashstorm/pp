@@ -137,7 +137,7 @@ fn explorer_role_is_read_only_and_uses_the_exploration_prompt_in_both_protocols(
                 for denied in ["write", "edit", "bash", "bash_task", "task"] {
                     assert!(!sub_has_tool(&body, protocol, denied), "{denied}: {body}");
                 }
-                for allowed in ["read", "rg", "glob"] {
+                for allowed in ["read", "rg", "glob", "web_search"] {
                     assert!(sub_has_tool(&body, protocol, allowed), "{allowed}: {body}");
                 }
                 assert!(

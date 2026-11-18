@@ -22,7 +22,7 @@ pub(super) fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String
         }
         return String::new();
     }
-    if matches!(name, "rg" | "glob")
+    if matches!(name, "rg" | "glob" | "web_search")
         && let Some(content) = result["content"].as_str()
     {
         return content.to_owned();
