@@ -341,6 +341,15 @@ impl App {
             self.menu = None;
         } else if edited || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
             let menu = SelectionMenu::new(items, preferred);
+            let menu = if menu
+                .items()
+                .iter()
+                .any(|item| matches!(item.value, MenuAction::ThemeColor(_)))
+            {
+                menu.with_scrollbar()
+            } else {
+                menu
+            };
             let menu = if matches!(
                 menu.items().first().map(|item| item.value),
                 Some(MenuAction::McpSubcommand(_) | MenuAction::McpServer(_))

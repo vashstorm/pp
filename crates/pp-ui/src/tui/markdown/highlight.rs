@@ -75,7 +75,8 @@ fn build_theme(active: UiTheme) -> Theme {
 /// 程序化构造的主题：scope 前缀匹配 + 长 scope 优先，未匹配文本使用
 /// `settings.foreground`（即 `code_block`）。不解析 .tmTheme。
 fn theme_for(active: UiTheme) -> &'static Theme {
-    static THEMES: [OnceLock<Theme>; 7] = [const { OnceLock::new() }; 7];
+    static THEMES: [OnceLock<Theme>; UiTheme::ALL.len()] =
+        [const { OnceLock::new() }; UiTheme::ALL.len()];
     let index = match active {
         UiTheme::Default => 0,
         UiTheme::TokyoNight => 1,
@@ -84,6 +85,19 @@ fn theme_for(active: UiTheme) -> &'static Theme {
         UiTheme::Nord => 4,
         UiTheme::Gruvbox => 5,
         UiTheme::SolarizedLight => 6,
+        UiTheme::OneDark => 7,
+        UiTheme::SolarizedDark => 8,
+        UiTheme::Monokai => 9,
+        UiTheme::RosePine => 10,
+        UiTheme::RosePineDawn => 11,
+        UiTheme::Kanagawa => 12,
+        UiTheme::Everforest => 13,
+        UiTheme::GruvboxLight => 14,
+        UiTheme::CatppuccinLatte => 15,
+        UiTheme::GitHubDark => 16,
+        UiTheme::GitHubLight => 17,
+        UiTheme::AyuDark => 18,
+        UiTheme::NightOwl => 19,
     };
     THEMES[index].get_or_init(|| build_theme(active))
 }

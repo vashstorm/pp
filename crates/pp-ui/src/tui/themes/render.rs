@@ -4,8 +4,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+
+pub(super) const MAX_LIST_ROWS: u16 = 8;
 
 impl Panel {
     pub(in crate::tui) fn draw(&mut self, frame: &mut Frame, area: Rect) {
@@ -190,8 +192,8 @@ impl Panel {
         if area.is_empty() {
             return;
         }
-        // 按两个分类的最大列表行数固定上方列表槽位，避免在 Icon Style 与 Color Theme 间切换时预览区上下跳动。
-        let max_list_rows = IconMode::ALL.len().max(Theme::ALL.len()) as u16;
+        // 按两个分类的最大列表行数固定上方列表槽位（上限 MAX_LIST_ROWS），既防止切换分类时预览区跳动，又保证下方预览区有充裕高度。
+        let max_list_rows = (IconMode::ALL.len().max(Theme::ALL.len()) as u16).min(MAX_LIST_ROWS);
         if area.height >= 12 {
             let list_height = max_list_rows.min(area.height.saturating_sub(6).max(2));
             let spacer = if area.height >= list_height + 19 {
@@ -226,17 +228,28 @@ impl Panel {
     }
 
     fn draw_list(&mut self, frame: &mut Frame, area: Rect, p: &Palette, ascii: bool) {
-        self.list_area = area;
         if area.is_empty() {
+            self.list_area = area;
             return;
         }
+        let total = self.list_len();
         let visible = usize::from(area.height).max(1);
         let selected_idx = self.selected_index();
+        self.list_scroll = self.list_scroll.min(total.saturating_sub(visible));
         if selected_idx < self.list_scroll {
             self.list_scroll = selected_idx;
         } else if selected_idx >= self.list_scroll + visible {
             self.list_scroll = selected_idx + 1 - visible;
         }
+        let has_scrollbar = total > visible && area.width > 1;
+        let rows_area = if has_scrollbar {
+            Rect::new(area.x, area.y, area.width - 1, area.height)
+        } else {
+            area
+        };
+        let scrollbar_area =
+            has_scrollbar.then(|| Rect::new(area.right() - 1, area.y, 1, area.height));
+        self.list_area = rows_area;
         let saved_dot = if ascii { "*" } else { "\u{f0765}" };
         let other_dot = if ascii { "o" } else { "\u{f0766}" };
 
@@ -262,7 +275,8 @@ impl Panel {
                     } else {
                         "\u{f1d8} \u{ec19} \u{f07c} \u{f00c}"
                     };
-                    let row_rect = Rect::new(area.x, area.y + row as u16, area.width, 1);
+                    let row_rect =
+                        Rect::new(rows_area.x, rows_area.y + row as u16, rows_area.width, 1);
                     frame.render_widget(
                         Block::default().style(Style::default().bg(row_bg)),
                         row_rect,
@@ -318,7 +332,8 @@ impl Panel {
                     let marker = if selected { "❯ " } else { "  " };
                     let dot = if is_saved { saved_dot } else { other_dot };
                     let dot_color = if is_saved { p.added } else { p.muted };
-                    let row_rect = Rect::new(area.x, area.y + row as u16, area.width, 1);
+                    let row_rect =
+                        Rect::new(rows_area.x, rows_area.y + row as u16, rows_area.width, 1);
                     frame.render_widget(
                         Block::default().style(Style::default().bg(row_bg)),
                         row_rect,
@@ -355,6 +370,20 @@ impl Panel {
                     frame.render_widget(Line::from(spans), row_rect);
                 }
             }
+        }
+
+        if let Some(sb_area) = scrollbar_area {
+            let mut state =
+                ScrollbarState::new(total.saturating_sub(visible) + 1).position(self.list_scroll);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None)
+                    .track_style(Style::default().fg(p.dim).bg(p.panel_bg))
+                    .thumb_style(Style::default().fg(p.panel_border).bg(p.panel_bg)),
+                sb_area,
+                &mut state,
+            );
         }
     }
 

@@ -163,10 +163,18 @@ fn slash_themes_completion_and_direct_arguments_update_and_persist() {
     }
     assert_eq!(
         menu_values(&app),
+        vec![
+            MenuAction::ThemeIcon(IconMode::Ascii),
+            MenuAction::ThemeColor(Theme::AyuDark),
+        ]
+    );
+    app.handle(key(KeyCode::Char('s')), &mut dirty);
+    assert_eq!(
+        menu_values(&app),
         vec![MenuAction::ThemeIcon(IconMode::Ascii)]
     );
 
-    // Tab 补全 ascii，空格后列出全部 7 个主题颜色而不重复图标项。
+    // Tab 补全 ascii，空格后列出全部主题颜色而不重复图标项。
     app.handle(key(KeyCode::Tab), &mut dirty);
     app.handle(key(KeyCode::Char(' ')), &mut dirty);
     let values = menu_values(&app);

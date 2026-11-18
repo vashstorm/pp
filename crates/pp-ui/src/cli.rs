@@ -511,7 +511,8 @@ fn handle_cli_themes(cmd: commands::ThemeCommand, stderr: &mut io::Stderr) -> Re
         writeln!(stderr, "Available icons: nerd, ascii")?;
         writeln!(
             stderr,
-            "Available themes: default, tokyonight, catppuccin, dracula, nord, gruvbox, solarized-light"
+            "Available themes: {}",
+            pp_config::config::Theme::ALL_NAMES
         )?;
         return Ok(());
     }

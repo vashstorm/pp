@@ -80,10 +80,23 @@ pub enum Theme {
     Nord,
     Gruvbox,
     SolarizedLight,
+    OneDark,
+    SolarizedDark,
+    Monokai,
+    RosePine,
+    RosePineDawn,
+    Kanagawa,
+    Everforest,
+    GruvboxLight,
+    CatppuccinLatte,
+    GitHubDark,
+    GitHubLight,
+    AyuDark,
+    NightOwl,
 }
 
 impl Theme {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 20] = [
         Self::Default,
         Self::TokyoNight,
         Self::Catppuccin,
@@ -91,7 +104,22 @@ impl Theme {
         Self::Nord,
         Self::Gruvbox,
         Self::SolarizedLight,
+        Self::OneDark,
+        Self::SolarizedDark,
+        Self::Monokai,
+        Self::RosePine,
+        Self::RosePineDawn,
+        Self::Kanagawa,
+        Self::Everforest,
+        Self::GruvboxLight,
+        Self::CatppuccinLatte,
+        Self::GitHubDark,
+        Self::GitHubLight,
+        Self::AyuDark,
+        Self::NightOwl,
     ];
+
+    pub const ALL_NAMES: &'static str = "default, tokyonight, catppuccin, dracula, nord, gruvbox, solarized-light, onedark, solarized-dark, monokai, rose-pine, rose-pine-dawn, kanagawa, everforest, gruvbox-light, catppuccin-latte, github-dark, github-light, ayu-dark, night-owl";
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -102,6 +130,19 @@ impl Theme {
             Self::Nord => "nord",
             Self::Gruvbox => "gruvbox",
             Self::SolarizedLight => "solarized-light",
+            Self::OneDark => "onedark",
+            Self::SolarizedDark => "solarized-dark",
+            Self::Monokai => "monokai",
+            Self::RosePine => "rose-pine",
+            Self::RosePineDawn => "rose-pine-dawn",
+            Self::Kanagawa => "kanagawa",
+            Self::Everforest => "everforest",
+            Self::GruvboxLight => "gruvbox-light",
+            Self::CatppuccinLatte => "catppuccin-latte",
+            Self::GitHubDark => "github-dark",
+            Self::GitHubLight => "github-light",
+            Self::AyuDark => "ayu-dark",
+            Self::NightOwl => "night-owl",
         }
     }
 
@@ -114,6 +155,19 @@ impl Theme {
             Self::Nord => "Nord",
             Self::Gruvbox => "Gruvbox Dark",
             Self::SolarizedLight => "Solarized Light",
+            Self::OneDark => "One Dark",
+            Self::SolarizedDark => "Solarized Dark",
+            Self::Monokai => "Monokai",
+            Self::RosePine => "Rose Pine",
+            Self::RosePineDawn => "Rose Pine Dawn",
+            Self::Kanagawa => "Kanagawa",
+            Self::Everforest => "Everforest Dark",
+            Self::GruvboxLight => "Gruvbox Light",
+            Self::CatppuccinLatte => "Catppuccin Latte",
+            Self::GitHubDark => "GitHub Dark",
+            Self::GitHubLight => "GitHub Light",
+            Self::AyuDark => "Ayu Dark",
+            Self::NightOwl => "Night Owl",
         }
     }
 
@@ -126,6 +180,19 @@ impl Theme {
             Self::Nord => "Arctic, north-bluish clean dark palette",
             Self::Gruvbox => "Retro groove warm dark palette",
             Self::SolarizedLight => "Precision warm daylight palette",
+            Self::OneDark => "Iconic balanced dark slate palette",
+            Self::SolarizedDark => "Precision deep teal low-glare dark palette",
+            Self::Monokai => "Vibrant warm charcoal high-contrast theme",
+            Self::RosePine => "All natural pine, faux fur and Soho vibes",
+            Self::RosePineDawn => "Warm muted rose daylight palette",
+            Self::Kanagawa => "Deep ink blue inspired by ukiyo-e waves",
+            Self::Everforest => "Comfortable soft green forest dark palette",
+            Self::GruvboxLight => "Retro warm parchment daylight palette",
+            Self::CatppuccinLatte => "Soothing pastel light theme",
+            Self::GitHubDark => "Crisp neutral dark high-contrast palette",
+            Self::GitHubLight => "Clean bright daylight editor palette",
+            Self::AyuDark => "Deep obsidian dark with warm amber accents",
+            Self::NightOwl => "Deep navy dark tuned for late-night coding",
         }
     }
 
@@ -142,6 +209,19 @@ impl Theme {
             "solarized-light" | "solarized_light" | "solarized" | "light" => {
                 Some(Self::SolarizedLight)
             }
+            "onedark" | "one-dark" | "one_dark" => Some(Self::OneDark),
+            "solarized-dark" | "solarized_dark" | "solarizeddark" => Some(Self::SolarizedDark),
+            "monokai" | "monokai-pro" | "monokai_pro" => Some(Self::Monokai),
+            "rose-pine" | "rose_pine" | "rosepine" | "rosé-pine" => Some(Self::RosePine),
+            "rose-pine-dawn" | "rose_pine_dawn" | "rosepinedawn" => Some(Self::RosePineDawn),
+            "kanagawa" | "kanagawa-wave" | "kanagawa_wave" => Some(Self::Kanagawa),
+            "everforest" | "everforest-dark" | "everforest_dark" => Some(Self::Everforest),
+            "gruvbox-light" | "gruvbox_light" | "gruvboxlight" => Some(Self::GruvboxLight),
+            "catppuccin-latte" | "catppuccin_latte" | "latte" => Some(Self::CatppuccinLatte),
+            "github-dark" | "github_dark" | "githubdark" => Some(Self::GitHubDark),
+            "github-light" | "github_light" | "githublight" => Some(Self::GitHubLight),
+            "ayu-dark" | "ayu_dark" | "ayudark" | "ayu" => Some(Self::AyuDark),
+            "night-owl" | "night_owl" | "nightowl" => Some(Self::NightOwl),
             _ => None,
         }
     }
@@ -168,7 +248,8 @@ impl<'de> Deserialize<'de> for Theme {
         let raw = String::deserialize(deserializer)?;
         Self::parse(&raw).ok_or_else(|| {
             serde::de::Error::custom(format!(
-                "unknown theme '{raw}'; expected one of: default, tokyonight, catppuccin, dracula, nord, gruvbox, solarized-light"
+                "unknown theme '{raw}'; expected one of: {}",
+                Self::ALL_NAMES
             ))
         })
     }
@@ -250,6 +331,20 @@ mod tests {
 
     #[test]
     fn theme_and_icon_mode_aliases_and_rejections() {
+        assert_eq!(Theme::ALL.len(), 20);
+        let listed: Vec<_> = Theme::ALL.iter().map(|theme| theme.as_str()).collect();
+        assert_eq!(listed.join(", "), Theme::ALL_NAMES);
+        let unique_slugs: std::collections::HashSet<_> = listed.iter().copied().collect();
+        assert_eq!(unique_slugs.len(), Theme::ALL.len());
+        let unique_labels: std::collections::HashSet<_> =
+            Theme::ALL.iter().map(|theme| theme.label()).collect();
+        assert_eq!(unique_labels.len(), Theme::ALL.len());
+        for theme in Theme::ALL {
+            assert_eq!(Theme::parse(theme.as_str()), Some(theme));
+            assert!(!theme.label().is_empty());
+            assert!(!theme.description().is_empty());
+        }
+
         for (input, expected) in [
             ("default", Some(Theme::Default)),
             ("TokyoNight", Some(Theme::TokyoNight)),
@@ -262,6 +357,19 @@ mod tests {
             ("gruvbox-dark", Some(Theme::Gruvbox)),
             ("solarized-light", Some(Theme::SolarizedLight)),
             ("solarized", Some(Theme::SolarizedLight)),
+            ("one-dark", Some(Theme::OneDark)),
+            ("solarized_dark", Some(Theme::SolarizedDark)),
+            ("monokai-pro", Some(Theme::Monokai)),
+            ("rosepine", Some(Theme::RosePine)),
+            ("rose_pine_dawn", Some(Theme::RosePineDawn)),
+            ("kanagawa-wave", Some(Theme::Kanagawa)),
+            ("everforest-dark", Some(Theme::Everforest)),
+            ("gruvbox_light", Some(Theme::GruvboxLight)),
+            ("latte", Some(Theme::CatppuccinLatte)),
+            ("github_dark", Some(Theme::GitHubDark)),
+            ("github-light", Some(Theme::GitHubLight)),
+            ("ayu", Some(Theme::AyuDark)),
+            ("night_owl", Some(Theme::NightOwl)),
             ("unknown", None),
         ] {
             assert_eq!(Theme::parse(input), expected, "input: {input}");

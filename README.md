@@ -94,7 +94,7 @@ edit: replace
 auto_compact: true
 auto_compact_threshold_percent: 80
 tui:
-  theme: default # default | tokyonight | catppuccin | dracula | nord | gruvbox | solarized-light
+  theme: default # default | tokyonight | catppuccin | dracula | nord | gruvbox | solarized-light | onedark | solarized-dark | monokai | rose-pine | rose-pine-dawn | kanagawa | everforest | gruvbox-light | catppuccin-latte | github-dark | github-light | ayu-dark | night-owl
   icons: nerd    # nerd | ascii
 ```
 

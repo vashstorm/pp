@@ -616,7 +616,8 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
                     );
                 } else {
                     bail!(
-                        "usage: /themes [nerd|ascii] [THEME] (icons: nerd, ascii; themes: default, tokyonight, catppuccin, dracula, nord, gruvbox, solarized-light)"
+                        "usage: /themes [nerd|ascii] [THEME] (icons: nerd, ascii; themes: {})",
+                        pp_config::config::Theme::ALL_NAMES
                     );
                 }
             }

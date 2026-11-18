@@ -1,138 +1,7 @@
-use pp_config::config::Theme;
+use super::Palette;
 use ratatui::style::Color;
 
-#[derive(Clone, Copy, Debug)]
-pub(in crate::tui) struct Palette {
-    pub accent: Color,
-    pub text: Color,
-    pub activity: Color,
-    pub muted: Color,
-    pub dim: Color,
-    pub user_bg: Color,
-    pub code: Color,
-    pub code_block: Color,
-    pub link: Color,
-    pub added: Color,
-    pub removed: Color,
-    pub md_bg: Color,
-    pub md_text: Color,
-    pub md_heading: Color,
-    pub md_code: Color,
-    pub md_strong: Color,
-    pub md_bullet: Color,
-    pub md_border: Color,
-    pub todo_active: Color,
-    pub error_border: Color,
-    pub tool_bg: Color,
-    pub tool_border: Color,
-    pub eval_bg: Color,
-    pub eval_border: Color,
-    pub eval_title: Color,
-    pub eval_py_title: Color,
-    pub eval_py_icon: Color,
-    pub eval_js_title: Color,
-    pub eval_js_icon: Color,
-    pub read_title: Color,
-    pub search_title: Color,
-    pub glob_title: Color,
-    pub write_title: Color,
-    pub shell_title: Color,
-    pub bash_title: Color,
-    pub mcp_title: Color,
-    pub mcp_server: Color,
-    pub mcp_tool: Color,
-    pub tool_pending_bg: Color,
-    pub tool_success_bg: Color,
-    pub tool_error_bg: Color,
-    pub ask_title: Color,
-    pub todo_title: Color,
-    pub ask_bg: Color,
-    pub ask_border: Color,
-    pub ask_tab_bg: Color,
-    pub read_text: Color,
-    pub read_summary_meta: Color,
-    pub rg_title: Color,
-    pub rg_text: Color,
-    pub rg_meta: Color,
-    pub tool_command: Color,
-    pub edit_title: Color,
-    pub edit_text: Color,
-    pub edit_meta: Color,
-    pub edit_added: Color,
-    pub edit_removed: Color,
-    pub edit_keyword: Color,
-    pub edit_type: Color,
-    pub edit_string: Color,
-    pub edit_number: Color,
-    pub syntax_keyword: Color,
-    pub syntax_comment: Color,
-    pub syntax_function: Color,
-    pub syntax_constant: Color,
-    pub syntax_tag: Color,
-    pub status_accent: Color,
-    pub shell_mode: Color,
-    pub input_status_bg: Color,
-    pub plan_mode: Color,
-    pub status_model: Color,
-    pub status_directory: Color,
-    pub status_git: Color,
-    pub status_speed: Color,
-    pub status_subagents: Color,
-    pub status_input: Color,
-    pub status_output: Color,
-    pub status_cache_read: Color,
-    pub status_cache_write: Color,
-    pub status_context: Color,
-    pub status_cost: Color,
-    pub menu_separator: Color,
-    pub menu_selected: Color,
-    pub menu_model_label: Color,
-    pub menu_model_detail: Color,
-    pub menu_model_selected: Color,
-    pub menu_file_selected: Color,
-    pub menu_favorite: Color,
-    pub menu_default_model: Color,
-    pub menu_current_model: Color,
-    pub welcome_first: Color,
-    pub welcome_second: Color,
-    pub welcome_separator: Color,
-    pub welcome_muted: Color,
-    pub welcome_wordmark: Color,
-    pub welcome_card_bg: Color,
-    pub panel_bg: Color,
-    pub panel_alt_bg: Color,
-    pub panel_border: Color,
-    pub panel_selected_bg: Color,
-    pub panel_selected_fg: Color,
-    pub attachment_color: Color,
-}
-
-impl Palette {
-    pub(in crate::tui) fn swatch(self) -> [Color; 6] {
-        [
-            self.accent,
-            self.status_model,
-            self.link,
-            self.added,
-            self.removed,
-            self.md_strong,
-        ]
-    }
-}
-
-pub(in crate::tui) const fn palette_for(theme: Theme) -> &'static Palette {
-    match theme {
-        Theme::Default => &DEFAULT,
-        Theme::TokyoNight => &TOKYO_NIGHT,
-        Theme::Catppuccin => &CATPPUCCIN,
-        Theme::Dracula => &DRACULA,
-        Theme::Nord => &NORD,
-        Theme::Gruvbox => &GRUVBOX,
-        Theme::SolarizedLight => &SOLARIZED_LIGHT,
-    }
-}
-
-const DEFAULT: Palette = Palette {
+pub(super) const DEFAULT: Palette = Palette {
     accent: Color::Rgb(254, 188, 56),
     text: Color::Rgb(250, 250, 250),
     activity: Color::Rgb(190, 198, 212),
@@ -237,7 +106,7 @@ const DEFAULT: Palette = Palette {
     attachment_color: Color::Rgb(255, 175, 95),
 };
 
-const TOKYO_NIGHT: Palette = Palette {
+pub(super) const TOKYO_NIGHT: Palette = Palette {
     accent: Color::Rgb(122, 162, 247),
     text: Color::Rgb(192, 202, 245),
     activity: Color::Rgb(169, 177, 214),
@@ -342,7 +211,7 @@ const TOKYO_NIGHT: Palette = Palette {
     attachment_color: Color::Rgb(255, 158, 100),
 };
 
-const CATPPUCCIN: Palette = Palette {
+pub(super) const CATPPUCCIN: Palette = Palette {
     accent: Color::Rgb(203, 166, 247),
     text: Color::Rgb(205, 214, 244),
     activity: Color::Rgb(186, 194, 222),
@@ -447,7 +316,7 @@ const CATPPUCCIN: Palette = Palette {
     attachment_color: Color::Rgb(250, 179, 135),
 };
 
-const DRACULA: Palette = Palette {
+pub(super) const DRACULA: Palette = Palette {
     accent: Color::Rgb(189, 147, 249),
     text: Color::Rgb(248, 248, 242),
     activity: Color::Rgb(210, 212, 224),
@@ -552,7 +421,7 @@ const DRACULA: Palette = Palette {
     attachment_color: Color::Rgb(255, 184, 108),
 };
 
-const NORD: Palette = Palette {
+pub(super) const NORD: Palette = Palette {
     accent: Color::Rgb(136, 192, 208),
     text: Color::Rgb(236, 239, 244),
     activity: Color::Rgb(216, 222, 233),
@@ -657,7 +526,7 @@ const NORD: Palette = Palette {
     attachment_color: Color::Rgb(208, 135, 112),
 };
 
-const GRUVBOX: Palette = Palette {
+pub(super) const GRUVBOX: Palette = Palette {
     accent: Color::Rgb(250, 189, 47),
     text: Color::Rgb(235, 219, 178),
     activity: Color::Rgb(213, 196, 161),
@@ -762,7 +631,7 @@ const GRUVBOX: Palette = Palette {
     attachment_color: Color::Rgb(254, 128, 25),
 };
 
-const SOLARIZED_LIGHT: Palette = Palette {
+pub(super) const SOLARIZED_LIGHT: Palette = Palette {
     accent: Color::Rgb(38, 139, 210),
     text: Color::Rgb(88, 110, 117),
     activity: Color::Rgb(101, 123, 131),

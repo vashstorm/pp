@@ -225,6 +225,14 @@ impl Panel {
                     KeyCode::Esc => Action::Cancel(self.saved_theme, self.saved_icons),
                     KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
                     KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
+                    KeyCode::PageUp if !self.sidebar_focus => {
+                        let step = usize::from(self.list_area.height).max(1);
+                        self.jump_selection(self.selected_index().saturating_sub(step))
+                    }
+                    KeyCode::PageDown if !self.sidebar_focus => {
+                        let step = usize::from(self.list_area.height).max(1);
+                        self.jump_selection(self.selected_index().saturating_add(step))
+                    }
                     KeyCode::Home => self.jump_selection(0),
                     KeyCode::End => self.jump_selection(self.list_len().saturating_sub(1)),
                     KeyCode::Enter if self.sidebar_focus => {
@@ -540,5 +548,96 @@ mod tests {
             }
             assert_eq!(preview_ys[0], preview_ys[1], "preview jumped on {w}x{h}");
         }
+    }
+
+    #[test]
+    fn color_theme_list_caps_height_scrolls_and_renders_all_palettes() {
+        let mut panel = Panel::new(Theme::Default, IconMode::Nerd);
+        let _ = panel.set_category(Category::Theme);
+
+        // 常规终端高度下列表框受 MAX_LIST_ROWS 限制，超出时开启滚动。
+        let initial = render_screen(&mut panel, 110, 32);
+        assert!(panel.list_area.height <= render::MAX_LIST_ROWS);
+        assert_eq!(panel.list_area.height, render::MAX_LIST_ROWS);
+        assert_eq!(panel.list_scroll, 0);
+        assert!(initial.contains("Default"));
+        assert!(!initial.contains("Night Owl"));
+        assert!(initial.contains("Live Preview"));
+
+        // PageDown 翻页并更新选中与滚动窗口。
+        assert_eq!(
+            key(&mut panel, KeyCode::PageDown),
+            Action::Preview(
+                Theme::ALL[usize::from(render::MAX_LIST_ROWS)],
+                IconMode::Nerd
+            )
+        );
+        let paged = render_screen(&mut panel, 110, 32);
+        assert!(panel.list_scroll > 0);
+        assert!(paged.contains(Theme::ALL[usize::from(render::MAX_LIST_ROWS)].label()));
+
+        // End 滚动到最末主题，鼠标点击可视行能正确命中滚动偏移后的主题。
+        assert_eq!(
+            key(&mut panel, KeyCode::End),
+            Action::Preview(Theme::NightOwl, IconMode::Nerd)
+        );
+        let at_end = render_screen(&mut panel, 110, 32);
+        assert!(at_end.contains("Night Owl"), "{at_end}");
+        assert!(!at_end.contains("Tokyo Night"), "{at_end}");
+        assert_eq!(
+            panel.list_scroll,
+            Theme::ALL.len() - usize::from(render::MAX_LIST_ROWS)
+        );
+
+        let first_visible_row = panel.list_area.y;
+        let first_visible_theme = Theme::ALL[panel.list_scroll];
+        assert_eq!(
+            panel.handle(Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: panel.list_area.x + 4,
+                row: first_visible_row,
+                modifiers: KeyModifiers::NONE,
+            })),
+            Action::Preview(first_visible_theme, IconMode::Nerd)
+        );
+
+        assert_eq!(
+            key(&mut panel, KeyCode::PageUp),
+            Action::Preview(
+                Theme::ALL[panel
+                    .list_scroll
+                    .saturating_sub(usize::from(render::MAX_LIST_ROWS))],
+                IconMode::Nerd
+            )
+        );
+        assert_eq!(
+            key(&mut panel, KeyCode::Home),
+            Action::Preview(Theme::Default, IconMode::Nerd)
+        );
+        let back_top = render_screen(&mut panel, 110, 32);
+        assert_eq!(panel.list_scroll, 0);
+        assert!(back_top.contains("Default"));
+
+        // 全部 20 套主题均能完整渲染，且任何单元格不回退到 Reset 背景。
+        for theme in Theme::ALL {
+            let mut themed = Panel::new(theme, IconMode::Nerd);
+            let _ = themed.set_category(Category::Theme);
+            set_active(theme, IconMode::Nerd);
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            terminal
+                .draw(|frame| themed.draw(frame, frame.area()))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            for y in 0..30 {
+                for x in 0..100 {
+                    assert_ne!(
+                        buffer[(x, y)].bg,
+                        ratatui::style::Color::Reset,
+                        "cell ({x},{y}) fell back to Reset bg for theme {theme:?}"
+                    );
+                }
+            }
+        }
+        set_active(Theme::Default, IconMode::Nerd);
     }
 }
