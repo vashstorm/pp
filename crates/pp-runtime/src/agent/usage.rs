@@ -18,14 +18,44 @@ pub(in crate::agent) struct SessionEstimate {
     messages: MessageBytes,
     /// 计入用量的消息数：Completion 跳过 system／developer，Response 计全部 item。
     session_messages: u64,
+    /// 缓存的请求骨架字节数；[`Self::invalidate`] 或骨架指纹变化时失效。
+    skeleton: Option<(SkeletonKey, u64)>,
     /// 下一次记账必须丢弃全部累计并重算。
     stale: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SkeletonKey {
+    protocol: u8,
+    model_len: usize,
+    tools_len: usize,
+    instructions_len: usize,
+}
+
+impl SkeletonKey {
+    fn of(session: &Session) -> Self {
+        match session {
+            Session::Completion(request) => Self {
+                protocol: 0,
+                model_len: request.model.len(),
+                tools_len: request.tools.as_ref().map_or(0, Vec::len),
+                instructions_len: 0,
+            },
+            Session::Response(request) => Self {
+                protocol: 1,
+                model_len: request.model.as_deref().map_or(0, str::len),
+                tools_len: request.tools.as_ref().map_or(0, Vec::len),
+                instructions_len: request.instructions.as_deref().map_or(0, str::len),
+            },
+        }
+    }
 }
 
 impl SessionEstimate {
     /// 历史被整段替换后丢弃累计；下一次 [`Self::tokens`] 全量重算。
     pub(in crate::agent) fn invalidate(&mut self) {
         self.stale = true;
+        self.skeleton = None;
     }
 
     /// 返回原生请求当前的估算 token 数；只序列化请求骨架与新增消息。
@@ -79,7 +109,15 @@ impl SessionEstimate {
         if self.session_messages == 0 {
             return Ok(0);
         }
-        let skeleton = Self::skeleton_bytes(session)?;
+        let key = SkeletonKey::of(session);
+        let skeleton = match self.skeleton {
+            Some((cached_key, bytes)) if cached_key == key => bytes,
+            _ => {
+                let bytes = Self::skeleton_bytes(session)?;
+                self.skeleton = Some((key, bytes));
+                bytes
+            }
+        };
         Ok(estimate_tokens_from_bytes(
             skeleton.saturating_add(self.messages.total()),
         ))

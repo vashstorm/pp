@@ -130,6 +130,16 @@ fn fold_char(ch: char) -> char {
 }
 
 fn normalize_fuzzy(text: &str) -> String {
+    if text.is_ascii() {
+        let mut output = String::with_capacity(text.len());
+        for (index, line) in text.split('\n').enumerate() {
+            if index > 0 {
+                output.push('\n');
+            }
+            output.push_str(line.trim_end_matches(ecma_whitespace));
+        }
+        return output;
+    }
     let nfkc: String = text.nfkc().collect();
     let mut output = String::with_capacity(nfkc.len());
     for (index, line) in nfkc.split('\n').enumerate() {
@@ -171,43 +181,48 @@ struct MappedText {
 impl MappedText {
     fn new(original: &str) -> Self {
         let mut mapped = Self {
-            text: String::new(),
+            text: String::with_capacity(original.len()),
             spans: Vec::new(),
         };
         let mut source_start = 0;
         for part in original.split_inclusive('\n') {
             let line_start = mapped.text.len();
             let body = part.strip_suffix('\n').unwrap_or(part);
-            for (offset, grapheme) in body.grapheme_indices(true) {
-                let range = source_start + offset..source_start + offset + grapheme.len();
-                if grapheme.is_ascii() {
-                    mapped.push(range, grapheme, true);
-                } else {
-                    let folded: String = grapheme.nfkc().map(fold_char).collect();
-                    mapped.push(range, &folded, folded == grapheme);
+            if body.is_ascii() {
+                let trimmed = body.trim_end_matches(ecma_whitespace);
+                mapped.push(source_start..source_start + trimmed.len(), trimmed, true);
+            } else {
+                for (offset, grapheme) in body.grapheme_indices(true) {
+                    let range = source_start + offset..source_start + offset + grapheme.len();
+                    if grapheme.is_ascii() {
+                        mapped.push(range, grapheme, true);
+                    } else {
+                        let folded: String = grapheme.nfkc().map(fold_char).collect();
+                        mapped.push(range, &folded, folded == grapheme);
+                    }
                 }
-            }
-            let kept = line_start
-                + mapped.text[line_start..]
-                    .trim_end_matches(ecma_whitespace)
-                    .len();
-            mapped.text.truncate(kept);
-            while mapped
-                .spans
-                .last()
-                .is_some_and(|s| s.normalized.start >= kept)
-            {
-                mapped.spans.pop();
-            }
-            if let Some(last) = mapped.spans.last_mut()
-                && last.normalized.end > kept
-            {
-                if last.exact {
-                    last.original.end -= last.normalized.end - kept;
-                } else {
-                    last.exact = false;
+                let kept = line_start
+                    + mapped.text[line_start..]
+                        .trim_end_matches(ecma_whitespace)
+                        .len();
+                mapped.text.truncate(kept);
+                while mapped
+                    .spans
+                    .last()
+                    .is_some_and(|s| s.normalized.start >= kept)
+                {
+                    mapped.spans.pop();
                 }
-                last.normalized.end = kept;
+                if let Some(last) = mapped.spans.last_mut()
+                    && last.normalized.end > kept
+                {
+                    if last.exact {
+                        last.original.end -= last.normalized.end - kept;
+                    } else {
+                        last.exact = false;
+                    }
+                    last.normalized.end = kept;
+                }
             }
             if part.ends_with('\n') {
                 mapped.push(

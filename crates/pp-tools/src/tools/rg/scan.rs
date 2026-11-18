@@ -2,9 +2,6 @@
 use anyhow::{Context, Result, ensure};
 use grep_matcher::Matcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
-use pp_config::config::RgSettings;
-use pp_core::cancellation;
-use pp_core::cancellation::CancellationToken;
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
@@ -18,7 +15,19 @@ use super::args::OutputMode;
 use super::paths::Target;
 use super::{MAX_FILE, MAX_LINE};
 
-#[derive(Clone)]
+use pp_core::cancellation;
+use pp_core::cancellation::CancellationToken;
+
+pub(super) fn build_searcher(multiline: bool, before: usize, after: usize) -> Searcher {
+    SearcherBuilder::new()
+        .line_number(true)
+        .multi_line(multiline)
+        .binary_detection(BinaryDetection::quit(b'\0'))
+        .before_context(before)
+        .after_context(after)
+        .heap_limit(Some(64 * 1024 * 1024))
+        .build()
+}
 pub(super) struct Row {
     pub(super) number: usize,
     pub(super) text: String,
@@ -50,6 +59,7 @@ struct Collector<'a, M> {
     limit: usize,
     output_mode: OutputMode,
     multiline: bool,
+    collect_rows: bool,
     ranges: &'a [(usize, usize)],
     token: &'a CancellationToken,
     deadline: Instant,
@@ -62,21 +72,21 @@ impl<M: Matcher> Collector<'_, M> {
     fn row(&mut self, bytes: &[u8], number: usize, matched: bool) {
         let raw = String::from_utf8_lossy(bytes);
         let raw = raw.trim_end_matches(['\n', '\r']);
-        let mut offset = if matched {
-            self.matcher
-                .find(raw.as_bytes())
-                .ok()
-                .flatten()
-                .map(|m| m.start())
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        while offset > 0 && !raw.is_char_boundary(offset) {
-            offset -= 1;
-        }
         let truncated = raw.len() > MAX_LINE;
         let (text, column) = if truncated {
+            let mut offset = if matched {
+                self.matcher
+                    .find(raw.as_bytes())
+                    .ok()
+                    .flatten()
+                    .map(|m| m.start())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            while offset > 0 && !raw.is_char_boundary(offset) {
+                offset -= 1;
+            }
             let mut start = if matched && offset > MAX_LINE.saturating_sub(3) {
                 offset.saturating_sub((MAX_LINE - 6) / 2)
             } else {
@@ -180,8 +190,10 @@ impl<M: Matcher> Sink for Collector<'_, M> {
         if self.matches > self.limit {
             return Ok(false);
         }
-        for (i, line) in m.bytes().split_inclusive(|b| *b == b'\n').enumerate() {
-            self.row(line, n + i, true);
+        if self.collect_rows {
+            for (i, line) in m.bytes().split_inclusive(|b| *b == b'\n').enumerate() {
+                self.row(line, n + i, true);
+            }
         }
         Ok(true)
     }
@@ -218,16 +230,20 @@ impl Read for CheckedReader<'_> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_file<M: Matcher>(
     matcher: &M,
+    searcher: &mut Searcher,
+    buffer: &mut Vec<u8>,
     target: Target,
-    settings: RgSettings,
+    context_before: usize,
+    context_after: usize,
     multiline: bool,
     cap: usize,
     max_count: Option<usize>,
     output_mode: OutputMode,
+    collect_rows: bool,
     capture_snapshot: bool,
     token: &CancellationToken,
     deadline: Instant,
-) -> Result<Option<Found>>
+) -> Result<(Option<Found>, Option<String>)>
 where
     M::Error: std::fmt::Display,
 {
@@ -239,6 +255,8 @@ where
         .with_context(|| format!("opening {}", target.display))?;
     let metadata = file.metadata()?;
     ensure!(metadata.is_file(), "rg requires a regular file");
+    let large_warning = (metadata.len() > MAX_FILE && (multiline || !target.explicit))
+        .then(|| format!("{}: searched only the first 4 MiB", target.display));
     let mut collector = Collector {
         matcher,
         rows: BTreeMap::new(),
@@ -247,35 +265,32 @@ where
         max_count,
         output_mode,
         multiline,
+        collect_rows,
         ranges: &target.ranges,
         token,
         deadline,
     };
-    let mut searcher = SearcherBuilder::new()
-        .line_number(true)
-        .multi_line(multiline)
-        .binary_detection(BinaryDetection::quit(b'\0'))
-        .before_context(settings.context_before)
-        .after_context(settings.context_after)
-        .heap_limit(Some(64 * 1024 * 1024))
-        .build();
     let mut bytes = None;
     let found = if metadata.len() <= MAX_FILE || !target.explicit || multiline {
-        let mut buffer = Vec::new();
+        buffer.clear();
+        let reserve = metadata.len().min(MAX_FILE) as usize;
+        if buffer.capacity() < reserve {
+            buffer.reserve(reserve - buffer.capacity());
+        }
         CheckedReader {
             file,
             token,
             deadline,
         }
         .take(MAX_FILE)
-        .read_to_end(&mut buffer)?;
+        .read_to_end(buffer)?;
         if capture_snapshot
             && metadata.len() <= MAX_FILE
-            && let Ok(s) = std::str::from_utf8(&buffer)
+            && let Ok(s) = std::str::from_utf8(buffer)
         {
             bytes = Some(Arc::<str>::from(s));
         }
-        searcher.search_slice(matcher, &buffer, &mut collector)
+        searcher.search_slice(matcher, buffer, &mut collector)
     } else {
         searcher.search_reader(
             matcher,
@@ -290,36 +305,43 @@ where
     check(token, deadline)?;
     found.map_err(|e| anyhow::anyhow!("rg search failed: {e}"))?;
     if collector.matches == 0 {
-        return Ok(None);
+        return Ok((None, large_warning));
     }
-    let matched: Vec<usize> = collector
-        .rows
-        .values()
-        .filter(|r| r.matched)
-        .map(|r| r.number)
-        .collect();
     let matches = collector.matches;
-    let rows = collector
-        .rows
-        .into_values()
-        .filter(|r| {
-            matched.iter().any(|n| {
-                r.number >= n.saturating_sub(settings.context_before)
-                    && r.number <= n.saturating_add(settings.context_after)
+    let rows = if collect_rows {
+        let matched: Vec<usize> = collector
+            .rows
+            .values()
+            .filter(|r| r.matched)
+            .map(|r| r.number)
+            .collect();
+        collector
+            .rows
+            .into_values()
+            .filter(|r| {
+                matched.iter().any(|n| {
+                    r.number >= n.saturating_sub(context_before)
+                        && r.number <= n.saturating_add(context_after)
+                })
             })
-        })
-        .collect();
-    Ok(Some(Found {
-        target,
-        rows,
-        matches: if output_mode == OutputMode::Content {
-            matches.min(cap)
-        } else {
-            matches
-        },
-        capped: output_mode == OutputMode::Content && matches > cap,
-        bytes,
-    }))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok((
+        Some(Found {
+            target,
+            rows,
+            matches: if output_mode == OutputMode::Content {
+                matches.min(cap)
+            } else {
+                matches
+            },
+            capped: output_mode == OutputMode::Content && matches > cap,
+            bytes,
+        }),
+        large_warning,
+    ))
 }
 fn libc_nofollow() -> i32 {
     (rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32

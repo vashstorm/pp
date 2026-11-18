@@ -42,13 +42,105 @@ fn glob_path(path: &str) -> bool {
     path.contains(['*', '?', '[', '{'])
 }
 
-/// 遍历剪枝：普通 entry 走词法快路径；symlink 与无法取得类型的 entry 取规范化
-/// 结果，避免链接指向拒绝根时被词法前缀误放行（`follow_links(false)` 已保证
-/// 不跨越目录链接）。
-fn sandbox_denied_entry(sandbox: &pp_sandbox::Sandbox, entry: &ignore::DirEntry) -> bool {
+/// 遍历剪枝：普通 entry 在与拒绝根不相交的遍历根下直接放行，否则走词法快路径；
+/// symlink 与无法取得类型的 entry 取规范化结果，避免链接指向拒绝根时被词法前缀误放行
+/// （`follow_links(false)` 已保证不跨越目录链接）。
+fn sandbox_denied_entry(
+    policy: Option<&pp_sandbox::Policy>,
+    can_contain_denied: bool,
+    entry: &ignore::DirEntry,
+) -> bool {
+    let Some(policy) = policy else {
+        return false;
+    };
     match entry.file_type() {
-        Some(kind) if !kind.is_symlink() => sandbox.is_read_denied(entry.path()),
-        _ => sandbox.is_read_denied_resolved(entry.path()),
+        Some(kind) if !kind.is_symlink() => {
+            can_contain_denied && policy.is_read_denied(entry.path())
+        }
+        _ => policy.is_read_denied_resolved(entry.path()),
+    }
+}
+
+pub(super) struct LazyWalk {
+    walk: ignore::Walk,
+    root: PathBuf,
+    cwd: PathBuf,
+    matcher: Option<GlobMatcher>,
+    raw_plain: bool,
+    exclude: Vec<GlobMatcher>,
+    exclusions: Vec<String>,
+    token: CancellationToken,
+    deadline: Instant,
+    aborted: bool,
+}
+
+impl Iterator for LazyWalk {
+    type Item = Result<Target>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.aborted {
+            return None;
+        }
+        for item in self.walk.by_ref() {
+            if let Err(error) = check(&self.token, self.deadline) {
+                self.aborted = true;
+                return Some(Err(error));
+            }
+            let Ok(item) = item else { continue };
+            if !item.file_type().is_some_and(|f| f.is_file()) {
+                continue;
+            }
+            let path = item.path();
+            let rel = path.strip_prefix(&self.root).unwrap_or(path);
+            if let Some(m) = &self.matcher
+                && !m.is_match(rel)
+                && !(self.raw_plain && path.file_name().is_some_and(|n| m.is_match(n)))
+            {
+                continue;
+            }
+            if !self.exclude.is_empty()
+                && self.exclude.iter().zip(&self.exclusions).any(|(m, e)| {
+                    if e.contains('/') {
+                        path.strip_prefix(&self.cwd)
+                            .unwrap_or(path)
+                            .ancestors()
+                            .any(|candidate| m.is_match(candidate))
+                    } else {
+                        rel.components().any(|c| m.is_match(c.as_os_str()))
+                    }
+                })
+            {
+                continue;
+            }
+            let display = path
+                .strip_prefix(&self.cwd)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned();
+            return Some(Ok(Target {
+                path: path.to_owned(),
+                display,
+                ranges: vec![],
+                explicit: false,
+            }));
+        }
+        None
+    }
+}
+
+pub(super) enum TargetIter {
+    Walk(Box<LazyWalk>),
+    List(std::vec::IntoIter<Target>),
+}
+
+impl Iterator for TargetIter {
+    type Item = Result<Target>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Walk(walk) => walk.next(),
+            Self::List(list) => list.next().map(Ok),
+        }
     }
 }
 
@@ -98,7 +190,7 @@ pub(super) fn parse_paths(
     token: &CancellationToken,
     deadline: Instant,
     sandbox: Option<&std::sync::Arc<pp_sandbox::Sandbox>>,
-) -> Result<(Vec<Target>, bool, Vec<String>)> {
+) -> Result<(TargetIter, bool, Vec<String>)> {
     let input = if input.trim().is_empty() { "." } else { input };
     let normalized = if cwd.join(input).exists() {
         input.to_owned()
@@ -174,9 +266,11 @@ pub(super) fn parse_paths(
     if entries.is_empty() {
         entries.push(".".into());
     }
+    let policy = sandbox.map(|sbx| sbx.policy()).transpose()?.flatten();
     let one_entry = entries.len() == 1;
     let mut targets = BTreeMap::new();
     let mut missing = Vec::new();
+    let mut lazy_walk = None;
     for entry in entries {
         check(token, deadline)?;
         let (raw, ranges) = if cwd.join(&entry).symlink_metadata().is_ok() {
@@ -235,8 +329,8 @@ pub(super) fn parse_paths(
                     .to_string_lossy()
                     .into_owned();
                 let abs = fs::canonicalize(&abs)?;
-                if let Some(sbx) = sandbox {
-                    sbx.check_read(&abs)?;
+                if let Some(policy) = &policy {
+                    policy.check_read(&abs)?;
                 }
                 add_target(
                     &mut targets,
@@ -280,16 +374,19 @@ pub(super) fn parse_paths(
         }
         reject_symlink_components(&root)?;
         let root = fs::canonicalize(root)?;
-        if let Some(sbx) = sandbox {
-            sbx.check_read(&root)?;
+        if let Some(policy) = &policy {
+            policy.check_read(&root)?;
         }
+        let can_contain_denied = policy
+            .as_ref()
+            .is_some_and(|p| p.can_contain_denied_read(&root));
         let matcher = pat.as_deref().map(glob).transpose()?;
         let exclude: Vec<_> = exclusions.iter().map(|e| glob(e)).collect::<Result<_>>()?;
         let filter_exclude = exclude.clone();
         let filter_patterns = exclusions.clone();
         let filter_root = root.clone();
         let filter_cwd = cwd.to_owned();
-        let filter_sandbox = sandbox.cloned();
+        let filter_policy = policy.clone();
         let mut builder = ignore::WalkBuilder::new(&root);
         builder
             .hidden(false)
@@ -306,13 +403,13 @@ pub(super) fn parse_paths(
                 if entry.file_name() == ".git" {
                     return false;
                 }
-                let path = entry.path();
-                if filter_sandbox
-                    .as_ref()
-                    .is_some_and(|sbx| sandbox_denied_entry(sbx, entry))
-                {
+                if sandbox_denied_entry(filter_policy.as_deref(), can_contain_denied, entry) {
                     return false;
                 }
+                if filter_exclude.is_empty() {
+                    return true;
+                }
+                let path = entry.path();
                 let rel = path.strip_prefix(&filter_root).unwrap_or(path);
                 !filter_exclude
                     .iter()
@@ -346,49 +443,28 @@ pub(super) fn parse_paths(
                     .map_err(|error| anyhow::anyhow!("invalid -g glob: {error}"))?,
             );
         }
-        for item in builder.build() {
-            check(token, deadline)?;
-            let Ok(item) = item else { continue };
-            let path = item.path();
-            if path.components().any(|c| c.as_os_str() == ".git")
-                || !item.file_type().is_some_and(|f| f.is_file())
-            {
-                continue;
-            }
-            let rel = path.strip_prefix(&root).unwrap_or(path);
-            if let Some(m) = &matcher {
-                let plain = !raw.contains('/');
-                if !m.is_match(rel) && !(plain && path.file_name().is_some_and(|n| m.is_match(n))) {
-                    continue;
-                }
-            }
-            if exclude.iter().zip(&exclusions).any(|(m, e)| {
-                if e.contains('/') {
-                    path.strip_prefix(cwd)
-                        .unwrap_or(path)
-                        .ancestors()
-                        .any(|candidate| m.is_match(candidate))
-                } else {
-                    rel.components().any(|c| m.is_match(c.as_os_str()))
-                }
-            }) {
-                continue;
-            }
-            let display = path
-                .strip_prefix(cwd)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .into_owned();
-            add_target(
-                &mut targets,
-                Target {
-                    path: path.to_owned(),
-                    display,
-                    ranges: vec![],
-                    explicit: false,
-                },
-            );
+        let stream = LazyWalk {
+            walk: builder.build(),
+            root,
+            cwd: cwd.to_owned(),
+            matcher,
+            raw_plain: !raw.contains('/'),
+            exclude,
+            exclusions: exclusions.clone(),
+            token: token.clone(),
+            deadline,
+            aborted: false,
+        };
+        if one_entry {
+            lazy_walk = Some(stream);
+            break;
         }
+        for target in stream {
+            add_target(&mut targets, target?);
+        }
+    }
+    if let Some(walk) = lazy_walk {
+        return Ok((TargetIter::Walk(Box::new(walk)), false, missing));
     }
     ensure!(
         !targets.is_empty() || missing.is_empty(),
@@ -401,7 +477,11 @@ pub(super) fn parse_paths(
             .values()
             .next()
             .is_some_and(|target| target.explicit);
-    Ok((targets.into_values().collect(), single, missing))
+    Ok((
+        TargetIter::List(targets.into_values().collect::<Vec<_>>().into_iter()),
+        single,
+        missing,
+    ))
 }
 
 #[cfg(test)]
@@ -411,10 +491,14 @@ mod tests {
     use pp_sandbox::{ProbeResult, Sandbox};
 
     fn denied(entries: &[ignore::DirEntry], sandbox: &Sandbox, name: &str) -> bool {
+        let policy = sandbox.policy().unwrap();
+        let can_contain = policy
+            .as_ref()
+            .is_some_and(|p| p.can_contain_denied_read(p.cwd()));
         entries
             .iter()
             .find(|entry| entry.file_name() == name)
-            .map(|entry| sandbox_denied_entry(sandbox, entry))
+            .map(|entry| sandbox_denied_entry(policy.as_deref(), can_contain, entry))
             .unwrap_or_else(|| panic!("missing walk entry {name}"))
     }
 

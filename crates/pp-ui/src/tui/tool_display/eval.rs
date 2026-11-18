@@ -96,7 +96,7 @@ fn sanitize_for_highlight(text: &str) -> String {
             out.push('\n');
         }
         let mut column = 0usize;
-        for grapheme in Line::raw(line).styled_graphemes(Style::default()) {
+        for grapheme in Span::raw(line).styled_graphemes(Style::default()) {
             if grapheme.symbol == "\t" {
                 let spaces = 4 - column % 4;
                 for _ in 0..spaces {
@@ -105,7 +105,7 @@ fn sanitize_for_highlight(text: &str) -> String {
                 column += spaces;
             } else {
                 out.push_str(grapheme.symbol);
-                column += Line::raw(grapheme.symbol).width();
+                column += Span::raw(grapheme.symbol).width();
             }
         }
     }
@@ -156,7 +156,7 @@ pub(in crate::tui) fn eval_code_lines(
                 if spans.is_empty() {
                     Line::styled(String::new(), base_style)
                 } else {
-                    Line::from(spans.clone()).style(bg_only)
+                    Line::from((**spans).clone()).style(bg_only)
                 }
             })
             .collect()

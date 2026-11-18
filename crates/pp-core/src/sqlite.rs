@@ -16,7 +16,9 @@ pub fn open(path: &Path) -> Result<Connection> {
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     let directory = fs::symlink_metadata(dir)?;
     ensure!(directory.is_dir(), "Database directory unavailable.");
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    if directory.permissions().mode() & 0o777 != 0o700 {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
     check_file(path)?;
     check_sidecars(path)?;
     let file = OpenOptions::new()

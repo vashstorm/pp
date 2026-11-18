@@ -26,14 +26,18 @@ const FIELDS: &[&str] = &[
 const CONFLICT: &str = "Legacy migration conflict; source files and database were preserved.";
 
 pub fn initialize(dir: &Path, cancellation: &CancellationToken) -> Result<()> {
+    initialize_store(dir, cancellation).map(|_| ())
+}
+
+pub fn initialize_store(dir: &Path, cancellation: &CancellationToken) -> Result<AgentStore> {
     let path = dir.join("agent.db");
     let mut store = AgentStore::open(&path)?;
     if stage(&store)?.as_deref() == Some("ready") {
-        return Ok(());
+        return Ok(store);
     }
     let _lock = StoreLock::acquire(&path, cancellation)?;
     if stage(&store)?.as_deref() == Some("ready") {
-        return Ok(());
+        return Ok(store);
     }
     check(cancellation)?;
     if stage(&store)?.is_none() {
@@ -50,7 +54,7 @@ pub fn initialize(dir: &Path, cancellation: &CancellationToken) -> Result<()> {
         .conn
         .execute("UPDATE migration_state SET stage='ready' WHERE id=1", [])
         .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
-    Ok(())
+    Ok(store)
 }
 
 fn stage(store: &AgentStore) -> Result<Option<String>> {

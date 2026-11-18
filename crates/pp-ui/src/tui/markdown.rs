@@ -30,19 +30,24 @@ mod highlight;
 pub(super) fn highlight_code_document(
     language: &str,
     text: &str,
-) -> Option<std::sync::Arc<Vec<Vec<Span<'static>>>>> {
+) -> Option<std::sync::Arc<Vec<Arc<Vec<Span<'static>>>>>> {
     highlight::highlight(Some(language), text)
 }
 
 pub(super) fn highlight_shell_document(
     language: &str,
     text: &str,
-) -> Option<std::sync::Arc<Vec<Vec<Span<'static>>>>> {
+) -> Option<std::sync::Arc<Vec<Arc<Vec<Span<'static>>>>>> {
     highlight_code_document(language, text)
 }
 
 pub(super) fn highlight_shell_segment(language: &str, text: &str) -> Option<Vec<Span<'static>>> {
-    highlight::highlight(Some(language), text).and_then(|lines| lines.first().cloned())
+    highlight::highlight(Some(language), text)
+        .and_then(|lines| lines.first().map(|spans| (**spans).clone()))
+}
+
+pub(super) fn prewarm_highlight() {
+    highlight::prewarm();
 }
 
 pub(super) fn release_highlight_context(id: u64) {
@@ -56,9 +61,23 @@ pub(super) fn highlight_context(id: u64, epoch: u64) {
 const TAB_STOP: usize = 4;
 const CELL_MIN_WIDTH: usize = 3;
 
+enum CachedBlock {
+    Plain {
+        width: u16,
+        rows: Vec<Line<'static>>,
+    },
+    Code {
+        width: u16,
+        top: Line<'static>,
+        lines: Vec<(Arc<Vec<Span<'static>>>, Vec<Line<'static>>)>,
+        closed: bool,
+        bottom: Option<Line<'static>>,
+    },
+}
+
 pub(super) struct MarkdownDocument {
     blocks: Vec<Block>,
-    cached: Vec<Option<(u16, Vec<Line<'static>>)>>,
+    cached: Vec<Option<CachedBlock>>,
     pub(super) table_tail_start: Option<usize>,
 }
 
@@ -86,7 +105,7 @@ struct WrapLine {
 struct CodeBlock {
     lang: Option<String>,
     /// 已着色的每行 spans（tab 已展开；高亮失败时为纯色单 span）。
-    lines: Arc<Vec<Vec<Span<'static>>>>,
+    lines: Arc<Vec<Arc<Vec<Span<'static>>>>>,
     closed: bool,
     first: Vec<Span<'static>>,
     rest: Vec<Span<'static>>,
@@ -121,7 +140,7 @@ impl MarkdownDocument {
         matches!(self.blocks.last(), Some(Block::Table(_)))
     }
 
-    // 保留全篇语义解析，只复用语义相等块的物理行。
+    // 保留全篇语义解析，只复用语义相等块（或正在生长的同一代码块已定型行）的物理行。
     pub(super) fn update(&mut self, source: &str, streaming: bool) {
         let mut next = parse_streaming(source, streaming);
         next.cached = next
@@ -129,11 +148,16 @@ impl MarkdownDocument {
             .iter()
             .enumerate()
             .map(|(i, block)| {
-                if self.blocks.get(i) == Some(block) {
-                    self.cached.get_mut(i).and_then(Option::take)
-                } else {
-                    None
-                }
+                let matches = match (self.blocks.get(i), block) {
+                    (Some(prev), next) if prev == next => true,
+                    (Some(Block::Code(prev)), Block::Code(next)) => {
+                        prev.lang == next.lang && prev.first == next.first && prev.rest == next.rest
+                    }
+                    _ => false,
+                };
+                matches
+                    .then(|| self.cached.get_mut(i).and_then(Option::take))
+                    .flatten()
             })
             .collect();
         *self = next;
@@ -143,6 +167,7 @@ impl MarkdownDocument {
             return Vec::new();
         }
         self.cached.resize_with(self.blocks.len(), || None);
+        let width_usize = usize::from(width);
         let mut out = Vec::new();
         let mut previous_group = None;
         for (i, block) in self.blocks.iter().enumerate() {
@@ -154,13 +179,92 @@ impl MarkdownDocument {
                 out.push(Line::from(""));
             }
             previous_group = group;
-            let slot = &mut self.cached[i];
-            if slot.as_ref().is_none_or(|(w, _)| *w != width) {
-                let mut rows = Vec::new();
-                layout_block(block, usize::from(width), &mut rows);
-                *slot = Some((width, rows));
+            match (block, &mut self.cached[i]) {
+                (
+                    Block::Code(cb),
+                    Some(CachedBlock::Code {
+                        width: cached_width,
+                        top,
+                        lines,
+                        closed,
+                        bottom,
+                    }),
+                ) if *cached_width == width => {
+                    let rest = fit_prefix(&cb.rest, width_usize);
+                    let body_width = width_usize.saturating_sub(spans_width(&rest)).max(1);
+                    let mut old_iter = std::mem::take(lines).into_iter();
+                    let mut rebuilt = Vec::with_capacity(cb.lines.len());
+                    for line_spans in cb.lines.iter() {
+                        let reused = old_iter.next().and_then(|(old_spans, old_rows)| {
+                            (Arc::ptr_eq(&old_spans, line_spans) || *old_spans == **line_spans)
+                                .then_some(old_rows)
+                        });
+                        let rows = match reused {
+                            Some(rows) => rows,
+                            None => {
+                                let mut rows = Vec::new();
+                                wrap_code_line(
+                                    line_spans,
+                                    &rest,
+                                    width_usize,
+                                    body_width,
+                                    &mut rows,
+                                );
+                                rows
+                            }
+                        };
+                        rebuilt.push((line_spans.clone(), rows));
+                    }
+                    *lines = rebuilt;
+                    if *closed != cb.closed {
+                        *closed = cb.closed;
+                        *bottom = cb.closed.then(|| code_bottom_line(cb, width_usize));
+                    }
+                    out.push(top.clone());
+                    for (_, rows) in lines.iter() {
+                        out.extend(rows.iter().cloned());
+                    }
+                    if let Some(bottom) = bottom {
+                        out.push(bottom.clone());
+                    }
+                }
+                (Block::Code(cb), slot) => {
+                    let top = code_top_line(cb, width_usize);
+                    let rest = fit_prefix(&cb.rest, width_usize);
+                    let body_width = width_usize.saturating_sub(spans_width(&rest)).max(1);
+                    let mut lines = Vec::with_capacity(cb.lines.len());
+                    for line_spans in cb.lines.iter() {
+                        let mut rows = Vec::new();
+                        wrap_code_line(line_spans, &rest, width_usize, body_width, &mut rows);
+                        lines.push((line_spans.clone(), rows));
+                    }
+                    let bottom = cb.closed.then(|| code_bottom_line(cb, width_usize));
+                    out.push(top.clone());
+                    for (_, rows) in &lines {
+                        out.extend(rows.iter().cloned());
+                    }
+                    if let Some(bottom_line) = &bottom {
+                        out.push(bottom_line.clone());
+                    }
+                    *slot = Some(CachedBlock::Code {
+                        width,
+                        top,
+                        lines,
+                        closed: cb.closed,
+                        bottom,
+                    });
+                }
+                (_, slot) => {
+                    if !matches!(slot, Some(CachedBlock::Plain { width: w, .. }) if *w == width) {
+                        let mut rows = Vec::new();
+                        layout_block(block, width_usize, &mut rows);
+                        *slot = Some(CachedBlock::Plain { width, rows });
+                    }
+                    if let Some(CachedBlock::Plain { rows, .. }) = slot {
+                        out.extend(rows.iter().cloned());
+                    }
+                }
             }
-            out.extend(slot.as_ref().expect("块排版已完成").1.iter().cloned());
         }
         out
     }
@@ -279,32 +383,53 @@ fn layout_paragraph(lines: &[WrapLine], width: usize, out: &mut Vec<Line<'static
     }
 }
 
-fn layout_code(cb: &CodeBlock, width: usize, out: &mut Vec<Line<'static>>) {
+fn code_top_line(cb: &CodeBlock, width: usize) -> Line<'static> {
     let first = fit_prefix(&cb.first, width);
-    let rest = fit_prefix(&cb.rest, width);
     let first_width = width.saturating_sub(spans_width(&first)).max(1);
-    let body_width = width.saturating_sub(spans_width(&rest)).max(1);
     let mut top = first;
     top.extend(frame_top(cb.lang.as_deref(), first_width).spans);
-    out.push(Line::from(top));
+    Line::from(top)
+}
+
+fn code_bottom_line(cb: &CodeBlock, width: usize) -> Line<'static> {
+    let rest = fit_prefix(&cb.rest, width);
+    let body_width = width.saturating_sub(spans_width(&rest)).max(1);
+    let mut bottom = rest;
+    bottom.extend(rule_line(body_width).spans);
+    Line::from(bottom)
+}
+
+fn wrap_code_line(
+    line_spans: &[Span<'static>],
+    rest: &[Span<'static>],
+    width: usize,
+    body_width: usize,
+    out: &mut Vec<Line<'static>>,
+) {
+    let wrapped = wrap(WrapMode::Char, line_spans, body_width, body_width);
+    if wrapped.is_empty() {
+        out.push(Line::from(rest.to_vec()));
+        return;
+    }
+    for line in wrapped {
+        let mut spans = fit_prefix(
+            rest,
+            width.saturating_sub(spans_width(&line)).saturating_add(1),
+        );
+        spans.extend(line);
+        out.push(Line::from(spans));
+    }
+}
+
+fn layout_code(cb: &CodeBlock, width: usize, out: &mut Vec<Line<'static>>) {
+    let rest = fit_prefix(&cb.rest, width);
+    let body_width = width.saturating_sub(spans_width(&rest)).max(1);
+    out.push(code_top_line(cb, width));
     for line_spans in cb.lines.iter() {
-        let wrapped = wrap(WrapMode::Char, line_spans, body_width, body_width);
-        if wrapped.is_empty() {
-            out.push(Line::from(rest.clone()));
-        }
-        for line in wrapped {
-            let mut spans = fit_prefix(
-                &rest,
-                width.saturating_sub(spans_width(&line)).saturating_add(1),
-            );
-            spans.extend(line);
-            out.push(Line::from(spans));
-        }
+        wrap_code_line(line_spans, &rest, width, body_width, out);
     }
     if cb.closed {
-        let mut bottom = rest;
-        bottom.extend(rule_line(body_width).spans);
-        out.push(Line::from(bottom));
+        out.push(code_bottom_line(cb, width));
     }
 }
 

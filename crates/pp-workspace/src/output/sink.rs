@@ -62,29 +62,44 @@ impl OutputSink {
             return;
         }
         self.total_bytes = self.total_bytes.saturating_add(text.len() as u64);
-        self.newlines = self
-            .newlines
-            .saturating_add(text.bytes().filter(|b| *b == b'\n').count() as u64);
         self.ends_newline = text.ends_with('\n');
-        let mut inline = String::new();
-        for ch in text.chars() {
-            if ch == '\n' {
-                inline.push(ch);
-                self.columns = 0;
-            } else if self.settings.output_max_columns == 0
-                || self.columns.saturating_add(ch.len_utf8()) <= self.settings.output_max_columns
-            {
-                inline.push(ch);
-                self.columns = self.columns.saturating_add(ch.len_utf8());
-            } else {
-                if self.columns <= self.settings.output_max_columns {
-                    inline.push('…');
-                }
-                self.columns = self.settings.output_max_columns.saturating_add(1);
-                self.column_dropped = true;
+        let max_cols = self.settings.output_max_columns;
+        let mut newlines = 0u64;
+        let mut cols = self.columns;
+        let mut overflow = false;
+        for segment in text.split('\n') {
+            if newlines > 0 {
+                cols = 0;
             }
+            cols = cols.saturating_add(segment.len());
+            if max_cols != 0 && cols > max_cols {
+                overflow = true;
+            }
+            newlines += 1;
         }
-        self.inline.append(inline.as_bytes());
+        self.newlines = self.newlines.saturating_add(newlines - 1);
+        if !overflow {
+            self.columns = if self.ends_newline { 0 } else { cols };
+            self.inline.append(text.as_bytes());
+        } else {
+            let mut inline = String::with_capacity(text.len());
+            for ch in text.chars() {
+                if ch == '\n' {
+                    inline.push(ch);
+                    self.columns = 0;
+                } else if max_cols == 0 || self.columns.saturating_add(ch.len_utf8()) <= max_cols {
+                    inline.push(ch);
+                    self.columns = self.columns.saturating_add(ch.len_utf8());
+                } else {
+                    if self.columns <= max_cols {
+                        inline.push('…');
+                    }
+                    self.columns = max_cols.saturating_add(1);
+                    self.column_dropped = true;
+                }
+            }
+            self.inline.append(inline.as_bytes());
+        }
         // 未溢出时只保留内存缓冲；首次溢出才创建资源文件并补写此前正文。
         if self.capture.is_none()
             && !self.capture_error

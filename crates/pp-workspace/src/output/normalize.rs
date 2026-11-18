@@ -24,12 +24,19 @@ pub struct Normalizer {
 impl Normalizer {
     pub fn feed(&mut self, bytes: &[u8], finish: bool) -> String {
         let decoded = if finish {
-            self.decoder.finish()
+            self.decoder.finish_delta()
         } else {
-            self.decoder.append(bytes)
+            self.decoder.append_delta(bytes)
         };
-        self.decoder.text.clear();
-        let mut text = String::new();
+        if matches!(self.escape, EscapeState::Text)
+            && !self.cr
+            && !decoded
+                .bytes()
+                .any(|b| (b < 0x20 && b != b'\n' && b != b'\t') || b >= 0x7f)
+        {
+            return decoded;
+        }
+        let mut text = String::with_capacity(decoded.len());
         for ch in decoded.chars() {
             if let EscapeState::ControlString { bell, escaped } = self.escape {
                 self.escape = if ch == '\u{9c}' || bell && ch == '\u{7}' || escaped && ch == '\\' {

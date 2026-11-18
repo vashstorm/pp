@@ -433,22 +433,47 @@ impl ModelCatalog {
         settings_path: &Path,
         models_path: &Path,
     ) -> Result<Self> {
-        Self::with_settings(settings, settings_path, models_path, false)
+        Self::with_settings(settings, settings_path, models_path, false, None)
+    }
+
+    /// 复用启动期迁移检查时已打开的 `AgentStore` 连接，避免重复开关 WAL 与 `-shm`。
+    pub fn from_migrated_settings_with_store(
+        settings: Settings,
+        settings_path: &Path,
+        models_path: &Path,
+        agent_store: crate::agent_store::AgentStore,
+    ) -> Result<Self> {
+        Self::with_settings(
+            settings,
+            settings_path,
+            models_path,
+            false,
+            Some(agent_store),
+        )
     }
 
     fn load(settings_path: &Path, models_path: &Path, allow_empty: bool) -> Result<Self> {
         // 一次性迁移先于任何 settings.yml 解析：旧四字段由迁移导入 agent.db 并从文件剥离。
-        // 启动期已由 `main::run` 完成迁移的路径改走 [`Self::from_migrated_settings`]。
+        // 启动期已由 `main::run` 完成迁移的路径改走 [`Self::from_migrated_settings_with_store`]。
         let dir = settings_path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        crate::agent_store::initialize(dir, &pp_core::cancellation::CancellationToken::new())?;
+        let store = crate::agent_store::initialize_store(
+            dir,
+            &pp_core::cancellation::CancellationToken::new(),
+        )?;
         let settings: Settings = read_settings(settings_path)?;
         settings
             .validate()
             .with_context(|| format!("loading YAML settings config {}", settings_path.display()))?;
-        Self::with_settings(settings, settings_path, models_path, allow_empty)
+        Self::with_settings(
+            settings,
+            settings_path,
+            models_path,
+            allow_empty,
+            Some(store),
+        )
     }
 
     fn with_settings(
@@ -456,9 +481,13 @@ impl ModelCatalog {
         settings_path: &Path,
         models_path: &Path,
         allow_empty: bool,
+        agent_store: Option<crate::agent_store::AgentStore>,
     ) -> Result<Self> {
         let agent_db_path = settings_path.with_file_name("agent.db");
-        let agent_store = crate::agent_store::AgentStore::open(&agent_db_path)?;
+        let agent_store = match agent_store {
+            Some(store) => store,
+            None => crate::agent_store::AgentStore::open(&agent_db_path)?,
+        };
         let preferences = agent_store.preferences()?;
         preferences.validate()?;
         let store = agent_store.load_auth()?;
@@ -686,6 +715,7 @@ impl ModelCatalog {
             &self.settings_path,
             &self.settings_path.with_file_name("models.yml"),
             true,
+            None,
         )?;
         self.providers = next.providers;
         self.pricing = next.pricing;

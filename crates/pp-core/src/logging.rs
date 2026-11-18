@@ -238,6 +238,10 @@ impl Drop for EventWriter<'_> {
 }
 
 fn open_regular(path: &Path, create_new: bool, create: bool) -> io::Result<File> {
+    open_regular_with_len(path, create_new, create).map(|(file, _)| file)
+}
+
+fn open_regular_with_len(path: &Path, create_new: bool, create: bool) -> io::Result<(File, u64)> {
     let file = OpenOptions::new()
         .read(true)
         .append(true)
@@ -246,13 +250,14 @@ fn open_regular(path: &Path, create_new: bool, create: bool) -> io::Result<File>
         .mode(0o600)
         .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)
         .open(path)?;
-    if !file.metadata()?.is_file() {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "log path is not a regular file",
         ));
     }
-    Ok(file)
+    Ok((file, metadata.len()))
 }
 
 #[cfg(test)]

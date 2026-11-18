@@ -339,6 +339,20 @@ impl Session {
 
     fn new(model: String, protocol: Protocol, system: String, edit_mode: EditMode) -> Self {
         let definitions = Tools::definitions(edit_mode, pp_config::config::ToolLimits::default());
+        Self::new_with_tools(model, protocol, system, Some(definitions))
+    }
+
+    fn new_without_tools(model: String, protocol: Protocol, system: String) -> Self {
+        Self::new_with_tools(model, protocol, system, None)
+    }
+
+    fn new_with_tools(
+        model: String,
+        protocol: Protocol,
+        system: String,
+        definitions: Option<Vec<async_openai::types::chat::FunctionObject>>,
+    ) -> Self {
+        let has_tools = definitions.is_some();
         match protocol {
             Protocol::Completion => Session::Completion(Box::new(CreateChatCompletionRequest {
                 model,
@@ -348,8 +362,8 @@ impl Session {
                         ..Default::default()
                     },
                 )],
-                tools: Some(Self::chat_tools(definitions)),
-                tool_choice: Some(ChatCompletionToolChoiceOption::Mode(
+                tools: definitions.map(Self::chat_tools),
+                tool_choice: has_tools.then_some(ChatCompletionToolChoiceOption::Mode(
                     ToolChoiceOptions::Auto,
                 )),
                 stream: Some(true),
@@ -363,8 +377,9 @@ impl Session {
                 model: Some(model),
                 instructions: Some(system),
                 input: InputParam::Items(Vec::new()),
-                tools: Some(Self::response_tools(definitions)),
-                tool_choice: Some(ToolChoiceParam::Option(ResponseToolChoiceOptions::Auto)),
+                tools: definitions.map(Self::response_tools),
+                tool_choice: has_tools
+                    .then_some(ToolChoiceParam::Option(ResponseToolChoiceOptions::Auto)),
                 stream: Some(true),
                 store: Some(false),
                 include: Some(vec![IncludeEnum::ReasoningEncryptedContent]),

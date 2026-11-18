@@ -40,7 +40,11 @@ impl Pending {
             self.order.clear();
         }
         if !self.jobs.contains_key(&job.id) {
-            self.order.push_front(job.id);
+            if job.streaming {
+                self.order.push_front(job.id);
+            } else {
+                self.order.push_back(job.id);
+            }
         }
         self.jobs.insert(job.id, job);
     }
@@ -133,6 +137,7 @@ impl Worker {
         let join = thread::Builder::new()
             .name("pp-layout".into())
             .spawn(move || {
+                super::markdown::prewarm_highlight();
                 let mut documents: VecDeque<CachedDocument> = VecDeque::new();
                 loop {
                     let job = {
@@ -436,6 +441,9 @@ impl Ticket {
 
     /// 吸收后台回写：更新的结果成为预览基线，并释放排队位。
     fn absorb(&mut self, width: u16) {
+        if self.in_flight.is_none() && self.exact {
+            return;
+        }
         let result = self.slot.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(result) = result.as_ref().filter(|result| {
             result.epoch == self.epoch

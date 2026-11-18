@@ -8,7 +8,13 @@ pub struct StreamText {
 }
 
 impl StreamText {
-    pub fn append(&mut self, mut bytes: &[u8]) -> String {
+    pub fn append(&mut self, bytes: &[u8]) -> String {
+        let delta = self.append_delta(bytes);
+        self.text.push_str(&delta);
+        delta
+    }
+
+    pub fn append_delta(&mut self, mut bytes: &[u8]) -> String {
         let mut delta = String::with_capacity(bytes.len() + self.tail_len);
         while self.tail_len > 0 && !bytes.is_empty() {
             let count = (self.tail.len() - self.tail_len).min(bytes.len());
@@ -25,14 +31,18 @@ impl StreamText {
             self.tail[..tail.len()].copy_from_slice(tail);
             self.tail_len = tail.len();
         }
-        self.text.push_str(&delta);
         delta
     }
 
     pub fn finish(&mut self) -> String {
+        let delta = self.finish_delta();
+        self.text.push_str(&delta);
+        delta
+    }
+
+    pub fn finish_delta(&mut self) -> String {
         let delta = String::from_utf8_lossy(&self.tail[..self.tail_len]).into_owned();
         self.tail_len = 0;
-        self.text.push_str(&delta);
         delta
     }
 }

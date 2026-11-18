@@ -854,8 +854,9 @@ fn is_missing(error: &anyhow::Error) -> bool {
 
 fn read_regular_file(file: File) -> Result<Vec<u8>> {
     let mut file = file;
-    ensure!(file.metadata()?.is_file(), "edit requires a regular file");
-    let mut bytes = Vec::new();
+    let metadata = file.metadata()?;
+    ensure!(metadata.is_file(), "edit requires a regular file");
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
     file.read_to_end(&mut bytes)
         .context("reading edit target")?;
     Ok(bytes)

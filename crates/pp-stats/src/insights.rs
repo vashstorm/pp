@@ -191,9 +191,7 @@ impl Store {
             .collect::<Vec<_>>()
             .join(",");
         let mut statement = self.conn.prepare(&format!("SELECT {columns},t.tool,t.args_chars FROM requests r JOIN request_tools t ON t.request_id=r.id WHERE r.timestamp>=?1 AND r.timestamp<=?2 ORDER BY r.timestamp DESC,r.id DESC"))?;
-        let rows = statement.query_map(params![range.since(now), now], |r| {
-            Ok((row(r)?, r.get::<_, String>(23)?, r.get::<_, i64>(24)?))
-        })?;
+        let mut rows = statement.query(params![range.since(now), now])?;
         let mut all = Tool::default();
         let mut tools = BTreeMap::<String, Tool>::new();
         let mut models = BTreeMap::<(String, String), (String, String, Tool)>::new();
@@ -226,17 +224,19 @@ impl Store {
             Ok(())
         };
         let mut pending: Option<(RequestRow, Vec<(String, u64)>)> = None;
-        for result in rows {
-            let (r, name, args_chars) = result?;
+        while let Some(r) = rows.next()? {
+            let id: i64 = r.get(0)?;
+            let name: String = r.get(23)?;
+            let args_chars: i64 = r.get(24)?;
             let args_chars =
                 u64::try_from(args_chars).context("tool argument length is negative")?;
             match pending.as_mut() {
-                Some((current, calls)) if current.id == r.id => calls.push((name, args_chars)),
+                Some((current, calls)) if current.id == id => calls.push((name, args_chars)),
                 _ => {
                     if let Some((current, calls)) = pending.take() {
                         push_request(current, &calls)?;
                     }
-                    pending = Some((r, vec![(name, args_chars)]));
+                    pending = Some((row(r)?, vec![(name, args_chars)]));
                 }
             }
         }

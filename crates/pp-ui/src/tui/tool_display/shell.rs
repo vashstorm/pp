@@ -41,7 +41,7 @@ pub(in crate::tui) fn command(
             let code = highlighted
                 .as_ref()
                 .and_then(|lines| lines.get(offset))
-                .map(Vec::as_slice);
+                .map(|spans| spans.as_slice());
             lines.extend(
                 layout_row(row, snapshot.running, width, code)
                     .into_iter()

@@ -76,15 +76,17 @@ pub(super) fn clip(text: &str, width: usize, ellipsis: bool) -> String {
     let expanded_tabs;
     let safe = if safe.contains('\t') {
         let mut columns = 0;
-        let mut expanded = String::new();
-        for grapheme in Line::raw(safe.as_ref()).styled_graphemes(Style::default()) {
+        let mut expanded = String::with_capacity(safe.len());
+        for grapheme in Span::raw(safe.as_ref()).styled_graphemes(Style::default()) {
             if grapheme.symbol == "\t" {
                 let spaces = 4 - columns % 4;
-                expanded.push_str(&" ".repeat(spaces));
+                for _ in 0..spaces {
+                    expanded.push(' ');
+                }
                 columns += spaces;
             } else {
                 expanded.push_str(grapheme.symbol);
-                columns += Line::raw(grapheme.symbol).width();
+                columns += Span::raw(grapheme.symbol).width();
             }
         }
         expanded_tabs = expanded;
@@ -92,14 +94,14 @@ pub(super) fn clip(text: &str, width: usize, ellipsis: bool) -> String {
     } else {
         safe
     };
-    if Line::raw(safe.as_ref()).width() <= width {
+    if Span::raw(safe.as_ref()).width() <= width {
         return safe.into_owned();
     }
     let budget = width.saturating_sub(usize::from(ellipsis));
-    let mut output = String::new();
+    let mut output = String::with_capacity(safe.len().min(width));
     let mut columns = 0;
-    for grapheme in Line::raw(safe.as_ref()).styled_graphemes(Style::default()) {
-        let size = Line::raw(grapheme.symbol).width();
+    for grapheme in Span::raw(safe.as_ref()).styled_graphemes(Style::default()) {
+        let size = Span::raw(grapheme.symbol).width();
         if columns + size > budget {
             break;
         }

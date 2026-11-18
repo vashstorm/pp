@@ -355,9 +355,9 @@ fn paint_surface(
             app.conversation.preview_native_batch(&batch);
             let rendered = draw_frame(app, canvas, context, layout.as_ref(), exiting)?;
             let buffer = if exiting {
-                app.normal_snapshot.as_ref().expect("normal frame")
+                app.normal_snapshot.as_ref().expect("normal frame").clone()
             } else {
-                rendered.as_ref().expect("rendered frame")
+                rendered.expect("rendered frame")
             };
             // 历史重建跨越多帧，只在全部批次提交后恢复输入光标。
             let cursor = (canvas.backend().cursor_visible() && !*rebuilding_history)
@@ -373,9 +373,9 @@ fn paint_surface(
     let cursor = (canvas.backend().cursor_visible() && (alternate || !*rebuilding_history))
         .then(|| canvas.backend().cursor_position());
     let buffer = if exiting {
-        app.normal_snapshot.as_ref().expect("normal frame")
+        app.normal_snapshot.as_ref().expect("normal frame").clone()
     } else {
-        rendered.as_ref().expect("rendered frame")
+        rendered.expect("rendered frame")
     };
     surface.paint_images(buffer, cursor, alternate, &[], &app.image_view.graphics)?;
     Ok(false)
@@ -388,12 +388,12 @@ fn draw_frame(
     context: &StatusContext,
     layout: Option<&MainLayout>,
     exiting: bool,
-) -> Result<Option<Buffer>> {
+) -> Result<Option<std::sync::Arc<Buffer>>> {
     let mut rendered = None;
     canvas.draw(|frame| {
         app.draw_with_layout(frame, context, layout, exiting);
         if !exiting {
-            rendered = Some(frame.buffer_mut().clone());
+            rendered = Some(std::sync::Arc::new(frame.buffer_mut().clone()));
         }
     })?;
     Ok(rendered)
@@ -506,7 +506,7 @@ struct App {
     conversation: Transcript,
     todo_panel: todo::Panel,
     native_render: bool,
-    normal_snapshot: Option<ratatui::buffer::Buffer>,
+    normal_snapshot: Option<std::sync::Arc<ratatui::buffer::Buffer>>,
     history_browser: bool,
     show_welcome: bool,
     input: TextArea<'static>,

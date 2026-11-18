@@ -67,7 +67,7 @@ pub struct PythonRuntime {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ProbeCacheKey {
-    cwd: PathBuf,
+    cwd: Option<PathBuf>,
     interpreter: Option<String>,
     path: Option<String>,
     virtual_env: Option<String>,
@@ -183,53 +183,71 @@ fn resolve_explicit_runtime(
     }
 }
 
-fn push_venv_candidate(
+fn venv_candidate(
     venv_dir: &Path,
     base_env: &BTreeMap<String, String>,
     seen: &mut HashSet<PathBuf>,
-    out: &mut Vec<PythonRuntime>,
-) {
+) -> Option<PythonRuntime> {
     let bin_dir = venv_dir.join("bin");
     for name in ["python", "python3"] {
         let candidate = bin_dir.join(name);
         if is_executable_file(&candidate) && seen.insert(candidate.clone()) {
-            out.push(PythonRuntime {
+            return Some(PythonRuntime {
                 python_path: candidate,
                 env: apply_venv_env(base_env, venv_dir, &bin_dir),
                 venv_path: Some(venv_dir.to_owned()),
             });
-            break;
         }
     }
+    None
 }
 
-pub(crate) fn enumerate_candidates(
+fn try_candidates(
     cwd: &Path,
     interpreter: Option<&str>,
     base_env: &BTreeMap<String, String>,
-) -> Vec<PythonRuntime> {
+    mut visit: impl FnMut(PythonRuntime) -> bool,
+) -> bool {
     if let Some(explicit) = interpreter.map(str::trim).filter(|s| !s.is_empty()) {
-        return vec![resolve_explicit_runtime(explicit, cwd, base_env)];
+        visit(resolve_explicit_runtime(explicit, cwd, base_env));
+        return true;
     }
 
-    let mut out = Vec::new();
     let mut seen = HashSet::new();
+    let mut found = false;
 
-    if let Some(venv) = base_env.get("VIRTUAL_ENV").filter(|s| !s.is_empty()) {
-        push_venv_candidate(Path::new(venv), base_env, &mut seen, &mut out);
+    let mut emit = |runtime: PythonRuntime| -> bool {
+        found = true;
+        visit(runtime)
+    };
+
+    if let Some(venv) = base_env.get("VIRTUAL_ENV").filter(|s| !s.is_empty())
+        && let Some(candidate) = venv_candidate(Path::new(venv), base_env, &mut seen)
+        && emit(candidate)
+    {
+        return true;
     }
-    if let Some(conda) = base_env.get("CONDA_PREFIX").filter(|s| !s.is_empty()) {
-        push_venv_candidate(Path::new(conda), base_env, &mut seen, &mut out);
+    if let Some(conda) = base_env.get("CONDA_PREFIX").filter(|s| !s.is_empty())
+        && let Some(candidate) = venv_candidate(Path::new(conda), base_env, &mut seen)
+        && emit(candidate)
+    {
+        return true;
     }
     for local in [cwd.join(".venv"), cwd.join("venv")] {
-        if local.is_dir() {
-            push_venv_candidate(&local, base_env, &mut seen, &mut out);
+        if local.is_dir()
+            && let Some(candidate) = venv_candidate(&local, base_env, &mut seen)
+            && emit(candidate)
+        {
+            return true;
         }
     }
     if let Some(home) = base_env.get("HOME").filter(|s| !s.is_empty()) {
         let managed = PathBuf::from(home).join(".pp/agent/python-env");
-        if managed.is_dir() {
-            push_venv_candidate(&managed, base_env, &mut seen, &mut out);
+        if managed.is_dir()
+            && let Some(candidate) = venv_candidate(&managed, base_env, &mut seen)
+            && emit(candidate)
+        {
+            return true;
         }
     }
 
@@ -237,23 +255,27 @@ pub(crate) fn enumerate_candidates(
         for bin in ["python3", "python"] {
             for dir in env::split_paths(path_var) {
                 let candidate = dir.join(bin);
-                if is_executable_file(&candidate) && seen.insert(candidate.clone()) {
-                    out.push(PythonRuntime {
+                if is_executable_file(&candidate)
+                    && seen.insert(candidate.clone())
+                    && emit(PythonRuntime {
                         python_path: candidate,
                         env: base_env.clone(),
                         venv_path: None,
-                    });
+                    })
+                {
+                    return true;
                 }
             }
         }
     }
 
-    out
+    found
 }
 
 fn probe_candidate(runtime: &PythonRuntime, cwd: &Path) -> Result<()> {
     let mut cmd = Command::new(&runtime.python_path);
     cmd.args([
+        "-S",
         "-c",
         "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)",
     ])
@@ -268,6 +290,7 @@ fn probe_candidate(runtime: &PythonRuntime, cwd: &Path) -> Result<()> {
         .spawn()
         .with_context(|| format!("spawning {}", runtime.python_path.display()))?;
     let deadline = Instant::now() + PROBE_TIMEOUT;
+    let mut poll = Duration::from_micros(250);
     loop {
         if let Some(status) = child.try_wait()? {
             if status.success() {
@@ -279,24 +302,32 @@ fn probe_candidate(runtime: &PythonRuntime, cwd: &Path) -> Result<()> {
                 status
             );
         }
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= deadline {
             let _ = child.kill();
             let _ = child.wait();
             bail!("{} probe timed out", runtime.python_path.display());
         }
-        thread::sleep(Duration::from_millis(15));
+        thread::sleep(poll.min(deadline - now));
+        poll = (poll * 2).min(Duration::from_millis(5));
     }
 }
 
 /// 探测可用 Python 3.9+ 运行时；成功结果按环境键缓存。
 pub fn probe_python(cwd: &Path, interpreter: Option<&str>) -> Result<PythonRuntime> {
     let base_env = filter_env(env::vars());
+    let trimmed_interpreter = interpreter
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let cwd_sensitive = trimmed_interpreter.as_deref().is_some_and(|raw| {
+        let home = base_env.get("HOME").map(String::as_str);
+        !expand_tilde(raw, home).is_absolute()
+    }) || (trimmed_interpreter.is_none()
+        && (cwd.join(".venv").is_dir() || cwd.join("venv").is_dir()));
     let key = ProbeCacheKey {
-        cwd: cwd.to_path_buf(),
-        interpreter: interpreter
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned),
+        cwd: cwd_sensitive.then(|| cwd.to_path_buf()),
+        interpreter: trimmed_interpreter,
         path: base_env.get("PATH").cloned(),
         virtual_env: base_env.get("VIRTUAL_ENV").cloned(),
         conda_prefix: base_env.get("CONDA_PREFIX").cloned(),
@@ -309,22 +340,32 @@ pub fn probe_python(cwd: &Path, interpreter: Option<&str>) -> Result<PythonRunti
         return Ok(cached.clone());
     }
 
-    let candidates = enumerate_candidates(cwd, interpreter, &base_env);
-    if candidates.is_empty() {
-        bail!("Python 3.9+ executable not found on PATH; configure eval.interpreter if needed");
-    }
-
+    let mut matched = None;
     let mut failures = Vec::new();
-    for candidate in candidates {
-        match probe_candidate(&candidate, cwd) {
-            Ok(()) => {
-                if let Ok(mut guard) = probe_cache().lock() {
-                    guard.insert(key, candidate.clone());
+    let any_candidate =
+        try_candidates(
+            cwd,
+            interpreter,
+            &base_env,
+            |candidate| match probe_candidate(&candidate, cwd) {
+                Ok(()) => {
+                    matched = Some(candidate);
+                    true
                 }
-                return Ok(candidate);
-            }
-            Err(error) => failures.push(format!("{error:#}")),
+                Err(error) => {
+                    failures.push(format!("{error:#}"));
+                    false
+                }
+            },
+        );
+    if let Some(candidate) = matched {
+        if let Ok(mut guard) = probe_cache().lock() {
+            guard.insert(key, candidate.clone());
         }
+        return Ok(candidate);
+    }
+    if !any_candidate {
+        bail!("Python 3.9+ executable not found on PATH; configure eval.interpreter if needed");
     }
 
     bail!(

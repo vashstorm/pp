@@ -163,6 +163,9 @@ pub(super) fn monitor(
             Phase::Finished => break,
         }
 
+        if state.phase == Phase::Draining && state.interpreter_done && !state.has_live_work() {
+            state.phase = Phase::Finished;
+        }
         if state.phase == Phase::Finished {
             break;
         }

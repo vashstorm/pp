@@ -6,8 +6,9 @@ use pp_config::config::EditMode;
 use pp_config::config::RgSettings;
 use pp_core::cancellation::CancellationToken;
 use serde_json::{Value, json};
+#[cfg(test)]
+use std::fs;
 use std::{
-    fs,
     path::Path,
     time::{Duration, Instant},
 };
@@ -22,10 +23,10 @@ mod scan;
 pub(super) use args::definition;
 use args::{Args, Many, OutputMode, count, file_types};
 use budget::Budget;
-use paths::parse_paths;
+use paths::{TargetIter, parse_paths};
 use pattern::{Compiled, compile};
 use render::grouped_header;
-use scan::{check, run_file};
+use scan::{build_searcher, check, run_file};
 
 const FILE_LIMIT: usize = 20;
 const MULTI_LIMIT: usize = 20;
@@ -114,7 +115,7 @@ pub(super) fn run_with_sandbox(
         .collect();
     let deadline = Instant::now() + Duration::from_secs(30);
     let (targets, single, missing) = if max_count == Some(0) {
-        (Vec::new(), false, Vec::new())
+        (TargetIter::List(Vec::new().into_iter()), false, Vec::new())
     } else {
         parse_paths(
             cwd,
@@ -134,60 +135,74 @@ pub(super) fn run_with_sandbox(
     let mut total = 0;
     let mut internal_limit = false;
     let mut warnings = Vec::new();
-    for mut target in targets {
+    let mut page_searcher = None;
+    let mut skip_searcher = None;
+    let mut buffer = Vec::new();
+    for target in targets {
+        let mut target = target?;
         if let Some(uri) = &uri {
             target.display = uri.clone();
         }
         check(token, deadline)?;
-        let large = fs::metadata(&target.path).is_ok_and(|m| m.len() > MAX_FILE);
-        if large && (multiline || !target.explicit) {
-            warnings.push(format!("{}: searched only the first 4 MiB", target.display));
-        }
         let in_page =
             single || (found.len() >= skip && found.len() < skip.saturating_add(FILE_LIMIT));
-        let capture_snapshot = output_mode == OutputMode::Content
-            && mode == EditMode::Hashline
-            && in_page
-            && artifact.is_none();
+        let collect_rows = output_mode == OutputMode::Content && in_page;
+        let capture_snapshot = collect_rows && mode == EditMode::Hashline && artifact.is_none();
+        let searcher = if collect_rows {
+            page_searcher.get_or_insert_with(|| {
+                build_searcher(multiline, settings.context_before, settings.context_after)
+            })
+        } else {
+            skip_searcher.get_or_insert_with(|| build_searcher(multiline, 0, 0))
+        };
         let result = match &compiled {
             Compiled::Rust(m) => run_file(
                 m,
+                searcher,
+                &mut buffer,
                 target,
-                settings,
+                settings.context_before,
+                settings.context_after,
                 multiline,
                 per_file,
                 max_count,
                 output_mode,
+                collect_rows,
                 capture_snapshot,
                 token,
                 deadline,
             ),
             Compiled::Pcre(m) => run_file(
                 m,
+                searcher,
+                &mut buffer,
                 target,
-                settings,
+                settings.context_before,
+                settings.context_after,
                 multiline,
                 per_file,
                 max_count,
                 output_mode,
+                collect_rows,
                 capture_snapshot,
                 token,
                 deadline,
             ),
         };
         match result {
-            Ok(Some(mut f)) => {
-                total += f.matches;
-                if !in_page {
-                    f.rows.clear();
+            Ok((matched, large_warning)) => {
+                if let Some(warning) = large_warning {
+                    warnings.push(warning);
                 }
-                found.push(f);
-                if output_mode == OutputMode::Content && total >= TOTAL_LIMIT {
-                    internal_limit = true;
-                    break;
+                if let Some(f) = matched {
+                    total += f.matches;
+                    found.push(f);
+                    if output_mode == OutputMode::Content && total >= TOTAL_LIMIT {
+                        internal_limit = true;
+                        break;
+                    }
                 }
             }
-            Ok(None) => {}
             Err(e) => {
                 check(token, deadline)?;
                 warnings.push(format!("Skipped file: {e:#}"));

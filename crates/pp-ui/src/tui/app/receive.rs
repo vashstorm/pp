@@ -179,6 +179,7 @@ impl App {
                 changed = true;
             }
         }
+        let mut refresh_candidates = changed;
         let receive_started = Instant::now();
         for _ in 0..64 {
             if receive_started.elapsed() >= std::time::Duration::from_millis(2) {
@@ -189,23 +190,16 @@ impl App {
             let Some(incoming) = self.next_worker_event() else {
                 break;
             };
-            if !matches!(
-                &incoming,
-                Ok(WorkerEvent::Progress(
-                    AgentEvent::ThinkingDelta { .. }
-                        | AgentEvent::ReasoningSummaryDelta { .. }
-                        | AgentEvent::AssistantDelta { .. }
-                        | AgentEvent::ModelOutputProgress { .. }
-                )) | Ok(WorkerEvent::ReviewProgress(
-                    AgentEvent::ThinkingDelta { .. }
-                        | AgentEvent::ReasoningSummaryDelta { .. }
-                        | AgentEvent::AssistantDelta { .. }
-                )) | Err(TryRecvError::Empty)
-            ) {
+            let is_delta = incoming.as_ref().is_ok_and(Self::is_streaming_delta);
+            if !is_delta {
                 self.flush_stream();
             }
             match incoming {
-                Ok(event) => changed |= self.apply_worker_event(event),
+                Ok(event) => {
+                    let event_changed = self.apply_worker_event(event);
+                    changed |= event_changed;
+                    refresh_candidates |= event_changed && !is_delta;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.fail_worker();
@@ -214,8 +208,9 @@ impl App {
             }
         }
         changed |= self.pipes_tick();
-        changed |= self.refresh_queue();
-        changed |= self.dispatch_next(false);
+        let queue_changed = self.refresh_queue() | self.dispatch_next(false);
+        changed |= queue_changed;
+        refresh_candidates |= queue_changed;
         if self.reopen_plan_after_discussion
             && matches!(self.state, State::Ready)
             && !self.has_pending()
@@ -224,13 +219,32 @@ impl App {
             if self.plan_panel.is_none() && self.has_saved_plan() {
                 self.request_plan_read();
                 changed = true;
+                refresh_candidates = true;
             }
         }
         if changed {
             self.escape_tap.reset();
-            self.refresh_candidates(false);
+            if refresh_candidates {
+                self.refresh_candidates(false);
+            }
         }
         changed
+    }
+
+    fn is_streaming_delta(event: &WorkerEvent) -> bool {
+        matches!(
+            event,
+            WorkerEvent::Progress(
+                AgentEvent::ThinkingDelta { .. }
+                    | AgentEvent::ReasoningSummaryDelta { .. }
+                    | AgentEvent::AssistantDelta { .. }
+                    | AgentEvent::ModelOutputProgress { .. }
+            ) | WorkerEvent::ReviewProgress(
+                AgentEvent::ThinkingDelta { .. }
+                    | AgentEvent::ReasoningSummaryDelta { .. }
+                    | AgentEvent::AssistantDelta { .. }
+            )
+        )
     }
 
     /// 按事件族把 worker 事件分派给各自的处理入口；返回是否有可见变化。

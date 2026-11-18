@@ -118,23 +118,12 @@ impl Agent {
                     let mut context = context;
                     context.model_reference = selection.model;
                     client.set_stats_context(context);
-                    let mut session = Session::new(
+                    let mut session = Session::new_without_tools(
                         config.model,
                         config.protocol,
                         TITLE_INSTRUCTIONS.into(),
-                        edit,
                     );
                     session.set_think_level(selection.effort);
-                    match &mut session {
-                        Session::Completion(request) => {
-                            request.tools = None;
-                            request.tool_choice = None;
-                        }
-                        Session::Response(request) => {
-                            request.tools = None;
-                            request.tool_choice = None;
-                        }
-                    }
                     append_user_to(&mut session, &prompt);
                     let mut fallback = selection.fallback.filter(|_| selection.enabled);
                     loop {

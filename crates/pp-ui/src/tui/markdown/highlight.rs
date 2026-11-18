@@ -115,7 +115,11 @@ fn ratatui_style(style: syntect::highlighting::Style) -> Style {
     st
 }
 
-type HighlightedLines = Vec<Vec<Span<'static>>>;
+type HighlightedLines = Vec<Arc<Vec<Span<'static>>>>;
+
+pub(super) fn prewarm() {
+    let _ = syntaxes();
+}
 thread_local! { static CONTEXT: Cell<(u64, u64, usize)> = const { Cell::new((0, 0, 0)) }; }
 pub(super) fn release_context(id: u64) {
     cache()
@@ -241,20 +245,20 @@ pub(super) fn highlight(lang: Option<&str>, code: &str) -> Option<Arc<Highlighte
     let stable = code.rfind('\n').map_or(0, |index| index + 1);
     for line in code[offset..stable].split_terminator('\n') {
         let fed = format!("{line}\n");
-        lines.push(grapheme_spans(
+        lines.push(Arc::new(grapheme_spans(
             line,
             highlighter.highlight_line(&fed, syntaxes).ok()?,
-        ));
+        )));
     }
     let state = highlighter.state();
     let prefix = lines.clone();
     let mut highlighter = HighlightLines::from_state(theme, state.0.clone(), state.1.clone());
     let last = &code[stable..];
     let fed = format!("{last}\n");
-    lines.push(grapheme_spans(
+    lines.push(Arc::new(grapheme_spans(
         last,
         highlighter.highlight_line(&fed, syntaxes).ok()?,
-    ));
+    )));
     let result = Arc::new(lines);
     let mut cache = cache().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(context) = context {
@@ -395,7 +399,10 @@ mod tests {
                 .split('\n')
                 .map(|line| {
                     let fed = format!("{line}\n");
-                    grapheme_spans(line, highlighter.highlight_line(&fed, syntaxes).unwrap())
+                    Arc::new(grapheme_spans(
+                        line,
+                        highlighter.highlight_line(&fed, syntaxes).unwrap(),
+                    ))
                 })
                 .collect();
             assert_eq!(*incremental, full, "前缀字节数：{index}");
@@ -409,7 +416,7 @@ mod tests {
         assert!(highlight(Some("text"), "just words").is_none());
         let lines = highlight(Some("txt"), "just words").expect("txt resolves");
         assert_eq!(lines.len(), 1);
-        for span in &lines[0] {
+        for span in lines[0].iter() {
             assert_eq!(span.style.fg, Some(code_block()));
         }
     }

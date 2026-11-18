@@ -445,18 +445,18 @@ impl<'a> Builder<'a> {
         // tab 展开前移到解析期：span 化后无法再对 String 展开。
         let expanded: Vec<String> = lines.iter().map(|l| expand_tabs(l, TAB_STOP)).collect();
         let text = expanded.join("\n");
-        let lines: Arc<Vec<Vec<Span<'static>>>> =
+        let lines: Arc<Vec<Arc<Vec<Span<'static>>>>> =
             match highlight::highlight(code.lang.as_deref(), &text) {
                 Some(spans) => spans,
                 None => Arc::new(
                     expanded
                         .into_iter()
                         .map(|line| {
-                            if line.is_empty() {
+                            Arc::new(if line.is_empty() {
                                 Vec::new()
                             } else {
                                 vec![Span::styled(line, Style::new().fg(code_block()))]
-                            }
+                            })
                         })
                         .collect(),
                 ),

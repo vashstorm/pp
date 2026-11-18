@@ -366,9 +366,16 @@ fn run(args: Args) -> Result<()> {
     // 进程级统计库句柄：请求、工具、hook 与标题复用同一个连接；
     // 解析失败不在这里致命，由既有配置错误路径呈现。
     let stats_database = pp_stats::database_path().map(pp_stats::Database::new);
-    let migration_error = global_dir.as_ref().ok().and_then(|dir| {
-        agent_store::initialize(dir, &cancellation::CancellationToken::new()).err()
-    });
+    let mut initialized_store = match &global_dir {
+        Ok(dir) => {
+            match agent_store::initialize_store(dir, &cancellation::CancellationToken::new()) {
+                Ok(store) => (Some(store), None),
+                Err(error) => (None, Some(error)),
+            }
+        }
+        Err(_) => (None, None),
+    };
+    let migration_error = initialized_store.1;
     logging::perf::mark("agent_db_ready");
     // 启动期只解析一次 settings.yml：TUI 外观、费用显示、技能发现与模型目录共用同一份快照。
     // 一次性迁移已在上一步完成（旧字段已从文件剥离），所以这里读到的是迁移后的配置；
@@ -441,10 +448,12 @@ fn run(args: Args) -> Result<()> {
     let models = pp_config::model_state::SharedModels::default();
     if migration_error.is_none()
         && let Ok((dir, catalog_settings)) = &settings
-        && let Ok(catalog) = config::ModelCatalog::from_migrated_settings(
+        && let Some(store) = initialized_store.0.take()
+        && let Ok(catalog) = config::ModelCatalog::from_migrated_settings_with_store(
             catalog_settings.clone(),
             &dir.join("settings.yml"),
             &dir.join("models.yml"),
+            store,
         )
     {
         models.install(pp_config::model_state::ModelState::shared(catalog));

@@ -126,6 +126,7 @@ vt100 = { workspace = true }
 [profile.dev]
 opt-level = 0
 incremental = false
+strip = true
 debug = 1
 
 [profile.release]

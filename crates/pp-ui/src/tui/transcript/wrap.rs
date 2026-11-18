@@ -30,6 +30,7 @@ pub(in crate::tui) fn visit_wrapped_rows(
     mut visit: impl FnMut(Line<'static>) -> bool,
 ) {
     let width = usize::from(width.max(1));
+    let continuation_width = Span::raw(continuation).width();
     let mut emitted = false;
     let mut spans = Vec::new();
     let mut used = 0;
@@ -65,17 +66,17 @@ pub(in crate::tui) fn visit_wrapped_rows(
                 ended_newline = false;
                 let repeats = if symbol == "\t" { 4 - used % 4 } else { 1 };
                 let value = if symbol == "\t" { " " } else { symbol };
-                let columns = Line::raw(value).width();
+                let columns = Span::raw(value).width();
                 for _ in 0..repeats {
                     if has_content && used + columns > width {
                         if !visit(Line::from(std::mem::take(&mut spans))) {
                             return;
                         }
                         emitted = true;
-                        let prefix = if Line::raw(continuation).width() + columns <= width {
-                            continuation
+                        let (prefix, prefix_width) = if continuation_width + columns <= width {
+                            (continuation, continuation_width)
                         } else {
-                            ""
+                            ("", 0)
                         };
                         if !prefix.is_empty() {
                             spans.push(Span::styled(
@@ -83,7 +84,7 @@ pub(in crate::tui) fn visit_wrapped_rows(
                                 Style::default().fg(palette::dim()),
                             ));
                         }
-                        used = Line::raw(prefix).width();
+                        used = prefix_width;
                     }
                     used += columns;
                     has_content = true;

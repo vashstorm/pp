@@ -198,22 +198,53 @@ const SPEED_MEDIUM_RATE: f64 = 60.0;
 const SPEED_FAST_RATE: f64 = 120.0;
 
 fn compact(text: &str, width: usize, keep_end: bool) -> String {
-    if Line::from(text).width() <= width {
+    if Span::raw(text).width() <= width {
         return text.into();
     }
     if width == 0 {
         return String::new();
     }
-    let mut chars: Vec<_> = text.chars().collect();
-    if keep_end {
-        chars.reverse();
-    }
-    let mut result = String::new();
-    for ch in chars {
-        if Line::from(format!("{result}{ch}")).width() > width - 1 {
-            break;
+    let budget = width - 1;
+    let mut result = String::with_capacity(text.len().min(width));
+    if text.is_ascii() {
+        let mut used = 0usize;
+        let mut push_byte = |b: u8| {
+            let buf = [b];
+            let s = std::str::from_utf8(&buf).unwrap_or("");
+            let w = Span::raw(s).width();
+            if used + w > budget {
+                return false;
+            }
+            used += w;
+            result.push(char::from(b));
+            true
+        };
+        if keep_end {
+            for &b in text.as_bytes().iter().rev() {
+                if !push_byte(b) {
+                    break;
+                }
+            }
+        } else {
+            for &b in text.as_bytes() {
+                if !push_byte(b) {
+                    break;
+                }
+            }
         }
-        result.push(ch);
+    } else {
+        let mut chars: Vec<_> = text.chars().collect();
+        if keep_end {
+            chars.reverse();
+        }
+        for ch in chars {
+            let prev_len = result.len();
+            result.push(ch);
+            if Span::raw(result.as_str()).width() > budget {
+                result.truncate(prev_len);
+                break;
+            }
+        }
     }
     if keep_end {
         format!("…{}", result.chars().rev().collect::<String>())

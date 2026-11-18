@@ -282,7 +282,7 @@ impl Snapshot {
 
     fn build_renderer(&self) -> Result<Handlebars<'static>> {
         let mut renderer = renderer();
-        if !matches!(self.base.kind, SourceKind::Text) {
+        if matches!(self.base.kind, SourceKind::Template) {
             ensure!(
                 !self.base.content.trim().is_empty(),
                 "system prompt template must not be empty: {}",
@@ -305,8 +305,8 @@ impl Snapshot {
     ) -> Result<(String, String)> {
         let renderer = self.renderer()?;
         let base = match self.base.kind {
-            SourceKind::Text => self.base.content.clone(),
-            _ => renderer.render(BASE_TEMPLATE, context).with_context(|| {
+            SourceKind::Text | SourceKind::Bundled => self.base.content.clone(),
+            SourceKind::Template => renderer.render(BASE_TEMPLATE, context).with_context(|| {
                 format!("rendering system prompt template: {}", self.base.origin)
             })?,
         };

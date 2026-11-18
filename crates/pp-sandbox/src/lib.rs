@@ -221,6 +221,14 @@ impl Policy {
         )
     }
 
+    /// 判断以 `canonical_root` 为根（已通过 `check_read` 且 `follow_links(false)`）的子树
+    /// 内非 symlink 条目是否可能命中任何读拒绝根。不相交时遍历期可 O(1) 放行常规 entry。
+    pub fn can_contain_denied_read(&self, canonical_root: &Path) -> bool {
+        self.deny_read_lexical
+            .iter()
+            .any(|denied| denied.starts_with(canonical_root) || canonical_root.starts_with(denied))
+    }
+
     /// 精确判定：总是先规范化（含 symlink 与 `/tmp` 折叠）。遍历剪枝只对
     /// symlink entry 使用，因为词法快路径无法预知链接目标。
     pub fn is_read_denied_resolved(&self, path: &Path) -> bool {
@@ -315,11 +323,11 @@ impl Policy {
         }
     }
 
-    fn join_cwd(&self, path: &Path) -> PathBuf {
+    fn join_cwd<'a>(&self, path: &'a Path) -> std::borrow::Cow<'a, Path> {
         if path.is_absolute() {
-            path.to_path_buf()
+            std::borrow::Cow::Borrowed(path)
         } else {
-            self.cwd.join(path)
+            std::borrow::Cow::Owned(self.cwd.join(path))
         }
     }
 
@@ -339,9 +347,32 @@ struct SandboxState {
     /// 平台探测结果；`None` 表示以 `off` 起步、从未探测过，切到需要沙盒的模式时补测。
     probe: Option<ProbeResult>,
     override_mode: Option<SandboxMode>,
+    cached_workspace_write: Option<Arc<Policy>>,
+    cached_read_only: Option<Arc<Policy>>,
 }
 
 impl SandboxState {
+    fn cached_policy(&self, mode: EffectiveMode) -> Option<&Arc<Policy>> {
+        match mode {
+            EffectiveMode::WorkspaceWrite => self.cached_workspace_write.as_ref(),
+            EffectiveMode::ReadOnly => self.cached_read_only.as_ref(),
+            EffectiveMode::Off => None,
+        }
+    }
+
+    fn get_or_build_policy(&mut self, mode: EffectiveMode) -> Arc<Policy> {
+        if let Some(policy) = self.cached_policy(mode) {
+            return Arc::clone(policy);
+        }
+        let policy = Arc::new(build_policy(self, mode));
+        let slot = match mode {
+            EffectiveMode::WorkspaceWrite => &mut self.cached_workspace_write,
+            EffectiveMode::ReadOnly => &mut self.cached_read_only,
+            EffectiveMode::Off => unreachable!("off mode has no policy"),
+        };
+        *slot = Some(Arc::clone(&policy));
+        policy
+    }
     /// 当前生效模式：会话级覆盖优先于 settings 里的值。
     fn configured(&self) -> SandboxMode {
         self.override_mode.unwrap_or(self.settings.mode)
@@ -464,6 +495,8 @@ impl Sandbox {
                 xdg_runtime_dir: norm_xdg_runtime,
                 probe,
                 override_mode: None,
+                cached_workspace_write: None,
+                cached_read_only: None,
             }),
         }
     }
@@ -500,19 +533,26 @@ impl Sandbox {
                 xdg_runtime_dir: state.xdg_runtime_dir.clone(),
                 probe: state.probe.clone(),
                 override_mode: state.override_mode,
+                cached_workspace_write: None,
+                cached_read_only: None,
             }),
         })
     }
 
     pub fn status(&self) -> SandboxStatus {
-        let state = self.state.read().expect("sandbox state lock poisoned");
-        let configured = state.configured();
-        let probe = state.probe_or_available();
+        let (configured, probe, network) = {
+            let state = self.state.read().expect("sandbox state lock poisoned");
+            (
+                state.configured(),
+                state.probe_or_available(),
+                state.settings.network,
+            )
+        };
         let (effective, degraded_reason) = resolve_effective(configured, &probe);
         let (writable_summary, notes) = match effective {
             EffectiveMode::Off => (Vec::new(), Vec::new()),
             mode => {
-                let policy = build_policy(&state, mode);
+                let policy = self.policy_for_effective(mode);
                 #[cfg(target_os = "linux")]
                 let notes = {
                     let spec = bwrap::BwrapSpec {
@@ -531,7 +571,7 @@ impl Sandbox {
                 let notes = Vec::new();
                 let roots = policy
                     .writable
-                    .into_iter()
+                    .iter()
                     .map(|p| p.display().to_string())
                     .collect();
                 (roots, notes)
@@ -542,48 +582,61 @@ impl Sandbox {
             effective,
             degraded_reason,
             backend: platform_backend(),
-            network: state.settings.network,
+            network,
             writable_summary,
             notes,
         }
     }
 
+    fn policy_for_effective(&self, mode: EffectiveMode) -> Arc<Policy> {
+        {
+            let state = self.state.read().expect("sandbox state lock poisoned");
+            if let Some(policy) = state.cached_policy(mode) {
+                return Arc::clone(policy);
+            }
+        }
+        let mut state = self.state.write().expect("sandbox state lock poisoned");
+        state.get_or_build_policy(mode)
+    }
+
     /// 取得当前生效策略；显式开启但平台不可用时 fail-closed 返回错误。
     pub fn policy(&self) -> Result<Option<Arc<Policy>>> {
-        let state = self.state.read().expect("sandbox state lock poisoned");
-        let configured = state.configured();
-        let probe = state.probe_or_available();
-        match configured {
-            SandboxMode::Off => Ok(None),
-            SandboxMode::Auto => {
-                if !cfg!(any(target_os = "macos", target_os = "linux")) {
-                    return Ok(None);
-                }
-                match &probe {
-                    ProbeResult::Available => Ok(Some(Arc::new(build_policy(
-                        &state,
-                        EffectiveMode::WorkspaceWrite,
-                    )))),
-                    ProbeResult::Unavailable { .. } => Ok(None),
-                }
+        let effective = {
+            let state = self.state.read().expect("sandbox state lock poisoned");
+            let configured = state.configured();
+            if configured == SandboxMode::Off {
+                return Ok(None);
             }
-            SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly => match &probe {
-                ProbeResult::Available => {
-                    let mode = if configured == SandboxMode::WorkspaceWrite {
-                        EffectiveMode::WorkspaceWrite
-                    } else {
-                        EffectiveMode::ReadOnly
-                    };
-                    Ok(Some(Arc::new(build_policy(&state, mode))))
+            let probe = state.probe_or_available();
+            match configured {
+                SandboxMode::Off => return Ok(None),
+                SandboxMode::Auto => {
+                    if !cfg!(any(target_os = "macos", target_os = "linux")) {
+                        return Ok(None);
+                    }
+                    match &probe {
+                        ProbeResult::Available => EffectiveMode::WorkspaceWrite,
+                        ProbeResult::Unavailable { .. } => return Ok(None),
+                    }
                 }
-                ProbeResult::Unavailable { reason } => {
-                    anyhow::bail!(
-                        "sandbox mode '{}' is enabled but unavailable: {reason}",
-                        configured.as_str()
-                    );
-                }
-            },
-        }
+                SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly => match &probe {
+                    ProbeResult::Available => {
+                        if configured == SandboxMode::WorkspaceWrite {
+                            EffectiveMode::WorkspaceWrite
+                        } else {
+                            EffectiveMode::ReadOnly
+                        }
+                    }
+                    ProbeResult::Unavailable { reason } => {
+                        anyhow::bail!(
+                            "sandbox mode '{}' is enabled but unavailable: {reason}",
+                            configured.as_str()
+                        );
+                    }
+                },
+            }
+        };
+        Ok(Some(self.policy_for_effective(effective)))
     }
 
     pub fn check_read(&self, path: &Path) -> io::Result<()> {

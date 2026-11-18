@@ -74,18 +74,21 @@ TMPDIR=/private/tmp HOME=/private/tmp/perf-home PP_PERF_TRACE=1 \
 - `tools_ready` 43 → 15 ms：`Tools::new` 不再探测 Python（默认配置下这是首个任务前最大的一笔固定开销）。
 - `sandbox_ready` 51 → 15 ms：`tools.sandbox.mode: off` 不再启动一次 `sandbox-exec` 子进程；启用模式的探测时机不变。
 - MCP 每增加一个 stdio 服务，首请求前仍多等约 30–50 ms；`await_connect` 的“首个请求必须带完整工具表”语义未改，这一列的高方差来自 fixture 服务进程启动，不代表本轮改动。
-- `skills_ready` 的 14.4 ms 含技能目录 `lstat` 与 frontmatter 读取，本轮未改发现逻辑。
+- **本轮补充优化（同机热 HOME，回环 Chat Completions SSE，三次样本 / 暖机第 2–3 次）**：
+  - 首次冷 `HOME` 建库：`agent_db_ready=9.75 ms`、`skills_ready=12.38 ms`、`sandbox_ready=12.49 ms`、`request_ready=28.87 ms`（端到端 `58.5 ms`）。
+  - 同目录暖 `HOME`（复用已迁移 `agent.db`，对照本轮前基线 `skills_ready=4.15–4.30 ms`、`request_ready=24.28–24.34 ms`）：`agent_db_ready=0.72–0.80 ms`、`skills_ready=3.39–3.45 ms`、`tools_ready=3.47–3.53 ms`、`sandbox_ready=3.49–3.55 ms`、`request_ready=20.09–25.38 ms`。
+  - 主要改动：复用 `AgentStore` 单连接完成迁移检查与 `ModelCatalog` 加载；`logging` 复用 `open_regular_with_len` 的 `fstat` 长度；`skills` 用 `DirEntry::file_type()` 避开普通条目 `stat`；`pp-lsp` 惰性启动维护线程；`pp-eval` 探测增加 `-S`、指数退避轮询与惰性候选 env 构造。
 
 ## 2. 每轮请求固定开销
 
 同一个 mock provider 按 `probe.json` 的 `rounds` 重复同一次 `read` 工具调用，随后返回文本：
 
-| 用例 | 墙钟中位数 | 优化后 |
-| --- | ---: | ---: |
-| 0 轮工具（`noop`） | 0.10 s | 0.06 s |
-| 1 轮 `read`（5k 行） | 0.09 s | 0.07 s |
-| 5 轮 `read`（5k 行） | 0.15 s | 0.09 s |
-| 每轮固定开销（(5 轮 − 1 轮) / 4） | 12–13 ms | 5 ms |
+| 用例 | 墙钟中位数 | 优化后 | 本轮复测 |
+| --- | ---: | ---: | ---: |
+| 0 轮工具（`noop`） | 0.10 s | 0.06 s | 0.047 s |
+| 1 轮 `read`（5k 行） | 0.09 s | 0.07 s | 0.055 s |
+| 5 轮 `read`（5k 行） | 0.15 s | 0.09 s | 0.077 s |
+| 每轮固定开销（(5 轮 − 1 轮) / 4） | 12–13 ms | 5 ms | ~5.6 ms |
 
 每轮固定开销覆盖：统计库写入（请求 + 工具各一次）、会话 JSONL 追加、项目指令刷新、
 提示词模板渲染、token 估算。本轮分别改为：统计库句柄复用单连接 + `Rates` 按
@@ -111,16 +114,18 @@ printf '{"tool":"read","arguments":{"path":"/private/tmp/perf_fixtures/big5k.txt
 进程内探针（`cargo nextest run --release --locked -p pp-tools --run-ignored only -E 'test(perf_probe)'`，
 `PERF_FIXTURES=/private/tmp/perf_fixtures`），排除进程启动与模型往返：
 
-| 用例 | 基线 | 优化后 |
-| --- | ---: | ---: |
-| `glob` 1k 文件 | 7.2 ms | 4.5 ms |
-| `glob` 10k 文件 | 53.7 ms | 30.2 ms |
-| `glob` 50k 文件 | 267.1 ms | 140.3 ms |
-| `rg` 10k 文件（全部命中） | 67.5 ms | 59.6 ms |
-| `rg` 50k 文件（全部命中） | 250.0 ms | 198.9 ms |
-| `read` 5k 行 | 0.2 ms | 0.2 ms |
-| `edit` 3k 行（一次替换） | 20.0 ms | 18.1 ms |
-| `bash` 输出 100k 行 | 70.2 ms | 29.9 ms |
+| 用例 | 历史基线 | 上轮优化后 | 本轮前复测 | 本轮优化后 |
+| --- | ---: | ---: | ---: | ---: |
+| `glob` 1k 文件 | 7.2 ms | 4.5 ms | 4.0 ms | 4.6 ms |
+| `glob` 10k 文件 | 53.7 ms | 30.2 ms | 24.3 ms | 23.9 ms |
+| `glob` 50k 文件 | 267.1 ms | 140.3 ms | 257.0 ms | 111.1 ms |
+| `rg` 10k 文件（全部命中） | 67.5 ms | 59.6 ms | 60.4 ms | 29.4 ms |
+| `rg` 50k 文件（全部命中） | 250.0 ms | 198.9 ms | 204.7 ms | 26.3 ms |
+| `read` 5k 行 | 0.2 ms | 0.2 ms | 0.2 ms | 0.3 ms |
+| `edit` 3k 行（一次替换） | 20.0 ms | 18.1 ms | 19.1 ms | 16.1 ms |
+| `bash` 输出 100k 行 | 70.2 ms | 29.9 ms | 27.9 ms | 20.1 ms |
+
+本轮 `glob`/`rg`/`edit`/`bash` 主要改动：`SandboxState` 缓存 `Arc<Policy>` 并提供 `can_contain_denied_read` 整子树快路径（symlink 仍走 `is_read_denied_resolved`）；`glob` 集满 `limit` 后按 `worst_mtime` 过滤路径分配；`rg` 单入口目录搜索改用惰性 `WalkBuilder`（满 2000 命中即停遍历）、跳过非本页行构造并复用行缓冲区；`replace` 与 `output` 增设 ASCII 快路径；`diff` 先裁剪公共前后缀再计算 Myers diff；`bash` supervisor 进程与管道结束时立即转 `Finished` 不再空等 5 ms。
 
 端到端交叉验证（真实二进制 + mock provider 触发一次工具调用，含启动与请求往返）：
 

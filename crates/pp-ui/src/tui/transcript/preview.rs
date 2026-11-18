@@ -75,10 +75,13 @@ impl Transcript {
 
 /// 只提取 JSON 字符串。遇到尚未闭合的值时仅解码完整前缀，转义序列与代理对
 /// 留待后续分片补齐；绝不通过补全 JSON 来触发工具执行。
-fn fields(raw: &str) -> Vec<(String, String)> {
+fn scan_fields<T>(
+    raw: &str,
+    mut accept_key: impl FnMut(&str) -> bool,
+    mut on_field: impl FnMut(String, String) -> std::ops::ControlFlow<T>,
+) -> Option<T> {
     let bytes = raw.as_bytes();
     let (mut cursor, mut key) = (0, None);
-    let mut fields = Vec::new();
     while cursor < bytes.len() {
         if bytes[cursor] != b'"' {
             cursor += 1;
@@ -94,41 +97,81 @@ fn fields(raw: &str) -> Vec<(String, String)> {
             }
         }
         let closed = cursor < bytes.len();
+        let next = if closed {
+            let after = cursor + 1;
+            bytes[after..]
+                .iter()
+                .position(|b| !b.is_ascii_whitespace())
+                .map(|offset| after + offset)
+        } else {
+            None
+        };
+        if closed && next.is_some_and(|next| bytes[next] == b':') {
+            let decoded = serde_json::from_str::<String>(&raw[start..=cursor]).ok()?;
+            key = Some(decoded);
+            cursor = next.expect("已找到冒号") + 1;
+            continue;
+        }
+        let Some(field_key) = key.take() else {
+            if !closed {
+                break;
+            }
+            cursor += 1;
+            continue;
+        };
+        if !accept_key(&field_key) {
+            if !closed {
+                break;
+            }
+            cursor += 1;
+            continue;
+        }
         let value = if closed {
             serde_json::from_str::<String>(&raw[start..=cursor]).ok()
         } else {
             partial_string(&raw[start..])
-        };
-        let Some(value) = value else { break };
+        }?;
         cursor += usize::from(closed);
-        let next = bytes[cursor..]
-            .iter()
-            .position(|b| !b.is_ascii_whitespace())
-            .map(|offset| cursor + offset);
-        if closed && next.is_some_and(|next| bytes[next] == b':') {
-            key = Some(value);
-            cursor = next.expect("已找到冒号") + 1;
-        } else if let Some(key) = key.take() {
-            fields.push((key, value));
+        if let std::ops::ControlFlow::Break(done) = on_field(field_key, value) {
+            return Some(done);
         }
     }
+    None
+}
+
+#[cfg(test)]
+fn fields(raw: &str) -> Vec<(String, String)> {
+    let mut fields = Vec::new();
+    scan_fields(
+        raw,
+        |_| true,
+        |key, value| {
+            fields.push((key, value));
+            std::ops::ControlFlow::<()>::Continue(())
+        },
+    );
     fields
 }
 
 /// 仅提取显示路径，不把尚未闭合的参数解释为可执行调用。
 pub(super) fn path(raw: &str) -> String {
-    fields(raw)
-        .into_iter()
-        .find_map(|(key, value)| match key.as_str() {
-            "path" => Some(value),
-            "input" => value.lines().find_map(|line| {
+    scan_fields(
+        raw,
+        |key| matches!(key, "path" | "input"),
+        |key, value| match key.as_str() {
+            "path" => std::ops::ControlFlow::Break(value),
+            "input" => match value.lines().find_map(|line| {
                 line.strip_prefix('[')
                     .and_then(|line| line.rsplit_once('#'))
                     .map(|(path, _)| path.to_owned())
-            }),
-            _ => None,
-        })
-        .unwrap_or_default()
+            }) {
+                Some(path) => std::ops::ControlFlow::Break(path),
+                None => std::ops::ControlFlow::Continue(()),
+            },
+            _ => std::ops::ControlFlow::Continue(()),
+        },
+    )
+    .unwrap_or_default()
 }
 
 fn partial_string(raw: &str) -> Option<String> {
@@ -181,16 +224,28 @@ pub(super) fn layout(
     truncated: bool,
 ) -> Vec<Line<'static>> {
     let base = Style::default().bg(palette::edit_bg());
-    let fields = fields(raw);
     if tool == "write" {
-        let content = fields.iter().find(|(key, _)| key == "content");
+        let content = scan_fields(
+            raw,
+            |key| key == "content",
+            |_, value| std::ops::ControlFlow::Break(value),
+        );
         return super::tool_display::write_body(
-            content.map_or("", |(_, content)| content.as_str()),
+            content.as_deref().unwrap_or(""),
             width,
             expanded,
             base.fg(palette::edit_added()),
         );
     }
+    let mut fields = Vec::new();
+    scan_fields(
+        raw,
+        |key| field_style(key).is_some(),
+        |key, value| {
+            fields.push((key, value));
+            std::ops::ControlFlow::<()>::Continue(())
+        },
+    );
     let hint = || Line::styled(LIMIT_HINT, base.fg(palette::muted()));
     if expanded {
         // 展开：正向物化全部行，`Ctrl + O` 需要完整正文。

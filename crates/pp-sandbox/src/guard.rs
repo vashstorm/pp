@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsString,
     io,
     path::{Component, Path, PathBuf},
 };
@@ -158,22 +157,22 @@ pub(crate) fn is_safe_device_write(path: &Path) -> bool {
 /// 匹配 macOS `confstr(_CS_DARWIN_USER_TEMP_DIR / CACHE_DIR)` 路径：
 /// `/private/var/folders/<2>/<hash>/{T,C}(/.*)?`
 pub(crate) fn is_macos_var_folder_temp(path: &Path) -> bool {
+    fn next_normal<'a>(it: &mut std::path::Components<'a>) -> Option<&'a std::ffi::OsStr> {
+        match it.next() {
+            Some(Component::Normal(s)) => Some(s),
+            _ => None,
+        }
+    }
     let mut comps = path.components();
     let Some(Component::RootDir) = comps.next() else {
         return false;
     };
-    let rest: Vec<OsString> = comps.map(|c| c.as_os_str().to_os_string()).collect();
-    if rest.len() < 5 {
-        return false;
-    }
-    rest[0] == "private"
-        && rest[1] == "var"
-        && rest[2] == "folders"
-        && !rest[3].is_empty()
-        && !rest[4].is_empty()
-        && rest
-            .get(5)
-            .is_some_and(|bucket| bucket == "T" || bucket == "C")
+    next_normal(&mut comps).is_some_and(|s| s == "private")
+        && next_normal(&mut comps).is_some_and(|s| s == "var")
+        && next_normal(&mut comps).is_some_and(|s| s == "folders")
+        && next_normal(&mut comps).is_some_and(|s| !s.is_empty())
+        && next_normal(&mut comps).is_some_and(|s| !s.is_empty())
+        && next_normal(&mut comps).is_some_and(|s| s == "T" || s == "C")
 }
 
 pub(crate) fn check_read_path(

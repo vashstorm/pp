@@ -166,38 +166,51 @@ impl Store {
         let mut providers = BTreeMap::<String, Group>::new();
         let mut names = BTreeMap::new();
         let mut model_rates = BTreeMap::<String, Option<RateSnapshot>>::new();
+        let mut cached_quarter: Option<(i64, i64, u32)> = None;
         for r in rows {
             let r = r?;
-            let local = Local
-                .timestamp_millis_opt(r.timestamp)
-                .single()
-                .ok_or_else(|| anyhow::anyhow!("invalid request timestamp"))?;
             let day = r.timestamp.div_euclid(86_400_000) * 86_400_000;
+            let quarter = r.timestamp.div_euclid(900_000);
+            let (local_day_start, hour) = match cached_quarter {
+                Some((cached_q, cached_day, cached_hour)) if cached_q == quarter => {
+                    (cached_day, cached_hour)
+                }
+                _ => {
+                    let local = Local
+                        .timestamp_millis_opt(r.timestamp)
+                        .single()
+                        .ok_or_else(|| anyhow::anyhow!("invalid request timestamp"))?;
+                    let day_start = local
+                        .date_naive()
+                        .and_hms_opt(0, 0, 0)
+                        .and_then(|d| d.and_local_timezone(Local).earliest())
+                        .map(|d| d.timestamp_millis())
+                        .ok_or_else(|| anyhow::anyhow!("invalid local date"))?;
+                    let hour = local.hour();
+                    cached_quarter = Some((quarter, day_start, hour));
+                    (day_start, hour)
+                }
+            };
             let bucket = match range {
                 Range::Hour => r.timestamp.div_euclid(300_000) * 300_000,
                 Range::Day => r.timestamp.div_euclid(3_600_000) * 3_600_000,
-                _ => local
-                    .date_naive()
-                    .and_hms_opt(0, 0, 0)
-                    .and_then(|d| d.and_local_timezone(Local).earliest())
-                    .map(|d| d.timestamp_millis())
-                    .ok_or_else(|| anyhow::anyhow!("invalid local date"))?,
+                _ => local_day_start,
             };
             let cost = r.cost();
-            all.push(&r, cost.as_ref(), bucket, day, local.hour());
+            all.push(&r, cost.as_ref(), bucket, day, hour);
             models.entry(r.model_reference.clone()).or_default().push(
                 &r,
                 cost.as_ref(),
                 bucket,
                 day,
-                local.hour(),
+                hour,
             );
             providers.entry(r.provider.clone()).or_default().push(
                 &r,
                 cost.as_ref(),
                 bucket,
                 day,
-                local.hour(),
+                hour,
             );
             let rate = r.rates();
             // 同一配置引用可能在历史上指向不同实际模型或缺少费率快照，仅显示一致的费率。

@@ -145,7 +145,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
         pty.input("Second research exchange\r");
         let (request, _) = pty.request_at(&fixture, api_path(other));
         plan_final(request, other, "Recent verified static facts");
-        pty.ready();
+        pty.completed_after("Recent verified static facts");
         pty.input("/compact\r");
         let (request, body) = pty.request_at(&fixture, api_path(other));
         assert!(

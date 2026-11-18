@@ -201,12 +201,12 @@ impl<W: Write> Surface<W> {
         alternate: bool,
         history: &[Vec<Cell>],
     ) -> io::Result<()> {
-        self.paint_images(buffer, cursor, alternate, history, &[])
+        self.paint_images(Arc::new(buffer.clone()), cursor, alternate, history, &[])
     }
 
     pub(super) fn paint_images(
         &mut self,
-        buffer: &Buffer,
+        buffer: Arc<Buffer>,
         cursor: Option<Position>,
         alternate: bool,
         history: &[Vec<Cell>],
@@ -289,7 +289,7 @@ impl<W: Write> Surface<W> {
         });
         let previous = scrolled.as_ref().or(previous);
         let forced = previous.is_none().then(|| {
-            let mut next = buffer.clone();
+            let mut next = (*buffer).clone();
             for cell in &mut next.content {
                 if cell.diff_option == CellDiffOption::None {
                     cell.set_diff_option(CellDiffOption::AlwaysUpdate);
@@ -298,7 +298,7 @@ impl<W: Write> Surface<W> {
             next
         });
         let previous = previous.unwrap_or(&unknown);
-        let next = forced.as_ref().unwrap_or(buffer);
+        let next = forced.as_ref().unwrap_or(&buffer);
         let was_alternate = self.alternate;
         let started = self.started;
         let changes = previous.diff(next);
@@ -398,14 +398,15 @@ impl<W: Write> Surface<W> {
             self.writer.flush()?;
         }
         // 主屏幕帧的差分基线与 main 共享同一份整帧缓冲，只复制一次。
-        let snapshot = Arc::new(buffer.clone());
+        let main_area = buffer.area;
+        let snapshot = buffer.clone();
         self.previous = Some(snapshot.clone());
         if reset
             || clear_graphics
             || self
                 .main
                 .as_ref()
-                .is_some_and(|main| main.area != buffer.area)
+                .is_some_and(|main| main.area != main_area)
         {
             // 备用屏幕期间的清理或缩放也会改变主屏幕，不能复用旧差分基线。
             self.main = None;
@@ -419,7 +420,7 @@ impl<W: Write> Surface<W> {
         self.started = true;
         self.cursor = cursor;
         self.graphics = graphics.to_vec();
-        self.graphics_cleanup = GraphicsCleanup::from_frame(buffer, graphics);
+        self.graphics_cleanup = GraphicsCleanup::from_frame(&buffer, graphics);
         if let Ok(mut graphics) = GRAPHICS.lock() {
             *graphics = self.graphics_cleanup.clone();
         }
@@ -820,15 +821,15 @@ mod tests {
         let (image, area) = graphics_frame();
         let mut surface = Surface::new(Vec::new());
         surface
-            .paint_images(&image, None, false, &[], &[area])
+            .paint_images(Arc::new(image.clone()), None, false, &[], &[area])
             .unwrap();
         let initial = surface.writer.len();
         surface
-            .paint_images(&image, None, false, &[], &[area])
+            .paint_images(Arc::new(image), None, false, &[], &[area])
             .unwrap();
         assert_eq!(surface.writer.len(), initial);
         surface
-            .paint_images(&frame("conversation"), None, false, &[], &[])
+            .paint_images(Arc::new(frame("conversation")), None, false, &[], &[])
             .unwrap();
         let bytes = String::from_utf8_lossy(&surface.writer[initial..]);
         assert!(bytes.contains("a=d,d=I,i=123"), "{bytes:?}");
@@ -843,7 +844,7 @@ mod tests {
         image[(area.x, area.y)].set_symbol("\x1bPtmux;\x1b\x1b]1337;File=inline=1:AAAA\x07\x1b\\");
         let mut surface = Surface::new(Vec::new());
         surface
-            .paint_images(&image, None, false, &[], &[area])
+            .paint_images(Arc::new(image), None, false, &[], &[area])
             .unwrap();
         let start = surface.writer.len();
         surface
@@ -877,7 +878,13 @@ mod tests {
         add(&mut preview, popup, 789);
         let mut surface = Surface::new(Vec::new());
         surface
-            .paint_images(&multiple, None, false, &[], &[thumbnail, neighbor])
+            .paint_images(
+                Arc::new(multiple.clone()),
+                None,
+                false,
+                &[],
+                &[thumbnail, neighbor],
+            )
             .unwrap();
         for (buffer, areas, deleted, transmitted) in [
             (&preview, vec![thumbnail, neighbor, popup], None, Some(789)),
@@ -886,7 +893,7 @@ mod tests {
         ] {
             let start = surface.writer.len();
             surface
-                .paint_images(buffer, None, false, &[], &areas)
+                .paint_images(Arc::new(buffer.clone()), None, false, &[], &areas)
                 .unwrap();
             let output = String::from_utf8_lossy(&surface.writer[start..]);
             assert!(!output.contains("a=d,d=I,i=123"), "{output:?}");
@@ -908,13 +915,19 @@ mod tests {
         let (image, area) = graphics_frame();
         let mut surface = Surface::new(Vec::new());
         surface
-            .paint_images(&image, Some(Position::new(2, 4)), false, &[], &[area])
+            .paint_images(
+                Arc::new(image.clone()),
+                Some(Position::new(2, 4)),
+                false,
+                &[],
+                &[area],
+            )
             .unwrap();
         let start = surface.writer.len();
         let history = vec![Cell::new("h"); 24];
         surface
             .paint_images(
-                &image,
+                Arc::new(image.clone()),
                 Some(Position::new(2, 4)),
                 false,
                 &[history],
@@ -930,7 +943,7 @@ mod tests {
         assert!(bytes.find("a=d,d=I").unwrap() < bytes.find("\x1b[?1049h").unwrap());
         assert!(surface.main.is_none());
         surface
-            .paint_images(&image, None, false, &[], &[area])
+            .paint_images(Arc::new(image), None, false, &[], &[area])
             .unwrap();
         assert_eq!(surface.graphics, [area]);
     }

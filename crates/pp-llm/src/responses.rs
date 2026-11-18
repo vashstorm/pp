@@ -211,7 +211,6 @@ impl OpenAiClient {
             .as_ref()
             .expect("ensure_ready leaves a runtime in place");
         let mut snapshot = serde_json::Value::Null;
-        let mut tool_deltas = Vec::new();
         let mut stop_reason = None;
         let mut reported_usage = None;
         let mut failure_context = pp_core::logging::FailureContext::default();
@@ -229,14 +228,17 @@ impl OpenAiClient {
                             wire: &wire,
                             mock_script: script.as_ref(),
                         };
-                        return responses
-                            .create_stream_byot::<_, ResponseEvent>(body)
-                            .await;
+                        return responses.create_stream_byot::<_, ResponseEvent>(body).await;
                     }
-                    responses.create_stream_byot::<_, ResponseEvent>(&wire).await
+                    responses
+                        .create_stream_byot::<_, ResponseEvent>(&wire)
+                        .await
                 })
                 .await;
-            if let Err(error) = on_request_sent() { local_failure = true; return Err(error); }
+            if let Err(error) = on_request_sent() {
+                local_failure = true;
+                return Err(error);
+            }
             let opened = match opened {
                 Some(opened) => opened,
                 None => return Err(Cancelled.into()),
@@ -251,32 +253,51 @@ impl OpenAiClient {
                         bail!("Responses protocol: stream ended before response.completed")
                     }
                     Some(Some(event)) => {
-                        let ResponseEvent(event, written, raw) = event.map_err(|error| provider_failure(error, "Responses"))?;
+                        let ResponseEvent(event, written, raw) =
+                            event.map_err(|error| provider_failure(error, "Responses"))?;
                         failure_context.push(&raw);
                         if record {
                             use async_openai::types::responses::ResponseStreamEvent;
                             let response = match &event {
-                                ResponseStreamEvent::ResponseCompleted(done) => Some(&done.response),
-                                ResponseStreamEvent::ResponseFailed(failed) => Some(&failed.response),
-                                ResponseStreamEvent::ResponseIncomplete(incomplete) => Some(&incomplete.response),
+                                ResponseStreamEvent::ResponseCompleted(done) => {
+                                    Some(&done.response)
+                                }
+                                ResponseStreamEvent::ResponseFailed(failed) => {
+                                    Some(&failed.response)
+                                }
+                                ResponseStreamEvent::ResponseIncomplete(incomplete) => {
+                                    Some(&incomplete.response)
+                                }
                                 _ => None,
                             };
                             if let Some(response) = response {
-                                snapshot = serde_json::to_value(&response.output).unwrap_or_default();
+                                snapshot =
+                                    serde_json::to_value(&response.output).unwrap_or_default();
                                 reported_usage = response.usage.as_ref().map(|usage| TokenUsage {
                                     input_tokens: u64::from(usage.input_tokens),
                                     output_tokens: u64::from(usage.output_tokens),
                                     cache_write_tokens: written,
-                                    cached_tokens: Some(u64::from(usage.input_tokens_details.cached_tokens)),
+                                    cached_tokens: Some(u64::from(
+                                        usage.input_tokens_details.cached_tokens,
+                                    )),
                                 });
-                                stop_reason = Some(if response.status != Status::Completed {
-                                    response.incomplete_details.as_ref().map_or("failed", |d|d.reason.as_str())
-                                } else if response.output.iter().any(|item|matches!(item,OutputItem::FunctionCall(_))) {
-                                    "tool_calls"
-                                } else { "stop" }.to_owned());
-                            }
-                            if let ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(delta) = &event {
-                                tool_deltas.push(serde_json::json!({"item_id":delta.item_id,"delta":delta.delta}));
+                                stop_reason = Some(
+                                    if response.status != Status::Completed {
+                                        response
+                                            .incomplete_details
+                                            .as_ref()
+                                            .map_or("failed", |d| d.reason.as_str())
+                                    } else if response
+                                        .output
+                                        .iter()
+                                        .any(|item| matches!(item, OutputItem::FunctionCall(_)))
+                                    {
+                                        "tool_calls"
+                                    } else {
+                                        "stop"
+                                    }
+                                    .to_owned(),
+                                );
                             }
                         }
                         if let Some(mut turn) = output.push(event, &mut progress)? {
@@ -339,11 +360,7 @@ impl OpenAiClient {
             }
             observation.usage = accounting_usage;
             observation.stop_reason = stop_reason;
-            observation.output = if snapshot.is_null() {
-                serde_json::json!({"tool_argument_deltas":tool_deltas})
-            } else {
-                snapshot
-            };
+            observation.output = snapshot;
             if let Some(context) = &self.stats_context {
                 if attempted {
                     observation.request_context = attempts.request_context.take();

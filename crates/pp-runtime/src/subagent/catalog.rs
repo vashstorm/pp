@@ -31,7 +31,11 @@ pub struct Definition {
 
 impl Definition {
     fn parse(markdown: &str) -> Result<Self> {
-        let markdown = markdown.replace("\r\n", "\n");
+        let markdown = if markdown.contains("\r\n") {
+            std::borrow::Cow::Owned(markdown.replace("\r\n", "\n"))
+        } else {
+            std::borrow::Cow::Borrowed(markdown)
+        };
         let text = markdown
             .strip_prefix("---\n")
             .context("missing frontmatter")?;

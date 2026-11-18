@@ -227,18 +227,27 @@ impl Skills {
         for root in roots {
             let mut candidates = Vec::new();
             next.scan(&next.resolve(&root), &mut visited, &mut candidates);
-            candidates.sort();
-            for candidate in candidates {
+            candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
+            for (candidate, canonical_dir) in candidates {
                 let result = (|| -> Result<_> {
-                    let path =
-                        fs::canonicalize(&candidate).context("Failed to resolve skill path")?;
+                    let path = match fs::symlink_metadata(&candidate) {
+                        Ok(meta) if !meta.file_type().is_symlink() => {
+                            ensure!(meta.is_file(), "SKILL.md must be a regular file");
+                            canonical_dir.join("SKILL.md")
+                        }
+                        _ => {
+                            let path = fs::canonicalize(&candidate)
+                                .context("Failed to resolve skill path")?;
+                            ensure!(
+                                fs::metadata(&path)?.is_file(),
+                                "SKILL.md must be a regular file"
+                            );
+                            path
+                        }
+                    };
                     if !files.insert(path.clone()) {
                         return Ok(None);
                     }
-                    ensure!(
-                        fs::metadata(&path)?.is_file(),
-                        "SKILL.md must be a regular file"
-                    );
                     let text = fs::read_to_string(&path).context("Failed to read SKILL.md")?;
                     let meta = metadata(&text)?;
                     if next.entries.iter().any(|skill| skill.name == meta.name) {
@@ -266,21 +275,26 @@ impl Skills {
         next
     }
 
-    fn scan(&mut self, path: &Path, visited: &mut HashSet<PathBuf>, files: &mut Vec<PathBuf>) {
+    fn scan(
+        &mut self,
+        path: &Path,
+        visited: &mut HashSet<PathBuf>,
+        files: &mut Vec<(PathBuf, PathBuf)>,
+    ) {
         let result = (|| -> Result<()> {
             let canonical = match fs::canonicalize(path) {
                 Ok(canonical) => canonical,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
                 Err(error) => return Err(error).context("Unable to access skill directory"),
             };
-            if !visited.insert(canonical) {
+            if !visited.insert(canonical.clone()) {
                 return Ok(());
             }
-            ensure!(path.is_dir(), "Skill root path must be a directory");
+            ensure!(canonical.is_dir(), "Skill root path must be a directory");
             let skill = path.join("SKILL.md");
-            match fs::metadata(&skill) {
+            match fs::symlink_metadata(&skill) {
                 Ok(_) => {
-                    files.push(skill);
+                    files.push((skill, canonical));
                     return Ok(());
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -289,7 +303,12 @@ impl Skills {
             let mut children = Vec::new();
             for child in fs::read_dir(path)? {
                 let child = child?;
-                if child.path().is_dir() {
+                let is_dir = match child.file_type() {
+                    Ok(ft) if ft.is_symlink() => child.path().is_dir(),
+                    Ok(ft) => ft.is_dir(),
+                    Err(_) => child.path().is_dir(),
+                };
+                if is_dir {
                     children.push(child.path());
                 }
             }

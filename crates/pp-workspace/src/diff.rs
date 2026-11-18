@@ -10,8 +10,83 @@ use similar::{ChangeTag, TextDiff};
 /// Line endings, BOM and the missing final newline are preserved verbatim;
 /// EOL-only differences stay visible because each changed line keeps its
 /// original terminator. Hunks carry three context lines like `git diff`.
+fn trim_common_lines<'a>(old: &'a str, after: &'a str) -> (&'a str, &'a str, usize) {
+    let ob = old.as_bytes();
+    let ab = after.as_bytes();
+    let prefix = ob
+        .iter()
+        .zip(ab.iter())
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| ob.len().min(ab.len()));
+    let prefix_line_end = ob[..prefix]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |i| i + 1);
+    let mut win_start = prefix_line_end;
+    for _ in 0..4 {
+        if win_start == 0 {
+            break;
+        }
+        win_start = ob[..win_start - 1]
+            .iter()
+            .rposition(|&b| b == b'\n')
+            .map_or(0, |i| i + 1);
+    }
+    let skipped_lines = ob[..win_start].iter().filter(|&&b| b == b'\n').count();
+
+    let old_rem = &ob[win_start..];
+    let after_rem = &ab[win_start..];
+    let suffix = old_rem
+        .iter()
+        .rev()
+        .zip(after_rem.iter().rev())
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| old_rem.len().min(after_rem.len()));
+    let suffix_from_end = if suffix == 0 {
+        0
+    } else {
+        let old_common_start = old_rem.len() - suffix;
+        // 对齐到公共后缀内的第一个完整行首，再向后放宽 4 行上下文缓冲。
+        let first_nl = old_rem[old_common_start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(old_rem.len(), |i| old_common_start + i + 1);
+        let mut keep_start = first_nl;
+        for _ in 0..4 {
+            if keep_start >= old_rem.len() {
+                break;
+            }
+            keep_start = match old_rem[keep_start..].iter().position(|&b| b == b'\n') {
+                Some(i) => keep_start + i + 1,
+                None => old_rem.len(),
+            };
+        }
+        old_rem.len() - keep_start
+    };
+    let old_end = old.len() - suffix_from_end;
+    let after_end = after.len() - suffix_from_end;
+    (
+        &old[win_start..old_end],
+        &after[win_start..after_end],
+        skipped_lines,
+    )
+}
+
 pub fn build(before: Option<&str>, after: &str) -> FileDiff {
-    let diff = TextDiff::from_lines(before.unwrap_or(""), after);
+    if before == Some(after) {
+        return FileDiff::Text {
+            deleted: false,
+            created: false,
+            added: 0,
+            removed: 0,
+            hunks: Vec::new(),
+        };
+    }
+    let (old_slice, new_slice, line_offset) = match before {
+        Some(old) => trim_common_lines(old, after),
+        None => ("", after, 0),
+    };
+    let diff = TextDiff::from_lines(old_slice, new_slice);
     let mut added = 0;
     let mut removed = 0;
     let mut hunks = Vec::new();
@@ -33,8 +108,8 @@ pub fn build(before: Option<&str>, after: &str) -> FileDiff {
                 lines.push(DiffLine {
                     kind,
                     // `Change` indices are zero-based; the wire format is 1-based.
-                    old_line: change.old_index().map(|index| index + 1),
-                    new_line: change.new_index().map(|index| index + 1),
+                    old_line: change.old_index().map(|index| line_offset + index + 1),
+                    new_line: change.new_index().map(|index| line_offset + index + 1),
                     text: change.value().to_owned(),
                 });
             }

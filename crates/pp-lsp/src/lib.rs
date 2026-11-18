@@ -123,7 +123,7 @@ impl Registry {
             Some(Ok(config)) => alias_index(config, &cwd),
             _ => HashMap::new(),
         };
-        let registry = Self {
+        Self {
             inner: Arc::new(Inner {
                 cwd,
                 config_path,
@@ -141,45 +141,43 @@ impl Registry {
                 closing: AtomicBool::new(false),
                 generation: AtomicU64::new(1),
             }),
-        };
-        if settings.enabled {
-            let (stop, receiver) = std::sync::mpsc::channel();
-            let weak = Arc::downgrade(&registry.inner);
-            match std::thread::Builder::new()
-                .name("pp-lsp-maintenance".into())
-                .spawn(move || {
-                    while matches!(
-                        receiver.recv_timeout(Duration::from_secs(1)),
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                    ) {
-                        let Some(inner) = weak.upgrade() else { break };
-                        let registry = Registry { inner };
-                        if registry.inner.closing.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        if let Err(error) = registry.idle_sweep() {
-                            tracing::error!(event = "lsp_idle_cleanup", error = %error);
-                        }
-                    }
-                }) {
-                Ok(_) => {
-                    *registry
-                        .inner
-                        .maintenance_stop
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = Some(stop)
-                }
-                Err(_) => {
-                    *registry
-                        .inner
-                        .config
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) =
-                        Some(Err("LSP maintenance thread could not be started".into()))
-                }
-            }
         }
-        registry
+    }
+
+    fn ensure_maintenance_started(&self) {
+        if !self.inner.settings.enabled || self.inner.closing.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut guard = self
+            .inner
+            .maintenance_stop
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if guard.is_some() {
+            return;
+        }
+        let (stop, receiver) = std::sync::mpsc::channel();
+        let weak = Arc::downgrade(&self.inner);
+        match std::thread::Builder::new()
+            .name("pp-lsp-maintenance".into())
+            .spawn(move || {
+                while matches!(
+                    receiver.recv_timeout(Duration::from_secs(1)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    let Some(inner) = weak.upgrade() else { break };
+                    let registry = Registry { inner };
+                    if registry.inner.closing.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Err(error) = registry.idle_sweep() {
+                        tracing::error!(event = "lsp_idle_cleanup", error = %error);
+                    }
+                }
+            }) {
+            Ok(_) => *guard = Some(stop),
+            Err(_) => tracing::error!(event = "lsp_maintenance_spawn_failed"),
+        }
     }
 
     pub fn settings(&self) -> LspSettings {
@@ -648,6 +646,7 @@ impl Registry {
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .insert(identity.clone(), client.clone());
+                    self.ensure_maintenance_started();
                     Ok(client)
                 }
                 Err(error) => {

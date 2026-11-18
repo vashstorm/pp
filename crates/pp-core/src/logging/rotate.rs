@@ -15,7 +15,7 @@ use std::{
 use chrono::{Local, NaiveDate};
 use rustix::fs::{FlockOperation, flock};
 
-use super::{MAX_LOG_BYTES, open_regular};
+use super::{MAX_LOG_BYTES, open_regular, open_regular_with_len};
 
 // Share the open lock fd without duplicating it for every event. The guard
 // does not borrow RotatingFile, allowing its date and volume cache to change.
@@ -126,8 +126,8 @@ impl RotatingFile {
             number = Some(latest);
         }
         if let Some(number) = number {
-            let mut file = open_regular(&self.path_for(namespace, today, number), false, false)?;
-            let length = file.metadata()?.len();
+            let (mut file, length) =
+                open_regular_with_len(&self.path_for(namespace, today, number), false, false)?;
             if length <= MAX_LOG_BYTES && record.len() as u64 <= MAX_LOG_BYTES - length {
                 self.current = Some((today, number));
                 return file.write_all(record);

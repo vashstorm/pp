@@ -114,17 +114,14 @@ impl Agent {
             context_window: config.context_window,
         };
         let edit_mode = tools.edit_mode();
+        let definitions = tools.all_definitions(pp_core::plan::WorkMode::Execute);
         // 项目文件在任务开始时加载，读取失败不会让整个交互会话永久不可用。
         let context = crate::system_prompt::RenderContext::new(
             tools.cwd(),
             &config.model,
             edit_mode,
             "execute",
-            tools
-                .all_definitions(pp_core::plan::WorkMode::Execute)
-                .into_iter()
-                .map(|tool| tool.name)
-                .collect(),
+            definitions.iter().map(|tool| tool.name.clone()).collect(),
         )
         .with_sandbox(&tools.sandbox().status());
         let system = prompt_source
@@ -143,8 +140,12 @@ impl Agent {
         // 无效正则或结构错误阻止 Agent 构造；脚本本身只在匹配时启动。
         let hooks = Self::compile_hooks(&catalog, tools.cwd())?;
         let initial_system = system.clone();
-        let mut session = Session::new(config.model, config.protocol, initial_system, edit_mode);
-        session.set_tools(tools.all_definitions(pp_core::plan::WorkMode::Execute));
+        let mut session = Session::new_with_tools(
+            config.model,
+            config.protocol,
+            initial_system,
+            Some(definitions),
+        );
         session.set_think_level(think_level);
         Ok(Self {
             role_route: None,

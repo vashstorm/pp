@@ -16,7 +16,7 @@ use crate::models::ModelThinking;
 use pp_core::model::ThinkLevel;
 
 mod migration;
-pub use migration::initialize;
+pub use migration::{initialize, initialize_store};
 
 const UNAVAILABLE: &str = "Agent database unavailable.";
 const UNSUPPORTED_VERSION: &str = "Agent database schema version is not supported.";

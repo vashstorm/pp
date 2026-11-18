@@ -110,14 +110,6 @@ struct Entry {
 fn rank(a: &Entry, b: &Entry) -> std::cmp::Ordering {
     b.mtime.cmp(&a.mtime).then_with(|| a.path.cmp(&b.path))
 }
-fn display(cwd: &Path, path: &Path, dir: bool) -> String {
-    let path = path.strip_prefix(cwd).unwrap_or(path);
-    let mut text = path.to_string_lossy().into_owned();
-    if dir && !text.ends_with('/') {
-        text.push('/');
-    }
-    text
-}
 /// 有界候选缓冲：保留 `rank` 最高的至多 `limit` 项。
 ///
 /// 候选按遍历顺序追加，缓冲超过 `2 × limit` 时才整体按 `rank` 排序并截断，
@@ -133,6 +125,7 @@ struct Results {
     entries: Vec<Entry>,
     limit: usize,
     more: bool,
+    worst_mtime: Option<SystemTime>,
 }
 impl Results {
     fn new(limit: usize) -> Self {
@@ -140,7 +133,21 @@ impl Results {
             entries: Vec::with_capacity(limit.saturating_add(1)),
             limit,
             more: false,
+            worst_mtime: None,
         }
+    }
+    fn may_enter(&mut self, mtime: SystemTime) -> bool {
+        if self.entries.len() < self.limit {
+            return true;
+        }
+        if self.worst_mtime.is_none() {
+            self.reduce();
+        }
+        if self.worst_mtime.is_some_and(|worst| mtime < worst) {
+            self.more = true;
+            return false;
+        }
+        true
     }
     fn push(&mut self, item: Entry) {
         self.entries.push(item);
@@ -154,6 +161,9 @@ impl Results {
         if self.entries.len() > self.limit {
             self.more = true;
             self.entries.truncate(self.limit);
+        }
+        if self.entries.len() == self.limit {
+            self.worst_mtime = self.entries.last().map(|entry| entry.mtime);
         }
     }
     fn finish(mut self) -> (Vec<Entry>, bool) {
@@ -219,13 +229,22 @@ fn grouped(items: &[Entry]) -> String {
     lines.join("\n")
 }
 
-/// 遍历剪枝：普通 entry 走词法快路径；symlink 与无法取得类型的 entry 取规范化
-/// 结果，避免链接指向拒绝根时被词法前缀误放行（`follow_links(false)` 已保证
-/// 不跨越目录链接）。
-fn sandbox_denied_entry(sandbox: &pp_sandbox::Sandbox, entry: &ignore::DirEntry) -> bool {
+/// 遍历剪枝：普通 entry 在与拒绝根不相交的遍历根下直接放行，否则走词法快路径；
+/// symlink 与无法取得类型的 entry 取规范化结果，避免链接指向拒绝根时被词法前缀误放行
+/// （`follow_links(false)` 已保证不跨越目录链接）。
+fn sandbox_denied_entry(
+    policy: Option<&pp_sandbox::Policy>,
+    can_contain_denied: bool,
+    entry: &ignore::DirEntry,
+) -> bool {
+    let Some(policy) = policy else {
+        return false;
+    };
     match entry.file_type() {
-        Some(kind) if !kind.is_symlink() => sandbox.is_read_denied(entry.path()),
-        _ => sandbox.is_read_denied_resolved(entry.path()),
+        Some(kind) if !kind.is_symlink() => {
+            can_contain_denied && policy.is_read_denied(entry.path())
+        }
+        _ => policy.is_read_denied_resolved(entry.path()),
     }
 }
 
@@ -310,8 +329,24 @@ fn search(
         ensure!(metadata.is_dir(), "glob search path is not a directory");
         let matcher = compile(&target.pattern)?;
         let walk_root = fs::canonicalize(&root).context("cannot resolve glob search path")?;
-        sandbox.check_read(&walk_root)?;
-        let filter_sandbox = std::sync::Arc::clone(sandbox);
+        let policy = sandbox.policy()?;
+        if let Some(policy) = &policy {
+            policy.check_read(&walk_root)?;
+        }
+        let can_contain_denied = policy
+            .as_ref()
+            .is_some_and(|policy| policy.can_contain_denied_read(&walk_root));
+        let filter_policy = policy.clone();
+        let display_root = root.strip_prefix(cwd).unwrap_or(&root);
+        let display_prefix = if display_root == Path::new("") || display_root == Path::new(".") {
+            String::new()
+        } else {
+            let mut s = display_root.to_string_lossy().into_owned();
+            if !s.ends_with('/') {
+                s.push('/');
+            }
+            s
+        };
         let in_repo = walk_root
             .ancestors()
             .any(|ancestor| ancestor.join(".git").exists());
@@ -345,7 +380,11 @@ fn search(
                 entry.depth() == 0
                     || (entry.file_name() != ".git"
                         && (allow_node_modules || entry.file_name() != "node_modules")
-                        && !sandbox_denied_entry(&filter_sandbox, entry))
+                        && !sandbox_denied_entry(
+                            filter_policy.as_deref(),
+                            can_contain_denied,
+                            entry,
+                        ))
             });
         for result in builder.build() {
             cancellation::check(token)?;
@@ -372,16 +411,24 @@ fn search(
             if !matcher.is_match(relative) {
                 continue;
             }
-            let dir = entry.file_type().is_some_and(|kind| kind.is_dir());
             let mtime = entry
                 .metadata()
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            results.push(Entry {
-                path: display(cwd, &root.join(relative), dir),
-                mtime,
-            });
+            if !results.may_enter(mtime) {
+                continue;
+            }
+            let dir = entry.file_type().is_some_and(|kind| kind.is_dir());
+            let rel_str = relative.to_string_lossy();
+            let mut path =
+                String::with_capacity(display_prefix.len() + rel_str.len() + usize::from(dir));
+            path.push_str(&display_prefix);
+            path.push_str(&rel_str);
+            if dir && !path.ends_with('/') {
+                path.push('/');
+            }
+            results.push(Entry { path, mtime });
         }
     }
     let (matches, more) = results.finish();

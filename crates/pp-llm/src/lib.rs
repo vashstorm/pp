@@ -31,6 +31,12 @@ pub const EMPTY_SUMMARY: &str = "context compaction failed: expected a non-empty
 pub type MockScripts =
     std::sync::Arc<std::collections::BTreeMap<String, std::sync::Arc<serde_json::Value>>>;
 
+enum UsageStore {
+    Pending(std::path::PathBuf),
+    Ready(pp_config::agent_store::AgentStore),
+    Unavailable,
+}
+
 pub struct OpenAiClient {
     auth: Option<pp_config::auth::Config>,
     client: Client<OpenAIConfig>,
@@ -48,8 +54,8 @@ pub struct OpenAiClient {
     // 下一条真正发出的模型请求是否携带初始脚本；每个客户端独立。
     #[cfg(debug_assertions)]
     mock_script_pending: bool,
-    // 复用的 agent.db 连接；构造时打开失败则整个客户端周期不计数并按需警告，不做重开回退。
-    usage_store: Option<pp_config::agent_store::AgentStore>,
+    // 惰性打开并复用的 agent.db 连接；首次计数时打开，失败后整个客户端周期不再重开。
+    usage_store: UsageStore,
     // 仅测试持有临时目录生命周期，保证计数数据库路径在客户端存续期内有效。
     #[cfg(test)]
     usage_dir: Option<tempfile::TempDir>,
@@ -177,9 +183,15 @@ impl OpenAiClient {
         if self.mock_scripts.is_some() {
             return;
         }
+        if let UsageStore::Pending(path) = &self.usage_store {
+            self.usage_store = match pp_config::agent_store::AgentStore::open(path) {
+                Ok(store) => UsageStore::Ready(store),
+                Err(_) => UsageStore::Unavailable,
+            };
+        }
         let counted = match &mut self.usage_store {
-            Some(store) => store.increment_model_usage(&self.model_reference).is_ok(),
-            None => false,
+            UsageStore::Ready(store) => store.increment_model_usage(&self.model_reference).is_ok(),
+            UsageStore::Pending(_) | UsageStore::Unavailable => false,
         };
         if !counted {
             pp_config::agent_store::warn_usage_unavailable();
@@ -221,8 +233,8 @@ impl OpenAiClient {
             mock_scripts: None,
             #[cfg(debug_assertions)]
             mock_script_pending: false,
-            // 构造期打开失败保持静默；实际计数失败时才发脱敏警告。
-            usage_store: pp_config::agent_store::AgentStore::open(&config.agent_db_path).ok(),
+            // 首次逻辑请求计数时才惰性打开；失败后才发脱敏警告。
+            usage_store: UsageStore::Pending(config.agent_db_path.clone()),
             #[cfg(test)]
             usage_dir: None,
         })

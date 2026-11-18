@@ -512,7 +512,7 @@ impl App {
             );
         }
         if self.native_render && exiting {
-            self.normal_snapshot = Some(frame.buffer_mut().clone());
+            self.normal_snapshot = Some(std::sync::Arc::new(frame.buffer_mut().clone()));
         }
         if self.resource_input_available() && self.menu.is_none() {
             self.image_view.preview(frame, preview_area);
