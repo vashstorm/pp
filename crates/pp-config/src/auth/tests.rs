@@ -487,7 +487,7 @@ fn auth_opencode_manual_models_and_session_validation() {
             assert_eq!(providers[0].auth, Some(provider));
             assert_eq!(
                 providers[0].models[0].thinking,
-                crate::models::ModelThinking::without_reasoning()
+                crate::models::ModelThinking::default()
             );
         }
         fs::write(
@@ -497,7 +497,11 @@ fn auth_opencode_manual_models_and_session_validation() {
             ),
         )
         .unwrap();
-        assert!(crate::models::load_models(&path).is_err());
+        let providers = crate::models::load_models(&path).unwrap();
+        assert_eq!(
+            providers[0].models[0].thinking.levels().collect::<Vec<_>>(),
+            [pp_core::model::ThinkLevel::Low]
+        );
 
         assert!(
             Credential::api_key("sk-fixture".into())

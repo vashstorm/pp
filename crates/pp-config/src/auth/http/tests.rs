@@ -237,6 +237,7 @@ fn auth_discovery_roundtrip_preserves_model_protocols_and_manual_priority() {
             let config = catalog.resolve(&reference).unwrap();
             assert_eq!(config.protocol, protocol);
             assert_eq!(config.model, id);
+            assert_eq!(config.thinking, crate::models::ModelThinking::default());
             assert_eq!(config.auth.unwrap().generation, credential.generation);
             assert_eq!(
                 catalog
@@ -650,6 +651,10 @@ fn auth_wire_adaptation_preserves_native_history_and_tool_pairs() {
         let req = json!({"model":"gpt-5","reasoning_effort":"none","messages":[{"role":"user","content":"hi"}]});
         let adapted = serde_json::to_value(wire_request(&req, Some(provider)).unwrap()).unwrap();
         assert!(adapted.get("reasoning_effort").is_none());
+        let high_req = json!({"model":"gpt-5","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]});
+        let high_adapted =
+            serde_json::to_value(wire_request(&high_req, Some(provider)).unwrap()).unwrap();
+        assert_eq!(high_adapted["reasoning_effort"], "high");
         let hdrs = headers(provider, None, Some("pp-session-1")).unwrap();
         assert_eq!(hdrs["x-opencode-session"], "pp-session-1");
         assert_eq!(hdrs["x-opencode-client"], "pp");

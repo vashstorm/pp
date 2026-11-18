@@ -90,7 +90,7 @@ Copilot 按每个模型的 `supported_endpoints` 选择协议：包含 `/respons
 
 Command Code 使用 [Provider API](https://commandcode.ai/docs/provider-api)，自动打开 [Studio](https://commandcode.ai/studio/) 后，从 API keys 页面获取密钥并粘贴到授权面板。模型目录来自 `https://api.commandcode.ai/provider/v1/models`，按 `supported_endpoints` 优先选择 `/responses`，其次 `/chat/completions`；仅支持 `/messages` 的 Claude 模型及其他不兼容端点不列入。未知端点元数据沿用 `completion`。手动模型可使用 `auth: command-code`（兼容别名 `commandcode`），并显式设置 `protocol: response` 或 `completion`；模型 ID 保留完整的供应商前缀，例如 `moonshotai/Kimi-K2.5`。密钥沿用现有数据库保存与 `/logout` 流程，不读取 Command Code 自身的凭证文件或环境变量。公开模型目录不验证密钥或套餐权限，首次实际调用仍可能返回认证或权限错误。
 
-OpenCode Zen 与 OpenCode Go 自动打开 [OpenCode 认证页](https://opencode.ai/auth) 后获取 API key 并粘贴到授权面板，分别使用 `https://opencode.ai/zen/v1` 与 `https://opencode.ai/zen/go/v1` 作为基址；模型目录来自各自公开的 `/models` 接口，按每条模型的 `api` 映射优先选择 `responses`，其次 `chat-completions`，仅支持 `messages`（如 Claude）或 `generate-content`（如 Gemini）等其他协议的模型不列入。登录时生成稳定的 `x-opencode-session` 会话头随请求发送（Go 网关强制要求该头），当前以非思考模式运行。公开模型目录匿名可读，不验证密钥或套餐权限，首次实际调用仍可能返回认证或额度错误。
+OpenCode Zen 与 OpenCode Go 自动打开 [OpenCode 认证页](https://opencode.ai/auth) 后获取 API key 并粘贴到授权面板，分别使用 `https://opencode.ai/zen/v1` 与 `https://opencode.ai/zen/go/v1` 作为基址；模型目录来自各自公开的 `/models` 接口，按每条模型的 `api` 映射优先选择 `responses`，其次 `chat-completions`，仅支持 `messages`（如 Claude）或 `generate-content`（如 Gemini）等其他协议的模型不列入。登录时生成稳定的 `x-opencode-session` 会话头随请求发送（Go 网关强制要求该头），未单独配置思考档位时默认全部 effort 档位可用。公开模型目录匿名可读，不验证密钥或套餐权限，首次实际调用仍可能返回认证或额度错误。
 
 模型发现失败或返回空列表时，保留授权并提示在 `/login` 中重试，不补造内置默认模型。只有能确认同一身份才保留旧缓存；缓存绑定授权版本，换账号后忽略旧目录。价格、上下文容量等未知元数据保持未知。
 

@@ -107,11 +107,7 @@ impl Catalog {
                         context_window: model.context_window,
                         thinking: if matches!(
                             entry.auth,
-                            Provider::KimiCode
-                                | Provider::Glm
-                                | Provider::Zai
-                                | Provider::OpencodeZen
-                                | Provider::OpencodeGo
+                            Provider::KimiCode | Provider::Glm | Provider::Zai
                         ) {
                             ModelThinking::without_reasoning()
                         } else {
