@@ -7,6 +7,14 @@ use super::connect::exposed_name;
 use super::{Access, EntryView, McpManager, RemoteTool, SharedServer, State, View};
 
 impl McpManager {
+    pub fn has_available_tool(&self, name: &str) -> bool {
+        let state = self.lock_state();
+        state
+            .tools
+            .get(name)
+            .is_some_and(|tool| tool_available(&state, tool))
+    }
+
     pub fn is_read_only(&self, name: &str) -> bool {
         let state = self.lock_state();
         state
@@ -66,7 +74,7 @@ impl McpManager {
                         .as_ref()
                         .is_some_and(|config| access.allows_server(config))
                     {
-                        "suspended (Plan/Review)"
+                        "suspended (read-only)"
                     } else if let Some(server) = state.servers.get(name) {
                         // 并行调用正在使用服务时视为可用，不阻塞管理查询。
                         match server.try_lock() {

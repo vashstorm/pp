@@ -65,6 +65,10 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
         let project = tempfile::tempdir().unwrap();
         let mut settings = super::super::mcp::settings("");
         settings["notification_timeout_seconds"] = json!(1);
+        settings["tools"] = json!({
+            "approvalMode": "write",
+            "approval": {"mcp__local__fail": "deny"}
+        });
         crate::write_settings(home.path(), settings.to_string()).unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),
@@ -76,7 +80,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
         pty.input("/plan Research the login flow\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         plan_wait_mode(&mut pty, "Plan");
-        // 进入 Plan 只按 access 过滤工具，MCP 进程保持运行。
+        // 进入 Plan 后复用 MCP 进程，并向模型提供发现的工具。
         cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
         assert_eq!(
             cancel_user_messages(&body, protocol),
@@ -105,6 +109,8 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
                             | "plan_submit"
                             | "task"
                             | "wait"
+                            | "mcp__local__echo"
+                            | "mcp__local__fail"
                     )
                 ),
                 "{body}"
@@ -114,16 +120,31 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
         plan_calls(
             request,
             protocol,
-            json!([plan_call(
-                protocol,
-                "deny-write",
-                "write",
-                json!({"path":"forbidden.txt","content":"wrong"})
-            )]),
+            json!([
+                plan_call(
+                    protocol,
+                    "plan-mcp",
+                    "mcp__local__echo",
+                    json!({"text":"evidence"})
+                ),
+                plan_call(protocol, "deny-mcp", "mcp__local__fail", json!({})),
+                plan_call(
+                    protocol,
+                    "deny-write",
+                    "write",
+                    json!({"path":"forbidden.txt","content":"wrong"})
+                )
+            ]),
         );
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        let outputs = cancel_tool_outputs(&body, protocol);
+        assert_eq!(outputs[0].1["result"]["content"][0]["text"], "中文结果");
         assert_eq!(
-            cancel_tool_outputs(&body, protocol).last().unwrap().1,
+            outputs[1].1["error"],
+            "mcp__local__fail is blocked by tools.approval policy."
+        );
+        assert_eq!(
+            outputs[2].1,
             json!({"ok":false,"error":"Tool is not available in Plan mode."})
         );
         assert!(!project.path().join("forbidden.txt").exists());

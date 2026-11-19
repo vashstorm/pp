@@ -355,7 +355,7 @@ fn mcp_read_only_scope_matches_original_names_and_management_filters_connections
         manager
             .view(Access::ReadOnly)
             .text()
-            .contains("suspended (Plan/Review)")
+            .contains("suspended (read-only)")
     );
 
     let name = exposed_name("remote", fixture::LONG_TOOL);

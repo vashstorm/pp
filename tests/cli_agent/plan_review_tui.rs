@@ -33,15 +33,16 @@ fn plan_review_case(action: usize) {
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             system_prompt::assert_live(&body, protocol, "plan");
             assert!(body["tools"].to_string().contains("mcp__remote__echo"));
-            assert!(!body["tools"].to_string().contains("mcp__remote__fail"));
+            assert!(body["tools"].to_string().contains("mcp__remote__fail"));
             plan_calls(request, protocol, json!([
                 plan_call(protocol, "plan-remote-read", "mcp__remote__echo", json!({"text":"plan public evidence"})),
-                plan_call(protocol, "plan-remote-forbidden", "mcp__remote__fail", json!({}))
+                plan_call(protocol, "plan-remote-fail", "mcp__remote__fail", json!({}))
             ]));
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             let outputs = cancel_tool_outputs(&body, protocol);
             assert_eq!(outputs[0].1["result"]["content"][0]["text"], "plan public evidence");
-            assert_eq!(outputs[1].1["error"], "Tool is not available in Plan mode.");
+            assert_eq!(outputs[1].1["ok"], false);
+            assert_eq!(outputs[1].1["result"]["isError"], true);
             plan_final(
                 request,
                 protocol,
@@ -54,7 +55,7 @@ fn plan_review_case(action: usize) {
                 protocol,
                 "Finalize independent plan",
                 PLAN_TUI_BODY,
-                &["mcp__remote__echo"],
+                &["mcp__remote__echo", "mcp__remote__fail"],
             );
             if action == 4 {
                 let id = saved_session_id(home.path());
@@ -172,8 +173,10 @@ fn plan_review_case(action: usize) {
             assert_eq!(outputs[11].1["result"]["content"][0]["text"], "review public evidence");
             let calls: Vec<_> = remote.log().into_iter()
                 .filter(|entry| entry["body"]["method"] == "tools/call").collect();
-            assert_eq!(calls.len(), 2);
-            assert!(calls.iter().all(|call| call["body"]["params"]["name"] == "echo"));
+            let called_names: Vec<_> = calls.iter()
+                .map(|call| call["body"]["params"]["name"].as_str().unwrap())
+                .collect();
+            assert_eq!(called_names, ["echo", "fail", "echo"]);
             assert_eq!(std::fs::read(&path).unwrap(), original);
             assert!(!project.path().join("canary.txt").exists());
             assert!(!project.path().join("review-forbidden").exists());
@@ -193,7 +196,7 @@ fn plan_review_case(action: usize) {
             assert!(!body.to_string().contains("review-read"));
             assert!(!body.to_string().contains("review-search"));
             assert!(!body.to_string().contains("review public evidence"));
-            assert_eq!(body["tools"].to_string().contains("mcp__remote__fail"), action != 4);
+            assert!(body["tools"].to_string().contains("mcp__remote__fail"));
             assert!(body.to_string().contains("PLANNING_CHAT_ONLY_MARKER") == (action != 0));
             assert!(body.to_string().contains("REVIEW_REPORT_ONLY_MARKER") == (action == 4));
             if action == 4 {

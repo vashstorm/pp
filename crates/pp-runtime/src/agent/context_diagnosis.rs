@@ -435,8 +435,7 @@ impl Agent {
             .lock()
             .map_err(|_| anyhow!("skill registry unavailable"))?
             .headers();
-        let access = pp_mcp::Access::for_mode(self.workflow.mode);
-        let mcp_origins = self.tools.mcp.tool_origins(access);
+        let mcp_origins = self.tools.mcp.tool_origins(self.tools.mcp_access());
         let fingerprint =
             sections::SectionFingerprint::of(self, actual_system, &skill_headers, &mcp_origins);
         let sections = match &cache.sections {

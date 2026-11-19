@@ -1,8 +1,8 @@
 //! 工具审批权限模式（tier + 三档模式 + 会话级授权）。
 //!
 //! 纯决策逻辑，无 IO；交互 prompt 经 `ApprovalHandler` 镜像 ask 链路，
-//! 无 handler 时 fail-closed（调用失败，不静默放行）。Plan / Review 的
-//! `ToolPolicy` 白名单门禁不经过本模块；审批门只作用于 `ToolPolicy::Execute`。
+//! 无 handler 时拒绝调用。工具白名单先于审批检查；Execute 工具与
+//! Plan 中未标为只读的 MCP 工具经过本模块。
 
 use pp_config::config::{ApprovalMode, ApprovalPolicy};
 

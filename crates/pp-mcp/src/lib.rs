@@ -124,13 +124,6 @@ pub enum Access {
 }
 
 impl Access {
-    pub fn for_mode(mode: pp_core::plan::WorkMode) -> Self {
-        match mode {
-            pp_core::plan::WorkMode::Execute => Self::Full,
-            pp_core::plan::WorkMode::Plan => Self::ReadOnly,
-        }
-    }
-
     fn allows_server(self, config: &ServerConfig) -> bool {
         self == Self::Full || !config.read_only_tools.is_empty()
     }

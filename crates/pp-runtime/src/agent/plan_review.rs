@@ -65,7 +65,7 @@ impl Agent {
     ) -> Result<PlanReviewReport> {
         cancellation::check(cancellation)?;
         self.validate_plan_token(&token, input)?;
-        self.connect_pending_plan_mcp(cancellation)?;
+        self.connect_pending_plan_mcp(cancellation, pp_mcp::Access::ReadOnly)?;
         let document = self
             .workflow
             .plan

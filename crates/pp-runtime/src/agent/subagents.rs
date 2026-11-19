@@ -364,7 +364,7 @@ impl Agent {
                 .collect()
         };
         binding.allow_mcp(
-            mcp_names(pp_mcp::Access::for_mode(self.workflow.mode)),
+            mcp_names(self.tools.mcp_access()),
             mcp_names(pp_mcp::Access::ReadOnly),
         );
         binding.set_model_roles(self.catalog.subagent_roles());

@@ -308,9 +308,8 @@ impl Agent {
 /// rejects the write.
 ///
 impl Agent {
-    /// 收尾子 Agent 后按 Plan 权限补连未连接的服务；已连接进程一律复用，
-    /// 不断开、不重读配置。补连或清理失败时保留阻断标记，等待用户重试
-    /// /plan。
+    /// 收尾子 Agent 后补连已启用的 MCP 服务，并刷新会话工具表。
+    /// 进程回收失败时保留阻断标记，等待用户重试 /plan。
     pub(super) fn ensure_plan_mcp_access(
         &mut self,
         cancellation: &CancellationToken,
@@ -320,7 +319,7 @@ impl Agent {
         let result = self
             .tools
             .mcp
-            .connect_enabled(cancellation, Access::ReadOnly);
+            .connect_enabled(cancellation, self.tools.mcp_access());
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
         if let Err(error) = result {
@@ -356,7 +355,7 @@ impl Agent {
     }
 
     /// `/plan` toggle 的进入方向：切到 Plan 待命（Plan+None），不绑定计划
-    /// 文档；工作流权威先持久化，之后才切换 Plan 访问权限。已在 Plan 时只
+    /// 文档；工作流先持久化，之后再补连服务与刷新工具。已在 Plan 时只
     /// 重试一次失败的补连（`/plan <prompt>` 继续当前草稿也复用该入口）。
     pub fn enter_plan(&mut self, cancellation: &CancellationToken) -> Result<WorkflowState> {
         self.stop_subagents()?;

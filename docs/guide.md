@@ -437,7 +437,7 @@ Execute 终答时仍有 pending/in_progress、且不是等待用户回答时，�
 
 普通任务默认 **EXEC**。空闲时输入 `/plan` 切换到 **PLAN** 待命：只进入模式，不创建计划身份或 Markdown 文件；第一条用户任务才建立计划绑定，之后的普通输入和 steering 继续同一绑定。再输入一次 `/plan` 退出 Plan 回 **EXEC** 并解除当前计划/审阅绑定；已保存的草稿文件和目录原样保留，不标记 Abandoned、不删除、不改名。已提交任务但尚未通过 `write` 首存（revision-0）时，退出会显示“放弃未保存的修改？”本地确认框，默认选中“取消，继续规划”；Enter 确认当前选项，Esc 取消，只有显式选中“放弃修改并退出”才解除绑定。确认不调用模型，不生成计划文件，也不删除已保存文件或对话历史；确认期间输入与粘贴不会发起任务，原输入草稿保留。空待命或已保存草稿可直接退出。也可输入 `/plan 调研登录流程`，先确保进入 Plan 再将 `调研登录流程` 作为用户消息发送；已在 Plan 时直接继续当前草稿，不暗中切出或新建计划。提示词可包含多行，输入历史保留原始命令。参数恰好为 `view` 时只查看当前计划，未保存时显示 `No saved plan.`；恰好为 `new` 或 `off` 时只报本地错误 `Use /plan to toggle; manage plans with /plan-list.`，不进入 Plan、不发模型请求；其余非空正文均作为提示词。切换失败或取消时不发送提示词，输入框为空时恢复该命令，已有新草稿则保留新草稿，可从输入历史取回原命令；退出失败不改变重试方向，下一次裸 `/plan` 仍执行离开。模型只能调研、询问关键产品取舍并保存计划，不能切换模式。忙碌或有 pending 输入时不能切换／批准；带提示词的 `/plan` 同样拒绝且保留草稿，不排队成后续执行动作。
 
-Plan 可使用 `read`、`rg`、`glob`、TUI `ask`、`write`、`plan_submit`，以及可用的只读 LSP、已授权的只读 MCP 和子 Agent 工具。`write` 仅接受 `path` 和完整 Markdown `content`：首次路径须为 `.pp/drafts/<英文 kebab-case 名称>.md`，后续只能写当前绑定的计划路径；标题从首个一级标题提取（缺失时使用文件名），修订号由运行时递增并返回，仍保留登记、同名冲突和外部修改校验。技能同样通过 `read` 读取。Plan 在执行层拒绝所有 todo 调用（包括 view），独立 reviewer 同样不暴露 todo；提交后同批剩余调用全部拒绝。执行层拒绝 shell、edit、旧 find 和未授权的 MCP 调用。进入 Plan 会回收未配置只读工具的 MCP 服务，恢复 Plan 只连接获授权的服务。清理失败保持 Plan 门禁并阻止模型请求，再次 `/plan` 优先重试进入。批准或退出切换的可取消执行准备完成后，UI 接管新的退出清理句柄才继续。
+Plan 主 Agent 可使用 `read`、`rg`、`glob`、TUI `ask`、`write`、`plan_submit`、只读 LSP、子 Agent 工具，以及已启用且连接成功的 MCP 工具。未列入 `read_only_tools` 的 MCP 工具沿用 Execute 的写档审批。`write` 仅接受 `path` 和完整 Markdown `content`：首次路径须为 `.pp/drafts/<英文 kebab-case 名称>.md`，后续只能写当前绑定的计划路径；标题从首个一级标题提取（缺失时使用文件名），修订号由运行时递增并返回，仍保留登记、同名冲突和外部修改校验。技能同样通过 `read` 读取。Plan 在执行层拒绝所有 todo 调用（包括 view），独立 reviewer 同样不暴露 todo；提交后同批剩余调用全部拒绝。执行层拒绝内置 shell、edit、旧 find 和未发现的 MCP 工具。进入与恢复 Plan 都会连接已启用的 MCP 服务，并复用当前进程已建立的连接。MCP 进程回收失败会阻止模型请求，可重试 `/plan`。
 
 Execute／Plan／Review 共用只读进程内 `rg` 和 `glob`。`glob` 使用必填匹配表达式 `pattern` 和可选目录 `path`（默认当前工作目录），另支持 `hidden`、`gitignore`、`limit`；`path` 只接受单个字面目录，不能传 glob 或多个范围。默认包含隐藏文件并遵守忽略规则；无分页，结果按修改时间排序，最多 200 项和 50 KiB。裸 `*.rs` 递归匹配，`src/*.rs` 仅匹配直接子项；五秒协作式超时返回部分结果及提示。read/skill 仍沿用现有读取权限，**不是凭据访问沙箱**。
 
@@ -735,7 +735,7 @@ stdio 服务的 `command` 必填，按 PATH 查找程序；`args`、`env` 默认
 
 上例可直接在 `headers` 中填写 API Key，也可先执行 `export CONTEXT7_API_KEY='YOUR_API_KEY'` 再启动 pp；配置更改后执行 `/mcp reload`。Context7 官方地址及认证方式参见[官方文档](https://github.com/upstash/context7/blob/master/docs/clients/cursor.mdx)。旧版 SSE 服务使用同样的认证字段，并将 `type` 改为 `sse`、`url` 改为该服务提供的事件流地址；不假定 Context7 提供旧版 `/sse` 端点。
 
-`read_only_tools` 可用于 pp 自有的 stdio、HTTP 和 SSE 定义，默认空列表。填写 `tools/list` 返回的原始名称，区分大小写。配置拒绝空名称、重复项和通配符，未发现的名称会提示诊断。Plan、独立 Review 及只读子 Agent 只接受已发现且获授权的工具。子 Agent 还受父级和自身工具集合约束。Execute 中授权工具按 Read 档审批，其余 MCP 按 Write 档。授权来自用户配置，服务自报的只读标记不授予权限，也不提供文件系统隔离。
+`read_only_tools` 可用于 pp 自有的 stdio、HTTP 和 SSE 定义，默认空列表。填写 `tools/list` 返回的原始名称，区分大小写。配置拒绝空名称、重复项和通配符，未发现的名称会提示诊断。独立 Review 和只读子 Agent 只接受已发现且列入该配置的工具。子 Agent 还受父级和自身工具集合约束。Execute 中标为只读的工具按 Read 档审批，其余 MCP 按 Write 档审批。Plan 主 Agent 可用同一批 MCP 工具，其中未标为只读的工具按 Write 档审批。授权来自用户配置，服务自报的只读标记不授予权限，也不提供文件系统隔离。
 
 ### 接入 Exa
 
@@ -785,7 +785,7 @@ stdio 服务的 `command` 必填，按 PATH 查找程序；`args`、`env` 默认
 
 添加或删除服务直接编辑 JSON，然后执行 `/mcp reload`。启停先持文件锁重新读取配置，再以 `0600` 权限原子保存；保存失败不改变运行态。连接失败保留启用设置，可用 reconnect 再试。reload 的整体配置解析失败会保留旧连接；个别连接失败独立显示，不阻断健康服务和本地工具。进程回收失败属于严重错误，禁止继续模型任务。
 
-TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务，仅展示名称和状态；无只读授权的服务在 Plan／Review 中显示 `suspended (Plan/Review)`，表示工具级挂起（进程仍在运行）而非断开。打开时仍可在底部编辑和粘贴草稿，用 PgUp／PgDn 或滚轮滚动列表。Esc 关闭列表并保留草稿和对话位置，提交后回到对话区。`/mcp ` 提供子命令及服务器名称补全。行模式提供相同命令并输出文本；命令不进入模型历史，`-p` 不解析斜杠命令。管理操作只允许在空闲时执行，先收尾子 Agent，再同步主会话和后续子 Agent 的工具表。Plan／Review 不断开任何已连接的 MCP 服务进程，只按只读授权过滤工具表；真正的运行时权威是 `Tools::execute` 的 Plan／Review 白名单。`/mcp reload` 和 `/mcp reconnect` 是刷新外部配置的唯一入口，可在 Plan 中执行。
+TUI 的 `/mcp list` 是只读结果面板，按来源分组并单列禁用服务，仅展示名称和状态，Plan 与 Execute 使用相同的服务状态。打开时仍可在底部编辑和粘贴草稿，用 PgUp／PgDn 或滚轮滚动列表。Esc 关闭列表并保留草稿和对话位置，提交后回到对话区。`/mcp ` 提供子命令及服务器名称补全。行模式提供相同命令并输出文本；命令不进入模型历史，`-p` 不解析斜杠命令。管理操作只允许在空闲时执行，先收尾子 Agent，再同步主会话和后续子 Agent 的工具表。Plan 与 Execute 共用 MCP 连接。独立 Review 在模型工具表和执行层都应用只读授权。`/mcp reload` 和 `/mcp reconnect` 是刷新外部配置的唯一入口，可在 Plan 中执行。
 
 连接遵循 [MCP 初始化流程](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)，协商版本并发送 `notifications/initialized`，再分页调用 `tools/list`。支持 `2025-11-25`、`2025-06-18`、`2025-03-26`、`2024-11-05`。支持 stdio、Streamable HTTP 和旧版 HTTP+SSE 工具。Streamable HTTP 使用 POST，接收 JSON 或 SSE 响应，并维护初始化返回的会话 ID 与协商后的协议版本头；关闭时有界尝试 DELETE 会话，服务返回 405 不阻止本地清理。旧版 SSE 通过 GET 的 `endpoint` 事件确定 POST 地址，通过 `message` 事件接收响应。不支持 OAuth、resources、prompts、sampling、elicitation、Smithery、SSE 断线续传或服务端动态工具列表通知。
 

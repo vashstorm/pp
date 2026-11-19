@@ -3,7 +3,6 @@ use anyhow::{Result, bail, ensure};
 use pp_config::config::EditMode;
 use pp_config::config::ToolLimits;
 use pp_core::plan::PlanDocument;
-use pp_core::plan::WorkMode;
 use serde_json::Value;
 use std::{
     cell::RefCell,
@@ -193,11 +192,11 @@ impl Tools {
         self.snapshots.borrow_mut().clear();
     }
 
-    pub(super) fn mcp_access(&self, mode: WorkMode) -> pp_mcp::Access {
+    pub fn mcp_access(&self) -> pp_mcp::Access {
         if self.mcp_readonly {
             pp_mcp::Access::ReadOnly
         } else {
-            pp_mcp::Access::for_mode(mode)
+            pp_mcp::Access::Full
         }
     }
 
@@ -237,17 +236,16 @@ impl Tools {
         // access, process creation and MCP dispatch, so denied tools have no
         // side effects even with malformed arguments, and unknown names
         // (including unseen MCP tools) cannot bypass it via the fallback.
-        let mcp_readonly_tool = self.mcp.is_read_only(name);
+        let is_mcp = name.starts_with("mcp__");
+        let mcp_readonly_tool = is_mcp && self.mcp.is_read_only(name);
         let mcp_access = match call.policy {
-            ToolPolicy::Execute { .. } => self.mcp_access(WorkMode::Execute),
-            _ => pp_mcp::Access::ReadOnly,
+            ToolPolicy::Review => pp_mcp::Access::ReadOnly,
+            _ => self.mcp_access(),
         };
         let allowed = match &call.policy {
             ToolPolicy::Execute { .. } => {
                 !is_plan_tool(name)
-                    && (mcp_access == pp_mcp::Access::Full
-                        || !name.starts_with("mcp__")
-                        || mcp_readonly_tool)
+                    && (mcp_access == pp_mcp::Access::Full || !is_mcp || mcp_readonly_tool)
             }
             ToolPolicy::Review => {
                 PLAN_BASE_TOOLS.contains(&name)
@@ -259,7 +257,9 @@ impl Tools {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || name == "lsp" && self.lsp.is_some()
-                    || mcp_readonly_tool
+                    || is_mcp
+                        && (mcp_access == pp_mcp::Access::Full || mcp_readonly_tool)
+                        && self.mcp.has_available_tool(name)
                     || self.subagent.is_some() && matches!(name, "task" | "wait")
                     || name == "write"
                     || is_plan_tool(name)
@@ -302,12 +302,15 @@ impl Tools {
         if let Some(message) = self.instruction_batch_blocked() {
             bail!("{message}");
         }
-        // 审批门只作用于 Execute；Plan/Review 的白名单门禁已是完整授权边界。
-        // 与 Plan/Review 门禁一样在参数解析与分发之前执行，失败由
-        // execute_with_fetch 统一回填为 ok:false 的工具结果。
-        if matches!(call.policy, ToolPolicy::Execute { .. })
-            && !(mcp_readonly_tool && self.subagent.as_ref().is_some_and(|b| b.plan_mode()))
-        {
+        // Plan 中未标为只读的 MCP 工具沿用 Execute 的写档审批。
+        let needs_approval = match call.policy {
+            ToolPolicy::Execute { .. } => {
+                !(mcp_readonly_tool && self.subagent.as_ref().is_some_and(|b| b.plan_mode()))
+            }
+            ToolPolicy::Plan { .. } => is_mcp && !mcp_readonly_tool,
+            ToolPolicy::Review => false,
+        };
+        if needs_approval {
             let tier = if mcp_readonly_tool {
                 approval::Tier::Read
             } else {

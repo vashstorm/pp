@@ -530,7 +530,7 @@ pub(super) struct ExecuteCall<'a, 'f> {
 impl Tools {
     pub fn all_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
         let mut definitions = self.mode_definitions(mode);
-        definitions.extend(self.mcp.definitions(self.mcp_access(mode)));
+        definitions.extend(self.mcp.definitions(self.mcp_access()));
         if let Some(binding) = &self.subagent {
             definitions.extend(binding.definitions(mode));
             if mode == WorkMode::Plan {

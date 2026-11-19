@@ -13,12 +13,10 @@ impl Agent {
     pub(in crate::agent) fn connect_pending_plan_mcp(
         &mut self,
         cancellation: &CancellationToken,
+        access: pp_mcp::Access,
     ) -> Result<()> {
         if self.workflow.mode == pp_core::plan::WorkMode::Plan {
-            let result = self
-                .tools
-                .mcp
-                .connect_enabled(cancellation, pp_mcp::Access::ReadOnly);
+            let result = self.tools.mcp.connect_enabled(cancellation, access);
             if let Err(error) = result {
                 if error.is::<pp_core::cancellation::CleanupError>() {
                     self.plan_cleanup_error = Some(format!(
@@ -181,7 +179,7 @@ impl Agent {
             pp_core::logging::perf::mark("mcp_wait_end");
             // 先检查后提交：拒绝或故障时不追加 user、不准备计划、不请求模型。
             let hook_context = self.user_prompt_hook(prompt, cancellation, emit)?;
-            self.connect_pending_plan_mcp(cancellation)?;
+            self.connect_pending_plan_mcp(cancellation, self.tools.mcp_access())?;
             self.apply_runtime_models()?;
             self.restore_resolved(emit)?;
             self.ensure_task_plan_lease()?;
@@ -227,7 +225,7 @@ impl Agent {
             pp_core::logging::perf::mark("mcp_wait_start");
             let _ = self.tools.mcp.await_connect(cancellation);
             pp_core::logging::perf::mark("mcp_wait_end");
-            self.connect_pending_plan_mcp(cancellation)?;
+            self.connect_pending_plan_mcp(cancellation, self.tools.mcp_access())?;
             self.ensure_task_plan_lease()?;
             self.prepare_plan_task("")?;
             self.ensure_task_plan_lease()?;

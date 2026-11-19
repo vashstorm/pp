@@ -191,7 +191,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
     }
 }
 
-// Plan 与执行共用同一批 MCP 进程：进入 Plan 只按 access 过滤工具，进程保持运行。
+// Plan 与 Execute 共用同一批 MCP 进程和工具。
 fn plan_mcp_initialized(dir: &Path) -> usize {
     cancel_mcp_log(dir)
         .iter()
@@ -253,18 +253,18 @@ fn plan_mcp_resident_case() {
         // 进入 Plan 不再断开进程：PID 存活且没有新的握手。
         cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
         assert_eq!(plan_mcp_initialized(project.path()), 1);
-        // 无只读授权的服务不进入 Plan 工具表，但进程继续运行。
+        // 无只读标记的工具也进入 Plan 工具表。
         plan_drive_ready_with_mcp(
             &mut pty,
             &fixture,
             protocol,
             "Plan before execution",
             PLAN_TUI_BODY,
-            &[],
+            &["mcp__local__echo", "mcp__local__fail"],
         );
         cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
         assert_eq!(plan_mcp_initialized(project.path()), 1);
-        // 保留上下文执行：复用同一批连接，工具表恢复。
+        // 保留上下文执行继续复用同一批连接。
         plan_choose(&mut pty, 1);
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(
@@ -302,7 +302,7 @@ fn plan_tui_mcp_stays_alive_across_plan_and_execution() {
     plan_mcp_resident_case();
 }
 
-// 进程边界：恢复到 Plan 不连接没有只读授权的服务，离开 Plan 时按执行权限补连一次。
+// 进程边界：恢复 Plan 时重建 MCP 连接，转入 Execute 后继续复用。
 fn plan_mcp_process_boundary_case(off: bool) {
     for protocol in ["completion", "response"] {
         let (fixture, home, project, mut pty) = plan_mcp_session(protocol);
@@ -310,12 +310,13 @@ fn plan_mcp_process_boundary_case(off: bool) {
         plan_enter(&mut pty, &fixture);
         // 启动进程在 Execute 下建立的连接在进入 Plan 后仍然存活。
         cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
-        plan_drive_ready(
+        plan_drive_ready_with_mcp(
             &mut pty,
             &fixture,
             protocol,
             "Plan before MCP reconnection",
             PLAN_TUI_BODY,
+            &["mcp__local__echo", "mcp__local__fail"],
         );
         assert_eq!(plan_mcp_initialized(project.path()), 1);
         let id = saved_session_id(home.path());
@@ -329,18 +330,30 @@ fn plan_mcp_process_boundary_case(off: bool) {
         pty.input("/plan view\r");
         plan_wait_review(&mut pty, 1);
         no_more(&fixture);
-        assert_eq!(plan_mcp_initialized(project.path()), 1);
+        pty.input("\x1b");
+        pty.wait_for("closing review before checking MCP status", |screen| {
+            !screen.contents().contains("Execute with context")
+        });
+        pty.input("/mcp list\r");
+        pty.wait_for("restored Plan MCP connection", |screen| {
+            screen.rows(0, 100).any(|row| {
+                row.contains("local") && row.contains("connected") && !row.contains("not connected")
+            })
+        });
+        assert_eq!(plan_mcp_initialized(project.path()), 2);
+        pty.input("\x1b");
+        pty.wait_for("closing MCP status", |screen| {
+            !screen.contents().contains("connected")
+        });
         if off {
-            pty.input("\x1b");
-            pty.wait_for("closing review before off", |screen| {
-                !screen.contents().contains("Execute with context")
-            });
             // 裸 /plan 直接切换退出：无本地确认框，已保存草稿保留在磁盘。
             pty.input("/plan\r");
             plan_wait_execute(&mut pty);
             no_more(&fixture);
             pty.input("Explicit normal execution after leaving Plan\r");
         } else {
+            pty.input("/plan view\r");
+            plan_wait_review(&mut pty, 1);
             plan_choose(&mut pty, 1);
         }
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
@@ -348,7 +361,7 @@ fn plan_mcp_process_boundary_case(off: bool) {
             plan_mcp_tool_names(&body, protocol).contains(&"mcp__local__echo"),
             "{body}"
         );
-        // 新进程在离开 Plan 时补连一次；此前 Plan 期没有新增握手。
+        // 复用恢复 Plan 时建立的连接。
         assert_eq!(plan_mcp_initialized(project.path()), 2);
         plan_calls(
             request,

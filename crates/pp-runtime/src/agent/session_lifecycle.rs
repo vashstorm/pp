@@ -84,9 +84,7 @@ impl Agent {
         tools.approval.set_config(config.settings.tools.clone());
         // 复用进程级单例：启动期后台建连可能仍在进行，这里只登记目标 access，
         // 首个任务入口统一等待并刷新工具，切换会话不阻塞界面。
-        tools
-            .mcp
-            .start_connect(pp_mcp::Access::for_mode(checkpoint.workflow.mode));
+        tools.mcp.start_connect(tools.mcp_access());
         Self::install_lsp(&mut tools, &catalog);
         checkpoint
             .session
