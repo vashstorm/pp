@@ -855,7 +855,7 @@ fn slow_agent_hub_rebinds_after_slash_resume_without_a_turn() {
     hub_close(&mut pty);
     // `/new` 同样会停掉旧根：新会话 Hub 也要能重新绑定，而不是只能等下一条消息。
     pty.input("/new\r");
-    pty.text("Terminal Coding Agent");
+    pty.text("Paper Plane");
     pty.ready();
     pty.input("/agents\r");
     pty.wait_for("hub binds a fresh session without a notice", |screen| {

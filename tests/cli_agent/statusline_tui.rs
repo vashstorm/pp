@@ -102,8 +102,9 @@ fn slow_statusline_out_accumulates_session_usage_across_requests_both_protocols(
             screen.contents().contains("\u{f04e2} 12K/600")
         });
         pty.input("/new\r");
-        pty.wait_for("新会话清空累计输出", |screen| {
-            screen.contents().contains("\u{f04e2} —/—")
+        pty.wait_for("新会话清空累计输出并隐藏无数据指标行", |screen| {
+            let text = screen.contents();
+            !text.contains('\u{f04e2}') && !text.contains('\u{e62a}')
         });
         pty.input("\x03");
         pty.finish();
@@ -346,13 +347,13 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
             1
         );
         pty.input("/new\r");
-        pty.wait_for("新会话清空标题、费用和累计输出", |screen| {
+        pty.wait_for("新会话清空标题、费用和累计输出并隐藏无数据指标行", |screen| {
             let text = screen.contents();
-            text.contains("0.0%/40K")
-                && text.contains("\u{f04e2} —/—")
-                && !text.contains("\u{f09a9}")
-                && !text.contains("\u{f01c1}")
-                && !text.contains("\u{f051b}")
+            !text.contains('\u{e62a}')
+                && !text.contains('\u{f04e2}')
+                && !text.contains('\u{f09a9}')
+                && !text.contains('\u{f01c1}')
+                && !text.contains('\u{f051b}')
         });
         pty.input("\x03");
         pty.finish();
@@ -521,9 +522,9 @@ fn statusline_session_cost_resumes_immediately_and_reuses_web_pricing() {
     }
     let id = saved_session_id(home.path());
     pty.input("/new\r");
-    pty.wait_for("新会话清空费用", |screen| {
+    pty.wait_for("新会话清空费用并隐藏无数据指标行", |screen| {
         let text = screen.contents();
-        text.contains("0.0%/40K") && !text.contains('\u{f07ba}')
+        !text.contains('\u{e62a}') && !text.contains('\u{f07ba}')
     });
     pty.input("/resume\r");
     pty.wait_for("列出待恢复会话", |screen| {

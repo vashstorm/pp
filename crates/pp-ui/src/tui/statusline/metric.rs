@@ -194,6 +194,27 @@ pub(super) fn speed_field(rate: Option<f64>, running_subagents: usize) -> Line<'
     line
 }
 
+/// 指标行是否有任何可显示的数据（ctx 基线不算数据，全部缺席时整行隐藏）。
+pub(in crate::tui) fn has_data(
+    usage: &ContextUsage,
+    speed: Option<(f64, bool)>,
+    running_subagents: usize,
+    live_output: Option<u64>,
+    task: Option<(
+        &pp_config::task_status::Snapshot,
+        &pp_config::config::CostDisplay,
+    )>,
+    elapsed: Option<&str>,
+) -> bool {
+    usage.last_request.is_some()
+        || usage.session_output_tokens > 0
+        || speed.is_some()
+        || running_subagents > 0
+        || live_output.is_some()
+        || elapsed.is_some()
+        || task.is_some_and(|(t, d)| t.title.is_some() || cost_field(t, d).is_some())
+}
+
 /// 所有指标共享显示列预算：先缩短标题，再按整组降级，最后保留 Ctx。
 pub(in crate::tui) fn metric_fields(
     metrics: Metrics<'_>,
@@ -679,5 +700,89 @@ mod tests {
             }
         }
         assert!(line_text(&full).len() > full.width());
+    }
+
+    #[test]
+    fn has_data_ignores_context_baseline_and_tracks_any_metric() {
+        let baseline = ContextUsage {
+            estimated_tokens: 1200,
+            context_window: Some(40_000),
+            auto_compact: false,
+            threshold_percent: 80,
+            last_request: None,
+            session_output_tokens: 0,
+        };
+        let display = pp_config::config::CostDisplay::default();
+        let empty_task = pp_config::task_status::Snapshot::default();
+        assert!(!has_data(
+            &baseline,
+            None,
+            0,
+            None,
+            Some((&empty_task, &display)),
+            None
+        ));
+
+        let with_last_req = ContextUsage {
+            last_request: Some(TokenUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cached_tokens: None,
+                cache_write_tokens: None,
+            }),
+            ..baseline
+        };
+        let with_session_out = ContextUsage {
+            session_output_tokens: 1,
+            ..baseline
+        };
+        let titled = pp_config::task_status::Snapshot {
+            title: Some("t".into()),
+            ..Default::default()
+        };
+        let costed = pp_config::task_status::Snapshot {
+            cost: 0.001,
+            ..Default::default()
+        };
+
+        for (case, usage, speed, subagents, live, task, elapsed) in [
+            ("last_request", &with_last_req, None, 0, None, None, None),
+            (
+                "session_output",
+                &with_session_out,
+                None,
+                0,
+                None,
+                None,
+                None,
+            ),
+            ("speed", &baseline, Some((0.0, false)), 0, None, None, None),
+            ("subagents", &baseline, None, 1, None, None, None),
+            ("live_output", &baseline, None, 0, Some(0), None, None),
+            (
+                "task_title",
+                &baseline,
+                None,
+                0,
+                None,
+                Some((&titled, &display)),
+                None,
+            ),
+            (
+                "task_cost",
+                &baseline,
+                None,
+                0,
+                None,
+                Some((&costed, &display)),
+                None,
+            ),
+            ("elapsed", &baseline, None, 0, None, None, Some("0s")),
+        ] {
+            assert!(
+                has_data(usage, speed, subagents, live, task, elapsed),
+                "{case} 应触发指标行显示"
+            );
+        }
     }
 }

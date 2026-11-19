@@ -56,7 +56,7 @@ fn welcome_responsive_breakpoints_center_hero_and_preserve_draft() {
         .position(|line| line.contains("▄▄▄██▀▀██"))
         .expect("wide logo");
     assert!(logo_y >= 2, "宽屏品牌区应有顶部呼吸留白: {wide}");
-    assert!(wide.contains("Terminal Coding Agent"));
+    assert!(wide.contains("Paper Plane"));
     let card_top_y = wide_lines
         .iter()
         .position(|line| line.contains("Session & workflow"))
@@ -160,4 +160,110 @@ fn welcome_uses_theme_palette_card_surface_and_ascii_icons() {
         buffer[(version_x, version_row as u16)].fg,
         light_palette.welcome_muted
     );
+}
+
+#[test]
+fn welcome_widens_tips_card_on_wide_screens_and_keeps_logo_aligned() {
+    let _guard = WelcomeThemeGuard::set(Theme::Default, IconMode::Nerd);
+    let mut app = app();
+
+    // 宽屏下卡片按 75% 终端宽自适应（下限 84，上限 120）。
+    for (term_w, expected_card_w) in [(100, 84), (120, 90), (160, 120), (200, 120)] {
+        let screen = draw(&mut app, term_w, 30);
+        let rule_len = screen
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                (!trimmed.is_empty() && trimmed.chars().all(|ch| ch == '─'))
+                    .then(|| trimmed.chars().count())
+            })
+            .next()
+            .expect("tips 卡片应含水平边框");
+        assert_eq!(
+            rule_len, expected_card_w,
+            "终端宽度 {term_w} 应渲染 {expected_card_w} 列卡片:\n{screen}"
+        );
+    }
+
+    // 副标题比 WORDMARK 更短时，WORDMARK、Paper Plane 与版本号右列起始列仍对齐。
+    let wide = draw(&mut app, 160, 30);
+    let lines: Vec<&str> = wide.lines().collect();
+    let wordmark_col = lines
+        .iter()
+        .find_map(|line| {
+            line.find("██████    ██████")
+                .map(|idx| line[..idx].chars().count())
+        })
+        .expect("wordmark");
+    let tagline_col = lines
+        .iter()
+        .find_map(|line| {
+            line.find("Paper Plane")
+                .map(|idx| line[..idx].chars().count())
+        })
+        .expect("tagline");
+    let version_col = lines
+        .iter()
+        .find_map(|line| {
+            line.find(concat!("v", env!("CARGO_PKG_VERSION")))
+                .map(|idx| line[..idx].chars().count())
+        })
+        .expect("version");
+    assert_eq!(
+        wordmark_col, tagline_col,
+        "wordmark 与副标题应左对齐:\n{wide}"
+    );
+    assert_eq!(tagline_col, version_col, "副标题与版本号应左对齐:\n{wide}");
+
+    // 品牌组合（logo + PP）可见外框在偶数终端宽下左右边距应完全相等。
+    for term_w in [100_u16, 120, 160] {
+        let screen = draw(&mut app, term_w, 30);
+        let brand_rows: Vec<&str> = screen
+            .lines()
+            .skip_while(|l| l.trim().is_empty())
+            .take(7)
+            .collect();
+        let min_left = brand_rows
+            .iter()
+            .map(|l| l.chars().take_while(|c| *c == ' ').count())
+            .min()
+            .unwrap();
+        let max_right = brand_rows
+            .iter()
+            .map(|l| l.trim_end().chars().count())
+            .max()
+            .unwrap();
+        let right_margin = usize::from(term_w) - max_right;
+        assert_eq!(
+            min_left, right_margin,
+            "终端宽度 {term_w} 下品牌组合应左右居中（左 {min_left}，右 {right_margin}）:\n{screen}"
+        );
+        // 卡片中间竖线 `│` 必须落在顶部 logo 右缘与 `PP` 左缘的间隙内。
+        let wordmark_left = brand_rows
+            .iter()
+            .find_map(|l| l.find("██████").map(|idx| l[..idx].chars().count()))
+            .unwrap();
+        let logo_right = brand_rows
+            .iter()
+            .take(5)
+            .map(|l| {
+                l.chars()
+                    .take(wordmark_left)
+                    .collect::<String>()
+                    .trim_end()
+                    .chars()
+                    .count()
+            })
+            .max()
+            .unwrap();
+        let divider_col = screen
+            .lines()
+            .find(|l| l.contains("Session & workflow") && l.contains('│'))
+            .and_then(|l| l.find('│').map(|idx| l[..idx].chars().count()))
+            .unwrap();
+        assert!(
+            divider_col >= logo_right && divider_col < wordmark_left,
+            "终端宽度 {term_w} 下竖线列 {divider_col} 应落在 logo 右缘 {logo_right} 与 PP 左缘 {wordmark_left} 之间:\n{screen}"
+        );
+    }
 }

@@ -222,6 +222,7 @@ fn effort_menu_filters_completes_and_cancels_without_changing_level() {
 
 #[test]
 fn activity_duration_follows_context_and_yields_space_on_narrow_screens() {
+    // 只有 ctx 基线、无任何数据时，指标行整行隐藏（含 ctx）。
     let mut app = app();
     app.usage = Some(pp_core::context::ContextUsage {
         estimated_tokens: 100,
@@ -231,9 +232,6 @@ fn activity_duration_follows_context_and_yields_space_on_narrow_screens() {
         last_request: None,
         session_output_tokens: 0,
     });
-    app.conversation.begin_run();
-    app.conversation
-        .tick(Instant::now() + Duration::from_secs(85));
     let render_status = |app: &App, width| {
         let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
         terminal
@@ -247,6 +245,11 @@ fn activity_duration_follows_context_and_yields_space_on_narrow_screens() {
             .map(|cell| cell.symbol())
             .collect::<String>()
     };
+    assert!(render_status(&app, 100).trim().is_empty());
+
+    app.conversation.begin_run();
+    app.conversation
+        .tick(Instant::now() + Duration::from_secs(85));
     assert!(
         render_status(&app, 100)
             .trim_end()
@@ -276,7 +279,7 @@ fn activity_duration_follows_context_and_yields_space_on_narrow_screens() {
             .ends_with("\u{f051b} 0s")
     );
     app.conversation = app.conversation.fresh();
-    assert!(render_status(&app, 100).contains("\u{e62a} 0.2%/40K"));
+    assert!(render_status(&app, 100).trim().is_empty());
 }
 
 #[test]

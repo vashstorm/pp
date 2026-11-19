@@ -294,7 +294,7 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     );
     assert!(!text.contains("/compact"), "{text}");
     assert!(!text.contains("/skills"), "{text}");
-    assert!(input_bar_above_draft(&text), "{text}");
+    assert!(!input_bar_above_draft(&text), "{text}");
 
     pty.input("startup draft");
     pty.draft("startup draft");
@@ -303,7 +303,7 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
         let text = screen.contents();
         tips_headers_on_one_row(&text)
             && text.contains("startup draft")
-            && input_bar_above_draft(&text)
+            && !input_bar_above_draft(&text)
     });
     pty.resize(30, 60);
     pty.wait_for(
@@ -314,7 +314,7 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
                 && tips_headers_stack(&text)
                 && text.contains("startup draft")
                 && text.contains("/tips  All shortcuts")
-                && input_bar_above_draft(&text)
+                && !input_bar_above_draft(&text)
         },
     );
     pty.resize(30, 38);
@@ -335,17 +335,15 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     pty.resize(12, 40);
     pty.wait_for("小窗口显示紧凑欢迎页并保留草稿", |screen| {
         let text = screen.contents();
-        text.lines().next().is_some_and(|line| line.trim() == "  PP")
-                && text.contains("startup draft")
-                && text.contains("/tips  All shortcuts")
-                && text.contains("/help  Commands")
-                && !text.contains("Session & workflow")
-                && !text.contains("Keyboard")
-                // 窄屏仍在输入栏上沿右端显示上下文字段。
-                && text
-                    .lines()
-                    .nth(8)
-                    .is_some_and(|line| line.contains("\u{e62a} "))
+        text.lines()
+            .next()
+            .is_some_and(|line| line.trim() == "  PP")
+            && text.contains("startup draft")
+            && text.contains("/tips  All shortcuts")
+            && text.contains("/help  Commands")
+            && !text.contains("Session & workflow")
+            && !text.contains("Keyboard")
+            && !text.contains("\u{e62a} ")
     });
     pty.resize(6, 20);
     pty.wait_for("极小窗口保留输入草稿", |screen| {
@@ -361,9 +359,11 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     final_reply(request, "startup answer");
     pty.text("startup answer");
     pty.completed();
+    assert!(input_bar_above_draft(&pty.parser.screen().contents()));
     assert!(!pty.parser.screen().contents().contains("▄▄▄██▀▀██"));
     pty.input("/new\r");
     pty.text("▄▄▄██▀▀██");
+    assert!(!pty.parser.screen().contents().contains("\u{e62a} "));
     assert!(!pty.parser.screen().contents().contains("Session reset."));
     pty.input("/help\r");
     pty.text("bash has no directory isolation");

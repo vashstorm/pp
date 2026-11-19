@@ -87,16 +87,16 @@ const WORDMARK: [&str; 5] = [
     "██        ██      ",
     "██        ██      ",
 ];
-const TAGLINE: &str = "Terminal Coding Agent";
+const TAGLINE: &str = "Paper Plane";
 const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 const LOGO: [(&str, &str); 7] = [
-    ("              ▄▄", "▄█"),
-    ("        ▄▄▄██▀▀", "██"),
-    ("  ▄▄▄██████▀ ", "▄███"),
-    (" ▀▀█████▀  ", "▄████"),
-    ("     ▀█  ", "▄█████▀"),
-    ("      █▀ ", "▀█████"),
-    ("            ", "▀█▀"),
+    ("             ▄▄", "▄█"),
+    ("       ▄▄▄██▀▀", "██"),
+    (" ▄▄▄██████▀ ", "▄███"),
+    ("▀▀█████▀  ", "▄████"),
+    ("    ▀█  ", "▄█████▀"),
+    ("     █▀ ", "▀█████"),
+    ("           ", "▀█▀"),
 ];
 
 fn session_icon(icons: IconMode) -> &'static str {
@@ -155,8 +155,13 @@ fn two_column_card_lines(card_width: u16, inset: u16) -> Vec<Line<'static>> {
     let rule_style = Style::default().fg(separator());
     let pad = " ".repeat(usize::from(inset));
     let inner = usize::from(card_width.saturating_sub(inset * 2));
-    // 中间竖线占用 3 列：" │ "
-    let left_col = ((inner.saturating_sub(3)) * 34 / 73).max(34);
+    // 中间竖线占用 3 列：" │ "；宽屏平分左右列使竖线居于卡片正中（对齐顶部 logo 与 PP 间隙），
+    // 极窄双栏则优先保留右列 38 列防止快捷键描述折行。
+    let left_col = if inner >= 79 {
+        (inner - 3) / 2
+    } else {
+        (inner.saturating_sub(3)).saturating_sub(38).max(34)
+    };
     let right_col = inner.saturating_sub(3 + left_col);
 
     let mut lines = Vec::with_capacity(8);
@@ -282,7 +287,11 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
             Line::styled(VERSION, Style::default().fg(muted())),
         ]
     } else {
-        let right_col_width = TAGLINE.chars().count();
+        let right_col_width = [WORDMARK[0], TAGLINE, VERSION]
+            .iter()
+            .map(|s| s.chars().count())
+            .max()
+            .unwrap_or(0);
         LOGO.into_iter()
             .enumerate()
             .map(|(row, (left, right))| {
@@ -299,7 +308,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
                 Line::from(vec![
                     Span::styled(left, Style::default().fg(first_color)),
                     Span::styled(right, Style::default().fg(second_color)),
-                    Span::raw(" ".repeat(22 - left.chars().count() - right.chars().count())),
+                    Span::raw(" ".repeat(20 - left.chars().count() - right.chars().count())),
                     Span::styled(label, style),
                     Span::raw(" ".repeat(right_col_width.saturating_sub(label.chars().count()))),
                 ])
@@ -308,7 +317,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
     };
     brand_lines.push(Line::default());
 
-    let brand_width = area.width.min(76);
+    let brand_width = area.width;
     let brand = Paragraph::new(brand_lines)
         .centered()
         .wrap(Wrap { trim: false });
@@ -317,7 +326,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
         .min(area.height);
 
     let (card_width, inset) = if area.width >= 88 {
-        (84, 2)
+        ((area.width * 3 / 4).clamp(84, 120), 2)
     } else if area.width >= 78 {
         (area.width.min(82), 1)
     } else if area.width >= 44 {

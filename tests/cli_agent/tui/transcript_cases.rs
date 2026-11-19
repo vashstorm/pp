@@ -163,15 +163,16 @@ fn tui_activity_is_single_live_emphasized_and_cleared_by_new() {
         );
     }
     pty.input("/new\r");
-    pty.wait_for("新会话清空完成提示", |screen| {
-        input_is_ready(screen) && !screen.contents().contains("Completed ·")
-    });
-    let text = pty.parser.screen().contents();
-    let context = text
-        .lines()
-        .find(|line| line.contains("\u{e62a} "))
-        .unwrap();
-    assert!(!context.contains("\u{f051b}"));
+    pty.wait_for(
+        "新会话清空完成提示并隐藏无数据指标行",
+        |screen| {
+            let text = screen.contents();
+            input_is_ready(screen)
+                && !text.contains("Completed ·")
+                && !text.contains("\u{e62a} ")
+                && !text.contains("\u{f051b}")
+        },
+    );
     pty.input("\x03");
     pty.finish();
     no_more(&server);

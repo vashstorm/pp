@@ -535,8 +535,26 @@ impl App {
     pub(in crate::tui) fn draw_input_status(&self, frame: &mut Frame, area: Rect) {
         let usage_style = Style::default().bg(statusline::input_status_bg());
         let mut right = area.right();
+        let speed = self.token_speed.value();
+        let running_subagents = self.subagent_status.map_or(0, |(_, count)| count);
+        let live_output = self.token_speed.live_output_tokens();
+        let task = self
+            .task_status
+            .as_ref()
+            .map(|task| (task, &self.cost_display));
+        let elapsed = self.conversation.task_duration();
+        let usage = self.usage.as_ref().filter(|usage| {
+            statusline::has_data(
+                usage,
+                speed,
+                running_subagents,
+                live_output,
+                task,
+                elapsed.as_deref(),
+            )
+        });
         // ctx 字段每帧只构造一次，宽度预算与实际指标簇共享同一行。
-        let context = self.usage.as_ref().map(statusline::context_field);
+        let context = usage.map(statusline::context_field);
         let context_width = context.as_ref().map_or(0, |context| {
             u16::try_from(context.width() + 2).unwrap_or(u16::MAX)
         });
@@ -580,19 +598,17 @@ impl App {
             frame.render_widget(line, Rect::new(left, area.y, width, 1));
             left += width;
         }
-        if let Some(usage) = self.usage.as_ref() {
+        if let Some(usage) = usage {
             let metrics = statusline::metric_fields(
                 statusline::Metrics {
                     usage,
                     context: context.expect("ctx 字段已随用量构造"),
                 },
-                self.token_speed.value(),
-                self.subagent_status.map_or(0, |(_, count)| count),
-                self.token_speed.live_output_tokens(),
-                self.task_status
-                    .as_ref()
-                    .map(|task| (task, &self.cost_display)),
-                self.conversation.task_duration().as_deref(),
+                speed,
+                running_subagents,
+                live_output,
+                task,
+                elapsed.as_deref(),
                 (right - left).saturating_sub(extra_width),
             )
             .style(usage_style);
