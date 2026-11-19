@@ -775,4 +775,28 @@ mod tests {
         assert_eq!(outcome.termination, Termination::Exited);
         assert!(outcome.cleanup_error.is_none());
     }
+
+    #[test]
+    fn stopping_exits_promptly_once_interpreter_and_children_finish() {
+        let supervisor = supervisor();
+        let spawned = supervisor
+            .spawn(command("sleep 30"), SpawnGroup::New, None)
+            .expect("spawn");
+        assert!(process_exists(spawned.process.pid()));
+        drop(spawned.group);
+        drop(spawned.process);
+
+        let started = Instant::now();
+        supervisor.request_stop();
+        supervisor.interpreter_finished();
+        let outcome = supervisor.wait();
+        let elapsed = started.elapsed();
+        assert_eq!(outcome.termination, Termination::Stopped);
+        assert!(outcome.cleanup_error.is_none());
+        // 正常响应 SIGTERM 的子进程退出后应远早于 1s GRACE 窗口结束。
+        assert!(
+            elapsed < Duration::from_millis(600),
+            "expected prompt exit in Stopping phase, got {elapsed:?}"
+        );
+    }
 }

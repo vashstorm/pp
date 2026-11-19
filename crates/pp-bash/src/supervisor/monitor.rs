@@ -135,7 +135,12 @@ pub(super) fn monitor(
                 }
             }
             Phase::Stopping => {
-                if now >= state.grace_deadline.unwrap_or(now) {
+                if state.interpreter_done && !state.has_live_work() {
+                    if let Some(permit) = state.permit.take() {
+                        permit.revoked.store(true, Ordering::Release);
+                    }
+                    state.phase = Phase::Draining;
+                } else if now >= state.grace_deadline.unwrap_or(now) {
                     // The cleanup window is over: revoke new cleanup spawns and
                     // kill everything still registered.
                     if let Some(permit) = state.permit.take() {
