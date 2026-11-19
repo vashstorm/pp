@@ -45,6 +45,25 @@ impl OpenAiClient {
         emit: &mut dyn FnMut(AgentEvent),
         summary: bool,
     ) -> Result<CompletionTurn> {
+        self.complete_request_with(
+            request,
+            cancellation,
+            on_request_sent,
+            emit,
+            summary,
+            &mut |_| Ok(()),
+        )
+    }
+
+    pub(crate) fn complete_request_with(
+        &mut self,
+        request: &CreateChatCompletionRequest,
+        cancellation: &CancellationToken,
+        on_request_sent: &mut dyn FnMut() -> Result<()>,
+        emit: &mut dyn FnMut(AgentEvent),
+        summary: bool,
+        precheck: &mut dyn FnMut(u32) -> Result<()>,
+    ) -> Result<CompletionTurn> {
         let mut attempts = RequestAttempts::new(self.rate_limit_retry_budget);
         attempts.summary = summary;
         let mut sent = false;
@@ -65,8 +84,16 @@ impl OpenAiClient {
             if attempts.attempt > 1 && !attempts.pending_open {
                 emit(AgentEvent::AssistantStarted);
             }
-            let outcome =
-                self.complete_attempt(request, cancellation, &mut once_sent, emit, &mut attempts);
+            let outcome = match precheck(attempts.attempt) {
+                Ok(()) => self.complete_attempt(
+                    request,
+                    cancellation,
+                    &mut once_sent,
+                    emit,
+                    &mut attempts,
+                ),
+                Err(error) => Err(error),
+            };
             if let Err(error) = &outcome
                 && model_request_failed(error)
                 && attempts.partial
@@ -78,6 +105,15 @@ impl OpenAiClient {
                 });
             }
             let Some(delay) = attempts.delay.take() else {
+                if attempts.pending_open {
+                    self.finish_pending_open(
+                        &mut attempts,
+                        &request.model,
+                        "chat-completions",
+                        outcome.as_ref().err(),
+                        emit,
+                    );
+                }
                 return outcome.map_err(|mut error| {
                     if attempts.attempt > 1
                         && let Some(failure) = error.downcast_mut::<ModelFailure>()

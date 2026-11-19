@@ -100,6 +100,17 @@ impl OpenAiClient {
         protocol: &str,
         emit: &mut dyn FnMut(AgentEvent),
     ) {
+        self.finish_pending_open(attempts, model, protocol, None, emit);
+    }
+
+    pub(super) fn finish_pending_open(
+        &mut self,
+        attempts: &mut RequestAttempts,
+        model: &str,
+        protocol: &str,
+        failure: Option<&anyhow::Error>,
+        emit: &mut dyn FnMut(AgentEvent),
+    ) {
         if !attempts.pending_open {
             return;
         }
@@ -109,14 +120,19 @@ impl OpenAiClient {
         if let Some(mut observation) = attempts.pending.take() {
             observation.request_context = attempts.request_context.take();
             if let Some(context) = &self.stats_context {
-                let cancelled: Result<()> = Err(Cancelled.into());
+                let recorded: Result<()> = match failure {
+                    Some(err) if !err.chain().any(|cause| cause.is::<Cancelled>()) => {
+                        Err(anyhow::anyhow!("{err:#}"))
+                    }
+                    _ => Err(Cancelled.into()),
+                };
                 self.stats_key = pp_stats::save(
                     context,
                     model,
                     protocol,
                     observation,
                     attempts.started,
-                    &cancelled,
+                    &recorded,
                 );
             }
         }

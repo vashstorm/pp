@@ -275,3 +275,103 @@ fn context_responses_usage_extracted_and_missing_usage_is_none() {
         assert_eq!(finished, Some((None, true)));
     });
 }
+
+#[test]
+fn retry_precheck_failure_closes_pending_request_lifecycle() {
+    use pp_config::task_status::View;
+
+    for use_responses in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let stats_db = dir.path().join("stats.db");
+        let server = TestServer::start().unwrap();
+
+        let settings_path = dir.path().join("settings.yml");
+        let models_path = dir.path().join("models.yml");
+        std::fs::write(
+            &models_path,
+            format!(
+                "providers:\n  fixture:\n    api_key: k\n    base_url: http://{}\n    models:\n      primary:\n        model: gpt-5\n        cost:\n          input: 1.0\n          cacheRead: 0.0\n          output: 1.0\n",
+                server.addr()
+            ),
+        )
+        .unwrap();
+        let catalog =
+            pp_config::config::ModelCatalog::from_files(&settings_path, &models_path).unwrap();
+        let view = View::default();
+        let ledger = view.accounting(&catalog);
+
+        let mut client = test_client(&format!("http://{}", server.addr()));
+        client.model_reference = "fixture/primary".into();
+        client.task_accounting = Some(ledger);
+        client.stats_context = Some(pp_stats::RequestContext {
+            cwd: dir.path().to_path_buf(),
+            model_reference: "fixture/primary".into(),
+            purpose: "chat",
+            session_file: None,
+            unlinked_requests: None,
+            first_request: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            skills: Vec::new(),
+            database: pp_stats::Database::new(stats_db.clone()),
+        });
+
+        let token = CancellationToken::new();
+        let mut started = 0usize;
+        let mut finished = Vec::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let req = server
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                req.respond(
+                    Response::builder()
+                        .status(429)
+                        .header("Retry-After", "0")
+                        .body(Body::from("rate limit"))
+                        .unwrap(),
+                )
+                .unwrap();
+            });
+            let mut on_event = |event| match event {
+                AgentEvent::ModelRequestStarted => started += 1,
+                AgentEvent::ModelRequestFinished { success, .. } => finished.push(success),
+                _ => {}
+            };
+            let mut precheck = |attempt: u32| {
+                if attempt >= 2 {
+                    bail!("simulated auth refresh failure");
+                }
+                Ok(())
+            };
+            let res: Result<()> = if use_responses {
+                client
+                    .respond_request_with(
+                        &CreateResponse::default(),
+                        &token,
+                        &mut || Ok(()),
+                        &mut on_event,
+                        false,
+                        &mut precheck,
+                    )
+                    .map(|_| ())
+            } else {
+                client
+                    .complete_request_with(
+                        &CreateChatCompletionRequest::default(),
+                        &token,
+                        &mut || Ok(()),
+                        &mut on_event,
+                        false,
+                        &mut precheck,
+                    )
+                    .map(|_| ())
+            };
+            assert!(res.is_err());
+        });
+        assert_eq!(started, 1);
+        assert_eq!(finished, vec![false]);
+        assert!(client.stats_key.is_some());
+        assert_eq!(view.snapshot().unwrap().live, 0.0);
+        assert_eq!(usage_of(&client, "fixture/primary"), 1);
+    }
+}
