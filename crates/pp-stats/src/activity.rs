@@ -167,8 +167,9 @@ impl Store {
         now: i64,
         titles: &HashMap<&str, &str>,
     ) -> Result<Option<Value>> {
-        let session: Option<Option<String>> = self
-            .conn
+        // 使用读事务保证两次查询看到同一快照，避免并发 gc 删除后 rows 为空 panic。
+        let tx = self.conn.unchecked_transaction()?;
+        let session: Option<Option<String>> = tx
             .query_row("SELECT session_file FROM requests WHERE id=?1", [id], |r| {
                 r.get(0)
             })
@@ -176,29 +177,27 @@ impl Store {
         let Some(session) = session else {
             return Ok(None);
         };
-        let stem = session.as_deref().map(session_stem);
-        let root = stem.map(|stem| format!("{stem}.jsonl"));
-        let scope = stem
-            .map(|stem| {
-                SessionScope::new(
-                    format!("{stem}.jsonl"),
-                    format!("{stem}.subagents/sessions/"),
-                )
-            })
-            .transpose()?;
-        // 有会话时按索引范围取根会话与专属子 Agent 目录；没有会话时只有当前这一行。
-        let (rows, tools) = match &scope {
-            Some(scope) => {
-                let rows = self
-                    .conn
+        let (stem, root, scope) = match session.as_deref() {
+            Some(raw) if raw.ends_with(".jsonl") || raw.contains(".subagents/sessions/") => {
+                let stem = session_stem(raw);
+                let root = format!("{stem}.jsonl");
+                let scope = SessionScope::new(root.clone(), format!("{stem}.subagents/sessions/"))?;
+                (Some(stem), Some(root), Some(scope))
+            }
+            Some(raw) => (Some(raw), Some(raw.to_owned()), None),
+            None => (None, None, None),
+        };
+        // 有会话时按索引范围取根会话与专属子 Agent 目录；没有会话或非标准路径时按精确列取。
+        let (rows, tools) = match (&scope, &root) {
+            (Some(scope), _) => {
+                let rows = tx
                     .prepare(&format!(
                         "{} ORDER BY timestamp,id",
                         session_requests_sql(COLUMNS)
                     ))?
                     .query_map(params![scope.root, scope.prefix, scope.upper], row)?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
-                let tools = self
-                    .conn
+                let tools = tx
                     .prepare(&trace_tools_sql())?
                     .query_map(params![scope.root, scope.prefix, scope.upper], |r| {
                         Ok((
@@ -217,15 +216,49 @@ impl Store {
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 (rows, tools)
             }
-            None => (
-                self.conn
+            (None, Some(exact)) => {
+                let rows = tx
                     .prepare(&format!(
-                        "SELECT {COLUMNS} FROM requests WHERE id=?1 ORDER BY timestamp,id"
+                        "SELECT {COLUMNS} FROM requests WHERE session_file=?1 ORDER BY timestamp,id"
                     ))?
-                    .query_map(params![id], row)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?,
+                    .query_map(params![exact], row)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let tools = tx
+                    .prepare(
+                        "SELECT t.id,t.request_key,t.session_file,t.call_id,t.tool,t.timestamp,t.duration_ms,t.status,t.error_message,r.id
+                         FROM tool_calls t
+                         LEFT JOIN requests r ON r.request_key=t.request_key
+                         WHERE t.session_file=?1
+                         ORDER BY t.timestamp,t.id",
+                    )?
+                    .query_map(params![exact], |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, String>(4)?,
+                            r.get::<_, i64>(5)?,
+                            r.get::<_, f64>(6)?,
+                            r.get::<_, String>(7)?,
+                            r.get::<_, Option<String>>(8)?,
+                            r.get::<_, Option<i64>>(9)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                (rows, tools)
+            }
+            (None, None) => (
+                tx.prepare(&format!(
+                    "SELECT {COLUMNS} FROM requests WHERE id=?1 ORDER BY timestamp,id"
+                ))?
+                .query_map(params![id], row)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
                 Vec::new(),
             ),
+        };
+        let Some(first) = rows.first() else {
+            return Ok(None);
         };
         let requests = rows.iter().map(|r| r.value()).collect::<Result<Vec<_>>>()?;
         let mut tool_stats = BTreeMap::<&str, (usize, usize, f64, f64)>::new();
@@ -273,7 +306,7 @@ impl Store {
         summary["tool_calls"] = json!(tools.len());
         summary["idle_ms"] = json!((wall_ms - model_ms - tool_ms).max(0.0));
         summary["agents"] = json!(agents);
-        let mut value = json!({"id":id,"session_file":root,"project":rows[0].project,"cwd":rows[0].cwd,"summary":summary,"requests":requests,"tool_calls":tool_calls,"tool_stats":tool_stats,"updated_at":now});
+        let mut value = json!({"id":id,"session_file":root,"project":first.project,"cwd":first.cwd,"summary":summary,"requests":requests,"tool_calls":tool_calls,"tool_stats":tool_stats,"updated_at":now});
         if let Some(title) = title(titles, stem) {
             value["title"] = json!(title);
         }
@@ -499,5 +532,24 @@ mod tests {
             server::dispatch(&store, "/api/stats/traces/1?file=/tmp/private", &[]).0,
             400
         );
+
+        // 非 `.jsonl` 后缀 session_file 不得越界 panic。
+        let mut custom = fixture("custom-session", now - 10);
+        custom.session_file = Some("custom-session".into());
+        store.insert(&custom, &Value::Null).unwrap();
+        let custom_id: i64 = store
+            .conn
+            .query_row(
+                "SELECT id FROM requests WHERE request_key='custom-session'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let custom_trace = store
+            .trace(custom_id, now, &HashMap::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(custom_trace["session_file"], "custom-session");
+        assert_eq!(custom_trace["requests"].as_array().unwrap().len(), 1);
     }
 }

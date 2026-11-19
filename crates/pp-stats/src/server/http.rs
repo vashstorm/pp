@@ -93,11 +93,7 @@ pub(super) fn start(address: SocketAddr) -> Result<(Transport, mpsc::Receiver<Qu
     listener
         .set_nonblocking(true)
         .context("configuring statistics listener")?;
-    let mut hosts = vec![address.to_string()];
-    if address.ip().is_loopback() {
-        hosts.push(format!("localhost:{}", address.port()));
-    }
-    let origins = hosts.iter().map(|host| format!("http://{host}")).collect();
+    let (hosts, origins) = allowed_hosts_and_origins(address);
     let (queries, requests) = mpsc::channel(32);
     let shared = Shared {
         queries,
@@ -234,17 +230,39 @@ async fn handle(State(shared): State<Shared>, request: Request) -> Response {
     }
 }
 
-/// Host 必须等于实际绑定地址；Origin 可缺省，存在时只允许同源。
+/// Host 必须等于实际绑定地址；Origin 可缺省，存在时只允许同源（非 ASCII 头同样拒绝）。
+fn allowed_hosts_and_origins(address: std::net::SocketAddr) -> (Vec<String>, Vec<String>) {
+    let mut hosts = vec![address.to_string()];
+    if address.port() == 80 {
+        let host_only = match address.ip() {
+            std::net::IpAddr::V4(ip) => ip.to_string(),
+            std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+        };
+        hosts.push(host_only);
+    }
+    if address.ip().is_loopback() {
+        hosts.push(format!("localhost:{}", address.port()));
+        if address.port() == 80 {
+            hosts.push("localhost".to_owned());
+        }
+    }
+    let origins = hosts.iter().map(|host| format!("http://{host}")).collect();
+    (hosts, origins)
+}
+
 fn permitted(shared: &Shared, headers: &HeaderMap) -> bool {
     let host = headers
         .get(header::HOST)
         .and_then(|host| host.to_str().ok())
         .unwrap_or_default();
-    let origin = headers
-        .get(header::ORIGIN)
-        .and_then(|origin| origin.to_str().ok());
-    shared.hosts.iter().any(|allowed| allowed == host)
-        && origin.is_none_or(|origin| shared.origins.iter().any(|allowed| allowed == origin))
+    let origin_ok = match headers.get(header::ORIGIN) {
+        None => true,
+        Some(value) => value
+            .to_str()
+            .ok()
+            .is_some_and(|origin| shared.origins.iter().any(|allowed| allowed == origin)),
+    };
+    shared.hosts.iter().any(|allowed| allowed == host) && origin_ok
 }
 
 fn unavailable() -> Response {
@@ -314,4 +332,33 @@ fn serve(
         };
         let _ = results.send(result);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permitted_rejects_non_ascii_origin_and_allows_port_80_without_port_suffix() {
+        let (tx, _rx) = mpsc::channel(1);
+        let (hosts, origins) = allowed_hosts_and_origins("127.0.0.1:80".parse().unwrap());
+        let shared = Shared {
+            queries: tx,
+            hosts,
+            origins,
+        };
+
+        let mut ok_headers = HeaderMap::new();
+        ok_headers.insert(header::HOST, HeaderValue::from_static("localhost"));
+        ok_headers.insert(header::ORIGIN, HeaderValue::from_static("http://127.0.0.1"));
+        assert!(permitted(&shared, &ok_headers));
+
+        let mut bad_origin = HeaderMap::new();
+        bad_origin.insert(header::HOST, HeaderValue::from_static("127.0.0.1:80"));
+        bad_origin.insert(
+            header::ORIGIN,
+            HeaderValue::from_bytes(b"https://evil.\xff.example").unwrap(),
+        );
+        assert!(!permitted(&shared, &bad_origin));
+    }
 }

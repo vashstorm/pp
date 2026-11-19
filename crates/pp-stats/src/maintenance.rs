@@ -115,12 +115,16 @@ pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
 /// Delete request snapshots before their parents, then reclaim the freed pages.
 pub fn gc(cutoff: i64) -> Result<(u64, u64)> {
     let path = database_path()?;
-    match fs::symlink_metadata(&path) {
+    gc_at(&path, cutoff)
+}
+
+fn gc_at(path: &std::path::Path, cutoff: i64) -> Result<(u64, u64)> {
+    match fs::symlink_metadata(path) {
         Ok(metadata) => ensure!(metadata.is_file(), "statistics database must be a file"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
         Err(error) => return Err(error.into()),
     }
-    let mut store = Store::open(&path)?;
+    let mut store = Store::open(path)?;
     // 旧库迁移失败时保留旧表并让本次 `gc` 失败（非零退出），下次重试。
     maintain(&mut store.conn)?;
     let tx = store
@@ -138,10 +142,68 @@ pub fn gc(cutoff: i64) -> Result<(u64, u64)> {
         [cutoff],
     )?;
     let removed = tx.execute("DELETE FROM requests WHERE timestamp < ?1", [cutoff])? as u64;
+    let tools_removed = tx.execute("DELETE FROM tool_calls WHERE timestamp < ?1", [cutoff])? as u64;
     let hooks_removed = tx.execute("DELETE FROM hook_runs WHERE timestamp < ?1", [cutoff])? as u64;
     tx.commit()?;
-    if removed > 0 || hooks_removed > 0 {
+    if removed > 0 || hooks_removed > 0 || tools_removed > 0 {
         store.conn.execute_batch("VACUUM;")?;
     }
     Ok((total, removed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::fixtures::*;
+    use super::*;
+    use crate::{ToolCall, ToolStatus};
+
+    #[test]
+    fn gc_removes_expired_tool_calls_alongside_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("stats.db");
+        let mut store = open_store(&db_path).unwrap();
+        let session = dir.path().join("s.jsonl");
+        store
+            .insert(&fixture("old", 100), &serde_json::Value::Null)
+            .unwrap();
+        store
+            .insert(&fixture("fresh", 2000), &serde_json::Value::Null)
+            .unwrap();
+        store
+            .tool(&ToolCall {
+                request_key: Some("old"),
+                session_file: &session,
+                call_id: "c1",
+                tool: "bash",
+                status: ToolStatus::Ok,
+                error_message: None,
+                timestamp: 100,
+                duration_ms: 10.0,
+                result_chars: None,
+            })
+            .unwrap();
+        store
+            .tool(&ToolCall {
+                request_key: Some("fresh"),
+                session_file: &session,
+                call_id: "c2",
+                tool: "read",
+                status: ToolStatus::Ok,
+                error_message: None,
+                timestamp: 2000,
+                duration_ms: 5.0,
+                result_chars: None,
+            })
+            .unwrap();
+        drop(store);
+
+        let (total, removed) = gc_at(&db_path, 1000).unwrap();
+        assert_eq!((total, removed), (2, 1));
+        let store = open_store(&db_path).unwrap();
+        let remaining_tools: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM tool_calls", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining_tools, 1);
+    }
 }
