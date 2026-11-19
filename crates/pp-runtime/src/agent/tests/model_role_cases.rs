@@ -226,4 +226,113 @@ fn model_roles_main_only_configuration_does_not_enable_task_in_plan() {
     let binding = agent.subagents().unwrap();
     assert!(binding.definitions(WorkMode::Plan).is_empty());
     agent.stop_subagents().unwrap();
+    assert!(agent.subagents().is_none());
+    assert!(agent.tools.subagent.is_none());
+}
+
+#[test]
+fn apply_pending_truncates_user_and_hook_developer_when_persist_fails() {
+    use std::collections::VecDeque;
+
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.yml");
+    let models = dir.path().join("models.yml");
+    std::fs::write(&settings, "{}").unwrap();
+    std::fs::write(
+        &models,
+        json!({"providers":{"fixture":{
+            "api_key":"k","protocol":"completion","base_url":"http://127.0.0.1:1/v1",
+            "models":{"one":{"model":"one","thinking":{"efforts":["low","high"],"defaultLevel":"low"}}}
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".pp")).unwrap();
+    std::fs::write(
+        dir.path().join(".pp/hooks.yml"),
+        "UserPromptSubmit:\n  - hooks:\n      - type: command\n        command: \"printf '{\\\"additionalContext\\\":\\\"extra ctx\\\"}'\"\n",
+    )
+    .unwrap();
+    let catalog = ModelCatalog::from_files(&settings, &models).unwrap();
+    let hooks = Agent::compile_hooks(&catalog, dir.path()).unwrap();
+    let mut agent = Agent::new(
+        catalog,
+        Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+        dir.path().join("sessions"),
+    )
+    .unwrap();
+    agent.hooks = hooks;
+    // 使 journal.sent 失败，强制触发回退分支。
+    std::fs::write(dir.path().join("sessions"), b"not-a-dir").unwrap();
+
+    let before_len = agent.session_len();
+    let mut batch = VecDeque::new();
+    batch.push_back(input::PendingInput {
+        id: 1,
+        kind: input::PendingKind::Steering,
+        source: "follow".into(),
+        expansion: None,
+        echo_source: true,
+        prepared: None,
+    });
+    let queue = input::InputQueue::default();
+    let mut user = None;
+    let err = agent
+        .apply_pending(
+            batch,
+            Some(&queue),
+            &mut user,
+            &CancellationToken::new(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+    assert!(!err.to_string().is_empty());
+    assert_eq!(agent.session_len(), before_len);
+}
+
+#[test]
+fn think_override_matching_default_clears_override_and_updates_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.yml");
+    let models = dir.path().join("models.yml");
+    std::fs::write(&settings, "{}").unwrap();
+    std::fs::write(
+        &models,
+        json!({"providers":{"fixture":{
+            "api_key":"k","protocol":"completion","base_url":"http://127.0.0.1:1/v1",
+            "models":{"one":{"model":"one","thinking":{"efforts":["low","high"],"defaultLevel":"low"}}}
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    let catalog = ModelCatalog::from_files(&settings, &models).unwrap();
+    let state = std::sync::Arc::new(pp_config::model_state::ModelState::from_catalog(catalog));
+    state
+        .set_override(pp_config::model_state::Selection {
+            reference: "fixture/one".into(),
+            effort: ThinkLevel::High,
+        })
+        .unwrap();
+    let source =
+        crate::system_prompt::Snapshot::discover(dir.path(), dir.path(), None, None, None).unwrap();
+    let mut agent = Agent::new_with_prompt(
+        state.clone(),
+        Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+        dir.path().join("sessions"),
+        dir.path().join("sessions/.locks"),
+        source,
+        dir.path().join("sessions/.stats/stats.db"),
+    )
+    .unwrap();
+    let service = crate::model_control::Service::start(state.clone()).unwrap();
+    agent.runtime_models = Some(crate::model_control::Binding::main(
+        service.registry.clone(),
+    ));
+    assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
+    assert!(service.submit(crate::model_control::Change::Think(ThinkLevel::Low)));
+    service.flush();
+    assert_eq!(state.source(), pp_core::model::ModelSource::Default);
+    assert!(service.override_selection().is_none());
+    agent.apply_runtime_models().unwrap();
+    assert_eq!(agent.model_source(), pp_core::model::ModelSource::Default);
 }

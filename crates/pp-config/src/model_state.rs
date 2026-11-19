@@ -220,6 +220,7 @@ impl ModelState {
                 reference: selection.reference,
                 effort,
             });
+            Self::reconcile_override(&mut inner);
             inner.revision += 1;
         }
         Ok(())
@@ -537,5 +538,31 @@ mod tests {
         );
         shared.install(Arc::clone(&state));
         assert!(Arc::ptr_eq(&shared.current().unwrap(), &state));
+    }
+
+    #[test]
+    fn set_override_effort_clears_override_when_matching_default() {
+        let (dir, state) = fixture();
+        // 将默认模型设为支持多档位的 fixture/two（默认档位 low）
+        state.set_default("fixture/two").unwrap();
+        state.save_default_think_level(ThinkLevel::Low).unwrap();
+        assert_eq!(state.source(), ModelSource::Default);
+
+        // 先设置与默认模型同款但不同档位的覆盖，随后把档位调回默认 low
+        state
+            .set_override(selection("fixture/two", ThinkLevel::High))
+            .unwrap();
+        assert_eq!(state.source(), ModelSource::Override);
+
+        state.set_override_effort(ThinkLevel::Low).unwrap();
+        assert_eq!(state.source(), ModelSource::Default);
+
+        // 验证不会残留假覆盖劫持后续全局默认变更
+        state.set_default("fixture/one").unwrap();
+        assert_eq!(
+            state.resolve().unwrap(),
+            selection("fixture/one", ThinkLevel::Low)
+        );
+        let _ = dir;
     }
 }

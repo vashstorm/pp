@@ -387,7 +387,14 @@ impl App {
                     if revision >= self.model_revision {
                         self.model_revision = revision;
                         self.think_level = effort;
-                        if let Some(selection) = &mut self.override_selection {
+                        if let Some(control) = &self.model_control {
+                            self.override_selection = control.override_selection();
+                            if self.override_selection.is_none()
+                                && self.current_source == Some(ModelSource::Override)
+                            {
+                                self.current_source = Some(ModelSource::Default);
+                            }
+                        } else if let Some(selection) = &mut self.override_selection {
                             selection.effort = effort;
                         }
                         if let Some(panel) = &mut self.roles_panel {

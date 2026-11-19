@@ -118,6 +118,7 @@ impl Agent {
         }
         if self.model_source == ModelSource::Override {
             self.models.set_override_effort(level)?;
+            self.model_source = self.models.source();
         }
         Ok(())
     }

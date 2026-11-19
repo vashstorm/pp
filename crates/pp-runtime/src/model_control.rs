@@ -299,6 +299,10 @@ impl Service {
         self.models.resolve_reference(reference, current)
     }
 
+    pub fn override_selection(&self) -> Option<Selection> {
+        self.models.override_selection()
+    }
+
     #[cfg(test)]
     pub(crate) fn flush(&self) {
         let (sender, receiver) = mpsc::channel();
