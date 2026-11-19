@@ -76,7 +76,10 @@ impl Panel {
             self.draw_entries(frame, list_area);
         }
         for (index, diagnostic) in self.listing.diagnostics.iter().take(2).enumerate() {
-            let y = hint_y.saturating_sub(diagnostics) + index as u16;
+            let y = hint_y + index as u16;
+            if y >= bottom.saturating_sub(1) {
+                break;
+            }
             frame.render_widget(
                 Line::styled(
                     display_text(diagnostic).into_owned(),

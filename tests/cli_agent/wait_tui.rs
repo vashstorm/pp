@@ -121,6 +121,7 @@ fn wait_tui_esc_cancels_background_and_restores_input_in_both_protocols() {
         pty.wait_for("进入等待屏障", |screen| {
             screen.contents().contains("0/1 settled")
         });
+        cancel_wait_pid_files(project.path(), &["wait.pid"]);
         pty.input("\x1b");
         cancel_wait_pid_dead(&project.path().join("wait.pid"));
         cancel_wait_cancelled_ready(&mut pty);

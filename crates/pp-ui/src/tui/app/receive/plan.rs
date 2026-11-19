@@ -226,7 +226,7 @@ impl App {
                                 self.resources.set_images(prepared.images);
                             }
                             self.input.insert_str(format!("/plan {prompt}"));
-                            self.resources.bind_text(&self.input_text());
+                            self.resources.bind_text(&self.raw_input_text());
                             self.refresh_candidates(true);
                         }
                         // 失败也可能已持久化 Plan（随后的 Workflow 快照纠正显示）；

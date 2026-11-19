@@ -228,7 +228,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/themes",
         display_label: None,
-        aliases: &[],
+        aliases: &["/theme"],
         category: CommandCategory::Config,
         usage: "/themes [nerd|ascii] [THEME]",
         description: "Configure TUI icon style and color theme",

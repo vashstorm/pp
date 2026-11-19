@@ -43,6 +43,7 @@ impl App {
             return quit;
         }
         let before = self.input_text();
+        let raw_before = self.raw_input_text();
         let previous = self.resources.bindings.clone();
         let undo = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('u') && key.modifiers == KeyModifiers::CONTROL);
         let redo = FUNCTION_MODIFIER != KeyModifiers::CONTROL
@@ -94,20 +95,20 @@ impl App {
         let old_cursor = crate::tui::attachment_edit::offset(&self.input, self.input.cursor());
         let quit = self.handle_inner(event, dirty);
         if epoch == self.resources.epoch {
-            let after = self.input_text();
-            let range = (before != after
+            let raw_after = self.raw_input_text();
+            let range = (raw_before != raw_after
                 || (replacement && selection.as_ref().is_some_and(|range| !range.is_empty())))
             .then(|| {
                 crate::tui::attachment_edit::edited_range(
-                    &before,
-                    &after,
+                    &raw_before,
+                    &raw_after,
                     old_cursor,
                     crate::tui::attachment_edit::offset(&self.input, self.input.cursor()),
                     selection,
                 )
             });
             self.resources
-                .edited(before.clone(), after, previous, range);
+                .edited(raw_before, raw_after, previous, range);
             crate::tui::attachment_edit::normalize(
                 &mut self.input,
                 &self.resources.bindings,

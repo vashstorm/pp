@@ -501,8 +501,12 @@ impl App {
         self.input.insert_str(text);
     }
 
+    pub(in crate::tui) fn raw_input_text(&self) -> String {
+        self.input.lines().join("\n")
+    }
+
     pub(in crate::tui) fn input_text(&self) -> String {
-        let text = self.input.lines().join("\n");
+        let text = self.raw_input_text();
         if self.shell_mode {
             format!("!{text}")
         } else {

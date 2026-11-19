@@ -24,7 +24,7 @@ impl App {
         match resources::start(
             operation,
             self.history_cwd.clone(),
-            self.input_text(),
+            self.raw_input_text(),
             kind,
             self.input.cursor(),
         ) {
@@ -79,7 +79,7 @@ impl App {
         let Some(job) = &self.resources.job else {
             return false;
         };
-        if job.source != self.input_text()
+        if job.source != self.raw_input_text()
             || job.cursor != self.input.cursor()
             || !self.resource_input_available()
         {
@@ -122,7 +122,7 @@ impl App {
                 self.load_image_references(false, job.kind);
             }
             Ok(resources::Output::Text(text)) => {
-                let before = self.input_text();
+                let before = self.raw_input_text();
                 let previous = self.resources.bindings.clone();
                 let cursor = crate::tui::attachment_edit::offset(&self.input, self.input.cursor());
                 let selection = self.input.selection_range().map(|((a, b), (c, d))| {
@@ -136,7 +136,7 @@ impl App {
                         )
                 });
                 self.insert_input(text.replace("\r\n", "\n").replace('\r', "\n"));
-                let after = self.input_text();
+                let after = self.raw_input_text();
                 let range = crate::tui::attachment_edit::edited_range(
                     &before,
                     &after,
@@ -149,7 +149,7 @@ impl App {
                 self.load_image_references(false, job.kind);
             }
             Ok(resources::Output::References(replacements)) => {
-                let before = self.input_text();
+                let before = self.raw_input_text();
                 let previous = self.resources.bindings.clone();
                 let old_cursor =
                     crate::tui::attachment_edit::offset(&self.input, self.input.cursor());
@@ -179,7 +179,7 @@ impl App {
                             *text = text.replacen(&job.source[range.clone()], &image.marker, 1);
                         }
                     }
-                    let current = self.input_text();
+                    let current = self.raw_input_text();
                     let bindings = self.resources.bindings.clone();
                     crate::tui::attachment_edit::jump(&mut self.input, range.start);
                     self.input.cancel_selection();
@@ -200,16 +200,17 @@ impl App {
                     self.resources.images.push(image);
                     self.resources.shift_bindings(
                         &current,
-                        &self.input_text(),
+                        &self.raw_input_text(),
                         &bindings,
                         Some((range.start, range.end, inserted_end)),
                     );
                 }
                 crate::tui::attachment_edit::jump(&mut self.input, cursor);
-                self.resources.record(before, self.input_text(), previous);
+                self.resources
+                    .record(before, self.raw_input_text(), previous);
                 self.refresh_candidates(true);
                 if let Some(text) = prepared_text {
-                    let source = self.input_text();
+                    let source = self.raw_input_text();
                     self.prepare_resource_input(&source, &text, job.kind);
                 }
             }
@@ -248,7 +249,7 @@ impl App {
                 crate::tui::attachment_edit::ICON,
                 self.resources.next_image
             );
-            if !self.input_text().contains(&marker)
+            if !self.raw_input_text().contains(&marker)
                 && !self.resources.images.iter().any(|old| old.marker == marker)
             {
                 return marker;
@@ -261,7 +262,7 @@ impl App {
     }
 
     pub(in crate::tui) fn insert_images(&mut self, images: Vec<user_input::Image>) {
-        let before = self.input_text();
+        let before = self.raw_input_text();
         let previous = self.resources.bindings.clone();
         let cursor = self
             .input
@@ -293,7 +294,7 @@ impl App {
         self.input.insert_str(markers);
         self.resources.edited(
             before,
-            self.input_text(),
+            self.raw_input_text(),
             previous,
             Some((start, end, inserted_end)),
         );

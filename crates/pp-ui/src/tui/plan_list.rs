@@ -885,4 +885,25 @@ mod tests {
             "{buttons}"
         );
     }
+
+    #[test]
+    fn diagnostics_render_below_list_without_overlapping_entries() {
+        let mut list = listing(vec![
+            entry("a", "alpha.md", PlanLocation::Drafts, "Alpha Plan", 0, 1),
+            entry("b", "beta.md", PlanLocation::Drafts, "Beta Plan", 0, 1),
+        ]);
+        list.diagnostics = vec!["DIAG_ONE".into(), "DIAG_TWO".into()];
+        let mut panel = Panel::new();
+        panel.set_listing(list);
+        let terminal = draw(&mut panel, 100);
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..12).map(|y| row_text(buffer, y)).collect();
+        let alpha_row = rows.iter().position(|r| r.contains("Alpha Plan")).unwrap();
+        let beta_row = rows.iter().position(|r| r.contains("Beta Plan")).unwrap();
+        let diag1_row = rows.iter().position(|r| r.contains("DIAG_ONE")).unwrap();
+        let diag2_row = rows.iter().position(|r| r.contains("DIAG_TWO")).unwrap();
+        assert!(alpha_row < beta_row);
+        assert!(beta_row < diag1_row);
+        assert_eq!(diag2_row, diag1_row + 1);
+    }
 }

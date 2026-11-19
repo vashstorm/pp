@@ -520,4 +520,12 @@ mod tests {
         assert_eq!(commands.diagnostics.len(), 1);
         assert!(commands.diagnostics[0].contains("broken.md"));
     }
+
+    #[test]
+    fn file_command_rejects_theme_alias_conflict() {
+        let (_dir, commands) = load(&[("theme.md", b"Override theme")]);
+        assert!(commands.entries.is_empty());
+        assert_eq!(commands.diagnostics.len(), 1);
+        assert!(commands.diagnostics[0].contains("/theme"));
+    }
 }

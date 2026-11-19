@@ -480,3 +480,28 @@ fn resource_plan_image_reference_without_delimiter_prepares_snapshot_before_tran
         matches!(&app.plan_after_enter, Some(PlanEnterAction::Prompt(_, Some(input))) if input.has_images())
     );
 }
+
+#[test]
+fn resource_shell_mode_prefix_does_not_shift_attachment_bindings_or_panic() {
+    let (mut app, _, _) = resource_app();
+    app.insert_images(vec![image()]);
+    assert_eq!(app.raw_input_text(), "\u{f03e} #1");
+
+    // 移至第 0 列后按 `!` 切入 shell 模式，`raw_input_text()` 不含虚拟 `!` 前缀。
+    app.handle(key(KeyCode::Home), &mut false);
+    app.handle(key(KeyCode::Char('!')), &mut false);
+    assert!(app.shell_mode);
+    assert_eq!(app.input_text(), "!\u{f03e} #1");
+    assert_eq!(app.raw_input_text(), "\u{f03e} #1");
+
+    // 移动光标进出图标边界与整块 Delete 均不得切片/越界 panic。
+    app.handle(key(KeyCode::Right), &mut false);
+    app.handle(key(KeyCode::Left), &mut false);
+    app.handle(key(KeyCode::Delete), &mut false);
+    assert_eq!(app.raw_input_text(), "");
+    assert!(
+        app.resources
+            .active_images(&app.raw_input_text())
+            .is_empty()
+    );
+}
