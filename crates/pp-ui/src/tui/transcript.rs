@@ -33,6 +33,7 @@ mod entry_ask;
 mod entry_layout;
 mod entry_title;
 mod entry_tool;
+mod entry_user;
 mod native;
 mod preview;
 mod progress;
@@ -442,9 +443,12 @@ impl Transcript {
             "Assistant" => (EntryKind::Assistant, String::new()),
             _ => (EntryKind::Data, label.into()),
         };
+        let mut entry = TranscriptEntry::new(kind, title, text.into(), None);
+        if kind == EntryKind::User {
+            entry.cwd = self.cwd.clone();
+        }
         self.read_groups_key = None;
-        self.entries
-            .push(TranscriptEntry::new(kind, title, text.into(), None));
+        self.entries.push(entry);
     }
 
     /// 本地错误仅进入可见历史，不生成模型消息或持久事件。

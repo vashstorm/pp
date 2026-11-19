@@ -163,4 +163,5 @@ mod streaming_cases;
 mod theme_cases;
 mod todo_cases;
 mod tree_cases;
+mod user_image_cases;
 mod wait_cases;

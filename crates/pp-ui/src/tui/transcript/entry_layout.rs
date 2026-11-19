@@ -539,6 +539,8 @@ impl TranscriptEntry {
                         height: 1,
                     }),
                 );
+            } else if user && let Some(user_lines) = self.user_body_lines(width) {
+                lines.extend(user_lines);
             } else {
                 self.add_lines(Source::Text, &mut lines);
             }

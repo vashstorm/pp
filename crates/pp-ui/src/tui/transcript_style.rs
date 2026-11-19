@@ -61,6 +61,9 @@ pub(super) fn error_border() -> Color {
 pub(super) fn removed() -> Color {
     themes::palette().removed
 }
+pub(super) fn attachment_color() -> Color {
+    themes::palette().attachment_color
+}
 pub(super) fn tool_bg() -> Color {
     themes::palette().tool_bg
 }
