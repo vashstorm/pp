@@ -1259,13 +1259,15 @@ TMPDIR=$(getconf DARWIN_USER_TEMP_DIR) cargo nextest run --locked --workspace   
 TMPDIR=/tmp cargo nextest run --locked --workspace                              # Linux
 ```
 
-`slow_test` 是串行集合：满载并行下会被饿过用例内 5s／10s 栅栏的重型用例（真实 PTY、真实二进制、真实子进程）已集中在此，成员判据是测试名末级以 `slow_` 开头，由 `.config/nextest.toml` 的 `[test-groups.slow_test]`（`max-threads = 1`）与 `[profile.slow_test]`（`test-threads = 1`）保证逐个串行。默认档的 `default-filter` 排除它们，所以完整验证＝默认档＋ `--profile slow_test`；它们只能在 `--profile slow_test` 或 `--ignore-default-filter` 下被收集，默认档配 `-E` 会零匹配。新增不稳定重型用例时给测试函数加 `slow_` 前缀，不在配置里维护名字清单。
+`slow_test` 是串行集合：满载并行下会被饿过用例内 5s／10s 栅栏的重型用例（真实 PTY、真实二进制、真实子进程）已集中在此，成员判据是测试名末级以 `slow_` 开头，由 `.config/nextest.toml` 的 `[test-groups.slow_test]`（`max-threads = 1`）与 `[profile.slow_test]`（`test-threads = 1`）保证逐个串行。默认档的 `default-filter` 排除它们，所以完整验证＝默认档＋ `--profile slow_test`。要在默认档用 `-E` 定向匹配慢用例，需加 `--ignore-default-filter`。新增不稳定重型用例时给测试函数加 `slow_` 前缀，不在配置里维护名字清单。
 
-`quick` 是日常快档：`.config/nextest.toml` 的 `[profile.quick]` 用 `default-filter` 跳过 `cli_agent` 中的真实 PTY 用例与 `slow_test` 成员，只保留每类冒烟；`crates/*` 单元测试与其余集成用例照旧执行。它不覆盖 TUI／PTY 行为，改动这些区域时用默认档。`default-filter` 与 `-E` 取交集，所以在 `--profile quick` 下定向跑 PTY 用例必须加 `--ignore-default-filter`，否则会得到零匹配：
+`quick` 是日常快档，在 `cli_agent` 的 `tui::` 模块中保留少量冒烟，跳过全部 `slow_test` 成员。单元测试和其余集成用例照常执行。此档仍会创建真实 PTY。`default-filter` 与 `-E` 取交集，定向跑被 `quick` 排除的 PTY 用例时，可以像下面这样加 `--ignore-default-filter`。
 
 ```sh
-cargo nextest run --locked -p pp --test cli_agent --profile quick --ignore-default-filter -E 'test(tui_exit_keeps_conversation_on_normal_screen)'
+cargo nextest run --locked -p pp --test cli_agent --profile quick --ignore-default-filter -E 'test(lsp_tui_late_report_collapses_and_ctrl_o_expands)'
 ```
+
+沙盒禁止 `openpty` 时，运行 `cargo nextest run --locked --workspace --profile no_pty`。此档排除 `cli_agent` 的 `tui::` 用例，以及使用真实终端验证 Plan 下的 LSP 只读行为和 `pp stats` 打开浏览器的两个用例。进程内 TUI 单测照常执行，其余 `slow_` 用例逐个独占执行。回环 HTTP fixture 仍需绑定本地端口，Seatbelt 集成测试仍需创建自己的沙盒。需要验证真实终端行为时，在允许创建 PTY 的环境运行默认档和 `slow_test` 档。
 
 日常修改优先按范围选择定向回归，默认并行；纯文档或注释修改无需运行 Rust 测试。以下命令按任务择一或合并筛选，不要求每次全部执行：
 

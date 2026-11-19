@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn streaming_idle_timeout_keeps_active_text_thinking_and_heartbeats_alive() {
+fn slow_streaming_idle_timeout_keeps_active_text_thinking_and_heartbeats_alive() {
     for protocol in PROTOCOLS {
         for mode in ["text", "thinking", "heartbeat"] {
             let server = server();
@@ -392,7 +392,7 @@ fn streaming_invalid_later_call_rejects_entire_batch_and_repl_history() {
 }
 
 #[test]
-fn streaming_failures_keep_partial_and_never_commit_when_retries_disabled() {
+fn slow_streaming_failures_keep_partial_and_never_commit_when_retries_disabled() {
     for protocol in PROTOCOLS {
         let failures: &[Broken] = match protocol {
             Protocol::Chat => &[

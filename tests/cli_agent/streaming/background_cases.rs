@@ -52,7 +52,7 @@ fn wait_background_delivers_results_once_and_does_not_stream_progress_json() {
 }
 
 #[test]
-fn background_service_lifecycle_in_both_protocols() {
+fn slow_background_service_lifecycle_in_both_protocols() {
     for protocol in PROTOCOLS {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
@@ -220,7 +220,7 @@ fn background_service_lifecycle_in_both_protocols() {
 }
 
 #[test]
-fn background_task_cleanup_at_run_boundaries() {
+fn slow_background_task_cleanup_at_run_boundaries() {
     for protocol in PROTOCOLS {
         for boundary in [RunBoundary::FinalAnswer, RunBoundary::ModelError] {
             let server = server();

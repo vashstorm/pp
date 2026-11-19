@@ -5,7 +5,7 @@ use std::{
 };
 
 #[test]
-fn request_retry_exponential_waits_match_cli_display_on_either_protocol() {
+fn slow_request_retry_exponential_waits_match_cli_display_on_either_protocol() {
     for responses in [false, true] {
         let server = server();
         let dir = tempfile::tempdir().unwrap();

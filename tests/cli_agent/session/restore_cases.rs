@@ -247,7 +247,7 @@ fn plan_headless_restore_refuses_before_mcp_or_model_start() {
 }
 
 #[test]
-fn session_loader_rejects_corrupt_or_unavailable_logs() {
+fn slow_session_loader_rejects_corrupt_or_unavailable_logs() {
     let server = server();
     let cwd = tempfile::tempdir().unwrap();
 

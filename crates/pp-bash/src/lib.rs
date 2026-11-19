@@ -644,7 +644,7 @@ mod tests {
     }
 
     #[test]
-    fn background_shutdown_closes_registry_and_joins_all() {
+    fn slow_background_shutdown_closes_registry_and_joins_all() {
         fn started_group(
             manager: &TaskManager,
             cwd: &Path,

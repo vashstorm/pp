@@ -197,7 +197,7 @@ fn stats_models(home: &Path) -> Vec<(String, String)> {
 }
 
 #[test]
-fn mock_test_all_commands_run_in_empty_home_without_models() {
+fn slow_mock_test_all_commands_run_in_empty_home_without_models() {
     let home = tempfile::tempdir().unwrap();
     let mut cli = LiveCli::new(Cli::start_env(home.path(), home.path(), &[], &[]));
     for command in COMMANDS {
@@ -255,7 +255,7 @@ fn mock_test_all_commands_run_in_empty_home_without_models() {
 }
 
 #[test]
-fn mock_test_each_command_runs_only_its_own_scenarios() {
+fn slow_mock_test_each_command_runs_only_its_own_scenarios() {
     let expected: &[(&str, &[(&str, usize)])] = &[
         ("/test-task", &[("task", 1), ("wait", 1)]),
         ("/test-ui", &[]),
@@ -425,7 +425,7 @@ fn mock_test_task_ignores_sentinel_provider_and_missing_roles() {
 }
 
 #[test]
-fn mock_test_edit_and_tools_repeat_with_fresh_workspaces_and_snapshots() {
+fn slow_mock_test_edit_and_tools_repeat_with_fresh_workspaces_and_snapshots() {
     let home = tempfile::tempdir().unwrap();
     let mut cli = LiveCli::new(Cli::start_env(home.path(), home.path(), &[], &[]));
     cli.input("/test-edit\n/test-edit\n/test-tools\n/quit\n");
@@ -480,7 +480,7 @@ fn mock_test_bash_task_repeats_from_fresh_task_ids() {
 }
 
 #[test]
-fn mock_test_normal_agent_session_roles_and_stats_survive_each_scenario() {
+fn slow_mock_test_normal_agent_session_roles_and_stats_survive_each_scenario() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
     let project = tempfile::tempdir().unwrap();

@@ -299,7 +299,7 @@ fn edit_mode_survives_model_switch() {
 }
 
 #[test]
-fn bash_timeout_argument_works_in_both_protocols() {
+fn slow_bash_timeout_argument_works_in_both_protocols() {
     for protocol in PROTOCOLS {
         let server = server();
         let dir = tempfile::tempdir().unwrap();

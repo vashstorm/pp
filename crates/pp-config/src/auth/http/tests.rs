@@ -501,7 +501,7 @@ fn auth_copilot_login_discovers_subscription_endpoint() {
 }
 
 #[test]
-fn auth_codex_device_login_exchanges_code_and_keeps_account_identity() {
+fn slow_auth_codex_device_login_exchanges_code_and_keeps_account_identity() {
     let token = jwt("account-fixture");
     let (_owner, base, server) = mock(vec![
         (

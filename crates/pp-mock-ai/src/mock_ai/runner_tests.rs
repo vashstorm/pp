@@ -290,7 +290,7 @@ fn assert_all_suites(recorder: &Recorder) {
 }
 
 #[test]
-fn mock_runner_all_suites_execute_real_tools_and_continue_after_failures() {
+fn slow_mock_runner_all_suites_execute_real_tools_and_continue_after_failures() {
     let server = MockServer::start().expect("mock AI server");
     let mut recorder = Recorder::default();
     let mut prepared = 0usize;
@@ -321,7 +321,7 @@ fn mock_runner_all_suites_execute_real_tools_and_continue_after_failures() {
 }
 
 #[test]
-fn mock_runner_write_streams_typewriter_text_and_deletes_the_fixed_file() {
+fn slow_mock_runner_write_streams_typewriter_text_and_deletes_the_fixed_file() {
     let server = MockServer::start().expect("mock AI server");
     let mut recorder = Recorder::default();
     let mut deltas = 0usize;

@@ -203,7 +203,7 @@ fn context_manual_compact_rejects_arguments_and_p_prompt_is_literal() {
 }
 
 #[test]
-fn context_manual_compact_failure_matrix_preserves_history_and_never_runs_tools() {
+fn slow_context_manual_compact_failure_matrix_preserves_history_and_never_runs_tools() {
     for protocol in PROTOCOLS {
         for failure in MANUAL_FAILURES {
             let server = server();

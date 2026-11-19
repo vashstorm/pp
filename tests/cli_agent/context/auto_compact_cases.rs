@@ -786,7 +786,7 @@ fn context_auto_compact_rejects_system_over_threshold_both_protocols() {
 }
 
 #[test]
-fn context_auto_compact_failures_never_retry_or_send_the_normal_request() {
+fn slow_context_auto_compact_failures_never_retry_or_send_the_normal_request() {
     for protocol in PROTOCOLS {
         for failure in AUTO_SUMMARY_FAILURES {
             let server = server();
