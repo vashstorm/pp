@@ -32,6 +32,7 @@ impl Transcript {
                 | AgentEvent::ToolOutputSnapshot { .. }
                 | AgentEvent::ToolPipelineSnapshot { .. }
                 | AgentEvent::ToolShellSnapshot { .. }
+                | AgentEvent::SubagentResultsInjected { .. }
                 | AgentEvent::FileChanged { .. }
                 | AgentEvent::LspDiagnostics { .. } => {}
                 // 后台自动加载不改变活动阶段，不伪装成模型工具执行。
@@ -74,6 +75,17 @@ impl Transcript {
             }
             // 用量更新不产生对话条目。
             AgentEvent::ContextUpdated { .. } | AgentEvent::PlanProgressUpdated { .. } => {}
+            AgentEvent::SubagentResultsInjected { run_ids } => {
+                self.injected_subagent_runs.extend(run_ids);
+                for entry in &mut self.entries {
+                    if entry.tool.as_deref() == Some("wait")
+                        && let Some(result) = &mut entry.result
+                        && mark_injected_jobs(result, &self.injected_subagent_runs)
+                    {
+                        entry.layout = None;
+                    }
+                }
+            }
             // 运行时指标只服务状态栏，不产生对话条目。
             AgentEvent::ModelRequestStarted
             | AgentEvent::RequestRetrying { .. }
@@ -512,7 +524,8 @@ impl Transcript {
                     let entry = &mut self.entries[index];
                     entry.pipeline_preview = None;
                     if entry.tool.as_deref() == Some("wait") {
-                        if let Ok(snapshot) = serde_json::from_str::<Value>(&output) {
+                        if let Ok(mut snapshot) = serde_json::from_str::<Value>(&output) {
+                            mark_injected_jobs(&mut snapshot, &self.injected_subagent_runs);
                             entry.result = Some(snapshot);
                             entry.layout = None;
                         }
@@ -533,6 +546,7 @@ impl Transcript {
                     .is_some_and(|index| self.entries[index].tool.as_deref() == Some("wait"))
                 {
                     self.apply_wait_background(&result);
+                    mark_injected_jobs(&mut result, &self.injected_subagent_runs);
                 }
                 if let Some(position) = self.running_tools.iter().position(|(call, _)| call == &id)
                 {
@@ -660,4 +674,23 @@ impl Transcript {
             }
         }
     }
+}
+
+fn mark_injected_jobs(result: &mut Value, injected: &BTreeSet<String>) -> bool {
+    let mut changed = false;
+    for job in result
+        .get_mut("jobs")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if job["type"] == "task"
+            && job["injected"] != true
+            && job["id"].as_str().is_some_and(|id| injected.contains(id))
+        {
+            job["injected"] = true.into();
+            changed = true;
+        }
+    }
+    changed
 }

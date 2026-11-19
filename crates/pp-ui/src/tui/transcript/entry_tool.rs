@@ -222,6 +222,20 @@ impl TranscriptEntry {
                     .is_some_and(|r| r["jobs"].is_array() || r["ok"] == false))
     }
 
+    pub(super) fn awaits_subagent_injection(&self) -> bool {
+        self.tool.as_deref() == Some("wait")
+            && self.result.as_ref().is_some_and(|result| {
+                result["cancelled"] != true
+                    && result["jobs"].as_array().is_some_and(|jobs| {
+                        jobs.iter().any(|job| {
+                            job["type"] == "task"
+                                && job["delivered"] == false
+                                && job["injected"] != true
+                        })
+                    })
+            })
+    }
+
     pub(super) fn edit_path(&self) -> &str {
         self.arguments["path"]
             .as_str()

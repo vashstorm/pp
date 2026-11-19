@@ -188,19 +188,26 @@ fn slow_wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_set
         assert!(cancel_user_messages(&body, protocol).iter().any(|text| text == "batch-steering"));
         let result = cancel_tool_outputs(&body, protocol).into_iter().find(|(id, _)| id == "batch-wait").unwrap().1;
         assert_eq!(result["pending"], false);
-        assert_eq!(result["results"].as_array().unwrap().len(), 3);
+        assert_eq!(result["results"], json!([]));
         assert!(result["jobs"].as_array().unwrap().iter().all(|job| job["status"] == "completed"));
+        for index in 0..3 {
+            assert_eq!(body.to_string().matches(&format!("stage-result-{index}")).count(), 1);
+        }
+        pty.text("[task] r1 · injected");
         // 前批已全部结束，下一次 wait 应创建新框，且不能重复交付结果。
         background_reply_call(request, protocol, "next-wait", "wait", json!({"run_ids":["r1"]}));
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         let result = cancel_tool_outputs(&body, protocol).into_iter().find(|(id, _)| id == "next-wait").unwrap().1;
         assert_eq!(result["results"], json!([]));
+        assert_eq!(result["jobs"][0]["delivered"], true);
+        assert_eq!(body.to_string().matches("stage-result-0").count(), 1);
         ask_final_reply(request, protocol, "batch-wait-finished");
         pty.text("batch-wait-finished");
         pty.ready();
         let (history, _) = pty.native_history();
         assert_eq!(history.matches("Wait ·").count(), 2, "{history}");
-        assert!(!history.contains("[task] r1 · running"), "{history}");
+        assert_eq!(history.matches("[task] r1 · injected").count(), 2, "{history}");
+        assert!(history.lines().any(|line| line.contains("[task] r1 · injected") && line.contains("stage-one")), "{history}");
         pty.input("/quit\r");
         pty.finish();
         let id = saved_session_id(home.path());
@@ -209,7 +216,8 @@ fn slow_wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_set
         restored.ready();
         restored.input("\x1b[5~");
         restored.wait_for("历史浏览显示已完成的等待批次", |screen| {
-            screen.alternate_screen() && screen.contents().contains("3/3 settled")
+            let text = screen.contents();
+            screen.alternate_screen() && text.contains("3/3 settled") && text.contains("[task] r3 · injected")
         });
         let history = restored.contents();
         assert!(history.contains("3/3 settled"), "{history}");

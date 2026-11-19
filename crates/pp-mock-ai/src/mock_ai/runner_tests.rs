@@ -15,7 +15,7 @@ use pp_core::{
     events::AgentEvent,
     model::ThinkLevel,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{MockServer, MockTest, MockTestEvent, run_test};
 
@@ -396,6 +396,7 @@ fn mock_runner_task_children_complete_consume_and_report_markers() {
     let mut control = None;
     let mut summary = None;
     let mut observed_registry = None;
+    let mut injected = Vec::new();
     let report = run_test(
         MockTest::Task,
         server.endpoint(),
@@ -438,6 +439,9 @@ fn mock_runner_task_children_complete_consume_and_report_markers() {
                 observed_registry = Some(binding.snapshots());
                 summary = Some(text);
             }
+            MockTestEvent::Progress(AgentEvent::SubagentResultsInjected { run_ids }) => {
+                injected.extend(run_ids);
+            }
             MockTestEvent::Progress(event) => recorder.record(event),
         },
     )
@@ -463,26 +467,13 @@ fn mock_runner_task_children_complete_consume_and_report_markers() {
     }
 
     let wait = wait_calls[0];
-    let results = wait["results"].as_array().expect("delivered runs");
-    assert_eq!(results.len(), ids.len());
+    assert_eq!(wait["results"], json!([]));
+    assert_eq!(injected, ids);
     let markers = [
         "fast-result-11: 3 Rust files",
         "slow-result-22: src/events.rs:1",
         "review-result-33: src/events.rs:1 Text has no request identifier",
     ];
-    for ((entry, id), marker) in results.iter().zip(ids).zip(markers) {
-        assert_eq!(entry["delivery_marker"], format!("pp-subagent-result:{id}"));
-        assert_eq!(entry["run"]["id"], id);
-        assert_eq!(entry["run"]["status"], "completed");
-        assert_eq!(entry["run"]["result"]["ok"], true);
-        assert!(
-            entry["run"]["result"]["output"]
-                .as_str()
-                .is_some_and(|output| output.contains(marker)),
-            "{}",
-            entry["run"]["result"]["output"]
-        );
-    }
     let jobs = wait["jobs"].as_array().expect("wait jobs");
     assert_eq!(jobs.len(), ids.len());
     assert!(jobs.iter().all(|job| job["status"] == "completed"));
@@ -503,6 +494,7 @@ fn mock_runner_task_children_complete_consume_and_report_markers() {
             .unwrap_or_else(|| panic!("missing run {id}"));
         assert_eq!(run["status"], "completed");
         assert_eq!(run["consumed"], true);
+        assert_eq!(run["result"]["ok"], true);
         assert!(
             run["result"]["output"]
                 .as_str()

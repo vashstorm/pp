@@ -175,6 +175,9 @@ fn wait_card_native_history_never_freezes_partial_running_state() {
     transcript.begin_run();
     tool(&mut transcript, "wait", "wait", json!({}));
     let mut result = wait_snapshot(3, 1000);
+    result["jobs"][0]["type"] = json!("task");
+    result["jobs"][0]["id"] = json!("r1");
+    result["jobs"][0]["label"] = json!("调查任务\n包含很长的多行说明，需要在窄窗口截断");
     for settled in 0..=3 {
         for job in result["jobs"]
             .as_array_mut()
@@ -182,7 +185,11 @@ fn wait_card_native_history_never_freezes_partial_running_state() {
             .iter_mut()
             .take(settled)
         {
-            job["status"] = json!("exited");
+            job["status"] = if job["type"] == "task" {
+                json!("completed")
+            } else {
+                json!("exited")
+            };
         }
         transcript.progress(AgentEvent::ToolOutputSnapshot {
             id: "wait".into(),
@@ -196,6 +203,20 @@ fn wait_card_native_history_never_freezes_partial_running_state() {
         id: "wait".into(),
         result,
     });
+    assert!(transcript.next_native_batch(100, 1, false).is_none());
+    transcript.progress(AgentEvent::SubagentResultsInjected {
+        run_ids: vec!["r1".into()],
+    });
+    let narrow = entry_text(&mut transcript.entries[0], 48);
+    assert!(
+        narrow
+            .lines()
+            .any(|line| line.contains("[task] r1 · injected")
+                && line.contains("调查任务")
+                && line.contains('…')),
+        "{narrow}"
+    );
+    assert!(!narrow.contains("截断"), "{narrow}");
     let history = retire_native(&mut transcript, 100, 1, false);
     assert_eq!(history.matches("Wait ·").count(), 1, "{history}");
     assert!(
@@ -203,4 +224,14 @@ fn wait_card_native_history_never_freezes_partial_running_state() {
         "{history}"
     );
     assert!(!history.contains("· running ·"), "{history}");
+    assert!(
+        history
+            .lines()
+            .any(|line| line.contains("[task] r1 · injected")
+                && line
+                    .split_whitespace()
+                    .collect::<String>()
+                    .contains("调查任务包含很长的多行说明")),
+        "{history}"
+    );
 }

@@ -153,6 +153,17 @@ impl Transcript {
         }
         // 相邻 read 还可能合并成同一摘要，整组关闭前不能冻结组首。
         if self.has_live_activity() {
+            if let Some(offset) =
+                self.entries
+                    .get(self.native.entry..frontier)
+                    .and_then(|entries| {
+                        entries
+                            .iter()
+                            .position(super::TranscriptEntry::awaits_subagent_injection)
+                    })
+            {
+                frontier = self.native.entry + offset;
+            }
             let mut index = self.entries.len();
             while index > 0 && self.entries[index - 1].tool.as_deref() == Some("read") {
                 index -= 1;

@@ -24,8 +24,8 @@ pub type Job = pp_workspace::WaitJob;
 
 #[derive(Default)]
 pub(super) struct State {
-    // 当前原生批次的预留记录，防止同一批多个 wait 返回同一份结果。
-    runs: BTreeSet<String>,
+    // 保留由 blocking task 工具直接返回的结果，避免同批 wait 再选中它们。
+    blocking_runs: BTreeSet<String>,
     tasks: BTreeSet<String>,
     delivered_tasks: BTreeSet<String>,
 }
@@ -38,7 +38,8 @@ impl State {
 
 const WAIT_DESCRIPTION: &str = concat!(
     "Wait until every selected owned background Bash task and subagent run has settled, then ",
-    "return all undelivered results. Optional run_ids/task_ids select targets; omit both to ",
+    "report their status. Subagent results are injected into the conversation after the tool batch; ",
+    "undelivered background Bash results are returned by wait. Optional run_ids/task_ids select targets; omit both to ",
     "watch all undelivered owned work. The fixed timeout is 120 minutes; on timeout, unfinished ",
     "selected jobs and their descendants are stopped and reaped before returning. Steering stays ",
     "queued until the batch finishes. Esc cancels the parent task and its owned work. Results are ",
@@ -86,7 +87,7 @@ impl Tools {
         for task in value["tasks"].as_array().into_iter().flatten() {
             for result in task["results"]["results"].as_array().into_iter().flatten() {
                 if let Some(id) = result["run"]["id"].as_str() {
-                    state.runs.insert(id.into());
+                    state.blocking_runs.insert(id.into());
                 }
             }
         }
@@ -94,19 +95,19 @@ impl Tools {
 
     pub fn start_wait_batch(&self) {
         let mut state = self.wait_state.borrow_mut();
-        state.runs.clear();
+        state.blocking_runs.clear();
         state.tasks.clear();
     }
 
     /// 只在原生工具批次成功同步后确认；写盘失败时预留记录仍然可重试。
     pub fn commit_wait_results(&self) -> Result<()> {
         let mut state = self.wait_state.borrow_mut();
-        if !state.runs.is_empty()
+        if !state.blocking_runs.is_empty()
             && let Some(binding) = &self.subagent
         {
-            binding.acknowledge(&state.runs.iter().cloned().collect::<Vec<_>>())?;
+            binding.acknowledge(&state.blocking_runs.iter().cloned().collect::<Vec<_>>())?;
         }
-        state.runs.clear();
+        state.blocking_runs.clear();
         let tasks = std::mem::take(&mut state.tasks);
         state.delivered_tasks.extend(tasks);
         Ok(())
@@ -127,7 +128,7 @@ impl Tools {
         let state = self.wait_state.borrow();
         for job in &mut jobs {
             job.delivered |= if job.r#type == "task" {
-                state.runs.contains(&job.id)
+                state.blocking_runs.contains(&job.id)
             } else {
                 state.tasks.contains(&job.id) || state.delivered_tasks.contains(&job.id)
             };
@@ -209,29 +210,6 @@ impl Tools {
                     binding.check_lsp_cleanup()?;
                 }
                 let mut state = self.wait_state.borrow_mut();
-                if let Some(binding) = &self.subagent {
-                    let ready_runs = jobs
-                        .iter()
-                        .filter(|job| job.r#type == "task" && !job.pending() && !job.delivered)
-                        .map(|job| job.id.clone())
-                        .collect::<Vec<_>>();
-                    let deliveries = if ready_runs.is_empty() {
-                        Vec::new()
-                    } else {
-                        binding.deliveries(&ready_runs)
-                    };
-                    for run in deliveries
-                        .into_iter()
-                        .filter(|r| !state.runs.contains(&r.id))
-                    {
-                        result["results"]
-                            .as_array_mut()
-                            .expect("结果数组")
-                            .push(json!({
-                                "delivery_marker":format!("pp-subagent-result:{}",run.id),"run":run.run
-                            }));
-                    }
-                }
                 for job in jobs
                     .iter()
                     .filter(|j| j.r#type == "bash" && !j.pending() && !j.delivered)
@@ -247,11 +225,6 @@ impl Tools {
                     return Ok(result);
                 }
                 // 先完成所有可能失败的快照，再整体预留，避免部分成功吞掉结果。
-                for entry in result["results"].as_array().expect("结果数组") {
-                    state
-                        .runs
-                        .insert(entry["run"]["id"].as_str().expect("Run ID").into());
-                }
                 for entry in result["background_results"].as_array().expect("结果数组") {
                     state
                         .tasks

@@ -91,25 +91,39 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
             _ => (palette::done_icon(icons), palette::added()),
         };
         let seconds = duration_ms / 1000;
-        let delivered = if job["delivered"] == true && !active {
-            " · delivered"
+        let kind = job["type"].as_str().unwrap_or("job");
+        let id = job["id"].as_str().unwrap_or("?");
+        let injected = kind == "task" && !active && job["injected"] == true;
+        let (status, delivery) = if injected && status == "completed" {
+            ("injected", "")
+        } else if injected {
+            (status, " · injected")
+        } else if job["delivered"] == true && !active {
+            (status, " · delivered")
         } else {
-            ""
+            (status, "")
         };
-        body.push(Line::styled(
-            format!(
-                "{icon} [{}] {} · {status} · {}m{:02}s{delivered}",
-                job["type"].as_str().unwrap_or("job"),
-                job["id"].as_str().unwrap_or("?"),
-                seconds / 60,
-                seconds % 60
-            ),
-            style.fg(tone),
-        ));
-        body.push(Line::styled(
-            format!("  {}", job["label"].as_str().unwrap_or_default()),
-            style,
-        ));
+        let summary = format!(
+            "{icon} [{kind}] {id} · {status}{delivery} · {}m{:02}s",
+            seconds / 60,
+            seconds % 60
+        );
+        let label = job["label"].as_str().unwrap_or_default();
+        if kind == "task" {
+            let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+            let summary = if label.is_empty() {
+                summary
+            } else {
+                format!("{summary} · {label}")
+            };
+            body.push(Line::styled(
+                clip(&summary, usize::from(inner), true),
+                style.fg(tone),
+            ));
+        } else {
+            body.push(Line::styled(summary, style.fg(tone)));
+            body.push(Line::styled(format!("  {label}"), style));
+        }
     }
     if shown < jobs.len() {
         body.push(Line::styled(

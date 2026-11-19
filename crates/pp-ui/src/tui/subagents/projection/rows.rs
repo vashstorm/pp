@@ -414,6 +414,7 @@ impl Projection {
             | AgentEvent::CompactionStarted { .. }
             | AgentEvent::CompactionFinished { .. }
             | AgentEvent::ModelOutputProgress { .. }
+            | AgentEvent::SubagentResultsInjected { .. }
             | AgentEvent::ProjectInstructionsLoaded { .. }
             // 瞬时 hook 诊断与输入拒绝不进入子 Agent 事件流；这里保持无行。
             | AgentEvent::HookDiagnostic { .. }

@@ -1,5 +1,7 @@
 //! 消息展示快照的共用回放器；展示数据不进入原生请求。
 use super::*;
+use crate::agent::subagents::injected_run_id;
+use async_openai::types::{chat as c, responses as r};
 use pp_core::events::OutputStream;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -294,6 +296,13 @@ impl Projector {
             } => {
                 self.restore_arguments(append);
                 self.flush(true)?;
+                let run_ids = injected_runs(append);
+                if !run_ids.is_empty() {
+                    self.records
+                        .push(ReplayRecord::Event(AgentEvent::SubagentResultsInjected {
+                            run_ids,
+                        }));
+                }
             }
             Payload::Custom {
                 custom: Custom::Error { message },
@@ -531,6 +540,34 @@ impl Projector {
         self.records
             .extend(retained.into_iter().flatten().map(ReplayRecord::Event));
         Ok(())
+    }
+}
+
+fn injected_runs(append: &NativeAppend) -> Vec<String> {
+    let run_id = |text: &str| injected_run_id(text).map(str::to_owned);
+    match append {
+        NativeAppend::Completion { messages } => messages
+            .iter()
+            .filter_map(|message| match message {
+                c::ChatCompletionRequestMessage::Developer(developer) => match &developer.content {
+                    c::ChatCompletionRequestDeveloperMessageContent::Text(text) => run_id(text),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect(),
+        NativeAppend::Response { items } => items
+            .iter()
+            .filter_map(|item| match item {
+                r::InputItem::EasyMessage(message) if message.role == r::Role::Developer => {
+                    match &message.content {
+                        r::EasyInputContent::Text(text) => run_id(text),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect(),
     }
 }
 

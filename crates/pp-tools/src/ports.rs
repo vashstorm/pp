@@ -67,11 +67,6 @@ pub trait PlanSubmitGate {
     fn seal_for_plan_review(&self) -> Result<bool>;
 }
 
-pub struct SubagentDelivery {
-    pub id: String,
-    pub run: Value,
-}
-
 /// 工具层访问子 Agent 绑定生命周期的端口 trait，由 `pp-runtime` 的 `Binding` 实现。
 pub trait SubagentHost: Send + Sync {
     fn definitions(&self, mode: WorkMode) -> Vec<FunctionObject>;
@@ -98,7 +93,6 @@ pub trait SubagentHost: Send + Sync {
         cancellation: &CancellationToken,
     ) -> Result<(Value, Option<Value>)>;
     fn wait_jobs(&self, ids: &[String]) -> Result<Vec<pp_workspace::WaitJob>>;
-    fn deliveries(&self, ids: &[String]) -> Vec<SubagentDelivery>;
     fn acknowledge(&self, ids: &[String]) -> Result<()>;
     fn check_lsp_cleanup(&self) -> Result<()>;
     fn cancel_runs(&self, ids: &[String]) -> Result<()>;

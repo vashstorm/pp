@@ -185,14 +185,14 @@ fn model_roles_plan_children_send_each_roles_model_protocol_and_effort() {
             &mut |_| {},
         );
         let result: Value = serde_json::from_str(&result.output).unwrap();
-        assert_eq!(result["results"].as_array().unwrap().len(), 4);
+        assert_eq!(result["jobs"].as_array().unwrap().len(), 4);
         assert_eq!(result["pending"], false);
         assert!(
-            result["results"]
+            result["jobs"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|result| result["run"]["result"]["ok"] == true)
+                .all(|job| job["status"] == "completed")
         );
         agent.stop_subagents().unwrap();
         assert_eq!(agent.current_model.reference, "fixture/planner");

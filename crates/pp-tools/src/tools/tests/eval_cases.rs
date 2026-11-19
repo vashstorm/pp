@@ -285,7 +285,7 @@ fn eval_nested_tools_keep_approval_instructions_and_hooks() {
 
 #[test]
 fn eval_bridge_task_reserves_sync_run_results_against_duplicate_wait() {
-    use crate::ports::{SubagentDelivery, SubagentHost};
+    use crate::ports::SubagentHost;
     use async_openai::types::chat::FunctionObject;
     use std::sync::Mutex;
 
@@ -342,16 +342,6 @@ fn eval_bridge_task_reserves_sync_run_results_against_duplicate_wait() {
                 delivered: false,
             }])
         }
-        fn deliveries(&self, ids: &[String]) -> Vec<SubagentDelivery> {
-            if ids.contains(&"run-1".to_owned()) {
-                vec![SubagentDelivery {
-                    id: "run-1".into(),
-                    run: json!({"id": "run-1", "output": "done"}),
-                }]
-            } else {
-                Vec::new()
-            }
-        }
         fn acknowledge(&self, ids: &[String]) -> Result<()> {
             self.acked.lock().unwrap().extend(ids.iter().cloned());
             Ok(())
@@ -387,7 +377,7 @@ fn eval_bridge_task_reserves_sync_run_results_against_duplicate_wait() {
         "eval",
         json!({
             "language": "py",
-            "code": "r = tool.task(role='explorer', prompt='hi')\nw = tool.wait(timeout_ms=0)\nprint(len(r['tasks']), len(w['results']))"
+            "code": "r = tool.task(role='explorer', prompt='hi')\nw = tool.wait(timeout_ms=0)\nprint(len(r['tasks']), len(w['jobs']))"
         }),
     );
     assert_eq!(res["ok"], true, "{res}");

@@ -17,7 +17,7 @@ use serde_json::Value;
 #[cfg(test)]
 use std::io::{self, Write};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     ops::Range,
     sync::{
         Arc,
@@ -349,6 +349,7 @@ pub(super) struct Transcript {
     argument_previews: BTreeMap<u32, usize>,
     // 同一轮用户任务中的后台进程共用原始 Bash 卡片。
     background_bash: BTreeMap<String, usize>,
+    injected_subagent_runs: BTreeSet<String>,
     offset: usize,
     browse_anchor: Option<BrowseAnchor>,
     // 上一帧的几何信息独立保留，流式事件使 layout 失效后仍能处理滚轮。

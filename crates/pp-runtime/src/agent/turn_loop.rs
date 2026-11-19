@@ -47,12 +47,12 @@ impl Agent {
         loop {
             self.journal.check()?;
             self.ensure_subagents()?;
-            if self.receive_subagents()? {
-                cached_usage = None;
-            }
             if cancellation.is_cancelled() {
                 self.persist_pending_input(user.take())?;
                 return Err(Cancelled.into());
+            }
+            if self.receive_subagents(emit)? {
+                cached_usage = None;
             }
             if self
                 .runtime_models
@@ -199,6 +199,9 @@ impl Agent {
             self.pending_instructions = None;
             self.journal.commit((&self.session).into())?;
             self.tools.commit_wait_results()?;
+            if matches!(finished, TurnOutcome::PlanSubmitted) && !cancellation.is_cancelled() {
+                self.receive_subagents(emit)?;
+            }
             if self.apply_runtime_models_changed()? {
                 // 与循环入口相同：切模型后历史可能已被跨协议重建。
                 estimate.invalidate();
@@ -215,7 +218,7 @@ impl Agent {
                 {
                     cached_usage = None;
                     self.tools.yielded.borrow_mut().take();
-                    self.wait_owned_subagents(cancellation)?;
+                    self.wait_owned_subagents(cancellation, emit)?;
                     append_developer_to(&mut self.session,"Owned background work completed after your submitted result. Review the new results and submit a fresh final yield.".into());
                     continue;
                 }
@@ -254,7 +257,7 @@ impl Agent {
                 if let Some(binding) = self.subagent.clone()
                     && binding.pending()
                 {
-                    self.wait_owned_subagents(cancellation)?;
+                    self.wait_owned_subagents(cancellation, emit)?;
                     continue;
                 }
                 if self.tools.yield_schema.is_some() && self.tools.yielded.borrow().is_none() {

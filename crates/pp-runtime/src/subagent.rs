@@ -340,16 +340,6 @@ impl pp_tools::SubagentHost for Binding {
         self.wait_jobs(ids)
     }
 
-    fn deliveries(&self, ids: &[String]) -> Vec<pp_tools::SubagentDelivery> {
-        self.deliveries(ids)
-            .into_iter()
-            .map(|run| pp_tools::SubagentDelivery {
-                id: run.id.clone(),
-                run: serde_json::to_value(run).unwrap_or(Value::Null),
-            })
-            .collect()
-    }
-
     fn acknowledge(&self, ids: &[String]) -> Result<()> {
         self.acknowledge(ids)
     }

@@ -913,9 +913,9 @@ fn runtime_subagent_roles_switch_at_next_request_mid_run() {
             &mut |_| {},
         );
         let result: Value = serde_json::from_str(&result.output).unwrap();
-        assert_eq!(result["results"].as_array().unwrap().len(), 1);
+        assert_eq!(result["jobs"].as_array().unwrap().len(), 1);
         assert_eq!(result["pending"], false);
-        assert_eq!(result["results"][0]["run"]["result"]["ok"], true);
+        assert_eq!(result["jobs"][0]["status"], "completed");
         agent.stop_subagents().unwrap();
         assert!(
             service

@@ -426,6 +426,14 @@ fn run_cli_execution(
                     &mut first_error,
                 );
             }
+            AgentEvent::SubagentResultsInjected { run_ids } => {
+                cli_write(
+                    stderr,
+                    &format!("subagent results injected: {}\n", run_ids.join(", ")),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
             // hook 诊断只写 stderr：stdout 仍是模型正文，也不是模型上下文。
             AgentEvent::HookDiagnostic { event, message } => {
                 cli_write(

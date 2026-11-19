@@ -226,6 +226,10 @@ pub enum AgentEvent {
         id: String,
         output: String,
     },
+    /// 已提交到父会话原生上下文的子 Agent 结果。
+    SubagentResultsInjected {
+        run_ids: Vec<String>,
+    },
     /// 瞬时命令展示；最终快照由工具结果的 shell 字段冻结。
     ToolShellSnapshot {
         id: String,
