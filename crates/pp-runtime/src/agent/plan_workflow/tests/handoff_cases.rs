@@ -38,6 +38,59 @@ pub(super) fn install_distinct_plan_model(agent: &mut Agent, root: &std::path::P
 }
 
 #[test]
+fn plan_role_save_switches_current_session_and_respects_manual_override() {
+    use crate::model_control::{Binding, Change, Service};
+    use pp_config::config::{RoleAssignment, RoleModel};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
+    install_distinct_plan_model(&mut agent, dir.path());
+    let control = Service::start(agent.models()).unwrap();
+    agent.runtime_models = Some(Binding::main(control.registry.clone()));
+    agent.enter_plan(&CancellationToken::new()).unwrap();
+    seed_session(&mut agent, EXPLORATION);
+
+    let fallback = RoleModel {
+        model: "planner/one".into(),
+        effort: ThinkLevel::Medium,
+    };
+    assert!(control.submit(Change::Role(
+        ModelRole::Plan,
+        Some(RoleAssignment {
+            enabled: true,
+            model: "fixture/spare".into(),
+            effort: ThinkLevel::Low,
+            fallback: Some(fallback.clone()),
+        }),
+    )));
+    control.flush();
+    agent.apply_runtime_models().unwrap();
+    assert_eq!(agent.current_model.reference, "fixture/spare");
+    assert_eq!(agent.think_level, ThinkLevel::Low);
+    assert!(matches!(agent.session, Session::Completion(_)));
+    assert_eq!(user_texts(&agent), [EXPLORATION]);
+    assert_eq!(
+        agent.role_fallback(),
+        Some(("fixture/spare".into(), fallback))
+    );
+
+    agent.switch_model("planner/one").unwrap();
+    assert!(control.submit(Change::Role(
+        ModelRole::Plan,
+        Some(RoleAssignment {
+            enabled: true,
+            model: "fixture/one".into(),
+            effort: ThinkLevel::High,
+            fallback: None,
+        }),
+    )));
+    control.flush();
+    agent.apply_runtime_models().unwrap();
+    assert_eq!(agent.current_model.reference, "planner/one");
+    assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
+}
+
+#[test]
 fn plan_exit_switches_protocol_and_persists_resolved_model() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");

@@ -54,11 +54,7 @@ impl Agent {
             if self.receive_subagents(emit)? {
                 cached_usage = None;
             }
-            if self
-                .runtime_models
-                .as_ref()
-                .is_some_and(|binding| binding.pending())
-            {
+            if self.runtime_model_pending() {
                 self.persist_pending_input(user.take())?;
             }
             if self.apply_runtime_models_changed()? {

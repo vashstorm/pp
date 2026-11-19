@@ -313,7 +313,7 @@ fn runtime_default_role_change_keeps_sessions_and_roles_isolate_children() {
                 .runtime_models
                 .as_mut()
                 .unwrap()
-                .take_targets()
+                .take_targets(false)
                 .0
                 .is_none()
         );
@@ -418,7 +418,7 @@ fn runtime_model_role_save_failure_does_not_publish_target() {
     std::fs::create_dir(dir.path().join("agent.db")).unwrap();
     assert!(service.submit(Change::Role(ModelRole::Fast, role())));
     service.flush();
-    assert!(fast.take_targets().0.is_none());
+    assert!(fast.take_targets(false).0.is_none());
     assert!(
         service
             .registry
@@ -611,7 +611,7 @@ fn runtime_binding_roles_route_main_children_and_custom_children() {
     assert!(service.submit(Change::Override(selection("other/two", ThinkLevel::None))));
     service.flush();
     let mut main = Binding::main(registry.clone());
-    let (target, think) = main.take_targets();
+    let (target, think) = main.take_targets(false);
     let target = target.expect("manual selection is visible to the main agent");
     assert_eq!(
         target
@@ -628,14 +628,14 @@ fn runtime_binding_roles_route_main_children_and_custom_children() {
     let mut fast_child = main.child(Some(ModelRole::Fast), "child-fast".into());
     let mut custom_child = main.child(None, "child-custom".into());
     assert!(
-        default_child.take_targets().0.is_none(),
+        default_child.take_targets(false).0.is_none(),
         "DEFAULT 不再是子 Agent 角色槽，也不继承手动覆盖"
     );
     assert!(
-        fast_child.take_targets().0.is_none(),
+        fast_child.take_targets(false).0.is_none(),
         "FAST child must not inherit the main override"
     );
-    assert!(custom_child.take_targets().0.is_none());
+    assert!(custom_child.take_targets(false).0.is_none());
 
     // FAST 角色目标只写 roles[Fast]：主 Agent 与其它 child 都看不到。
     assert!(service.submit(Change::Role(
@@ -643,18 +643,18 @@ fn runtime_binding_roles_route_main_children_and_custom_children() {
         role_with("other/two", ThinkLevel::Medium)
     )));
     service.flush();
-    let (target, _) = fast_child.take_targets();
+    let (target, _) = fast_child.take_targets(false);
     let target = target.expect("FAST child follows the FAST role");
     let chosen = target.selection.expect("role target carries a selection");
     assert_eq!(chosen.reference, "other/two");
     assert_eq!(chosen.effort, ThinkLevel::Medium);
     assert_eq!(target.source, ModelSource::Role);
     assert!(
-        main.take_targets().0.is_none(),
+        main.take_targets(false).0.is_none(),
         "role targets never enter the main slot"
     );
-    assert!(default_child.take_targets().0.is_none());
-    assert!(custom_child.take_targets().0.is_none());
+    assert!(default_child.take_targets(false).0.is_none());
+    assert!(custom_child.take_targets(false).0.is_none());
 
     // DEFAULT 角色即配置默认 `b`：只保存配置，不发布任何模型目标。
     assert!(service.submit(Change::Role(
@@ -664,15 +664,15 @@ fn runtime_binding_roles_route_main_children_and_custom_children() {
     service.flush();
     // 用同一个 main Binding：新建 Binding 会重新看到此前尚未过期的手动目标。
     assert!(
-        main.take_targets().0.is_none(),
+        main.take_targets(false).0.is_none(),
         "DEFAULT role only writes b; it must not publish a main target"
     );
-    assert!(fast_child.take_targets().0.is_none());
+    assert!(fast_child.take_targets(false).0.is_none());
 
     // think 目标只有主 Binding 拿到，且不会冒充 model 目标让 `pending()` 变真。
     assert!(service.submit(Change::Think(ThinkLevel::High)));
     service.flush();
-    let (target, think) = main.take_targets();
+    let (target, think) = main.take_targets(false);
     assert!(
         target.is_none(),
         "a think change must not publish a model target"
@@ -681,7 +681,7 @@ fn runtime_binding_roles_route_main_children_and_custom_children() {
         think.expect("the main agent receives think targets").effort,
         ThinkLevel::High
     );
-    let (target, think) = default_child.take_targets();
+    let (target, think) = default_child.take_targets(false);
     assert!(target.is_none() && think.is_none());
 
     // `apply_think_target` 不得让 `pending()` 变真：只登记 think 槽时它仍为 false。
@@ -691,12 +691,12 @@ fn runtime_binding_roles_route_main_children_and_custom_children() {
     let mut probe = Binding::main(think_only.registry.clone());
     assert!(think_only.submit(Change::Think(ThinkLevel::High)));
     think_only.flush();
-    assert!(!probe.pending(), "pending() only tracks model targets");
-    let (target, think) = probe.take_targets();
+    assert!(!probe.pending(false), "pending() only tracks model targets");
+    let (target, think) = probe.take_targets(false);
     assert!(target.is_none());
     assert_eq!(think.expect("think target").effort, ThinkLevel::High);
     // 同一 revision 不被重复领取。
-    assert!(probe.take_targets().1.is_none());
+    assert!(probe.take_targets(false).1.is_none());
 
     // 应用侧：主 Agent 不消费角色槽；覆盖目标切换后来源保持 Override。
     let route_dir = tempfile::tempdir().unwrap();

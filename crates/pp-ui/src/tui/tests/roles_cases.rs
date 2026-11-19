@@ -164,6 +164,7 @@ fn model_switch_report_is_not_overwritten_by_an_older_worker_snapshot() {
         agent: None,
         revision: 1,
         model: selected.clone(),
+        effort: ThinkLevel::High,
         source: ModelSource::Override,
     });
     app.receive();
@@ -171,8 +172,9 @@ fn model_switch_report_is_not_overwritten_by_an_older_worker_snapshot() {
         app.current_model.as_ref().unwrap().reference,
         selected.reference
     );
+    assert_eq!(app.think_level, ThinkLevel::High);
     assert_eq!(app.current_source, Some(ModelSource::Override));
-    // 应用后的 worker 快照补齐 effort，并保持来源一致。
+    // 应用后的 worker 快照与控制线程回报一致。
     events
         .send(WorkerEvent::ModelState {
             revision: 1,

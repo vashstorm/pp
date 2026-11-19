@@ -14,10 +14,8 @@ use super::{
     plan_management::{PlanOpenIntent, PlanSelection, plan_display_title},
 };
 use anyhow::{Result, bail, ensure};
-use pp_config::model_state::Selection;
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
-use pp_core::model::ModelSource;
 use pp_core::plan;
 use pp_core::plan::PlanDocument;
 use pp_core::plan::PlanLocation;
@@ -123,35 +121,9 @@ impl Agent {
             ..Default::default()
         };
         candidate_workflow.validate()?;
-        // 手动覆盖优先：Plan 会话不改用 PLAN 角色，保持用户显式选择。
-        let (selection, role_route, model_source) = match self.models.override_selection() {
-            Some(selection) => (selection, None, ModelSource::Override),
-            None => {
-                let assignment = self.catalog.role_selection(
-                    pp_config::config::ModelRole::Plan,
-                    &self.current_model.reference,
-                    self.think_level,
-                )?;
-                let route = assignment
-                    .enabled
-                    .then(|| self.catalog.role_route(pp_config::config::ModelRole::Plan))
-                    .flatten();
-                let source = if route.is_some() {
-                    ModelSource::Role
-                } else {
-                    self.models.source()
-                };
-                (
-                    Selection {
-                        reference: assignment.model,
-                        effort: assignment.effort,
-                    },
-                    route,
-                    source,
-                )
-            }
-        };
-        let config = self.catalog.resolve(&selection.reference)?;
+        let catalog = self.models.catalog_snapshot();
+        let (selection, role_route, model_source) = self.resolve_plan_model(&catalog)?;
+        let config = catalog.resolve(&selection.reference)?;
         let client = pp_llm::OpenAiClient::new(&config)?;
         let prompt = selection_prompt(intent, &verified.id, &verified.path, &verified.content);
         let prepared = (|| -> Result<(Session, super::persistence::SessionJournal)> {
@@ -195,6 +167,7 @@ impl Agent {
         let (session, journal) = prepared?;
         self.ensure_plan_mcp_access(cancellation)?;
         // 完整提交后才替换当前会话；只有真正切换才清除撤销内存资格。
+        self.catalog = catalog;
         self.role_route = role_route;
         self.session = session;
         self.reset_lsp_diagnostics();

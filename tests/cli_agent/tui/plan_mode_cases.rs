@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn plan_statusline_shows_updated_role_model_after_effort_change() {
+    let fixture = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(home.path(), "settings.yml"),
+        "default_model: fixture/primary\nrate_limit_retry_budget_seconds: 0\nmodel_roles:\n  plan: {model: fixture/old-plan, effort: high}\n",
+    )
+    .unwrap();
+    let mut models: Value =
+        serde_json::from_str(&response_models(&fixture, Some("completion"))).unwrap();
+    models["providers"]["fixture"]["models"]["old-plan"] = json!({"model":"old-plan-model"});
+    models["providers"]["fixture"]["models"]["new-plan"] = json!({"model":"new-plan-model"});
+    std::fs::write(config_path(home.path(), "models.yml"), models.to_string()).unwrap();
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+
+    pty.ready_model("fixture/primary");
+    pty.input("/effort medium\r");
+    pty.ready_effort("medium");
+    runtime_role_save(&mut pty, 4, "new-plan");
+    pty.ready_model("fixture/primary");
+
+    pty.input("/plan\r");
+    plan_wait_mode(&mut pty, "Plan");
+    pty.ready_model("fixture/new-plan");
+    pty.ready_effort("high");
+    pty.input("\x03");
+    pty.finish();
+    no_more(&fixture);
+}
+
+#[test]
+fn plan_statusline_switches_when_role_model_is_saved_during_plan() {
+    let fixture = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let mut pty = plan_start_with_role_models(&fixture, home.path(), project.path(), "completion");
+    plan_enter(&mut pty, &fixture);
+    pty.ready_model("fixture/planner");
+
+    runtime_role_save(&mut pty, 4, "primary");
+    pty.ready_model("fixture/primary");
+    plan_wait_mode(&mut pty, "Plan");
+    pty.ready_effort("high");
+
+    pty.input("Continue planning with the updated model\r");
+    let (request, body) = pty.request_at(&fixture, api_path("completion"));
+    assert_eq!(body["model"], "fixture-model");
+    assert_eq!(body["reasoning_effort"], "high");
+    plan_final(request, "completion", "Planning continued.");
+    pty.text("Planning continued.");
+    pty.input("\x03");
+    pty.finish();
+    no_more(&fixture);
+}
+
+#[test]
 fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
     for protocol in ["completion", "response"] {
         let fixture = server();

@@ -330,10 +330,11 @@ pub(super) fn request_ask(
 impl WorkerEvent {
     pub(super) fn model_state(agent: &Agent) -> Self {
         Self::ModelState {
+            // 快照同时携带模型和思考档位，版本需反映两者最近一次应用。
             revision: agent
                 .runtime_models
                 .as_ref()
-                .map_or(0, |binding| binding.seen),
+                .map_or(0, |binding| binding.seen.max(binding.seen_think)),
             model: agent.current_model().clone(),
             effort: agent.think_level(),
             source: agent.model_source(),

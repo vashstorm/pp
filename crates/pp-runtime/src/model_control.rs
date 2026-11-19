@@ -9,6 +9,7 @@ use pp_config::config::ModelChoice;
 use pp_config::config::ModelRole;
 use pp_config::config::ModelRoles;
 use pp_config::config::RoleAssignment;
+use pp_config::config::RoleRoute;
 use pp_config::model_state::ModelState;
 use pp_config::model_state::Selection;
 use pp_core::model::ModelSource;
@@ -26,6 +27,7 @@ pub struct Target {
     /// `None`：没有手动覆盖，跟随配置默认。
     pub selection: Option<Selection>,
     pub source: ModelSource,
+    pub(crate) plan_route: Option<RoleRoute>,
 }
 
 /// 主会话手动思考档位目标；只有主 Agent 领取，不写配置文件。
@@ -41,7 +43,7 @@ struct State {
     catalog: Option<Arc<ModelCatalog>>,
     /// 主 Agent 的手动覆盖目标；`selection == None` 表示清除覆盖、跟随默认。
     main: Option<Target>,
-    /// 子 Agent 的角色目标；DEFAULT 不再是角色，只由 `main` 表达。
+    /// PLAN 供规划中的主 Agent 领取，其余角色由各自绑定的子 Agent 领取。
     roles: BTreeMap<ModelRole, Target>,
     /// 仅 `Change::Think` 写入；只有主 Agent 消费。
     think: Option<ThinkTarget>,
@@ -87,6 +89,7 @@ pub enum Report {
         agent: Option<String>,
         revision: u64,
         model: ModelChoice,
+        effort: ThinkLevel,
         source: ModelSource,
     },
     Failed {
@@ -119,10 +122,10 @@ pub struct Binding {
 }
 
 impl Binding {
-    /// 语义不变：只关心待应用的 model 目标（main/roles 两槽），probe clone 不污染 `seen`。
-    pub fn pending(&self) -> bool {
+    /// 只检查待应用的模型目标，保留当前领取进度。
+    pub fn pending(&self, follow_plan: bool) -> bool {
         let mut probe = self.clone();
-        probe.take_targets().0.is_some()
+        probe.take_targets(follow_plan).0.is_some()
     }
 
     pub fn main(registry: Registry) -> Self {
@@ -146,16 +149,24 @@ impl Binding {
     }
 
     /// 一次加锁取齐两个槽，保证同批快照里两个 revision 可比。
-    pub fn take_targets(&mut self) -> (Option<Target>, Option<ThinkTarget>) {
+    pub fn take_targets(&mut self, follow_plan: bool) -> (Option<Target>, Option<ThinkTarget>) {
         let state = self.registry.0.lock().unwrap_or_else(|e| e.into_inner());
-        // 主 Agent 只消费手动覆盖槽；子 Agent 只消费自己的角色槽。
+        // 主 Agent 在无手动覆盖的 Plan 模式下也领取 PLAN 角色目标。
         let picked = if self.agent.is_none() {
-            state.main.clone()
+            let plan = follow_plan
+                .then(|| state.roles.get(&ModelRole::Plan))
+                .flatten();
+            state
+                .main
+                .iter()
+                .chain(plan)
+                .max_by_key(|target| target.revision)
         } else {
-            self.role.and_then(|role| state.roles.get(&role).cloned())
+            self.role.and_then(|role| state.roles.get(&role))
         };
         let target = picked
             .filter(|target| target.revision > self.seen)
+            .cloned()
             .inspect(|target| {
                 self.seen = target.revision;
             });
@@ -366,16 +377,20 @@ fn apply(models: &Arc<ModelState>, registry: &Registry, change: Change) -> Resul
             Ok(())
         }
         Change::Role(role, assignment) => {
-            models.set_role(role, assignment.clone())?;
+            let roles = models.set_role(role, assignment.clone())?;
+            let catalog = models.catalog_snapshot();
+            let plan_route = (role == ModelRole::Plan)
+                .then(|| catalog.role_route(role))
+                .flatten();
             let mut state = registry.0.lock().unwrap_or_else(|e| e.into_inner());
-            state.catalog = Some(Arc::new(models.catalog_snapshot()));
             state.revision += 1;
             let revision = state.revision;
             state.reports.push_back(Report::Saved {
-                roles: models.model_roles(),
-                default: models.catalog_snapshot().default_reference().to_owned(),
-                effort: models.default_think_level(),
+                roles,
+                default: catalog.default_reference().to_owned(),
+                effort: catalog.default_think_level(),
             });
+            state.catalog = Some(Arc::new(catalog));
             // DEFAULT 角色即 `b`：只改配置默认，不切换运行中的主会话。
             if role == ModelRole::Default {
                 return Ok(());
@@ -392,6 +407,7 @@ fn apply(models: &Arc<ModelState>, registry: &Registry, change: Change) -> Resul
                             revision,
                             selection: Some(selection.clone()),
                             source: ModelSource::Role,
+                            plan_route,
                         },
                     );
                     state.reports.push_back(Report::Queued {
@@ -425,6 +441,7 @@ fn publish_override(models: &Arc<ModelState>, registry: &Registry) {
         revision,
         selection: selection.clone(),
         source,
+        plan_route: None,
     });
     match selection {
         Some(selection) => state.reports.push_back(Report::Queued {

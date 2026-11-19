@@ -184,7 +184,7 @@ cost:
 已启用的 `DEFAULT` 优先用于新启动会话；未设置或未选中时沿用已保存的默认模型与全局默认 effort（同样存于 `agent.db`）。DEFAULT 供主 Agent 默认选模，PLAN 仅用于主 Agent 的 Plan 模式。子任务的内置角色包括 FAST、SLOW、VISION、REVIEW、EXPLORER，启用后进入 `task` 的可选列表。没有可用内置角色或已加载的自定义角色时，`task` 工具会隐藏。自动 Plan/Review 路由未启用时保留原有模型及 effort。迁移自旧配置的 Role 条目省略 `enabled` 时按已选中读取。显式配置的模型不可用或 effort 不受支持时返回错误，不悄悄替换；已移除模型或禁用 Role 的引用仍可保留。清除 DEFAULT 后，新启动回到原有默认设置；当前会话不强制回退模型。
 
 - `task.tasks[]` 的每项必须通过 `role` 选择一个可用角色，例如 `role: "fast"` 或 `role: "api-auditor"`。缺失或无效的角色会在启动前拒绝整批。旧调用中的 `agent` 改为 `role`。`readonly: true` 可将普通任务限制为只读。
-- 从 Execute 进入 Plan，或从 `/plan-list` 打开新的规划会话时，采用已启用 PLAN 的 model 和 effort。同一 Plan 内继续讨论保留用户手动选择的模型和 effort。退出 Plan、批准执行或从 Plan 恢复到 Execute 会话时，按启动默认规则切换模型和 effort；已启用的 DEFAULT 主备路由随之恢复。启动时恢复的旧 Execute 会话若仍绑定 PLAN，也按同一规则切换。
+- 采用已启用 PLAN 的模型和 effort 的时机包括从 Execute 进入 Plan、从 `/plan-list` 打开新的规划会话，以及在 Plan 模式下通过 `/roles` 保存 PLAN 配置。空闲时保存成功后即更新当前模型和状态栏，任务运行中在下一次安全边界切换。手动模型覆盖优先。同一 Plan 内继续讨论保留用户手动选择的模型和 effort。退出 Plan、批准执行或从 Plan 恢复到 Execute 会话时，按启动默认规则切换模型和 effort，已启用的 DEFAULT 主备路由随之恢复。启动时恢复的旧 Execute 会话若仍绑定 PLAN，也按同一规则切换。
 - 计划面板的独立审阅使用已启用的 REVIEW；代码审查通过 `role: "review"` 创建只读子任务，并使用 REVIEW 的 model、effort 和 fallback。独立计划审阅不会改变主会话模型。角色配置本身不自动发起审查。
 - `VISION` 是可选模型角色，不改变模型自身的图像输入能力。
 - `EXPLORER` 始终只读：内置工具仅保留 read、rg、glob、lsp 与已授权的只读 MCP，不提供写入、shell 或继续委托，用于快速探索代码结构和定位实现。

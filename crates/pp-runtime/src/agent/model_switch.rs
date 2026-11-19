@@ -1,14 +1,25 @@
 //! 运行时模型／档位切换与失败回报；整块搬迁，切换语义不可再拆。
 use super::{Agent, Session, history, persistence::Metadata, plan_workflow};
 use anyhow::{Result, ensure};
-use pp_config::config::ModelChoice;
+use pp_config::config::{ModelChoice, RoleRoute};
 use pp_config::model_state::Selection;
 use pp_config::models::Protocol;
 use pp_core::model::ModelSource;
 use pp_core::model::ThinkLevel;
+use pp_core::plan::WorkMode;
 use pp_llm::OpenAiClient;
 
 impl Agent {
+    pub(super) fn runtime_model_pending(&self) -> bool {
+        self.runtime_models
+            .as_ref()
+            .is_some_and(|binding| binding.pending(self.follows_plan_role()))
+    }
+
+    fn follows_plan_role(&self) -> bool {
+        self.workflow.mode == WorkMode::Plan && self.models.override_selection().is_none()
+    }
+
     pub fn apply_runtime_models(&mut self) -> Result<()> {
         let _ = self.apply_runtime_models_changed()?;
         Ok(())
@@ -36,10 +47,11 @@ impl Agent {
                 return Err(error);
             }
         }
+        let follow_plan = self.follows_plan_role();
         let Some((model, think)) = self
             .runtime_models
             .as_mut()
-            .map(|binding| binding.take_targets())
+            .map(|binding| binding.take_targets(follow_plan))
         else {
             return Ok(false);
         };
@@ -95,10 +107,13 @@ impl Agent {
                 }
             },
         };
-        let old_catalog = self.catalog.clone();
+        let old_catalog = std::mem::replace(&mut self.catalog, self.models.catalog_snapshot());
         let old_source = self.model_source;
-        self.catalog = self.models.catalog_snapshot();
-        if let Err(error) = self.switch_model_with_effort_result(&selection, target.source) {
+        let result = match &target.plan_route {
+            Some(route) => self.switch_plan_model(&selection, Some(route.clone()), target.source),
+            None => self.switch_model_with_effort_result(&selection, target.source),
+        };
+        if let Err(error) = result {
             self.catalog = old_catalog;
             self.model_source = old_source;
             self.report_model_failure(&target, format!("{error:#}"));
@@ -113,9 +128,33 @@ impl Agent {
             agent: binding.agent.clone(),
             revision: target.revision,
             model: self.current_model.clone(),
+            effort: self.think_level,
             source: target.source,
         });
         Ok(())
+    }
+
+    pub(super) fn switch_plan_model(
+        &mut self,
+        selection: &Selection,
+        route: Option<RoleRoute>,
+        source: ModelSource,
+    ) -> Result<bool> {
+        let previous_route = std::mem::replace(&mut self.role_route, route);
+        let result = self
+            .switch_model_with_effort(&selection.reference, Some(selection.effort))
+            .and_then(|changed| {
+                if !changed && previous_route != self.role_route {
+                    self.checkpoint_route()?;
+                }
+                Ok(changed)
+            });
+        if result.is_ok() {
+            self.model_source = source;
+        } else {
+            self.role_route = previous_route;
+        }
+        result
     }
 
     fn switch_model_with_effort_result(

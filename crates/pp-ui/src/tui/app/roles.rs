@@ -232,6 +232,13 @@ impl App {
                     selection,
                     source,
                 } => {
+                    if let Some(commands) = &self.commands {
+                        let _ = commands.send(WorkerCommand::ApplyModelTargets);
+                    }
+                    // PLAN 是否生效取决于 worker 当前的模式和手动覆盖。
+                    if role == pp_config::config::ModelRole::Plan {
+                        continue;
+                    }
                     if role == pp_config::config::ModelRole::Default {
                         self.pending_model = Some((revision, selection.reference.clone()));
                         // 覆盖已写入 `ModelState`；只登记快照，来源等实际应用后才切换。
@@ -253,9 +260,6 @@ impl App {
                         role.name(),
                         selection.reference
                     ));
-                    if let Some(commands) = &self.commands {
-                        let _ = commands.send(WorkerCommand::ApplyModelTargets);
-                    }
                 }
                 Report::Saved {
                     roles,
@@ -301,6 +305,7 @@ impl App {
                     agent,
                     revision,
                     model,
+                    effort,
                     source,
                 } => {
                     if let Some(panel) = &mut self.roles_panel {
@@ -321,6 +326,7 @@ impl App {
                     } else if revision >= self.model_revision {
                         self.model_revision = revision;
                         self.current_model = Some(model);
+                        self.think_level = effort;
                         self.current_source = Some(source);
                         if source == ModelSource::Default {
                             self.override_selection = None;

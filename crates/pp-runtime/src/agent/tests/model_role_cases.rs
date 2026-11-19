@@ -1,4 +1,5 @@
 use super::*;
+use crate::model_control::{Binding, Change, Service};
 use pp_config::config::ModelRole;
 use pp_config::config::RoleAssignment;
 use pp_core::plan::WorkMode;
@@ -20,11 +21,24 @@ fn model_roles_plan_applies_once_and_manual_model_and_effort_survive_continuatio
                 Some(RoleAssignment {
                     fallback: None,
                     enabled: true,
-                    model: "fixture/planner".into(),
-                    effort: ThinkLevel::High,
+                    model: "fixture/one".into(),
+                    effort: ThinkLevel::Medium,
                 }),
             )
             .unwrap();
+        let control = Service::start(agent.models()).unwrap();
+        agent.runtime_models = Some(Binding::main(control.registry.clone()));
+        assert!(control.submit(Change::Role(
+            ModelRole::Plan,
+            Some(RoleAssignment {
+                fallback: None,
+                enabled: true,
+                model: "fixture/planner".into(),
+                effort: ThinkLevel::High,
+            }),
+        )));
+        // 控制线程已提交配置，worker 尚未处理刷新命令。
+        control.flush();
         seed_session(&mut agent, "planning context marker");
         agent.enter_plan(&CancellationToken::new()).unwrap();
         assert_eq!(agent.current_model.reference, "fixture/planner");
