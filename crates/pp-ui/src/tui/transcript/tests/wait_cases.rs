@@ -195,6 +195,15 @@ fn wait_card_native_history_never_freezes_partial_running_state() {
             id: "wait".into(),
             output: result.to_string(),
         });
+        if settled == 1 {
+            let text = entry_text(&mut transcript.entries[0], 100);
+            assert!(
+                text.contains("[task] r1 · injected")
+                    && text.contains("[bash] bg-1 · running")
+                    && text.contains("1/3 settled"),
+                "{text}"
+            );
+        }
         assert_eq!(transcript.entries.len(), 1);
         assert!(transcript.next_native_batch(100, 1, false).is_none());
     }

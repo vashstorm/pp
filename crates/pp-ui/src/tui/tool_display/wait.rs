@@ -7,6 +7,7 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
     let jobs = jobs.map(Vec::as_slice).unwrap_or_default();
     let pending = |j: &&Value| matches!(j["status"].as_str(), Some("queued" | "running"));
     let running = jobs.iter().filter(pending).count();
+    let waiting_for_batch = view.running && running > 0;
     let failed = jobs.iter().filter(|j| j["status"] == "failed").count();
     let cancelled = jobs
         .iter()
@@ -94,7 +95,9 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
         let kind = job["type"].as_str().unwrap_or("job");
         let id = job["id"].as_str().unwrap_or("?");
         let injected = kind == "task" && !active && job["injected"] == true;
-        let (status, delivery) = if injected && status == "completed" {
+        // 等待中的卡片提前显示成功子任务的投递状态，终态仍以注入事件为准。
+        let awaiting_injection = kind == "task" && waiting_for_batch && job["delivered"] == false;
+        let (status, delivery) = if status == "completed" && (injected || awaiting_injection) {
             ("injected", "")
         } else if injected {
             (status, " · injected")

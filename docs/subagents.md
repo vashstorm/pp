@@ -120,7 +120,7 @@ Review the assigned API contract. Report concrete compatibility issues and file 
 
 返回值中的 `jobs` 保存目标的 ID、类型、标题、状态、耗时与交付状态，`background_results` 保存后台 Bash 的终态、退出码、有限输出及 artifact 元数据。`results` 保留为空数组，子 Agent 正文通过上下文注入交付。`ok` 表示等待调用成功，任务自身仍可能失败或取消。已交付目标再次等待只返回状态，查看正文使用不消费结果的读取接口。
 
-Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功提交后才按原规则领取。某个目标提前成功、失败或取消都不会放行其余目标。120 分钟期限到达后，先取消本批未完成目标及其派生工作，并等待真实回收，再返回 `ok:false, timed_out:true, pending:false`，保留已完成结果和可用的部分输出；清理失败升级 `CleanupError` 并停止父 Agent。Esc 取消整个当前任务，回收后恢复输入，取消不提前确认结果消费。TUI 每 500ms 更新同一个框中的状态和耗时，进度条表示已结束数量／目标总数。默认显示 8 项，Ctrl + O 展开全部目标。每个子 Agent 使用一行摘要，超宽部分以省略号截断。注入提交后，成功的任务显示 `injected`，失败或取消的任务同时保留原有状态。完整结果可在 Agent Hub（`/agents`）查看，后台 Bash 输出保留在原 Bash 卡片。恢复历史时从已提交的上下文重建注入标记。参见 [OMP wait 调研与适配](wait-research.md)。
+Steering 与 FollowUp 在等待期间保留队列，批次全部结束并成功提交后才按原规则领取。某个目标提前成功、失败或取消都不会放行其余目标。120 分钟期限到达后，先取消本批未完成目标及其派生工作，并等待真实回收，再返回 `ok:false, timed_out:true, pending:false`，保留已完成结果和可用的部分输出；清理失败升级 `CleanupError` 并停止父 Agent。Esc 取消整个当前任务，回收后恢复输入，取消不提前确认结果消费。TUI 每 500ms 更新同一个框中的状态和耗时，进度条表示已结束数量／目标总数。默认显示 8 项，Ctrl + O 展开全部目标。每个子 Agent 使用一行摘要，超宽部分以省略号截断。批次还在等待时，已成功且待交付的子 Agent 行提前显示 `injected`。最终卡片以实际注入为准，失败或取消的任务同时保留原有状态。完整结果可在 Agent Hub（`/agents`）查看，后台 Bash 输出保留在原 Bash 卡片。恢复历史时从已提交的上下文重建注入标记。参见 [OMP wait 调研与适配](wait-research.md)。
 
 默认使用最后一条 assistant 消息作为结果。任务项可以提供 `output_schema`，也可采用自定义定义中的 `output`；任务项优先。结构化 child 获得 `yield`，必须以 `{"data": ...}` 提交符合 JSON Schema 的结果；无效结果不会被标成成功。Schema 外部 HTTP/文件引用解析未开启。
 
