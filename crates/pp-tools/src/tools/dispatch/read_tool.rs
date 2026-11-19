@@ -50,6 +50,11 @@ impl Tools {
         }
         if let Some(local) = read::local_path(&args.path, &self.cwd)? {
             self.sandbox.check_read(&local)?;
+        } else if read::is_http_url(&args.path, &self.cwd)?
+            && let Some(policy) = self.sandbox.policy()?
+            && !policy.network()
+        {
+            anyhow::bail!("URL read is blocked by sandbox policy (outbound network is disabled).");
         }
         self.activate_read_instructions(&args.path)?;
         let mut fetch = |url: &str, token: &CancellationToken| match web(

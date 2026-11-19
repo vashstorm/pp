@@ -3,7 +3,7 @@ use async_openai::types::chat::FunctionObject;
 use pp_config::config::{WebSearchProvider, WebSearchSettings};
 use pp_core::cancellation::CancellationToken;
 use pp_llm::web_search::{Recency, WebSearchRequest, WebSearchResponse};
-use pp_sandbox::{EffectiveMode, Sandbox};
+use pp_sandbox::Sandbox;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -90,11 +90,13 @@ pub(crate) fn sandbox_network_decision(
     settings: &WebSearchSettings,
     requested: Option<WebSearchProvider>,
 ) -> Result<bool> {
-    let status = sandbox.status();
-    if status.effective == EffectiveMode::Off || status.network {
+    let Some(policy) = sandbox.policy()? else {
+        return Ok(true);
+    };
+    if policy.network() {
         return Ok(true);
     }
-    if status.backend == "bubblewrap" {
+    if policy.backend() == "bubblewrap" {
         anyhow::bail!("web_search is blocked by sandbox policy (network access is isolated).");
     }
 

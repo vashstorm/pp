@@ -157,3 +157,49 @@ fn sandbox_bash_tool_reports_sandbox_metadata_and_unavailable_fails_closed() {
         "{err}"
     );
 }
+
+#[test]
+fn sandbox_read_url_respects_network_disabled_and_unavailable_fail_closed() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let workflow = WorkflowState::default();
+
+    for (mode, network, probe) in [
+        (SandboxMode::ReadOnly, false, ProbeResult::Available),
+        (
+            SandboxMode::WorkspaceWrite,
+            true,
+            ProbeResult::Unavailable {
+                reason: "nested".into(),
+            },
+        ),
+    ] {
+        let mut tools = Tools::new(root.path().to_path_buf(), EditMode::Replace).unwrap();
+        tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
+            SandboxSettings {
+                mode,
+                network,
+                ..Default::default()
+            },
+            root.path(),
+            Some(&home),
+            Some(Path::new("/tmp")),
+            probe,
+        )));
+        let exec = tools.execute_with_web(
+            "read",
+            &json!({"path": "https://example.com/secret"}).to_string(),
+            "read-url-sbx",
+            ToolPolicy::Execute {
+                workflow: &workflow,
+            },
+            None,
+            &CancellationToken::new(),
+            &mut |_| {},
+            &mut |_, _| unreachable!("web handler must not be called when sandbox blocks URL read"),
+        );
+        let val: Value = serde_json::from_str(&exec.output).unwrap();
+        assert_eq!(val["ok"], false, "{val}");
+    }
+}

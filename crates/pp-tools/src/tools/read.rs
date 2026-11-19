@@ -32,6 +32,10 @@ pub(super) fn local_path(path: &str, cwd: &Path) -> Result<Option<std::path::Pat
     Ok((!resource).then(|| cwd.join(target.source)))
 }
 
+pub(super) fn is_http_url(path: &str, cwd: &Path) -> Result<bool> {
+    Ok(Target::parse(path, cwd)?.is_url())
+}
+
 pub(super) fn agent_result(
     uri: &str,
     cwd: &Path,

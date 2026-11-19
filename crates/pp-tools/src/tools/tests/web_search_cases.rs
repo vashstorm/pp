@@ -210,4 +210,23 @@ fn web_search_enforces_sandbox_network_policy_and_allows_loopback_searxng() {
     );
     let val: Value = serde_json::from_str(&explicit_ext.output).unwrap();
     assert_eq!(val["ok"], false);
+
+    // 显式开启沙盒但平台不可用时，必须 fail-closed 拒绝外部搜索。
+    let unavailable = Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::ReadOnly,
+            network: false,
+            ..Default::default()
+        },
+        dir.path(),
+        Some(home.path()),
+        Some(Path::new("/tmp")),
+        ProbeResult::Unavailable {
+            reason: "nested".into(),
+        },
+    );
+    assert!(
+        web_search::sandbox_network_decision(&unavailable, &WebSearchSettings::default(), None)
+            .is_err()
+    );
 }
