@@ -39,6 +39,8 @@ struct Args {
     #[arg(
         value_name = "COMMAND",
         num_args = 1..,
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
         conflicts_with_all = ["prompt", "resume", "continue_session"]
     )]
     command: Vec<String>,

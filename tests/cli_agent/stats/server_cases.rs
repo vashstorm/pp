@@ -50,6 +50,30 @@ fn stats_slash_starts_reuses_and_stops_server_without_models() {
 }
 
 #[test]
+fn stats_startup_command_preserves_options() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = stats_browser_fixture(dir.path());
+    let output = Cli::spawn(
+        dir.path(),
+        &["/stats", "--host", "127.0.0.1", "--port", "0", "--no-open"],
+        &[("PATH", bin.to_str().unwrap())],
+    )
+    .finish();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "startup command failed: {stderr}");
+    assert!(
+        stderr.contains("pp stats: http://127.0.0.1:"),
+        "missing stats banner: {stderr}"
+    );
+    assert!(
+        stderr.contains("/#/overview?range=24h"),
+        "missing statistics page URL: {stderr}"
+    );
+    assert!(output.stdout.is_empty());
+    assert!(!dir.path().join(".pp/agent/sessions").exists());
+}
+
+#[test]
 #[cfg(unix)]
 fn stats_server_opens_actual_url_and_survives_browser_failure() {
     for exit in ["0", "23"] {
