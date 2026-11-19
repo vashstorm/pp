@@ -13,6 +13,26 @@ use crate::commands::WebSearchTestCommand;
 
 use super::{App, Level, State, WorkerCommand, WorkerEvent};
 
+pub(in crate::tui) fn run_queries(
+    queries: &[String],
+    call_id: &str,
+    cancellation: &CancellationToken,
+    mut run_one: impl FnMut(&str, &str) -> Result<()>,
+) -> Result<()> {
+    for (index, query) in queries.iter().enumerate() {
+        if cancellation.is_cancelled() {
+            break;
+        }
+        let id = if queries.len() == 1 {
+            call_id.to_owned()
+        } else {
+            format!("{call_id}-{}", index + 1)
+        };
+        run_one(query, &id)?;
+    }
+    Ok(())
+}
+
 /// 无可用 `Agent`（`State::Unavailable`）时使用的单次后台搜索 worker。
 pub(in crate::tui) struct Worker {
     cancellation: CancellationToken,
@@ -36,17 +56,19 @@ impl Worker {
         let handle = thread::Builder::new()
             .name("pp-web-search-test".into())
             .spawn(move || {
-                let result = pp_runtime::agent::run_web_search_standalone(
-                    &cwd,
-                    settings_path.as_deref(),
-                    &command.query,
-                    command.provider,
-                    &call_id,
-                    &token,
-                    &mut |event| {
-                        let _ = sender_events.send(WorkerEvent::Progress(event));
-                    },
-                );
+                let result = run_queries(&command.queries, &call_id, &token, |query, id| {
+                    pp_runtime::agent::run_web_search_standalone(
+                        &cwd,
+                        settings_path.as_deref(),
+                        query,
+                        command.provider,
+                        id,
+                        &token,
+                        &mut |event| {
+                            let _ = sender_events.send(WorkerEvent::Progress(event));
+                        },
+                    )
+                });
                 let _ = sender.send(WorkerEvent::WebSearchCompleted(result));
             })
             .context("starting web search diagnostic worker")?;
@@ -102,7 +124,7 @@ impl App {
         if self.commands.is_some() {
             if self.send_submission(
                 WorkerCommand::TestWebSearch {
-                    query: command.query,
+                    queries: command.queries,
                     provider: command.provider,
                     call_id,
                     cancellation: cancellation.clone(),

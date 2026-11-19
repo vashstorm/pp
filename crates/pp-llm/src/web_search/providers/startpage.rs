@@ -20,13 +20,34 @@ fn recency_param(recency: Recency) -> &'static str {
     }
 }
 
-fn is_challenge_response(status: u16, final_url: &str, html: &str) -> bool {
-    let _ = status;
-    final_url.contains("/errors/")
-        || final_url.contains("/captcha/")
-        || final_url.contains("/sp/captcha")
+fn blocked_response(final_url: &str, html: &str) -> Option<ProviderError> {
+    let url = final_url.split_once('?').map_or(final_url, |(url, _)| url);
+    let (message, status) = if url.ends_with("/sp/cdn/error-pages/blocked.html") {
+        ("Startpage denied access to search.", 403)
+    } else if html.contains(r#"id="anubis_challenge""#) {
+        (
+            "Startpage blocked the request with a browser challenge.",
+            429,
+        )
+    } else if url.contains("/errors/")
+        || url.contains("/captcha/")
+        || url.contains("/sp/captcha")
         || html.contains("component---src-pages-captcha")
         || html.contains("/sp/captcha")
+    {
+        (
+            "Startpage blocked the request with a CAPTCHA challenge.",
+            429,
+        )
+    } else {
+        return None;
+    };
+    Some(ProviderError::new(
+        "startpage",
+        "Startpage",
+        message,
+        Some(status),
+    ))
 }
 
 fn parse_search_form_inputs(html: &str) -> Option<Vec<(String, String)>> {
@@ -134,7 +155,7 @@ async fn fetch_form_inputs(ctx: &SearchContext<'_>) -> Option<Vec<(String, Strin
     let (status, final_url, html) = read_search_body(response, "startpage", "Startpage")
         .await
         .ok()?;
-    if !(200..300).contains(&status) || is_challenge_response(status, &final_url, &html) {
+    if !(200..300).contains(&status) || blocked_response(&final_url, &html).is_some() {
         return None;
     }
     parse_search_form_inputs(&html)
@@ -186,16 +207,11 @@ pub(crate) async fn search(
     };
 
     let (status, final_url, html) = read_search_body(response, "startpage", "Startpage").await?;
-    if is_challenge_response(status, &final_url, &html) {
-        return Err(ProviderError::new(
-            "startpage",
-            "Startpage",
-            "Startpage blocked the request with a CAPTCHA challenge.",
-            Some(429),
-        ));
+    if let Some(error) = blocked_response(&final_url, &html) {
+        return Err(error);
     }
     if !(200..300).contains(&status) {
-        return Err(classify_http_error("startpage", "Startpage", status, &html));
+        return Err(classify_http_error("startpage", "Startpage", status));
     }
 
     let mut sources = parse_html_results(&html, &ctx.endpoints.startpage_home);

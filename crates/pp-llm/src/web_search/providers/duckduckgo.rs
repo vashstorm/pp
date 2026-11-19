@@ -234,12 +234,7 @@ async fn post_ddg_form(
         .map_err(|e| map_reqwest_error("duckduckgo", "DuckDuckGo", e))?;
     let (status, _, html) = read_search_body(response, "duckduckgo", "DuckDuckGo").await?;
     if !(200..300).contains(&status) {
-        return Err(classify_http_error(
-            "duckduckgo",
-            "DuckDuckGo",
-            status,
-            &html,
-        ));
+        return Err(classify_http_error("duckduckgo", "DuckDuckGo", status));
     }
     if is_anomaly_response(&html) {
         return Err(ProviderError::new(

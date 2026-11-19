@@ -254,7 +254,7 @@ pub(crate) async fn search(
 
     let (status, _, body) = read_search_body(response, "searxng", "SearXNG").await?;
     if !(200..300).contains(&status) {
-        return Err(classify_http_error("searxng", "SearXNG", status, &body));
+        return Err(classify_http_error("searxng", "SearXNG", status));
     }
 
     let payload: SearxngResponsePayload = serde_json::from_str(&body).map_err(|_| {

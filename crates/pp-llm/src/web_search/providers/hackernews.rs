@@ -194,12 +194,7 @@ async fn fetch_hits(
         .map_err(|e| map_reqwest_error("hackernews", "Hacker News", e))?;
     let (status, _, body) = read_search_body(response, "hackernews", "Hacker News").await?;
     if !(200..300).contains(&status) {
-        return Err(classify_http_error(
-            "hackernews",
-            "Hacker News",
-            status,
-            &body,
-        ));
+        return Err(classify_http_error("hackernews", "Hacker News", status));
     }
     let parsed: AlgoliaResponse = serde_json::from_str(&body).map_err(|_| {
         ProviderError::new(

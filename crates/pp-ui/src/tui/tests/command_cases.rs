@@ -180,7 +180,7 @@ fn test_web_search_dispatches_cancels_and_restores_state() {
     assert!(matches!(app.state, State::RunningWebSearch));
     assert_eq!(app.input.lines(), &[""]);
     let WorkerCommand::TestWebSearch {
-        query,
+        queries,
         provider,
         cancellation,
         ..
@@ -188,7 +188,7 @@ fn test_web_search_dispatches_cancels_and_restores_state() {
     else {
         panic!("expected WorkerCommand::TestWebSearch");
     };
-    assert_eq!(query, "rust");
+    assert_eq!(queries, vec!["rust"]);
     assert_eq!(
         provider,
         Some(pp_config::config::WebSearchProvider::Hackernews)
@@ -207,7 +207,56 @@ fn test_web_search_dispatches_cancels_and_restores_state() {
     app.receive();
     assert!(matches!(app.state, State::Ready));
     assert_eq!(app.input.lines(), &["keep-draft"]);
+
+    // Bare /test-web-search dispatches both Hacker News and GitHub probes.
+    app.input = editor();
+    app.input.insert_str("/test-web-search");
+    app.submit(PendingKind::Steering);
+    let WorkerCommand::TestWebSearch {
+        queries, provider, ..
+    } = requests.try_recv().unwrap()
+    else {
+        panic!("expected WorkerCommand::TestWebSearch");
+    };
+    assert_eq!(
+        queries,
+        vec![
+            "site:news.ycombinator.com rust programming language",
+            "site:github.com rust programming language",
+        ]
+    );
+    assert_eq!(provider, None);
+    events
+        .send(WorkerEvent::WebSearchCompleted(Ok(())))
+        .unwrap();
+    app.receive();
+    assert!(matches!(app.state, State::Ready));
     drop(events);
+
+    // Cancelling during the first probe skips remaining probes.
+    let cancel = pp_core::cancellation::CancellationToken::new();
+    let mut seen = Vec::new();
+    crate::tui::web_search_test::run_queries(
+        &[
+            "site:news.ycombinator.com rust programming language".into(),
+            "site:github.com rust programming language".into(),
+        ],
+        "test-web-search-1",
+        &cancel,
+        |query, call_id| {
+            seen.push((query.to_owned(), call_id.to_owned()));
+            cancel.cancel();
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        seen,
+        vec![(
+            "site:news.ycombinator.com rust programming language".to_owned(),
+            "test-web-search-1-1".to_owned(),
+        )]
+    );
 
     // Busy states reject /test-web-search and preserve draft.
     app.state = State::Running;

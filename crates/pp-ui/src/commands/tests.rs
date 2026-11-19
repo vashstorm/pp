@@ -293,30 +293,37 @@ fn slash_test_web_search_parses_provider_and_query() {
     use pp_config::config::WebSearchProvider;
 
     let files = FileCommands::default();
-    for (input, expected_provider, expected_query) in [
-        ("/test-web-search", None, "rust programming language"),
-        ("/test-web-search rust async", None, "rust async"),
+    for (input, expected_provider, expected_queries) in [
+        (
+            "/test-web-search",
+            None,
+            vec![
+                "site:news.ycombinator.com rust programming language",
+                "site:github.com rust programming language",
+            ],
+        ),
+        ("/test-web-search rust async", None, vec!["rust async"]),
         (
             "/test-web-search --provider duckduckgo",
             Some(WebSearchProvider::Duckduckgo),
-            "rust programming language",
+            vec!["rust programming language"],
         ),
         (
             " /test-web-search --provider=SearXNG site:rust-lang.org ownership ",
             Some(WebSearchProvider::Searxng),
-            "site:rust-lang.org ownership",
+            vec!["site:rust-lang.org ownership"],
         ),
         (
             "/test-web-search -- --literal-query",
             None,
-            "--literal-query",
+            vec!["--literal-query"],
         ),
     ] {
         assert_eq!(
             parse(input, &files).unwrap(),
             Some(Command::TestWebSearch(WebSearchTestCommand {
                 provider: expected_provider,
-                query: expected_query.to_owned(),
+                queries: expected_queries.into_iter().map(str::to_owned).collect(),
             })),
             "{input}"
         );

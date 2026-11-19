@@ -332,6 +332,58 @@ fn public_fanout_returns_on_soft_deadline_when_one_engine_is_slow() {
 }
 
 #[test]
+fn public_reports_startpage_challenge_when_duckduckgo_has_no_results() {
+    let server = TestServer::start().unwrap();
+    let base = format!("http://{}", server.addr());
+    let endpoints = Endpoints {
+        startpage_home: format!("{base}/"),
+        startpage_search: format!("{base}/sp/search"),
+        duckduckgo_html: format!("{base}/html/"),
+        ..Default::default()
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let result = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for _ in 0..3 {
+                let req = server
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap();
+                let html = match req.target().split('?').next().unwrap() {
+                    "/" | "/html/" => "<html></html>",
+                    "/sp/search" => {
+                        r#"<script id="anubis_challenge" type="application/json">{}</script>"#
+                    }
+                    target => panic!("unexpected search request: {target}"),
+                };
+                req.respond(Response::new(Body::from(html))).unwrap();
+            }
+        });
+        runtime.block_on(execute_search_with_endpoints(
+            &no_proxy_client(),
+            &WebSearchRequest {
+                query: "rust".into(),
+                recency: None,
+                limit: None,
+                provider: Some(WebSearchProvider::Public),
+            },
+            &WebSearchSettings::default(),
+            true,
+            &endpoints,
+            &CancellationToken::new(),
+        ))
+    });
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("Startpage blocked the request"), "{error}");
+    assert!(error.contains("DuckDuckGo returned no results"), "{error}");
+}
+
+#[test]
 fn auto_routes_hackernews_and_searxng_with_fallback_and_auth_redaction() {
     let hn_server = Arc::new(TestServer::start().unwrap());
     let hn_addr = hn_server.addr();

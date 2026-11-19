@@ -38,7 +38,7 @@ pub(super) enum WorkerCommand {
     },
     #[cfg(debug_assertions)]
     TestWebSearch {
-        query: String,
+        queries: Vec<String>,
         provider: Option<pp_config::config::WebSearchProvider>,
         call_id: String,
         cancellation: CancellationToken,

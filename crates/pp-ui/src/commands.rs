@@ -428,7 +428,7 @@ pub(crate) enum SettingTab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WebSearchTestCommand {
     pub(crate) provider: Option<pp_config::config::WebSearchProvider>,
-    pub(crate) query: String,
+    pub(crate) queries: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -758,6 +758,11 @@ pub(crate) fn help(files: &FileCommands) -> String {
 #[cfg(debug_assertions)]
 const TEST_WEB_SEARCH_DEFAULT_QUERY: &str = "rust programming language";
 #[cfg(debug_assertions)]
+const TEST_WEB_SEARCH_DEFAULT_PROBES: [&str; 2] = [
+    "site:news.ycombinator.com rust programming language",
+    "site:github.com rust programming language",
+];
+#[cfg(debug_assertions)]
 const TEST_WEB_SEARCH_USAGE: &str = "usage: /test-web-search [--provider auto|public|duckduckgo|startpage|hackernews|searxng] [QUERY]";
 
 #[cfg(debug_assertions)]
@@ -806,12 +811,15 @@ fn parse_test_web_search(argument: &str) -> Result<WebSearchTestCommand> {
             bail!("{TEST_WEB_SEARCH_USAGE}");
         }
     }
-    let query = if rest.is_empty() {
-        TEST_WEB_SEARCH_DEFAULT_QUERY.to_owned()
-    } else {
-        rest.to_owned()
+    let queries = match (rest, provider) {
+        ("", None) => TEST_WEB_SEARCH_DEFAULT_PROBES
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        ("", Some(_)) => vec![TEST_WEB_SEARCH_DEFAULT_QUERY.to_owned()],
+        (query, _) => vec![query.to_owned()],
     };
-    Ok(WebSearchTestCommand { provider, query })
+    Ok(WebSearchTestCommand { provider, queries })
 }
 
 #[cfg(test)]

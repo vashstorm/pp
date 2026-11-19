@@ -120,9 +120,12 @@ pub(crate) async fn search_with_deadlines(
 
     loop {
         let both_done = sp_res.is_some() && ddg_res.is_some();
-        let any_ok = sp_res.as_ref().is_some_and(Result::is_ok)
-            || ddg_res.as_ref().is_some_and(Result::is_ok);
-        if both_done || (soft_elapsed && any_ok) {
+        let has_results = sp_res.iter().chain(&ddg_res).any(|result| {
+            result
+                .as_ref()
+                .is_ok_and(|response| !response.sources.is_empty())
+        });
+        if both_done || (soft_elapsed && has_results) {
             break;
         }
 
@@ -144,29 +147,27 @@ pub(crate) async fn search_with_deadlines(
 
     let mut merged = HashMap::new();
     let mut failures = Vec::new();
-    let mut any_responded = false;
-
-    for (name, res) in [("startpage", sp_res), ("duckduckgo", ddg_res)] {
+    let results = [("Startpage", sp_res), ("DuckDuckGo", ddg_res)];
+    let all_responded = results
+        .iter()
+        .all(|(_, result)| result.as_ref().is_some_and(Result::is_ok));
+    for (name, res) in results {
         match res {
-            Some(Ok(resp)) => {
-                any_responded = true;
-                merge_sources(&mut merged, resp.sources);
-            }
-            Some(Err(err)) => failures.push(format!("{name}: {}", err.message)),
-            None => {}
+            Some(Ok(resp)) if !resp.sources.is_empty() => merge_sources(&mut merged, resp.sources),
+            Some(Ok(_)) => failures.push(format!("{name} returned no results")),
+            Some(Err(err)) => failures.push(err.message.trim_end_matches('.').to_owned()),
+            None => failures.push(format!("{name} did not respond before the deadline")),
         }
     }
 
-    if !any_responded {
-        let detail = if failures.is_empty() {
-            "Public web search timed out before any engine responded.".to_owned()
-        } else {
-            format!("All public engines failed: {}", failures.join("; "))
-        };
+    if merged.is_empty() && !all_responded {
         return Err(ProviderError::new(
             "public",
             "Public Web",
-            detail,
+            format!(
+                "Public web search returned no results: {}",
+                failures.join("; ")
+            ),
             Some(503),
         ));
     }

@@ -343,8 +343,8 @@ pub fn run_line_mode(
         #[cfg(debug_assertions)]
         if let Some(commands::Command::TestWebSearch(cmd)) = &command {
             let result = match &mut agent {
-                Ok(active) => run_cli_web_search(active, &cmd.query, cmd.provider, &mut stderr),
-                Err(_) => run_cli_web_search_standalone(&cmd.query, cmd.provider, &mut stderr),
+                Ok(active) => run_cli_web_search(active, &cmd.queries, cmd.provider, &mut stderr),
+                Err(_) => run_cli_web_search_standalone(&cmd.queries, cmd.provider, &mut stderr),
             };
             if let Err(error) = result {
                 if error

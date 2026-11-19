@@ -182,21 +182,13 @@ pub(crate) async fn read_search_body(
     read_limited_body(response, max, provider, label).await
 }
 
-pub(crate) fn classify_http_error(
-    provider: &str,
-    label: &str,
-    status: u16,
-    body: &str,
-) -> ProviderError {
-    let snippet =
-        super::format::truncate_chars(&body.split_whitespace().collect::<Vec<_>>().join(" "), 180);
+pub(crate) fn classify_http_error(provider: &str, label: &str, status: u16) -> ProviderError {
     let message = match status {
         401 | 403 => {
             format!("{label} authorization failed ({status}). Check credentials or endpoint.")
         }
         429 => format!("{label} rate-limited the request (429)."),
-        _ if snippet.is_empty() => format!("{label} HTTP error ({status})"),
-        _ => format!("{label} HTTP error ({status}): {snippet}"),
+        _ => format!("{label} HTTP error ({status})"),
     };
     ProviderError::new(provider, label, message, Some(status))
 }

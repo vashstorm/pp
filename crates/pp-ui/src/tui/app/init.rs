@@ -351,17 +351,24 @@ impl App {
                         }
                         #[cfg(debug_assertions)]
                         WorkerCommand::TestWebSearch {
-                            query,
+                            queries,
                             provider,
                             call_id,
                             cancellation,
                         } => {
-                            let result = agent.run_web_search(
-                                &query,
-                                provider,
+                            let result = crate::tui::web_search_test::run_queries(
+                                &queries,
                                 &call_id,
                                 &cancellation,
-                                &mut emit,
+                                |query, id| {
+                                    agent.run_web_search(
+                                        query,
+                                        provider,
+                                        id,
+                                        &cancellation,
+                                        &mut emit,
+                                    )
+                                },
                             );
                             let cleanup_failed = result.as_ref().is_err_and(|error| {
                                 error

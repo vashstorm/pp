@@ -220,6 +220,74 @@ fn test_web_search_command_runs_live_without_llm_in_configured_and_unavailable_m
         assert!(!config_path(&root, "sessions").exists());
     }
 
+    // 无参数 /test-web-search 依次探测 news.ycombinator.com 与 github.com 两条查询。
+    let probe_server = server();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    write_settings(
+        &root,
+        format!(
+            "rate_limit_retry_budget_seconds: 0\nwebSearch:\n  provider: searxng\n  searxng:\n    endpoint: http://{}\n",
+            probe_server.addr()
+        ),
+    )
+    .unwrap();
+    let probe_worker = {
+        let srv = Arc::clone(&probe_server);
+        thread::spawn(move || {
+            for (expected_site, title, url) in [
+                (
+                    "news.ycombinator.com",
+                    "Rust on HN",
+                    "https://news.ycombinator.com/item?id=1",
+                ),
+                (
+                    "github.com",
+                    "rust-lang/rust",
+                    "https://github.com/rust-lang/rust",
+                ),
+            ] {
+                let req = srv.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+                assert!(
+                    req.target().contains(expected_site),
+                    "expected {expected_site} in {}",
+                    req.target()
+                );
+                let body = serde_json::json!({
+                    "results": [{
+                        "title": title,
+                        "url": url,
+                        "content": "Rust programming language"
+                    }]
+                })
+                .to_string();
+                req.respond(
+                    Response::builder()
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .unwrap();
+            }
+        })
+    };
+    let mut cli = LiveCli::new(Cli::start_env(&root, &root, &[], &[]));
+    cli.input("/test-web-search\n/quit\n");
+    let output = cli.finish_within(Duration::from_secs(20));
+    probe_worker.join().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("https://news.ycombinator.com/item?id=1"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("https://github.com/rust-lang/rust"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.matches("tool web_search: ok").count(), 2, "{stderr}");
+    no_more(&probe_server);
+
     // webSearch.enabled: false 时立即报禁用错误，不发任何 HTTP 请求。
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();

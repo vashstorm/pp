@@ -209,35 +209,50 @@ pub(crate) fn run_cli_shell(
 #[cfg(debug_assertions)]
 pub(crate) fn run_cli_web_search(
     agent: &mut agent::Agent,
-    query: &str,
+    queries: &[String],
     provider: Option<pp_config::config::WebSearchProvider>,
     stderr: &mut impl Write,
 ) -> Result<()> {
     let token = cancellation::CancellationToken::new();
     run_cli_web_search_with(stderr, |emit| {
-        agent.run_web_search(query, provider, "test-web-search-cli", &token, emit)
+        for (index, query) in queries.iter().enumerate() {
+            if token.is_cancelled() {
+                break;
+            }
+            let call_id = cli_web_search_call_id(queries.len(), index);
+            agent.run_web_search(query, provider, &call_id, &token, emit)?;
+        }
+        Ok(())
     })
 }
 
 #[cfg(debug_assertions)]
 pub(crate) fn run_cli_web_search_standalone(
-    query: &str,
+    queries: &[String],
     provider: Option<pp_config::config::WebSearchProvider>,
     stderr: &mut impl Write,
 ) -> Result<()> {
     let cwd = std::env::current_dir().context("determining current directory")?;
     let token = cancellation::CancellationToken::new();
     run_cli_web_search_with(stderr, |emit| {
-        agent::run_web_search_standalone(
-            &cwd,
-            None,
-            query,
-            provider,
-            "test-web-search-cli",
-            &token,
-            emit,
-        )
+        for (index, query) in queries.iter().enumerate() {
+            if token.is_cancelled() {
+                break;
+            }
+            let call_id = cli_web_search_call_id(queries.len(), index);
+            agent::run_web_search_standalone(&cwd, None, query, provider, &call_id, &token, emit)?;
+        }
+        Ok(())
     })
+}
+
+#[cfg(debug_assertions)]
+fn cli_web_search_call_id(total: usize, index: usize) -> String {
+    if total == 1 {
+        "test-web-search-cli".to_owned()
+    } else {
+        format!("test-web-search-cli-{}", index + 1)
+    }
 }
 
 #[cfg(debug_assertions)]
