@@ -469,7 +469,11 @@ fn slow_tree_tui_inline_selection_filter_resize_and_cancel_preserve_draft() {
     });
     // 非空草稿不能双 Esc 打开：随后的粘贴仍进入编辑器。
     context_tui_paste(&mut pty, "preserved-tree-draft");
-    pty.input("\x1b\x1b");
+    pty.draft("preserved-tree-draft");
+    pty.input("\x1b");
+    thread::sleep(Duration::from_millis(80));
+    pty.input("\x1b");
+    thread::sleep(Duration::from_millis(80));
     context_tui_paste(&mut pty, "!");
     pty.draft("preserved-tree-draft!");
     assert!(
@@ -728,7 +732,7 @@ fn tree_tui_failed_navigation_preserves_branch_and_restarts_from_previous_state(
         let path = resume_boundary_journal(home.path(), &ids[0]);
         let original = std::fs::read(&path).unwrap();
         // 向下取整的 block 限额不大于现有文件长度，导航时的状态追加必然失败。
-        let limit = original.len() as u64 / 1024;
+        let limit = (original.len() as u64 / 1024).saturating_sub(1);
         let mut pty =
             Pty::start_with_file_limit(home.path(), home.path(), limit, &["--resume", &ids[0]]);
         pty.ready();

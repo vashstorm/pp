@@ -20,7 +20,7 @@ fn tui_roles_favorites_sort_persist_across_restart_and_can_be_removed() {
     pty.ready_model("fixture/one");
     pty.input("/roles\r");
     pty.text("Model roles");
-    pty.input("\x1b[B\x1b[C\x1b[B\x06");
+    pty.input("\x1b[B\t\x1b[B\x06");
     pty.wait_for("收藏已保存、置顶且保留选中模型", |screen| {
         let text = screen.contents();
         text.contains("❯ fixture/two ")
@@ -34,7 +34,7 @@ fn tui_roles_favorites_sort_persist_across_restart_and_can_be_removed() {
     pty.ready_model("fixture/one");
     pty.input("/roles\r");
     pty.text("Model roles");
-    pty.input("\x1b[B\x1b[C");
+    pty.input("\x1b[B\t");
     pty.text("❯ fixture/two ");
     pty.input("\x06");
     pty.wait_for(
@@ -100,7 +100,7 @@ fn slow_tui_roles_configures_explorer_after_fallback_row_without_switching_curre
     );
     pty.resize(6, 30);
     pty.resize(30, 100);
-    pty.input(&format!("\x1b[C{}\r", "\x1b[B".repeat(7)));
+    pty.input(&format!("\t{}\r", "\x1b[B".repeat(7)));
     pty.text("Select a model for EXPLORER");
     pty.input("two\r");
     pty.text("Choose an effort for this role");
@@ -435,7 +435,7 @@ fn fallback_tui_row_shortcuts_persist_primary_and_backup_independently() {
     pty.ready_model("fixture/one");
     pty.input("/roles\r");
     pty.text("Model roles");
-    pty.input("\x1b[C\r");
+    pty.input("\t\r");
     pty.text("Select a model for DEFAULT");
     pty.input("one\r");
     pty.text("Choose an effort");

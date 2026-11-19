@@ -1,7 +1,7 @@
 fn runtime_role_save(pty: &mut Pty, role: usize, model: &str) {
     pty.input("/roles\r");
     pty.text("Model roles");
-    pty.input("\x1b[C");
+    pty.input("\t");
     for _ in 0..role {
         pty.input("\x1b[B");
     }

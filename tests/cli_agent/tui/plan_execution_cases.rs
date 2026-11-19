@@ -611,6 +611,7 @@ fn plan_tui_manual_override_outranks_roles_at_every_boundary() {
         assert_eq!(body["model"], "alt-model", "{body}");
         super::think::assert_level(&body, protocol, "low");
         plan_final(request, protocol, "Override exploration done");
+        pty.completed_after("Override exploration done");
         pty.ready();
 
         // 边界二：退出 Plan 回到执行，仍是覆盖模型。
@@ -623,6 +624,7 @@ fn plan_tui_manual_override_outranks_roles_at_every_boundary() {
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert_eq!(body["model"], "alt-model", "{body}");
         plan_final(request, protocol, "Executed without a plan");
+        pty.completed_after("Executed without a plan");
         pty.ready();
 
         // 边界三：重新进入 Plan 并批准执行，执行请求仍是覆盖模型。

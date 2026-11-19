@@ -589,8 +589,8 @@ fn agent_hub_layout_tree_scope_and_follow() {
     // 140x40 分栏 + 80x24 单栏 + 极窄尺寸都不能越界。
     pty.resize(40, 140);
     // Option+A 优先于主输入补全；关闭后原草稿仍在。
-    pty.input("/sub");
-    pty.draft("/sub");
+    pty.input("/ag");
+    pty.draft("/ag");
     pty.text("View, follow up, and control subagents");
     pty.input("\x1ba");
     pty.text("Alpha");
@@ -674,7 +674,7 @@ fn agent_hub_layout_tree_scope_and_follow() {
     hub_escape(&mut pty, "Roster ·");
     hub_clear_filter(&mut pty, "Alpha");
     hub_close(&mut pty);
-    pty.draft("/sub");
+    pty.draft("/ag");
     let main = pty.contents();
     assert!(main.contains("task"), "{main}");
     // 真实 SGR 鼠标点击 roster 的可见物理行：打开该 Agent 的详情。
@@ -855,6 +855,7 @@ fn slow_agent_hub_rebinds_after_slash_resume_without_a_turn() {
     hub_close(&mut pty);
     // `/new` 同样会停掉旧根：新会话 Hub 也要能重新绑定，而不是只能等下一条消息。
     pty.input("/new\r");
+    pty.text("Terminal Coding Agent");
     pty.ready();
     pty.input("/agents\r");
     pty.wait_for("hub binds a fresh session without a notice", |screen| {

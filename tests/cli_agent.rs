@@ -243,7 +243,7 @@ fn chat_chunk(delta: Value, finish: Option<&str>) -> Value {
     })
 }
 
-fn reply(request: CapturedRequest, mut message: Value) {
+fn try_reply(request: CapturedRequest, mut message: Value) -> std::io::Result<()> {
     let finish_reason = if message.get("tool_calls").is_some() {
         "tool_calls"
     } else {
@@ -254,13 +254,16 @@ fn reply(request: CapturedRequest, mut message: Value) {
             call["index"] = json!(index);
         }
     }
-    let mut stream = request.start_sse().unwrap();
-    stream.event(&chat_chunk(message, None)).unwrap();
-    stream
-        .event(&chat_chunk(json!({}), Some(finish_reason)))
-        .unwrap();
-    stream.frame("[DONE]").unwrap();
+    let mut stream = request.start_sse()?;
+    stream.event(&chat_chunk(message, None))?;
+    stream.event(&chat_chunk(json!({}), Some(finish_reason)))?;
+    stream.frame("[DONE]")?;
     stream.finish();
+    Ok(())
+}
+
+fn reply(request: CapturedRequest, message: Value) {
+    try_reply(request, message).unwrap();
 }
 fn final_reply(request: CapturedRequest, text: &str) {
     reply(request, json!({"role":"assistant","content":text}));
@@ -323,8 +326,8 @@ fn response_body(output: Value) -> Value {
     })
 }
 
-fn response_reply(request: CapturedRequest, output: Value) {
-    let mut stream = request.start_sse().unwrap();
+fn try_response_reply(request: CapturedRequest, output: Value) -> std::io::Result<()> {
+    let mut stream = request.start_sse()?;
     let mut sequence = 0;
     for (output_index, item) in output.as_array().unwrap().iter().enumerate() {
         if let Some(parts) = item["content"].as_array() {
@@ -334,40 +337,37 @@ fn response_reply(request: CapturedRequest, output: Value) {
                     Some("refusal") => ("response.refusal.delta", part["refusal"].as_str()),
                     _ => continue,
                 };
-                stream
-                    .event(&json!({
-                        "type":event_type, "sequence_number":sequence,
-                        "item_id":item["id"], "output_index":output_index,
-                        "content_index":content_index, "delta":text.unwrap(),
-                        "logprobs":[]
-                    }))
-                    .unwrap();
+                stream.event(&json!({
+                    "type":event_type, "sequence_number":sequence,
+                    "item_id":item["id"], "output_index":output_index,
+                    "content_index":content_index, "delta":text.unwrap(),
+                    "logprobs":[]
+                }))?;
                 sequence += 1;
-                stream
-                    .event(&json!({
-                        "type":"response.content_part.done", "sequence_number":sequence,
-                        "item_id":item["id"], "output_index":output_index,
-                        "content_index":content_index, "part":part
-                    }))
-                    .unwrap();
+                stream.event(&json!({
+                    "type":"response.content_part.done", "sequence_number":sequence,
+                    "item_id":item["id"], "output_index":output_index,
+                    "content_index":content_index, "part":part
+                }))?;
                 sequence += 1;
             }
         }
-        stream
-            .event(&json!({
-                "type":"response.output_item.done", "sequence_number":sequence,
-                "output_index":output_index, "item":item
-            }))
-            .unwrap();
+        stream.event(&json!({
+            "type":"response.output_item.done", "sequence_number":sequence,
+            "output_index":output_index, "item":item
+        }))?;
         sequence += 1;
     }
-    stream
-        .event(&json!({
-            "type":"response.completed", "sequence_number":sequence,
-            "response":response_body(output)
-        }))
-        .unwrap();
+    stream.event(&json!({
+        "type":"response.completed", "sequence_number":sequence,
+        "response":response_body(output)
+    }))?;
     stream.finish();
+    Ok(())
+}
+
+fn response_reply(request: CapturedRequest, output: Value) {
+    try_response_reply(request, output).unwrap();
 }
 
 fn response_message(id: &str, content: Value) -> Value {

@@ -29,13 +29,13 @@ fn tui_skills_sources_preview_cancel_save_and_individual_disable() {
                 .zip(text.find("Global"))
                 .is_some_and(|(sources, global)| sources < global)
     });
-    pty.input("\x1b[Z");
-    pty.wait_for("Shift+Tab 选择全局管理页签", |screen| {
+    pty.input("\t\x1b[B\t");
+    pty.wait_for("切换全局管理页签", |screen| {
         selected_tab(screen, "Global management")
     });
     pty.text(&format!("{ENABLED} native"));
-    pty.input(" \t");
-    pty.wait_for("Tab 返回来源页签", |screen| {
+    pty.input(" \t\x1b[A\t");
+    pty.wait_for("返回来源页签", |screen| {
         selected_tab(screen, "Sources")
     });
     pty.input(" ");
@@ -48,7 +48,7 @@ fn tui_skills_sources_preview_cancel_save_and_individual_disable() {
         let text = screen.contents();
         selected_tab(screen, "Sources") && text.contains(&format!("{ENABLED} codex"))
     });
-    pty.input("\t");
+    pty.input("\t\x1b[B\t");
     pty.text(&format!("{ENABLED} claude-skill"));
     pty.text(&format!("{DISABLED} native"));
     pty.input("\x1b");
@@ -79,10 +79,10 @@ fn tui_skills_sources_preview_cancel_save_and_individual_disable() {
         let text = screen.contents();
         selected_tab(screen, "Sources") && text.contains(&format!("{ENABLED} codex"))
     });
-    pty.input("\t\x1b[B ");
+    pty.input("\t\x1b[B\t\x1b[B ");
     pty.text(&format!("{DISABLED} claude-skill"));
     // 关闭再开启来源，仍保留尚未保存的单个技能选择。
-    pty.input("\t\x1b[A ");
+    pty.input("\t\x1b[A\t\x1b[A ");
     pty.wait_for("来源预览完成：claude 已停用", |screen| {
         let text = screen.contents();
         selected_tab(screen, "Sources") && text.contains(&format!("{DISABLED} claude"))
@@ -92,7 +92,7 @@ fn tui_skills_sources_preview_cancel_save_and_individual_disable() {
         let text = screen.contents();
         selected_tab(screen, "Sources") && text.contains(&format!("{ENABLED} claude"))
     });
-    pty.input("\t");
+    pty.input("\t\x1b[B\t");
     pty.text(&format!("{DISABLED} claude-skill"));
     std::fs::write(&settings_path, "invalid yaml").unwrap();
     pty.input("\r");
@@ -118,7 +118,7 @@ fn tui_skills_sources_preview_cancel_save_and_individual_disable() {
     pty.wait_for("重开后默认显示来源", |screen| {
         selected_tab(screen, "Sources")
     });
-    pty.input("\t");
+    pty.input("\t\x1b[B\t");
     pty.text(&format!("{DISABLED} claude-skill"));
     pty.text(&format!("{ENABLED} codex-skill"));
     pty.resize(4, 20);
@@ -146,7 +146,7 @@ fn tui_skills_manage_cancel_save_reload_restart_and_unavailable_models() {
     pty.ready();
     pty.input("/skills\r");
     pty.text(&format!("{DISABLED} claude"));
-    pty.input("\t");
+    pty.input("\t\x1b[B\t");
     pty.text(&format!("{ENABLED} rust"));
     pty.input(" ");
     pty.text(&format!("{DISABLED} rust"));
@@ -159,7 +159,7 @@ fn tui_skills_manage_cancel_save_reload_restart_and_unavailable_models() {
     );
     pty.input("\r");
     pty.text(&format!("{DISABLED} claude"));
-    pty.input("\t");
+    pty.input("\t\x1b[B\t");
     pty.text(&format!("{ENABLED} rust"));
     pty.input(" \r");
     pty.ready();
@@ -172,7 +172,7 @@ fn tui_skills_manage_cancel_save_reload_restart_and_unavailable_models() {
     pty.ready();
     pty.input("/skills\r");
     pty.text(&format!("{DISABLED} claude"));
-    pty.input("\t");
+    pty.input("\t\x1b[B\t");
     pty.text(&format!("{DISABLED} rust"));
     super::super::skills::install(home.path(), "second", "second");
     pty.input("r");
@@ -203,7 +203,7 @@ fn tui_skills_manage_cancel_save_reload_restart_and_unavailable_models() {
     pty.text("models.yml");
     pty.input("/skills\r");
     pty.text(&format!("{DISABLED} claude"));
-    pty.input("\t");
+    pty.input("\t\x1b[B\t");
     pty.text(&format!("{ENABLED} rust"));
     pty.input("\x03");
     pty.finish();

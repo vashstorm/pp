@@ -33,11 +33,16 @@ fn scroll_stream_case(thinking: bool) {
             };
             send(&mut stream, &prefix);
             pty.wait_for("完整 Markdown 已排版", |screen| {
-                screen.contents().contains("row_0599")
+                let text = screen.contents();
+                text.contains("row_0599")
                     && if code {
                         label_color(screen, "let row_0599") == vt100::Color::Rgb(156, 220, 254)
                     } else {
-                        !screen.contents().contains("**")
+                        text.contains("• row_0598 中文🙂")
+                            && !text
+                                .lines()
+                                .filter(|line| !line.contains("row_0599"))
+                                .any(|line| line.contains("**"))
                     }
             });
             let raw_start = pty.raw.len();

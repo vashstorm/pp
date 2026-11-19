@@ -68,10 +68,23 @@ fn receive_at(server: &TestServer, path: &str) -> (CapturedRequest, Value) {
             assert_eq!(request.target(), path);
             return (request, body);
         }
-        if request.target().ends_with("responses") {
-            response_final(request, "Task");
+        // 旁路标题请求在 /tree 回退、取消或进程退出时可能已被客户端中止，
+        // 只吞掉传输已关闭的 BrokenPipe，继续等待主请求。
+        let outcome = if request.target().ends_with("responses") {
+            try_response_reply(
+                request,
+                json!([response_message(
+                    "msg-final",
+                    json!([response_text("Task")])
+                )]),
+            )
         } else {
-            final_reply(request, "Task");
+            try_reply(request, json!({"role":"assistant","content":"Task"}))
+        };
+        if let Err(error) = outcome
+            && error.kind() != std::io::ErrorKind::BrokenPipe
+        {
+            panic!("task title reply failed: {error}");
         }
     }
 }

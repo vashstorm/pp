@@ -88,6 +88,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
         pty.input("Execute history before entering Plan\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         plan_final(request, protocol, "Old Execute history");
+        pty.completed_after("Old Execute history");
         pty.ready();
         plan_enter(&mut pty, &fixture);
         plan_drive_ready(
@@ -245,6 +246,7 @@ fn plan_mcp_resident_case() {
             "{body}"
         );
         plan_final(request, protocol, "Execute ready");
+        pty.completed_after("Execute ready");
         pty.ready();
         assert_eq!(plan_mcp_initialized(project.path()), 1);
         plan_enter(&mut pty, &fixture);

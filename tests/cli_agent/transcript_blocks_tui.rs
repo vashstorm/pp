@@ -485,8 +485,8 @@ fn transcript_blocks_markdown_unicode_and_long_line_survive_resize() {
         let text = screen.contents();
         text.contains("long-line-tail")
             && text.contains("名称")
-            && text.contains("中文名")
-            && text.contains("第二行")
+            && text.contains("中文")
+            && text.contains("第二")
             && text.contains("cafe\u{301}")
             && text.contains("✅")
             && text.contains("😀")

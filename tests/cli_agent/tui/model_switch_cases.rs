@@ -135,16 +135,19 @@ fn slow_tui_model_switch_survives_panels_and_tree_without_saving_default() {
             &server,
             protocol,
             "before switch",
-            "original answer",
+            "answer before",
         );
-        for (reference, model) in [("fixture/two", "two"), ("fixture/three", "three")] {
+        for (reference, model, answer) in [
+            ("fixture/two", "two", "answer two"),
+            ("fixture/three", "three", "answer three"),
+        ] {
             pty.function_key('p');
             pty.model_search("");
             pty.input(reference);
             pty.model_search(reference);
             pty.input("\r");
             pty.ready_model(reference);
-            tree_tui_open(&mut pty, "original answer");
+            tree_tui_open(&mut pty, "answer before");
             pty.input("\x1b");
             pty.ready_model(reference);
             pty.input("/roles\r");
@@ -158,12 +161,12 @@ fn slow_tui_model_switch_survives_panels_and_tree_without_saving_default() {
             pty.input("after panels\r");
             let (request, body) = pty.request_at(&server, api_path(protocol));
             assert_eq!(body["model"], model);
-            context_tui_final(request, protocol, "original answer");
-            pty.text("original answer");
-            pty.completed();
+            context_tui_final(request, protocol, answer);
+            pty.text(answer);
+            pty.completed_after(answer);
             pty.ready_model(reference);
         }
-        tree_tui_open(&mut pty, "original answer");
+        tree_tui_open(&mut pty, "answer three");
         tree_tui_rewind(&mut pty, &[TREE_TUI_HOME, TREE_TUI_RIGHT], "after panels");
         pty.ready_model("fixture/three");
         pty.input("after rewind\r");
