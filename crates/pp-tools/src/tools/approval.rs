@@ -241,15 +241,18 @@ impl Gate {
             );
         };
         let name = request.tool.clone();
+        let allow_session_grant = request.session_grant;
         let decision = handler(request, cancellation)?;
         pp_core::cancellation::check(cancellation)?;
         match decision {
             ApprovalDecision::Approve => Ok(()),
             ApprovalDecision::ApproveSession => {
-                self.grants
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(name);
+                if allow_session_grant {
+                    self.grants
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(name);
+                }
                 Ok(())
             }
             ApprovalDecision::Deny => bail!("{name} was denied by the user."),
@@ -907,5 +910,19 @@ mod tests {
                 .approval,
             empty
         );
+    }
+
+    #[test]
+    fn session_grant_false_never_records_permanent_grant() {
+        let mut gate = gate(ApprovalMode::Write, &[]);
+        gate.set_handler(Box::new(|request, _| {
+            assert!(!request.session_grant);
+            Ok(ApprovalDecision::ApproveSession)
+        }));
+        // 关键命令强制 session_grant=false；即使 handler 返回 ApproveSession 也不得持久化授权。
+        enforce(&gate, "bash", &bash("rm -rf /")).unwrap();
+        gate.handler = None;
+        let err = enforce(&gate, "bash", &bash("echo ordinary")).unwrap_err();
+        assert!(err.to_string().contains("no interactive UI"), "{err}");
     }
 }
