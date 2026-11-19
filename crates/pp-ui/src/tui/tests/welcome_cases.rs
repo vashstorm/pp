@@ -43,19 +43,23 @@ fn welcome_separates_shift_enter_from_description_across_breakpoints() {
 }
 
 #[test]
-fn welcome_responsive_breakpoints_center_hero_and_preserve_draft() {
+fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
     let _guard = WelcomeThemeGuard::set(Theme::Default, IconMode::Nerd);
     let mut app = app();
     app.input.insert_str("welcome draft");
 
-    // 宽屏 100x30：视觉偏上居中，双栏卡片与全部 8 项入口完整展示。
+    // 宽屏 100x30：品牌区上对齐并保留 2 行顶部留白，双栏卡片与全部 8 项入口完整展示。
     let wide = draw(&mut app, 100, 30);
     let wide_lines: Vec<&str> = wide.lines().collect();
     let logo_y = wide_lines
         .iter()
         .position(|line| line.contains("▄▄▄██▀▀██"))
         .expect("wide logo");
-    assert!(logo_y >= 2, "宽屏品牌区应有顶部呼吸留白: {wide}");
+    let brand_top_y = wide_lines
+        .iter()
+        .position(|line| line.contains('▄'))
+        .expect("wide brand top");
+    assert_eq!(brand_top_y, 2, "品牌区应上对齐并保留 2 行顶部留白: {wide}");
     assert!(wide.contains("Paper Plane"));
     let card_top_y = wide_lines
         .iter()

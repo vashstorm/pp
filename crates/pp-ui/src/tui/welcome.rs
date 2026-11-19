@@ -10,6 +10,7 @@ use ratatui::{
 
 pub(super) struct WelcomeContext<'a> {
     pub(super) mcp_tips: &'a [String],
+    /// 对话区已有正文时为真：此时不再占用顶部留白，优先把行让给正文。
     pub(super) reserve_trailing: bool,
 }
 
@@ -89,6 +90,8 @@ const WORDMARK: [&str; 5] = [
 ];
 const TAGLINE: &str = "Paper Plane";
 const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+/// 欢迎页顶部留白行数：仅在内容之外还有富余行时生效。
+const TOP_PADDING: u16 = 2;
 const LOGO: [(&str, &str); 7] = [
     ("             ▄▄", "▄█"),
     ("       ▄▄▄██▀▀", "██"),
@@ -386,11 +389,12 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
 
     let total_height =
         brand_height + body_card_height + footer_gap + body_footer_height + mcp_gap + mcp_height;
-    let slack = area.height.saturating_sub(total_height);
+    // 欢迎页上对齐：标准版在确有富余行时保留 2 行顶部留白；紧凑版、矮窗口与
+    // 对话区已有正文时贴住首行，避免裁切下方正文。
     let top = if compact || ctx.reserve_trailing {
         0
     } else {
-        (slack * 2 / 5).min(8)
+        area.height.saturating_sub(total_height).min(TOP_PADDING)
     };
 
     let card_x = area.x + (area.width - card_width) / 2;
