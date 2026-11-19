@@ -4,6 +4,61 @@ use pp_core::session_jsonl::Reader as SessionReader;
 use std::collections::HashMap;
 use std::io::BufReader;
 
+fn user_before_len(checkpoint: Option<&Checkpoint>, native_len: usize) -> Result<usize> {
+    if let Some(saved) = checkpoint {
+        match &saved.session {
+            Session::Completion(request) => {
+                let mut idx = request.messages.len();
+                while idx > 0
+                    && matches!(
+                        request.messages[idx - 1],
+                        async_openai::types::chat::ChatCompletionRequestMessage::Developer(_)
+                    )
+                {
+                    idx -= 1;
+                }
+                if idx > 0
+                    && matches!(
+                        request.messages[idx - 1],
+                        async_openai::types::chat::ChatCompletionRequestMessage::User(_)
+                    )
+                {
+                    return Ok(idx - 1);
+                }
+            }
+            Session::Response(request) => {
+                if let async_openai::types::responses::InputParam::Items(items) = &request.input {
+                    let mut idx = items.len();
+                    while idx > 0
+                        && matches!(
+                            &items[idx - 1],
+                            async_openai::types::responses::InputItem::EasyMessage(msg)
+                                if matches!(
+                                    msg.role,
+                                    async_openai::types::responses::Role::Developer
+                                )
+                        )
+                    {
+                        idx -= 1;
+                    }
+                    if idx > 0
+                        && matches!(
+                            &items[idx - 1],
+                            async_openai::types::responses::InputItem::EasyMessage(msg)
+                                if matches!(msg.role, async_openai::types::responses::Role::User)
+                        )
+                    {
+                        return Ok(idx - 1);
+                    }
+                }
+            }
+        }
+    }
+    native_len
+        .checked_sub(1)
+        .context("missing native user message")
+}
+
 impl Tree {
     #[cfg(any(test, feature = "test-support"))]
     pub fn fixture(nodes: &[(Option<usize>, Kind, &str)], leaf: Option<usize>) -> Self {
@@ -210,10 +265,7 @@ impl Tree {
                 ensure!(!ids.contains_key(&id), "duplicate session tree ID");
                 let before = if kind == Kind::User {
                     Cursor {
-                        len: native
-                            .len
-                            .checked_sub(1)
-                            .context("missing native user message")?,
+                        len: user_before_len(checkpoint.as_ref(), native.len)?,
                         ..native
                     }
                 } else {
@@ -566,6 +618,75 @@ mod tests {
             assert_eq!(text(&restored.checkpoint.session), text(&cached.session));
             assert!(!text(&restored.checkpoint.session).contains("question-c"));
             assert_eq!(users(&restored.replay), ["question-a", "question-b"]);
+        }
+    }
+
+    #[test]
+    fn tree_rewind_to_user_with_developer_hook_context_drops_both_messages() {
+        use crate::agent::turn::{append_developer_to, response_input};
+        use serde_json::json;
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            let dir = tempfile::tempdir().unwrap();
+            let metadata = metadata(dir.path());
+            let mut journal = SessionJournal::new(dir.path().into());
+            let mut session =
+                Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
+
+            // 第一轮正常问答
+            turn(
+                &mut journal,
+                &mut session,
+                &metadata,
+                "first-q",
+                "first-a",
+                false,
+            );
+
+            // 第二轮模拟 UserPromptSubmit hook 追加 additionalContext (User + Developer)
+            match &mut session {
+                Session::Completion(request) => request.messages.push(
+                    serde_json::from_value(json!({"role":"user","content":"hooked-user"})).unwrap(),
+                ),
+                Session::Response(request) => response_input(request).push(
+                    serde_json::from_value(json!({"role":"user","content":"hooked-user"})).unwrap(),
+                ),
+            }
+            append_developer_to(&mut session, "hook-extra-context".into());
+            journal
+                .sent(
+                    &metadata,
+                    (&session).into(),
+                    &WorkflowState::default(),
+                    Some("hooked-user"),
+                    None,
+                )
+                .unwrap();
+            journal.event(&AgentEvent::AssistantStarted);
+            journal.event(&AgentEvent::AssistantFinished {
+                text: "hooked-answer".into(),
+            });
+            match &mut session {
+                Session::Completion(request) => request.messages.push(
+                    serde_json::from_value(json!({"role":"assistant","content":"hooked-answer"}))
+                        .unwrap(),
+                ),
+                Session::Response(request) => response_input(request).push(
+                    serde_json::from_value(
+                        json!({"type":"message","id":"message-a","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hooked-answer","annotations":[]}]}),
+                    )
+                    .unwrap(),
+                ),
+            }
+            journal.commit((&session).into()).unwrap();
+
+            let tree = journal.tree().unwrap();
+            let hooked_user_id = tree.nodes[2].id.clone();
+            let prepared = journal.prepare_tree(&hooked_user_id).unwrap();
+            let native_text = text(&prepared.session);
+            assert!(!native_text.contains("hooked-user"), "{native_text}");
+            assert!(!native_text.contains("hook-extra-context"), "{native_text}");
+            assert!(native_text.contains("first-q"), "{native_text}");
+            assert_eq!(prepared.draft.as_deref(), Some("hooked-user"));
         }
     }
 }

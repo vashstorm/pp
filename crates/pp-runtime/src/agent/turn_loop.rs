@@ -11,8 +11,6 @@ use super::{
     usage::SessionEstimate,
 };
 use anyhow::{Result, bail};
-use async_openai::types::chat::ChatCompletionRequestMessage;
-use async_openai::types::responses::{InputItem, Role};
 use pp_core::cancellation::{self, CancellationToken, Cancelled, RunOutcome};
 use pp_core::events::AgentEvent;
 use std::collections::VecDeque;
@@ -388,6 +386,7 @@ impl Agent {
                         bail!("{reason}");
                     }
                 }
+                let before_len = self.session_len();
                 if let Some(prepared) = &item.prepared {
                     turn::append_input_to(&mut self.session, prepared);
                 } else {
@@ -402,7 +401,7 @@ impl Agent {
                     );
                 }
                 if let Err(error) = self.persist_pending_input(Some(item.prompt())) {
-                    self.remove_last_user();
+                    self.truncate_session(before_len);
                     return Err(error);
                 }
                 let item = batch.pop_front().expect("batch is non-empty");
@@ -428,26 +427,15 @@ impl Agent {
         }
     }
 
-    // 回退尚未持久化的内存 user append；只移除确认属于用户身份的末条消息。
-    fn remove_last_user(&mut self) {
+    pub(in crate::agent) fn session_len(&self) -> usize {
+        super::persistence::SessionRef::from(&self.session).len()
+    }
+
+    // 回退尚未持久化的内存 user/developer append。
+    fn truncate_session(&mut self, len: usize) {
         match &mut self.session {
-            Session::Completion(request) => {
-                if matches!(
-                    request.messages.last(),
-                    Some(ChatCompletionRequestMessage::User(_))
-                ) {
-                    request.messages.pop();
-                }
-            }
-            Session::Response(request) => {
-                let input = response_input(request);
-                if matches!(
-                    input.last(),
-                    Some(InputItem::EasyMessage(message)) if matches!(message.role, Role::User)
-                ) {
-                    input.pop();
-                }
-            }
+            Session::Completion(request) => request.messages.truncate(len),
+            Session::Response(request) => response_input(request).truncate(len),
         }
     }
 }

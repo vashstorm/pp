@@ -101,7 +101,7 @@ impl<'a> From<&'a Session> for SessionRef<'a> {
     }
 }
 impl SessionRef<'_> {
-    fn len(self) -> usize {
+    pub(in crate::agent) fn len(self) -> usize {
         match self {
             Self::Completion(request) => request.messages.len(),
             Self::Response(request) => match &request.input {
