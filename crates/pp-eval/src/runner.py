@@ -33,7 +33,6 @@ from typing import Any, Callable
 # Private control FDs & stdio isolation
 # ---------------------------------------------------------------------------
 
-_RAW_STDERR = sys.__stderr__
 try:
     _FRAME_FD = os.dup(sys.__stdout__.fileno())
     _FRAME_OUT = os.fdopen(_FRAME_FD, "w", encoding="utf-8", errors="backslashreplace")
@@ -45,10 +44,13 @@ except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
     _CAP_OUT_R = None
 
 try:
+    _RAW_STDERR_FD = os.dup(sys.__stderr__.fileno())
+    _RAW_STDERR = os.fdopen(_RAW_STDERR_FD, "w", encoding="utf-8", errors="backslashreplace")
     _CAP_ERR_R, _CAP_ERR_W = os.pipe()
     os.dup2(_CAP_ERR_W, sys.__stderr__.fileno())
     os.close(_CAP_ERR_W)
 except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+    _RAW_STDERR = sys.__stderr__
     _CAP_ERR_R = None
 
 try:

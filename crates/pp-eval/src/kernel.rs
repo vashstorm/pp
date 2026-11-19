@@ -108,7 +108,7 @@ pub(crate) struct RunningKernel {
     child: Child,
     pgid: libc::pid_t,
     stdin: Option<ChildStdin>,
-    frames: Receiver<KernelFrame>,
+    frames: Option<Receiver<KernelFrame>>,
     stderr_tail: Arc<Mutex<Vec<u8>>>,
     reader_handle: Option<JoinHandle<()>>,
     stderr_handle: Option<JoinHandle<()>>,
@@ -309,7 +309,7 @@ impl RunningKernel {
             child,
             pgid,
             stdin: Some(stdin),
-            frames: rx,
+            frames: Some(rx),
             stderr_tail,
             reader_handle: Some(reader_handle),
             stderr_handle: Some(stderr_handle),
@@ -377,6 +377,8 @@ impl RunningKernel {
     pub(crate) fn shutdown(mut self) -> Result<()> {
         let _ = self.send_line(&json!({ "type": "exit" }));
         self.stdin.take();
+        // 先丢弃接收端，避免通道已满时 reader 线程永久阻塞在 sync_channel::send 上造成自死锁。
+        self.frames.take();
         if !self.wait_exit(SHUTDOWN_GRACE) {
             self.send_signal_group(libc::SIGTERM);
             if !self.wait_exit(SHUTDOWN_GRACE) {
@@ -555,7 +557,11 @@ pub(crate) fn run_cell(
                 kernel_died = true;
                 break;
             };
-            kernel.frames.recv_timeout(POLL_INTERVAL)
+            let Some(frames) = kernel.frames.as_ref() else {
+                kernel_died = true;
+                break;
+            };
+            frames.recv_timeout(POLL_INTERVAL)
         };
 
         match frame {
@@ -662,7 +668,7 @@ pub(crate) fn run_cell(
             }) if id == rid => {
                 exec_status = status;
                 execution_count = count;
-                if py_cancelled {
+                if py_cancelled && !timed_out {
                     cancelled = true;
                 }
                 break;

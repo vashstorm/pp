@@ -466,4 +466,50 @@ print(a["content"], b["matches"], caught)
             ro_res.value
         );
     }
+
+    #[test]
+    fn eval_handles_idle_stderr_flooded_shutdown_and_sigint_timeout_cleanly() {
+        let h = Harness::new(65_536);
+
+        // 1. 后台线程在无活动 cell 时直接写入 fd 2，不得自回环死锁。
+        let idle_err = h.run(
+            r#"import os, threading, time
+def bg():
+    time.sleep(0.03)
+    os.write(2, b'idle-fd2-note\n')
+threading.Thread(target=bg, daemon=True).start()
+print('before-idle')"#,
+            false,
+            10,
+        );
+        assert_eq!(idle_err.value["ok"], true, "{}", idle_err.value);
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let after_idle = h.run("print('after-idle')", false, 10);
+        assert_eq!(after_idle.value["ok"], true, "{}", after_idle.value);
+        assert_eq!(after_idle.value["output"], "after-idle\n");
+
+        // 2. 正常响应 SIGINT 的超时单元格，timed_out 为 true 且 cancelled 为 false。
+        let timed = h.run("import time\ntime.sleep(5)", false, 1);
+        assert_eq!(timed.value["ok"], false, "{}", timed.value);
+        assert_eq!(timed.value["timed_out"], true, "{}", timed.value);
+        assert_eq!(timed.value["cancelled"], false, "{}", timed.value);
+
+        // 3. 后台协程发送 > 512 帧填满通道后 reset，shutdown 不得死锁。
+        let flood = h.run(
+            r#"import asyncio
+async def spam():
+    await asyncio.sleep(0.02)
+    for i in range(600):
+        print(f'spam-{i}')
+asyncio.get_running_loop().create_task(spam())
+print('scheduled')"#,
+            false,
+            10,
+        );
+        assert_eq!(flood.value["ok"], true, "{}", flood.value);
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let reset_ok = h.run("print('reset-ok')", true, 10);
+        assert_eq!(reset_ok.value["ok"], true, "{}", reset_ok.value);
+        assert_eq!(reset_ok.value["output"], "reset-ok\n");
+    }
 }
