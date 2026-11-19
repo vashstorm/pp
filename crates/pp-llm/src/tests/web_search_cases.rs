@@ -56,10 +56,18 @@ fn query_parser_scraper_downgrade_and_lenient_constraints() {
             age_seconds: None,
             author: None,
         },
+        SearchSource {
+            title: "Async Runtime Overflow".into(),
+            url: "https://github.com/rust-lang/book/releases/overflow.md".into(),
+            snippet: None,
+            published_date: Some("9999999999999 years ago".into()),
+            age_seconds: None,
+            author: None,
+        },
     ];
     let filtered = apply_query_constraints(&sources, &parsed);
     assert!(filtered.dropped.is_empty(), "{:?}", filtered.dropped);
-    assert_eq!(filtered.sources.len(), 1);
+    assert_eq!(filtered.sources.len(), 2);
     assert_eq!(filtered.sources[0].title, "Async Runtime Notes");
 
     // 某维约束会清空结果时应放宽并保留其余约束与提示标签。
@@ -458,7 +466,7 @@ fn auto_routes_hackernews_and_searxng_with_fallback_and_auth_redaction() {
                     Response::builder()
                         .status(StatusCode::OK)
                         .body(Body::from(
-                            r#"{"answers":["42"],"results":[{"title":"SearXNG Result","url":"https://docs.rs/tokio","content":"Tokio docs"}]}"#,
+                            r#"{"answers":["42"],"results":[{"title":"SearXNG Result","url":"https://docs.rs/tokio","content":"Tokio docs","published_date":"2026-03-10"}]}"#,
                         ))
                         .unwrap(),
                 )
@@ -544,6 +552,10 @@ fn auto_routes_hackernews_and_searxng_with_fallback_and_auth_redaction() {
     assert_eq!(sx_res.provider, "searxng");
     assert_eq!(sx_res.answer.as_deref(), Some("42"));
     assert_eq!(sx_res.sources[0].url, "https://docs.rs/tokio");
+    assert_eq!(
+        sx_res.sources[0].published_date.as_deref(),
+        Some("2026-03-10")
+    );
 
     // 3. 当非 loopback SearXNG 遇到断网沙盒时必须拒绝。
     let remote_searx = WebSearchSettings {

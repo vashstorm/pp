@@ -227,7 +227,7 @@ fn parse_relative_age_seconds(text: &str) -> Option<i64> {
         return None;
     }
     let mult = match unit {
-        "m" | "min" | "minute" | "minutes" => 60,
+        "m" | "min" | "minute" | "minutes" => 60_i64,
         "h" | "hr" | "hour" | "hours" => 3600,
         "d" | "day" | "days" => 86_400,
         "w" | "week" | "weeks" => 604_800,
@@ -235,16 +235,16 @@ fn parse_relative_age_seconds(text: &str) -> Option<i64> {
         "y" | "yr" | "year" | "years" => 31_536_000,
         _ => return None,
     };
-    Some(num * mult)
+    num.checked_mul(mult)
 }
 
 fn source_time_epoch(source: &SearchSource) -> Option<i64> {
     if let Some(age) = source.age_seconds {
-        return Some(now_epoch_secs() - age);
+        return now_epoch_secs().checked_sub(age);
     }
     let published = source.published_date.as_deref()?;
     if let Some(secs) = parse_relative_age_seconds(published) {
-        return Some(now_epoch_secs() - secs);
+        return now_epoch_secs().checked_sub(secs);
     }
     iso_date_to_epoch_secs(published.trim())
 }

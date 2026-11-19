@@ -46,6 +46,7 @@ struct SearxngResultItem {
     snippet: Option<String>,
     #[serde(rename = "publishedDate")]
     published_date: Option<String>,
+    #[serde(rename = "published_date")]
     published_date_snake: Option<String>,
 }
 
