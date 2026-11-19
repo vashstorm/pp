@@ -214,6 +214,13 @@ impl Agent {
 fn normalize_title(text: &str) -> String {
     let clean = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let clean: String = clean.chars().filter(|ch| !ch.is_control()).collect();
+    // 供应商可能把 DSML 工具调用作为正文返回，截断前检查完整回复。
+    if ["<｜DSML｜", "</｜DSML｜", "<|DSML|", "</|DSML|"]
+        .iter()
+        .any(|marker| clean.contains(marker))
+    {
+        return String::new();
+    }
     let mut result = String::new();
     for ch in clean.trim_matches(['"', '\'', '`']).graphemes(true) {
         if format!("{result}{ch}").width() > 32 {
@@ -233,5 +240,18 @@ mod tests {
         let title = normalize_title(&"中🙂".repeat(40));
         assert_eq!(title.width(), 32);
         assert_eq!(normalize_title("a\u{1b}b\r\nc"), "ab c");
+    }
+
+    #[test]
+    fn task_title_rejects_dsml_tool_markup_before_truncating() {
+        for reply in [
+            "<｜DSML｜ calls>\n<｜DSML｜ invoke",
+            "<|DSML|tool_calls>",
+            "</｜DSML｜invoke>",
+            "This task title is longer than 32 columns\n<｜DSML｜invoke",
+        ] {
+            assert_eq!(normalize_title(reply), "", "{reply:?}");
+        }
+        assert_eq!(normalize_title("修复 DSML 解析"), "修复 DSML 解析");
     }
 }
