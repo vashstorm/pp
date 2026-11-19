@@ -4,6 +4,8 @@ pub(crate) mod catalog;
 mod dispatch;
 mod followup;
 mod lifecycle;
+#[cfg(test)]
+mod lifecycle_cases;
 mod observe;
 mod results;
 mod task_tool;

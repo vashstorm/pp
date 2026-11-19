@@ -182,6 +182,9 @@ impl Tools {
             &mut nested_images,
         ) {
             Ok((value, _plan, todo)) => {
+                if name == "task" {
+                    self.reserve_task_results(&value);
+                }
                 images.extend(nested_images);
                 if let Some(todo) = todo {
                     *todo_change = Some(todo);

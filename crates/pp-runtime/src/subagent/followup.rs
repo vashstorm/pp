@@ -83,7 +83,12 @@ impl Binding {
             }),
         );
         if let Err(error) = self.launch(record.clone(), &run, text.into(), token) {
-            self.settle(&run, json!({"ok":false,"error":format!("{error:#}")}), 0)?;
+            self.settle(
+                &run,
+                json!({"ok":false,"error":format!("{error:#}")}),
+                0,
+                Some(generation),
+            )?;
             return Err(error);
         }
         Ok(json!({"ok":true,"run_id":run,"wait_args":{"run_ids":[run]}}))

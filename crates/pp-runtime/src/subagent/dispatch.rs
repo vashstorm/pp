@@ -245,9 +245,13 @@ impl Binding {
         }
         let mut results = Vec::new();
         for (record, run_id, task, blocking) in records {
-            let result = self.launch(record, &run_id, task, token);
-            if let Err(error) = result {
-                self.settle(&run_id, json!({"ok":false,"error":format!("{error:#}")}), 0)?;
+            if let Err(error) = self.launch(record.clone(), &run_id, task, token) {
+                self.settle(
+                    &run_id,
+                    json!({"ok":false,"error":format!("{error:#}")}),
+                    0,
+                    Some(record.generation),
+                )?;
             }
             let agent_id = lock(&self.inner.state).disk.runs[&run_id].agent_id.clone();
             let value = json!({"agent_id":agent_id,"run_id":run_id,"status":"queued","output_uri":format!("agent://{agent_id}"),"blocking":blocking});
@@ -378,7 +382,13 @@ impl Binding {
         }
         Ok(())
     }
-    pub(super) fn settle(&self, run: &str, result: Value, duration_ms: u64) -> Result<()> {
+    pub(super) fn settle(
+        &self,
+        run: &str,
+        result: Value,
+        duration_ms: u64,
+        expected_generation: Option<u64>,
+    ) -> Result<()> {
         let mut state = lock(&self.inner.state);
         let r = state.disk.runs.get_mut(run).context("unknown run")?;
         r.status = if result["cancelled"] == true {
@@ -393,15 +403,17 @@ impl Binding {
         r.duration_ms = duration_ms;
         let agent_id = r.agent_id.clone();
         let status = r.status.clone();
-        let generation = state
-            .disk
-            .agents
-            .get(&agent_id)
-            .map_or(0, |record| record.generation);
-        if let Some(record) = state.disk.agents.get_mut(&agent_id) {
-            record.status = "idle".into();
-            record.updated_ms = now();
-        }
+        let (generation, set_idle) = match state.disk.agents.get_mut(&agent_id) {
+            Some(record) => {
+                let matches_gen = expected_generation.is_none_or(|g| record.generation == g);
+                if matches_gen {
+                    record.status = "idle".into();
+                    record.updated_ms = now();
+                }
+                (record.generation, matches_gen)
+            }
+            None => (0, false),
+        };
         self.inner.save(&state)?;
         self.inner.observe(
             &agent_id,
@@ -411,16 +423,18 @@ impl Binding {
             None,
             Some(HubEvent::RunState { status }),
         );
-        self.inner.observe(
-            &agent_id,
-            None,
-            generation,
-            None,
-            None,
-            Some(HubEvent::AgentState {
-                status: "idle".into(),
-            }),
-        );
+        if set_idle {
+            self.inner.observe(
+                &agent_id,
+                None,
+                generation,
+                None,
+                None,
+                Some(HubEvent::AgentState {
+                    status: "idle".into(),
+                }),
+            );
+        }
         self.inner.changed.notify_all();
         Ok(())
     }

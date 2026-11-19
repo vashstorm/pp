@@ -180,7 +180,12 @@ fn wait_mixed_targets_wait_for_child_and_background_bash() {
                     return;
                 }
                 binding
-                    .settle("r1", json!({"ok":true,"output":"child-mixed-result"}), 20)
+                    .settle(
+                        "r1",
+                        json!({"ok":true,"output":"child-mixed-result"}),
+                        20,
+                        None,
+                    )
                     .unwrap();
                 // 新出现的 Run 不属于本次 wait 固定的目标集合。
                 lock(&binding.inner.state)
@@ -251,6 +256,7 @@ fn wait_timeout_cancels_only_selected_runs_and_their_descendant_tokens() {
                 "r2",
                 json!({"ok":false,"cancelled":true,"partial_output":"selected-partial"}),
                 15,
+                None,
             )
             .unwrap();
     });
@@ -327,7 +333,7 @@ fn wait_cleanup_failure_is_a_stop_error_and_does_not_reserve_results() {
     let result = unified_wait(&tools, json!({}));
     assert_eq!(result["background_results"].as_array().unwrap().len(), 1);
 }
-fn binding(dir: &Path, settings: TaskSettings) -> Binding {
+pub(super) fn binding(dir: &Path, settings: TaskSettings) -> Binding {
     let binding = Binding::root(
         RootOptions {
             dir: dir.join("state"),

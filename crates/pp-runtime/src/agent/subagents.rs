@@ -396,7 +396,7 @@ impl Agent {
         if let Some(binding) = self.subagent.as_ref().filter(|b| b.depth == 0) {
             binding.shutdown()?;
             self.subagent = None;
-            self.subagent = None;
+            self.tools.subagent = None;
             *self
                 .subagent_control
                 .lock()

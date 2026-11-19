@@ -321,12 +321,6 @@ pub(super) fn worker(
                     None,
                 );
             });
-            native.save_child(
-                &binding
-                    .inner
-                    .directory()
-                    .join(format!("{}.session.json", record.id)),
-            )?;
             {
                 let mut state = lock(&binding.inner.state);
                 if let Some(current) = state
@@ -335,11 +329,12 @@ pub(super) fn worker(
                     .get_mut(&record.id)
                     .filter(|r| r.generation == generation)
                 {
-                    current.session_file = Some(
-                        binding
-                            .directory()
-                            .join(format!("{}.session.json", record.id)),
-                    );
+                    let session_path = binding
+                        .inner
+                        .directory()
+                        .join(format!("{}.session.json", record.id));
+                    native.save_child(&session_path)?;
+                    current.session_file = Some(session_path);
                 }
             }
             let outcome = outcome?;
@@ -404,7 +399,12 @@ pub(super) fn worker(
             result["output_path"] = json!(output_path);
         }
 
-        if let Err(e) = binding.settle(&work.run, result, started.elapsed().as_millis() as u64) {
+        if let Err(e) = binding.settle(
+            &work.run,
+            result,
+            started.elapsed().as_millis() as u64,
+            Some(generation),
+        ) {
             tracing::error!(error=%e,"subagent result persist failed");
         }
         // 只有真实 work 结束才重置空闲基线；诊断 tick 不能延长 TTL。
@@ -435,14 +435,6 @@ pub(super) fn worker(
             lock(&binding.inner.cleanup_errors).push(error);
         }
     }
-    if let Some(agent) = agent {
-        let _ = agent.save_child(
-            &binding
-                .inner
-                .directory()
-                .join(format!("{}.session.json", record.id)),
-        );
-    }
     let parked;
     {
         let mut state = lock(&binding.inner.state);
@@ -457,6 +449,14 @@ pub(super) fn worker(
             .get(&record.id)
             .is_some_and(|r| r.generation == generation)
         {
+            if let Some(agent) = agent {
+                let _ = agent.save_child(
+                    &binding
+                        .inner
+                        .directory()
+                        .join(format!("{}.session.json", record.id)),
+                );
+            }
             state.live.remove(&record.id);
             if let Some(r) = state.disk.agents.get_mut(&record.id) {
                 r.status = "parked".into();

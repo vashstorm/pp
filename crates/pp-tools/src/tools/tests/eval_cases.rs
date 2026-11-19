@@ -282,3 +282,116 @@ fn eval_nested_tools_keep_approval_instructions_and_hooks() {
     assert!(hook_calls.contains(&"pre:write".to_owned()));
     assert!(hook_calls.contains(&"post:write".to_owned()));
 }
+
+#[test]
+fn eval_bridge_task_reserves_sync_run_results_against_duplicate_wait() {
+    use crate::ports::{SubagentDelivery, SubagentHost};
+    use async_openai::types::chat::FunctionObject;
+    use std::sync::Mutex;
+
+    struct StubHost {
+        acked: Mutex<Vec<String>>,
+    }
+    impl SubagentHost for StubHost {
+        fn definitions(&self, _: WorkMode) -> Vec<FunctionObject> {
+            vec![FunctionObject {
+                name: "task".into(),
+                description: Some("task".into()),
+                parameters: Some(json!({"type": "object"})),
+                strict: None,
+            }]
+        }
+        fn pending(&self) -> bool {
+            false
+        }
+        fn plan_mode(&self) -> bool {
+            false
+        }
+        fn is_root(&self) -> bool {
+            true
+        }
+        fn bind_session(&self, _: &Path, _: &str) {}
+        fn execute_task(&self, _: &str, _: bool, _: &CancellationToken) -> Result<Value> {
+            Ok(json!({
+                "ok": true,
+                "tasks": [{
+                    "run_id": "run-1",
+                    "results": {
+                        "results": [{"run": {"id": "run-1", "output": "done"}}]
+                    }
+                }]
+            }))
+        }
+        fn uri(&self, _: &str, _: &str, _: Option<&str>, _: &CancellationToken) -> Result<Value> {
+            unreachable!()
+        }
+        fn read_agent_result(
+            &self,
+            _: &str,
+            _: &CancellationToken,
+        ) -> Result<(Value, Option<Value>)> {
+            unreachable!()
+        }
+        fn wait_jobs(&self, _: &[String]) -> Result<Vec<pp_workspace::WaitJob>> {
+            Ok(vec![pp_workspace::WaitJob {
+                id: "run-1".into(),
+                r#type: "task".into(),
+                label: "explorer".into(),
+                status: "completed".into(),
+                duration_ms: 1,
+                delivered: false,
+            }])
+        }
+        fn deliveries(&self, ids: &[String]) -> Vec<SubagentDelivery> {
+            if ids.contains(&"run-1".to_owned()) {
+                vec![SubagentDelivery {
+                    id: "run-1".into(),
+                    run: json!({"id": "run-1", "output": "done"}),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+        fn acknowledge(&self, ids: &[String]) -> Result<()> {
+            self.acked.lock().unwrap().extend(ids.iter().cloned());
+            Ok(())
+        }
+        fn check_lsp_cleanup(&self) -> Result<()> {
+            Ok(())
+        }
+        fn cancel_runs(&self, _: &[String]) -> Result<()> {
+            Ok(())
+        }
+        fn reap_runs(&self, _: &[String]) -> Result<()> {
+            Ok(())
+        }
+        fn shutdown(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+    tools.configure_eval(&pp_config::config::EvalSettings {
+        enabled: true,
+        ..Default::default()
+    });
+    let host = Arc::new(StubHost {
+        acked: Mutex::new(Vec::new()),
+    });
+    tools.subagent = Some(host.clone());
+
+    tools.start_wait_batch();
+    let res = execute(
+        &tools,
+        "eval",
+        json!({
+            "language": "py",
+            "code": "r = tool.task(role='explorer', prompt='hi')\nw = tool.wait(timeout_ms=0)\nprint(len(r['tasks']), len(w['results']))"
+        }),
+    );
+    assert_eq!(res["ok"], true, "{res}");
+    assert_eq!(res["output"], "1 0\n");
+    tools.commit_wait_results().unwrap();
+    assert_eq!(*host.acked.lock().unwrap(), vec!["run-1".to_owned()]);
+}
