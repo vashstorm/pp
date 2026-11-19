@@ -111,21 +111,27 @@ impl Client {
                     };
                     state.pending_write = false;
                     state.last_used = Instant::now();
-                    if state.text != text {
+                    let changed = state.text != text;
+                    let will_notify_save =
+                        state.opened && self.capabilities.save != SaveKind::Never;
+                    if (changed && state.opened) || will_notify_save {
+                        // 在向 writer 投递任何变更/保存通知之前使旧诊断失效，防止与 reader 线程竞态。
+                        self.diagnostics.invalidate(&uri);
+                    }
+                    if changed {
                         let previous_text = std::mem::replace(&mut state.text, text);
                         state.version += 1;
                         if state.opened {
                             self.notify_did_change(op, &state, &previous_text)?;
                         }
                     }
-                    if state.opened && self.capabilities.save != SaveKind::Never {
+                    if will_notify_save {
                         let mut params = json!({"textDocument": {"uri": uri}});
                         if self.capabilities.save == SaveKind::IncludeText {
                             params["text"] = json!(&state.text);
                         }
                         op.notify("textDocument/didSave", params)?;
                     }
-                    self.diagnostics.invalidate(&uri);
                     self.store_document(path, &state);
                     watched.push(json!({"uri": uri, "type": change_kind}));
                 }

@@ -203,13 +203,12 @@ pub(super) fn code_actions(
         .filter(|query| !query.is_empty())
         .map(str::to_owned);
     let line = params.line.unwrap_or(1);
-    let cached_uri = client.document(&path).map(|state| state.uri);
-    let diagnostics = match cached_uri {
-        Some(uri) => code_action_diagnostics(&client, &path, &uri, deadline, cancellation)?,
-        None => Vec::new(),
-    };
-    let diagnostics_json: Vec<Value> = diagnostics.iter().map(diagnostic_json).collect();
     let mut service = deny_service();
+    let state = client.operation(deadline, cancellation, &mut service, |op| {
+        client.open_or_refresh(op, &path)
+    })?;
+    let diagnostics = code_action_diagnostics(&client, &path, &state.uri, deadline, cancellation)?;
+    let diagnostics_json: Vec<Value> = diagnostics.iter().map(diagnostic_json).collect();
     let entries = client.operation(deadline, cancellation, &mut service, |op| {
         let state = client.open_or_refresh(op, &path)?;
         let position = position_json(&state.text, line, params.symbol.as_deref())?;

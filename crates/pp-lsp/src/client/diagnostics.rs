@@ -264,6 +264,14 @@ impl Signals {
     }
 }
 
+struct PushTarget<'a> {
+    uri: &'a str,
+    expected: u64,
+    seq_before: u64,
+    synced: bool,
+    opened_at: Instant,
+}
+
 impl Client {
     /// 采集目标文件的诊断；`diagnostics: None` 表示未验证。
     ///
@@ -286,17 +294,20 @@ impl Client {
         self.operation(deadline, cancellation, &mut service, |op| {
             // 基线必须在 didOpen/didChange 之前保存：打开动作触发的 push 才算新鲜。
             let seq_before = self.diagnostics.seq();
-            let state = self.open_or_refresh(op, path)?;
+            let (state, synced) = self.open_or_refresh_with_sync(op, path)?;
             let expected = state.version as u64;
             let uri = state.uri.clone();
             if self.supports_pull() {
                 outcome = Some(self.pull(op, &uri, expected, seq_before)?);
             } else {
                 outcome = Some(self.wait_push(
-                    &uri,
-                    expected,
-                    seq_before,
-                    state.opened_at,
+                    PushTarget {
+                        uri: &uri,
+                        expected,
+                        seq_before,
+                        synced,
+                        opened_at: state.opened_at,
+                    },
                     deadline,
                     cancellation,
                 )?);
@@ -448,13 +459,47 @@ impl Client {
 
     fn wait_push(
         &self,
-        uri: &str,
-        expected: u64,
-        seq_before: u64,
-        opened_at: Instant,
+        target: PushTarget<'_>,
         deadline: Instant,
         cancellation: &CancellationToken,
     ) -> Result<DiagnosticOutcome> {
+        let PushTarget {
+            uri,
+            expected,
+            seq_before,
+            synced,
+            opened_at,
+        } = target;
+        // 本次未向服务器发送 didOpen/didChange 时，若当前版本与 epoch 已有新鲜缓存，直接复用，
+        // 避免 push-only 服务器重复查询未改文件或保存联动早于收集返回时等待到超时。
+        if !synced
+            && let Some(entry) = self.diagnostics.snapshot(uri)
+            && entry.seq > 0
+            && entry.epoch == self.diagnostics.epoch.load(Ordering::SeqCst)
+        {
+            match entry.version {
+                Some(version) if version == expected => {
+                    return Ok(DiagnosticOutcome::reported(
+                        entry.diagnostics,
+                        Some(version),
+                        None,
+                        true,
+                    ));
+                }
+                None if !(entry.diagnostics.is_empty() && opened_at.elapsed() < COLD_WINDOW) => {
+                    return Ok(DiagnosticOutcome::reported(
+                        entry.diagnostics,
+                        None,
+                        Some(
+                            "The server did not attach a document version to this report."
+                                .to_owned(),
+                        ),
+                        false,
+                    ));
+                }
+                _ => {}
+            }
+        }
         let mut settled_at: Option<Instant> = None;
         let mut last_seq = seq_before;
         loop {
@@ -697,5 +742,51 @@ mod tests {
         assert!(full_items(&report).unwrap().is_empty());
         assert!(full_items(&json!({"kind": "full"})).is_err());
         assert!(full_items(&json!({"kind": "full", "items": "invalid"})).is_err());
+    }
+
+    #[test]
+    fn lsp_client_wait_push_reuses_fresh_cached_report_when_not_resynced() {
+        let (_dir, client) = fixture_client(&[]);
+        let uri = "file:///cached.fixture";
+        let diag: Diagnostic = serde_json::from_value(json!({
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+            "message": "cached error"
+        }))
+        .unwrap();
+        client.diagnostics.publish(uri, Some(2), vec![diag]);
+        let seq_before = client.diagnostics.seq();
+
+        let outcome = client
+            .wait_push(
+                PushTarget {
+                    uri,
+                    expected: 2,
+                    seq_before,
+                    synced: false,
+                    opened_at: Instant::now(),
+                },
+                Instant::now() + Duration::from_secs(5),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(outcome.status, ReportStatus::ReportedIssues);
+        assert_eq!(outcome.diagnostics.as_ref().map(Vec::len), Some(1));
+
+        // 发生过新同步时，即使存在同版本旧缓存也必须等待更新的推送，不得误用。
+        let stale_outcome = client
+            .wait_push(
+                PushTarget {
+                    uri,
+                    expected: 2,
+                    seq_before,
+                    synced: true,
+                    opened_at: Instant::now(),
+                },
+                Instant::now() + Duration::from_millis(20),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(stale_outcome.status, ReportStatus::Unreported);
+        client.shutdown().unwrap();
     }
 }

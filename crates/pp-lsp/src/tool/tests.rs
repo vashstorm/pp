@@ -456,6 +456,38 @@ fn lsp_tool_code_action_resolve_returns_edit_and_marks_missing_command_step() {
         finish(tools, registry);
     }
 }
+
+#[test]
+fn lsp_tool_code_actions_on_unopened_file_collects_diagnostics_context() {
+    let dir = tempfile::tempdir().unwrap();
+    write_file(dir.path(), "sample.rs", "wrong\n");
+    let (tools, registry) = suggestion_tools(
+        dir.path(),
+        &["--real-navigation", "--code-action-mode", "resolve"],
+    );
+    let value = call(
+        &tools,
+        json!({"action":"code_actions","file":"sample.rs","query":"quickfix","selection":"0"}),
+        Access::ReadOnly,
+    )
+    .unwrap();
+    assert_eq!(value["ok"], true, "{value}");
+
+    let log = std::fs::read_to_string(dir.path().join("requests.jsonl")).unwrap();
+    let code_action_req: Value = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|msg| msg["method"] == "textDocument/codeAction")
+        .unwrap();
+    assert!(
+        !code_action_req["params"]["context"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "unopened file should still supply diagnostics context: {code_action_req}"
+    );
+    finish(tools, registry);
+}
 #[test]
 fn lsp_tool_rename_file_preserves_versions_and_never_moves() {
     for version in ["1", "999"] {

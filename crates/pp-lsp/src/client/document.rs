@@ -50,6 +50,15 @@ impl Client {
     /// 文档可能因为 5 分钟空闲被 didClose，再次打开时必须重新 didOpen，
     /// 不能在未打开的文档上先发 didChange。
     pub(crate) fn open_or_refresh(&self, op: &mut Op<'_>, path: &Path) -> Result<DocumentState> {
+        self.open_or_refresh_with_sync(op, path)
+            .map(|(state, _)| state)
+    }
+
+    pub(crate) fn open_or_refresh_with_sync(
+        &self,
+        op: &mut Op<'_>,
+        path: &Path,
+    ) -> Result<(DocumentState, bool)> {
         let uri = path_to_uri(path);
         let previous = self
             .documents
@@ -62,7 +71,7 @@ impl Client {
             && previous.pending_write
         {
             // 写入流程自己负责同步；此时不得用盘上旧内容覆盖 overlay。
-            return Ok(previous.clone());
+            return Ok((previous.clone(), false));
         }
         let text = read_document_text(path)?;
         let now = Instant::now();
@@ -79,12 +88,13 @@ impl Client {
                     last_used: now,
                     pending_write: false,
                 };
-                if self.syncs_documents() {
+                self.diagnostics.invalidate(&uri);
+                let synced = self.syncs_documents();
+                if synced {
                     self.notify_did_open(op, &state)?;
                 }
-                self.diagnostics.invalidate(&uri);
                 self.store_document(path, &state);
-                Ok(state)
+                Ok((state, synced))
             }
             Some(mut state) => {
                 state.last_used = now;
@@ -96,22 +106,23 @@ impl Client {
                     state.opened = true;
                     state.opened_at = now;
                     self.diagnostics.invalidate(&uri);
-                    if self.syncs_documents() {
+                    let synced = self.syncs_documents();
+                    if synced {
                         self.notify_did_open(op, &state)?;
                     }
                     self.store_document(path, &state);
-                    return Ok(state);
+                    return Ok((state, synced));
                 }
                 if state.text == text {
                     self.store_document(path, &state);
-                    return Ok(state);
+                    return Ok((state, false));
                 }
                 let previous_text = std::mem::replace(&mut state.text, text);
                 state.version += 1;
                 self.diagnostics.invalidate(&uri);
                 self.notify_did_change(op, &state, &previous_text)?;
                 self.store_document(path, &state);
-                Ok(state)
+                Ok((state, true))
             }
         }
     }
