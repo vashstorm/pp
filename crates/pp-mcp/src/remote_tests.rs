@@ -11,7 +11,7 @@ fn load(
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, server.config(transport, timeout).to_string()).unwrap();
-    let manager = Arc::new(McpManager::new(path, dir.path().to_path_buf()));
+    let manager = Arc::new(McpManager::new_isolated(path, dir.path().to_path_buf()));
     manager
         .connect_enabled(&CancellationToken::new(), Access::Full)
         .unwrap();
@@ -174,7 +174,7 @@ fn mcp_remote_cancel_during_headers_closes_worker() {
         cancel.cancel();
     });
     let start = Instant::now();
-    let manager = McpManager::new(path, dir.path().to_path_buf());
+    let manager = McpManager::new_isolated(path, dir.path().to_path_buf());
     let error = manager.connect_enabled(&token, Access::Full).err().unwrap();
     canceller.join().unwrap();
     assert!(error.is::<Cancelled>());
@@ -239,7 +239,7 @@ fn mcp_remote_management_plan_reload_and_cleanup_track_later_connections() {
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, server.config("http", 1000).to_string()).unwrap();
     let token = CancellationToken::new();
-    let manager = McpManager::new(path.clone(), dir.path().to_path_buf());
+    let manager = McpManager::new_isolated(path.clone(), dir.path().to_path_buf());
     manager.connect_enabled(&token, Access::ReadOnly).unwrap();
     for action in [
         Action::List,
@@ -317,7 +317,7 @@ fn mcp_remote_legacy_endpoint_cannot_forward_credentials_cross_origin() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, server.config("sse", 1000).to_string()).unwrap();
-    let manager = McpManager::new(path, dir.path().to_path_buf());
+    let manager = McpManager::new_isolated(path, dir.path().to_path_buf());
     manager
         .connect_enabled(&CancellationToken::new(), Access::Full)
         .unwrap();
@@ -343,7 +343,10 @@ fn mcp_read_only_scope_matches_original_names_and_management_filters_connections
         suspended.config("http", 3000)["mcpServers"]["remote"].clone();
     std::fs::write(&path, config.to_string()).unwrap();
     let token = CancellationToken::new();
-    let manager = Arc::new(McpManager::new(path.clone(), dir.path().to_path_buf()));
+    let manager = Arc::new(McpManager::new_isolated(
+        path.clone(),
+        dir.path().to_path_buf(),
+    ));
     manager.connect_enabled(&token, Access::Full).unwrap();
     assert_eq!(manager.definitions(Access::Full).len(), 4);
     // Plan/Review 只按 access 过滤工具，不断开任何已连接的服务进程。

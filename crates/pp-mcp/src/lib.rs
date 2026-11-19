@@ -142,6 +142,8 @@ impl Access {
 pub struct McpManager {
     // `None` 表示无配置文件的内存实例：绝不读取 HOME 下的 Claude/Codex 来源。
     config: Option<PathBuf>,
+    // 是否发现 HOME 下的 Claude/Codex 用户级来源；隔离实例只读指定 pp 配置。
+    discover_user_sources: bool,
     cwd: PathBuf,
     // 串行化配置加载、连接集合变更与退出停止；单次工具调用不经过它。
     control: Mutex<()>,
@@ -206,19 +208,32 @@ pub(crate) struct ServerState {
 impl McpManager {
     /// 唯一生产构造入口：只保存配置路径与工作目录，首次使用时加载配置。
     pub fn new(config: PathBuf, cwd: PathBuf) -> Self {
-        Self::with_optional_config(Some(config), cwd)
+        Self::with_optional_config(Some(config), cwd, true)
+    }
+
+    /// 隔离实例：只读指定 pp 配置，不发现 HOME 下的 Claude/Codex 来源。
+    ///
+    /// 单元测试与内嵌场景专用：被测 crate 以依赖方式编译时 `cfg(test)` 不生效，
+    /// 不能再靠配置层判断测试态，必须由调用方显式关闭外部来源发现。
+    pub fn new_isolated(config: PathBuf, cwd: PathBuf) -> Self {
+        Self::with_optional_config(Some(config), cwd, false)
     }
 
     /// 无配置文件的内存实例：测试与 mock 专用，不读取 HOME 下的 Claude/Codex 来源。
     pub fn empty() -> Self {
-        Self::with_optional_config(None, PathBuf::from("."))
+        Self::with_optional_config(None, PathBuf::from("."), false)
     }
 
-    fn with_optional_config(config: Option<PathBuf>, cwd: PathBuf) -> Self {
+    fn with_optional_config(
+        config: Option<PathBuf>,
+        cwd: PathBuf,
+        discover_user_sources: bool,
+    ) -> Self {
         // 无配置文件的实例已就绪；带路径的实例等首次使用时加载，失败后可重试。
         let loaded = config.is_none();
         Self {
             config,
+            discover_user_sources,
             cwd,
             control: Mutex::new(()),
             state: Mutex::new(State {

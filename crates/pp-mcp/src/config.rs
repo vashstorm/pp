@@ -196,12 +196,12 @@ fn read_native(path: &Path) -> Result<Native> {
 }
 
 impl Directory {
-    pub fn load(path: &Path) -> Result<Self> {
-        #[cfg(not(test))]
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        // 单元测试不得读取开发者的真实外部配置；发现测试显式提供隔离 HOME。
-        #[cfg(test)]
-        let home: Option<PathBuf> = None;
+    /// `discover_user_sources` 由 `McpManager` 构造方式决定：生产实例发现 HOME 下的
+    /// Claude/Codex 来源，隔离实例只读 `path`；测试依赖编译时不会带 `cfg(test)`。
+    pub fn load(path: &Path, discover_user_sources: bool) -> Result<Self> {
+        let home = discover_user_sources
+            .then(|| std::env::var_os("HOME").map(PathBuf::from))
+            .flatten();
         Self::load_at(path, home.as_deref())
     }
     fn load_at(path: &Path, home: Option<&Path>) -> Result<Self> {
@@ -768,7 +768,7 @@ mod lifecycle_tests {
         let log = dir.path().join("server-log");
         fs::write(&path, json!({"mcpServers":{"local":{"command":"bash","args":[format!("{}/../../tests/fixtures/mcp_server.sh", env!("CARGO_MANIFEST_DIR"))],"env":{"MCP_LOG":log.to_str().unwrap(),"MCP_VALUE":"test"}}}}).to_string()).unwrap();
         let token = CancellationToken::new();
-        let manager = McpManager::new(path, dir.path().to_path_buf());
+        let manager = McpManager::new_isolated(path, dir.path().to_path_buf());
         manager.connect_enabled(&token, Access::ReadOnly).unwrap();
         manager
             .manage(&Action::Disable("local".into()), &token, Access::ReadOnly)

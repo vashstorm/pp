@@ -50,10 +50,10 @@ impl Agent {
     ) -> Result<Self> {
         let lock_dir = sessions_dir.join(".locks");
         let stats_db = sessions_dir.join(".stats/stats.db");
-        // 单测各自持有配置化管理器：Plan 交接测试的 `/mcp reload` 读的是本
-        // catalog 指向的临时 `mcp.json`，不能落到真实用户配置。
+        // 单测各自持有隔离管理器：Plan 交接测试的 `/mcp reload` 读的是本 catalog
+        // 指向的临时 `mcp.json`，不能落到真实用户配置或 HOME 下的 Claude/Codex 来源。
         let cwd = tools.cwd().to_owned();
-        tools.mcp = std::sync::Arc::new(pp_mcp::McpManager::new(catalog.mcp_path(), cwd));
+        tools.mcp = std::sync::Arc::new(pp_mcp::McpManager::new_isolated(catalog.mcp_path(), cwd));
         Self::new_with_prompt(
             ModelState::shared(catalog),
             tools,

@@ -32,8 +32,8 @@ impl McpManager {
         if self.lock_state().loaded {
             return Ok(());
         }
-        // 解析（可能读 HOME 下的外部来源）在 state 锁外完成。
-        let directory = config::Directory::load(&path)?;
+        // 解析（生产实例还会读 HOME 下的外部来源）在 state 锁外完成。
+        let directory = config::Directory::load(&path, self.discover_user_sources)?;
         let mut state = self.lock_state();
         state.directory = directory;
         state.loaded = true;
@@ -288,7 +288,7 @@ impl McpManager {
         cancellation: &CancellationToken,
     ) -> Result<Self> {
         validate_config(configs)?;
-        let manager = Self::with_optional_config(None, cwd.to_owned());
+        let manager = Self::with_optional_config(None, cwd.to_owned(), false);
         for (name, config) in configs {
             if let Err(error) = manager
                 .add_server(name, config, cancellation)
@@ -613,7 +613,7 @@ mod background_tests {
     fn background_connect_returns_immediately_and_registers_tools_before_await() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_config(dir.path(), "local");
-        let manager = Arc::new(McpManager::new(path, dir.path().to_path_buf()));
+        let manager = Arc::new(McpManager::new_isolated(path, dir.path().to_path_buf()));
         let started = Instant::now();
         manager.start_connect(Access::Full);
         // 启动不等握手：起线程与登记进度立即返回，工具表由后台补齐。

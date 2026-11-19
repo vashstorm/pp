@@ -115,7 +115,7 @@ impl McpManager {
                     return Ok(());
                 };
                 // 解析失败保留旧连接与工具，直接返回错误。
-                let directory = config::Directory::load(&path)?;
+                let directory = config::Directory::load(&path, self.discover_user_sources)?;
                 // state 级停止：失败保留 servers/tools 供重试，不假装成功。
                 self.stop_all_servers()?;
                 {
