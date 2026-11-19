@@ -34,6 +34,61 @@ pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     normalize_with_depth(path, 0)
 }
 
+/// 按平台大小写语义比较路径前缀：macOS 默认大小写不敏感 APFS 上对每个普通分量做大小写折叠，
+/// 防止通过大小写变体绕过 `protect`、词法快路径或 `deny_read`。
+pub(crate) fn path_starts_with(path: &Path, base: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let mut p_comps = path.components();
+        let mut b_comps = base.components();
+        loop {
+            match b_comps.next() {
+                None => return true,
+                Some(b) => {
+                    let Some(p) = p_comps.next() else {
+                        return false;
+                    };
+                    if !component_eq_macos(p, b) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        path.starts_with(base)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn component_eq_macos(left: Component<'_>, right: Component<'_>) -> bool {
+    match (left, right) {
+        (Component::Normal(a), Component::Normal(b)) => {
+            if a == b {
+                return true;
+            }
+            let (Some(sa), Some(sb)) = (a.to_str(), b.to_str()) else {
+                return false;
+            };
+            if sa.is_ascii() && sb.is_ascii() {
+                sa.eq_ignore_ascii_case(sb)
+            } else {
+                sa.to_lowercase() == sb.to_lowercase()
+            }
+        }
+        _ => left == right,
+    }
+}
+
+pub(crate) fn paths_overlap(left: &Path, right: &Path) -> bool {
+    path_starts_with(left, right) || path_starts_with(right, left)
+}
+
+fn path_eq_platform(left: &Path, right: &Path) -> bool {
+    path_starts_with(left, right) && path_starts_with(right, left)
+}
+
 /// 词法快路径：`target` 已是绝对路径且各分量均可直接比较（无 `..`/前缀；`.` 由
 /// `Path::components` 自行归一）时，只要它与所有拒绝根在路径分量层面互不为祖先也
 /// 互不为后代，规范化就不可能把它移入拒绝集合，可跳过 `canonicalize`。
@@ -50,9 +105,7 @@ pub(crate) fn lexically_outside_deny(target: &Path, deny_read: &[PathBuf]) -> bo
     if components.any(|component| !matches!(component, Component::Normal(_))) {
         return false;
     }
-    !deny_read
-        .iter()
-        .any(|denied| target.starts_with(denied) || denied.starts_with(target))
+    !deny_read.iter().any(|denied| paths_overlap(target, denied))
 }
 
 /// 拒绝根在建策略时已经规范化；macOS 上 `/tmp`、`/var`、`/etc` 是指向
@@ -197,10 +250,15 @@ pub(crate) fn is_read_denied_path(
     deny_read: &[PathBuf],
     allow_read: &[PathBuf],
 ) -> bool {
-    if allow_read.iter().any(|allowed| target.starts_with(allowed)) {
+    if allow_read
+        .iter()
+        .any(|allowed| path_starts_with(target, allowed))
+    {
         return false;
     }
-    deny_read.iter().any(|denied| target.starts_with(denied))
+    deny_read
+        .iter()
+        .any(|denied| path_starts_with(target, denied))
 }
 
 pub(crate) fn check_write_path(
@@ -213,7 +271,7 @@ pub(crate) fn check_write_path(
     if is_safe_device_write(target) {
         return Ok(());
     }
-    if protect.iter().any(|prot| target.starts_with(prot)) {
+    if protect.iter().any(|prot| path_starts_with(target, prot)) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
@@ -224,11 +282,12 @@ pub(crate) fn check_write_path(
     }
     // 在 ReadOnly 模式下，即使 cwd 自身位于 /tmp 或 /var/folders/.../T 下，
     // 也只允许写入显式列出的子根（如 .pp-cache、本次 scratch），其余 cwd 子路径只读。
-    if mode == crate::EffectiveMode::ReadOnly && target.starts_with(cwd) {
-        if writable
-            .iter()
-            .any(|root| root.starts_with(cwd) && root != cwd && target.starts_with(root))
-        {
+    if mode == crate::EffectiveMode::ReadOnly && path_starts_with(target, cwd) {
+        if writable.iter().any(|root| {
+            path_starts_with(root, cwd)
+                && !path_eq_platform(root, cwd)
+                && path_starts_with(target, root)
+        }) {
             return Ok(());
         }
         return Err(io::Error::new(
@@ -239,7 +298,9 @@ pub(crate) fn check_write_path(
             ),
         ));
     }
-    if is_macos_var_folder_temp(target) || writable.iter().any(|root| target.starts_with(root)) {
+    if is_macos_var_folder_temp(target)
+        || writable.iter().any(|root| path_starts_with(target, root))
+    {
         return Ok(());
     }
     Err(io::Error::new(

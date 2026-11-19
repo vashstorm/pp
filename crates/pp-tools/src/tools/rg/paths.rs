@@ -167,7 +167,26 @@ fn split_top_level(input: &str, delimiter: u8) -> Vec<&str> {
     result.push(&input[start..]);
     result
 }
+fn fold_macos_system_prefix(path: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        for alias in ["/tmp", "/var", "/etc"] {
+            let prefix = Path::new(alias);
+            if let Ok(rest) = path.strip_prefix(prefix) {
+                let private = Path::new("/private").join(alias.trim_start_matches('/'));
+                return if rest.as_os_str().is_empty() {
+                    private
+                } else {
+                    private.join(rest)
+                };
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
 fn reject_symlink_components(path: &Path) -> Result<()> {
+    let path = fold_macos_system_prefix(path);
     let mut current = PathBuf::new();
     for part in path.components() {
         current.push(part.as_os_str());
@@ -550,5 +569,27 @@ mod tests {
         );
         assert!(denied(&entries, &sandbox, "secret-link"));
         assert!(denied(&entries, &sandbox, "dangling"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn rg_allows_macos_tmp_system_symlink_prefix() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let file = dir.path().join("sample.txt");
+        fs::write(&file, "needle\n").unwrap();
+        let raw_tmp_path = Path::new("/tmp").join(dir.path().file_name().unwrap());
+        let (targets, _, missing) = parse_paths(
+            dir.path(),
+            raw_tmp_path.to_str().unwrap(),
+            true,
+            &[],
+            None,
+            &CancellationToken::new(),
+            Instant::now() + std::time::Duration::from_secs(5),
+            None,
+        )
+        .unwrap();
+        assert!(missing.is_empty());
+        assert_eq!(targets.count(), 1);
     }
 }
