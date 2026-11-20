@@ -1,9 +1,10 @@
 //! 用户级的持久沙盒授权。
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
+    fmt::Write as _,
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -11,6 +12,8 @@ use std::{
 };
 
 const MAX_BYTES: u64 = 1024 * 1024;
+const PERMISSION_FILE: &str = "permission.toml";
+const PERMISSION_LOCK: &str = "permission.lock";
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,16 +37,16 @@ impl SandboxGrant {
                         .components()
                         .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
             }),
-            "invalid approval rule path"
+            "invalid permission rule path"
         );
-        ensure!(!self.command.trim().is_empty(), "empty approval command");
+        ensure!(!self.command.trim().is_empty(), "empty permission command");
         ensure!(
             self.network || !self.writable.is_empty(),
-            "empty approval scope"
+            "empty permission scope"
         );
         ensure!(
             self.writable.windows(2).all(|pair| pair[0] < pair[1]),
-            "invalid approval scope order"
+            "invalid permission scope order"
         );
         Ok(())
     }
@@ -68,17 +71,18 @@ impl SandboxGrant {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Rule {
     id: String,
     pub(crate) grant: SandboxGrant,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
     version: u32,
+    #[serde(default)]
     rules: Vec<Rule>,
 }
 
@@ -90,7 +94,7 @@ pub(crate) struct Store {
 impl Store {
     pub(crate) fn new(agent_dir: &Path) -> Self {
         Self {
-            path: agent_dir.join("approval.yml"),
+            path: agent_dir.join(PERMISSION_FILE),
         }
     }
 
@@ -103,7 +107,7 @@ impl Store {
         };
         let is_rule = path
             .file_name()
-            .is_some_and(|file| file == "approval.yml" || file == "approval.lock");
+            .is_some_and(|file| file == PERMISSION_FILE || file == PERMISSION_LOCK);
         is_rule
             && path
                 .parent()
@@ -114,7 +118,7 @@ impl Store {
 
     pub(crate) fn load(&self) -> Result<Vec<Rule>> {
         self.read()
-            .with_context(|| format!("loading approval rules from {}", self.path.display()))
+            .with_context(|| format!("loading permission rules from {}", self.path.display()))
     }
 
     fn read(&self) -> Result<Vec<Rule>> {
@@ -131,16 +135,23 @@ impl Store {
         };
         let mut text = String::new();
         file.take(MAX_BYTES + 1).read_to_string(&mut text)?;
-        ensure!(text.len() as u64 <= MAX_BYTES, "approval file is too large");
-        let document: Document = pp_config::yaml::parse(&text, "approval rules")?;
-        ensure!(document.version == 1, "unsupported approval file version");
+        ensure!(
+            text.len() as u64 <= MAX_BYTES,
+            "permission file is too large"
+        );
+        let document: Document = toml::from_str(&text).map_err(|_| {
+            anyhow!(
+                "invalid TOML permission rules config: check syntax, field types, required fields, and unknown fields"
+            )
+        })?;
+        ensure!(document.version == 1, "unsupported permission file version");
         let mut ids = HashSet::new();
         for rule in &document.rules {
             ensure!(
                 rule.id.len() == 32
                     && rule.id.bytes().all(|byte| byte.is_ascii_hexdigit())
                     && ids.insert(&rule.id),
-                "invalid or duplicate approval rule id"
+                "invalid or duplicate permission rule id"
             );
             rule.grant.validate()?;
         }
@@ -171,7 +182,7 @@ impl Store {
             }
             let mut random = [0; 16];
             getrandom::fill(&mut random)
-                .map_err(|_| anyhow::anyhow!("cannot generate approval rule id"))?;
+                .map_err(|_| anyhow!("cannot generate permission rule id"))?;
             rules.push(Rule {
                 id: format!("{:032x}", u128::from_be_bytes(random)),
                 grant,
@@ -193,31 +204,105 @@ impl Store {
         let dir = self
             .path
             .parent()
-            .context("approval directory unavailable")?;
+            .context("permission directory unavailable")?;
         fs::create_dir_all(dir)?;
         let lock =
-            private_file(&dir.join("approval.lock"), true).context("opening approval lock")?;
+            private_file(&dir.join(PERMISSION_LOCK), true).context("opening permission lock")?;
         let guard = lock;
         loop {
             match rustix::fs::flock(&guard, rustix::fs::FlockOperation::LockExclusive) {
                 Err(rustix::io::Errno::INTR) => continue,
-                result => break result.context("locking approval rules")?,
+                result => break result.context("locking permission rules")?,
             }
         }
         let mut rules = self.load()?;
         update(&mut rules)?;
-        let text = serde_yaml::to_string(&Document { version: 1, rules })
-            .map_err(|_| anyhow::anyhow!("cannot encode approval rules"))?;
-        ensure!(text.len() as u64 <= MAX_BYTES, "approval file is too large");
+        let text = encode_document(&Document { version: 1, rules })?;
+        ensure!(
+            text.len() as u64 <= MAX_BYTES,
+            "permission file is too large"
+        );
         let mut temporary = tempfile::NamedTempFile::new_in(dir)?;
         temporary.write_all(text.as_bytes())?;
         temporary.as_file().sync_all()?;
         temporary
             .persist(&self.path)
             .map_err(|error| error.error)
-            .with_context(|| format!("committing approval rules to {}", self.path.display()))?;
+            .with_context(|| format!("committing permission rules to {}", self.path.display()))?;
         Ok(())
     }
+}
+
+fn encode_document(document: &Document) -> Result<String> {
+    let mut out = String::new();
+    writeln!(out, "version = {}", document.version)?;
+    if document.rules.is_empty() {
+        writeln!(out, "rules = []")?;
+    } else {
+        for rule in &document.rules {
+            writeln!(out)?;
+            writeln!(out, "[[rules]]")?;
+            write!(out, "id = ")?;
+            write_toml_string(&mut out, &rule.id)?;
+            writeln!(out)?;
+            writeln!(out)?;
+            writeln!(out, "[rules.grant]")?;
+            let workspace = rule
+                .grant
+                .workspace
+                .to_str()
+                .context("permission rule path must be valid UTF-8")?;
+            write!(out, "workspace = ")?;
+            write_toml_string(&mut out, workspace)?;
+            writeln!(out)?;
+            let cwd = rule
+                .grant
+                .cwd
+                .to_str()
+                .context("permission rule path must be valid UTF-8")?;
+            write!(out, "cwd = ")?;
+            write_toml_string(&mut out, cwd)?;
+            writeln!(out)?;
+            write!(out, "command = ")?;
+            write_toml_string(&mut out, &rule.grant.command)?;
+            writeln!(out)?;
+            write!(out, "writable = [")?;
+            for (index, path) in rule.grant.writable.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                let path = path
+                    .to_str()
+                    .context("permission rule path must be valid UTF-8")?;
+                write_toml_string(&mut out, path)?;
+            }
+            writeln!(out, "]")?;
+            writeln!(out, "network = {}", rule.grant.network)?;
+        }
+    }
+    let decoded: Document =
+        toml::from_str(&out).map_err(|_| anyhow!("cannot encode permission rules"))?;
+    ensure!(&decoded == document, "cannot encode permission rules");
+    Ok(out)
+}
+
+fn write_toml_string(out: &mut String, value: &str) -> Result<()> {
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\u{08}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            ch if ch.is_control() => write!(out, "\\u{:04X}", ch as u32)?,
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    Ok(())
 }
 
 fn private_file(path: &Path, create: bool) -> Result<File> {
@@ -234,7 +319,7 @@ fn private_file(path: &Path, create: bool) -> Result<File> {
             && meta.nlink() == 1
             && meta.mode() & 0o077 == 0
             && meta.uid() == rustix::process::geteuid().as_raw(),
-        "approval file must be a private regular file owned by the current user"
+        "permission file must be a private regular file owned by the current user"
     );
     Ok(file)
 }

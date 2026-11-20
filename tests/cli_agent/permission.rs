@@ -1,12 +1,12 @@
 use super::*;
 
 #[test]
-fn yolo_executes_flagged_bash_without_approval_in_both_protocols() {
+fn yolo_executes_flagged_bash_without_permission_in_both_protocols() {
     for protocol in ["completion", "response"] {
         for (mode, policy, override_yolo) in [
-            (None, "prompt", false),
             (Some("yolo"), "deny", false),
-            (Some("write"), "deny", true),
+            (Some("always-ask"), "deny", true),
+            (None, "allow", false),
         ] {
             let server = server();
             let dir = tempfile::tempdir().unwrap();
@@ -15,10 +15,10 @@ fn yolo_executes_flagged_bash_without_approval_in_both_protocols() {
             std::fs::write(target.join("fixture"), "temporary fixture").unwrap();
             let mut settings = json!({
                 "rate_limit_retry_budget_seconds": 0,
-                "tools": {"approval": {"bash": policy}}
+                "tools": {"permission": {"bash": policy}}
             });
             if let Some(mode) = mode {
-                settings["tools"]["approvalMode"] = json!(mode);
+                settings["tools"]["permissionMode"] = json!(mode);
             }
             let models = if protocol == "completion" {
                 fixture_models(&server)
@@ -28,7 +28,7 @@ fn yolo_executes_flagged_bash_without_approval_in_both_protocols() {
             write_settings(dir.path(), settings.to_string()).unwrap();
             std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
             let args = if override_yolo {
-                vec!["--approval-mode", "yolo", "-p", "clean temporary fixture"]
+                vec!["--permission-mode", "yolo", "-p", "clean temporary fixture"]
             } else {
                 vec!["-p", "clean temporary fixture"]
             };
@@ -39,7 +39,7 @@ fn yolo_executes_flagged_bash_without_approval_in_both_protocols() {
                 "/v1/responses"
             };
             let (request, _) = receive_at(&server, path);
-            // 仅删除夹具目录；绝对路径递归删除会命中原有强制审批规则。
+            // 仅删除夹具目录；绝对路径递归删除会命中原有强制权限检查规则。
             let command = format!(
                 "rm -rf -- '{}'; printf yolo-completed",
                 target.to_str().unwrap().replace('\'', "'\\''")
@@ -90,32 +90,36 @@ fn yolo_executes_flagged_bash_without_approval_in_both_protocols() {
 }
 
 #[test]
-fn permission_cli_distinguishes_legacy_yolo_from_the_new_preset() {
+fn permission_cli_applies_permission_mode_and_rejects_legacy_flag() {
     let home = tempfile::tempdir().unwrap();
     write_settings(
         home.path(),
-        "tools: { approvalMode: yolo, sandbox: { mode: auto, network: false } }",
+        "tools: { permissionMode: always-ask, sandbox: { mode: auto, network: false } }",
     )
     .unwrap();
     std::fs::write(
         config_path(home.path(), "models.yml"),
         "providers:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://127.0.0.1:9/v1\n    models:\n      primary:\n        model: fixture-model\n",
-    ).unwrap();
-    for (flag, expected_mode, expected_sandbox) in [
-        ("--approval-mode", "legacy (yolo)", "configured=auto"),
-        ("--permission-mode", "yolo", "effective=off, configured=off"),
-    ] {
-        let output = Cli::spawn(home.path(), &[flag, "yolo", "/permissions"], &[]).finish();
-        assert!(output.status.success(), "{output:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains(&format!("Permission mode: {expected_mode}")),
-            "{stderr}"
-        );
-        assert!(stderr.contains(expected_sandbox), "{stderr}");
-        if flag == "--permission-mode" {
-            assert!(stderr.contains("network=unrestricted"), "{stderr}");
-        }
-    }
-    assert!(!config_path(home.path(), "approval.yml").exists());
+    )
+    .unwrap();
+    let output = Cli::spawn(
+        home.path(),
+        &["--permission-mode", "yolo", "/permissions"],
+        &[],
+    )
+    .finish();
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Permission mode: yolo"), "{stderr}");
+    assert!(stderr.contains("effective=off, configured=off"), "{stderr}");
+    assert!(stderr.contains("network=unrestricted"), "{stderr}");
+    assert!(!config_path(home.path(), "permission.toml").exists());
+
+    let legacy = Cli::spawn(
+        home.path(),
+        &["--approval-mode", "yolo", "/permissions"],
+        &[],
+    )
+    .finish();
+    assert!(!legacy.status.success(), "{legacy:?}");
 }

@@ -108,7 +108,7 @@ impl Panel {
         let multi = self.questions.questions[index].multi;
         let error = self.error.clone();
         let editing = matches!(&self.editor, Some((owner, _)) if *owner == index);
-        let hint = if self.approval {
+        let hint = if self.permission {
             "PgUp/PgDn details · ↑/↓ move · Enter confirm · Esc cancel"
         } else if editing {
             EDITOR_HINT
@@ -141,7 +141,7 @@ impl Panel {
         let question = self.question_lines(index, content_area.width);
         // 短屏至少为当前选项或编辑器保留一行。
         let mut question_budget = content_h.saturating_sub(1);
-        if self.approval {
+        if self.permission {
             question_budget = question_budget.min(content_h.div_ceil(2));
         }
         let question_h = question.len().min(usize::from(question_budget)) as u16;

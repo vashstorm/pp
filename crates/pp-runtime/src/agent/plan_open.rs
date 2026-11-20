@@ -181,7 +181,7 @@ impl Agent {
             context_window: config.context_window,
         };
         self.think_level = selection.effort;
-        self.tools.approval.clear_session();
+        self.tools.permission.clear_session();
         self.journal = journal;
         self.tools.artifacts = Default::default();
         // 打开既有计划会建立候选会话根；旧根的临时管道不随导航保留。

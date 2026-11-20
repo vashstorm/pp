@@ -3,11 +3,11 @@ use pp_config::config::ToolsSettings;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-fn settings(mode: ApprovalMode, policy: &[(&str, ApprovalPolicy)]) -> ToolsSettings {
+fn settings(mode: PermissionMode, policy: &[(&str, PermissionPolicy)]) -> ToolsSettings {
     ToolsSettings {
         output: Default::default(),
-        approval_mode: Some(mode),
-        approval: policy
+        permission_mode: Some(mode),
+        permission: policy
             .iter()
             .map(|(name, policy)| ((*name).to_owned(), *policy))
             .collect(),
@@ -15,7 +15,7 @@ fn settings(mode: ApprovalMode, policy: &[(&str, ApprovalPolicy)]) -> ToolsSetti
     }
 }
 
-fn gate(mode: ApprovalMode, policy: &[(&str, ApprovalPolicy)]) -> Gate {
+fn gate(mode: PermissionMode, policy: &[(&str, PermissionPolicy)]) -> Gate {
     let mut gate = Gate::new();
     gate.set_config(settings(mode, policy));
     gate
@@ -23,7 +23,7 @@ fn gate(mode: ApprovalMode, policy: &[(&str, ApprovalPolicy)]) -> Gate {
 
 #[test]
 fn cloned_gate_keeps_session_grants_shared() {
-    let mut parent = gate(ApprovalMode::Write, &[]);
+    let mut parent = gate(PermissionMode::AlwaysAsk, &[]);
     parent.set_handler(session_handler());
     let child = parent.clone();
     parent
@@ -46,7 +46,7 @@ fn cloned_gate_keeps_session_grants_shared() {
             &CancellationToken::new(),
         )
         .unwrap();
-    let mut once = gate(ApprovalMode::Write, &[]);
+    let mut once = gate(PermissionMode::AlwaysAsk, &[]);
     once.set_handler(approve_handler());
     once.enforce(
         "bash",
@@ -57,16 +57,17 @@ fn cloned_gate_keeps_session_grants_shared() {
     )
     .unwrap();
 }
-fn approve_handler() -> ApprovalHandler {
-    Box::new(|_request, _cancellation| Ok(ApprovalDecision::Approve))
+
+fn approve_handler() -> PermissionHandler {
+    Box::new(|_request, _cancellation| Ok(PermissionDecision::Approve))
 }
 
-fn deny_handler() -> ApprovalHandler {
-    Box::new(|_request, _cancellation| Ok(ApprovalDecision::Deny))
+fn deny_handler() -> PermissionHandler {
+    Box::new(|_request, _cancellation| Ok(PermissionDecision::Deny))
 }
 
-fn session_handler() -> ApprovalHandler {
-    Box::new(|_request, _cancellation| Ok(ApprovalDecision::ApproveSession))
+fn session_handler() -> PermissionHandler {
+    Box::new(|_request, _cancellation| Ok(PermissionDecision::ApproveSession))
 }
 
 fn enforce(gate: &Gate, name: &str, arguments: &str) -> Result<()> {
@@ -94,14 +95,14 @@ fn bash(command: &str) -> String {
 }
 
 #[test]
-fn mcp_read_tier_respects_explicit_approval_policy() {
+fn mcp_read_tier_respects_explicit_permission_policy() {
     let name = "mcp__remote__echo";
     let token = CancellationToken::new();
     for (policy, expected) in [
-        (ApprovalPolicy::Deny, "blocked by"),
-        (ApprovalPolicy::Prompt, "approval"),
+        (PermissionPolicy::Deny, "blocked by"),
+        (PermissionPolicy::Prompt, "permission"),
     ] {
-        let gate = gate(ApprovalMode::AlwaysAsk, &[(name, policy)]);
+        let gate = gate(PermissionMode::AlwaysAsk, &[(name, policy)]);
         let error = gate
             .enforce(name, "{}", Tier::Read, None, &token)
             .unwrap_err();
@@ -112,25 +113,28 @@ fn mcp_read_tier_respects_explicit_approval_policy() {
 #[test]
 fn hook_ask_forces_one_prompt_and_keeps_explicit_deny() {
     // YOLO 也不能绕过 hook 的 ask。
-    let mut yolo = gate(ApprovalMode::Yolo, &[]);
+    let mut yolo = gate(PermissionMode::Yolo, &[]);
     yolo.set_handler(approve_handler());
     enforce_with_ask(&yolo, "write", "confirm the write").unwrap();
-    let mut prompted = gate(ApprovalMode::Write, &[]);
+    let mut prompted = gate(PermissionMode::AlwaysAsk, &[]);
     prompted.set_handler(deny_handler());
     let error = enforce_with_ask(&prompted, "write", "confirm the write").unwrap_err();
     assert!(error.to_string().contains("denied by the user"), "{error}");
     // 非 YOLO 下用户的显式 deny 优先于 hook 的 ask。
-    let mut denied = gate(ApprovalMode::Write, &[("write", ApprovalPolicy::Deny)]);
+    let mut denied = gate(
+        PermissionMode::AlwaysAsk,
+        &[("write", PermissionPolicy::Deny)],
+    );
     denied.set_handler(approve_handler());
     let error = enforce_with_ask(&denied, "write", "confirm the write").unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("blocked by tools.approval policy"),
+            .contains("blocked by tools.permission policy"),
         "{error}"
     );
     // 没有交互 handler 时 ask 失败，不静默放行。
-    let bare = gate(ApprovalMode::Yolo, &[]);
+    let bare = gate(PermissionMode::Yolo, &[]);
     let error = enforce_with_ask(&bare, "write", "confirm the write").unwrap_err();
     assert!(error.to_string().contains("no interactive UI"), "{error}");
 }
@@ -148,9 +152,9 @@ fn yolo_allows_all_tool_tiers_without_handler() {
 #[test]
 fn yolo_bypasses_explicit_policies_without_calling_handler() {
     for policy in [
-        ApprovalPolicy::Allow,
-        ApprovalPolicy::Prompt,
-        ApprovalPolicy::Deny,
+        PermissionPolicy::Allow,
+        PermissionPolicy::Prompt,
+        PermissionPolicy::Deny,
     ] {
         for name in [
             "read",
@@ -160,23 +164,48 @@ fn yolo_bypasses_explicit_policies_without_calling_handler() {
             "mcp__local__tool",
             "unknown_tool",
         ] {
-            let mut gate = gate(ApprovalMode::Yolo, &[(name, policy)]);
-            gate.set_handler(Box::new(|_, _| panic!("YOLO 不应触发审批回调")));
+            let mut gate = gate(PermissionMode::Yolo, &[(name, policy)]);
+            gate.set_handler(Box::new(|_, _| panic!("YOLO 不应触发权限回调")));
             enforce(&gate, name, &bash("rm -rf /")).unwrap();
         }
     }
 }
 
 #[test]
-fn write_mode_blocks_exec_tier_and_allows_read_write_tiers() {
-    let gate = gate(ApprovalMode::Write, &[]);
-    enforce(&gate, "read", r#"{"path":"a"}"#).unwrap();
-    enforce(&gate, "write", r#"{"path":"a","content":"b"}"#).unwrap();
-    enforce(&gate, "mcp__local__tool", "{}").unwrap();
-    let error = enforce(&gate, "bash", &bash("echo hi")).unwrap_err();
-    assert!(error.to_string().contains("no interactive UI"), "{error}");
-    assert!(error.to_string().contains("bash"), "{error}");
-    let error = enforce(&gate, "bash_task", r#"{"task_id":"t","action":"status"}"#).unwrap_err();
+fn accept_edits_allows_sandboxed_tools_and_prompts_unsandboxed_write_or_exec() {
+    let gate = gate(PermissionMode::AcceptEdits, &[]);
+    let token = CancellationToken::new();
+    gate.enforce_for(
+        PermissionMode::AcceptEdits,
+        "read",
+        r#"{"path":"a"}"#,
+        ToolAccess {
+            tier: Tier::Read,
+            sandboxed: false,
+        },
+        None,
+        &token,
+    )
+    .unwrap();
+    for (name, tier) in [
+        ("write", Tier::Write),
+        ("edit", Tier::Write),
+        ("bash", Tier::Exec),
+    ] {
+        gate.enforce_for(
+            PermissionMode::AcceptEdits,
+            name,
+            "{}",
+            ToolAccess {
+                tier,
+                sandboxed: true,
+            },
+            None,
+            &token,
+        )
+        .unwrap();
+    }
+    let error = enforce(&gate, "mcp__local__tool", "{}").unwrap_err();
     assert!(error.to_string().contains("no interactive UI"), "{error}");
     let error = enforce(&gate, "unknown_tool", "{}").unwrap_err();
     assert!(error.to_string().contains("no interactive UI"), "{error}");
@@ -184,7 +213,7 @@ fn write_mode_blocks_exec_tier_and_allows_read_write_tiers() {
 
 #[test]
 fn always_ask_blocks_write_and_exec_tiers() {
-    let gate = gate(ApprovalMode::AlwaysAsk, &[]);
+    let gate = gate(PermissionMode::AlwaysAsk, &[]);
     enforce(&gate, "read", r#"{"path":"a"}"#).unwrap();
     enforce(&gate, "rg", r#"{"pattern":"a"}"#).unwrap();
     let error = enforce(&gate, "write", r#"{"path":"a","content":"b"}"#).unwrap_err();
@@ -197,7 +226,7 @@ fn always_ask_blocks_write_and_exec_tiers() {
 
 #[test]
 fn session_grant_persists_for_tool_until_process_ends() {
-    let mut gate = gate(ApprovalMode::Write, &[]);
+    let mut gate = gate(PermissionMode::AlwaysAsk, &[]);
     gate.set_handler(session_handler());
     enforce(&gate, "bash", &bash("echo one")).unwrap();
     // 会话级授权命中后同类调用不再询问。
@@ -216,7 +245,7 @@ fn session_grant_persists_for_tool_until_process_ends() {
 
 #[test]
 fn deny_decision_reports_denied_by_user() {
-    let mut gate = gate(ApprovalMode::Write, &[]);
+    let mut gate = gate(PermissionMode::AlwaysAsk, &[]);
     gate.set_handler(deny_handler());
     let error = enforce(&gate, "bash", &bash("echo hi")).unwrap_err();
     assert!(
@@ -227,19 +256,22 @@ fn deny_decision_reports_denied_by_user() {
 
 #[test]
 fn user_policy_allow_bypasses_destructive_check() {
-    let gate = gate(ApprovalMode::AlwaysAsk, &[("bash", ApprovalPolicy::Allow)]);
+    let gate = gate(
+        PermissionMode::AlwaysAsk,
+        &[("bash", PermissionPolicy::Allow)],
+    );
     enforce(&gate, "bash", &bash("rm -rf /")).unwrap();
 }
 
 #[test]
 fn user_policy_deny_blocks_in_non_yolo_modes() {
-    for mode in [ApprovalMode::Write, ApprovalMode::AlwaysAsk] {
-        let gate = gate(mode, &[("bash", ApprovalPolicy::Deny)]);
+    for mode in [PermissionMode::AcceptEdits, PermissionMode::AlwaysAsk] {
+        let gate = gate(mode, &[("bash", PermissionPolicy::Deny)]);
         let error = enforce(&gate, "bash", &bash("echo hi")).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("blocked by tools.approval policy."),
+                .contains("blocked by tools.permission policy."),
             "{error}"
         );
     }
@@ -247,12 +279,15 @@ fn user_policy_deny_blocks_in_non_yolo_modes() {
 
 #[test]
 fn user_policy_prompt_forces_prompt_every_time_without_session_grant() {
-    let mut gate = gate(ApprovalMode::Write, &[("bash", ApprovalPolicy::Prompt)]);
+    let mut gate = gate(
+        PermissionMode::AcceptEdits,
+        &[("bash", PermissionPolicy::Prompt)],
+    );
     let seen = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&seen);
     gate.set_handler(Box::new(move |request, _| {
         recorded.lock().unwrap().push(request.session_grant);
-        Ok(ApprovalDecision::ApproveSession)
+        Ok(PermissionDecision::ApproveSession)
     }));
     enforce(&gate, "bash", &bash("echo one")).unwrap();
     // ApproveSession 不建立会话授权：强制 prompt 每次都问。
@@ -278,13 +313,13 @@ fn destructive_commands_bypass_yolo_but_prompt_in_other_modes() {
         "dd if=/dev/zero of=/dev/sda",
     ] {
         enforce(&Gate::new(), "bash", &bash(command)).unwrap();
-        for mode in [ApprovalMode::Write, ApprovalMode::AlwaysAsk] {
+        for mode in [PermissionMode::AcceptEdits, PermissionMode::AlwaysAsk] {
             let mut gate = gate(mode, &[]);
             let seen = Arc::new(Mutex::new(Vec::new()));
             let recorded = Arc::clone(&seen);
             gate.set_handler(Box::new(move |request, _| {
                 recorded.lock().unwrap().push(request.session_grant);
-                Ok(ApprovalDecision::ApproveSession)
+                Ok(PermissionDecision::ApproveSession)
             }));
             enforce(&gate, "bash", &bash(command)).unwrap();
             // 关键命令不提供会话级选项，下一调用仍须询问。
@@ -296,7 +331,7 @@ fn destructive_commands_bypass_yolo_but_prompt_in_other_modes() {
 
 #[test]
 fn non_destructive_similar_commands_do_not_prompt() {
-    let mut gate = gate(ApprovalMode::Write, &[]);
+    let mut gate = gate(PermissionMode::AlwaysAsk, &[]);
     // 已有普通 bash 授权；误命中关键命令仍会因缺少 handler 而失败。
     gate.set_handler(session_handler());
     enforce(&gate, "bash", &bash("echo hi")).unwrap();
@@ -311,7 +346,7 @@ fn non_destructive_similar_commands_do_not_prompt() {
 
 #[test]
 fn malformed_bash_arguments_skip_destructive_check() {
-    let gate = gate(ApprovalMode::AlwaysAsk, &[]);
+    let gate = gate(PermissionMode::AlwaysAsk, &[]);
     // 解析失败交给正式参数解析，不在此处拦截。
     for arguments in ["{broken", r#"{"other":1}"#, r#"{"command":42}"#] {
         assert_eq!(destructive_reason(arguments), None);
@@ -326,7 +361,7 @@ fn malformed_bash_arguments_skip_destructive_check() {
 
 #[test]
 fn handler_errors_and_denials_propagate_verbatim() {
-    let mut gate = gate(ApprovalMode::Write, &[]);
+    let mut gate = gate(PermissionMode::AlwaysAsk, &[]);
     gate.set_handler(Box::new(|_request, _cancellation| {
         anyhow::bail!("handler exploded")
     }));
@@ -335,71 +370,77 @@ fn handler_errors_and_denials_propagate_verbatim() {
 }
 
 #[test]
-fn flag_override_replaces_configured_mode() {
-    let mut configured = gate(ApprovalMode::Write, &[("bash", ApprovalPolicy::Deny)]);
-    configured.set_override(ApprovalMode::Yolo);
-    assert_eq!(configured.effective_mode(), ApprovalMode::Yolo);
+fn select_replaces_configured_mode_across_clones() {
+    let configured = gate(
+        PermissionMode::AlwaysAsk,
+        &[("bash", PermissionPolicy::Deny)],
+    );
+    configured.select(Some(PermissionMode::Yolo));
+    assert_eq!(configured.effective_mode(), PermissionMode::Yolo);
     enforce(&configured, "bash", &bash("rm -rf /")).unwrap();
-    let mut overridden = gate(ApprovalMode::Yolo, &[]);
-    overridden.set_override(ApprovalMode::AlwaysAsk);
-    assert_eq!(overridden.effective_mode(), ApprovalMode::AlwaysAsk);
-    let error = enforce(&overridden, "write", r#"{"path":"a","content":"b"}"#).unwrap_err();
+    let child = configured.clone();
+    configured.select(Some(PermissionMode::AlwaysAsk));
+    assert_eq!(child.effective_mode(), PermissionMode::AlwaysAsk);
+    let error = enforce(&child, "write", r#"{"path":"a","content":"b"}"#).unwrap_err();
     assert!(error.to_string().contains("no interactive UI"), "{error}");
 }
 
 #[test]
-fn approval_mode_serialization_matches_config_names() {
+fn permission_mode_serialization_matches_config_names() {
     assert_eq!(
-        serde_yaml::from_str::<ApprovalMode>("yolo").unwrap(),
-        ApprovalMode::Yolo
+        serde_yaml::from_str::<PermissionMode>("yolo").unwrap(),
+        PermissionMode::Yolo
     );
     assert_eq!(
-        serde_yaml::from_str::<ApprovalMode>("write").unwrap(),
-        ApprovalMode::Write
+        serde_yaml::from_str::<PermissionMode>("accept-edits").unwrap(),
+        PermissionMode::AcceptEdits
     );
     assert_eq!(
-        serde_yaml::from_str::<ApprovalMode>("always-ask").unwrap(),
-        ApprovalMode::AlwaysAsk
+        serde_yaml::from_str::<PermissionMode>("always-ask").unwrap(),
+        PermissionMode::AlwaysAsk
     );
-    assert!(serde_yaml::from_str::<ApprovalMode>("ask").is_err());
+    assert!(serde_yaml::from_str::<PermissionMode>("write").is_err());
     assert_eq!(
-        serde_yaml::from_str::<ApprovalPolicy>("allow").unwrap(),
-        ApprovalPolicy::Allow
-    );
-    assert_eq!(
-        serde_yaml::from_str::<ApprovalPolicy>("prompt").unwrap(),
-        ApprovalPolicy::Prompt
+        serde_yaml::from_str::<PermissionPolicy>("allow").unwrap(),
+        PermissionPolicy::Allow
     );
     assert_eq!(
-        serde_yaml::from_str::<ApprovalPolicy>("deny").unwrap(),
-        ApprovalPolicy::Deny
+        serde_yaml::from_str::<PermissionPolicy>("prompt").unwrap(),
+        PermissionPolicy::Prompt
+    );
+    assert_eq!(
+        serde_yaml::from_str::<PermissionPolicy>("deny").unwrap(),
+        PermissionPolicy::Deny
     );
 }
 
 #[test]
 fn tools_settings_reads_camel_case_section() {
     let settings: ToolsSettings =
-        serde_yaml::from_str("approvalMode: write\napproval:\n  bash: deny\n").unwrap();
-    assert_eq!(settings.approval_mode, Some(ApprovalMode::Write));
-    assert!(serde_yaml::from_str::<ToolsSettings>("approvalMode: null").is_err());
-    assert_eq!(settings.approval.get("bash"), Some(&ApprovalPolicy::Deny));
-    let config = ApprovalConfig::from(settings);
-    assert_eq!(config.mode, ApprovalMode::Write);
-    let empty: BTreeMap<String, ApprovalPolicy> = BTreeMap::new();
+        serde_yaml::from_str("permissionMode: always-ask\npermission:\n  bash: deny\n").unwrap();
+    assert_eq!(settings.permission_mode, Some(PermissionMode::AlwaysAsk));
+    assert!(serde_yaml::from_str::<ToolsSettings>("permissionMode: null").is_err());
+    assert_eq!(
+        settings.permission.get("bash"),
+        Some(&PermissionPolicy::Deny)
+    );
+    let config = PermissionConfig::from(settings);
+    assert_eq!(config.policy.get("bash"), Some(&PermissionPolicy::Deny));
+    let empty: BTreeMap<String, PermissionPolicy> = BTreeMap::new();
     assert_eq!(
         serde_yaml::from_str::<ToolsSettings>("{}")
             .unwrap()
-            .approval,
+            .permission,
         empty
     );
 }
 
 #[test]
 fn session_grant_false_never_records_permanent_grant() {
-    let mut gate = gate(ApprovalMode::Write, &[]);
+    let mut gate = gate(PermissionMode::AlwaysAsk, &[]);
     gate.set_handler(Box::new(|request, _| {
         assert!(!request.session_grant);
-        Ok(ApprovalDecision::ApproveSession)
+        Ok(PermissionDecision::ApproveSession)
     }));
     // 关键命令强制 session_grant=false；即使 handler 返回 ApproveSession 也不得持久化授权。
     enforce(&gate, "bash", &bash("rm -rf /")).unwrap();
@@ -428,109 +469,94 @@ fn sandbox_grant(root: &Path, command: &str) -> SandboxGrant {
 }
 
 #[test]
-fn permission_presets_override_legacy_only_after_explicit_selection() {
+fn permission_presets_cycle_and_update_sandbox_mode() {
     let dir = tempfile::tempdir().unwrap();
-    let mut legacy = Gate::for_process(
-        dir.path(),
-        dir.path(),
-        None,
-        Some(ApprovalMode::Yolo),
-        false,
-    );
-    let settings = ToolsSettings {
-        approval_mode: Some(ApprovalMode::Write),
-        permission_mode: Some(PermissionMode::AlwaysAsk),
-        ..Default::default()
-    };
-    legacy.set_config(settings.clone());
-    assert_eq!(
-        legacy.snapshot(),
-        EffectivePermissions::Legacy(ApprovalMode::Yolo)
-    );
-    assert_eq!(legacy.snapshot().sandbox_mode(), None);
-    let child = legacy.clone();
-    for expected in [
-        PermissionMode::AcceptEdits,
-        PermissionMode::Yolo,
-        PermissionMode::AlwaysAsk,
+    let gate = Gate::for_process(dir.path(), dir.path(), None, false);
+    assert_eq!(gate.snapshot(), PermissionMode::AcceptEdits);
+    assert_eq!(gate.sandbox_mode(), Some(SandboxMode::WorkspaceWrite));
+    let child = gate.clone();
+    for (expected, expected_sandbox) in [
+        (PermissionMode::Yolo, Some(SandboxMode::Off)),
+        (PermissionMode::AlwaysAsk, Some(SandboxMode::WorkspaceWrite)),
+        (
+            PermissionMode::AcceptEdits,
+            Some(SandboxMode::WorkspaceWrite),
+        ),
     ] {
-        legacy.select(None);
-        assert_eq!(child.snapshot().preset(), Some(expected));
+        gate.select(None);
+        assert_eq!(child.snapshot(), expected);
+        assert_eq!(child.sandbox_mode(), expected_sandbox);
     }
-    let mut startup = Gate::for_process(
-        dir.path(),
-        dir.path(),
-        Some(PermissionMode::Yolo),
-        None,
-        false,
-    );
-    startup.set_config(settings);
-    assert_eq!(startup.snapshot().sandbox_mode(), Some(SandboxMode::Off));
-    startup.select(Some(PermissionMode::AlwaysAsk));
-    assert_eq!(
-        startup.snapshot().sandbox_mode(),
-        Some(SandboxMode::WorkspaceWrite)
-    );
 }
 
 #[test]
-fn process_defaults_to_accept_edits_with_no_permission_overrides() {
+fn process_defaults_to_accept_edits_and_respects_custom_sandbox_without_preset() {
     let dir = tempfile::tempdir().unwrap();
-    let mut gate = Gate::for_process(dir.path(), dir.path(), None, None, false);
-    for (settings, expected) in [
+    let mut gate = Gate::for_process(dir.path(), dir.path(), None, false);
+    for (settings, expected_mode, expected_sandbox) in [
         (
             "{}",
-            EffectivePermissions::Preset(PermissionMode::AcceptEdits),
+            PermissionMode::AcceptEdits,
+            Some(SandboxMode::WorkspaceWrite),
         ),
         (
-            "approvalMode: yolo",
-            EffectivePermissions::Legacy(ApprovalMode::Yolo),
+            "permissionMode: yolo",
+            PermissionMode::Yolo,
+            Some(SandboxMode::Off),
         ),
         (
-            "approval: {bash: prompt}",
-            EffectivePermissions::Legacy(ApprovalMode::Yolo),
+            "permission: {bash: prompt}",
+            PermissionMode::AcceptEdits,
+            Some(SandboxMode::WorkspaceWrite),
         ),
+        ("sandbox: {mode: off}", PermissionMode::AcceptEdits, None),
         (
-            "sandbox: {mode: off}",
-            EffectivePermissions::Legacy(ApprovalMode::Yolo),
-        ),
-        (
-            "approvalMode: yolo\npermissionMode: always-ask",
-            EffectivePermissions::Preset(PermissionMode::AlwaysAsk),
+            "permissionMode: always-ask",
+            PermissionMode::AlwaysAsk,
+            Some(SandboxMode::WorkspaceWrite),
         ),
     ] {
         gate.set_config(serde_yaml::from_str(settings).unwrap());
-        assert_eq!(gate.snapshot(), expected, "{settings}");
+        assert_eq!(gate.snapshot(), expected_mode, "{settings}");
+        assert_eq!(gate.sandbox_mode(), expected_sandbox, "{settings}");
     }
 }
 
 #[test]
-fn sandbox_grants_are_exact_session_and_persistent_permissions() {
+fn sandbox_grants_are_exact_session_and_persistent_permissions_in_toml() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let mut gate = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), None, false);
-    let grant = sandbox_grant(&root, "printf test");
+    let mut gate = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), false);
+    let grant = sandbox_grant(&root, "printf \"test\"\t# toml");
     let token = CancellationToken::new();
-    for decision in [ApprovalDecision::Approve, ApprovalDecision::ApproveSession] {
+    for decision in [
+        PermissionDecision::Approve,
+        PermissionDecision::ApproveSession,
+    ] {
         gate.set_handler(Box::new(move |_, _| Ok(decision)));
         gate.authorize_sandbox(grant.clone(), &token).unwrap();
         let mut child = gate.clone();
         child.handler = None;
         assert_eq!(
             child.authorize_sandbox(grant.clone(), &token).is_ok(),
-            decision == ApprovalDecision::ApproveSession
+            decision == PermissionDecision::ApproveSession
         );
-        assert!(!root.join("approval.yml").exists());
+        assert!(!root.join("permission.toml").exists());
         gate.clear_session();
         child.authorize_sandbox(grant.clone(), &token).unwrap_err();
     }
 
     gate.set_handler(Box::new(|request, _| {
         assert!(request.persistent_grant);
-        Ok(ApprovalDecision::ApprovePersistently)
+        Ok(PermissionDecision::ApprovePersistently)
     }));
     gate.authorize_sandbox(grant.clone(), &token).unwrap();
-    let restarted = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), None, false);
+    let toml_text = std::fs::read_to_string(root.join("permission.toml")).unwrap();
+    assert!(toml_text.contains("version = 1"), "{toml_text}");
+    assert!(toml_text.contains("[[rules]]"), "{toml_text}");
+    assert!(toml_text.contains("[rules.grant]"), "{toml_text}");
+
+    let restarted = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), false);
     restarted.authorize_sandbox(grant.clone(), &token).unwrap();
     let changed_command = sandbox_grant(&root, "printf different");
     restarted
@@ -549,7 +575,7 @@ fn sandbox_grants_are_exact_session_and_persistent_permissions() {
 
     let list = restarted.list_rules().unwrap();
     let id = list.split_whitespace().next().unwrap();
-    assert!(list.contains(&grant.command));
+    assert!(list.contains("printf"));
     restarted.revoke_rule(id).unwrap();
     restarted.authorize_sandbox(grant, &token).unwrap_err();
 }
@@ -573,27 +599,27 @@ fn concurrent_sandbox_grant_saves_preserve_all_rules_and_reject_invalid_store() 
             .iter()
             .all(|grant| rules.iter().any(|rule| &rule.grant == grant))
     );
-    let path = root.join("approval.yml");
+    let path = root.join("permission.toml");
     assert_eq!(
         std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    std::fs::write(&path, "version: 1\nrules: broken\n").unwrap();
-    let mut gate = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), None, false);
+    std::fs::write(&path, "version = 1\nrules = \"broken\"\n").unwrap();
+    let mut gate = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), false);
     let token = CancellationToken::new();
     let err = gate
         .authorize_sandbox(grants[0].clone(), &token)
         .unwrap_err();
-    assert!(err.to_string().contains("approval.yml"), "{err:#}");
+    assert!(err.to_string().contains("permission.toml"), "{err:#}");
     gate.set_handler(Box::new(|request, _| {
         assert!(!request.persistent_grant);
-        Ok(ApprovalDecision::ApprovePersistently)
+        Ok(PermissionDecision::ApprovePersistently)
     }));
     gate.authorize_sandbox(grants[0].clone(), &token)
         .unwrap_err();
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
-        "version: 1\nrules: broken\n"
+        "version = 1\nrules = \"broken\"\n"
     );
 }
 
@@ -601,11 +627,11 @@ fn concurrent_sandbox_grant_saves_preserve_all_rules_and_reject_invalid_store() 
 fn persistent_grant_is_denied_if_the_store_cannot_commit() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    std::fs::create_dir(root.join("approval.lock")).unwrap();
-    let mut gate = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), None, false);
+    std::fs::create_dir(root.join("permission.lock")).unwrap();
+    let mut gate = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), false);
     gate.set_handler(Box::new(|request, _| {
         assert!(request.persistent_grant);
-        Ok(ApprovalDecision::ApprovePersistently)
+        Ok(PermissionDecision::ApprovePersistently)
     }));
     let err = gate
         .authorize_sandbox(
@@ -613,6 +639,6 @@ fn persistent_grant_is_denied_if_the_store_cannot_commit() {
             &CancellationToken::new(),
         )
         .unwrap_err();
-    assert!(format!("{err:#}").contains("opening approval lock"));
-    assert!(!root.join("approval.yml").exists());
+    assert!(format!("{err:#}").contains("opening permission lock"));
+    assert!(!root.join("permission.toml").exists());
 }

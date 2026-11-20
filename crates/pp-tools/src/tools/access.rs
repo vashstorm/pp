@@ -1,9 +1,10 @@
 //! `Tools` 的构造、拆除与工具侧句柄访问器。
 use anyhow::{Result, bail, ensure};
 use pp_config::config::EditMode;
+use pp_config::config::PermissionMode;
 use pp_config::config::ToolLimits;
 use pp_core::plan::PlanDocument;
-use pp_permission::{EffectivePermissions, ToolAccess};
+use pp_permission::ToolAccess;
 use serde_json::Value;
 use std::{
     cell::RefCell,
@@ -11,7 +12,7 @@ use std::{
 };
 
 use super::{
-    ExecuteCall, PLAN_BASE_TOOLS, PLAN_SEARCH_TOOLS, ToolPolicy, Tools, approval, is_plan_tool,
+    ExecuteCall, PLAN_BASE_TOOLS, PLAN_SEARCH_TOOLS, ToolPolicy, Tools, is_plan_tool, permission,
     plan,
 };
 use pp_bash::{BackgroundCleanup, PipeStore};
@@ -50,7 +51,7 @@ impl Tools {
             allowed_tools: None,
             yield_schema: None,
             yielded: RefCell::new(None),
-            approval: approval::Gate::new(),
+            permission: permission::Gate::new(),
             skills: pp_config::skills::Skills::default().shared(),
             cwd: workspace.path.clone(),
             edit_mode,
@@ -90,9 +91,7 @@ impl Tools {
     }
 
     pub fn sandbox_status(&self) -> pp_sandbox::SandboxStatus {
-        self.sandbox
-            .view(self.approval.snapshot().sandbox_mode())
-            .status()
+        self.sandbox.view(self.permission.sandbox_mode()).status()
     }
 
     /// 生产与子 Agent 构造入口：注入进程级共享的 `McpManager`。
@@ -212,7 +211,7 @@ impl Tools {
         call: &ExecuteCall<'_, '_>,
         hook_ask: Option<&str>,
     ) -> Result<AuthorizedAccess> {
-        let permissions = self.approval.snapshot();
+        let permissions = self.permission.snapshot();
         let name = call.name;
         let arguments = call.arguments;
         ensure!(
@@ -298,8 +297,8 @@ impl Tools {
             bail!("lsp is not available; LSP is disabled or not installed.");
         }
         // LSP 的动作级授权在执行层完成：受限模式（Plan/Review/readonly
-        // 子 Agent）连写动作的参数都不解析就拒绝，且必须先于审批门，
-        // 避免受限 Agent 通过审批提示绕过白名单。schema 裁剪只是提示。
+        // 子 Agent）连写动作的参数都不解析就拒绝，且必须先于权限门，
+        // 避免受限 Agent 通过权限提示绕过白名单。schema 裁剪只是提示。
         let lsp_access = match &call.policy {
             ToolPolicy::Execute { .. } if !self.lsp_readonly => pp_lsp::tool::Access::Execute,
             _ => pp_lsp::tool::Access::ReadOnly,
@@ -310,23 +309,23 @@ impl Tools {
         if let Some(message) = self.instruction_batch_blocked() {
             bail!("{message}");
         }
-        // Plan 中未标为只读的 MCP 工具沿用 Execute 的写档审批。
-        let needs_approval = match call.policy {
+        // Plan 中未标为只读的 MCP 工具沿用 Execute 的写档权限规则。
+        let needs_permission = match call.policy {
             ToolPolicy::Execute { .. } => {
                 !(mcp_readonly_tool && self.subagent.as_ref().is_some_and(|b| b.plan_mode()))
             }
             ToolPolicy::Plan { .. } => is_mcp && !mcp_readonly_tool,
             ToolPolicy::Review => false,
         };
-        if needs_approval {
+        if needs_permission {
             let tier = if mcp_readonly_tool {
-                approval::Tier::Read
+                permission::Tier::Read
             } else {
-                approval::tier_of_arguments(name, arguments)
+                permission::tier_of_arguments(name, arguments)
             };
             let sandboxed = matches!(call.policy, ToolPolicy::Execute { .. })
                 && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval");
-            self.approval.enforce_for(
+            self.permission.enforce_for(
                 permissions,
                 name,
                 arguments,
@@ -346,7 +345,7 @@ impl Tools {
 pub(super) struct AuthorizedAccess {
     pub(super) mcp_access: pp_mcp::Access,
     pub(super) lsp_access: pp_lsp::tool::Access,
-    pub(super) permissions: EffectivePermissions,
+    pub(super) permissions: PermissionMode,
 }
 
 impl Drop for Tools {

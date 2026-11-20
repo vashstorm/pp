@@ -258,7 +258,7 @@ impl Policy {
     pub fn with_command_grant(&self, writable: &[PathBuf], network: bool) -> Result<Arc<Self>> {
         anyhow::ensure!(
             self.resolve_extra_writable(writable)? == writable,
-            "extra writable directories changed during approval"
+            "extra writable directories changed during permission check"
         );
         let mut next = self.clone();
         next.writable.extend_from_slice(writable);
@@ -590,12 +590,11 @@ impl Sandbox {
     }
 
     pub fn view(&self, mode: Option<SandboxMode>) -> SandboxView<'_> {
-        let mode = mode.unwrap_or_else(|| {
-            self.state
-                .read()
-                .expect("sandbox state lock poisoned")
-                .configured()
-        });
+        let state = self.state.read().expect("sandbox state lock poisoned");
+        let mode = state
+            .override_mode
+            .or(mode)
+            .unwrap_or_else(|| state.configured());
         SandboxView {
             sandbox: self,
             mode,
@@ -846,7 +845,7 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
         push_unique(&mut protect, guard::normalize_path(&state.cwd.join(rel)));
     }
     if let Some(home) = home {
-        for rel in [".pp/agent/approval.yml", ".pp/agent/approval.lock"] {
+        for rel in [".pp/agent/permission.toml", ".pp/agent/permission.lock"] {
             push_unique(&mut protect, guard::normalize_path(&home.join(rel)));
         }
     }

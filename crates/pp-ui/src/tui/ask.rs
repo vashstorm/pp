@@ -88,7 +88,7 @@ pub(super) struct Panel {
     error: Option<String>,
     submitted: bool,
     review_scroll: usize,
-    approval: bool,
+    permission: bool,
     details_offset: usize,
     details_limit: usize,
     overlay: Option<Rect>,
@@ -98,12 +98,12 @@ pub(super) struct Panel {
 impl Panel {
     pub(super) fn new(request: AskRequest) -> Self {
         let AskRequest { args, call_id } = request;
-        let approval = call_id == "approval-dialog"
-            || call_id.starts_with("subagent-") && call_id.ends_with("-approval");
+        let permission = call_id == "permission-dialog"
+            || call_id.starts_with("subagent-") && call_id.ends_with("-permission");
         let states = args
             .questions
             .iter()
-            .map(|question| QuestionState::new(question, !approval))
+            .map(|question| QuestionState::new(question, !permission))
             .collect();
         Self {
             questions: args,
@@ -113,7 +113,7 @@ impl Panel {
             error: None,
             submitted: false,
             review_scroll: 0,
-            approval,
+            permission,
             details_offset: 0,
             details_limit: 0,
             overlay: None,

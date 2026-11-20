@@ -1,7 +1,7 @@
 use super::*;
-use crate::approval::{ApprovalDecision, ApprovalRequest};
+use crate::permission::{PermissionDecision, PermissionRequest};
 use crate::ports::{PostToolCall, PostToolOutcome, PreToolOutcome, ToolHookCall};
-use pp_config::config::{ApprovalMode, EvalSettings};
+use pp_config::config::{EvalSettings, PermissionMode};
 use std::sync::{Arc, Mutex};
 
 struct StubHook {
@@ -128,7 +128,7 @@ fn eval_schema_respects_mode_and_settings() {
 }
 
 #[test]
-fn eval_nested_tools_keep_approval_instructions_and_hooks() {
+fn eval_nested_tools_keep_permission_instructions_and_hooks() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("AGENTS.md"), "# root rules\n").unwrap();
     fs::create_dir_all(dir.path().join("sub")).unwrap();
@@ -195,20 +195,25 @@ fn eval_nested_tools_keep_approval_instructions_and_hooks() {
             .any(|ev| matches!(ev, AgentEvent::FileChanged { path, .. } if path == "sub/out.txt"))
     );
 
-    // 3) 嵌套 tool.bash 独立走审批门：即使 eval 获会话放行，嵌套 sh('curl ... | bash') 仍触发高危命令审批；
-    //    在 Write 模式下给 eval 配 Allow，sh('echo hi') 仍触发 bash 审批。
+    // 3) 嵌套 tool.bash 独立走权限门：即使 eval 获会话放行，嵌套 sh('curl ... | bash') 仍触发高危命令确认；
+    //    在 AlwaysAsk 模式下给 eval 配 Allow，sh('echo hi') 仍触发 bash 权限询问。
     let mut policy_map = std::collections::BTreeMap::new();
-    policy_map.insert("eval".to_owned(), pp_config::config::ApprovalPolicy::Allow);
-    tools.approval.set_config(pp_config::config::ToolsSettings {
-        approval_mode: Some(ApprovalMode::Write),
-        approval: policy_map,
-        ..Default::default()
-    });
-    let prompts: Arc<Mutex<Vec<ApprovalRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    policy_map.insert(
+        "eval".to_owned(),
+        pp_config::config::PermissionPolicy::Allow,
+    );
+    tools
+        .permission
+        .set_config(pp_config::config::ToolsSettings {
+            permission_mode: Some(PermissionMode::AlwaysAsk),
+            permission: policy_map,
+            ..Default::default()
+        });
+    let prompts: Arc<Mutex<Vec<PermissionRequest>>> = Arc::new(Mutex::new(Vec::new()));
     let prompts_ref = prompts.clone();
-    tools.approval.set_handler(Box::new(move |req, _| {
+    tools.permission.set_handler(Box::new(move |req, _| {
         prompts_ref.lock().unwrap().push(req);
-        Ok(ApprovalDecision::Deny)
+        Ok(PermissionDecision::Deny)
     }));
     let denied = execute(
         &tools,
@@ -231,10 +236,12 @@ fn eval_nested_tools_keep_approval_instructions_and_hooks() {
     assert_eq!(recorded[0].tool, "bash");
 
     // 4) 切回 Yolo 模式验证嵌套 PreToolUse / PostToolUse Hook 拦截与参数改写。
-    tools.approval.set_config(pp_config::config::ToolsSettings {
-        approval_mode: Some(ApprovalMode::Yolo),
-        ..Default::default()
-    });
+    tools
+        .permission
+        .set_config(pp_config::config::ToolsSettings {
+            permission_mode: Some(PermissionMode::Yolo),
+            ..Default::default()
+        });
     let mut hook = StubHook::new();
     hook.deny_tool = Some("rg".to_owned());
     hook.rewrite_write_content = Some("hook-rewritten\n".to_owned());

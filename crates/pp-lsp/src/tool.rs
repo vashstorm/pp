@@ -317,8 +317,8 @@ pub fn validate_access(arguments: &str, access: Access) -> Result<()> {
     enforce_access(&params, access)
 }
 
-/// 审批分档：只读动作 Read；写动作（含预览）Write；工作区诊断与无效参数保守处理。
-pub fn approval_tier(arguments: &str) -> Tier {
+/// 权限分档：只读动作 Read；写动作（含预览）Write；工作区诊断与无效参数保守处理。
+pub fn permission_tier(arguments: &str) -> Tier {
     let Ok(params) = Params::parse(arguments) else {
         return Tier::Write;
     };

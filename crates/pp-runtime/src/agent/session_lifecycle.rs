@@ -79,9 +79,9 @@ impl Agent {
         if let Some(id) = journal.id() {
             let _ = tools.artifacts.bind(journal.directory(), id);
         }
-        // 审批配置沿用当前 settings.yml，不恢复 checkpoint 中的旧值；
+        // 权限配置沿用当前 settings.yml，不恢复 checkpoint 中的旧值；
         // 会话级授权本来就不序列化。
-        tools.approval.set_config(config.settings.tools.clone());
+        tools.permission.set_config(config.settings.tools.clone());
         // 复用进程级单例：启动期后台建连可能仍在进行，这里只登记目标 access，
         // 首个任务入口统一等待并刷新工具，切换会话不阻塞界面。
         tools.mcp.start_connect(tools.mcp_access());
@@ -302,7 +302,7 @@ impl Agent {
             }
             return Err(error);
         }
-        self.tools.approval.clear_session();
+        self.tools.permission.clear_session();
         self.session = session;
         self.reset_lsp_diagnostics();
         self.tools.clear_caches();
@@ -345,7 +345,7 @@ impl Agent {
             mode: self.workflow.mode,
             ..Default::default()
         };
-        self.tools.approval.clear_session();
+        self.tools.permission.clear_session();
         self.journal.reset();
         self.tools.artifacts = Default::default();
         // /new 是新的会话根：旧临时管道正文与 URI 一律失效。

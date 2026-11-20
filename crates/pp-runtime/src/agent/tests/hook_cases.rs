@@ -618,7 +618,7 @@ fn hooks_pre_tool_use_deny_blocks_even_in_yolo() {
 }
 
 #[test]
-fn hooks_pre_tool_use_allow_keeps_the_original_approval_denial() {
+fn hooks_pre_tool_use_allow_keeps_the_original_permission_denial() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let script = hook_script(
@@ -631,11 +631,11 @@ fn hooks_pre_tool_use_allow_keeps_the_original_approval_denial() {
             dir.path(),
             protocol,
             &server.addr().to_string(),
-            "tools:\n  approvalMode: write\n",
+            "tools:\n  permissionMode: always-ask\n",
             Some(&hook_yaml("PreToolUse", &script)),
         );
-        agent.set_approval_handler(Box::new(|_request, _cancellation| {
-            Ok(pp_tools::approval::ApprovalDecision::Deny)
+        agent.set_permission_handler(Box::new(|_request, _cancellation| {
+            Ok(pp_tools::permission::PermissionDecision::Deny)
         }));
         let serving = protocol.to_owned();
         let worker = Arc::clone(&server);
@@ -673,7 +673,7 @@ fn hooks_pre_tool_use_allow_keeps_the_original_approval_denial() {
 }
 
 #[test]
-fn hooks_pre_tool_use_ask_fails_without_an_approval_handler() {
+fn hooks_pre_tool_use_ask_fails_without_a_permission_handler() {
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let script = hook_script(

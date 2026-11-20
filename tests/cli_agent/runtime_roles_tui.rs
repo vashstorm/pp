@@ -26,7 +26,7 @@ fn slow_tui_runtime_role_changes_switch_children_at_their_own_committed_boundary
         let home = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("marker.txt"), "child tool marker").unwrap();
-        std::fs::write(config_path(home.path(), "settings.yml"), "default_model: fixture/one\ntask: {idle_ttl_ms: 1}\ntools: {approvalMode: yolo}\nmodel_roles:\n  fast: {model: fixture/one, effort: none}\n").unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), "default_model: fixture/one\ntask: {idle_ttl_ms: 1}\ntools: {permissionMode: yolo}\nmodel_roles:\n  fast: {model: fixture/one, effort: none}\n").unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),
             json!({"providers":{"fixture":slash_provider(&fixture,"fixture",protocol,json!({

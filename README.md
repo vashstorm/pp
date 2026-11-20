@@ -36,7 +36,7 @@ Foreground Bash normally uses `bash_timeout_seconds` (default: 60 seconds). Opti
 
 Model-facing Bash results also include a recovery notice with a concrete `read` example when an artifact is available, or explain when capture failed. Notices distinguish complete logs, growing snapshots, and incomplete head/tail samples.
 
-`eval` provides a persistent, stateful Python 3.9+ kernel (`language: "py"`) across turns in Execute mode (hidden automatically when `eval.enabled` is false or no working interpreter is detected). It supports top-level `await`, trailing expression echo, magics (`%load`, `%pip`, `%cd`, `%env`, `!cmd`, `%%bash`), `matplotlib`/`PIL` image capture, and an in-process duplex NDJSON bridge (`tool.<name>(...)`, `read`, `write`, `rg`, `glob`, `sh`, `env`) that enforces the same approval, `AGENTS.md`, and hook gates as top-level calls. Configure `eval` (`enabled`, `interpreter`, `timeout_seconds`, `max_timeout_seconds`) in `~/.pp/agent/settings.yml`.
+`eval` provides a persistent, stateful Python 3.9+ kernel (`language: "py"`) across turns in Execute mode (hidden automatically when `eval.enabled` is false or no working interpreter is detected). It supports top-level `await`, trailing expression echo, magics (`%load`, `%pip`, `%cd`, `%env`, `!cmd`, `%%bash`), `matplotlib`/`PIL` image capture, and an in-process duplex NDJSON bridge (`tool.<name>(...)`, `read`, `write`, `rg`, `glob`, `sh`, `env`) that enforces the same permission, `AGENTS.md`, and hook gates as top-level calls. Configure `eval` (`enabled`, `interpreter`, `timeout_seconds`, `max_timeout_seconds`) in `~/.pp/agent/settings.yml`.
 
 ## Quick start
 
@@ -124,7 +124,7 @@ pp --model deepseek/deepseek-flash:high /commit
 pp /stats --host 127.0.0.1 --port 0 --no-open
 ```
 
-> **Permissions and data** — `accept-edits` is the default preset. It uses the workspace sandbox and prompts for extra Bash access on request. Set `tools.permissionMode` in `settings.yml` to choose another preset. `always-ask` also asks before write and execution tools. `yolo` turns off the pp sandbox and skips routine tool approvals. The colored TUI footer shows the active mode. Press Alt + Shift + A or F6 to cycle, or use `/permissions` to see the effective sandbox and approval settings. Without a preset override, explicit legacy approval settings and customized sandbox settings use Legacy mode. API keys in the model configuration are stored in plain text. Sessions and statistics may contain source code and conversations. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
+> **Permissions and data** — `accept-edits` is the default preset. It uses the workspace sandbox and prompts for extra Bash access on request. Set `tools.permissionMode` in `settings.yml` to choose another preset (`always-ask`, `accept-edits`, or `yolo`). `always-ask` also asks before write and execution tools. `yolo` turns off the pp sandbox and skips routine tool permission prompts. The colored TUI footer shows the active mode. Press Alt + Shift + A or F6 to cycle, or use `/permissions` to see the effective sandbox and permission settings. API keys in the model configuration are stored in plain text. Sessions and statistics may contain source code and conversations. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
 
 ## Everyday use
 
@@ -168,8 +168,8 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 | `/test-write` | Dev/test only: typewriter reply at 12.5 mock tokens/s; the two writes of a 24/28-line `/tmp/pp-test-write/demo.txt` stream at 240 mock tokens/s so the write preview scrolls its tail, then an escape failure and bash cleanup |
 | `/test-ui` | Dev/test only: native Responses SSE reasoning and Markdown/code chunks at 12.5 mock tokens/s |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | Manage MCP servers without restarting |
-| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <id>]` | Inspect or switch the process permission preset, or manage project-scoped rules saved in `~/.pp/agent/approval.yml` |
-| `/sandbox [auto\|workspace-write\|read-only\|off]` | Inspect the active sandbox, or override its mode when using legacy settings |
+| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <id>]` | Inspect or switch the process permission preset, or manage project-scoped rules saved in `~/.pp/agent/permission.toml` |
+| `/sandbox [auto\|workspace-write\|read-only\|off]` | Inspect the active sandbox, or override its mode for this session |
 | `/compact`, `/new` | Compact context or start a new session |
 | `/context` | Inspect session context grid and 10-category breakdown (`System Prompt`, `Instruction Files`, `Skills`, `Built-in Tools`, `Custom Tools`, `User / Developer Messages`, `Assistant Messages`, `Assistant Thinking`, `Tool Calls`, `Tool Output`) with in-place item expansion, `Auto-Compact Buffer`, and `Free Space` (TUI, alias `/ctx`). Available even before the first message or during a running task; `r` refreshes |
 | `/resume`, `/tree` | Restore a session or navigate back through current history (TUI only) |
@@ -205,7 +205,7 @@ Type `@` for project file path completion. When idle with an empty input, press 
 
 `-F: true` treats metacharacters literally and skips the lenient compile chain and the PCRE2 fallback; `\n` then means a backslash followed by `n`, and only a real newline enables multiline matching. `-w: true` requires whole-word matches and combines with `-F`. `-t` takes a file type or a list of them (`!name` excludes, `all` is valid, unknown types are rejected), and `-g` (plain-name alias `glob`) takes an override glob or list (`!` excludes, ranked above ignore files, and a pattern without `/` matches basenames at any depth); both filter directory traversal only, so files named explicitly in `path` are always searched. `max_count` caps matches per file like `rg -m`; `0` performs no search and returns `No matches found` with `details.fileCount: 0`.
 
-The tool is named `rg` throughout: `settings.yml` uses the top-level `rg:` key (the former `grep:` key fails strict parsing now), and `tools.approval` entries use `rg`.
+The tool is named `rg` throughout: `settings.yml` uses the top-level `rg:` key (the former `grep:` key fails strict parsing now), and `tools.permission` entries use `rg`.
 
 `max_output_tokens` is an optional positive integer (or `null` to keep the default). It budgets `content`, including notices, using the existing estimate of one token per three JSON-encoded bytes; structured metadata is excluded, so this is not an exact provider token count or a cap on the entire result. All three output modes retain the 50 KiB hard limit. Results stop at complete rendered lines and set `details.tokenLimitReached` and `details.truncated` when the token budget is reached. Very small budgets may return empty content; check the metadata. Count totals remain available in metadata, and only returned complete source lines gain Hashline edit eligibility. For example: `rg({"pattern":"Barrier","path":"src","max_output_tokens":2000})`.
 

@@ -173,7 +173,7 @@ pub(super) enum WorkerEvent {
     // 压缩终态：与普通任务 Completed 是不同的判别值，不触发任务收尾展示。
     Compacted(Result<CompactionOutcome>),
     SandboxStatus(Result<(pp_sandbox::SandboxStatus, bool)>),
-    Permissions(pp_permission::EffectivePermissions, Result<Option<String>>),
+    Permissions(pp_config::config::PermissionMode, Result<Option<String>>),
     ContextInspected(Result<pp_runtime::agent::context_diagnosis::ContextReport>),
     Reset,
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),

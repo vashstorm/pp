@@ -75,9 +75,9 @@ fn permission_tui_cycles_modes_with_both_shortcuts_and_keeps_draft() {
 fn permission_tui_preserves_mode_across_new_and_plan() {
     let home = tempfile::tempdir().unwrap();
     permission_fixture(home.path());
-    write_settings(home.path(), "tools: { approvalMode: yolo }").unwrap();
+    write_settings(home.path(), "tools: { permissionMode: always-ask }").unwrap();
     let mut pty = Pty::start_with_existing_files(home.path());
-    pty.wait_for("旧配置档位", |screen| screen.contents().contains("Legacy"));
+    pty.wait_for("初始模式", |screen| screen.contents().contains("Always-ask"));
     pty.input("/permissions yolo\r");
     pty.wait_for("切换到新版 YOLO", |screen| {
         permission_label(screen, "YOLO", vt100::Color::Rgb(224, 108, 117))
@@ -131,7 +131,7 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
         contents.contains("outbound network") && contents.contains("Always allow in this project")
     });
     let marker = cwd.join("marker");
-    let store = config_path(home.path(), "approval.yml");
+    let store = config_path(home.path(), "permission.toml");
     assert!(!marker.exists());
     assert!(!store.exists());
     pty.input("\x1b[B\x1b[B\r");
@@ -142,9 +142,12 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
     assert_eq!(output["ok"], true, "{output}");
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "approved");
     let rules = std::fs::read_to_string(&store).unwrap();
-    assert!(rules.contains(command));
-    final_reply(request, "sandbox approval completed");
-    pty.completed_after("sandbox approval completed");
+    assert!(rules.contains("version = 1"), "{rules}");
+    assert!(rules.contains("[[rules]]"), "{rules}");
+    assert!(rules.contains("[rules.grant]"), "{rules}");
+    assert!(rules.contains(command), "{rules}");
+    final_reply(request, "sandbox permission completed");
+    pty.completed_after("sandbox permission completed");
     pty.input("/quit\r");
     pty.finish();
     no_more(&server);

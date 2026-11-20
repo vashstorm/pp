@@ -43,6 +43,6 @@ Use bash mode background and bash_task ONLY for persistent services (such as a d
 {{#if has_eval}}
 eval: persistent Python 3.9+ kernel (language: "py"); variables, imports, and functions persist across calls until reset: true or /new. NEVER shell out to python -c via bash when eval is available.
 Supports top-level await, trailing non-None expression echo, %load <path>, %pip <args>, %cd/%pwd/%ls/%env/%time/%who, !cmd, %%bash, and matplotlib/PIL image attachments.
-Built-in helpers (sync or await): tool.<name>(...) invokes any allowed session tool through the same approval/hook/AGENTS.md gates; read(path, offset?, limit?), write(path, content), rg(pattern, path?), glob(pattern, path?), sh(command, timeout_seconds?), env(key?, value?).
+Built-in helpers (sync or await): tool.<name>(...) invokes any allowed session tool through the same permission/hook/AGENTS.md gates; read(path, offset?, limit?), write(path, content), rg(pattern, path?), glob(pattern, path?), sh(command, timeout_seconds?), env(key?, value?).
 Timeout defaults to {{eval_timeout_seconds}}s (1-{{eval_max_timeout_seconds}}s); nested host tool calls pause the Python compute budget.
 {{/if}}

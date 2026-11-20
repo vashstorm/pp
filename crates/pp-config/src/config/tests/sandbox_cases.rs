@@ -103,12 +103,12 @@ fn sandbox_mode_patch_persists_and_from_str_parses() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.yml");
-    std::fs::write(&path, "# keep\ntools:\n  approvalMode: write\n").unwrap();
+    std::fs::write(&path, "# keep\ntools:\n  permissionMode: always-ask\n").unwrap();
 
     let saved =
         update_general_setting(&path, SettingPatch::SandboxMode(SandboxMode::ReadOnly)).unwrap();
     assert_eq!(saved.tools.sandbox.mode, SandboxMode::ReadOnly);
-    assert_eq!(saved.tools.approval_mode, Some(ApprovalMode::Write));
+    assert_eq!(saved.tools.permission_mode, Some(PermissionMode::AlwaysAsk));
     assert!(
         std::fs::read_to_string(&path)
             .unwrap()

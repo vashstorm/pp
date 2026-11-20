@@ -81,7 +81,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         category: CommandCategory::Workflow,
         usage: "/permissions [always-ask|accept-edits|yolo|rules|revoke <id>]",
-        description: "View or switch permissions, or manage saved approvals",
+        description: "View or switch permissions, or manage saved permissions",
     },
     CommandSpec {
         name: "/sandbox",

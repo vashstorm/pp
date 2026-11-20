@@ -169,14 +169,13 @@ impl App {
                             PermissionMode::AcceptEdits => {
                                 "Confirm requests for extra sandbox permissions"
                             }
-                            PermissionMode::Yolo => "Disable sandbox and routine approvals",
+                            PermissionMode::Yolo => {
+                                "Disable sandbox and routine permission prompts"
+                            }
                         }
                         .into(),
                         icon: None,
-                        current: self
-                            .permission_mode
-                            .and_then(pp_permission::EffectivePermissions::preset)
-                            == Some(mode),
+                        current: self.permission_mode == Some(mode),
                     })
                     .collect()
             }

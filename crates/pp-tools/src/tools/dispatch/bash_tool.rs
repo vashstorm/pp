@@ -6,7 +6,7 @@ impl Tools {
     pub(in crate::tools) fn run_bash(
         &self,
         call: &mut ExecuteCall<'_, '_>,
-        permissions: pp_permission::EffectivePermissions,
+        permissions: pp_config::config::PermissionMode,
         sandbox: pp_sandbox::SandboxView<'_>,
     ) -> Result<Value> {
         let args: BashArgs =
@@ -27,7 +27,7 @@ impl Tools {
         let mut policy = sandbox.policy()?;
         if let Some(request) = args.sandbox_permissions {
             ensure!(
-                permissions.preset() == Some(pp_config::config::PermissionMode::AcceptEdits)
+                permissions == pp_config::config::PermissionMode::AcceptEdits
                     && matches!(call.policy, ToolPolicy::Execute { .. }),
                 "sandbox_permissions requires accept-edits in Execute mode"
             );
@@ -35,9 +35,9 @@ impl Tools {
             let writable = base.resolve_extra_writable(&request.writable)?;
             let network = request.network && !base.network();
             if network || !writable.is_empty() {
-                self.approval.authorize_sandbox(
+                self.permission.authorize_sandbox(
                     pp_permission::SandboxGrant {
-                        workspace: self.approval.workspace(&self.cwd).to_owned(),
+                        workspace: self.permission.workspace(&self.cwd).to_owned(),
                         cwd: self.cwd.clone(),
                         command: args.command.clone(),
                         writable: writable.clone(),

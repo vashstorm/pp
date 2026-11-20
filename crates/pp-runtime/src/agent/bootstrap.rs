@@ -99,7 +99,7 @@ impl Agent {
         tools.limits = config.settings.tool_limits();
         tools.configure_eval(catalog.eval_settings());
         tools.configure_web_search(catalog.web_search_settings().clone());
-        tools.approval.set_config(config.settings.tools.clone());
+        tools.permission.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
         // 进程级单例：启动期后台建连，不再阻塞首个界面；首个任务入口等它结束。
         // 连接失败不是启动失败：失败只落到 `/mcp list` 与提示行。
@@ -238,15 +238,16 @@ impl Agent {
             .set_tools(self.tools.all_definitions(self.workflow.mode));
     }
 
-    pub fn permission_mode(&self) -> pp_permission::EffectivePermissions {
-        self.tools.approval.snapshot()
+    pub fn permission_mode(&self) -> pp_config::config::PermissionMode {
+        self.tools.permission.snapshot()
     }
 
     pub fn set_permission_mode(
         &mut self,
         mode: Option<pp_config::config::PermissionMode>,
     ) -> Result<()> {
-        self.tools.approval.select(mode);
+        self.tools.permission.select(mode);
+        self.tools.sandbox().set_mode_override(None);
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
         self.refresh_instructions_changed()?;
@@ -254,11 +255,11 @@ impl Agent {
     }
 
     pub fn list_permission_rules(&self) -> Result<String> {
-        self.tools.approval.list_rules()
+        self.tools.permission.list_rules()
     }
 
     pub fn revoke_permission_rule(&self, id: &str) -> Result<()> {
-        self.tools.approval.revoke_rule(id)
+        self.tools.permission.revoke_rule(id)
     }
 
     pub fn sandbox_status(&self) -> pp_sandbox::SandboxStatus {
@@ -270,10 +271,6 @@ impl Agent {
         &mut self,
         mode: Option<pp_config::config::SandboxMode>,
     ) -> Result<()> {
-        anyhow::ensure!(
-            self.permission_mode().preset().is_none(),
-            "/sandbox can only change legacy settings; use /permissions to select a permission mode"
-        );
         let previous = self.tools.sandbox().mode_override();
         self.tools.sandbox().set_mode_override(mode);
         if matches!(
@@ -317,9 +314,9 @@ impl Agent {
         Ok(())
     }
 
-    /// 审批 handler 镜像 ask：不改变 schema 列表，无需刷新工具定义。
-    pub fn set_approval_handler(&mut self, handler: pp_tools::approval::ApprovalHandler) {
-        self.tools.approval.set_handler(handler);
+    /// 权限 handler 镜像 ask：不改变 schema 列表，无需刷新工具定义。
+    pub fn set_permission_handler(&mut self, handler: pp_tools::permission::PermissionHandler) {
+        self.tools.permission.set_handler(handler);
     }
 
     pub(in crate::agent) fn refresh_instructions(&mut self) -> Result<()> {

@@ -99,7 +99,7 @@ fn sandbox_line_mode_slash_command_inspects_and_overrides_runtime_mode() {
     let mut cli = LiveCli::new(Cli::start_with(
         &root,
         None,
-        "rate_limit_retry_budget_seconds: 0\ntools: {approvalMode: yolo}\n",
+        "rate_limit_retry_budget_seconds: 0\ntools: {permissionMode: accept-edits}\n",
         &fixture_models(&server),
     ));
 
@@ -107,7 +107,7 @@ fn sandbox_line_mode_slash_command_inspects_and_overrides_runtime_mode() {
     if sandbox_active {
         cli.wait_for(
             Pipe::Stderr,
-            "Sandbox: effective=workspace-write, configured=auto",
+            "Sandbox: effective=workspace-write, configured=workspace-write",
         );
         cli.input("/sandbox read-only\n");
         cli.wait_for(
@@ -115,7 +115,10 @@ fn sandbox_line_mode_slash_command_inspects_and_overrides_runtime_mode() {
             "Sandbox: effective=read-only, configured=read-only",
         );
     } else {
-        cli.wait_for(Pipe::Stderr, "Sandbox: effective=off, configured=auto");
+        cli.wait_for(
+            Pipe::Stderr,
+            "Sandbox: effective=unavailable, configured=workspace-write",
+        );
         cli.input("/sandbox read-only\n");
         cli.wait_for(Pipe::Stderr, "error:");
     }

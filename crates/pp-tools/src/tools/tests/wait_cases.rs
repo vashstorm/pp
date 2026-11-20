@@ -154,8 +154,8 @@ fn wait_validates_arguments_and_remains_available_without_subagents() {
         );
     }
     assert_eq!(
-        crate::tools::approval::tier_of("wait"),
-        crate::tools::approval::Tier::Read
+        crate::tools::permission::tier_of("wait"),
+        crate::tools::permission::Tier::Read
     );
     assert_eq!(execute(&tools, "wait", json!({}))["ok"], true);
     let result = tools.execute(

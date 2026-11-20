@@ -391,14 +391,13 @@ pub(super) fn status_line(
     Line::from(spans)
 }
 
-fn permission_field(permissions: pp_permission::EffectivePermissions) -> Span<'static> {
+fn permission_field(mode: pp_config::config::PermissionMode) -> Span<'static> {
     use pp_config::config::PermissionMode;
     let theme = themes::palette();
-    let (label, color) = match permissions.preset() {
-        Some(PermissionMode::AlwaysAsk) => ("Always-ask", theme.status_input),
-        Some(PermissionMode::AcceptEdits) => ("Accept-edits", theme.plan_mode),
-        Some(PermissionMode::Yolo) => ("YOLO", theme.error_border),
-        None => ("Legacy", theme.muted),
+    let (label, color) = match mode {
+        PermissionMode::AlwaysAsk => ("Always-ask", theme.status_input),
+        PermissionMode::AcceptEdits => ("Accept-edits", theme.plan_mode),
+        PermissionMode::Yolo => ("YOLO", theme.error_border),
     };
     let icon = match themes::current_icons() {
         IconMode::Nerd => "\u{f132}",
@@ -415,7 +414,7 @@ pub(super) fn primary(
     model: Option<&ModelChoice>,
     think_level: ThinkLevel,
     mode: pp_core::plan::WorkMode,
-    permissions: Option<pp_permission::EffectivePermissions>,
+    permissions: Option<pp_config::config::PermissionMode>,
     context: &StatusContext,
     width: u16,
 ) -> Line<'static> {
@@ -512,7 +511,6 @@ mod tests {
     fn primary_reserves_width_for_ascii_permission_field() {
         use pp_config::config::{PermissionMode, Theme};
         use pp_core::plan::WorkMode;
-        use pp_permission::EffectivePermissions;
 
         let (theme, icons) = themes::current();
         themes::set_active(Theme::Default, IconMode::Ascii);
@@ -521,7 +519,7 @@ mod tests {
                 None,
                 ThinkLevel::High,
                 WorkMode::Plan,
-                Some(EffectivePermissions::Preset(PermissionMode::AcceptEdits)),
+                Some(PermissionMode::AcceptEdits),
                 &StatusContext::default(),
                 width,
             );

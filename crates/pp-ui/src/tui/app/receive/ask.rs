@@ -39,11 +39,11 @@ impl App {
                             .as_ref()
                             .is_some_and(|token| !token.is_cancelled())
                         || request.call_id.starts_with("subagent-")
-                        || request.call_id == "approval-dialog")
+                        || request.call_id == "permission-dialog")
                     && self.ask_panel.is_none()
                     && (self.conversation.has_running_ask(&request.call_id)
                         || request.call_id.starts_with("subagent-")
-                        || request.call_id == "approval-dialog")
+                        || request.call_id == "permission-dialog")
                 {
                     self.menu = None;
                     self.menu_dismissed = true;

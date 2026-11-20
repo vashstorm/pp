@@ -122,7 +122,7 @@ impl Panel {
         let focused = self.states[index].menu.selected_index().unwrap_or(0);
         match key.code {
             KeyCode::Esc => Action::Cancel,
-            KeyCode::PageUp | KeyCode::PageDown if self.approval => {
+            KeyCode::PageUp | KeyCode::PageDown if self.permission => {
                 self.details_offset = if key.code == KeyCode::PageUp {
                     self.details_offset.saturating_sub(1)
                 } else {

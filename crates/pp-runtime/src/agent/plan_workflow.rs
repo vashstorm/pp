@@ -588,7 +588,7 @@ impl Agent {
         self.session = session;
         self.reset_lsp_diagnostics();
         self.workflow = workflow;
-        self.tools.approval.clear_session();
+        self.tools.permission.clear_session();
         self.journal = journal;
         self.tools.artifacts = Default::default();
         // 恢复的会话是新的有效根；不承诺旧临时管道正文跨恢复存在。

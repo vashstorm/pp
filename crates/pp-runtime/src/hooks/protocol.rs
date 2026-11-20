@@ -375,10 +375,10 @@ fn apply_specific(
                     "ask" => {
                         output.ask = Some(bound(&fallback_reason(
                             nested.get("permissionDecisionReason"),
-                            "a PreToolUse hook requires approval for this tool call.",
+                            "a PreToolUse hook requires permission for this tool call.",
                         )));
                     }
-                    // `allow` 只表示 hook 不拦截；不跳过 pp 原有审批。
+                    // `allow` 只表示 hook 不拦截；不跳过 pp 原有权限检查。
                     "allow" => {}
                     other => bail!(
                         "{} hook returned unsupported permissionDecision {other:?}",

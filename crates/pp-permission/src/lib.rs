@@ -1,10 +1,10 @@
-//! 生效权限、工具审批与用户授权。
+//! 生效权限、工具门禁与用户授权。
 //!
-//! 交互请求经 `ApprovalHandler` 交给调用方，
-//! 无 handler 时拒绝调用。工具白名单先于审批检查；Execute 工具与
+//! 交互请求经 `PermissionHandler` 交给调用方，
+//! 无 handler 时拒绝调用。工具白名单先于权限检查；Execute 工具与
 //! Plan 中未标为只读的 MCP 工具经过本模块。
 
-use pp_config::config::{ApprovalMode, ApprovalPolicy, PermissionMode, SandboxMode};
+use pp_config::config::{PermissionMode, PermissionPolicy, SandboxMode};
 use std::path::{Path, PathBuf};
 
 mod rules;
@@ -20,26 +20,24 @@ use pp_core::cancellation::CancellationToken;
 
 pub use pp_workspace::Tier;
 
-/// settings.yml `tools:` 小节的运行时形态；构造在审批门内部完成。
+/// settings.yml `tools:` 小节的运行时形态；构造在权限门内部完成。
 #[derive(Clone, Debug, Default)]
-struct ApprovalConfig {
-    mode: ApprovalMode,
-    policy: BTreeMap<String, ApprovalPolicy>,
+struct PermissionConfig {
+    policy: BTreeMap<String, PermissionPolicy>,
 }
 
-impl From<pp_config::config::ToolsSettings> for ApprovalConfig {
+impl From<pp_config::config::ToolsSettings> for PermissionConfig {
     fn from(settings: pp_config::config::ToolsSettings) -> Self {
         Self {
-            mode: settings.approval_mode.unwrap_or_default(),
-            policy: settings.approval,
+            policy: settings.permission,
         }
     }
 }
 
-/// 审批请求：只携带工具名与脱敏 reason，不携带参数原文；
+/// 权限请求：只携带工具名与脱敏 reason，不携带参数原文；
 /// 参数详情在 TUI 中经既有 ToolStarted / Ctrl+O 查看。
 #[derive(Clone, Debug)]
-pub struct ApprovalRequest {
+pub struct PermissionRequest {
     pub tool: String,
     pub agent: Option<String>,
     pub reason: String,
@@ -50,48 +48,16 @@ pub struct ApprovalRequest {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ApprovalDecision {
+pub enum PermissionDecision {
     Approve,
     ApproveSession,
     ApprovePersistently,
     Deny,
 }
 
-pub type ApprovalCallback =
-    dyn Fn(ApprovalRequest, &CancellationToken) -> Result<ApprovalDecision> + Send + Sync;
-pub type ApprovalHandler = Box<ApprovalCallback>;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EffectivePermissions {
-    Legacy(ApprovalMode),
-    Preset(PermissionMode),
-}
-
-impl EffectivePermissions {
-    pub fn preset(self) -> Option<PermissionMode> {
-        match self {
-            Self::Legacy(_) => None,
-            Self::Preset(mode) => Some(mode),
-        }
-    }
-
-    pub fn sandbox_mode(self) -> Option<SandboxMode> {
-        match self {
-            Self::Legacy(_) => None,
-            Self::Preset(PermissionMode::Yolo) => Some(SandboxMode::Off),
-            Self::Preset(_) => Some(SandboxMode::WorkspaceWrite),
-        }
-    }
-
-    pub fn approval_mode(self) -> ApprovalMode {
-        match self {
-            Self::Legacy(mode) => mode,
-            Self::Preset(PermissionMode::AlwaysAsk) => ApprovalMode::AlwaysAsk,
-            Self::Preset(PermissionMode::AcceptEdits) => ApprovalMode::Write,
-            Self::Preset(PermissionMode::Yolo) => ApprovalMode::Yolo,
-        }
-    }
-}
+pub type PermissionCallback =
+    dyn Fn(PermissionRequest, &CancellationToken) -> Result<PermissionDecision> + Send + Sync;
+pub type PermissionHandler = Box<PermissionCallback>;
 
 pub struct ToolAccess {
     pub tier: Tier,
@@ -100,29 +66,27 @@ pub struct ToolAccess {
 
 #[derive(Default)]
 struct ModeState {
-    configured: Option<PermissionMode>,
+    configured: PermissionMode,
     startup: Option<PermissionMode>,
-    force_legacy: bool,
     selected: Option<PermissionMode>,
+    manage_sandbox: bool,
 }
 
 impl ModeState {
-    fn current(&self) -> Option<PermissionMode> {
-        self.selected
-            .or(self.startup)
-            .or_else(|| self.configured.filter(|_| !self.force_legacy))
+    fn current(&self) -> PermissionMode {
+        self.selected.or(self.startup).unwrap_or(self.configured)
     }
 }
 
 #[derive(Clone)]
 pub struct Gate {
-    config: ApprovalConfig,
-    default_mode: Option<PermissionMode>,
-    /// `--approval-mode` flag 覆盖；`None` 时使用配置值。
-    override_mode: Option<ApprovalMode>,
+    config: PermissionConfig,
+    default_mode: PermissionMode,
+    is_process: bool,
+    sandbox_override: bool,
     /// 常规工具的会话级授权。
     grants: Arc<Mutex<HashSet<String>>>,
-    handler: Option<Arc<ApprovalCallback>>,
+    handler: Option<Arc<PermissionCallback>>,
     modes: Arc<Mutex<ModeState>>,
     sandbox_grants: Arc<Mutex<HashSet<SandboxGrant>>>,
     store: Option<rules::Store>,
@@ -137,13 +101,18 @@ impl Default for Gate {
 
 impl Gate {
     pub fn new() -> Self {
+        let default_mode = PermissionMode::Yolo;
         Self {
-            config: ApprovalConfig::default(),
-            default_mode: None,
-            override_mode: None,
+            config: PermissionConfig::default(),
+            default_mode,
+            is_process: false,
+            sandbox_override: false,
             grants: Default::default(),
             handler: None,
-            modes: Default::default(),
+            modes: Arc::new(Mutex::new(ModeState {
+                configured: default_mode,
+                ..Default::default()
+            })),
             sandbox_grants: Default::default(),
             store: None,
             workspace: None,
@@ -154,19 +123,19 @@ impl Gate {
         agent_dir: &Path,
         workspace: &Path,
         startup: Option<PermissionMode>,
-        legacy_approval: Option<ApprovalMode>,
-        legacy_sandbox_override: bool,
+        sandbox_override: bool,
     ) -> Self {
-        let default_mode = Some(PermissionMode::AcceptEdits);
+        let default_mode = PermissionMode::AcceptEdits;
         Self {
             default_mode,
+            is_process: true,
+            sandbox_override,
             modes: Arc::new(Mutex::new(ModeState {
                 configured: default_mode,
                 startup,
-                force_legacy: legacy_approval.is_some() || legacy_sandbox_override,
-                ..Default::default()
+                selected: None,
+                manage_sandbox: startup.is_some() || !sandbox_override,
             })),
-            override_mode: legacy_approval,
             store: Some(rules::Store::new(agent_dir)),
             workspace: Some(
                 workspace
@@ -187,21 +156,28 @@ impl Gate {
             .is_some_and(|store| store.protects_path(path))
     }
 
-    pub fn snapshot(&self) -> EffectivePermissions {
+    pub fn snapshot(&self) -> PermissionMode {
+        self.modes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .current()
+    }
+
+    pub fn sandbox_mode(&self) -> Option<SandboxMode> {
         let state = self.modes.lock().unwrap_or_else(|error| error.into_inner());
-        state.current().map_or(
-            EffectivePermissions::Legacy(self.override_mode.unwrap_or(self.config.mode)),
-            EffectivePermissions::Preset,
-        )
+        state.manage_sandbox.then(|| match state.current() {
+            PermissionMode::Yolo => SandboxMode::Off,
+            PermissionMode::AcceptEdits | PermissionMode::AlwaysAsk => SandboxMode::WorkspaceWrite,
+        })
     }
 
     pub fn select(&self, requested: Option<PermissionMode>) {
         let mut state = self.modes.lock().unwrap_or_else(|error| error.into_inner());
         let current = state.current();
-        let selected = requested
-            .unwrap_or_else(|| current.map_or(PermissionMode::AcceptEdits, PermissionMode::next));
+        let selected = requested.unwrap_or_else(|| current.next());
         state.selected = Some(selected);
-        if current != Some(selected) {
+        state.manage_sandbox = true;
+        if current != selected {
             self.grants
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
@@ -210,12 +186,10 @@ impl Gate {
     }
 
     pub fn clear_session(&self) {
-        if self.snapshot().preset().is_some() {
-            self.grants
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clear();
-        }
+        self.grants
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
         self.sandbox_grants
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -262,10 +236,10 @@ impl Gate {
         let Some(handler) = &self.handler else {
             if let Some(message) = load_error {
                 bail!(
-                    "Bash requires sandbox approval and no interactive UI is available. {message}"
+                    "Bash requires sandbox permission and no interactive UI is available. {message}"
                 );
             }
-            bail!("Bash requires sandbox approval and no interactive UI is available.");
+            bail!("Bash requires sandbox permission and no interactive UI is available.");
         };
         let mut reason = grant.summary();
         if let Some(message) = &load_error {
@@ -273,7 +247,7 @@ impl Gate {
         }
         let persistent_grant = self.store.is_some() && load_error.is_none();
         let decision = handler(
-            ApprovalRequest {
+            PermissionRequest {
                 tool: "bash".into(),
                 agent: None,
                 reason,
@@ -284,24 +258,26 @@ impl Gate {
         )?;
         pp_core::cancellation::check(cancellation)?;
         match decision {
-            ApprovalDecision::Approve => Ok(()),
-            ApprovalDecision::ApproveSession => {
+            PermissionDecision::Approve => Ok(()),
+            PermissionDecision::ApproveSession => {
                 self.sandbox_grants
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
                     .insert(grant);
                 Ok(())
             }
-            ApprovalDecision::ApprovePersistently if persistent_grant => {
+            PermissionDecision::ApprovePersistently if persistent_grant => {
                 self.store
                     .as_ref()
-                    .expect("批准选项要求有规则存储")
+                    .expect("持久授权选项要求有规则存储")
                     .save(grant)?;
                 pp_core::cancellation::check(cancellation)?;
                 Ok(())
             }
-            ApprovalDecision::ApprovePersistently => bail!("persistent permission is unavailable"),
-            ApprovalDecision::Deny => bail!("Bash sandbox permission was denied by the user."),
+            PermissionDecision::ApprovePersistently => {
+                bail!("persistent permission is unavailable")
+            }
+            PermissionDecision::Deny => bail!("Bash sandbox permission was denied by the user."),
         }
     }
 
@@ -315,40 +291,34 @@ impl Gate {
             }));
         }
     }
+
     pub fn set_config(&mut self, settings: pp_config::config::ToolsSettings) {
-        // 已配置旧审批或自定义沙盒的用户沿用原模式，显式权限预设仍可覆盖。
-        let legacy_configured = settings.approval_mode.is_some()
-            || !settings.approval.is_empty()
-            || !settings.sandbox.is_default();
-        self.modes
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .configured = settings
-            .permission_mode
-            .or(self.default_mode.filter(|_| !legacy_configured));
-        self.config = ApprovalConfig::from(settings);
+        {
+            let mut state = self.modes.lock().unwrap_or_else(|error| error.into_inner());
+            state.configured = settings.permission_mode.unwrap_or(self.default_mode);
+            state.manage_sandbox = state.selected.is_some()
+                || state.startup.is_some()
+                || settings.permission_mode.is_some()
+                || (self.is_process && !self.sandbox_override && settings.sandbox.is_default());
+        }
+        self.config = PermissionConfig::from(settings);
     }
 
-    pub fn set_override(&mut self, mode: ApprovalMode) {
-        tracing::debug!(mode = mode.as_str(), "设置工具审批模式");
-        self.override_mode = Some(mode);
-    }
-
-    pub fn set_handler(&mut self, handler: ApprovalHandler) {
+    pub fn set_handler(&mut self, handler: PermissionHandler) {
         self.handler = Some(Arc::from(handler));
     }
 
-    /// 生效审批档位（flag 覆盖优先）；只读查询，不另存权限状态。
-    pub fn effective_mode(&self) -> ApprovalMode {
-        self.snapshot().approval_mode()
+    /// 生效权限档位；只读查询，不另存状态。
+    pub fn effective_mode(&self) -> PermissionMode {
+        self.snapshot()
     }
 
-    /// 单次工具调用的审批决策。决策顺序：
-    /// 1) YOLO 无条件跳过审批，包括显式 policy 和关键命令检查
+    /// 单次工具调用的权限决策。决策顺序：
+    /// 1) YOLO 无条件跳过常规权限检查，包括显式 policy 和关键命令检查
     /// 2) 用户 policy（Deny 拒绝、Allow 旁路一切后续检查）
     /// 3) bash 内置关键命令强制 prompt（无会话级选项）
     /// 4) 用户 policy `Prompt` 强制 prompt（无会话级选项）
-    /// 5) 生效模式按 tier 放行或进入 prompt（`lsp` 的 tier 结合动作参数）
+    /// 5) 生效模式按 tier 与沙盒状态放行或进入 prompt（`lsp` 的 tier 结合动作参数）
     /// 6) 会话级授权命中放行，否则 prompt（无 handler 时 fail-closed）
     pub fn enforce(
         &self,
@@ -373,25 +343,24 @@ impl Gate {
 
     pub fn enforce_for(
         &self,
-        permissions: EffectivePermissions,
+        mode: PermissionMode,
         name: &str,
         arguments: &str,
         access: ToolAccess,
         hook_ask: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
-        let mode = permissions.approval_mode();
         let tier = access.tier;
         if let Some(reason) = hook_ask {
-            // hook 的 ask 强制一次审批：YOLO 与已有会话授权都不能跳过，
+            // hook 的 ask 强制一次确认：YOLO 与已有会话授权都不能跳过，
             // 但非 YOLO 下用户的显式 deny 仍然优先。
-            if mode != ApprovalMode::Yolo
-                && matches!(self.config.policy.get(name), Some(ApprovalPolicy::Deny))
+            if mode != PermissionMode::Yolo
+                && matches!(self.config.policy.get(name), Some(PermissionPolicy::Deny))
             {
-                bail!("{name} is blocked by tools.approval policy.")
+                bail!("{name} is blocked by tools.permission policy.")
             }
             return self.prompt(
-                ApprovalRequest {
+                PermissionRequest {
                     tool: name.to_owned(),
                     agent: None,
                     reason: reason.to_owned(),
@@ -401,13 +370,13 @@ impl Gate {
                 cancellation,
             );
         }
-        if mode == ApprovalMode::Yolo {
+        if mode == PermissionMode::Yolo {
             return Ok(());
         }
         match self.config.policy.get(name) {
-            Some(ApprovalPolicy::Allow) => return Ok(()),
-            Some(ApprovalPolicy::Deny) => {
-                bail!("{name} is blocked by tools.approval policy.")
+            Some(PermissionPolicy::Allow) => return Ok(()),
+            Some(PermissionPolicy::Deny) => {
+                bail!("{name} is blocked by tools.permission policy.")
             }
             _ => {}
         }
@@ -415,7 +384,7 @@ impl Gate {
             && let Some(reason) = destructive_reason(arguments)
         {
             return self.prompt(
-                ApprovalRequest {
+                PermissionRequest {
                     tool: name.to_owned(),
                     agent: None,
                     reason: reason.to_owned(),
@@ -425,33 +394,25 @@ impl Gate {
                 cancellation,
             );
         }
-        if matches!(self.config.policy.get(name), Some(ApprovalPolicy::Prompt)) {
+        if matches!(self.config.policy.get(name), Some(PermissionPolicy::Prompt)) {
             return self.prompt(
-                ApprovalRequest {
+                PermissionRequest {
                     tool: name.to_owned(),
                     agent: None,
-                    reason: "required by the tools.approval policy for this tool.".to_owned(),
+                    reason: "required by the tools.permission policy for this tool.".to_owned(),
                     session_grant: false,
                     persistent_grant: false,
                 },
                 cancellation,
             );
         }
-        let needs_prompt = match (permissions, tier) {
-            (EffectivePermissions::Preset(PermissionMode::AcceptEdits), _) if access.sandboxed => {
-                false
-            }
-            (
-                EffectivePermissions::Preset(PermissionMode::AcceptEdits),
-                Tier::Write | Tier::Exec,
-            ) => true,
-            _ => match (mode, tier) {
-                (ApprovalMode::Yolo, _) => false,
-                (ApprovalMode::Write, Tier::Read | Tier::Write) => false,
-                (ApprovalMode::AlwaysAsk, Tier::Read) => false,
-                (ApprovalMode::Write, Tier::Exec) => true,
-                (ApprovalMode::AlwaysAsk, Tier::Write | Tier::Exec) => true,
-            },
+        let needs_prompt = match (mode, tier) {
+            (PermissionMode::Yolo, _) => false,
+            (PermissionMode::AcceptEdits, _) if access.sandboxed => false,
+            (PermissionMode::AcceptEdits, Tier::Read) => false,
+            (PermissionMode::AcceptEdits, Tier::Write | Tier::Exec) => true,
+            (PermissionMode::AlwaysAsk, Tier::Read) => false,
+            (PermissionMode::AlwaysAsk, Tier::Write | Tier::Exec) => true,
         };
         if !needs_prompt {
             return Ok(());
@@ -464,18 +425,16 @@ impl Gate {
         {
             return Ok(());
         }
-        let reason = match permissions {
-            EffectivePermissions::Preset(PermissionMode::AcceptEdits) => {
-                "tool runs outside the workspace sandbox and requires approval."
+        let reason = match mode {
+            PermissionMode::AcceptEdits => {
+                "tool runs outside the workspace sandbox and requires permission."
             }
-            EffectivePermissions::Legacy(ApprovalMode::Write) => {
-                "exec-tier tool requires approval in write mode."
-            }
-            _ => "tool requires approval in always-ask mode.",
+            PermissionMode::AlwaysAsk => "tool requires permission in always-ask mode.",
+            PermissionMode::Yolo => unreachable!(),
         }
         .to_owned();
         self.prompt(
-            ApprovalRequest {
+            PermissionRequest {
                 tool: name.to_owned(),
                 agent: None,
                 reason,
@@ -486,10 +445,10 @@ impl Gate {
         )
     }
 
-    fn prompt(&self, request: ApprovalRequest, cancellation: &CancellationToken) -> Result<()> {
+    fn prompt(&self, request: PermissionRequest, cancellation: &CancellationToken) -> Result<()> {
         let Some(handler) = self.handler.as_ref() else {
             bail!(
-                "{} requires approval and no interactive UI is available; run in an interactive TUI or adjust tools.approvalMode.",
+                "{} requires permission and no interactive UI is available; run in an interactive TUI or adjust tools.permissionMode.",
                 request.tool
             );
         };
@@ -498,8 +457,8 @@ impl Gate {
         let decision = handler(request, cancellation)?;
         pp_core::cancellation::check(cancellation)?;
         match decision {
-            ApprovalDecision::Approve => Ok(()),
-            ApprovalDecision::ApproveSession => {
+            PermissionDecision::Approve => Ok(()),
+            PermissionDecision::ApproveSession => {
                 if allow_session_grant {
                     self.grants
                         .lock()
@@ -508,7 +467,7 @@ impl Gate {
                 }
                 Ok(())
             }
-            ApprovalDecision::Deny | ApprovalDecision::ApprovePersistently => {
+            PermissionDecision::Deny | PermissionDecision::ApprovePersistently => {
                 bail!("{name} was denied by the user.")
             }
         }

@@ -32,8 +32,8 @@ impl Tools {
         let normalized_path = self.workspace.key(Path::new(&args.path))?;
         let target_path = self.cwd.join(&normalized_path);
         ensure!(
-            !self.approval.protects_path(&target_path),
-            "approval rules must be managed with /permissions"
+            !self.permission.protects_path(&target_path),
+            "permission rules must be managed with /permissions"
         );
         if let Some(sandbox) = sandbox
             && let Some(policy) = sandbox.policy()?

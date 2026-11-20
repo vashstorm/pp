@@ -963,26 +963,26 @@ tools:
   permissionMode: always-ask
 ```
 
-| 底栏标签 | 审批与沙盒 |
+| 底栏标签 | 权限与沙盒 |
 |---|---|
 | `Always-ask`（蓝色） | 工作区沙盒，写入类和执行类工具运行前确认。 |
 | `Accept-edits`（琥珀色） | 工作区沙盒，沙盒内 Bash 和允许的编辑自动执行。沙盒外的其他写入或执行工具运行前仍需确认。 |
-| `YOLO`（红色） | 关闭 pp 沙盒，跳过常规工具审批。Plan 和 Review 白名单、内置文件保存及强制 Hook 审批仍适用。 |
+| `YOLO`（红色） | 关闭 pp 沙盒，跳过常规工具权限确认。Plan 和 Review 白名单、内置文件保存及强制 Hook 确认仍适用。 |
 
 - 权限档位紧跟在底栏的 effort 后，前面有盾牌图标。ASCII 图标模式用 `!` 表示权限。
 - 主对话空闲时，Alt + Shift + A 或 F6 按表中顺序循环，保留输入草稿与光标。`/permissions` 显示模式及沙盒详情，`/permissions <模式>` 立即切换。切换只在本次进程内生效，跨会话与 Plan 切换保留。启动时可用 `--permission-mode <模式>` 覆盖配置。
-- `accept-edits` 的 Bash 调用可用 `sandbox_permissions.writable` 申请增加可写目录，目录须已存在且使用绝对路径。若沙盒禁止出站，可通过 `sandbox_permissions.network: true` 申请为本次命令及其子进程开放出站网络。前台与后台命令均先审批再执行。普通失败只返回诊断，后续调用可以明确申请权限。硬性保护路径和拒绝规则继续生效。
-- 提示提供仅此一次、本会话允许、始终允许此项目中的操作或拒绝。持久授权写入 `~/.pp/agent/approval.yml`，按工作区、执行目录、完整命令和申请范围精确匹配。`/permissions rules` 列出规则，`/permissions revoke <id>` 撤销。文件损坏或保存失败时，持久授权无法放行。行模式和 `-p` 可以复用已保存的授权，需要新审批时返回工具错误。
-- `Always-ask` 和 `Accept-edits` 依赖可用的工作区沙盒，平台探测失败时阻止依赖沙盒的操作。未指定预设时，显式配置的 `tools.approvalMode`、非空 `tools.approval` 或非默认沙盒设置继续按 `Legacy` 生效。旧启动参数 `--approval-mode` 或 `--sandbox` 也会选择 `Legacy`，与 `--permission-mode` 互斥。首次从 `Legacy` 按循环键进入 `Accept-edits`。
+- `accept-edits` 的 Bash 调用可用 `sandbox_permissions.writable` 申请增加可写目录，目录须已存在且使用绝对路径。若沙盒禁止出站，可通过 `sandbox_permissions.network: true` 申请为本次命令及其子进程开放出站网络。前台与后台命令均先确认再执行。普通失败只返回诊断，后续调用可以明确申请权限。硬性保护路径和拒绝规则继续生效。
+- 提示提供仅此一次、本会话允许、始终允许此项目中的操作或拒绝。持久授权以 TOML 格式写入 `~/.pp/agent/permission.toml`，按工作区、执行目录、完整命令和申请范围精确匹配。`/permissions rules` 列出规则，`/permissions revoke <id>` 撤销。文件损坏或保存失败时，持久授权无法放行。行模式和 `-p` 可以复用已保存的授权，需要新确认时返回工具错误。
+- `Always-ask` 和 `Accept-edits` 依赖可用的工作区沙盒，平台探测失败时阻止依赖沙盒的操作。启动参数 `--sandbox` 或命令 `/sandbox` 可临时覆盖本次会话的沙盒模式；可通过 `tools.permission` 为单个工具配置 `allow`／`prompt`／`deny` 覆盖策略（在非 `yolo` 模式下生效）。
 
 内置 `write` 和 `edit` 的保存范围为启动目录和系统临时目录，单次提交采用原子替换并拒绝符号链接。MCP stdio 与 LSP 服务进程在本地沙盒外运行。会话与统计可能包含源码和对话。
 
-- **沙盒配置与覆盖**：`settings.yml` 的 `tools.sandbox` 支持 `mode`（`auto`｜`workspace-write`｜`read-only`｜`off`，默认 `auto`）、`network`（默认 `true`）、`writable`、`protect`、`denyRead` 与 `allowRead`。命令行可通过 `pp --sandbox <mode>` 指定本次运行模式；交互模式可通过 `/sandbox` 查看详情，旧配置路径可通过 `/sandbox <mode>` 独立覆盖，`/setting general` 也支持修改并持久化默认 `tools.sandbox.mode`。平台探针在 macOS 通过 `/usr/bin/sandbox-exec`、在 Linux 通过 `bwrap`（≥ 0.5）探测系统能力：若处于嵌套沙盒、缺少 `bwrap` 或非特权用户命名空间受限，`auto` 会自动降级关闭并给出提示，而显式设置 `workspace-write`/`read-only` 会在不可用时 fail-closed 拒绝工具执行。`mode: off` 不执行平台探针（不启动子进程），之后切到启用模式时补测；`STDIO` MCP 与 LSP 服务进程同样不探测。
+- **沙盒配置与覆盖**：`settings.yml` 的 `tools.sandbox` 支持 `mode`（`auto`｜`workspace-write`｜`read-only`｜`off`，默认 `auto`）、`network`（默认 `true`）、`writable`、`protect`、`denyRead` 与 `allowRead`。命令行可通过 `pp --sandbox <mode>` 指定本次运行模式；交互模式可通过 `/sandbox` 查看详情或通过 `/sandbox <mode>` 临时覆盖，`/setting general` 也支持修改并持久化默认 `tools.sandbox.mode`。平台探针在 macOS 通过 `/usr/bin/sandbox-exec`、在 Linux 通过 `bwrap`（≥ 0.5）探测系统能力：若处于嵌套沙盒、缺少 `bwrap` 或非特权用户命名空间受限，`auto` 会自动降级关闭并给出提示，而显式设置 `workspace-write`/`read-only` 会在不可用时 fail-closed 拒绝工具执行。`mode: off` 不执行平台探针（不启动子进程），之后切到启用模式时补测；`STDIO` MCP 与 LSP 服务进程同样不探测。
 - **macOS Seatbelt 边界**：`workspace-write` 放行启动目录、系统临时目录（含当次 `.pp-tmp-*` scratch 与 `.pp-cache`）、常见包管理/构建缓存（`~/.cargo/registry`、`~/.cargo/git`、`~/.cargo/.package-cache`、`~/.cache`、`~/Library/Caches`、`~/.npm`、`~/.bun/install/cache`、`~/go/pkg/mod`）以及 `writable`；`read-only` 仅允许临时 scratch 与 `.pp-cache` 写入。两种开启模式均保护工作区内敏感控制路径（`.git/hooks`、`.git/config`、`.pp`、`.mcp.json`、`.claude/.mcp.json` 及 `protect`）防写入，并拒绝读取凭据与敏感目录（`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.azure`、`~/.kube`、`~/.config/gcloud`、`~/.config/gh`、`~/.docker/config.json`、`~/.netrc`、`~/.npmrc`、`~/.pypirc`、`~/.git-credentials`、`~/Library/Keychains`、`~/Library/Cookies`、`~/.claude/.credentials.json`、`~/.codex/auth.json`、`~/.pp/agent` 及 `denyRead`），同时例外放行 `~/.pp/agent/{python-env,skills,commands,hooks,cache}` 与 `allowRead`。设置 `network: false` 后会阻止除 `localhost:*` 与常规 Unix domain socket 外的出站 IP 访问，并继续拒绝 `~/.docker/run/docker.sock` 与 `/var/run/docker.sock`。命中沙盒拒绝时工具结果返回 `ok: false` 并附带 `sandbox` 诊断元数据。
 - **Linux Bubblewrap 边界**：依赖系统已安装的 `bwrap`（要求支持 `--perms` 的 0.5 及以上版本）及非特权用户命名空间（无内置二进制）。通过 `--ro-bind / /` 与 `--dev /dev` 挂载只读根并降权（`--cap-drop ALL`、`--die-with-parent`），按配置叠加 `--bind-try` 可写根（含 `/tmp`、`/var/tmp`、`$TMPDIR`、`$XDG_CACHE_HOME` 及通用工具链缓存；`read-only` 下仅放行 `/tmp`、`/var/tmp`、`.pp-cache`、当次 scratch 与非工作区可写根）。与 macOS 的差异包括：(1) `protect` 与 `denyRead` 仅能覆盖磁盘上**已存在**的路径（若工作区尚无 `.pp`，沙盒内仍可新建，创建后下一次调用生效）；(2) 拒读目录使用只读空 `tmpfs`（无 `allowRead` 子项为 `0000` 权限，访问报 `Permission denied`；含 `allowRead` 子项为 `0111`，只可穿越不可列目录，未放行条目不可见），拒读文件及 `docker.sock`（`/run/docker.sock`、`/var/run/docker.sock`、`$XDG_RUNTIME_DIR/docker.sock`、`~/.docker/run/docker.sock`）覆盖为 `/dev/null`（不可读或为空内容）；(3) `network: false` 使用 `--unshare-net` 隔离网络命名空间，既阻止外网也无法访问宿主 `127.0.0.1` 服务；(4) 不启用 `--unshare-pid`，以保持进程组信号与 `eval` 的 `SIGINT` 优雅中断一致，沙盒内仍可见宿主进程列表并可向同 uid 进程发信号，且不可用 `sudo`/setuid。
 - **已知平台与实现边界**：(1) 受 macOS `(allow default)` + LaunchServices XPC（`com.apple.lsd`）机制限制，`open` 等通过系统服务拉起外部 App 的调用无法仅靠 Seatbelt 文件/exec 规则完全阻断；(2) `bash` 中外部命令与 `exec` 由内核级 `sandbox-exec`／`bwrap` 强制执行，而嵌入式 `brush` 进程内的重定向、`source` 与内置文件操作由宿主在 `open_file` 前做规范路径守卫，极高并发符号链接切换存在理论 TOCTOU 窗口；(3) 上述保护面向防止模型误操作与常见凭据外泄，不构成对抗恶意本地提权的完全隔离边界。
 
-旧配置的 `tools.approvalMode` 默认为 `yolo`，跳过常规工具审批，包括 bash 危险命令确认及 `tools.approval` 中的 `prompt`／`deny` 规则；无需交互界面或会话授权。`pp --approval-mode yolo` 可在本次运行中覆盖配置模式。`write` 模式放行只读和写入档工具、审批执行档工具；`always-ask` 模式只放行只读档工具。在这两种模式下，显式 `allow`／`deny`／`prompt` 规则及 bash 危险命令检查仍生效，需要审批但没有交互界面时返回工具错误。旧版 YOLO 的沙盒继续由 `tools.sandbox` 决定。
+在 `always-ask` 与 `accept-edits` 模式下，显式 `tools.permission` 中的 `allow`／`deny`／`prompt` 规则及 bash 危险命令检查均生效，需要确认但没有交互界面时返回工具错误；`yolo` 模式跳过常规工具权限检查与内置危险命令确认（强制 Hook `ask` 除外）。
 
 - 启动时固定规范化工作目录。`read` 允许目录外读取及符号链接；`write/edit` 接受启动目录内的相对或绝对路径，以及临时目录（`/tmp` 与其真实路径 `/private/tmp` 是同一目录的两种拼写）下的绝对路径，其他路径越界即拒绝，写入路径上的符号链接（包括指向项目内的链接）同样拒绝。临时目录内的文件用真实绝对路径作为变更、撤销与快照的键，`/tmp/a` 与 `/private/tmp/a` 因此是同一条记录；Plan 与 LSP 的结构校验仍只按启动目录相对路径判定。父目录通过目录句柄逐级打开，保存不重新按完整路径追踪链接。允许不越出受管根的 `..`；项目规则按[分层 AGENTS.md](#项目级-agentsmd)发现与检查，skill 仅扫描全局配置指定的目录。
 - `read({path})`：仅接受 `path`，范围直接写入路径，例如 `src/main.rs:20-60`。`:20` 从第 20 行开始，`:20-60` 包含两端，`:20+40` 读取 40 行，`:-30` 读取末尾 30 行，`:5-10,20-30` 读取多个区间（排序并合并重叠或相邻区间，最多 128 个）；也支持 `L20-L60`、`20..60` 和开放结尾 `20-`。所有范围精确读取，不自动增加上下文。真实存在的完整本地文件名优先于冒号后缀解析，`skill://` 始终按虚拟资源处理。
@@ -1002,7 +1002,7 @@ tools:
 - `rg({"pattern":"needle","path":"src/**/*.rs"})` 在进程内搜索本地文件，默认区分大小写、包含隐藏文件并遵守 ignore。`path` 支持分号分隔、glob、`!` 排除及单文件行范围；不支持网页、压缩包和技能 URI。`case` 控制区分大小写，`-i: true` 等价于 `case: false`，两者含义冲突时报错。布尔参数 `-n` 用于兼容 ripgrep 调用习惯，可以省略，正文始终带行号。`context`／`-C` 设置前后文行数（两者不同值时报错），`-B`／`-A` 分别覆盖前文／后文，均接受非负整数，包括 0；未指定的侧使用 `rg: {contextBefore: 1, contextAfter: 3}` 配置。
 - `rg` 的 `output_mode` 接受 `content`（默认正文）、`files_with_matches`（仅命中文件路径）、`count`（逐文件计数及总计）。上下文参数仅影响正文模式；仅正文模式生成 Hashline 快照、TAG 和完整已返回行的编辑资格，另两种模式不创建、更新或清除已有编辑快照。三种模式均由 `skip` 按命中文件分页，每页最多 20 个文件；单个明确文件保留不分页行为。正文模式多文件每文件最多 20 条匹配，单文件最多 200 条；正文与长行另有上限。计数模式不受正文匹配条数上限限制：单行模式按命中行计数，同一行多次命中仍算一行，多行模式按不重叠匹配计数。总计覆盖所有已搜索文件，不随分页改变；`details.matchCount` 为已输出文件的计数之和，`details.totalMatchCount` 为总计，`details.countComplete` 表示统计是否完整。原有大文件扫描上限、读取错误及缺失路径会使统计标为部分结果，显示 `Total (partial)`；超时和取消仍返回错误。仅路径模式不提供匹配次数，TUI 只显示文件数。
 - `rg` 新增与 rg 一致的语义参数：`-F: true` 按字面量匹配，跳过元字符宽松编译与 PCRE2 回退，此时 `\n` 是反斜杠加 n，只有真实换行才启用多行匹配；`-w: true` 要求整词匹配，可与 `-F` 组合。`-t` 接受文件类型字符串或数组（`!name` 排除，`all` 合法），未知名返回 `invalid rg type: <name>`；`-g` 接受 override glob 字符串或数组（`!` 前缀排除，优先于 `.gitignore` 等 ignore 文件，不含 `/` 的模式匹配任意层级文件名），`glob` 是无短横线别名，与 `-g` 同时给出时合并；非法 glob 返回 `invalid -g glob: <glob>`。`-t` 与 `-g` 只过滤目录遍历，`path` 中显式给出的文件始终被搜索，路径里的 `!` 排除语义不变并与 `-g` 叠加。`max_count` 按文件限制匹配数（对齐 rg `-m`），`0` 不执行搜索并返回 `No matches found` 与 `details.fileCount: 0`；它不改变 `details.truncated`／`perFileLimitReached` 的既有含义。
-- 工具名统一为 `rg`：`settings.yml` 顶层键为 `rg:`，旧 `grep:` 会在严格解析下失败；`tools.approval` 的键同样使用 `rg`。
+- 工具名统一为 `rg`：`settings.yml` 顶层键为 `rg:`，旧 `grep:` 会在严格解析下失败；`tools.permission` 的键同样使用 `rg`。
 - `rg` 的可选 `max_output_tokens` 接受正整数，省略或 `null` 保持默认行为；例如 `rg({"pattern":"Barrier","max_output_tokens":2000})`。预算覆盖 `content` 正文及提示，以 JSON 编码字节数每三字节估算一个 token，不包含结构化元数据，也不保证供应商精确计数；三种输出模式均遵守原有 50 KiB 硬上限。预算不足时仅返回完整渲染行，标记 `details.tokenLimitReached: true` 与 `details.truncated: true`，极小预算可返回空正文。统计扫描不受此展示预算影响，计数总量保存在元数据中；Hashline 只授权实际返回的完整源代码行。
 - `glob({"pattern":"**/*.rs","path":"src"})` 查找路径；`pattern` 必填，`path` 为可选搜索目录（默认当前工作目录），不能传 glob 或多个范围；另支持 `hidden`、`gitignore`、`limit`；默认包含隐藏路径、遵守忽略规则，最多返回 200 项和 50 KiB。扫描在文件操作之间检查取消及五秒期限，超时返回不完整结果；启用沙盒后会跳过被沙盒拒读的凭据路径，未单独限制项目外普通路径读取。
 - 默认前台 `bash({"command":"..."})`：以启动目录执行 `bash -c`，关闭 stdin，建立独立进程组。stdout/stderr 按收集器接收顺序合并，不保证跨流真实写入顺序；无需等待换行即可显示有界头尾快照。返回合并的 `output`、退出码、输出计数、截断标记、`timed_out` 与 `cancelled`，信号退出的退出码为 null。超限日志通过下述 artifact 机制继续读取，旧会话的 stdout/stderr 分流结果仍可回放。
@@ -1225,8 +1225,8 @@ pp gc [天数]
 | `pp-lsp` / `crates/pp-lsp/src/` | LSP 客户端注册表、stdio JSON-RPC 传输、诊断、保存联动、只读预览与 `lsp` 工具。 |
 | `pp-bash` / `crates/pp-bash/src/` | 嵌入式 Bash 宿主（`brush-core`/`brush-builtins`）、外部程序进程组监督、后台任务管理、管道流存储与 AST 命令展示。 |
 | `pp-eval` / `crates/pp-eval/src/` | 持久 Python REPL 内核宿主、探测缓存、进程组监督与双工 NDJSON 回调桥。 |
-| `pp-permission` / `crates/pp-permission/src/` | 生效权限预设、工具审批门、会话授权与用户级持久规则。 |
-| `pp-tools` / `crates/pp-tools/src/` | 同步工具执行器、内置工具（read/rg/glob/edit/write/todo/wait/plan/approval）、分层项目指令与端口 trait（`ToolHookCall`、`PlanSubmitGate`、`SubagentHost`）。 |
+| `pp-permission` / `crates/pp-permission/src/` | 生效权限预设、工具权限门、会话授权与用户级持久规则（`permission.toml`）。 |
+| `pp-tools` / `crates/pp-tools/src/` | 同步工具执行器、内置工具（read/rg/glob/edit/write/todo/wait/plan/permission）、分层项目指令与端口 trait（`ToolHookCall`、`PlanSubmitGate`、`SubagentHost`）。 |
 | `pp-runtime` / `crates/pp-runtime/src/` | Agent 循环、子 Agent、Hooks 接线、会话与历史、模型控制与系统提示词；`prompts/` 保留 system、runtime、plan-review 与内置角色提示词。 |
 | `pp-mock-ai` / `crates/pp-mock-ai/src/` | 仅 `debug_assertions` 构建启用的本地 Responses mock 服务与内嵌调试场景（`/test-*`）。 |
 | `pp-ui` / `crates/pp-ui/src/` | TUI、CLI、命令、快捷键与 tips；TUI 子模块边界保持在包内。 |

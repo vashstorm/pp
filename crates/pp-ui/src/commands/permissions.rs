@@ -1,6 +1,5 @@
 use anyhow::{Result, bail};
 use pp_config::config::PermissionMode;
-use pp_permission::EffectivePermissions;
 use pp_runtime::agent::Agent;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,12 +44,9 @@ impl PermissionCommand {
 }
 
 fn status(agent: &Agent) -> String {
-    let mode = match agent.permission_mode() {
-        EffectivePermissions::Preset(mode) => mode.as_str().to_owned(),
-        EffectivePermissions::Legacy(approval) => format!("legacy ({})", approval.as_str()),
-    };
     format!(
-        "Permission mode: {mode}\n{}",
+        "Permission mode: {}\n{}",
+        agent.permission_mode().as_str(),
         agent.sandbox_status().summary()
     )
 }

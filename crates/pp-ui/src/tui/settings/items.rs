@@ -1,7 +1,7 @@
 //! `General` 设置页的分类、字段元数据与校验/步进规则单源定义。
 use anyhow::{Context, Result, ensure};
 use pp_config::config::{
-    ApprovalMode, CostDisplay, EditMode, SandboxMode, SettingPatch, Settings, StatsStyle,
+    CostDisplay, EditMode, PermissionMode, SandboxMode, SettingPatch, Settings, StatsStyle,
     WebSearchProvider,
 };
 
@@ -42,7 +42,7 @@ impl Category {
 pub(super) enum ValueKind {
     Bool,
     EditMode,
-    ApprovalMode,
+    PermissionMode,
     SandboxMode,
     WebSearchProvider,
     StatsStyle,
@@ -60,7 +60,7 @@ pub(super) enum ValueKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingId {
     Edit,
-    ApprovalMode,
+    PermissionMode,
     SandboxMode,
     ReadMaxLines,
     ReadMaxBytes,
@@ -105,9 +105,9 @@ impl SettingItem {
     pub(super) fn display_value(&self, settings: &Settings) -> String {
         match self.id {
             SettingId::Edit => settings.edit.as_str().to_owned(),
-            SettingId::ApprovalMode => settings
+            SettingId::PermissionMode => settings
                 .tools
-                .approval_mode
+                .permission_mode
                 .unwrap_or_default()
                 .as_str()
                 .to_owned(),
@@ -287,22 +287,18 @@ impl SettingItem {
                 EditMode::Replace => EditMode::Hashline,
                 EditMode::Hashline => EditMode::Replace,
             })),
-            ValueKind::ApprovalMode => {
-                let modes = [
-                    ApprovalMode::Yolo,
-                    ApprovalMode::Write,
-                    ApprovalMode::AlwaysAsk,
-                ];
+            ValueKind::PermissionMode => {
+                let modes = PermissionMode::ALL;
                 let idx = modes
                     .iter()
-                    .position(|mode| *mode == settings.tools.approval_mode.unwrap_or_default())
+                    .position(|mode| *mode == settings.tools.permission_mode.unwrap_or_default())
                     .unwrap_or(0);
                 let next = if forward {
                     (idx + 1) % modes.len()
                 } else {
                     (idx + modes.len() - 1) % modes.len()
                 };
-                Ok(SettingPatch::ApprovalMode(modes[next]))
+                Ok(SettingPatch::PermissionMode(modes[next]))
             }
             ValueKind::SandboxMode => {
                 let modes = SandboxMode::ALL;
@@ -409,12 +405,12 @@ pub(super) const ITEMS: &[SettingItem] = &[
         kind: ValueKind::EditMode,
     },
     SettingItem {
-        id: SettingId::ApprovalMode,
+        id: SettingId::PermissionMode,
         category: Category::EditingTools,
-        key: "tools.approvalMode",
-        label: "Legacy approval mode",
-        description: "Independent approval policy for legacy launches: yolo, write, or always-ask",
-        kind: ValueKind::ApprovalMode,
+        key: "tools.permissionMode",
+        label: "Permission mode",
+        description: "Default permission preset: always-ask, accept-edits, or yolo",
+        kind: ValueKind::PermissionMode,
     },
     SettingItem {
         id: SettingId::SandboxMode,

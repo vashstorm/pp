@@ -541,7 +541,7 @@ struct App {
     #[cfg(test)]
     history_dir: Option<tempfile::TempDir>,
     state: State,
-    permission_mode: Option<pp_permission::EffectivePermissions>,
+    permission_mode: Option<pp_config::config::PermissionMode>,
     next_shell_id: u64,
     active_cancellation: Option<CancellationToken>,
     input_queue: InputQueue,

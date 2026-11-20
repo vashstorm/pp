@@ -22,8 +22,8 @@ pub use hooks::{
 
 mod sections;
 pub use sections::{
-    ApprovalMode, ApprovalPolicy, CostDisplay, EditMode, EvalSettings, LspSettings, OutputSettings,
-    PermissionMode, ReadDisplaySettings, TaskSettings,
+    CostDisplay, EditMode, EvalSettings, LspSettings, OutputSettings, PermissionMode,
+    PermissionPolicy, ReadDisplaySettings, TaskSettings,
 };
 
 mod stats;
@@ -294,18 +294,18 @@ impl Settings {
         self.tool_limits().validate()?;
         self.tools.sandbox.validate()?;
         ensure!(
-            self.tools.approval.iter().all(|(name, _)| {
+            self.tools.permission.iter().all(|(name, _)| {
                 !name.trim().is_empty()
-                    && (APPROVAL_TOOL_NAMES.contains(&name.as_str()) || name.starts_with("mcp__"))
+                    && (PERMISSION_TOOL_NAMES.contains(&name.as_str()) || name.starts_with("mcp__"))
             }),
-            "tools.approval keys must be non-blank built-in tool names or mcp__ prefixes"
+            "tools.permission keys must be non-blank built-in tool names or mcp__ prefixes"
         );
         Ok(())
     }
 }
 
-/// 审批 policy 允许的内置工具名；MCP 工具只接受 `mcp__` 前缀防拼写错误。
-const APPROVAL_TOOL_NAMES: &[&str] = &[
+/// 权限 policy 允许的内置工具名；MCP 工具只接受 `mcp__` 前缀防拼写错误。
+const PERMISSION_TOOL_NAMES: &[&str] = &[
     "read",
     "rg",
     "glob",

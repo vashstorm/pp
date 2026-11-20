@@ -37,22 +37,20 @@ impl Default for RgSettings {
     }
 }
 
-/// settings.yml 的 `tools:` 小节；字段语义由 `crate::tools::approval` 与 `pp-sandbox` 解释。
+/// settings.yml 的 `tools:` 小节；字段语义由 `pp-permission` 与 `pp-sandbox` 解释。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ToolsSettings {
     #[serde(flatten)]
     pub output: crate::config::OutputSettings,
     #[serde(
-        rename = "approvalMode",
-        deserialize_with = "deserialize_approval_mode",
+        rename = "permissionMode",
+        deserialize_with = "deserialize_permission_mode",
         skip_serializing_if = "Option::is_none"
     )]
-    pub approval_mode: Option<crate::config::ApprovalMode>,
-    #[serde(rename = "permissionMode", skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<crate::config::PermissionMode>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub approval: std::collections::BTreeMap<String, crate::config::ApprovalPolicy>,
+    pub permission: std::collections::BTreeMap<String, crate::config::PermissionPolicy>,
     #[serde(
         default,
         skip_serializing_if = "crate::config::SandboxSettings::is_default"
@@ -60,13 +58,13 @@ pub struct ToolsSettings {
     pub sandbox: crate::config::SandboxSettings,
 }
 
-fn deserialize_approval_mode<'de, D>(
+fn deserialize_permission_mode<'de, D>(
     deserializer: D,
-) -> Result<Option<crate::config::ApprovalMode>, D::Error>
+) -> Result<Option<crate::config::PermissionMode>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    crate::config::ApprovalMode::deserialize(deserializer).map(Some)
+    crate::config::PermissionMode::deserialize(deserializer).map(Some)
 }
 
 impl ToolLimits {

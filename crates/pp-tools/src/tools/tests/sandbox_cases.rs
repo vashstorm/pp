@@ -207,7 +207,7 @@ fn sandbox_read_url_respects_network_disabled_and_unavailable_fail_closed() {
 #[test]
 fn accept_edits_authorizes_bash_before_start_and_does_not_replay_failed_calls() {
     use pp_config::config::{PermissionMode, ToolsSettings};
-    use pp_permission::ApprovalDecision;
+    use pp_permission::PermissionDecision;
     let dir = tempfile::tempdir().unwrap();
     let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
     tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
@@ -220,31 +220,31 @@ fn accept_edits_authorizes_bash_before_start_and_does_not_replay_failed_calls() 
         Some(Path::new("/tmp")),
         ProbeResult::Available,
     )));
-    tools.approval.set_config(ToolsSettings {
+    tools.permission.set_config(ToolsSettings {
         permission_mode: Some(PermissionMode::AcceptEdits),
         ..Default::default()
     });
 
     for (mode, decision, marker, expected) in [
-        ("foreground", ApprovalDecision::Deny, "denied", false),
-        ("foreground", ApprovalDecision::Approve, "approved", true),
+        ("foreground", PermissionDecision::Deny, "denied", false),
+        ("foreground", PermissionDecision::Approve, "approved", true),
         (
             "background",
-            ApprovalDecision::Deny,
+            PermissionDecision::Deny,
             "denied-background",
             false,
         ),
         (
             "background",
-            ApprovalDecision::Approve,
+            PermissionDecision::Approve,
             "approved-background",
             true,
         ),
     ] {
         let target = dir.path().join(marker);
         let before = target.clone();
-        tools.approval.set_handler(Box::new(move |request, _| {
-            assert!(!before.exists(), "命令在批准前启动");
+        tools.permission.set_handler(Box::new(move |request, _| {
+            assert!(!before.exists(), "命令在授权前启动");
             assert!(request.reason.contains("outbound network"));
             Ok(decision)
         }));
@@ -267,8 +267,8 @@ fn accept_edits_authorizes_bash_before_start_and_does_not_replay_failed_calls() 
     }
 
     tools
-        .approval
-        .set_handler(Box::new(|_, _| panic!("普通命令失败不应打开沙盒审批")));
+        .permission
+        .set_handler(Box::new(|_, _| panic!("普通命令失败不应打开沙盒权限询问")));
     let failed = execute(
         &tools,
         "bash",
@@ -285,12 +285,12 @@ fn accept_edits_authorizes_bash_before_start_and_does_not_replay_failed_calls() 
 
 #[test]
 fn accept_edits_applies_ordinary_policy_before_sandbox_grants() {
-    use pp_config::config::{ApprovalPolicy, PermissionMode, ToolsSettings};
+    use pp_config::config::{PermissionMode, PermissionPolicy, ToolsSettings};
     let dir = tempfile::tempdir().unwrap();
     let mut tools = tools_with_sandbox(&dir, dir.path(), SandboxMode::Auto, ProbeResult::Available);
-    tools.approval.set_config(ToolsSettings {
+    tools.permission.set_config(ToolsSettings {
         permission_mode: Some(PermissionMode::AcceptEdits),
-        approval: [("bash".into(), ApprovalPolicy::Deny)].into(),
+        permission: [("bash".into(), PermissionPolicy::Deny)].into(),
         ..Default::default()
     });
     let result = execute(
@@ -306,7 +306,7 @@ fn accept_edits_applies_ordinary_policy_before_sandbox_grants() {
         result["error"]
             .as_str()
             .unwrap()
-            .contains("tools.approval policy")
+            .contains("tools.permission policy")
     );
     assert!(!dir.path().join("denied").exists());
 }

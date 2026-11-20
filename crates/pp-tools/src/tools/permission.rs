@@ -1,6 +1,6 @@
-//! 工具与参数分类在分发层维护，审批状态与规则由 pp-permission 管理。
+//! 工具与参数分类在分发层维护，权限状态与规则由 pp-permission 管理。
 
-pub use pp_permission::{ApprovalDecision, ApprovalHandler, ApprovalRequest, Gate, Tier};
+pub use pp_permission::{Gate, PermissionDecision, PermissionHandler, PermissionRequest, Tier};
 
 /// 内置工具按风险分级；未获只读授权的 MCP 工具按写档处理，
 /// 未知名按 exec 处理（安全默认）。
@@ -20,11 +20,11 @@ pub fn tier_of(name: &str) -> Tier {
 /// 仍按名称固定分档。
 pub fn tier_of_arguments(name: &str, arguments: &str) -> Tier {
     if name == "lsp" {
-        return pp_lsp::tool::approval_tier(arguments);
+        return pp_lsp::tool::permission_tier(arguments);
     }
     tier_of(name)
 }
 
 #[cfg(test)]
-#[path = "approval_tests.rs"]
+#[path = "permission_tests.rs"]
 mod tests;

@@ -119,7 +119,7 @@ impl Bootstrap {
         let mut tools = Tools::with_mcp(self.cwd.clone(), catalog.edit_mode(), self.mcp.clone())?;
         pp_core::logging::perf::mark("tools_ready");
         tools.skills = self.skills.clone();
-        tools.approval = self.permission.as_ref().clone();
+        tools.permission = self.permission.as_ref().clone();
         let sandbox = self
             .sandbox
             .get_or_init(catalog.sandbox_settings(), &self.cwd);

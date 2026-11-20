@@ -240,7 +240,7 @@ impl Agent {
         self.install_execution_model(model);
         if let Some(journal) = fork {
             self.reset_lsp_diagnostics();
-            self.tools.approval.clear_session();
+            self.tools.permission.clear_session();
             self.journal = journal;
             self.tools.artifacts = Default::default();
             self.tools.reset_pipe_store();

@@ -31,31 +31,12 @@ impl OutputSettings {
     }
 }
 
+/// 同时选择工具权限策略和沙盒边界。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ApprovalMode {
-    #[default]
-    Yolo,
-    Write,
-    #[serde(rename = "always-ask")]
-    AlwaysAsk,
-}
-
-impl ApprovalMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Yolo => "yolo",
-            Self::Write => "write",
-            Self::AlwaysAsk => "always-ask",
-        }
-    }
-}
-
-/// 同时选择工具审批策略和沙盒边界。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
     AlwaysAsk,
+    #[default]
     AcceptEdits,
     Yolo,
 }
@@ -94,7 +75,7 @@ impl std::str::FromStr for PermissionMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ApprovalPolicy {
+pub enum PermissionPolicy {
     Allow,
     Prompt,
     Deny,

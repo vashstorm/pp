@@ -36,7 +36,7 @@ impl Agent {
             &self.hooks,
             self.subagent.as_ref(),
             &self.workflow,
-            &self.tools.approval,
+            &self.tools.permission,
             self.hook_agent_type.as_deref(),
         );
         let mut stop_hook_active = false;

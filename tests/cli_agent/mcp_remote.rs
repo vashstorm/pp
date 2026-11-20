@@ -13,7 +13,7 @@ fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_prec
             config["mcpServers"]["remote"]["env_headers"] = json!({"x-test-key":"PP_MCP_TEST_KEY"});
             write_settings(
                 dir.path(),
-                json!({"tools":{"approvalMode":"yolo"},"mcpServers":config["mcpServers"]})
+                json!({"tools":{"permissionMode":"yolo"},"mcpServers":config["mcpServers"]})
                     .to_string(),
             )
             .unwrap();
@@ -143,7 +143,7 @@ fn mcp_remote_management_both_protocols_reload_refreshes_auth_without_persisting
             config["mcpServers"]["remote"]["env_headers"] = json!({"x-test-key":"PP_MCP_TEST_KEY"});
             write_settings(
                 dir.path(),
-                json!({"tools":{"approvalMode":"yolo"},"mcpServers":config["mcpServers"]})
+                json!({"tools":{"permissionMode":"yolo"},"mcpServers":config["mcpServers"]})
                     .to_string(),
             )
             .unwrap();

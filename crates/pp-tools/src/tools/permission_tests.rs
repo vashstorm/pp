@@ -1,13 +1,13 @@
 use super::*;
-use pp_config::config::{ApprovalMode, ApprovalPolicy, ToolsSettings};
+use pp_config::config::{PermissionMode, PermissionPolicy, ToolsSettings};
 use pp_core::cancellation::CancellationToken;
 use std::sync::{Arc, Mutex};
 
-fn gate(mode: ApprovalMode, policies: &[(&str, ApprovalPolicy)]) -> Gate {
+fn gate(mode: PermissionMode, policies: &[(&str, PermissionPolicy)]) -> Gate {
     let mut gate = Gate::new();
     gate.set_config(ToolsSettings {
-        approval_mode: Some(mode),
-        approval: policies
+        permission_mode: Some(mode),
+        permission: policies
             .iter()
             .map(|(name, policy)| (name.to_string(), *policy))
             .collect(),
@@ -61,7 +61,7 @@ fn lsp_write(action: &str) -> String {
 
 #[test]
 fn lsp_read_actions_stay_read_tier_and_skip_always_ask_prompt() {
-    let gate = gate(ApprovalMode::AlwaysAsk, &[]);
+    let gate = gate(PermissionMode::AlwaysAsk, &[]);
     for action in [
         "definition",
         "type_definition",
@@ -91,14 +91,14 @@ fn lsp_read_actions_stay_read_tier_and_skip_always_ask_prompt() {
 
 #[test]
 fn lsp_write_actions_are_write_tier_even_for_preview() {
-    // write 模式放行 Write 档、只拦截 Exec 档：写入动作不是 Exec 档。
-    let write = gate(ApprovalMode::Write, &[]);
-    for action in ["reload", "request"] {
-        enforce(&write, "lsp", &lsp_write(action)).unwrap();
-    }
+    // accept-edits 放行沙盒内 Write/Exec，非沙盒 Write 仍受权限门约束；
     // always-ask 只放行 Read 档：写入动作（含 apply=false 预览）必须询问，
     // 无交互 handler 时 fail-closed。
-    let always = gate(ApprovalMode::AlwaysAsk, &[]);
+    let accept_edits = gate(PermissionMode::AcceptEdits, &[]);
+    for action in ["reload", "request"] {
+        enforce(&accept_edits, "lsp", &lsp_write(action)).unwrap_err();
+    }
+    let always = gate(PermissionMode::AlwaysAsk, &[]);
     for action in ["reload", "request"] {
         enforce(&always, "lsp", &lsp_write(action)).unwrap_err();
     }
@@ -106,8 +106,8 @@ fn lsp_write_actions_are_write_tier_even_for_preview() {
 
 #[test]
 fn lsp_invalid_arguments_are_conservatively_write() {
-    // 无效参数既不能降成 Read 档，也不能跳过审批：按 Write 处理。
-    let write = gate(ApprovalMode::Write, &[]);
+    // 无效参数既不能降成 Read 档，也不能跳过权限检查：按 Write 处理。
+    let yolo = gate(PermissionMode::Yolo, &[]);
     for arguments in [
         "{broken",
         "{}",
@@ -116,10 +116,10 @@ fn lsp_invalid_arguments_are_conservatively_write() {
         r#"{"action":42}"#,
         r#"{"action":"rename","unexpected":true}"#,
     ] {
-        enforce(&write, "lsp", arguments).unwrap();
+        enforce(&yolo, "lsp", arguments).unwrap();
         assert_eq!(tier_of_arguments("lsp", arguments), Tier::Write);
     }
-    let always = gate(ApprovalMode::AlwaysAsk, &[]);
+    let always = gate(PermissionMode::AlwaysAsk, &[]);
     for arguments in ["{broken", "{}", r#"{"action":"bogus"}"#] {
         enforce(&always, "lsp", arguments).unwrap_err();
     }
@@ -127,29 +127,38 @@ fn lsp_invalid_arguments_are_conservatively_write() {
 
 #[test]
 fn lsp_policy_overrides_action_tiers() {
-    // 显式 tools.approval.lsp 优先于动作分档：deny 拦只读动作。
-    let denied = gate(ApprovalMode::Write, &[("lsp", ApprovalPolicy::Deny)]);
+    // 显式 tools.permission.lsp 优先于动作分档：deny 拦只读动作。
+    let denied = gate(
+        PermissionMode::AcceptEdits,
+        &[("lsp", PermissionPolicy::Deny)],
+    );
     enforce(&denied, "lsp", &lsp_read("definition")).unwrap_err();
-    // allow 旁路写入动作的审批。
-    let allowed = gate(ApprovalMode::AlwaysAsk, &[("lsp", ApprovalPolicy::Allow)]);
+    // allow 旁路写入动作的权限询问。
+    let allowed = gate(
+        PermissionMode::AlwaysAsk,
+        &[("lsp", PermissionPolicy::Allow)],
+    );
     enforce(&allowed, "lsp", &lsp_write("rename")).unwrap();
     // prompt 强制每次询问，优先于动作分档。
-    let prompted = gate(ApprovalMode::Write, &[("lsp", ApprovalPolicy::Prompt)]);
+    let prompted = gate(
+        PermissionMode::AcceptEdits,
+        &[("lsp", PermissionPolicy::Prompt)],
+    );
     enforce(&prompted, "lsp", &lsp_read("hover")).unwrap_err();
 }
 
 #[test]
-fn lsp_write_action_approval_reaches_handler_for_every_call() {
-    let mut gate = gate(ApprovalMode::AlwaysAsk, &[]);
+fn lsp_write_action_permission_reaches_handler_for_every_call() {
+    let mut gate = gate(PermissionMode::AlwaysAsk, &[]);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&seen);
     gate.set_handler(Box::new(move |request, _cancellation| {
         recorded.lock().unwrap().push(request.session_grant);
-        Ok(ApprovalDecision::Approve)
+        Ok(PermissionDecision::Approve)
     }));
     enforce(&gate, "lsp", &lsp_write("reload")).unwrap();
     enforce(&gate, "lsp", &lsp_write("reload")).unwrap();
-    // 只读动作不进入审批，handler 不被调用。
+    // 只读动作不进入权限询问，handler 不被调用。
     enforce(&gate, "lsp", &lsp_read("hover")).unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![true, true]);
 }

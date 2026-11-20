@@ -69,7 +69,7 @@ impl Agent {
         // 子 Agent 一律共享父级 MCP 管理器：经代理调用复用父连接，权限仍受
         // 只读门禁与授权集合约束。
         let mcp = self.tools.mcp.clone();
-        let approval = self.tools.approval.clone();
+        let permission = self.tools.permission.clone();
         let ask = self.tools.ask_handler.clone();
         let write_lock = self.tools.write_lock.clone();
         let artifacts = self.tools.artifacts.clone();
@@ -149,9 +149,9 @@ impl Agent {
             if !record.spec.isolated {
                 tools.write_lock = write_lock.clone();
             }
-            tools.approval = approval.clone();
+            tools.permission = permission.clone();
             tools
-                .approval
+                .permission
                 .label(record.name.clone(), binding.owner.clone());
             if !record.spec.isolated
                 && let Some(parent) = lsp.as_ref()

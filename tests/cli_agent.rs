@@ -18,8 +18,6 @@ mod stats;
 #[path = "cli_agent/stats_hooks.rs"]
 mod stats_hooks;
 
-#[path = "cli_agent/approval.rs"]
-mod approval;
 #[path = "cli_agent/ask.rs"]
 mod ask;
 #[path = "cli_agent/hooks.rs"]
@@ -30,6 +28,8 @@ mod lsp;
 mod mcp;
 #[path = "cli_agent/mcp_remote.rs"]
 mod mcp_remote;
+#[path = "cli_agent/permission.rs"]
+mod permission;
 #[path = "cli_agent/sandbox.rs"]
 mod sandbox;
 #[path = "cli_agent/subagents.rs"]
@@ -174,12 +174,17 @@ impl Drop for Cli {
 }
 
 fn fixture_settings() -> &'static str {
-    "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n"
+    "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  permissionMode: yolo\n  sandbox:\n    mode: off\n"
 }
 
 fn fixture_settings_with_tools(tools_yaml: &str) -> String {
+    let mode = if tools_yaml.contains("permissionMode:") {
+        ""
+    } else {
+        "  permissionMode: yolo\n"
+    };
     format!(
-        "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n{tools_yaml}"
+        "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n{mode}  sandbox:\n    mode: off\n{tools_yaml}"
     )
 }
 

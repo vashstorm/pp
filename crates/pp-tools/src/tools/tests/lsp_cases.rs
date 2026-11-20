@@ -1,7 +1,7 @@
 use super::*;
-use crate::tools::approval::ApprovalDecision;
-use crate::tools::approval::ApprovalHandler;
-use pp_config::config::ApprovalMode;
+use crate::tools::permission::PermissionDecision;
+use crate::tools::permission::PermissionHandler;
+use pp_config::config::PermissionMode;
 use pp_config::config::ToolsSettings;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -42,11 +42,11 @@ fn run_lsp(tools: &Tools, arguments: Value, policy: ToolPolicy<'_>) -> Value {
     serde_json::from_str(&execution.output).unwrap()
 }
 
-fn deny_handler(prompts: &Arc<AtomicUsize>) -> ApprovalHandler {
+fn deny_handler(prompts: &Arc<AtomicUsize>) -> PermissionHandler {
     let prompts = Arc::clone(prompts);
     Box::new(move |_request, _cancellation| {
         prompts.fetch_add(1, Ordering::SeqCst);
-        Ok(ApprovalDecision::Deny)
+        Ok(PermissionDecision::Deny)
     })
 }
 
@@ -204,17 +204,17 @@ fn plan_policy_blocks_lsp_mutating_actions_before_dispatch() {
 }
 
 #[test]
-fn forced_readonly_execute_rejects_mutating_actions_before_approval() {
+fn forced_readonly_execute_rejects_mutating_actions_before_permission() {
     let dir = tempfile::tempdir().unwrap();
     let workflow = WorkflowState::default();
     let prompts = Arc::new(AtomicUsize::new(0));
     let mut tools = tools_with_lsp(&dir);
     tools.set_lsp_readonly(true);
-    tools.approval.set_config(ToolsSettings {
-        approval_mode: Some(ApprovalMode::AlwaysAsk),
+    tools.permission.set_config(ToolsSettings {
+        permission_mode: Some(PermissionMode::AlwaysAsk),
         ..Default::default()
     });
-    tools.approval.set_handler(deny_handler(&prompts));
+    tools.permission.set_handler(deny_handler(&prompts));
 
     let result = run_lsp(
         &tools,
@@ -224,7 +224,7 @@ fn forced_readonly_execute_rejects_mutating_actions_before_approval() {
         },
     );
     assert_eq!(result["ok"], false, "{result}");
-    // 只读强制先于审批：不会弹出审批，也不会被当成“用户拒绝”。
+    // 只读强制先于权限门：不会弹出权限询问，也不会被当成“用户拒绝”。
     let error = result["error"].as_str().unwrap_or_default();
     assert!(!error.contains("denied by the user"), "{result}");
     assert_eq!(prompts.load(Ordering::SeqCst), 0);
@@ -232,18 +232,18 @@ fn forced_readonly_execute_rejects_mutating_actions_before_approval() {
 }
 
 #[test]
-fn execute_mutating_action_reaches_approval_with_exact_arguments() {
+fn execute_mutating_action_reaches_permission_with_exact_arguments() {
     let dir = tempfile::tempdir().unwrap();
     let workflow = WorkflowState::default();
     let prompts = Arc::new(AtomicUsize::new(0));
     let mut tools = tools_with_lsp(&dir);
-    tools.approval.set_config(ToolsSettings {
-        approval_mode: Some(ApprovalMode::AlwaysAsk),
+    tools.permission.set_config(ToolsSettings {
+        permission_mode: Some(PermissionMode::AlwaysAsk),
         ..Default::default()
     });
-    tools.approval.set_handler(deny_handler(&prompts));
+    tools.permission.set_handler(deny_handler(&prompts));
 
-    // reload 是 Write 档：always-ask 下必须经过审批，审批发生在分发之前。
+    // reload 是 Write 档：always-ask 下必须经过权限询问，询问发生在分发之前。
     let result = run_lsp(
         &tools,
         json!({"action":"reload"}),
@@ -264,16 +264,16 @@ fn execute_mutating_action_reaches_approval_with_exact_arguments() {
 }
 
 #[test]
-fn execute_readonly_action_skips_approval_and_never_starts_when_unsupported() {
+fn execute_readonly_action_skips_permission_and_never_starts_when_unsupported() {
     let dir = tempfile::tempdir().unwrap();
     let workflow = WorkflowState::default();
     let prompts = Arc::new(AtomicUsize::new(0));
     let mut tools = tools_with_lsp(&dir);
-    tools.approval.set_config(ToolsSettings {
-        approval_mode: Some(ApprovalMode::AlwaysAsk),
+    tools.permission.set_config(ToolsSettings {
+        permission_mode: Some(PermissionMode::AlwaysAsk),
         ..Default::default()
     });
-    tools.approval.set_handler(deny_handler(&prompts));
+    tools.permission.set_handler(deny_handler(&prompts));
 
     // 无匹配服务器的扩展名：动作是只读档，跳过审批，由工具返回无服务器结果。
     let result = run_lsp(

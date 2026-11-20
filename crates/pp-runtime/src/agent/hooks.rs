@@ -8,7 +8,7 @@ use super::persistence::{Metadata, SessionJournal, SessionRef};
 use crate::hooks::protocol::{Context, Payload};
 use crate::hooks::{HookEffect, Runner};
 use anyhow::Result;
-use pp_config::config::{ApprovalMode, HookEvent};
+use pp_config::config::{HookEvent, PermissionMode};
 use pp_core::cancellation::{CancellationToken, Cancelled, CleanupError};
 use pp_core::events::AgentEvent;
 use serde_json::Value;
@@ -54,7 +54,7 @@ pub(crate) fn scope(
     runner: &std::sync::Arc<Runner>,
     binding: Option<&crate::subagent::Binding>,
     workflow: &pp_core::plan::WorkflowState,
-    approval: &pp_tools::approval::Gate,
+    permission: &pp_tools::permission::Gate,
     agent_type: Option<&str>,
 ) -> HookScope {
     let execute = workflow.mode == pp_core::plan::WorkMode::Execute;
@@ -71,17 +71,17 @@ pub(crate) fn scope(
     HookScope {
         runner: runner.clone(),
         role: role.filter(|_| execute),
-        permission_mode: permission_mode(approval.effective_mode()),
+        permission_mode: permission_mode(permission.snapshot()),
         agent_type: agent_id.as_ref().and(agent_type.map(str::to_owned)),
         agent_id,
     }
 }
 
-fn permission_mode(mode: ApprovalMode) -> &'static str {
+fn permission_mode(mode: PermissionMode) -> &'static str {
     match mode {
-        ApprovalMode::Yolo => "bypassPermissions",
-        ApprovalMode::Write => "acceptEdits",
-        ApprovalMode::AlwaysAsk => "default",
+        PermissionMode::Yolo => "bypassPermissions",
+        PermissionMode::AcceptEdits => "acceptEdits",
+        PermissionMode::AlwaysAsk => "default",
     }
 }
 
@@ -395,7 +395,7 @@ impl super::Agent {
             &self.hooks,
             self.subagent.as_ref(),
             &self.workflow,
-            &self.tools.approval,
+            &self.tools.permission,
             self.hook_agent_type.as_deref(),
         );
         if !scope.enabled(event) {

@@ -926,7 +926,7 @@ fn eval_settings_defaults_validation_and_checkpoint_compatibility() {
     assert_eq!(defaults.eval.max_timeout_seconds, 600);
 
     let custom = load(
-        Some("eval:\n  enabled: false\n  interpreter: /usr/bin/python3\n  timeout_seconds: 15\n  max_timeout_seconds: 120\ntools:\n  approval:\n    eval: prompt\n"),
+        Some("eval:\n  enabled: false\n  interpreter: /usr/bin/python3\n  timeout_seconds: 15\n  max_timeout_seconds: 120\ntools:\n  permission:\n    eval: prompt\n"),
         Some(VALID_MODELS),
     )
     .unwrap();
@@ -938,8 +938,8 @@ fn eval_settings_defaults_validation_and_checkpoint_compatibility() {
     assert_eq!(custom.settings.tool_limits().eval_timeout_seconds, 15);
     assert_eq!(custom.settings.tool_limits().eval_max_timeout_seconds, 120);
     assert_eq!(
-        custom.settings.tools.approval.get("eval"),
-        Some(&ApprovalPolicy::Prompt)
+        custom.settings.tools.permission.get("eval"),
+        Some(&PermissionPolicy::Prompt)
     );
 
     for bad in [

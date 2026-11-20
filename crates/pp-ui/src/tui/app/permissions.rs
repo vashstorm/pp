@@ -57,15 +57,15 @@ impl App {
     }
 }
 
-pub(super) fn request_approval(
+pub(super) fn request_permission(
     events: &std::sync::mpsc::SyncSender<crate::tui::WorkerEvent>,
-    request: pp_permission::ApprovalRequest,
+    request: pp_permission::PermissionRequest,
     token: &pp_core::cancellation::CancellationToken,
-) -> anyhow::Result<pp_permission::ApprovalDecision> {
+) -> anyhow::Result<pp_permission::PermissionDecision> {
     use pp_core::interaction::{AskArgs, AskOption, AskQuestion, AskRequest};
-    use pp_permission::ApprovalDecision;
+    use pp_permission::PermissionDecision;
 
-    const ONCE: &str = "Approve once";
+    const ONCE: &str = "Allow once";
     const SESSION: &str = "Allow for this session";
     const PERSIST: &str = "Always allow in this project";
     let option = |label: &str, description: &str| AskOption {
@@ -86,10 +86,10 @@ pub(super) fn request_approval(
             "Save a rule for this exact command and permission scope",
         ));
     }
-    options.push(option("Deny", "Return tool approval denied"));
+    options.push(option("Deny", "Return tool permission denied"));
     let args = AskArgs {
         questions: vec![AskQuestion {
-            id: "approval".into(),
+            id: "permission".into(),
             question: format!("{}: {}", request.tool, request.reason),
             options,
             header: None,
@@ -98,8 +98,8 @@ pub(super) fn request_approval(
         }],
     };
     let call_id = request.agent.as_ref().map_or_else(
-        || "approval-dialog".into(),
-        |id| format!("subagent-{id}-approval"),
+        || "permission-dialog".into(),
+        |id| format!("subagent-{id}-permission"),
     );
     let answers = crate::tui::request_ask(
         events,
@@ -113,9 +113,9 @@ pub(super) fn request_approval(
         .first()
         .and_then(|answer| answer.selected_options.first());
     Ok(match selected.map(String::as_str) {
-        Some(ONCE) => ApprovalDecision::Approve,
-        Some(SESSION) if request.session_grant => ApprovalDecision::ApproveSession,
-        Some(PERSIST) if request.persistent_grant => ApprovalDecision::ApprovePersistently,
-        _ => ApprovalDecision::Deny,
+        Some(ONCE) => PermissionDecision::Approve,
+        Some(SESSION) if request.session_grant => PermissionDecision::ApproveSession,
+        Some(PERSIST) if request.persistent_grant => PermissionDecision::ApprovePersistently,
+        _ => PermissionDecision::Deny,
     })
 }

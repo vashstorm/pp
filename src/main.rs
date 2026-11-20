@@ -85,12 +85,8 @@ struct Args {
     )]
     continue_session: Option<Option<String>>,
 
-    /// Override tools.approvalMode from settings.yml for this run
-    #[arg(long, value_enum, value_name = "MODE")]
-    approval_mode: Option<ApprovalModeCli>,
-
     /// Select a permission preset for this run (always-ask, accept-edits, yolo)
-    #[arg(long, value_name = "MODE", conflicts_with_all = ["approval_mode", "sandbox"])]
+    #[arg(long, value_name = "MODE", conflicts_with = "sandbox")]
     permission_mode: Option<pp_config::config::PermissionMode>,
 
     /// Override tools.sandbox.mode from settings.yml for this run
@@ -100,23 +96,6 @@ struct Args {
     /// 本次运行使用的模型，写法为 [provider/]model[:effort]；不写入偏好
     #[arg(long, value_name = "MODEL")]
     model: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-enum ApprovalModeCli {
-    Yolo,
-    Write,
-    AlwaysAsk,
-}
-
-impl From<ApprovalModeCli> for pp_config::config::ApprovalMode {
-    fn from(value: ApprovalModeCli) -> Self {
-        match value {
-            ApprovalModeCli::Yolo => Self::Yolo,
-            ApprovalModeCli::Write => Self::Write,
-            ApprovalModeCli::AlwaysAsk => Self::AlwaysAsk,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -505,7 +484,6 @@ fn run(args: Args) -> Result<()> {
                 dir,
                 &cwd,
                 args.permission_mode,
-                args.approval_mode.map(Into::into),
                 sandbox_override.is_some(),
             )),
             sandbox_override,
@@ -530,7 +508,7 @@ fn run(args: Args) -> Result<()> {
                         manager.clone(),
                     )?;
                     tools.skills = skills.clone();
-                    tools.approval = bootstrap.permission.as_ref().clone();
+                    tools.permission = bootstrap.permission.as_ref().clone();
                     let sbx =
                         sandbox.get_or_init(models.catalog_snapshot().sandbox_settings(), &cwd);
                     if let Some(mode) = sandbox_override {

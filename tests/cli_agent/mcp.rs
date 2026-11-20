@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn settings(mode: &str) -> Value {
-    json!({"tools":{"approvalMode":"yolo"},"mcpServers":{"local":{
+    json!({"tools":{"permissionMode":"yolo"},"mcpServers":{"local":{
         "command":"bash",
         "args":[format!("{}/tests/fixtures/mcp_server.sh", env!("CARGO_MANIFEST_DIR"))],
         "env":{"MCP_MODE":mode,"MCP_VALUE":"中文结果","MCP_LOG":"mcp-log"},

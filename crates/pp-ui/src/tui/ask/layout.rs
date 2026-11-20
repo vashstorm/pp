@@ -120,7 +120,7 @@ impl Panel {
 
     pub(super) fn question_lines(&self, index: usize, width: u16) -> Vec<Line<'static>> {
         let question = &self.questions.questions[index].question;
-        let parts = if self.approval {
+        let parts = if self.permission {
             question.lines().collect::<Vec<_>>()
         } else {
             vec![question.as_str()]

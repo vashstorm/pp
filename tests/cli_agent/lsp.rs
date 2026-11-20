@@ -36,7 +36,7 @@ fn lsp_models(server: &TestServer, protocol: &str) -> String {
 fn lsp_settings(format_on_write: bool, diagnostics_on_edit: bool) -> String {
     json!({
         "rate_limit_retry_budget_seconds": 0,
-        "tools": {"approvalMode": "yolo"},
+        "tools": {"permissionMode": "yolo"},
         "model_roles": {"fast": {"model": "fixture/primary", "effort": "none"}},
         "lsp": {
             "requestTimeout": 5,

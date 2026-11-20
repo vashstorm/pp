@@ -30,13 +30,13 @@ use std::io::{self, Read};
 
 mod access;
 pub use access::edit_path;
-pub mod approval;
 mod dispatch;
 mod edit;
 mod glob;
 mod hashline;
 mod instructions;
 mod lifecycle;
+pub mod permission;
 use lifecycle::{finalize_tool_execution, tool_metric_name};
 mod lsp;
 mod plan;
@@ -71,7 +71,7 @@ const WRITE_NEW_CONFLICT: &str = "File appeared after the write started; write r
 pub struct Tools {
     pub artifacts: output::Store,
     pub ask_handler: Option<pp_core::interaction::SharedAskHandler>,
-    pub approval: approval::Gate,
+    pub permission: permission::Gate,
     pub mcp: std::sync::Arc<pp_mcp::McpManager>,
     /// 子 Agent 共享父级 manager：分发走代理调用，父连接不因子 Agent 取消而中断。
     pub mcp_shared: bool,
@@ -492,7 +492,7 @@ fn eval_definition(limits: ToolLimits) -> FunctionObject {
             "data inspection, plotting, or multi-step scripts. Supports top-level await, trailing ",
             "non-None expression echo, %load <path>, %pip <args>, %cd/%pwd/%ls/%env/%time/%who, ",
             "!cmd, %%bash, and matplotlib/PIL image output. Built-in helpers: tool.<name>(...) ",
-            "(works sync or with await; calls any allowed session tool through normal approval ",
+            "(works sync or with await; calls any allowed session tool through normal permission ",
             "and hooks), read(path, offset?, limit?), write(path, content), rg(pattern, path?), ",
             "glob(pattern, path?), sh(command, timeout_seconds?), env(key?, value?). Timeout ",
             "defaults to {default_timeout}s (1-{max_timeout}s); host tool bridge calls pause the ",
@@ -593,9 +593,9 @@ impl Tools {
         if let Some(definition) = self.lsp_definition(lsp_readonly) {
             definitions.push(definition);
         }
-        let permissions = self.approval.snapshot();
-        let sandbox_status = self.sandbox.view(permissions.sandbox_mode()).status();
-        if permissions.preset() == Some(pp_config::config::PermissionMode::AcceptEdits)
+        let permissions = self.permission.snapshot();
+        let sandbox_status = self.sandbox.view(self.permission.sandbox_mode()).status();
+        if permissions == pp_config::config::PermissionMode::AcceptEdits
             && let Some(bash) = definitions
                 .iter_mut()
                 .find(|definition| definition.name == "bash")
@@ -604,7 +604,7 @@ impl Tools {
             parameters["properties"]["sandbox_permissions"] = json!({
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Request approval before starting this command when it requires additional writable directories or outbound network. Normal commands omit this field. A sandbox failure does not retry the command.",
+                "description": "Request permission before starting this command when it requires additional writable directories or outbound network. Normal commands omit this field. A sandbox failure does not retry the command.",
                 "properties": {
                     "writable": {"type": "array", "items": {"type": "string", "description": "An existing absolute directory path"}},
                     "network": {"type": "boolean", "description": "Allow outbound network for the command and its subprocesses"}
@@ -870,7 +870,7 @@ impl Tools {
         images: &mut Vec<read::ToolImage>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let access = self.authorize_call(call, hook_ask)?;
-        let sandbox = self.sandbox.view(access.permissions.sandbox_mode());
+        let sandbox = self.sandbox.view(self.permission.sandbox_mode());
         if let Some(value) = self.dispatch_subagent(
             call.name,
             call.arguments,
@@ -881,11 +881,8 @@ impl Tools {
         )? {
             return Ok((value, None, None));
         }
-        let file_sandbox = access
-            .permissions
-            .preset()
-            .filter(|mode| *mode != pp_config::config::PermissionMode::Yolo)
-            .map(|_| sandbox);
+        let file_sandbox =
+            (access.permissions != pp_config::config::PermissionMode::Yolo).then_some(sandbox);
         match call.name {
             "yield" => {
                 let value: Value = serde_json::from_str(call.arguments)?;

@@ -244,7 +244,7 @@ fn agent_hub_streams_and_anchors_activity() {
         std::fs::write(project.path().join("probe.txt"), "hub-probe-body").unwrap();
         std::fs::write(
             config_path(home.path(), "settings.yml"),
-            r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"bash_timeout_seconds":37,"read":{"toolResultPreview":true},"tools":{"approvalMode":"yolo"},"model_roles":{"fast":{"model":"fixture/primary","effort":"none"}}}"#,
+            r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"bash_timeout_seconds":37,"read":{"toolResultPreview":true},"tools":{"permissionMode":"yolo"},"model_roles":{"fast":{"model":"fixture/primary","effort":"none"}}}"#,
         ).unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),

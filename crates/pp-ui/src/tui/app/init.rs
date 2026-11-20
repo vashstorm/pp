@@ -261,10 +261,10 @@ impl App {
             let _guard = crate::tui::dialog_guard(&ask_lock, cancellation)?;
             request_ask(&ask_events, request, cancellation)
         }));
-        let approval_events = sender.clone();
-        agent.set_approval_handler(Box::new(move |request, token| {
+        let permission_events = sender.clone();
+        agent.set_permission_handler(Box::new(move |request, token| {
             let _guard = crate::tui::dialog_guard(&dialog_lock, token)?;
-            super::permissions::request_approval(&approval_events, request, token)
+            super::permissions::request_permission(&permission_events, request, token)
         }));
         agent.ensure_subagents()?;
         let usage = agent.context_usage().ok();

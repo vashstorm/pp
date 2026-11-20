@@ -132,39 +132,39 @@ fn call(host: &TestHost, arguments: Value, access: Access) -> Result<Value> {
 #[test]
 fn lsp_tool_access_and_tier_are_derived_from_the_action() {
     assert_eq!(
-        approval_tier(r#"{"action":"definition","file":"a.rs"}"#),
+        permission_tier(r#"{"action":"definition","file":"a.rs"}"#),
         Tier::Read
     );
     assert_eq!(
-        approval_tier(r#"{"action":"hover","symbol":"x"}"#),
+        permission_tier(r#"{"action":"hover","symbol":"x"}"#),
         Tier::Read
     );
     assert_eq!(
-        approval_tier(r#"{"action":"diagnostics","file":"a.rs"}"#),
+        permission_tier(r#"{"action":"diagnostics","file":"a.rs"}"#),
         Tier::Read
     );
     assert_eq!(
-        approval_tier(r#"{"action":"diagnostics","file":"*"}"#),
+        permission_tier(r#"{"action":"diagnostics","file":"*"}"#),
         Tier::Read
     );
     // 缺少 file 的 diagnostics 参数无效，保守按写档。
-    assert_eq!(approval_tier(r#"{"action":"diagnostics"}"#), Tier::Write);
+    assert_eq!(permission_tier(r#"{"action":"diagnostics"}"#), Tier::Write);
     // 修改建议只读取信息。
     assert_eq!(
-        approval_tier(r#"{"action":"rename","file":"a.rs","new_name":"b","apply":false}"#),
+        permission_tier(r#"{"action":"rename","file":"a.rs","new_name":"b","apply":false}"#),
         Tier::Read
     );
     assert_eq!(
-        approval_tier(r#"{"action":"rename_file","file":"a","new_name":"b"}"#),
+        permission_tier(r#"{"action":"rename_file","file":"a","new_name":"b"}"#),
         Tier::Read
     );
     assert_eq!(
-        approval_tier(r#"{"action":"request","query":"x"}"#),
+        permission_tier(r#"{"action":"request","query":"x"}"#),
         Tier::Write
     );
-    assert_eq!(approval_tier(r#"{"action":"reload"}"#), Tier::Write);
-    assert_eq!(approval_tier("not json"), Tier::Write);
-    assert_eq!(approval_tier(r#"{"action":"unknown"}"#), Tier::Write);
+    assert_eq!(permission_tier(r#"{"action":"reload"}"#), Tier::Write);
+    assert_eq!(permission_tier("not json"), Tier::Write);
+    assert_eq!(permission_tier(r#"{"action":"unknown"}"#), Tier::Write);
 
     assert!(validate_access(r#"{"action":"definition","file":"a.rs"}"#, Access::ReadOnly).is_ok());
     assert!(
