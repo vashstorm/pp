@@ -69,17 +69,23 @@ fn mcp_tip_line(line: &str) -> Line<'static> {
     Line::styled(line.to_owned(), base)
 }
 
-const SESSION_TIPS: [(&str, &str); 4] = [
+const SESSION_TIPS: [(&str, &str); 7] = [
     ("/model", "switch model, keep chat"),
     ("/new", "clear chat, keep model"),
     ("/resume", "reopen a saved session"),
     ("/plan", "plan, then approve edits"),
+    ("/context", "inspect context usage"),
+    ("/compact", "summarize context"),
+    ("/tree", "browse & rewind chat"),
 ];
-const KEYBOARD_TIPS: [(&str, &str); 4] = [
+const KEYBOARD_TIPS: [(&str, &str); 7] = [
     ("Enter", "send a message"),
     ("Shift + Enter", "insert a newline"),
     ("Esc", "cancel the running task"),
     ("Shift + Tab", "cycle thinking levels"),
+    ("Tab", "complete commands/paths"),
+    ("↑ / ↓", "recall input history"),
+    ("Ctrl + O", "toggle tool output"),
 ];
 const WORDMARK: [&str; 5] = [
     "██████    ██████  ",
@@ -167,7 +173,7 @@ fn two_column_card_lines(card_width: u16, inset: u16) -> Vec<Line<'static>> {
     };
     let right_col = inner.saturating_sub(3 + left_col);
 
-    let mut lines = Vec::with_capacity(8);
+    let mut lines = Vec::with_capacity(SESSION_TIPS.len() + 4);
     lines.push(Line::styled(
         "─".repeat(usize::from(card_width)),
         rule_style,
@@ -223,7 +229,7 @@ fn single_column_card_lines(card_width: u16, inset: u16) -> Vec<Line<'static>> {
     let rule_style = Style::default().fg(separator());
     let pad = " ".repeat(usize::from(inset));
     let inner = usize::from(card_width.saturating_sub(inset * 2));
-    let key_width = if inner >= 38 { 15 } else { 14 };
+    let key_width = if inner >= 39 { 15 } else { 14 };
 
     let mut lines = Vec::new();
     lines.push(Line::styled(
@@ -271,11 +277,7 @@ fn compact_hint_lines(width: u16) -> Vec<Line<'static>> {
     compact
 }
 
-pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Rect {
-    if area.width == 0 || area.height == 0 {
-        return area;
-    }
-    let compact = area.width < 40 || area.height < 11;
+fn brand_lines(compact: bool) -> Vec<Line<'static>> {
     let first_color = first();
     let second_color = second();
     let wordmark = wordmark_color();
@@ -319,15 +321,13 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
             .collect::<Vec<_>>()
     };
     brand_lines.push(Line::default());
+    brand_lines
+}
 
-    let brand_width = area.width;
-    let brand = Paragraph::new(brand_lines)
-        .centered()
-        .wrap(Wrap { trim: false });
-    let brand_height = u16::try_from(brand.line_count(brand_width))
-        .unwrap_or(u16::MAX)
-        .min(area.height);
-
+pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return area;
+    }
     let (card_width, inset) = if area.width >= 88 {
         ((area.width * 3 / 4).clamp(84, 120), 2)
     } else if area.width >= 78 {
@@ -353,6 +353,28 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
     let card_line_count = u16::try_from(card_widget.line_count(card_width)).unwrap_or(u16::MAX);
     let footer_widget = Paragraph::new(footer).wrap(Wrap { trim: false });
     let footer_height = u16::try_from(footer_widget.line_count(tips_width)).unwrap_or(u16::MAX);
+    let full_tips_height = card_line_count + footer_height;
+
+    let mut compact = area.width < 40 || area.height < 11;
+    let mut brand = Paragraph::new(brand_lines(compact))
+        .centered()
+        .wrap(Wrap { trim: false });
+    let mut brand_height = brand.line_count(area.width);
+    // 完整标识放不下全部提示时，尝试用较矮的标识为提示腾出空间。
+    if !compact && brand_height + usize::from(full_tips_height) > usize::from(area.height) {
+        let smaller_brand = Paragraph::new(brand_lines(true))
+            .centered()
+            .wrap(Wrap { trim: false });
+        let smaller_height = smaller_brand.line_count(area.width);
+        if smaller_height + usize::from(full_tips_height) <= usize::from(area.height) {
+            compact = true;
+            brand = smaller_brand;
+            brand_height = smaller_height;
+        }
+    }
+    let brand_height = u16::try_from(brand_height)
+        .unwrap_or(u16::MAX)
+        .min(area.height);
 
     let mcp_lines: Vec<Line<'static>> =
         ctx.mcp_tips.iter().map(|line| mcp_tip_line(line)).collect();
@@ -363,10 +385,11 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
     });
 
     let available_for_body = area.height.saturating_sub(brand_height);
-    let use_full_card = card_line_count + 1 + footer_height <= available_for_body;
+    let use_full_card = full_tips_height <= available_for_body;
 
     let (body_card_height, body_footer, body_footer_height, footer_gap) = if use_full_card {
-        (card_line_count, footer_widget, footer_height, 1_u16)
+        let gap = u16::from(full_tips_height < available_for_body);
+        (card_line_count, footer_widget, footer_height, gap)
     } else {
         let compact_para =
             Paragraph::new(compact_hint_lines(tips_width)).wrap(Wrap { trim: false });
@@ -401,15 +424,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
     let content_x = card_x + inset;
     let mut y = area.y + top;
 
-    frame.render_widget(
-        brand,
-        Rect::new(
-            area.x + (area.width - brand_width) / 2,
-            y,
-            brand_width,
-            brand_height,
-        ),
-    );
+    frame.render_widget(brand, Rect::new(area.x, y, area.width, brand_height));
     y += brand_height;
 
     if use_full_card && body_card_height > 0 {

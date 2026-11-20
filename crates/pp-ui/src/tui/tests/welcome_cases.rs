@@ -48,7 +48,7 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
     let mut app = app();
     app.input.insert_str("welcome draft");
 
-    // 宽屏 100x30：品牌区上对齐并保留 2 行顶部留白，双栏卡片与全部 8 项入口完整展示。
+    // 宽屏 100x30：品牌区上对齐并保留 2 行顶部留白，双栏完整展示 14 项入口。
     let wide = draw(&mut app, 100, 30);
     let wide_lines: Vec<&str> = wide.lines().collect();
     let logo_y = wide_lines
@@ -86,8 +86,9 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
     assert!(std.contains("plan, then approve edits"), "{std}");
     assert!(std.contains("cancel the running task"), "{std}");
 
-    // 60x30：退化为单列卡片并保留全部入口。
+    // 60x30：紧凑品牌为单列卡片留出空间，保留全部入口。
     let narrow = draw(&mut app, 60, 30);
+    assert_eq!(narrow.lines().next().unwrap().trim(), "  PP");
     let session_y = narrow
         .lines()
         .position(|line| line.contains("Session & workflow"))
@@ -102,6 +103,19 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
     let compact_tall = draw(&mut app, 38, 30);
     assert_eq!(compact_tall.lines().next().unwrap().trim(), "  PP");
     assert!(compact_tall.contains("Shift + Tab"));
+
+    for screen in [&wide, &std, &narrow, &compact_tall] {
+        for entry in [
+            "/context",
+            "/compact",
+            "/tree",
+            "complete commands/paths",
+            "↑ / ↓",
+            "Ctrl + O",
+        ] {
+            assert!(screen.contains(entry), "缺少 {entry}:\n{screen}");
+        }
+    }
 
     // 40x12：极矮屏幕保留紧凑品牌、最简提示与草稿。
     let compact_short = draw(&mut app, 40, 12);

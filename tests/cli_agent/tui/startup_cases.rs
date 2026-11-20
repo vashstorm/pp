@@ -292,7 +292,7 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
         text.contains("/tips  All shortcuts   ·   /help  Commands"),
         "{text}"
     );
-    assert!(!text.contains("/compact"), "{text}");
+    assert!(text.contains("/compact"), "{text}");
     assert!(!text.contains("/skills"), "{text}");
     assert!(!input_bar_above_draft(&text), "{text}");
 
@@ -307,11 +307,13 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     });
     pty.resize(30, 60);
     pty.wait_for(
-        "窄屏提示切换为单列并保留八项入口",
+        "窄屏提示切换为单列并保留完整入口",
         |screen| {
             let text = screen.contents();
             !tips_headers_on_one_row(&text)
                 && tips_headers_stack(&text)
+                && text.contains("/tree")
+                && text.contains("Ctrl + O")
                 && text.contains("startup draft")
                 && text.contains("/tips  All shortcuts")
                 && !input_bar_above_draft(&text)
