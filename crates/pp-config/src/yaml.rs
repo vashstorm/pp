@@ -1,11 +1,20 @@
 use anyhow::{Context, Result, anyhow};
+use serde_path_to_error::{Path, Segment};
 use serde_yaml::{Mapping, Value};
+use std::fmt::Write;
 
-// 解析器错误可能包含凭证值，只返回固定的脱敏提示。
 pub fn parse<T: serde::de::DeserializeOwned>(text: &str, kind: &str) -> Result<T> {
     // 先检查 YAML 的重复键，再通过严格的数据模型反序列化，
     // 避免数字转字符串或 null 被当成空列表、空映射。
-    let value: Value = serde_yaml::from_str(text).map_err(|_| invalid_config(kind))?;
+    let value: Value = serde_yaml::from_str(text).map_err(|error| yaml_error(kind, &error))?;
+    decode(value, text, kind)
+}
+
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(
+    value: Value,
+    text: &str,
+    kind: &str,
+) -> Result<T> {
     if std::any::type_name::<T>() == std::any::type_name::<crate::config::Settings>() {
         if value.get("mcp_servers").is_some() {
             anyhow::bail!(
@@ -24,9 +33,20 @@ pub fn parse<T: serde::de::DeserializeOwned>(text: &str, kind: &str) -> Result<T
         }
     }
     if !value.is_mapping() {
-        return Err(invalid_config(kind));
+        return Err(anyhow!(
+            "invalid YAML {kind} config: expected a top-level mapping"
+        ));
     }
-    T::deserialize(StrictValue(value)).map_err(|_| invalid_config(kind))
+    serde_path_to_error::deserialize(StrictValue(value)).map_err(|error| {
+        let path = error.path();
+        // 宽松解析只在失败后用于定位，且仅在两次解析指向同一条目时采用坐标。
+        let location =
+            serde_path_to_error::deserialize::<_, T>(serde_yaml::Deserializer::from_str(text))
+                .err()
+                .filter(|located| located.path().to_string() == path.to_string())
+                .and_then(|located| located.inner().location());
+        field_error(kind, path, error.inner(), location)
+    })
 }
 
 // 结构体必须来自映射，不能接受 Serde 默认支持的按位置填充数组。
@@ -110,10 +130,126 @@ impl<'de> serde::Deserializer<'de> for StrictValue {
     }
 }
 
-fn invalid_config(kind: &str) -> anyhow::Error {
-    anyhow!(
-        "invalid YAML {kind} config: check syntax, field types, required fields, and unknown fields"
-    )
+// 解析器原文可能包含凭据。语法错误只取位置，反序列化错误只取键路径和安全的原因。
+fn yaml_error(kind: &str, error: &serde_yaml::Error) -> anyhow::Error {
+    let message = error.to_string();
+    let reason =
+        if message.starts_with("duplicate entry ") || message.contains(": duplicate entry ") {
+            "duplicate mapping key"
+        } else {
+            "invalid YAML syntax or document structure"
+        };
+    match error.location() {
+        Some(location) => anyhow!(
+            "invalid YAML {kind} config at line {}, column {}: {reason}",
+            location.line(),
+            location.column()
+        ),
+        None => anyhow!("invalid YAML {kind} config: {reason}"),
+    }
+}
+
+fn field_error(
+    kind: &str,
+    path: &Path,
+    error: &serde_yaml::Error,
+    location: Option<serde_yaml::Location>,
+) -> anyhow::Error {
+    const EXPECTED_TYPES: &[&str] = &[
+        "a boolean",
+        "a string",
+        "a sequence",
+        "a map",
+        "a mapping of ids to entries",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "usize",
+        "f64",
+    ];
+    let message = error.to_string();
+    let unknown_field = message.starts_with("unknown field ");
+    let mut field = if kind == "auth" {
+        String::new()
+    } else {
+        // 未知键也可能是误填的凭据。保留父路径，用源文件坐标定位该键。
+        let depth = path.iter().len().saturating_sub(usize::from(unknown_field));
+        field_path(path.iter().take(depth))
+    };
+    let reason = if let Some(missing) = message
+        .strip_prefix("missing field `")
+        .and_then(|name| name.strip_suffix('`'))
+    {
+        append_key(&mut field, missing);
+        "missing required field"
+    } else if unknown_field {
+        "unknown field"
+    } else if message.starts_with("unknown variant ") {
+        "unsupported enum value"
+    } else if message.starts_with("invalid type:") {
+        "invalid field type"
+    } else if message == "expected a mapping" {
+        "expected a mapping"
+    } else if message == "expected an enum string" {
+        "expected a string for an enum field"
+    } else {
+        "invalid field value or structure"
+    };
+    let mut detail = format!("invalid YAML {kind} config");
+    if !field.is_empty() {
+        let _ = write!(detail, " at `{field}`");
+    }
+    if let Some(location) = location {
+        let _ = write!(
+            detail,
+            " (line {}, column {})",
+            location.line(),
+            location.column()
+        );
+    }
+    let _ = write!(detail, ": {reason}");
+    if (message.starts_with("invalid type:") || message.starts_with("invalid value:"))
+        && let Some((_, expected)) = message.rsplit_once(", expected ")
+        && EXPECTED_TYPES.contains(&expected)
+    {
+        let _ = write!(detail, " (expected {expected})");
+    }
+    anyhow!(detail)
+}
+
+fn field_path<'a>(mut segments: impl Iterator<Item = &'a Segment>) -> String {
+    let mut field = String::new();
+    for segment in segments.by_ref().take(16) {
+        match segment {
+            Segment::Map { key } => append_key(&mut field, key),
+            Segment::Seq { index } => {
+                let _ = write!(field, "[{index}]");
+            }
+            Segment::Enum { .. } | Segment::Unknown => field.push_str("[?]"),
+        }
+    }
+    if segments.next().is_some() {
+        field.push_str("[…]");
+    }
+    field
+}
+
+fn append_key(path: &mut String, key: &str) {
+    if key.chars().take(65).count() > 64 {
+        path.push_str("[…]");
+    } else if !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        if !path.is_empty() {
+            path.push('.');
+        }
+        path.push_str(key);
+    } else {
+        let _ = write!(path, "[{key:?}]");
+    }
 }
 
 pub(crate) fn update_field(text: &str, name: &str, value: Value) -> Result<String> {

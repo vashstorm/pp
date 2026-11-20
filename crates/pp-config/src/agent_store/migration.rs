@@ -4,7 +4,7 @@ use crate::auth::StoreLock;
 use crate::config::ModelPreferences;
 use crate::config::Settings;
 use crate::yaml;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use pp_core::cancellation::CancellationToken;
 use pp_core::cancellation::check;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
@@ -41,9 +41,13 @@ pub fn initialize_store(dir: &Path, cancellation: &CancellationToken) -> Result<
     }
     check(cancellation)?;
     if stage(&store)?.is_none() {
-        let settings = snapshot(&dir.join("settings.yml"))?;
+        let settings_path = dir.join("settings.yml");
+        let settings = snapshot(&settings_path)?;
         let (preferences, _) =
-            split_settings(settings.as_ref().map(|s| s.text.as_str()).unwrap_or("{}"))?;
+            split_settings(settings.as_ref().map(|s| s.text.as_str()).unwrap_or("{}"))
+                .with_context(|| {
+                    format!("loading YAML settings config {}", settings_path.display())
+                })?;
         let credentials = auth::load_legacy_store(&dir.join("auth.yml"))?;
         check(cancellation)?;
         import(&mut store, &preferences, &credentials)?;
@@ -76,18 +80,11 @@ fn split_settings(text: &str) -> Result<(ModelPreferences, Mapping)> {
             migrated.insert(key, value);
         }
     }
-    let mut preferences: ModelPreferences = yaml::parse(
-        &serde_yaml::to_string(&migrated)
-            .map_err(|_| anyhow::anyhow!("Invalid legacy settings.yml."))?,
-        "settings",
-    )?;
+    let mut preferences: ModelPreferences =
+        yaml::decode(Value::Mapping(migrated), text, "settings")?;
     preferences.validate()?;
     normalize(&mut preferences);
-    let settings: Settings = yaml::parse(
-        &serde_yaml::to_string(&remaining)
-            .map_err(|_| anyhow::anyhow!("Invalid legacy settings.yml."))?,
-        "settings",
-    )?;
+    let settings: Settings = yaml::decode(Value::Mapping(remaining.clone()), text, "settings")?;
     settings.validate()?;
     Ok((preferences, remaining))
 }
@@ -203,8 +200,9 @@ fn cleanup(store: &AgentStore, dir: &Path, cancellation: &CancellationToken) -> 
     let settings_path = dir.join("settings.yml");
     let settings = snapshot(&settings_path)?;
     if let Some(settings) = &settings {
-        let mapping: Mapping = yaml::parse(&settings.text, "settings")?;
-        let (actual, _) = split_settings(&settings.text)?;
+        let context = || format!("loading YAML settings config {}", settings_path.display());
+        let mapping: Mapping = yaml::parse(&settings.text, "settings").with_context(context)?;
+        let (actual, _) = split_settings(&settings.text).with_context(context)?;
         // 缺失字段可能已经在上次清理中删除；只比较仍存在的源字段。
         for field in FIELDS {
             if mapping.contains_key(Value::String((*field).into())) {

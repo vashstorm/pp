@@ -482,6 +482,71 @@ fn invalid_settings_limits_and_numeric_types_are_rejected() {
 }
 
 #[test]
+fn yaml_diagnostics_identify_entries_without_echoing_values() {
+    for (settings, location, reason) in [
+        (
+            "tui:\n  max_fps: [secret-marker\n",
+            "line 3, column 1",
+            "syntax",
+        ),
+        (
+            "debug: true\ndebug: secret-marker",
+            "line 1, column 1",
+            "duplicate mapping key",
+        ),
+        (
+            "tui: {max_fps: secret-marker}",
+            "tui.max_fps",
+            "expected u16",
+        ),
+        (
+            "# settings\ntui:\n  secret-marker: true",
+            "`tui` (line 3, column 3)",
+            "unknown field",
+        ),
+        (
+            "disabled_skills: [valid, {bad: secret-marker}]",
+            "disabled_skills[1]",
+            "invalid field type",
+        ),
+        ("edit: secret-marker", "`edit`", "unsupported enum value"),
+    ] {
+        let chain = rejection(Some(settings), Some(VALID_MODELS));
+        assert!(chain.contains("settings.yml"), "{chain}");
+        assert!(
+            chain.contains(location) && chain.contains(reason),
+            "{chain}"
+        );
+    }
+
+    for (model, field, reason) in [
+        (
+            "{model: some-model, context_window: secret-marker}",
+            "providers.fixture.models.primary.context_window",
+            "invalid field type",
+        ),
+        (
+            "{secret-marker: true, model: some-model}",
+            "`providers.fixture.models.primary` (line 5, column 17)",
+            "unknown field",
+        ),
+        (
+            "{context_window: 2048}",
+            "providers.fixture.models.primary.model",
+            "missing required field",
+        ),
+    ] {
+        let models = format!(
+            "providers:\n  fixture:\n    api_key: secret-marker\n    models:\n      primary: {model}\n"
+        );
+        let chain = rejection(None, Some(&models));
+        assert!(chain.contains("models.yml"), "{chain}");
+        assert!(chain.contains(field), "{chain}");
+        assert!(chain.contains(reason), "{chain}");
+    }
+}
+
+#[test]
 fn unknown_and_misplaced_fields_and_old_format_are_rejected() {
     for settings in [
         r#"{"secret-marker":true}"#,

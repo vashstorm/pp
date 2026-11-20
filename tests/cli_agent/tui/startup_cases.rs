@@ -186,18 +186,21 @@ fn tui_unknown_command_is_silently_ignored() {
 
 #[test]
 fn tui_notification_deprecated_settings_keep_startup_errors_and_redaction() {
-    for (settings, expected) in [
+    for (settings, expected, detail) in [
         (
             r#"{"notification_timeout_seconds":2}"#,
             "Configuration unavailable",
+            None,
         ),
         (
             r#"{"notification_show_countdown":false,"notification_timeout_seconds":2}"#,
             "Configuration unavailable",
+            None,
         ),
         (
             r#"{"notification_timeout_seconds":"private-invalid-value"}"#,
             "invalid YAML settings",
+            Some("notification_timeout_seconds"),
         ),
     ] {
         let home = tempfile::tempdir().unwrap();
@@ -206,8 +209,14 @@ fn tui_notification_deprecated_settings_keep_startup_errors_and_redaction() {
         pty.wait_for(
             "启动错误使用消息区红框且不再有倒计时",
             |screen| {
+                let text = screen.contents();
                 notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
-                    && screen.contents().contains(expected)
+                    && text.contains(expected)
+                    && detail.is_none_or(|field| {
+                        text.contains("settings.yml")
+                            && text.contains(field)
+                            && text.contains("invalid field type")
+                    })
             },
         );
         let text = pty.parser.screen().contents();
