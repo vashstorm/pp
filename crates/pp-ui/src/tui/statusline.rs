@@ -87,7 +87,7 @@ fn timer_color() -> Color {
 
 pub(super) fn app_icon(icons: IconMode) -> &'static str {
     match icons {
-        IconMode::Nerd => "\u{f1d8}",
+        IconMode::Nerd => "\u{f1d9}",
         IconMode::Ascii => ">",
     }
 }
@@ -400,7 +400,7 @@ fn permission_field(mode: pp_config::config::PermissionMode) -> Span<'static> {
         PermissionMode::Yolo => ("YOLO", theme.error_border),
     };
     let icon = match themes::current_icons() {
-        IconMode::Nerd => "\u{f132}",
+        IconMode::Nerd => "\u{ed25}",
         IconMode::Ascii => "!",
     };
     Span::styled(

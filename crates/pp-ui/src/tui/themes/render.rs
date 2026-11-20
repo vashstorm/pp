@@ -273,7 +273,7 @@ impl Panel {
                     let sample = if mode_ascii {
                         "> @ / * +"
                     } else {
-                        "\u{f1d8} \u{ec19} \u{f07c} \u{f00c}"
+                        "\u{f1d9} \u{ec19} \u{f07c} \u{f00c}"
                     };
                     let row_rect =
                         Rect::new(rows_area.x, rows_area.y + row as u16, rows_area.width, 1);

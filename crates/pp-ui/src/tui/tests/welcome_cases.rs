@@ -88,7 +88,7 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
 
     // 60x30：紧凑品牌为单列卡片留出空间，保留全部入口。
     let narrow = draw(&mut app, 60, 30);
-    assert_eq!(narrow.lines().next().unwrap().trim(), "  PP");
+    assert_eq!(narrow.lines().next().unwrap().trim(), "\u{f1d9}  PP");
     let session_y = narrow
         .lines()
         .position(|line| line.contains("Session & workflow"))
@@ -101,7 +101,7 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
 
     // 38x30：紧凑品牌 + 完整单列提示。
     let compact_tall = draw(&mut app, 38, 30);
-    assert_eq!(compact_tall.lines().next().unwrap().trim(), "  PP");
+    assert_eq!(compact_tall.lines().next().unwrap().trim(), "\u{f1d9}  PP");
     assert!(compact_tall.contains("Shift + Tab"));
 
     for screen in [&wide, &std, &narrow, &compact_tall] {
@@ -119,7 +119,7 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
 
     // 40x12：极矮屏幕保留紧凑品牌、最简提示与草稿。
     let compact_short = draw(&mut app, 40, 12);
-    assert_eq!(compact_short.lines().next().unwrap().trim(), "  PP");
+    assert_eq!(compact_short.lines().next().unwrap().trim(), "\u{f1d9}  PP");
     assert!(compact_short.contains("/tips  All shortcuts"));
     assert!(compact_short.contains("welcome draft"));
 

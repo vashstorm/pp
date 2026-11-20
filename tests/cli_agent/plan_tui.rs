@@ -85,7 +85,7 @@ fn plan_wait_mode(pty: &mut Pty, mode: &str) {
 fn plan_wait_execute(pty: &mut Pty) {
     pty.wait_for("执行模式隐藏模式标签", |screen| {
         screen.contents().lines().last().is_some_and(|line| {
-            line.trim_start().starts_with("\u{f1d8} · ")
+            line.trim_start().starts_with("\u{f1d9} · ")
                 && !line.contains('\u{f0132}')
                 && !line.contains(" · EXEC · ")
                 && !line.contains(" · E · ")

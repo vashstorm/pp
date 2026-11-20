@@ -334,7 +334,9 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
         |screen| {
             let text = screen.contents();
             let mut lines = text.lines();
-            lines.next().is_some_and(|line| line.trim() == "  PP")
+            lines
+                .next()
+                .is_some_and(|line| line.trim() == "\u{f1d9}  PP")
                 && lines
                     .next()
                     .is_some_and(|line| line.trim() == concat!("v", env!("CARGO_PKG_VERSION")))
@@ -348,7 +350,7 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
         let text = screen.contents();
         text.lines()
             .next()
-            .is_some_and(|line| line.trim() == "  PP")
+            .is_some_and(|line| line.trim() == "\u{f1d9}  PP")
             && text.contains("startup draft")
             && text.contains("/tips  All shortcuts")
             && text.contains("/help  Commands")

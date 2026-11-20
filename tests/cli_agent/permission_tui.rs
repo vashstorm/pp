@@ -29,7 +29,7 @@ fn permission_tui_cycles_modes_with_both_shortcuts_and_keeps_draft() {
             && screen
                 .rows(0, cols)
                 .nth(usize::from(rows - 1))
-                .is_some_and(|row| row.contains("off · \u{f132} Accept-edits ·"))
+                .is_some_and(|row| row.contains("off · \u{ed25} Accept-edits ·"))
     };
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.wait_for("默认启动时 effort 后带盾牌的 Accept-edits", default_footer);
