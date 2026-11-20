@@ -1,5 +1,4 @@
-fn permission_fixture(home: &Path, settings: &str) {
-    write_settings(home, settings).unwrap();
+fn permission_fixture(home: &Path) {
     std::fs::write(
         config_path(home, "models.yml"),
         "providers:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://127.0.0.1:9/v1\n    models:\n      primary:\n        model: fixture-model\n",
@@ -23,43 +22,60 @@ fn permission_label(screen: &vt100::Screen, label: &str, color: vt100::Color) ->
 fn permission_tui_cycles_modes_with_both_shortcuts_and_keeps_draft() {
     use vt100::Color::Rgb;
     let home = tempfile::tempdir().unwrap();
-    permission_fixture(home.path(), "tools: { permissionMode: always-ask }");
+    permission_fixture(home.path());
+    let default_footer = |screen: &vt100::Screen| {
+        let (rows, cols) = screen.size();
+        permission_label(screen, "Accept-edits", Rgb(254, 188, 56))
+            && screen
+                .rows(0, cols)
+                .nth(usize::from(rows - 1))
+                .is_some_and(|row| row.contains("off · \u{f132} Accept-edits ·"))
+    };
     let mut pty = Pty::start_with_existing_files(home.path());
-    pty.wait_for("蓝色 Always-ask", |screen| {
-        permission_label(screen, "Always-ask", Rgb(125, 207, 255))
-    });
+    pty.wait_for("默认启动时 effort 后带盾牌的 Accept-edits", default_footer);
     pty.input("permission draft");
     pty.draft("permission draft");
     pty.input("\x1b[D");
     let (row, column) = pty.parser.screen().cursor_position();
     pty.wait_for("草稿内光标", |screen| screen.cursor_position() == (row, column.saturating_sub(1)));
     let cursor = pty.parser.screen().cursor_position();
-    pty.input("\x1b[17~");
-    pty.wait_for("琥珀色 Accept-edits", |screen| {
+    for (keys, label, color) in [
+        ("\x1b[17~", "YOLO", Rgb(224, 108, 117)),
+        ("\x1bA", "Always-ask", Rgb(125, 207, 255)),
+        ("\x1b[97;4u", "Accept-edits", Rgb(254, 188, 56)),
+        ("\x1b[27;4;65~", "YOLO", Rgb(224, 108, 117)),
+        ("\x1b[27;10;65~", "Always-ask", Rgb(125, 207, 255)),
+        ("\x1b[65;3u", "Accept-edits", Rgb(254, 188, 56)),
+    ] {
+        pty.input(keys);
+        pty.wait_for(&format!("{keys:?} 切换至 {label}"), |screen| {
+            permission_label(screen, label, color)
+        });
+        assert_eq!(pty.prompt(), "permission draft");
+        assert_eq!(pty.parser.screen().cursor_position(), cursor);
+    }
+    pty.resize(24, 17);
+    pty.wait_for("窄屏 Accept-edits", |screen| {
         permission_label(screen, "Accept-edits", Rgb(254, 188, 56))
     });
-    assert_eq!(pty.prompt(), "permission draft");
-    assert_eq!(pty.parser.screen().cursor_position(), cursor);
-    pty.input("\x1bA");
-    pty.wait_for("红色 YOLO", |screen| {
-        permission_label(screen, "YOLO", Rgb(224, 108, 117))
-    });
-    pty.resize(24, 17);
+    pty.input("\x1b[17~");
     pty.wait_for("窄屏 YOLO", |screen| {
         permission_label(screen, "YOLO", Rgb(224, 108, 117))
     });
-    pty.input("\x1b[17~");
-    pty.wait_for("窄屏 Always-ask", |screen| {
-        permission_label(screen, "Always-ask", Rgb(125, 207, 255))
-    });
     pty.input("\x03");
     pty.finish();
+
+    let mut restarted = Pty::start_with_existing_files(home.path());
+    restarted.wait_for("重启后恢复默认 Accept-edits", default_footer);
+    restarted.input("\x03");
+    restarted.finish();
 }
 
 #[test]
 fn permission_tui_preserves_mode_across_new_and_plan() {
     let home = tempfile::tempdir().unwrap();
-    permission_fixture(home.path(), "tools: { approvalMode: yolo }");
+    permission_fixture(home.path());
+    write_settings(home.path(), "tools: { approvalMode: yolo }").unwrap();
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.wait_for("旧配置档位", |screen| screen.contents().contains("Legacy"));
     pty.input("/permissions yolo\r");

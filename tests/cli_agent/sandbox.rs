@@ -99,7 +99,7 @@ fn sandbox_line_mode_slash_command_inspects_and_overrides_runtime_mode() {
     let mut cli = LiveCli::new(Cli::start_with(
         &root,
         None,
-        "rate_limit_retry_budget_seconds: 0\n",
+        "rate_limit_retry_budget_seconds: 0\ntools: {approvalMode: yolo}\n",
         &fixture_models(&server),
     ));
 

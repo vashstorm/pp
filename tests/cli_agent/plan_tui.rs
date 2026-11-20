@@ -5,7 +5,7 @@ const PLAN_TUI_BODY: &str = "# Create canary\n\nCreate canary.txt with the exact
 fn plan_start(server: &TestServer, home: &Path, project: &Path, protocol: &str) -> Pty {
     std::fs::write(
         config_path(home, "settings.yml"),
-        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0}"#,
+        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0,"tools":{"approvalMode":"yolo"}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -77,9 +77,7 @@ fn plan_final(request: CapturedRequest, protocol: &str, text: &str) {
 fn plan_wait_mode(pty: &mut Pty, mode: &str) {
     pty.wait_for("authoritative workflow mode", |screen| {
         screen.contents().lines().last().is_some_and(|line| {
-            ["off", "low", "med", "hig", "xhi", "max"]
-                .iter()
-                .any(|effort| line.contains(&format!("{effort} · \u{f0132} {mode} · ")))
+            line.contains(&format!(" · \u{f0132} {mode} · "))
         })
     });
 }

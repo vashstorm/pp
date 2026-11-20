@@ -138,6 +138,7 @@ fn wait_tui_esc_cancels_background_and_restores_input_in_both_protocols() {
 
 fn wait_subagent_settings() -> String {
     let mut settings: Value = serde_json::from_str(CANCEL_SETTINGS).unwrap();
+    settings["tools"]["approvalMode"] = json!("yolo");
     settings["model_roles"] = json!({"fast":{"model":"fixture/primary","effort":"none"}});
     settings.to_string()
 }

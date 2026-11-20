@@ -108,7 +108,7 @@ fn sandbox_mode_patch_persists_and_from_str_parses() {
     let saved =
         update_general_setting(&path, SettingPatch::SandboxMode(SandboxMode::ReadOnly)).unwrap();
     assert_eq!(saved.tools.sandbox.mode, SandboxMode::ReadOnly);
-    assert_eq!(saved.tools.approval_mode, ApprovalMode::Write);
+    assert_eq!(saved.tools.approval_mode, Some(ApprovalMode::Write));
     assert!(
         std::fs::read_to_string(&path)
             .unwrap()

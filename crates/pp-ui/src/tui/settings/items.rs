@@ -105,7 +105,12 @@ impl SettingItem {
     pub(super) fn display_value(&self, settings: &Settings) -> String {
         match self.id {
             SettingId::Edit => settings.edit.as_str().to_owned(),
-            SettingId::ApprovalMode => settings.tools.approval_mode.as_str().to_owned(),
+            SettingId::ApprovalMode => settings
+                .tools
+                .approval_mode
+                .unwrap_or_default()
+                .as_str()
+                .to_owned(),
             SettingId::SandboxMode => settings.tools.sandbox.mode.as_str().to_owned(),
             SettingId::ReadMaxLines => settings.read_max_lines.to_string(),
             SettingId::ReadMaxBytes => settings.read_max_bytes.to_string(),
@@ -290,7 +295,7 @@ impl SettingItem {
                 ];
                 let idx = modes
                     .iter()
-                    .position(|mode| *mode == settings.tools.approval_mode)
+                    .position(|mode| *mode == settings.tools.approval_mode.unwrap_or_default())
                     .unwrap_or(0);
                 let next = if forward {
                     (idx + 1) % modes.len()

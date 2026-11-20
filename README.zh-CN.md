@@ -127,7 +127,7 @@ pp --model deepseek/deepseek-flash:high /commit
 pp /stats --host 127.0.0.1 --port 0 --no-open
 ```
 
-> **权限与数据** · 在 `settings.yml` 中设置 `tools.permissionMode: accept-edits`，即可在工作区沙盒内运行，并按需批准 Bash 的额外权限。`always-ask` 还会在写入与执行工具运行前询问，`yolo` 关闭 pp 沙盒并跳过常规工具审批。TUI 底栏用颜色标明档位，按 Alt + Shift + A 或 F6 循环，也可通过 `/permissions` 查看生效状态。未配置权限预设的安装继续使用原有审批与沙盒设置。模型配置中的接口密钥以明文保存，会话与统计可能包含源码和对话。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
+> **权限与数据** · 默认使用 `accept-edits`，在工作区沙盒内运行，并按需询问 Bash 的额外权限。可以在 `settings.yml` 中通过 `tools.permissionMode` 选择其他预设。`always-ask` 还会在写入与执行工具运行前询问，`yolo` 关闭 pp 沙盒并跳过常规工具审批。TUI 底栏用颜色标明档位，按 Alt + Shift + A 或 F6 循环，也可通过 `/permissions` 查看生效状态。未指定预设时，显式的旧审批配置或自定义沙盒设置按 `Legacy` 生效。模型配置中的接口密钥以明文保存，会话与统计可能包含源码和对话。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
 
 ## 日常使用
 

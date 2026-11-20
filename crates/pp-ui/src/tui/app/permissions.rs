@@ -2,10 +2,17 @@ use crate::tui::{App, KeyCode, KeyModifiers, Level, PendingKind, State, WorkerCo
 use crossterm::event::KeyEvent;
 
 pub(super) fn is_permission_shortcut(key: KeyEvent) -> bool {
-    let alt_shift = KeyModifiers::ALT | KeyModifiers::SHIFT;
-    matches!(key.code, KeyCode::Char('a' | 'A')) && key.modifiers == alt_shift
-        || key.code == KeyCode::Char('A') && key.modifiers == KeyModifiers::ALT
-        || key.code == KeyCode::F(6) && key.modifiers.is_empty()
+    let alt_or_meta = KeyModifiers::ALT | KeyModifiers::META;
+    let modifiers = key.modifiers - alt_or_meta;
+    match key.code {
+        KeyCode::F(6) => key.modifiers.is_empty(),
+        // 某些终端通过 Meta 报告 Alt，另一些只在字符大小写上体现 Shift。
+        KeyCode::Char('a' | 'A') if key.modifiers.intersects(alt_or_meta) => {
+            modifiers == KeyModifiers::SHIFT
+                || (modifiers.is_empty() && key.code == KeyCode::Char('A'))
+        }
+        _ => false,
+    }
 }
 
 impl App {

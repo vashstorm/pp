@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn settings(mode: &str) -> Value {
-    json!({"mcpServers":{"local":{
+    json!({"tools":{"approvalMode":"yolo"},"mcpServers":{"local":{
         "command":"bash",
         "args":[format!("{}/tests/fixtures/mcp_server.sh", env!("CARGO_MANIFEST_DIR"))],
         "env":{"MCP_MODE":mode,"MCP_VALUE":"中文结果","MCP_LOG":"mcp-log"},
@@ -552,13 +552,21 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
             if index == 3 {
                 let mut changed = configured.clone();
                 changed["mcpServers"]["extra"] = extra.clone();
-                std::fs::write(config_path(home.path(), "mcp.json"), changed.to_string()).unwrap();
+                std::fs::write(
+                    config_path(home.path(), "mcp.json"),
+                    json!({"mcpServers":changed["mcpServers"]}).to_string(),
+                )
+                .unwrap();
             }
             if index == 4 {
                 let mut changed = settings("special_name");
                 changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
                 changed["mcpServers"]["extra"] = extra.clone();
-                std::fs::write(config_path(home.path(), "mcp.json"), changed.to_string()).unwrap();
+                std::fs::write(
+                    config_path(home.path(), "mcp.json"),
+                    json!({"mcpServers":changed["mcpServers"]}).to_string(),
+                )
+                .unwrap();
             }
             if index == 5 {
                 std::fs::write(config_path(home.path(), "mcp.json"), "broken secret-config")

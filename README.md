@@ -124,7 +124,7 @@ pp --model deepseek/deepseek-flash:high /commit
 pp /stats --host 127.0.0.1 --port 0 --no-open
 ```
 
-> **Permissions and data** — Set `tools.permissionMode: accept-edits` in `settings.yml` to use the workspace sandbox and approve extra Bash access on request. `always-ask` also asks before write and execution tools. `yolo` turns off the pp sandbox and skips routine tool approvals. The colored TUI footer shows the active preset. Press Alt + Shift + A or F6 to cycle, or use `/permissions` to see the effective sandbox and approval settings. Existing configurations without a preset keep their original sandbox and tool approval settings. API keys in the model configuration are stored in plain text. Sessions and statistics may contain source code and conversations. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
+> **Permissions and data** — `accept-edits` is the default preset. It uses the workspace sandbox and prompts for extra Bash access on request. Set `tools.permissionMode` in `settings.yml` to choose another preset. `always-ask` also asks before write and execution tools. `yolo` turns off the pp sandbox and skips routine tool approvals. The colored TUI footer shows the active mode. Press Alt + Shift + A or F6 to cycle, or use `/permissions` to see the effective sandbox and approval settings. Without a preset override, explicit legacy approval settings and customized sandbox settings use Legacy mode. API keys in the model configuration are stored in plain text. Sessions and statistics may contain source code and conversations. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
 
 ## Everyday use
 

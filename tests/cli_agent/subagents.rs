@@ -11,7 +11,7 @@ fn subagent_role_is_required_and_main_roles_are_rejected_in_both_protocols() {
         } else {
             response_models(&server, Some("response"))
         };
-        let settings = json!({"model_roles":{
+        let settings = json!({"tools":{"approvalMode":"yolo"},"model_roles":{
             "default":{"model":"fixture/primary","effort":"none"},
             "plan":{"model":"fixture/primary","effort":"high"},
             "fast":{"model":"fixture/primary","effort":"low"}
@@ -92,7 +92,7 @@ fn explorer_role_is_read_only_and_uses_the_exploration_prompt_in_both_protocols(
         } else {
             response_models(&server, Some("response"))
         };
-        let settings = "model_roles:\n  fast: {model: fixture/primary, effort: none}\n  explorer: {model: fixture/primary, effort: none}\n";
+        let settings = "tools: {approvalMode: yolo}\nmodel_roles:\n  fast: {model: fixture/primary, effort: none}\n  explorer: {model: fixture/primary, effort: none}\n";
         let cli = Cli::start_with(
             home.path(),
             Some("map the execution loop"),
@@ -170,7 +170,9 @@ fn artifact_child_output_is_readable_from_parent_in_both_protocols() {
         let cli = Cli::start_with(
             dir.path(),
             Some("inspect child artifact"),
-            &format!("{FIXTURE_FAST_ROLE}tools:\n  artifactSpillThreshold: 16\n"),
+            &format!(
+                "{FIXTURE_FAST_ROLE}tools:\n  approvalMode: yolo\n  artifactSpillThreshold: 16\n"
+            ),
             &models,
         );
         let (request, _) = receive_sub(&server, protocol);
@@ -232,7 +234,7 @@ fn subagent_result_read_pages_full_disk_output_in_both_protocols() {
         let cli = Cli::start_with(
             home.path(),
             Some("read the full child result"),
-            &format!("{FIXTURE_FAST_ROLE}read_max_lines: 1\n"),
+            &format!("{FIXTURE_FAST_ROLE}tools: {{approvalMode: yolo}}\nread_max_lines: 1\n"),
             &models,
         );
         let first_line = "x".repeat(12_000);
@@ -772,7 +774,7 @@ fn fallback_subagent_uses_its_role_backup_without_switching_parent() {
             "base_url":format!("http://{}/v1", server.addr()),"models":{"model":{"model":model}}})
         };
         let models = json!({"providers":{"first":provider(protocol,"main"),"second":provider(backup_protocol,"backup")}});
-        let settings = json!({"rate_limit_retry_budget_seconds":0,"default_model":"first/model",
+        let settings = json!({"tools":{"approvalMode":"yolo"},"rate_limit_retry_budget_seconds":0,"default_model":"first/model",
             "model_roles":{"fast":{"model":"first/model","effort":"none","fallback":{"model":"second/model","effort":"high"}}}});
         let cli = Cli::start_with(
             home.path(),
@@ -850,7 +852,7 @@ fn custom_role_roundtrip_rejects_invented_names_and_routes_each_role() {
             "base_url":format!("http://{}/v1", server.addr()),"models":{"special":{"model":model}}})
         };
         let models = json!({"providers":{"main":provider(protocol,"main-model"),"custom":provider(custom_protocol,"custom-model")}});
-        let settings = json!({"default_model":"main/special","rate_limit_retry_budget_seconds":0,
+        let settings = json!({"tools":{"approvalMode":"yolo"},"default_model":"main/special","rate_limit_retry_budget_seconds":0,
             "model_roles":{"fast":{"model":"main/special","effort":"low"}}});
         let cli = Cli::start_with(
             dir.path(),

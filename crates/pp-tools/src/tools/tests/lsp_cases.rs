@@ -211,7 +211,7 @@ fn forced_readonly_execute_rejects_mutating_actions_before_approval() {
     let mut tools = tools_with_lsp(&dir);
     tools.set_lsp_readonly(true);
     tools.approval.set_config(ToolsSettings {
-        approval_mode: ApprovalMode::AlwaysAsk,
+        approval_mode: Some(ApprovalMode::AlwaysAsk),
         ..Default::default()
     });
     tools.approval.set_handler(deny_handler(&prompts));
@@ -238,7 +238,7 @@ fn execute_mutating_action_reaches_approval_with_exact_arguments() {
     let prompts = Arc::new(AtomicUsize::new(0));
     let mut tools = tools_with_lsp(&dir);
     tools.approval.set_config(ToolsSettings {
-        approval_mode: ApprovalMode::AlwaysAsk,
+        approval_mode: Some(ApprovalMode::AlwaysAsk),
         ..Default::default()
     });
     tools.approval.set_handler(deny_handler(&prompts));
@@ -270,7 +270,7 @@ fn execute_readonly_action_skips_approval_and_never_starts_when_unsupported() {
     let prompts = Arc::new(AtomicUsize::new(0));
     let mut tools = tools_with_lsp(&dir);
     tools.approval.set_config(ToolsSettings {
-        approval_mode: ApprovalMode::AlwaysAsk,
+        approval_mode: Some(ApprovalMode::AlwaysAsk),
         ..Default::default()
     });
     tools.approval.set_handler(deny_handler(&prompts));

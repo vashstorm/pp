@@ -11,7 +11,12 @@ fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_prec
             let dir = tempfile::tempdir().unwrap();
             let mut config = remote.config(transport, 2000);
             config["mcpServers"]["remote"]["env_headers"] = json!({"x-test-key":"PP_MCP_TEST_KEY"});
-            write_settings(dir.path(), config.to_string()).unwrap();
+            write_settings(
+                dir.path(),
+                json!({"tools":{"approvalMode":"yolo"},"mcpServers":config["mcpServers"]})
+                    .to_string(),
+            )
+            .unwrap();
             std::fs::write(
                 config_path(dir.path(), "models.yml"),
                 response_models(&provider, Some(protocol)),
@@ -136,7 +141,12 @@ fn mcp_remote_management_both_protocols_reload_refreshes_auth_without_persisting
             let dir = tempfile::tempdir().unwrap();
             let mut config = remote.config(transport, 3000);
             config["mcpServers"]["remote"]["env_headers"] = json!({"x-test-key":"PP_MCP_TEST_KEY"});
-            write_settings(dir.path(), config.to_string()).unwrap();
+            write_settings(
+                dir.path(),
+                json!({"tools":{"approvalMode":"yolo"},"mcpServers":config["mcpServers"]})
+                    .to_string(),
+            )
+            .unwrap();
             std::fs::write(
                 config_path(dir.path(), "models.yml"),
                 response_models(&provider, Some(protocol)),

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 fn gate(mode: ApprovalMode, policies: &[(&str, ApprovalPolicy)]) -> Gate {
     let mut gate = Gate::new();
     gate.set_config(ToolsSettings {
-        approval_mode: mode,
+        approval_mode: Some(mode),
         approval: policies
             .iter()
             .map(|(name, policy)| (name.to_string(), *policy))

@@ -200,7 +200,7 @@ fn eval_nested_tools_keep_approval_instructions_and_hooks() {
     let mut policy_map = std::collections::BTreeMap::new();
     policy_map.insert("eval".to_owned(), pp_config::config::ApprovalPolicy::Allow);
     tools.approval.set_config(pp_config::config::ToolsSettings {
-        approval_mode: ApprovalMode::Write,
+        approval_mode: Some(ApprovalMode::Write),
         approval: policy_map,
         ..Default::default()
     });
@@ -232,7 +232,7 @@ fn eval_nested_tools_keep_approval_instructions_and_hooks() {
 
     // 4) 切回 Yolo 模式验证嵌套 PreToolUse / PostToolUse Hook 拦截与参数改写。
     tools.approval.set_config(pp_config::config::ToolsSettings {
-        approval_mode: ApprovalMode::Yolo,
+        approval_mode: Some(ApprovalMode::Yolo),
         ..Default::default()
     });
     let mut hook = StubHook::new();

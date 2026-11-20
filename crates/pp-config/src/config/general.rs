@@ -52,7 +52,7 @@ impl SettingPatch {
                 serde_yaml::to_value(value).context("Failed to serialize edit")?,
             ),
             Self::ApprovalMode(value) => {
-                settings.tools.approval_mode = value;
+                settings.tools.approval_mode = Some(value);
                 (
                     "tools",
                     serde_yaml::to_value(&settings.tools)
@@ -234,7 +234,7 @@ mod tests {
 
         let saved =
             update_general_setting(&path, SettingPatch::ApprovalMode(ApprovalMode::Write)).unwrap();
-        assert_eq!(saved.tools.approval_mode, ApprovalMode::Write);
+        assert_eq!(saved.tools.approval_mode, Some(ApprovalMode::Write));
         assert_eq!(saved.tui.theme, crate::config::Theme::TokyoNight);
 
         let saved = update_general_setting(&path, SettingPatch::LspRequestTimeout(30)).unwrap();

@@ -956,11 +956,11 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 
 ## 工具执行与权限
 
-新配置可以在 `settings.yml` 中声明权限预设。
+启动默认使用 `accept-edits`。可以在 `settings.yml` 中显式选择其他权限预设。
 
 ```yaml
 tools:
-  permissionMode: accept-edits
+  permissionMode: always-ask
 ```
 
 | 底栏标签 | 审批与沙盒 |
@@ -969,10 +969,11 @@ tools:
 | `Accept-edits`（琥珀色） | 工作区沙盒，沙盒内 Bash 和允许的编辑自动执行。沙盒外的其他写入或执行工具运行前仍需确认。 |
 | `YOLO`（红色） | 关闭 pp 沙盒，跳过常规工具审批。Plan 和 Review 白名单、内置文件保存及强制 Hook 审批仍适用。 |
 
+- 权限档位紧跟在底栏的 effort 后，前面有盾牌图标。ASCII 图标模式用 `!` 表示权限。
 - 主对话空闲时，Alt + Shift + A 或 F6 按表中顺序循环，保留输入草稿与光标。`/permissions` 显示模式及沙盒详情，`/permissions <模式>` 立即切换。切换只在本次进程内生效，跨会话与 Plan 切换保留。启动时可用 `--permission-mode <模式>` 覆盖配置。
 - `accept-edits` 的 Bash 调用可用 `sandbox_permissions.writable` 申请增加可写目录，目录须已存在且使用绝对路径。若沙盒禁止出站，可通过 `sandbox_permissions.network: true` 申请为本次命令及其子进程开放出站网络。前台与后台命令均先审批再执行。普通失败只返回诊断，后续调用可以明确申请权限。硬性保护路径和拒绝规则继续生效。
 - 提示提供仅此一次、本会话允许、始终允许此项目中的操作或拒绝。持久授权写入 `~/.pp/agent/approval.yml`，按工作区、执行目录、完整命令和申请范围精确匹配。`/permissions rules` 列出规则，`/permissions revoke <id>` 撤销。文件损坏或保存失败时，持久授权无法放行。行模式和 `-p` 可以复用已保存的授权，需要新审批时返回工具错误。
-- `Always-ask` 和 `Accept-edits` 依赖可用的工作区沙盒，平台探测失败时阻止依赖沙盒的操作。未配置预设时显示 `Legacy`，沿用独立的审批和沙盒配置。旧启动参数 `--approval-mode` 或 `--sandbox` 选择兼容路径，与 `--permission-mode` 互斥。首次从 `Legacy` 按循环键进入 `Accept-edits`。
+- `Always-ask` 和 `Accept-edits` 依赖可用的工作区沙盒，平台探测失败时阻止依赖沙盒的操作。未指定预设时，显式配置的 `tools.approvalMode`、非空 `tools.approval` 或非默认沙盒设置继续按 `Legacy` 生效。旧启动参数 `--approval-mode` 或 `--sandbox` 也会选择 `Legacy`，与 `--permission-mode` 互斥。首次从 `Legacy` 按循环键进入 `Accept-edits`。
 
 内置 `write` 和 `edit` 的保存范围为启动目录和系统临时目录，单次提交采用原子替换并拒绝符号链接。MCP stdio 与 LSP 服务进程在本地沙盒外运行。会话与统计可能包含源码和对话。
 

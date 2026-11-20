@@ -384,9 +384,15 @@ fn rewrite(bytes: &[u8]) -> Option<Vec<u8>> {
     }
     let modifier = parts.next()?.parse::<u16>().ok()?;
     let code = parts.next()?.parse::<u32>().ok()?;
-    if parts.next().is_some() || !(2..=8).contains(&modifier) {
+    if parts.next().is_some() || !(2..=16).contains(&modifier) {
         return None;
     }
+    // xterm 的 Meta 位是 8，Kitty 的 Meta 位是 32（位 8 表示 Super）。
+    let modifier = if modifier >= 9 {
+        modifier + 24
+    } else {
+        modifier
+    };
     Some(format!("\x1b[{code};{modifier}u").into_bytes())
 }
 
@@ -411,6 +417,8 @@ mod tests {
         assert_eq!(translated(&[b"\x1b[27;3;13~"]), b"\x1b[13;3u");
         assert_eq!(translated(&[b"\x1b[27;5;99~"]), b"\x1b[99;5u");
         assert_eq!(translated(&[b"\x1b[27;2;9~"]), b"\x1b[9;2u");
+        // Meta + Shift 转成 Kitty 的对应位，不会被读成 Super + Shift。
+        assert_eq!(translated(&[b"\x1b[27;10;65~"]), b"\x1b[65;34u");
         // 多字节键码保持完整。
         assert_eq!(translated(&[b"\x1b[27;2;233~"]), b"\x1b[233;2u");
     }

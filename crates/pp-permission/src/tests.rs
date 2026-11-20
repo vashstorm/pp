@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 fn settings(mode: ApprovalMode, policy: &[(&str, ApprovalPolicy)]) -> ToolsSettings {
     ToolsSettings {
         output: Default::default(),
-        approval_mode: mode,
+        approval_mode: Some(mode),
         approval: policy
             .iter()
             .map(|(name, policy)| ((*name).to_owned(), *policy))
@@ -380,7 +380,8 @@ fn approval_mode_serialization_matches_config_names() {
 fn tools_settings_reads_camel_case_section() {
     let settings: ToolsSettings =
         serde_yaml::from_str("approvalMode: write\napproval:\n  bash: deny\n").unwrap();
-    assert_eq!(settings.approval_mode, ApprovalMode::Write);
+    assert_eq!(settings.approval_mode, Some(ApprovalMode::Write));
+    assert!(serde_yaml::from_str::<ToolsSettings>("approvalMode: null").is_err());
     assert_eq!(settings.approval.get("bash"), Some(&ApprovalPolicy::Deny));
     let config = ApprovalConfig::from(settings);
     assert_eq!(config.mode, ApprovalMode::Write);
@@ -437,7 +438,7 @@ fn permission_presets_override_legacy_only_after_explicit_selection() {
         false,
     );
     let settings = ToolsSettings {
-        approval_mode: ApprovalMode::Write,
+        approval_mode: Some(ApprovalMode::Write),
         permission_mode: Some(PermissionMode::AlwaysAsk),
         ..Default::default()
     };
@@ -470,6 +471,37 @@ fn permission_presets_override_legacy_only_after_explicit_selection() {
         startup.snapshot().sandbox_mode(),
         Some(SandboxMode::WorkspaceWrite)
     );
+}
+
+#[test]
+fn process_defaults_to_accept_edits_with_no_permission_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut gate = Gate::for_process(dir.path(), dir.path(), None, None, false);
+    for (settings, expected) in [
+        (
+            "{}",
+            EffectivePermissions::Preset(PermissionMode::AcceptEdits),
+        ),
+        (
+            "approvalMode: yolo",
+            EffectivePermissions::Legacy(ApprovalMode::Yolo),
+        ),
+        (
+            "approval: {bash: prompt}",
+            EffectivePermissions::Legacy(ApprovalMode::Yolo),
+        ),
+        (
+            "sandbox: {mode: off}",
+            EffectivePermissions::Legacy(ApprovalMode::Yolo),
+        ),
+        (
+            "approvalMode: yolo\npermissionMode: always-ask",
+            EffectivePermissions::Preset(PermissionMode::AlwaysAsk),
+        ),
+    ] {
+        gate.set_config(serde_yaml::from_str(settings).unwrap());
+        assert_eq!(gate.snapshot(), expected, "{settings}");
+    }
 }
 
 #[test]

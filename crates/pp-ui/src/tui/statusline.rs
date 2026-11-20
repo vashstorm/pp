@@ -253,12 +253,13 @@ fn compact(text: &str, width: usize, keep_end: bool) -> String {
     }
 }
 
-// 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示模型前缀。
+// 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示模型前缀与权限／模式。
 // Plan 模式标签由调用方按预算决定：不足时先压缩其它字段，再缩为单字母，最后只留模式。
 // 模型字段只放配置引用：切换来源由内容栏的提示行交代，不挤占状态栏宽度。
 pub(super) fn status_line(
     model: &str,
     think_level: ThinkLevel,
+    permission: Option<&Span<'static>>,
     mode: Option<&'static str>,
     context: &StatusContext,
     width: usize,
@@ -324,15 +325,21 @@ pub(super) fn status_line(
                 false,
             );
             if width < field_slot(&model_text) + effort_width + dir_fixed {
-                // 4) 仍不足：仅显示模型前缀与模式；模式图标和标签优先保留。
+                // 4) 仍不足：保留模型前缀、权限与模式。
                 let mut spans = vec![Span::styled(
                     compact(&model_display, width, false),
                     Style::default()
                         .fg(model_color())
                         .add_modifier(Modifier::BOLD),
                 )];
-                if let Some(mode_text) = mode {
+                if let Some(permission) = permission {
                     if width > 0 {
+                        spans.push(separator());
+                    }
+                    spans.push(permission.clone());
+                }
+                if let Some(mode_text) = mode {
+                    if width > 0 || permission.is_some() {
                         spans.push(separator());
                     }
                     spans.push(icon(plan_icon(icons), plan_mode()));
@@ -362,6 +369,9 @@ pub(super) fn status_line(
     // off 表示显式发送 none，请求关闭思考。
     spans.push(icon(think_icon, model_color()));
     spans.push(Span::styled(think, model_text_style));
+    if let Some(permission) = permission {
+        spans.extend([separator(), permission.clone()]);
+    }
     if let Some(mode_text) = mode {
         spans.push(separator());
         spans.push(icon(plan_icon(icons), plan_mode()));
@@ -381,7 +391,26 @@ pub(super) fn status_line(
     Line::from(spans)
 }
 
-/// 主状态栏：先按模式标签预留预算，再交给共享的字段装配与降级逻辑。
+fn permission_field(permissions: pp_permission::EffectivePermissions) -> Span<'static> {
+    use pp_config::config::PermissionMode;
+    let theme = themes::palette();
+    let (label, color) = match permissions.preset() {
+        Some(PermissionMode::AlwaysAsk) => ("Always-ask", theme.status_input),
+        Some(PermissionMode::AcceptEdits) => ("Accept-edits", theme.plan_mode),
+        Some(PermissionMode::Yolo) => ("YOLO", theme.error_border),
+        None => ("Legacy", theme.muted),
+    };
+    let icon = match themes::current_icons() {
+        IconMode::Nerd => "\u{f132}",
+        IconMode::Ascii => "!",
+    };
+    Span::styled(
+        format!("{icon} {label}"),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )
+}
+
+/// 主状态栏：先为权限和 Plan 预留列宽，再交给共享的字段装配与降级逻辑。
 pub(super) fn primary(
     model: Option<&ModelChoice>,
     think_level: ThinkLevel,
@@ -390,51 +419,16 @@ pub(super) fn primary(
     context: &StatusContext,
     width: u16,
 ) -> Line<'static> {
-    let Some(permissions) = permissions else {
-        return primary_fields(model, think_level, mode, context, width);
-    };
-    let theme = themes::palette();
-    use pp_config::config::PermissionMode;
-    let (label, color) = match permissions.preset() {
-        Some(PermissionMode::AlwaysAsk) => ("Always-ask", theme.status_input),
-        Some(PermissionMode::AcceptEdits) => ("Accept-edits", theme.plan_mode),
-        Some(PermissionMode::Yolo) => ("YOLO", theme.error_border),
-        None => ("Legacy", theme.muted),
-    };
-    let label = Span::styled(
-        label,
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    );
-    let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
-    let label_width = label.width();
-    let remaining = usize::from(width).saturating_sub(label_width + SEPARATOR_WIDTH);
-    let mut fields = primary_fields(model, think_level, mode, context, remaining as u16);
-    if remaining == 0 || fields.width() > remaining {
-        let mut spans = vec![label];
-        if mode == pp_core::plan::WorkMode::Plan && remaining >= "Plan".len() {
-            spans.extend([
-                separator(),
-                Span::styled("Plan", Style::default().fg(plan_mode())),
-            ]);
-        }
-        return Line::from(spans);
-    }
-    fields.spans.extend([separator(), label]);
-    fields
-}
-
-fn primary_fields(
-    model: Option<&ModelChoice>,
-    think_level: ThinkLevel,
-    mode: pp_core::plan::WorkMode,
-    context: &StatusContext,
-    width: u16,
-) -> Line<'static> {
     use pp_core::plan::WorkMode as Mode;
     let width = usize::from(width);
+    let permission = permissions.map(permission_field);
+    let remaining = width.saturating_sub(
+        permission
+            .as_ref()
+            .map_or(0, |span| SEPARATOR_WIDTH + span.width()),
+    );
     let mode_slot = |text: &str| SEPARATOR_WIDTH + FIELD_ICON_WIDTH + Line::from(text).width();
-    // 头部为空白加纸飞机图标；为 effort 后的模式图标与标签预留空间。
-    let budget_total = width.saturating_sub(1 + ICON_WIDTH);
+    let budget_total = remaining.saturating_sub(1 + ICON_WIDTH);
     let (mode_text, budget) = if mode == Mode::Execute {
         ("", budget_total)
     } else if budget_total >= mode_slot("Plan") + MIN_AFTER_MODE {
@@ -447,13 +441,37 @@ fn primary_fields(
         ("", budget_total)
     };
     let model = model.map_or("—", |choice| choice.reference.as_str());
-    status_line(
+    let fields = status_line(
         model,
         think_level,
+        permission.as_ref(),
         (!mode_text.is_empty()).then_some(mode_text),
         context,
         budget,
-    )
+    );
+    if let Some(permission) = permission
+        && (remaining == 0
+            || fields.width() > width
+            || (mode == Mode::Plan && mode_text.is_empty()))
+    {
+        let mut spans = vec![Span::styled(
+            compact(&permission.content, width, false),
+            permission.style,
+        )];
+        if mode == Mode::Plan && remaining > 0 {
+            let label = if remaining >= "Plan".len() {
+                "Plan"
+            } else {
+                "P"
+            };
+            spans.extend([
+                Span::styled(" · ", Style::default().fg(Color::DarkGray)),
+                Span::styled(label, Style::default().fg(plan_mode())),
+            ]);
+        }
+        return Line::from(spans);
+    }
+    fields
 }
 
 #[cfg(test)]
@@ -489,6 +507,38 @@ mod fixtures {
 mod tests {
     use super::fixtures::*;
     use super::*;
+
+    #[test]
+    fn primary_reserves_width_for_ascii_permission_field() {
+        use pp_config::config::{PermissionMode, Theme};
+        use pp_core::plan::WorkMode;
+        use pp_permission::EffectivePermissions;
+
+        let (theme, icons) = themes::current();
+        themes::set_active(Theme::Default, IconMode::Ascii);
+        for width in [0, 1, 8, 14, 17, 20, 24, 32, 48, 100] {
+            let line = primary(
+                None,
+                ThinkLevel::High,
+                WorkMode::Plan,
+                Some(EffectivePermissions::Preset(PermissionMode::AcceptEdits)),
+                &StatusContext::default(),
+                width,
+            );
+            let text = line_text(&line);
+            assert!(line.width() <= usize::from(width), "{width}: {text}");
+            if width >= 14 {
+                assert!(text.contains("! Accept-edits"), "{width}: {text}");
+            }
+            if width == 20 {
+                assert!(text.ends_with(" · P"), "{text}");
+            }
+            if width == 100 {
+                assert!(text.contains("hig · ! Accept-edits ·"), "{text}");
+            }
+        }
+        themes::set_active(theme, icons);
+    }
 
     #[test]
     fn primary_model_label_uses_configured_reference() {

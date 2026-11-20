@@ -30,7 +30,7 @@ struct ApprovalConfig {
 impl From<pp_config::config::ToolsSettings> for ApprovalConfig {
     fn from(settings: pp_config::config::ToolsSettings) -> Self {
         Self {
-            mode: settings.approval_mode,
+            mode: settings.approval_mode.unwrap_or_default(),
             policy: settings.approval,
         }
     }
@@ -117,6 +117,7 @@ impl ModeState {
 #[derive(Clone)]
 pub struct Gate {
     config: ApprovalConfig,
+    default_mode: Option<PermissionMode>,
     /// `--approval-mode` flag 覆盖；`None` 时使用配置值。
     override_mode: Option<ApprovalMode>,
     /// 常规工具的会话级授权。
@@ -138,6 +139,7 @@ impl Gate {
     pub fn new() -> Self {
         Self {
             config: ApprovalConfig::default(),
+            default_mode: None,
             override_mode: None,
             grants: Default::default(),
             handler: None,
@@ -155,8 +157,11 @@ impl Gate {
         legacy_approval: Option<ApprovalMode>,
         legacy_sandbox_override: bool,
     ) -> Self {
+        let default_mode = Some(PermissionMode::AcceptEdits);
         Self {
+            default_mode,
             modes: Arc::new(Mutex::new(ModeState {
+                configured: default_mode,
                 startup,
                 force_legacy: legacy_approval.is_some() || legacy_sandbox_override,
                 ..Default::default()
@@ -311,10 +316,16 @@ impl Gate {
         }
     }
     pub fn set_config(&mut self, settings: pp_config::config::ToolsSettings) {
+        // 已配置旧审批或自定义沙盒的用户沿用原模式，显式权限预设仍可覆盖。
+        let legacy_configured = settings.approval_mode.is_some()
+            || !settings.approval.is_empty()
+            || !settings.sandbox.is_default();
         self.modes
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .configured = settings.permission_mode;
+            .configured = settings
+            .permission_mode
+            .or(self.default_mode.filter(|_| !legacy_configured));
         self.config = ApprovalConfig::from(settings);
     }
 

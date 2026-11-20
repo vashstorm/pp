@@ -160,7 +160,7 @@ pub(in crate::tui) fn subagent_status(
     };
     // 与 primary 的 budget_total 同口径：扣除前导空白与纸飞机图标列。
     let budget = usize::from(width).saturating_sub(1 + ICON_WIDTH);
-    status_line(model, think, None, &context, budget)
+    status_line(model, think, None, None, &context, budget)
 }
 
 #[cfg(test)]
