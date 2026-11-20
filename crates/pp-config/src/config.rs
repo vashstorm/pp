@@ -23,7 +23,7 @@ pub use hooks::{
 mod sections;
 pub use sections::{
     ApprovalMode, ApprovalPolicy, CostDisplay, EditMode, EvalSettings, LspSettings, OutputSettings,
-    ReadDisplaySettings, TaskSettings,
+    PermissionMode, ReadDisplaySettings, TaskSettings,
 };
 
 mod stats;

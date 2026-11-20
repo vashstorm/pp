@@ -459,6 +459,15 @@ impl App {
                     }
                     return false;
                 }
+                if super::permissions::is_permission_shortcut(key) {
+                    if key.kind == KeyEventKind::Press && self.completion_input_focused() {
+                        self.submit_permission_command(
+                            WorkerCommand::Permissions(crate::commands::PermissionCommand::Cycle),
+                            false,
+                        );
+                    }
+                    return false;
+                }
                 // 主输入框的 Shift + Enter 始终换行：补全／队列菜单、文件选择与
                 // 提交都不得抢占；需要键盘协议的终端才会与普通 Enter 区分开。
                 if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {

@@ -163,6 +163,18 @@ impl App {
                 self.mcp_view = view;
                 changed = true;
             }
+            WorkerEvent::Permissions(mode, result) => {
+                self.permission_mode = Some(mode);
+                match result {
+                    Ok(Some(message)) => self.append("Permissions", &message),
+                    Ok(None) => {}
+                    Err(error) => self.notify(
+                        Level::Error,
+                        pp_core::logging::diagnostic_text(&format!("{error:#}")),
+                    ),
+                }
+                changed = true;
+            }
             WorkerEvent::SandboxStatus(result) => {
                 match result {
                     Ok((status, updated)) => {

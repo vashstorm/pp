@@ -283,6 +283,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/init` | 使用当前模型创建或更新项目 `AGENTS.md` | TUI / 行模式 |
 | `/compact` | 摘要较早上下文，保留近期交互和可见记录 | TUI / 行模式 |
 | `/skills` | 管理技能来源与逐项启停；另支持 `sources [enable\|disable claude\|codex]`、`enable 名称` / `disable 名称` | TUI / 行模式 |
+| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <id>]` | 查看或切换本次进程的权限预设，或查看和撤销已保存的项目授权 | TUI / 行模式 |
 | `/sandbox [auto\|workspace-write\|read-only\|off]` | 查看当前沙盒生效模式、网络状态、可写根及降级原因，或在当前会话临时覆盖模式（支持在设置中调整默认 `tools.sandbox` 后按运行时策略切换） | TUI / 行模式 |
 | `/resume` | 选择已保存会话；命令行 `pp -r` 直接打开本面板，按 ID 恢复使用 `pp -r ID` | 仅 TUI |
 | `/tree` | 浏览并回退当前有效历史，不回滚文件 | 仅 TUI |
@@ -929,7 +930,7 @@ TUI 空闲时提交 `/resume`，或启动时使用不带 ID 的 `pp -r`，都会
 | `pp -c` | 选择全局最近修改的 session，刷新项目规则和技能摘要后发送已保存历史 | 继续交互；行模式 stdin EOF 退出 |
 | `pp -c ID` | 精确恢复，刷新项目规则和技能摘要后发送已保存历史 | 同上 |
 | `pp --model MODEL` | 本次运行用模糊选中的模型与档位（不写 `agent.db`，不改变默认模型或默认档位） | 原有 TUI / 行模式，可与 `-p`／`-r`／`-c` 组合 |
-| `pp /COMMAND` | 启动后立即执行一条斜杠命令；TUI 执行后保持交互，行模式执行完待 stdin EOF 退出 | TUI / 行模式，可与 `--model`、`--approval-mode` 组合，与 `-p`／`-r`／`-c` 互斥 |
+| `pp /COMMAND` | 启动后立即执行一条斜杠命令；TUI 执行后保持交互，行模式执行完待 stdin EOF 退出 | TUI / 行模式，可与 `--model`、`--permission-mode` 或旧审批参数组合，与 `-p`／`-r`／`-c` 互斥 |
 
 `-c` 不附加“请继续”、不重复最后一条用户消息、不回滚助手回答，也不重放旧工具调用。只能使用完整 ID：`YYYY-MM-DDTHH-MM-SS-<32位小写hex>`，例如 `2026-10-17T01-02-03-0123456789abcdef0123456789abcdef`；日期时间使用创建时的本机时区，精确到秒，随机后缀避免同秒冲突。不支持前缀或文件路径，旧的 Unix 毫秒格式 ID 不再接受。`-r` 缺 ID、`-r` 与 `-c` 同用、`-c` 与 `-p` 同用均报错。
 
@@ -955,14 +956,32 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 
 ## 工具执行与权限
 
-**write/edit 只修改启动目录内文件与 macOS/Linux 临时目录（`/tmp`，macOS 的真实路径为 `/private/tmp`），按单次调用原子提交。在 macOS 与 Linux 下默认启用 `tools.sandbox.mode: auto`（macOS 为 Seatbelt，Linux 为 Bubblewrap `workspace-write` 沙盒）约束 `bash`、`!命令` 与 Python `eval`，并在 `read`/`rg`/`glob` 中拒读凭据路径；其余平台 `auto` 等价关闭；MCP stdio 与 LSP 服务进程不在沙盒内；默认 YOLO 模式不进行工具审批。请在可信或临时目录中运行。**
+新配置可以在 `settings.yml` 中声明权限预设。
 
-- **沙盒配置与覆盖**：`settings.yml` 的 `tools.sandbox` 支持 `mode`（`auto`｜`workspace-write`｜`read-only`｜`off`，默认 `auto`）、`network`（默认 `true`）、`writable`、`protect`、`denyRead` 与 `allowRead`。命令行可通过 `pp --sandbox <mode>` 指定本次运行模式；交互模式可通过 `/sandbox [mode]` 查看详情或在当前会话覆盖，`/setting general` 也支持修改并持久化默认 `tools.sandbox.mode`。平台探针在 macOS 通过 `/usr/bin/sandbox-exec`、在 Linux 通过 `bwrap`（≥ 0.5）探测系统能力：若处于嵌套沙盒、缺少 `bwrap` 或非特权用户命名空间受限，`auto` 会自动降级关闭并给出提示，而显式设置 `workspace-write`/`read-only` 会在不可用时 fail-closed 拒绝工具执行。`mode: off` 不执行平台探针（不启动子进程），之后切到启用模式时补测；`STDIO` MCP 与 LSP 服务进程同样不探测。
-- **macOS Seatbelt 边界**：`workspace-write` 放行启动目录、系统临时目录（含当次 `.pp-tmp-*` scratch 与 `.pp-cache`）、常见包管理/构建缓存（`~/.cargo/registry`、`~/.cargo/git`、`~/.cargo/.package-cache`、`~/.cache`、`~/Library/Caches`、`~/.npm`、`~/.bun/install/cache`、`~/go/pkg/mod`）以及 `writable`；`read-only` 仅允许临时 scratch 与 `.pp-cache` 写入。两种开启模式均保护工作区内敏感控制路径（`.git/hooks`、`.git/config`、`.pp`、`.mcp.json`、`.claude/.mcp.json` 及 `protect`）防写入，并拒绝读取凭据与敏感目录（`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.azure`、`~/.kube`、`~/.config/gcloud`、`~/.config/gh`、`~/.docker/config.json`、`~/.netrc`、`~/.npmrc`、`~/.pypirc`、`~/.git-credentials`、`~/Library/Keychains`、`~/Library/Cookies`、`~/.claude/.credentials.json`、`~/.codex/auth.json`、`~/.pp/agent` 及 `denyRead`），同时例外放行 `~/.pp/agent/{python-env,skills,commands,hooks,cache}` 与 `allowRead`。设置 `network: false` 后会阻止除 `localhost:*` 与常规 Unix domain socket 外的出站 IP 访问，并继续拒绝 `~/.docker/run/docker.sock` 与 `/var/run/docker.sock`。命中沙盒拒绝时工具结果返回 `ok: false` 并附带 `sandbox` 诊断元数据（不提供模型单次绕过参数）。
+```yaml
+tools:
+  permissionMode: accept-edits
+```
+
+| 底栏标签 | 审批与沙盒 |
+|---|---|
+| `Always-ask`（蓝色） | 工作区沙盒，写入类和执行类工具运行前确认。 |
+| `Accept-edits`（琥珀色） | 工作区沙盒，沙盒内 Bash 和允许的编辑自动执行。沙盒外的其他写入或执行工具运行前仍需确认。 |
+| `YOLO`（红色） | 关闭 pp 沙盒，跳过常规工具审批。Plan 和 Review 白名单、内置文件保存及强制 Hook 审批仍适用。 |
+
+- 主对话空闲时，Alt + Shift + A 或 F6 按表中顺序循环，保留输入草稿与光标。`/permissions` 显示模式及沙盒详情，`/permissions <模式>` 立即切换。切换只在本次进程内生效，跨会话与 Plan 切换保留。启动时可用 `--permission-mode <模式>` 覆盖配置。
+- `accept-edits` 的 Bash 调用可用 `sandbox_permissions.writable` 申请增加可写目录，目录须已存在且使用绝对路径。若沙盒禁止出站，可通过 `sandbox_permissions.network: true` 申请为本次命令及其子进程开放出站网络。前台与后台命令均先审批再执行。普通失败只返回诊断，后续调用可以明确申请权限。硬性保护路径和拒绝规则继续生效。
+- 提示提供仅此一次、本会话允许、始终允许此项目中的操作或拒绝。持久授权写入 `~/.pp/agent/approval.yml`，按工作区、执行目录、完整命令和申请范围精确匹配。`/permissions rules` 列出规则，`/permissions revoke <id>` 撤销。文件损坏或保存失败时，持久授权无法放行。行模式和 `-p` 可以复用已保存的授权，需要新审批时返回工具错误。
+- `Always-ask` 和 `Accept-edits` 依赖可用的工作区沙盒，平台探测失败时阻止依赖沙盒的操作。未配置预设时显示 `Legacy`，沿用独立的审批和沙盒配置。旧启动参数 `--approval-mode` 或 `--sandbox` 选择兼容路径，与 `--permission-mode` 互斥。首次从 `Legacy` 按循环键进入 `Accept-edits`。
+
+内置 `write` 和 `edit` 的保存范围为启动目录和系统临时目录，单次提交采用原子替换并拒绝符号链接。MCP stdio 与 LSP 服务进程在本地沙盒外运行。会话与统计可能包含源码和对话。
+
+- **沙盒配置与覆盖**：`settings.yml` 的 `tools.sandbox` 支持 `mode`（`auto`｜`workspace-write`｜`read-only`｜`off`，默认 `auto`）、`network`（默认 `true`）、`writable`、`protect`、`denyRead` 与 `allowRead`。命令行可通过 `pp --sandbox <mode>` 指定本次运行模式；交互模式可通过 `/sandbox` 查看详情，旧配置路径可通过 `/sandbox <mode>` 独立覆盖，`/setting general` 也支持修改并持久化默认 `tools.sandbox.mode`。平台探针在 macOS 通过 `/usr/bin/sandbox-exec`、在 Linux 通过 `bwrap`（≥ 0.5）探测系统能力：若处于嵌套沙盒、缺少 `bwrap` 或非特权用户命名空间受限，`auto` 会自动降级关闭并给出提示，而显式设置 `workspace-write`/`read-only` 会在不可用时 fail-closed 拒绝工具执行。`mode: off` 不执行平台探针（不启动子进程），之后切到启用模式时补测；`STDIO` MCP 与 LSP 服务进程同样不探测。
+- **macOS Seatbelt 边界**：`workspace-write` 放行启动目录、系统临时目录（含当次 `.pp-tmp-*` scratch 与 `.pp-cache`）、常见包管理/构建缓存（`~/.cargo/registry`、`~/.cargo/git`、`~/.cargo/.package-cache`、`~/.cache`、`~/Library/Caches`、`~/.npm`、`~/.bun/install/cache`、`~/go/pkg/mod`）以及 `writable`；`read-only` 仅允许临时 scratch 与 `.pp-cache` 写入。两种开启模式均保护工作区内敏感控制路径（`.git/hooks`、`.git/config`、`.pp`、`.mcp.json`、`.claude/.mcp.json` 及 `protect`）防写入，并拒绝读取凭据与敏感目录（`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.azure`、`~/.kube`、`~/.config/gcloud`、`~/.config/gh`、`~/.docker/config.json`、`~/.netrc`、`~/.npmrc`、`~/.pypirc`、`~/.git-credentials`、`~/Library/Keychains`、`~/Library/Cookies`、`~/.claude/.credentials.json`、`~/.codex/auth.json`、`~/.pp/agent` 及 `denyRead`），同时例外放行 `~/.pp/agent/{python-env,skills,commands,hooks,cache}` 与 `allowRead`。设置 `network: false` 后会阻止除 `localhost:*` 与常规 Unix domain socket 外的出站 IP 访问，并继续拒绝 `~/.docker/run/docker.sock` 与 `/var/run/docker.sock`。命中沙盒拒绝时工具结果返回 `ok: false` 并附带 `sandbox` 诊断元数据。
 - **Linux Bubblewrap 边界**：依赖系统已安装的 `bwrap`（要求支持 `--perms` 的 0.5 及以上版本）及非特权用户命名空间（无内置二进制）。通过 `--ro-bind / /` 与 `--dev /dev` 挂载只读根并降权（`--cap-drop ALL`、`--die-with-parent`），按配置叠加 `--bind-try` 可写根（含 `/tmp`、`/var/tmp`、`$TMPDIR`、`$XDG_CACHE_HOME` 及通用工具链缓存；`read-only` 下仅放行 `/tmp`、`/var/tmp`、`.pp-cache`、当次 scratch 与非工作区可写根）。与 macOS 的差异包括：(1) `protect` 与 `denyRead` 仅能覆盖磁盘上**已存在**的路径（若工作区尚无 `.pp`，沙盒内仍可新建，创建后下一次调用生效）；(2) 拒读目录使用只读空 `tmpfs`（无 `allowRead` 子项为 `0000` 权限，访问报 `Permission denied`；含 `allowRead` 子项为 `0111`，只可穿越不可列目录，未放行条目不可见），拒读文件及 `docker.sock`（`/run/docker.sock`、`/var/run/docker.sock`、`$XDG_RUNTIME_DIR/docker.sock`、`~/.docker/run/docker.sock`）覆盖为 `/dev/null`（不可读或为空内容）；(3) `network: false` 使用 `--unshare-net` 隔离网络命名空间，既阻止外网也无法访问宿主 `127.0.0.1` 服务；(4) 不启用 `--unshare-pid`，以保持进程组信号与 `eval` 的 `SIGINT` 优雅中断一致，沙盒内仍可见宿主进程列表并可向同 uid 进程发信号，且不可用 `sudo`/setuid。
 - **已知平台与实现边界**：(1) 受 macOS `(allow default)` + LaunchServices XPC（`com.apple.lsd`）机制限制，`open` 等通过系统服务拉起外部 App 的调用无法仅靠 Seatbelt 文件/exec 规则完全阻断；(2) `bash` 中外部命令与 `exec` 由内核级 `sandbox-exec`／`bwrap` 强制执行，而嵌入式 `brush` 进程内的重定向、`source` 与内置文件操作由宿主在 `open_file` 前做规范路径守卫，极高并发符号链接切换存在理论 TOCTOU 窗口；(3) 上述保护面向防止模型误操作与常见凭据外泄，不构成对抗恶意本地提权的完全隔离边界。
 
-`tools.approvalMode` 默认为 `yolo`：跳过全部工具审批，包括 bash 危险命令确认及 `tools.approval` 中的 `prompt`／`deny` 规则；无需交互界面或会话授权。`pp --approval-mode yolo` 可在本次运行中覆盖配置模式。`write` 模式放行只读和写入档工具、审批执行档工具；`always-ask` 模式只放行只读档工具。在这两种模式下，显式 `allow`／`deny`／`prompt` 规则及 bash 危险命令检查仍生效，需要审批但没有交互界面时返回工具错误。YOLO 只影响工具审批，不改变 Plan／Review 工作流白名单或 write/edit 的保存限制。
+旧配置的 `tools.approvalMode` 默认为 `yolo`，跳过常规工具审批，包括 bash 危险命令确认及 `tools.approval` 中的 `prompt`／`deny` 规则；无需交互界面或会话授权。`pp --approval-mode yolo` 可在本次运行中覆盖配置模式。`write` 模式放行只读和写入档工具、审批执行档工具；`always-ask` 模式只放行只读档工具。在这两种模式下，显式 `allow`／`deny`／`prompt` 规则及 bash 危险命令检查仍生效，需要审批但没有交互界面时返回工具错误。旧版 YOLO 的沙盒继续由 `tools.sandbox` 决定。
 
 - 启动时固定规范化工作目录。`read` 允许目录外读取及符号链接；`write/edit` 接受启动目录内的相对或绝对路径，以及临时目录（`/tmp` 与其真实路径 `/private/tmp` 是同一目录的两种拼写）下的绝对路径，其他路径越界即拒绝，写入路径上的符号链接（包括指向项目内的链接）同样拒绝。临时目录内的文件用真实绝对路径作为变更、撤销与快照的键，`/tmp/a` 与 `/private/tmp/a` 因此是同一条记录；Plan 与 LSP 的结构校验仍只按启动目录相对路径判定。父目录通过目录句柄逐级打开，保存不重新按完整路径追踪链接。允许不越出受管根的 `..`；项目规则按[分层 AGENTS.md](#项目级-agentsmd)发现与检查，skill 仅扫描全局配置指定的目录。
 - `read({path})`：仅接受 `path`，范围直接写入路径，例如 `src/main.rs:20-60`。`:20` 从第 20 行开始，`:20-60` 包含两端，`:20+40` 读取 40 行，`:-30` 读取末尾 30 行，`:5-10,20-30` 读取多个区间（排序并合并重叠或相邻区间，最多 128 个）；也支持 `L20-L60`、`20..60` 和开放结尾 `20-`。所有范围精确读取，不自动增加上下文。真实存在的完整本地文件名优先于冒号后缀解析，`skill://` 始终按虚拟资源处理。
@@ -1205,6 +1224,7 @@ pp gc [天数]
 | `pp-lsp` / `crates/pp-lsp/src/` | LSP 客户端注册表、stdio JSON-RPC 传输、诊断、保存联动、只读预览与 `lsp` 工具。 |
 | `pp-bash` / `crates/pp-bash/src/` | 嵌入式 Bash 宿主（`brush-core`/`brush-builtins`）、外部程序进程组监督、后台任务管理、管道流存储与 AST 命令展示。 |
 | `pp-eval` / `crates/pp-eval/src/` | 持久 Python REPL 内核宿主、探测缓存、进程组监督与双工 NDJSON 回调桥。 |
+| `pp-permission` / `crates/pp-permission/src/` | 生效权限预设、工具审批门、会话授权与用户级持久规则。 |
 | `pp-tools` / `crates/pp-tools/src/` | 同步工具执行器、内置工具（read/rg/glob/edit/write/todo/wait/plan/approval）、分层项目指令与端口 trait（`ToolHookCall`、`PlanSubmitGate`、`SubagentHost`）。 |
 | `pp-runtime` / `crates/pp-runtime/src/` | Agent 循环、子 Agent、Hooks 接线、会话与历史、模型控制与系统提示词；`prompts/` 保留 system、runtime、plan-review 与内置角色提示词。 |
 | `pp-mock-ai` / `crates/pp-mock-ai/src/` | 仅 `debug_assertions` 构建启用的本地 Responses mock 服务与内嵌调试场景（`/test-*`）。 |

@@ -203,3 +203,110 @@ fn sandbox_read_url_respects_network_disabled_and_unavailable_fail_closed() {
         assert_eq!(val["ok"], false, "{val}");
     }
 }
+
+#[test]
+fn accept_edits_authorizes_bash_before_start_and_does_not_replay_failed_calls() {
+    use pp_config::config::{PermissionMode, ToolsSettings};
+    use pp_permission::ApprovalDecision;
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+    tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
+        SandboxSettings {
+            network: false,
+            ..Default::default()
+        },
+        dir.path(),
+        None,
+        Some(Path::new("/tmp")),
+        ProbeResult::Available,
+    )));
+    tools.approval.set_config(ToolsSettings {
+        permission_mode: Some(PermissionMode::AcceptEdits),
+        ..Default::default()
+    });
+
+    for (mode, decision, marker, expected) in [
+        ("foreground", ApprovalDecision::Deny, "denied", false),
+        ("foreground", ApprovalDecision::Approve, "approved", true),
+        (
+            "background",
+            ApprovalDecision::Deny,
+            "denied-background",
+            false,
+        ),
+        (
+            "background",
+            ApprovalDecision::Approve,
+            "approved-background",
+            true,
+        ),
+    ] {
+        let target = dir.path().join(marker);
+        let before = target.clone();
+        tools.approval.set_handler(Box::new(move |request, _| {
+            assert!(!before.exists(), "命令在批准前启动");
+            assert!(request.reason.contains("outbound network"));
+            Ok(decision)
+        }));
+        let response = execute(
+            &tools,
+            "bash",
+            json!({
+                "mode": mode,
+                "command": format!("printf done > {marker}"),
+                "sandbox_permissions": {"network": true},
+            }),
+        );
+        assert_eq!(response["ok"], expected, "{response}");
+        if expected && mode == "background" {
+            let id = response["task_id"].as_str().unwrap();
+            let completed = background_wait(&tools, id, |snapshot| snapshot["status"] != "running");
+            assert_eq!(completed["exit_code"], 0, "{completed}");
+        }
+        assert_eq!(target.exists(), expected);
+    }
+
+    tools
+        .approval
+        .set_handler(Box::new(|_, _| panic!("普通命令失败不应打开沙盒审批")));
+    let failed = execute(
+        &tools,
+        "bash",
+        json!({
+            "command": "printf once >> failed; printf 'Permission denied'; exit 1",
+        }),
+    );
+    assert_eq!(failed["ok"], false, "{failed}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("failed")).unwrap(),
+        "once"
+    );
+}
+
+#[test]
+fn accept_edits_applies_ordinary_policy_before_sandbox_grants() {
+    use pp_config::config::{ApprovalPolicy, PermissionMode, ToolsSettings};
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = tools_with_sandbox(&dir, dir.path(), SandboxMode::Auto, ProbeResult::Available);
+    tools.approval.set_config(ToolsSettings {
+        permission_mode: Some(PermissionMode::AcceptEdits),
+        approval: [("bash".into(), ApprovalPolicy::Deny)].into(),
+        ..Default::default()
+    });
+    let result = execute(
+        &tools,
+        "bash",
+        json!({
+            "command": "printf done > denied",
+            "sandbox_permissions": {"network": true},
+        }),
+    );
+    assert_eq!(result["ok"], false, "{result}");
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("tools.approval policy")
+    );
+    assert!(!dir.path().join("denied").exists());
+}

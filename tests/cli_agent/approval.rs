@@ -88,3 +88,34 @@ fn yolo_executes_flagged_bash_without_approval_in_both_protocols() {
         }
     }
 }
+
+#[test]
+fn permission_cli_distinguishes_legacy_yolo_from_the_new_preset() {
+    let home = tempfile::tempdir().unwrap();
+    write_settings(
+        home.path(),
+        "tools: { approvalMode: yolo, sandbox: { mode: auto, network: false } }",
+    )
+    .unwrap();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        "providers:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://127.0.0.1:9/v1\n    models:\n      primary:\n        model: fixture-model\n",
+    ).unwrap();
+    for (flag, expected_mode, expected_sandbox) in [
+        ("--approval-mode", "legacy (yolo)", "configured=auto"),
+        ("--permission-mode", "yolo", "effective=off, configured=off"),
+    ] {
+        let output = Cli::spawn(home.path(), &[flag, "yolo", "/permissions"], &[]).finish();
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!("Permission mode: {expected_mode}")),
+            "{stderr}"
+        );
+        assert!(stderr.contains(expected_sandbox), "{stderr}");
+        if flag == "--permission-mode" {
+            assert!(stderr.contains("network=unrestricted"), "{stderr}");
+        }
+    }
+    assert!(!config_path(home.path(), "approval.yml").exists());
+}

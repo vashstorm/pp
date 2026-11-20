@@ -124,7 +124,7 @@ impl Agent {
             "execute",
             definitions.iter().map(|tool| tool.name.clone()).collect(),
         )
-        .with_sandbox(&tools.sandbox().status());
+        .with_sandbox(&tools.sandbox_status());
         let system = prompt_source
             .compose(
                 &context,
@@ -238,13 +238,31 @@ impl Agent {
             .set_tools(self.tools.all_definitions(self.workflow.mode));
     }
 
-    /// `--approval-mode` 覆盖 settings.yml 的 `tools.approvalMode`。
-    pub fn set_approval_override(&mut self, mode: pp_config::config::ApprovalMode) {
-        self.tools.approval.set_override(mode);
+    pub fn permission_mode(&self) -> pp_permission::EffectivePermissions {
+        self.tools.approval.snapshot()
+    }
+
+    pub fn set_permission_mode(
+        &mut self,
+        mode: Option<pp_config::config::PermissionMode>,
+    ) -> Result<()> {
+        self.tools.approval.select(mode);
+        self.session
+            .set_tools(self.tools.all_definitions(self.workflow.mode));
+        self.refresh_instructions_changed()?;
+        Ok(())
+    }
+
+    pub fn list_permission_rules(&self) -> Result<String> {
+        self.tools.approval.list_rules()
+    }
+
+    pub fn revoke_permission_rule(&self, id: &str) -> Result<()> {
+        self.tools.approval.revoke_rule(id)
     }
 
     pub fn sandbox_status(&self) -> pp_sandbox::SandboxStatus {
-        self.tools.sandbox().status()
+        self.tools.sandbox_status()
     }
 
     /// `--sandbox` 或 `/sandbox <mode>` 的会话级内存覆盖，刷新提示词与工具描述。
@@ -252,6 +270,10 @@ impl Agent {
         &mut self,
         mode: Option<pp_config::config::SandboxMode>,
     ) -> Result<()> {
+        anyhow::ensure!(
+            self.permission_mode().preset().is_none(),
+            "/sandbox can only change legacy settings; use /permissions to select a permission mode"
+        );
         let previous = self.tools.sandbox().mode_override();
         self.tools.sandbox().set_mode_override(mode);
         if matches!(

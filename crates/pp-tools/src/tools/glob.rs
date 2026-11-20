@@ -252,7 +252,7 @@ pub(super) fn run_with_sandbox(
     cwd: &Path,
     arguments: &str,
     token: &CancellationToken,
-    sandbox: &std::sync::Arc<pp_sandbox::Sandbox>,
+    sandbox: pp_sandbox::SandboxView<'_>,
 ) -> Result<Value> {
     run_with_timeout(cwd, arguments, token, TIMEOUT, sandbox)
 }
@@ -262,7 +262,7 @@ fn run(cwd: &Path, arguments: &str, token: &CancellationToken) -> Result<Value> 
         cwd,
         arguments,
         token,
-        &std::sync::Arc::new(pp_sandbox::Sandbox::disabled()),
+        pp_sandbox::Sandbox::disabled().view(None),
     )
 }
 fn run_with_timeout(
@@ -270,7 +270,7 @@ fn run_with_timeout(
     arguments: &str,
     token: &CancellationToken,
     timeout: Duration,
-    sandbox: &std::sync::Arc<pp_sandbox::Sandbox>,
+    sandbox: pp_sandbox::SandboxView<'_>,
 ) -> Result<Value> {
     cancellation::check(token)?;
     let args: Args = serde_json::from_str(arguments).context("invalid glob arguments")?;
@@ -310,7 +310,7 @@ fn search(
     token: &CancellationToken,
     requested: f64,
     limit: usize,
-    sandbox: &std::sync::Arc<pp_sandbox::Sandbox>,
+    sandbox: pp_sandbox::SandboxView<'_>,
     mut expired: impl FnMut() -> bool,
 ) -> Result<Value> {
     let mut results = Results::new(limit);
@@ -624,7 +624,7 @@ mod tests {
             r#"{"pattern":"**/*"}"#,
             &CancellationToken::new(),
             Duration::ZERO,
-            &disabled,
+            disabled.view(None),
         )
         .unwrap();
         assert_eq!(timeout["timed_out"], true);
@@ -660,7 +660,7 @@ mod tests {
             &CancellationToken::new(),
             200.0,
             200,
-            &disabled,
+            disabled.view(None),
             || {
                 checkpoints += 1;
                 checkpoints > 2
@@ -837,7 +837,7 @@ mod tests {
             root,
             r#"{"pattern":"**/*"}"#,
             &CancellationToken::new(),
-            &sandbox,
+            sandbox.view(None),
         )
         .unwrap();
         let listing = text(&result);

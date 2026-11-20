@@ -57,7 +57,7 @@ pub(super) fn run(
         arguments,
         token,
         artifacts,
-        &std::sync::Arc::new(pp_sandbox::Sandbox::disabled()),
+        pp_sandbox::Sandbox::disabled().view(None),
     )
 }
 
@@ -71,7 +71,7 @@ pub(super) fn run_with_sandbox(
     arguments: &str,
     token: &CancellationToken,
     artifacts: Option<&pp_workspace::output::Store>,
-    sandbox: &std::sync::Arc<pp_sandbox::Sandbox>,
+    sandbox: pp_sandbox::SandboxView<'_>,
 ) -> Result<Value> {
     let mut args: Args = serde_json::from_str(arguments).context("invalid rg arguments")?;
     let mut budget = Budget::new(args.max_output_tokens)?;

@@ -226,7 +226,11 @@ fn web_search_enforces_sandbox_network_policy_and_allows_loopback_searxng() {
         },
     );
     assert!(
-        web_search::sandbox_network_decision(&unavailable, &WebSearchSettings::default(), None)
-            .is_err()
+        web_search::sandbox_network_decision(
+            unavailable.view(None),
+            &WebSearchSettings::default(),
+            None
+        )
+        .is_err()
     );
 }

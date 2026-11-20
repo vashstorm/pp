@@ -89,7 +89,7 @@ pub struct Bootstrap {
     pub cwd: PathBuf,
     pub skills: pp_config::skills::SharedSkills,
     pub prompt: crate::system_prompt::Snapshot,
-    pub approval: Option<pp_config::config::ApprovalMode>,
+    pub permission: std::sync::Arc<pp_permission::Gate>,
     pub sandbox_override: Option<pp_config::config::SandboxMode>,
     /// 进程级共享的沙盒单例；首次加载配置时初始化，认证/重建保留会话覆盖。
     pub sandbox: pp_sandbox::SharedSandbox,
@@ -119,6 +119,7 @@ impl Bootstrap {
         let mut tools = Tools::with_mcp(self.cwd.clone(), catalog.edit_mode(), self.mcp.clone())?;
         pp_core::logging::perf::mark("tools_ready");
         tools.skills = self.skills.clone();
+        tools.approval = self.permission.as_ref().clone();
         let sandbox = self
             .sandbox
             .get_or_init(catalog.sandbox_settings(), &self.cwd);
@@ -127,18 +128,14 @@ impl Bootstrap {
             sandbox.set_mode_override(Some(mode));
         }
         tools.set_sandbox(sandbox);
-        let mut agent = Agent::new_with_prompt(
+        Agent::new_with_prompt(
             models,
             tools,
             self.dir.join("sessions"),
             persistence::locks::directory()?,
             self.prompt.clone(),
             stats,
-        )?;
-        if let Some(mode) = self.approval {
-            agent.set_approval_override(mode);
-        }
-        Ok(agent)
+        )
     }
 }
 

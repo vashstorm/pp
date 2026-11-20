@@ -119,14 +119,23 @@ impl Panel {
     }
 
     pub(super) fn question_lines(&self, index: usize, width: u16) -> Vec<Line<'static>> {
-        super::super::transcript::wrap_block(
-            Line::styled(
-                menu_text(&self.questions.questions[index].question),
-                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-            ),
-            width,
-            "",
-        )
+        let question = &self.questions.questions[index].question;
+        let parts = if self.approval {
+            question.lines().collect::<Vec<_>>()
+        } else {
+            vec![question.as_str()]
+        };
+        let style = Style::default().fg(accent()).add_modifier(Modifier::BOLD);
+        parts
+            .into_iter()
+            .flat_map(|part| {
+                super::super::transcript::wrap_block(
+                    Line::styled(menu_text(part), style),
+                    width,
+                    "",
+                )
+            })
+            .collect()
     }
 
     pub(super) fn draw_tabs(&self, frame: &mut Frame, area: Rect) {

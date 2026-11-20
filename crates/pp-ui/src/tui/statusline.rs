@@ -386,6 +386,47 @@ pub(super) fn primary(
     model: Option<&ModelChoice>,
     think_level: ThinkLevel,
     mode: pp_core::plan::WorkMode,
+    permissions: Option<pp_permission::EffectivePermissions>,
+    context: &StatusContext,
+    width: u16,
+) -> Line<'static> {
+    let Some(permissions) = permissions else {
+        return primary_fields(model, think_level, mode, context, width);
+    };
+    let theme = themes::palette();
+    use pp_config::config::PermissionMode;
+    let (label, color) = match permissions.preset() {
+        Some(PermissionMode::AlwaysAsk) => ("Always-ask", theme.status_input),
+        Some(PermissionMode::AcceptEdits) => ("Accept-edits", theme.plan_mode),
+        Some(PermissionMode::Yolo) => ("YOLO", theme.error_border),
+        None => ("Legacy", theme.muted),
+    };
+    let label = Span::styled(
+        label,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    );
+    let separator = || Span::styled(" · ", Style::default().fg(Color::DarkGray));
+    let label_width = label.width();
+    let remaining = usize::from(width).saturating_sub(label_width + SEPARATOR_WIDTH);
+    let mut fields = primary_fields(model, think_level, mode, context, remaining as u16);
+    if remaining == 0 || fields.width() > remaining {
+        let mut spans = vec![label];
+        if mode == pp_core::plan::WorkMode::Plan && remaining >= "Plan".len() {
+            spans.extend([
+                separator(),
+                Span::styled("Plan", Style::default().fg(plan_mode())),
+            ]);
+        }
+        return Line::from(spans);
+    }
+    fields.spans.extend([separator(), label]);
+    fields
+}
+
+fn primary_fields(
+    model: Option<&ModelChoice>,
+    think_level: ThinkLevel,
+    mode: pp_core::plan::WorkMode,
     context: &StatusContext,
     width: u16,
 ) -> Line<'static> {
@@ -463,6 +504,7 @@ mod tests {
                 Some(&choice),
                 ThinkLevel::None,
                 pp_core::plan::WorkMode::Execute,
+                None,
                 &StatusContext::default(),
                 100,
             ));
@@ -487,6 +529,7 @@ mod tests {
             Some(&choice),
             ThinkLevel::None,
             pp_core::plan::WorkMode::Execute,
+            None,
             &StatusContext::default(),
             100,
         ));
@@ -499,6 +542,7 @@ mod tests {
                 Some(&choice),
                 ThinkLevel::High,
                 pp_core::plan::WorkMode::Plan,
+                None,
                 &StatusContext::default(),
                 width,
             );

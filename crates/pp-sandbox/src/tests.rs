@@ -255,3 +255,45 @@ fn macos_guards_match_case_insensitively_across_protected_and_denied_paths() {
     assert!(policy.check_read(&home.join(".SSH/id_ed25519")).is_err());
     assert!(policy.can_contain_denied_read(&home.join(".SSH")));
 }
+
+#[test]
+fn command_sandbox_grant_only_extends_requested_paths_and_network() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().canonicalize().unwrap();
+    let work = root.join("work");
+    let approved = root.join("approved");
+    let unrelated = root.join("unrelated");
+    let protected = root.join("protected");
+    for dir in [&work, &approved, &unrelated, &protected] {
+        std::fs::create_dir(dir).unwrap();
+    }
+    let sandbox = Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::WorkspaceWrite,
+            network: false,
+            ..Default::default()
+        },
+        &work,
+        None,
+        None,
+        ProbeResult::Available,
+    );
+    let mut base = (*sandbox.policy().unwrap().unwrap()).clone();
+    base.writable = vec![work];
+    base.protect.push(protected.clone());
+    assert!(base.resolve_extra_writable(&[root]).is_err());
+    assert!(
+        base.resolve_extra_writable(std::slice::from_ref(&protected))
+            .is_err()
+    );
+    let request = base
+        .resolve_extra_writable(std::slice::from_ref(&approved))
+        .unwrap();
+    let granted = base.with_command_grant(&request, true).unwrap();
+    assert!(granted.check_write(&approved.join("output")).is_ok());
+    assert!(granted.check_write(&unrelated.join("output")).is_err());
+    assert!(granted.check_write(&protected.join("output")).is_err());
+    assert!(granted.network());
+    assert!(!base.network());
+    assert!(base.check_write(&approved.join("output")).is_err());
+}

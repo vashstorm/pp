@@ -414,6 +414,15 @@ pub fn run_line_mode(
                 }
                 writeln!(stderr, ")")?;
             }
+            Some(commands::Command::Permissions(command)) => match command.apply(agent) {
+                Ok(Some(message)) => writeln!(stderr, "{message}")?,
+                Ok(None) => {}
+                Err(error) => writeln!(
+                    stderr,
+                    "error: {}",
+                    pp_core::logging::diagnostic_text(&format!("{error:#}"))
+                )?,
+            },
             Some(commands::Command::Sandbox(mode)) => {
                 if let Some(mode) = mode
                     && let Err(error) = agent.set_sandbox_override(Some(mode))

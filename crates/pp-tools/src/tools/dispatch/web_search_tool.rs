@@ -8,6 +8,7 @@ impl Tools {
         arguments: &str,
         cancellation: &CancellationToken,
         web: &mut web_search::WebHandler<'_>,
+        sandbox: pp_sandbox::SandboxView<'_>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let mut runner = |req: &pp_llm::web_search::WebSearchRequest,
                           settings: &pp_config::config::WebSearchSettings,
@@ -30,7 +31,7 @@ impl Tools {
         let value = web_search::run(
             arguments,
             &self.web_search,
-            &self.sandbox,
+            sandbox,
             cancellation,
             &mut runner,
         )?;

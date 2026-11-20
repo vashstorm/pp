@@ -65,13 +65,13 @@ struct QuestionState {
 }
 
 impl QuestionState {
-    fn new(question: &pp_core::interaction::AskQuestion) -> Self {
+    fn new(question: &pp_core::interaction::AskQuestion, allow_custom: bool) -> Self {
         let initial = question
             .recommended
             .filter(|index| *index < question.options.len())
             .unwrap_or(0);
-        let menu =
-            SelectionMenu::new(menu_items(question, &[], false), initial).with_accent(accent());
+        let menu = SelectionMenu::new(menu_items(question, &[], false, allow_custom), initial)
+            .with_accent(accent());
         Self {
             selected: Vec::new(),
             custom: String::new(),
@@ -88,14 +88,23 @@ pub(super) struct Panel {
     error: Option<String>,
     submitted: bool,
     review_scroll: usize,
+    approval: bool,
+    details_offset: usize,
+    details_limit: usize,
     overlay: Option<Rect>,
     review: Option<(u16, Vec<Line<'static>>)>,
 }
 
 impl Panel {
     pub(super) fn new(request: AskRequest) -> Self {
-        let AskRequest { args, .. } = request;
-        let states = args.questions.iter().map(QuestionState::new).collect();
+        let AskRequest { args, call_id } = request;
+        let approval = call_id == "approval-dialog"
+            || call_id.starts_with("subagent-") && call_id.ends_with("-approval");
+        let states = args
+            .questions
+            .iter()
+            .map(|question| QuestionState::new(question, !approval))
+            .collect();
         Self {
             questions: args,
             states,
@@ -104,6 +113,9 @@ impl Panel {
             error: None,
             submitted: false,
             review_scroll: 0,
+            approval,
+            details_offset: 0,
+            details_limit: 0,
             overlay: None,
             review: None,
         }

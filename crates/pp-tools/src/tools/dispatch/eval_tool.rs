@@ -11,6 +11,7 @@ impl Tools {
         call: &mut ExecuteCall<'_, '_>,
         hook: Option<&dyn ToolHookCall>,
         images: &mut Vec<read::ToolImage>,
+        sandbox: pp_sandbox::SandboxView<'_>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let args: EvalArgs =
             serde_json::from_str(call.arguments).context("invalid eval arguments")?;
@@ -27,7 +28,7 @@ impl Tools {
             self.limits.eval_timeout_seconds
         );
         let cache_dir = self.workspace.cache_dir()?;
-        let sandbox_policy = self.sandbox.policy()?;
+        let sandbox_policy = sandbox.policy()?;
         let sink = output::OutputSink::new(self.limits.output, self.artifacts.clone());
 
         let policy = call.policy;

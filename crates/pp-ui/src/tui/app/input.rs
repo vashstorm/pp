@@ -156,6 +156,30 @@ impl App {
                 preferred = items.iter().position(|item| item.current).unwrap_or(0);
                 items
             }
+            Some(("/permissions", argument)) => {
+                use pp_config::config::PermissionMode;
+                PermissionMode::ALL
+                    .into_iter()
+                    .filter(|mode| mode.as_str().starts_with(argument.trim()))
+                    .map(|mode| MenuItem {
+                        value: MenuAction::PermissionMode(mode),
+                        label: mode.as_str().into(),
+                        description: match mode {
+                            PermissionMode::AlwaysAsk => "Confirm write and execution tools",
+                            PermissionMode::AcceptEdits => {
+                                "Confirm requests for extra sandbox permissions"
+                            }
+                            PermissionMode::Yolo => "Disable sandbox and routine approvals",
+                        }
+                        .into(),
+                        icon: None,
+                        current: self
+                            .permission_mode
+                            .and_then(pp_permission::EffectivePermissions::preset)
+                            == Some(mode),
+                    })
+                    .collect()
+            }
             Some(("/sandbox", argument)) => {
                 use pp_config::config::SandboxMode;
                 let prefix = argument.trim().to_ascii_lowercase();
@@ -904,6 +928,7 @@ fn completion_text(item: &MenuItem<MenuAction>) -> &str {
         MenuAction::File(_) | MenuAction::FileDirectory(_) => &item.description,
         MenuAction::Effort(level) => level.as_str(),
         MenuAction::SandboxMode(mode) => mode.as_str(),
+        MenuAction::PermissionMode(mode) => mode.as_str(),
         MenuAction::SettingTab(tab) => tab.slug(),
         MenuAction::ThemeIcon(mode) => mode.as_str(),
         MenuAction::ThemeColor(theme) => theme.as_str(),

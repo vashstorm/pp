@@ -191,6 +191,16 @@ struct BashArgs {
     mode: BashMode,
     #[serde(default, deserialize_with = "deserialize_bash_timeout")]
     timeout_seconds: Option<u64>,
+    sandbox_permissions: Option<BashPermissions>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BashPermissions {
+    #[serde(default)]
+    writable: Vec<std::path::PathBuf>,
+    #[serde(default)]
+    network: bool,
 }
 
 fn deserialize_bash_timeout<'de, D>(deserializer: D) -> std::result::Result<Option<u64>, D::Error>
@@ -583,7 +593,24 @@ impl Tools {
         if let Some(definition) = self.lsp_definition(lsp_readonly) {
             definitions.push(definition);
         }
-        let sandbox_status = self.sandbox.status();
+        let permissions = self.approval.snapshot();
+        let sandbox_status = self.sandbox.view(permissions.sandbox_mode()).status();
+        if permissions.preset() == Some(pp_config::config::PermissionMode::AcceptEdits)
+            && let Some(bash) = definitions
+                .iter_mut()
+                .find(|definition| definition.name == "bash")
+            && let Some(parameters) = &mut bash.parameters
+        {
+            parameters["properties"]["sandbox_permissions"] = json!({
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Request approval before starting this command when it requires additional writable directories or outbound network. Normal commands omit this field. A sandbox failure does not retry the command.",
+                "properties": {
+                    "writable": {"type": "array", "items": {"type": "string", "description": "An existing absolute directory path"}},
+                    "network": {"type": "boolean", "description": "Allow outbound network for the command and its subprocesses"}
+                }
+            });
+        }
         if sandbox_status.effective != pp_sandbox::EffectiveMode::Off {
             let mode_str = sandbox_status.effective.as_str();
             let net_note = if sandbox_status.network {
@@ -843,6 +870,7 @@ impl Tools {
         images: &mut Vec<read::ToolImage>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let access = self.authorize_call(call, hook_ask)?;
+        let sandbox = self.sandbox.view(access.permissions.sandbox_mode());
         if let Some(value) = self.dispatch_subagent(
             call.name,
             call.arguments,
@@ -853,6 +881,11 @@ impl Tools {
         )? {
             return Ok((value, None, None));
         }
+        let file_sandbox = access
+            .permissions
+            .preset()
+            .filter(|mode| *mode != pp_config::config::PermissionMode::Yolo)
+            .map(|_| sandbox);
         match call.name {
             "yield" => {
                 let value: Value = serde_json::from_str(call.arguments)?;
@@ -865,21 +898,20 @@ impl Tools {
                 Ok(json!({"ok":true,"completed":true}))
             }
             "ask" => self.run_ask(call.arguments, call.call_id, call.cancellation),
-            "read" => return self.run_read(call.arguments, call.cancellation, call.web, images),
-            "edit" => self.run_edit(call.arguments, call.call_id, call.cancellation, call.emit),
-            "write" => {
-                return self.run_write(
-                    call.policy,
-                    call.name,
-                    call.arguments,
-                    call.call_id,
-                    call.cancellation,
-                    call.emit,
-                );
+            "read" => {
+                return self.run_read(call.arguments, call.cancellation, call.web, images, sandbox);
             }
-            "bash" => self.run_bash(call.arguments, call.call_id, call.cancellation, call.emit),
+            "edit" => self.run_edit(
+                call.arguments,
+                call.call_id,
+                call.cancellation,
+                call.emit,
+                file_sandbox,
+            ),
+            "write" => return self.run_write(call, file_sandbox),
+            "bash" => self.run_bash(call, access.permissions, sandbox),
             "bash_task" => self.run_bash_task(call.arguments, call.call_id, call.emit),
-            "eval" => return self.run_eval(call, hook, images),
+            "eval" => return self.run_eval(call, hook, images, sandbox),
             "rg" => rg::run_with_sandbox(
                 &self.cwd,
                 self.limits.rg,
@@ -889,13 +921,11 @@ impl Tools {
                 call.arguments,
                 call.cancellation,
                 Some(&self.artifacts),
-                &self.sandbox,
+                sandbox,
             ),
-            "glob" => {
-                glob::run_with_sandbox(&self.cwd, call.arguments, call.cancellation, &self.sandbox)
-            }
+            "glob" => glob::run_with_sandbox(&self.cwd, call.arguments, call.cancellation, sandbox),
             "web_search" => {
-                return self.run_web_search(call.arguments, call.cancellation, call.web);
+                return self.run_web_search(call.arguments, call.cancellation, call.web, sandbox);
             }
             "lsp" => pp_lsp::tool::run(
                 self,

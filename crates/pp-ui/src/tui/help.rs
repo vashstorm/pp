@@ -69,6 +69,7 @@ const KEYBINDING_GROUPS: &[(&str, &[(&str, &str)])] = &[
         &[
             (platform_text("⌥ + P", "Ctrl + P"), "choose model"),
             ("Shift + Tab", "cycle thinking"),
+            ("F6 / Alt + Shift + A", "cycle permissions"),
             ("Ctrl + F", "favorite model"),
             ("Ctrl + S", "save model default"),
             (platform_text("⌥ + S", "Ctrl + S"), "save effort default"),

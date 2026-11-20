@@ -108,7 +108,9 @@ impl Panel {
         let multi = self.questions.questions[index].multi;
         let error = self.error.clone();
         let editing = matches!(&self.editor, Some((owner, _)) if *owner == index);
-        let hint = if editing {
+        let hint = if self.approval {
+            "PgUp/PgDn details · ↑/↓ move · Enter confirm · Esc cancel"
+        } else if editing {
             EDITOR_HINT
         } else if multi {
             MULTI_HINT
@@ -138,8 +140,19 @@ impl Panel {
 
         let question = self.question_lines(index, content_area.width);
         // 短屏至少为当前选项或编辑器保留一行。
-        let question_h = question.len().min(usize::from(content_h.saturating_sub(1))) as u16;
-        for (row, line) in question.iter().take(usize::from(question_h)).enumerate() {
+        let mut question_budget = content_h.saturating_sub(1);
+        if self.approval {
+            question_budget = question_budget.min(content_h.div_ceil(2));
+        }
+        let question_h = question.len().min(usize::from(question_budget)) as u16;
+        self.details_limit = question.len().saturating_sub(usize::from(question_h));
+        self.details_offset = self.details_offset.min(self.details_limit);
+        for (row, line) in question
+            .iter()
+            .skip(self.details_offset)
+            .take(usize::from(question_h))
+            .enumerate()
+        {
             frame.render_widget(
                 line,
                 Rect::new(inner.x, inner.y + row as u16, inner.width, 1),

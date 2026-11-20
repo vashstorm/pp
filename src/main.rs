@@ -89,6 +89,10 @@ struct Args {
     #[arg(long, value_enum, value_name = "MODE")]
     approval_mode: Option<ApprovalModeCli>,
 
+    /// Select a permission preset for this run (always-ask, accept-edits, yolo)
+    #[arg(long, value_name = "MODE", conflicts_with_all = ["approval_mode", "sandbox"])]
+    permission_mode: Option<pp_config::config::PermissionMode>,
+
     /// Override tools.sandbox.mode from settings.yml for this run
     #[arg(long, value_enum, value_name = "MODE")]
     sandbox: Option<SandboxModeCli>,
@@ -497,7 +501,13 @@ fn run(args: Args) -> Result<()> {
             prompt: prompt_source
                 .clone()
                 .unwrap_or_else(system_prompt::Snapshot::bundled),
-            approval: args.approval_mode.map(Into::into),
+            permission: std::sync::Arc::new(pp_permission::Gate::for_process(
+                dir,
+                &cwd,
+                args.permission_mode,
+                args.approval_mode.map(Into::into),
+                sandbox_override.is_some(),
+            )),
             sandbox_override,
             sandbox: sandbox.clone(),
             mcp: manager.clone(),
@@ -520,6 +530,7 @@ fn run(args: Args) -> Result<()> {
                         manager.clone(),
                     )?;
                     tools.skills = skills.clone();
+                    tools.approval = bootstrap.permission.as_ref().clone();
                     let sbx =
                         sandbox.get_or_init(models.catalog_snapshot().sandbox_settings(), &cwd);
                     if let Some(mode) = sandbox_override {
@@ -558,18 +569,12 @@ fn run(args: Args) -> Result<()> {
                 error = logging::diagnostic_text(&format!("{error:#}")),
             );
         }
-        if let (Some(mode), Ok(agent)) = (args.approval_mode, agent.as_mut()) {
-            agent.set_approval_override(mode.into());
-        }
-        if !use_tui
-            && let Ok(agent) = &agent
-            && let Some(reason) = agent.sandbox_status().degraded_reason
-        {
-            tracing::warn!(event = "sandbox_degraded", reason = %reason);
-            writeln!(
-                io::stderr().lock(),
-                "warning: sandbox degraded to off ({reason})"
-            )?;
+        if !use_tui && let Ok(agent) = &agent {
+            let status = agent.sandbox_status();
+            if let Some(warning) = status.warning() {
+                tracing::warn!(event = "sandbox_unavailable", %warning);
+                writeln!(io::stderr().lock(), "warning: {warning}")?;
+            }
         }
         // `--model` 只在本次运行生效；显式给出却无法解析时必须致命，不静默回退默认模型。
         // 配置本身不可用时 `agent` 为 Err，此时没有 catalog 可校验，沿用既有交互修复流程。

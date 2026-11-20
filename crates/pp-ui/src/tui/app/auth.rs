@@ -167,7 +167,7 @@ impl App {
         } else if !self.auth_pending
             && let Some(factory) = self.bootstrap.clone()
         {
-            self.request_auth(Request::Bootstrap(factory));
+            self.request_auth(Request::Bootstrap(Box::new(factory)));
         }
     }
 }

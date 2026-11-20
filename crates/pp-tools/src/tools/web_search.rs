@@ -3,7 +3,7 @@ use async_openai::types::chat::FunctionObject;
 use pp_config::config::{WebSearchProvider, WebSearchSettings};
 use pp_core::cancellation::CancellationToken;
 use pp_llm::web_search::{Recency, WebSearchRequest, WebSearchResponse};
-use pp_sandbox::Sandbox;
+use pp_sandbox::SandboxView;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -86,7 +86,7 @@ pub(super) fn definition() -> FunctionObject {
 }
 
 pub(crate) fn sandbox_network_decision(
-    sandbox: &Sandbox,
+    sandbox: SandboxView<'_>,
     settings: &WebSearchSettings,
     requested: Option<WebSearchProvider>,
 ) -> Result<bool> {
@@ -122,7 +122,7 @@ pub(crate) fn sandbox_network_decision(
 pub(super) fn run(
     arguments: &str,
     settings: &WebSearchSettings,
-    sandbox: &Sandbox,
+    sandbox: SandboxView<'_>,
     cancellation: &CancellationToken,
     runner: &mut Runner<'_>,
 ) -> Result<Value> {

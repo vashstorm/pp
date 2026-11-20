@@ -5,13 +5,15 @@ use super::*;
 impl Tools {
     pub(in crate::tools) fn run_write(
         &self,
-        policy: ToolPolicy<'_>,
-        name: &str,
-        arguments: &str,
-        call_id: &str,
-        cancellation: &CancellationToken,
-        emit: &mut dyn FnMut(AgentEvent),
+        call: &mut ExecuteCall<'_, '_>,
+        sandbox: Option<pp_sandbox::SandboxView<'_>>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
+        let policy = call.policy;
+        let name = call.name;
+        let arguments = call.arguments;
+        let call_id = call.call_id;
+        let cancellation = call.cancellation;
+        let emit = &mut *call.emit;
         if let ToolPolicy::Plan {
             document, input, ..
         } = policy
@@ -27,8 +29,18 @@ impl Tools {
         );
         ensure!(!args.path.trim().is_empty(), "path must not be blank");
         self.check_mutation_instructions("write", arguments)?;
-        let target = self.workspace.target(Path::new(&args.path), true)?;
         let normalized_path = self.workspace.key(Path::new(&args.path))?;
+        let target_path = self.cwd.join(&normalized_path);
+        ensure!(
+            !self.approval.protects_path(&target_path),
+            "approval rules must be managed with /permissions"
+        );
+        if let Some(sandbox) = sandbox
+            && let Some(policy) = sandbox.policy()?
+        {
+            policy.check_write(&target_path)?;
+        }
+        let target = self.workspace.target(Path::new(&args.path), true)?;
         let registry = self.lsp_save_registry();
         let absolute = registry
             .map(|registry| registry.cwd().join(&normalized_path))

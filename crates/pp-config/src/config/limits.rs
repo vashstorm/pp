@@ -45,6 +45,8 @@ pub struct ToolsSettings {
     pub output: crate::config::OutputSettings,
     #[serde(rename = "approvalMode")]
     pub approval_mode: crate::config::ApprovalMode,
+    #[serde(rename = "permissionMode", skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<crate::config::PermissionMode>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub approval: std::collections::BTreeMap<String, crate::config::ApprovalPolicy>,
     #[serde(

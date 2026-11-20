@@ -127,7 +127,7 @@ pp --model deepseek/deepseek-flash:high /commit
 pp /stats --host 127.0.0.1 --port 0 --no-open
 ```
 
-> **权限与数据**：接口密钥明文保存在模型配置中。在 macOS 与 Linux 下，`tools.sandbox.mode` 默认为 `auto`（macOS 通过 Seatbelt `sandbox-exec`、Linux 通过 Bubblewrap `bwrap` 启用 `workspace-write`），将 `bash`、`!命令` 与 `eval` 的写入限制在工作目录、临时目录及常用工具链缓存内，保护项目控制路径（`.git/hooks`、`.git/config`、`.pp`、`.mcp.json`、`.claude/.mcp.json`），并在 `read`、`rg`、`glob`、`bash`、`eval` 中拒读敏感凭据目录（如 `~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.pp/agent` 等）；出站网络默认放行，可通过 `tools.sandbox.network: false` 关闭（macOS 仍放行本地回环；Linux 通过 `--unshare-net` 隔离网络命名空间）。嵌套沙盒、缺少 `bwrap` 或非特权用户命名空间受限时，`auto` 会降级关闭并给出提示；其余平台 `auto` 等价关闭。MCP stdio 与 LSP 服务进程不在沙盒内。可通过 `--sandbox <auto|workspace-write|read-only|off>` 或 `/sandbox` 查看与覆盖当前模式。默认 YOLO 模式跳过全部工具审批，包括危险命令检查和显式 prompt/deny 规则；写入与编辑工具的保存层限制在工作目录与临时目录（`/tmp`，macOS 的真实路径为 `/private/tmp`，两种拼写是同一目录）内并拒绝符号链接。会话与统计可能包含源码和对话，请按敏感数据保管。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
+> **权限与数据** · 在 `settings.yml` 中设置 `tools.permissionMode: accept-edits`，即可在工作区沙盒内运行，并按需批准 Bash 的额外权限。`always-ask` 还会在写入与执行工具运行前询问，`yolo` 关闭 pp 沙盒并跳过常规工具审批。TUI 底栏用颜色标明档位，按 Alt + Shift + A 或 F6 循环，也可通过 `/permissions` 查看生效状态。未配置权限预设的安装继续使用原有审批与沙盒设置。模型配置中的接口密钥以明文保存，会话与统计可能包含源码和对话。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
 
 ## 日常使用
 
@@ -162,7 +162,8 @@ pp /stats --host 127.0.0.1 --port 0 --no-open
 | `/test-write` | 仅 dev/test：12.5 mock token/s 的打字机回复；24/28 行正文以 240 mock token/s 写入 `/tmp/pp-test-write/demo.txt`，写入卡片可见尾部滚动；随后越界失败，最后用 bash 工具删除 |
 | `/test-ui` | 仅 dev/test：以 12.5 mock token/s 输出原生 Responses SSE 思考与 Markdown／代码分片 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
-| `/sandbox [auto\|workspace-write\|read-only\|off]` | 查看当前沙盒状态与平台支持，或在当前会话内临时覆盖沙盒模式 |
+| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <id>]` | 查看或切换本次进程的权限预设，或管理 `~/.pp/agent/approval.yml` 中按项目生效的授权 |
+| `/sandbox [auto\|workspace-write\|read-only\|off]` | 查看当前沙盒状态，旧配置模式下可独立覆盖沙盒 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
 | `/context` | 在独立 TUI 面板中以 25×16 占比网格与 10 项分类（`System Prompt`、`Instruction Files`、`Skills`、`Built-in Tools`、`Custom Tools`、`User / Developer Messages`、`Assistant Messages`、`Assistant Thinking`、`Tool Calls`、`Tool Output`）加 `Auto-Compact Buffer`／`Free Space` 展示上下文占用，支持原地展开子项查看详情（别名 `/ctx`）；空会话及主任务运行中均可打开，按 `r` 刷新 |
 | `/resume`、`/tree` | 恢复会话，或回退当前历史（仅终端界面） |

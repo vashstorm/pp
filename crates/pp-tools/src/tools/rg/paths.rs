@@ -208,7 +208,7 @@ pub(super) fn parse_paths(
     types: Option<&ignore::types::Types>,
     token: &CancellationToken,
     deadline: Instant,
-    sandbox: Option<&std::sync::Arc<pp_sandbox::Sandbox>>,
+    sandbox: Option<pp_sandbox::SandboxView<'_>>,
 ) -> Result<(TargetIter, bool, Vec<String>)> {
     let input = if input.trim().is_empty() { "." } else { input };
     let normalized = if cwd.join(input).exists() {

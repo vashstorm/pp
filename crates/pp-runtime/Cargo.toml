@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+pp-permission = { path = "../pp-permission" }
 pp-core = { path = "../pp-core" }
 pp-bash = { path = "../pp-bash" }
 pp-config = { path = "../pp-config" }

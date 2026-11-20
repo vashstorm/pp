@@ -28,7 +28,7 @@ pub(super) enum Request {
     Discover(Provider),
     Logout(Provider),
     Open(String),
-    Bootstrap(Bootstrap),
+    Bootstrap(Box<Bootstrap>),
 }
 
 pub(super) enum Reply {

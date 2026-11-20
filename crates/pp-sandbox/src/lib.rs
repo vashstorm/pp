@@ -87,8 +87,32 @@ pub struct SandboxStatus {
 }
 
 impl SandboxStatus {
+    pub fn warning(&self) -> Option<String> {
+        self.degraded_reason.as_ref().map(|reason| {
+            if self.configured == SandboxMode::Auto {
+                format!("Sandbox degraded to off: {reason}")
+            } else {
+                format!("Sandbox unavailable; commands requiring it are blocked: {reason}")
+            }
+        })
+    }
+
     pub fn summary(&self) -> String {
-        let net_desc = if self.network {
+        let unavailable = self.degraded_reason.is_some()
+            && matches!(
+                self.configured,
+                SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly
+            );
+        let mode = if unavailable {
+            "unavailable"
+        } else {
+            self.effective.as_str()
+        };
+        let net_desc = if unavailable {
+            "unavailable"
+        } else if self.effective == EffectiveMode::Off {
+            "unrestricted"
+        } else if self.network {
             "on"
         } else if self.backend == "bubblewrap" {
             "off (isolated network namespace)"
@@ -96,13 +120,12 @@ impl SandboxStatus {
             "off (loopback only)"
         };
         let mut lines = vec![format!(
-            "Sandbox: effective={}, configured={}, backend={}, network={net_desc}",
-            self.effective.as_str(),
+            "Sandbox: effective={mode}, configured={}, backend={}, network={net_desc}",
             self.configured.as_str(),
             self.backend,
         )];
-        if let Some(reason) = &self.degraded_reason {
-            lines.push(format!("Warning: degraded to off ({reason})"));
+        if let Some(warning) = self.warning() {
+            lines.push(format!("Warning: {warning}"));
         }
         if !self.writable_summary.is_empty() {
             lines.push(format!(
@@ -199,6 +222,48 @@ impl Policy {
             next.writable.push(normalized);
         }
         Arc::new(next)
+    }
+
+    /// 从当前命令的策略快照派生更窄的、显式批准过的额外权限。
+    pub fn resolve_extra_writable(&self, paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+        let mut resolved = Vec::with_capacity(paths.len());
+        for path in paths {
+            anyhow::ensure!(
+                path.is_absolute(),
+                "extra writable directory must be absolute"
+            );
+            let directory = std::fs::canonicalize(path)
+                .map_err(|_| anyhow::anyhow!("cannot resolve extra writable directory"))?;
+            anyhow::ensure!(
+                directory.is_dir(),
+                "extra writable path must be a directory"
+            );
+            anyhow::ensure!(
+                !self
+                    .protect
+                    .iter()
+                    .chain(&self.deny_read)
+                    .any(|protected| guard::paths_overlap(&directory, protected)),
+                "extra writable directory overlaps a protected path"
+            );
+            if self.check_write(&directory).is_err() {
+                resolved.push(directory);
+            }
+        }
+        resolved.sort_unstable();
+        resolved.dedup();
+        Ok(resolved)
+    }
+
+    pub fn with_command_grant(&self, writable: &[PathBuf], network: bool) -> Result<Arc<Self>> {
+        anyhow::ensure!(
+            self.resolve_extra_writable(writable)? == writable,
+            "extra writable directories changed during approval"
+        );
+        let mut next = self.clone();
+        next.writable.extend_from_slice(writable);
+        next.network |= network;
+        Ok(Arc::new(next))
     }
 
     pub fn check_read(&self, path: &Path) -> io::Result<()> {
@@ -378,21 +443,6 @@ impl SandboxState {
         self.override_mode.unwrap_or(self.settings.mode)
     }
 
-    /// 探测结果的只读投影；`None` 只可能出现在 `off` 状态，而 `off` 分支不消费该值。
-    fn probe_or_available(&self) -> ProbeResult {
-        match &self.probe {
-            Some(probe) => probe.clone(),
-            None => {
-                debug_assert_eq!(
-                    self.configured(),
-                    SandboxMode::Off,
-                    "未探测的状态只允许出现在 off 模式"
-                );
-                ProbeResult::Available
-            }
-        }
-    }
-
     /// 切到需要沙盒的模式后补一次探测；`off` 保持未探测，避免白起一次沙盒探针子进程。
     fn ensure_probe(&mut self) {
         if self.probe.is_none() && self.configured() != SandboxMode::Off {
@@ -539,14 +589,46 @@ impl Sandbox {
         })
     }
 
+    pub fn view(&self, mode: Option<SandboxMode>) -> SandboxView<'_> {
+        let mode = mode.unwrap_or_else(|| {
+            self.state
+                .read()
+                .expect("sandbox state lock poisoned")
+                .configured()
+        });
+        SandboxView {
+            sandbox: self,
+            mode,
+        }
+    }
+
     pub fn status(&self) -> SandboxStatus {
-        let (configured, probe, network) = {
+        self.view(None).status()
+    }
+
+    fn probe_for_mode(&self, mode: SandboxMode) -> ProbeResult {
+        if mode == SandboxMode::Off {
+            return ProbeResult::Available;
+        }
+        {
             let state = self.state.read().expect("sandbox state lock poisoned");
-            (
-                state.configured(),
-                state.probe_or_available(),
-                state.settings.network,
-            )
+            if let Some(probe) = &state.probe {
+                return probe.clone();
+            }
+        }
+        let mut state = self.state.write().expect("sandbox state lock poisoned");
+        let network = state.settings.network;
+        state
+            .probe
+            .get_or_insert_with(|| platform_probe(network))
+            .clone()
+    }
+
+    fn status_for_mode(&self, configured: SandboxMode) -> SandboxStatus {
+        let probe = self.probe_for_mode(configured);
+        let network = {
+            let state = self.state.read().expect("sandbox state lock poisoned");
+            state.settings.network
         };
         let (effective, degraded_reason) = resolve_effective(configured, &probe);
         let (writable_summary, notes) = match effective {
@@ -601,52 +683,29 @@ impl Sandbox {
 
     /// 取得当前生效策略；显式开启但平台不可用时 fail-closed 返回错误。
     pub fn policy(&self) -> Result<Option<Arc<Policy>>> {
-        let effective = {
-            let state = self.state.read().expect("sandbox state lock poisoned");
-            let configured = state.configured();
-            if configured == SandboxMode::Off {
-                return Ok(None);
+        self.view(None).policy()
+    }
+
+    fn policy_for_mode(&self, configured: SandboxMode) -> Result<Option<Arc<Policy>>> {
+        let (effective, reason) = resolve_effective(configured, &self.probe_for_mode(configured));
+        if effective == EffectiveMode::Off {
+            if matches!(
+                configured,
+                SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly
+            ) {
+                anyhow::bail!(
+                    "sandbox mode '{}' is enabled but unavailable: {}",
+                    configured.as_str(),
+                    reason.as_deref().unwrap_or("unsupported platform"),
+                );
             }
-            let probe = state.probe_or_available();
-            match configured {
-                SandboxMode::Off => return Ok(None),
-                SandboxMode::Auto => {
-                    if !cfg!(any(target_os = "macos", target_os = "linux")) {
-                        return Ok(None);
-                    }
-                    match &probe {
-                        ProbeResult::Available => EffectiveMode::WorkspaceWrite,
-                        ProbeResult::Unavailable { .. } => return Ok(None),
-                    }
-                }
-                SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly => match &probe {
-                    ProbeResult::Available => {
-                        if configured == SandboxMode::WorkspaceWrite {
-                            EffectiveMode::WorkspaceWrite
-                        } else {
-                            EffectiveMode::ReadOnly
-                        }
-                    }
-                    ProbeResult::Unavailable { reason } => {
-                        anyhow::bail!(
-                            "sandbox mode '{}' is enabled but unavailable: {reason}",
-                            configured.as_str()
-                        );
-                    }
-                },
-            }
-        };
+            return Ok(None);
+        }
         Ok(Some(self.policy_for_effective(effective)))
     }
 
     pub fn check_read(&self, path: &Path) -> io::Result<()> {
-        let policy = self
-            .policy()
-            .map_err(|err| io::Error::new(io::ErrorKind::PermissionDenied, err.to_string()))?;
-        let Some(policy) = policy else {
-            return Ok(());
-        };
-        policy.check_read(path)
+        self.view(None).check_read(path)
     }
 
     pub fn is_read_denied(&self, path: &Path) -> bool {
@@ -693,6 +752,33 @@ fn resolve_effective(
             ProbeResult::Available => (EffectiveMode::ReadOnly, None),
             ProbeResult::Unavailable { reason } => (EffectiveMode::Off, Some(reason.clone())),
         },
+    }
+}
+
+/// 每次调用解析一次配置，后续检查沿用同一个沙盒模式。
+#[derive(Clone, Copy)]
+pub struct SandboxView<'a> {
+    sandbox: &'a Sandbox,
+    mode: SandboxMode,
+}
+
+impl SandboxView<'_> {
+    pub fn policy(self) -> Result<Option<Arc<Policy>>> {
+        self.sandbox.policy_for_mode(self.mode)
+    }
+
+    pub fn status(self) -> SandboxStatus {
+        self.sandbox.status_for_mode(self.mode)
+    }
+
+    pub fn check_read(self, path: &Path) -> io::Result<()> {
+        if let Some(policy) = self
+            .policy()
+            .map_err(|err| io::Error::new(io::ErrorKind::PermissionDenied, err.to_string()))?
+        {
+            policy.check_read(path)?;
+        }
+        Ok(())
     }
 }
 
@@ -758,6 +844,11 @@ fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy {
         ".claude/.mcp.json",
     ] {
         push_unique(&mut protect, guard::normalize_path(&state.cwd.join(rel)));
+    }
+    if let Some(home) = home {
+        for rel in [".pp/agent/approval.yml", ".pp/agent/approval.lock"] {
+            push_unique(&mut protect, guard::normalize_path(&home.join(rel)));
+        }
     }
     for rel in &state.settings.protect {
         push_unique(&mut protect, guard::normalize_path(&state.cwd.join(rel)));

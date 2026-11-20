@@ -146,7 +146,7 @@ impl Agent {
                 agent.workflow.mode_name(),
                 agent.session.tool_names(),
             )
-            .with_sandbox(&agent.tools.sandbox().status());
+            .with_sandbox(&agent.tools.sandbox_status());
             source
                 .compose(
                     &context,
@@ -302,6 +302,7 @@ impl Agent {
             }
             return Err(error);
         }
+        self.tools.approval.clear_session();
         self.session = session;
         self.reset_lsp_diagnostics();
         self.tools.clear_caches();
@@ -344,6 +345,7 @@ impl Agent {
             mode: self.workflow.mode,
             ..Default::default()
         };
+        self.tools.approval.clear_session();
         self.journal.reset();
         self.tools.artifacts = Default::default();
         // /new 是新的会话根：旧临时管道正文与 URI 一律失效。

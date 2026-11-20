@@ -407,8 +407,8 @@ pub(super) const ITEMS: &[SettingItem] = &[
         id: SettingId::ApprovalMode,
         category: Category::EditingTools,
         key: "tools.approvalMode",
-        label: "Approval mode",
-        description: "Tool confirmation policy: yolo, write, or always-ask; next task",
+        label: "Legacy approval mode",
+        description: "Independent approval policy for legacy launches: yolo, write, or always-ask",
         kind: ValueKind::ApprovalMode,
     },
     SettingItem {

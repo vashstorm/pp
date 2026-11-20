@@ -8,6 +8,7 @@ mod input;
 mod mcp_tip;
 mod navigation;
 mod panels;
+mod permissions;
 mod pipes;
 mod receive;
 mod resources;

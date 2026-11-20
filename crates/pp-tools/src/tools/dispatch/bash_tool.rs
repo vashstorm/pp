@@ -5,12 +5,15 @@ use super::*;
 impl Tools {
     pub(in crate::tools) fn run_bash(
         &self,
-        arguments: &str,
-        call_id: &str,
-        cancellation: &CancellationToken,
-        emit: &mut dyn FnMut(AgentEvent),
+        call: &mut ExecuteCall<'_, '_>,
+        permissions: pp_permission::EffectivePermissions,
+        sandbox: pp_sandbox::SandboxView<'_>,
     ) -> Result<Value> {
-        let args: BashArgs = serde_json::from_str(arguments).context("invalid bash arguments")?;
+        let args: BashArgs =
+            serde_json::from_str(call.arguments).context("invalid bash arguments")?;
+        let call_id = call.call_id;
+        let cancellation = call.cancellation;
+        let emit = &mut *call.emit;
         ensure!(!args.command.trim().is_empty(), "command must not be blank");
         let timeout_seconds = args
             .timeout_seconds
@@ -21,8 +24,32 @@ impl Tools {
             self.limits.bash_max_timeout_seconds,
             self.limits.bash_timeout_seconds
         );
+        let mut policy = sandbox.policy()?;
+        if let Some(request) = args.sandbox_permissions {
+            ensure!(
+                permissions.preset() == Some(pp_config::config::PermissionMode::AcceptEdits)
+                    && matches!(call.policy, ToolPolicy::Execute { .. }),
+                "sandbox_permissions requires accept-edits in Execute mode"
+            );
+            let base = policy.as_ref().context("sandbox is unavailable")?;
+            let writable = base.resolve_extra_writable(&request.writable)?;
+            let network = request.network && !base.network();
+            if network || !writable.is_empty() {
+                self.approval.authorize_sandbox(
+                    pp_permission::SandboxGrant {
+                        workspace: self.approval.workspace(&self.cwd).to_owned(),
+                        cwd: self.cwd.clone(),
+                        command: args.command.clone(),
+                        writable: writable.clone(),
+                        network,
+                    },
+                    cancellation,
+                )?;
+                policy = Some(base.with_command_grant(&writable, network)?);
+            }
+        }
+        pp_core::cancellation::check(cancellation)?;
         let cache = self.workspace.cache_dir()?;
-        let policy = self.sandbox.policy()?;
         match args.mode {
             BashMode::Foreground => pp_bash::run(
                 &self.cwd,

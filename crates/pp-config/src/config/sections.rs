@@ -51,6 +51,47 @@ impl ApprovalMode {
     }
 }
 
+/// 同时选择工具审批策略和沙盒边界。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionMode {
+    AlwaysAsk,
+    AcceptEdits,
+    Yolo,
+}
+
+impl PermissionMode {
+    pub const ALL: [Self; 3] = [Self::AlwaysAsk, Self::AcceptEdits, Self::Yolo];
+    pub const OPTIONS: &str = "always-ask, accept-edits, yolo";
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AlwaysAsk => "always-ask",
+            Self::AcceptEdits => "accept-edits",
+            Self::Yolo => "yolo",
+        }
+    }
+
+    pub const fn next(self) -> Self {
+        match self {
+            Self::AlwaysAsk => Self::AcceptEdits,
+            Self::AcceptEdits => Self::Yolo,
+            Self::Yolo => Self::AlwaysAsk,
+        }
+    }
+}
+
+impl std::str::FromStr for PermissionMode {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.as_str() == raw)
+            .ok_or_else(|| anyhow::anyhow!("expected one of {}", Self::OPTIONS))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApprovalPolicy {

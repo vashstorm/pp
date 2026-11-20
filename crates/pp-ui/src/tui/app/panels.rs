@@ -317,23 +317,17 @@ impl App {
             }
             return false;
         }
-        if let Some(Command::Sandbox(mode)) = &command {
-            if matches!(self.state, State::Unavailable) {
-                if let Some(error) = self.unavailable.clone() {
-                    self.notify(Level::Error, error);
-                }
-            } else if !matches!(self.state, State::Ready) || self.has_pending() {
-                self.notify(
-                    Level::Error,
-                    "Finish or cancel the current task before using /sandbox".into(),
-                );
-            } else if let Some(commands) = &self.commands {
-                if commands.send(WorkerCommand::Sandbox(*mode)).is_err() {
-                    self.fail_worker();
-                } else {
-                    self.remember_input();
-                    self.clear_input();
-                }
+        let permissions_command = match &command {
+            Some(Command::Sandbox(mode)) => Some(WorkerCommand::Sandbox(*mode)),
+            Some(Command::Permissions(command)) => {
+                Some(WorkerCommand::Permissions(command.clone()))
+            }
+            _ => None,
+        };
+        if let Some(command) = permissions_command {
+            if self.submit_permission_command(command, true) {
+                self.remember_input();
+                self.clear_input();
             }
             return false;
         }
@@ -620,6 +614,7 @@ impl App {
                     | Command::Skills(_)
                     | Command::Mcp(_)
                     | Command::Sandbox(_)
+                    | Command::Permissions(_)
                     | Command::Login
                     | Command::Logout,
                 ) => {
@@ -884,6 +879,9 @@ impl App {
                 self.input.insert_str(format!("/effort {}", level.as_str()));
                 self.refresh_candidates(true);
                 return confirm && self.submit(PendingKind::Steering);
+            }
+            MenuAction::PermissionMode(mode) => {
+                return self.complete_permission_mode(mode, confirm);
             }
             MenuAction::SandboxMode(mode) => {
                 self.input = editor();

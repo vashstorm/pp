@@ -97,6 +97,7 @@ pub(super) fn menu_items(
     question: &pp_core::interaction::AskQuestion,
     selected: &[usize],
     custom: bool,
+    allow_custom: bool,
 ) -> Vec<MenuItem<usize>> {
     let count = question.options.len();
     let mut items = Vec::with_capacity(count + 1);
@@ -119,14 +120,15 @@ pub(super) fn menu_items(
             current: chosen,
         });
     }
-    let other_icon = selection_icon(question.multi, custom);
-    items.push(MenuItem {
-        value: count,
-        label: OTHER_LABEL.to_string(),
-        description: String::new(),
-        icon: Some(other_icon),
-        current: custom,
-    });
+    if allow_custom {
+        items.push(MenuItem {
+            value: count,
+            label: OTHER_LABEL.to_string(),
+            description: String::new(),
+            icon: Some(selection_icon(question.multi, custom)),
+            current: custom,
+        });
+    }
     items
 }
 

@@ -9,13 +9,24 @@ impl Tools {
         call_id: &str,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
+        sandbox: Option<pp_sandbox::SandboxView<'_>>,
     ) -> Result<Value> {
         let request = edit::Request::parse(self.edit_mode, arguments)?;
         let path = request.path().to_owned();
         ensure!(!path.starts_with("artifact://"), "artifacts are read-only");
         self.check_mutation_instructions("edit", arguments)?;
-        let target = self.workspace.target(Path::new(&path), false)?;
         let normalized_path = self.workspace.key(Path::new(&path))?;
+        let target_path = self.cwd.join(&normalized_path);
+        ensure!(
+            !self.approval.protects_path(&target_path),
+            "approval rules must be managed with /permissions"
+        );
+        if let Some(sandbox) = sandbox
+            && let Some(policy) = sandbox.policy()?
+        {
+            policy.check_write(&target_path)?;
+        }
+        let target = self.workspace.target(Path::new(&path), false)?;
         let registry = self.lsp_save_registry();
         let absolute = registry
             .map(|registry| registry.cwd().join(&normalized_path))

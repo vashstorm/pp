@@ -697,7 +697,7 @@ impl SectionFingerprint {
             EditMode::Hashline => "hashline",
         });
         render.text(agent.workflow.mode_name());
-        let status = agent.tools.sandbox().status();
+        let status = agent.tools.sandbox_status();
         render.text(status.effective.as_str());
         render.number(u64::from(status.network));
         let limits = agent.tools.limits;

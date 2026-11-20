@@ -9,6 +9,7 @@ impl Tools {
         cancellation: &CancellationToken,
         web: &mut web_search::WebHandler<'_>,
         images: &mut Vec<read::ToolImage>,
+        sandbox: pp_sandbox::SandboxView<'_>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let args: ReadArgs = serde_json::from_str(arguments).context("invalid read arguments")?;
         if args.path.starts_with("agent://") {
@@ -49,9 +50,9 @@ impl Tools {
             .map(|result| (result.value, None, None));
         }
         if let Some(local) = read::local_path(&args.path, &self.cwd)? {
-            self.sandbox.check_read(&local)?;
+            sandbox.check_read(&local)?;
         } else if read::is_http_url(&args.path, &self.cwd)?
-            && let Some(policy) = self.sandbox.policy()?
+            && let Some(policy) = sandbox.policy()?
             && !policy.network()
         {
             anyhow::bail!("URL read is blocked by sandbox policy (outbound network is disabled).");

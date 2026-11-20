@@ -79,6 +79,7 @@ impl App {
             #[cfg(test)]
             history_dir: None,
             state: State::Unavailable,
+            permission_mode: None,
             next_shell_id: 0,
             active_cancellation: None,
             input_queue: InputQueue::default(),
@@ -230,10 +231,11 @@ impl App {
         // 后台建连失败由欢迎页多行 MCP tip 统一展示，不因竞态弹窗覆盖欢迎页；
         // 配置诊断（如非法条目）仍作为启动错误提示。
         let mut startup_errors = self.mcp_view.diagnostics.clone();
-        if let Some(reason) = agent.sandbox_status().degraded_reason {
-            tracing::warn!(event = "sandbox_degraded", reason = %reason);
-            startup_errors.push(format!("Sandbox degraded to off: {reason}"));
+        if let Some(warning) = agent.sandbox_status().warning() {
+            tracing::warn!(event = "sandbox_unavailable", %warning);
+            startup_errors.push(warning);
         }
+        let permission_mode = agent.permission_mode();
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
         self.favorite_models = agent.favorite_models();
@@ -260,14 +262,9 @@ impl App {
             request_ask(&ask_events, request, cancellation)
         }));
         let approval_events = sender.clone();
-        agent.set_approval_handler(Box::new(move |request,token|{
-            let _guard=crate::tui::dialog_guard(&dialog_lock,token)?;
-            let mut options=vec![serde_json::json!({"label":"Approve once","description":"Run the current tool call only"})];
-            if request.session_grant{options.push(serde_json::json!({"label":"Allow for this session","description":"Granted to the root session and its subagents"}));}
-            options.push(serde_json::json!({"label":"Deny","description":"Return tool approval denied"}));
-            let args=pp_core::interaction::AskArgs::parse(&serde_json::json!({"questions":[{"id":"approval","question":format!("{}: {}",request.tool,request.reason),"options":options}]}).to_string())?;
-            let answers=request_ask(&approval_events,pp_core::interaction::AskRequest{call_id:request.agent.as_ref().map(|id|format!("subagent-{id}-approval")).unwrap_or_else(||"approval-dialog".into()),args:std::sync::Arc::new(args)},token)?;
-            Ok(match answers.first().and_then(|a|a.selected_options.first()).map(String::as_str){Some("Approve once")=>pp_tools::approval::ApprovalDecision::Approve,Some("Allow for this session")if request.session_grant=>pp_tools::approval::ApprovalDecision::ApproveSession,_=>pp_tools::approval::ApprovalDecision::Deny})
+        agent.set_approval_handler(Box::new(move |request, token| {
+            let _guard = crate::tui::dialog_guard(&dialog_lock, token)?;
+            super::permissions::request_approval(&approval_events, request, token)
         }));
         agent.ensure_subagents()?;
         let usage = agent.context_usage().ok();
@@ -433,6 +430,10 @@ impl App {
                             }
                             agent.publish_context_snapshot();
                             continue;
+                        }
+                        WorkerCommand::Permissions(command) => {
+                            let result = command.apply(&mut agent);
+                            WorkerEvent::Permissions(agent.permission_mode(), result)
                         }
                         WorkerCommand::Sandbox(mode) => {
                             let result = match mode {
@@ -744,6 +745,7 @@ impl App {
         self.commands = Some(commands);
         self.events = Some(events);
         self.state = State::Ready;
+        self.permission_mode = Some(permission_mode);
         if let Some(cleanup) = lsp_cleanup {
             self.install_lsp_cleanup(cleanup);
         }

@@ -3,6 +3,7 @@ use anyhow::{Result, bail, ensure};
 use pp_config::config::EditMode;
 use pp_config::config::ToolLimits;
 use pp_core::plan::PlanDocument;
+use pp_permission::{EffectivePermissions, ToolAccess};
 use serde_json::Value;
 use std::{
     cell::RefCell,
@@ -86,6 +87,12 @@ impl Tools {
 
     pub fn sandbox(&self) -> &std::sync::Arc<pp_sandbox::Sandbox> {
         &self.sandbox
+    }
+
+    pub fn sandbox_status(&self) -> pp_sandbox::SandboxStatus {
+        self.sandbox
+            .view(self.approval.snapshot().sandbox_mode())
+            .status()
     }
 
     /// 生产与子 Agent 构造入口：注入进程级共享的 `McpManager`。
@@ -205,6 +212,7 @@ impl Tools {
         call: &ExecuteCall<'_, '_>,
         hook_ask: Option<&str>,
     ) -> Result<AuthorizedAccess> {
+        let permissions = self.approval.snapshot();
         let name = call.name;
         let arguments = call.arguments;
         ensure!(
@@ -316,12 +324,21 @@ impl Tools {
             } else {
                 approval::tier_of_arguments(name, arguments)
             };
-            self.approval
-                .enforce(name, arguments, tier, hook_ask, call.cancellation)?;
+            let sandboxed = matches!(call.policy, ToolPolicy::Execute { .. })
+                && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval");
+            self.approval.enforce_for(
+                permissions,
+                name,
+                arguments,
+                ToolAccess { tier, sandboxed },
+                hook_ask,
+                call.cancellation,
+            )?;
         }
         Ok(AuthorizedAccess {
             mcp_access,
             lsp_access,
+            permissions,
         })
     }
 }
@@ -329,6 +346,7 @@ impl Tools {
 pub(super) struct AuthorizedAccess {
     pub(super) mcp_access: pp_mcp::Access,
     pub(super) lsp_access: pp_lsp::tool::Access,
+    pub(super) permissions: EffectivePermissions,
 }
 
 impl Drop for Tools {

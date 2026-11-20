@@ -415,6 +415,7 @@ const TIPS_COMMANDS: &[&str] = &[
     "/mcp",
     "/model",
     "/new",
+    "/permissions",
     "/pipes",
     "/plan",
     "/plan-list",
@@ -451,6 +452,7 @@ const TIPS_COMMANDS: &[&str] = &[
 fn tips_shortcuts() -> Vec<&'static str> {
     if cfg!(target_os = "macos") {
         vec![
+            "Alt + Shift + A",
             "Ctrl + A",
             "Ctrl + C",
             "Ctrl + E",
@@ -463,6 +465,7 @@ fn tips_shortcuts() -> Vec<&'static str> {
             "Esc",
             "Esc Esc",
             "F1",
+            "F6",
             "F8",
             "PgUp/PgDn",
             "Shift + Enter",
@@ -482,6 +485,7 @@ fn tips_shortcuts() -> Vec<&'static str> {
         vec![
             "Alt + A",
             "Alt + Enter",
+            "Alt + Shift + A",
             "Ctrl + A",
             "Ctrl + C",
             "Ctrl + E",
@@ -500,6 +504,7 @@ fn tips_shortcuts() -> Vec<&'static str> {
             "Esc",
             "Esc Esc",
             "F1",
+            "F6",
             "F8",
             "PgUp/PgDn",
             "Shift + Enter",
@@ -597,7 +602,8 @@ fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
         let (home, mut pty) = context_tui_start(&server, protocol, 100_000, 80);
         pty.text("Session & workflow");
         let startup = pty.parser.screen().contents();
-        assert!(!startup.contains("/compact"));
+        assert!(startup.contains("/compact"));
+        assert!(!startup.contains("/permissions"));
         assert!(!startup.contains("/skills"));
         let commands = tips_commands();
         let shortcuts = tips_shortcuts();

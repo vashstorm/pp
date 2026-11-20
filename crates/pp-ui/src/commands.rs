@@ -1,6 +1,8 @@
 #[cfg(debug_assertions)]
 use pp_mock_ai::MockTest;
+mod permissions;
 mod templates;
+pub(crate) use permissions::PermissionCommand;
 pub use templates::{FileCommand, FileCommands};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -72,6 +74,14 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         category: CommandCategory::Config,
         usage: "/setting [general|roles|themes|skills]",
         description: "Open Settings TUI (/config, /settings)",
+    },
+    CommandSpec {
+        name: "/permissions",
+        display_label: None,
+        aliases: &[],
+        category: CommandCategory::Workflow,
+        usage: "/permissions [always-ask|accept-edits|yolo|rules|revoke <id>]",
+        description: "View or switch permissions, or manage saved approvals",
     },
     CommandSpec {
         name: "/sandbox",
@@ -458,6 +468,7 @@ pub(crate) enum Command<'a> {
     Model(Option<&'a str>),
     Think(Option<ThinkLevel>),
     Sandbox(Option<pp_config::config::SandboxMode>),
+    Permissions(PermissionCommand),
     Skills(SkillCommand<'a>),
     Mcp(pp_mcp::Action),
     Shell(&'a str),
@@ -616,6 +627,11 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
                     .then(|| argument.parse())
                     .transpose()?,
             )));
+        }
+        "/permissions" => {
+            return Ok(Some(Command::Permissions(PermissionCommand::parse(
+                argument,
+            )?)));
         }
         "/sandbox" => {
             return Ok(Some(Command::Sandbox(

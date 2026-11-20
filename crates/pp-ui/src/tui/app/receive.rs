@@ -293,6 +293,7 @@ impl App {
             | WorkerEvent::McpSnapshot(_)
             | WorkerEvent::McpManaged { .. }
             | WorkerEvent::SandboxStatus(_)
+            | WorkerEvent::Permissions(..)
             | WorkerEvent::LspWarmupFailed { .. }
             | WorkerEvent::LspPollFailed(_) => self.on_panel_event(event),
             WorkerEvent::PlansListed(_)
