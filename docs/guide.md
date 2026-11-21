@@ -283,7 +283,7 @@ chmod 600 ~/.pp/agent/models.yml
 | `/init` | 使用当前模型创建或更新项目 `AGENTS.md` | TUI / 行模式 |
 | `/compact` | 摘要较早上下文，保留近期交互和可见记录 | TUI / 行模式 |
 | `/skills` | 管理技能来源与逐项启停；另支持 `sources [enable\|disable claude\|codex]`、`enable 名称` / `disable 名称` | TUI / 行模式 |
-| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <id>]` | 查看或切换本次进程的权限预设，或查看和撤销已保存的项目授权 | TUI / 行模式 |
+| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <index\|tool>]` | 查看或切换本次进程的权限预设，或查看和撤销已保存的全局授权 | TUI / 行模式 |
 | `/sandbox [auto\|workspace-write\|read-only\|off]` | 查看当前沙盒生效模式、网络状态、可写根及降级原因，或在当前会话临时覆盖模式（支持在设置中调整默认 `tools.sandbox` 后按运行时策略切换） | TUI / 行模式 |
 | `/resume` | 选择已保存会话；命令行 `pp -r` 直接打开本面板，按 ID 恢复使用 `pp -r ID` | 仅 TUI |
 | `/tree` | 浏览并回退当前有效历史，不回滚文件 | 仅 TUI |
@@ -970,9 +970,9 @@ tools:
 | `YOLO`（红色） | 关闭 pp 沙盒，跳过常规工具权限确认。Plan 和 Review 白名单、内置文件保存及强制 Hook 确认仍适用。 |
 
 - 权限档位紧跟在底栏的 effort 后，前面有盾牌图标。ASCII 图标模式用 `!` 表示权限。
-- 权限切换独立于任务与面板状态：任何时候（包括任务运行中、审批弹窗或面板打开期间）均可通过 Alt + Shift + A 或 F6 按表中顺序循环并保留输入草稿与光标，也可通过 F7 打开 `/permissions` 模态命令浮层或直接提交 `/permissions` 查看详情、`/permissions <模式>` 切换、`/permissions rules` 查看或 `/permissions revoke <id>` 撤销规则；切换后的下一次工具调用立即生效。切换只在本次进程内生效，跨会话与 Plan 切换保留。启动时可用 `--permission-mode <模式>` 覆盖配置。
+- 权限切换独立于任务与面板状态：任何时候（包括任务运行中、审批弹窗或面板打开期间）均可通过 Alt + Shift + A 或 F6 按表中顺序循环并保留输入草稿与光标，也可通过 F7 打开 `/permissions` 模态命令浮层或直接提交 `/permissions` 查看详情、`/permissions <模式>` 切换、`/permissions rules` 查看或 `/permissions revoke <index|tool>` 撤销规则；切换后的下一次工具调用立即生效。切换只在本次进程内生效，跨会话与 Plan 切换保留。启动时可用 `--permission-mode <模式>` 覆盖配置。
 - `accept-edits` 的 Bash 调用可用 `sandbox_permissions.writable` 申请增加可写目录，目录须已存在且使用绝对路径。若沙盒禁止出站，可通过 `sandbox_permissions.network: true` 申请为本次命令及其子进程开放出站网络。前台与后台命令均先确认再执行。普通失败只返回诊断，后续调用可以明确申请权限。硬性保护路径和拒绝规则继续生效。
-- 提示提供仅此一次、本会话允许、全局始终允许（`Always allow globally`）或拒绝。全局持久授权以 TOML 格式写入 `~/.pp/agent/permission.toml` 并对所有项目生效（MCP 工具规则同时绑定服务传输身份指纹，替换同别名服务后需重新授权）；多 `pp` 进程并发写入时通过 `permission.lock` 排他锁重读合并与原子替换避免覆盖，读取侧按文件指纹（含 `ctime`）按需重载使跨进程新增或原地覆写规则在下一次工具调用生效。`/permissions rules` 列出规则，`/permissions revoke <id>` 撤销（TUI 内在独立后台线程执行，不阻塞界面）。文件损坏或保存失败时，持久授权无法放行。行模式和 `-p` 可以复用已保存的授权，需要新确认时返回工具错误。
+- 提示提供仅此一次、本会话允许、全局始终允许（`Always allow globally`）或拒绝。全局持久授权以简洁的分节 TOML 格式写入 `~/.pp/agent/permission.toml`（顶层 `tools = [...]` 保存工具名，可选 `[[sandbox]]` 保存 Bash 沙盒扩权规则）并对所有项目生效；多 `pp` 进程并发写入时通过 `permission.lock` 排他锁重读合并与原子替换避免覆盖，读取侧按文件指纹（含 `ctime`）按需重载使跨进程新增或原地覆写规则在下一次工具调用生效。`/permissions rules` 按编号列出规则，`/permissions revoke <index|tool>` 按编号或工具名撤销（TUI 内在独立后台线程执行，不阻塞界面）。文件损坏或保存失败时，持久授权无法放行。行模式和 `-p` 可以复用已保存的授权，需要新确认时返回工具错误。
 - `Always-ask` 和 `Accept-edits` 依赖可用的工作区沙盒，平台探测失败时阻止依赖沙盒的操作。启动参数 `--sandbox` 或命令 `/sandbox` 可临时覆盖本次会话的沙盒模式；可通过 `tools.permission` 为单个工具配置 `allow`／`prompt`／`deny` 覆盖策略（在非 `yolo` 模式下生效）。
 
 内置 `write` 和 `edit` 的保存范围为启动目录和系统临时目录，单次提交采用原子替换并拒绝符号链接。MCP stdio 与 LSP 服务进程在本地沙盒外运行。会话与统计可能包含源码和对话。

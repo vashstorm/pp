@@ -329,12 +329,8 @@ fn permission_switch_takes_effect_on_next_tool_call_and_tolerates_sandbox_permis
         Some(Path::new("/tmp")),
         ProbeResult::Available,
     )));
-    tools.permission = pp_permission::Gate::for_process(
-        &agent_dir,
-        dir.path(),
-        Some(PermissionMode::AlwaysAsk),
-        false,
-    );
+    tools.permission =
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AlwaysAsk), false);
     tools.permission.set_config(ToolsSettings::default());
 
     // 1. Always-ask 下写操作拒绝（无交互 handler）。
@@ -378,12 +374,8 @@ fn approval_wait_freezes_sandbox_override_until_next_call() {
     ));
     sandbox.set_mode_override(Some(SandboxMode::ReadOnly));
     tools.set_sandbox(Arc::clone(&sandbox));
-    tools.permission = pp_permission::Gate::for_process(
-        &agent_dir,
-        dir.path(),
-        Some(PermissionMode::AlwaysAsk),
-        true,
-    );
+    tools.permission =
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AlwaysAsk), true);
     tools.permission.set_config(ToolsSettings::default());
 
     let gate = tools.permission.clone();
@@ -439,7 +431,7 @@ fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_un
     sandbox.set_mode_override(Some(SandboxMode::ReadOnly));
     yolo_sandboxed.set_sandbox(sandbox);
     yolo_sandboxed.permission =
-        pp_permission::Gate::for_process(&agent_dir, dir.path(), Some(PermissionMode::Yolo), true);
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::Yolo), true);
     yolo_sandboxed
         .permission
         .set_config(ToolsSettings::default());
@@ -509,12 +501,8 @@ fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_un
             sbx.set_mode_override(Some(ov));
         }
         tools.set_sandbox(sbx);
-        tools.permission = pp_permission::Gate::for_process(
-            &agent_dir,
-            dir.path(),
-            startup,
-            override_mode.is_some(),
-        );
+        tools.permission =
+            pp_permission::Gate::for_process(&agent_dir, startup, override_mode.is_some());
         tools.permission.set_config(ToolsSettings {
             sandbox: settings,
             ..Default::default()
@@ -541,7 +529,7 @@ fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_un
 }
 
 #[test]
-fn mcp_persistent_grant_reprompts_after_reload_changes_server_identity() {
+fn mcp_persistent_grant_persists_across_restarts_and_revokes() {
     use pp_config::config::{PermissionMode, ToolsSettings};
     use pp_permission::PermissionDecision;
 
@@ -580,12 +568,8 @@ fn mcp_persistent_grant_reprompts_after_reload_changes_server_identity() {
     mcp.connect_enabled(&token, pp_mcp::Access::Full).unwrap();
 
     let mut tools = Tools::with_mcp(root.clone(), EditMode::Replace, Arc::clone(&mcp)).unwrap();
-    tools.permission = pp_permission::Gate::for_process(
-        &agent_dir,
-        &root,
-        Some(PermissionMode::AcceptEdits),
-        false,
-    );
+    tools.permission =
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AcceptEdits), false);
     tools.permission.set_config(ToolsSettings::default());
     tools.permission.set_handler(Box::new(|request, _| {
         assert!(request.persistent_grant);
@@ -595,30 +579,30 @@ fn mcp_persistent_grant_reprompts_after_reload_changes_server_identity() {
     let first = execute(&tools, "mcp__svc__echo", json!({"text": "hi"}));
     assert_eq!(first["ok"], true, "{first}");
 
-    // 同一服务身份在无交互 handler 下直接复用全局持久授权。
+    // 同一工具名在无交互 handler 下直接复用全局持久授权（即使服务重载也不依赖服务指纹）。
     let mut reused = Tools::with_mcp(root.clone(), EditMode::Replace, Arc::clone(&mcp)).unwrap();
-    reused.permission = pp_permission::Gate::for_process(
-        &agent_dir,
-        &root,
-        Some(PermissionMode::AcceptEdits),
-        false,
-    );
+    reused.permission =
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AcceptEdits), false);
     reused.permission.set_config(ToolsSettings::default());
     let second = execute(&reused, "mcp__svc__echo", json!({"text": "again"}));
     assert_eq!(second["ok"], true, "{second}");
 
-    // 同一别名切换为另一服务定义并 reload：旧持久授权不得放行新服务。
     write_mcp("server-two");
     mcp.manage(&pp_mcp::Action::Reload, &token, pp_mcp::Access::Full)
         .unwrap();
-    let after_reload = execute(&reused, "mcp__svc__echo", json!({"text": "blocked"}));
-    assert_eq!(after_reload["ok"], false, "{after_reload}");
+    let after_reload = execute(&reused, "mcp__svc__echo", json!({"text": "still-allowed"}));
+    assert_eq!(after_reload["ok"], true, "{after_reload}");
+
+    // 按工具名撤销后恢复拦截。
+    reused.permission.revoke_rule("mcp__svc__echo").unwrap();
+    let after_revoke = execute(&reused, "mcp__svc__echo", json!({"text": "blocked"}));
+    assert_eq!(after_revoke["ok"], false, "{after_revoke}");
     assert!(
-        after_reload["error"]
+        after_revoke["error"]
             .as_str()
             .unwrap()
             .contains("no interactive UI"),
-        "{after_reload}"
+        "{after_revoke}"
     );
     mcp.shutdown().unwrap();
 }

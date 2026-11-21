@@ -162,7 +162,7 @@ pp /stats --host 127.0.0.1 --port 0 --no-open
 | `/test-write` | 仅 dev/test：12.5 mock token/s 的打字机回复；24/28 行正文以 240 mock token/s 写入 `/tmp/pp-test-write/demo.txt`，写入卡片可见尾部滚动；随后越界失败，最后用 bash 工具删除 |
 | `/test-ui` | 仅 dev/test：以 12.5 mock token/s 输出原生 Responses SSE 思考与 Markdown／代码分片 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
-| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <id>]` | 查看或切换本次进程的权限预设，或管理 `~/.pp/agent/permission.toml` 中按项目生效的授权 |
+| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <index\|tool>]` | 查看或切换本次进程的权限预设，或管理 `~/.pp/agent/permission.toml` 中保存的全局授权 |
 | `/sandbox [auto\|workspace-write\|read-only\|off]` | 查看当前沙盒状态，或在本次会话内临时覆盖沙盒模式 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
 | `/context` | 在独立 TUI 面板中以 25×16 占比网格与 10 项分类（`System Prompt`、`Instruction Files`、`Skills`、`Built-in Tools`、`Custom Tools`、`User / Developer Messages`、`Assistant Messages`、`Assistant Thinking`、`Tool Calls`、`Tool Output`）加 `Auto-Compact Buffer`／`Free Space` 展示上下文占用，支持原地展开子项查看详情（别名 `/ctx`）；空会话及主任务运行中均可打开，按 `r` 刷新 |

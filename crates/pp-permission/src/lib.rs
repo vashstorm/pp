@@ -5,7 +5,7 @@
 //! Plan 中未标为只读的 MCP 工具经过本模块。
 
 use pp_config::config::{PermissionMode, PermissionPolicy, SandboxMode};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 mod rules;
 pub use rules::SandboxGrant;
@@ -62,8 +62,6 @@ pub type PermissionHandler = Box<PermissionCallback>;
 pub struct ToolAccess {
     pub tier: Tier,
     pub sandboxed: bool,
-    /// MCP 工具所属服务的身份指纹；服务定义变化后不复用旧授权。
-    pub server_identity: Option<String>,
 }
 
 #[derive(Default)]
@@ -93,13 +91,12 @@ pub struct Gate {
     default_mode: PermissionMode,
     is_process: bool,
     sandbox_override: bool,
-    /// 常规工具的会话级授权（MCP 工具含服务身份指纹）。
-    grants: Arc<Mutex<HashSet<rules::ToolGrant>>>,
+    /// 常规工具的会话级授权。
+    grants: Arc<Mutex<HashSet<String>>>,
     handler: Option<Arc<PermissionCallback>>,
     modes: Arc<Mutex<ModeState>>,
     sandbox_grants: Arc<Mutex<HashSet<SandboxGrant>>>,
     store: Option<rules::Store>,
-    workspace: Option<PathBuf>,
 }
 
 impl Default for Gate {
@@ -123,13 +120,11 @@ impl Gate {
             })),
             sandbox_grants: Default::default(),
             store: None,
-            workspace: None,
         }
     }
 
     pub fn for_process(
         agent_dir: &Path,
-        workspace: &Path,
         startup: Option<PermissionMode>,
         sandbox_override: bool,
     ) -> Self {
@@ -146,17 +141,8 @@ impl Gate {
                 manage_sandbox: startup.is_some() || !sandbox_override,
             })),
             store: Some(rules::Store::new(agent_dir)),
-            workspace: Some(
-                workspace
-                    .canonicalize()
-                    .unwrap_or_else(|_| workspace.to_owned()),
-            ),
             ..Self::new()
         }
-    }
-
-    pub fn workspace<'a>(&'a self, cwd: &'a Path) -> &'a Path {
-        self.workspace.as_deref().unwrap_or(cwd)
     }
 
     pub fn protects_path(&self, path: &Path) -> bool {
@@ -211,16 +197,17 @@ impl Gate {
         )
     }
 
-    pub fn revoke_rule(&self, id: &str) -> Result<()> {
+    pub fn revoke_rule(&self, target: &str) -> Result<()> {
         let Some(store) = &self.store else {
             bail!("permission rule store unavailable");
         };
-        store.revoke(id)
+        store.revoke(target)
     }
 
     pub fn authorize_sandbox(
         &self,
         grant: SandboxGrant,
+        cwd: Option<&Path>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
         pp_core::cancellation::check(cancellation)?;
@@ -233,7 +220,7 @@ impl Gate {
             return Ok(());
         }
         let load_error = match self.store.as_ref().map(rules::Store::load).transpose() {
-            Ok(Some(rules)) if rules.iter().any(|rule| rule.matches_sandbox(&grant)) => {
+            Ok(Some(doc)) if doc.sandbox.iter().any(|rule| rule == &grant) => {
                 return Ok(());
             }
             Ok(_) => None,
@@ -251,7 +238,7 @@ impl Gate {
             }
             bail!("Bash requires sandbox permission and no interactive UI is available.");
         };
-        let mut reason = grant.summary();
+        let mut reason = grant.summary(cwd);
         if let Some(message) = &load_error {
             reason.push_str(&format!("\nSaved permissions unavailable: {message}"));
         }
@@ -353,7 +340,6 @@ impl Gate {
             ToolAccess {
                 tier,
                 sandboxed: false,
-                server_identity: None,
             },
             hook_ask,
             cancellation,
@@ -386,7 +372,6 @@ impl Gate {
                     persistent_grant: false,
                 },
                 None,
-                None,
                 cancellation,
             );
         }
@@ -412,7 +397,6 @@ impl Gate {
                     persistent_grant: false,
                 },
                 None,
-                None,
                 cancellation,
             );
         }
@@ -425,7 +409,6 @@ impl Gate {
                     session_grant: false,
                     persistent_grant: false,
                 },
-                None,
                 None,
                 cancellation,
             );
@@ -441,27 +424,16 @@ impl Gate {
         if !needs_prompt {
             return Ok(());
         }
-        let server_identity = access.server_identity;
-        let is_mcp = name.starts_with("mcp__");
-        let grant_key = rules::ToolGrant {
-            tool: name.to_owned(),
-            server: server_identity.clone(),
-        };
-        if (!is_mcp || server_identity.is_some())
-            && self
-                .grants
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains(&grant_key)
+        if self
+            .grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(name)
         {
             return Ok(());
         }
         let load_error = match self.store.as_ref().map(rules::Store::load).transpose() {
-            Ok(Some(rules))
-                if rules
-                    .iter()
-                    .any(|rule| rule.matches_tool(name, server_identity.as_deref())) =>
-            {
+            Ok(Some(doc)) if doc.tools.iter().any(|tool| tool == name) => {
                 return Ok(());
             }
             Ok(_) => None,
@@ -482,17 +454,15 @@ impl Gate {
         if let Some(message) = &load_error {
             reason.push_str(&format!("\nSaved permissions unavailable: {message}"));
         }
-        let has_identity = !is_mcp || server_identity.is_some();
-        let persistent_grant = self.store.is_some() && load_error.is_none() && has_identity;
+        let persistent_grant = self.store.is_some() && load_error.is_none();
         self.prompt(
             PermissionRequest {
                 tool: name.to_owned(),
                 agent: None,
                 reason,
-                session_grant: has_identity,
+                session_grant: true,
                 persistent_grant,
             },
-            server_identity,
             load_error.as_deref(),
             cancellation,
         )
@@ -501,7 +471,6 @@ impl Gate {
     fn prompt(
         &self,
         request: PermissionRequest,
-        server_identity: Option<String>,
         load_error: Option<&str>,
         cancellation: &CancellationToken,
     ) -> Result<()> {
@@ -529,10 +498,7 @@ impl Gate {
                     self.grants
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .insert(rules::ToolGrant {
-                            tool: name,
-                            server: server_identity,
-                        });
+                        .insert(name);
                 }
                 Ok(())
             }
@@ -540,7 +506,7 @@ impl Gate {
                 self.store
                     .as_ref()
                     .expect("持久授权选项要求有规则存储")
-                    .save_tool(&name, server_identity.as_deref())?;
+                    .save_tool(&name)?;
                 pp_core::cancellation::check(cancellation)?;
                 Ok(())
             }

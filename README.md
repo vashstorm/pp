@@ -168,7 +168,7 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 | `/test-write` | Dev/test only: typewriter reply at 12.5 mock tokens/s; the two writes of a 24/28-line `/tmp/pp-test-write/demo.txt` stream at 240 mock tokens/s so the write preview scrolls its tail, then an escape failure and bash cleanup |
 | `/test-ui` | Dev/test only: native Responses SSE reasoning and Markdown/code chunks at 12.5 mock tokens/s |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | Manage MCP servers without restarting |
-| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <id>]` | Inspect or switch the process permission preset, or manage project-scoped rules saved in `~/.pp/agent/permission.toml` |
+| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <index\|tool>]` | Inspect or switch the process permission preset, or manage global rules saved in `~/.pp/agent/permission.toml` |
 | `/sandbox [auto\|workspace-write\|read-only\|off]` | Inspect the active sandbox, or override its mode for this session |
 | `/compact`, `/new` | Compact context or start a new session |
 | `/context` | Inspect session context grid and 10-category breakdown (`System Prompt`, `Instruction Files`, `Skills`, `Built-in Tools`, `Custom Tools`, `User / Developer Messages`, `Assistant Messages`, `Assistant Thinking`, `Tool Calls`, `Tool Output`) with in-place item expansion, `Auto-Compact Buffer`, and `Free Space` (TUI, alias `/ctx`). Available even before the first message or during a running task; `r` refreshes |

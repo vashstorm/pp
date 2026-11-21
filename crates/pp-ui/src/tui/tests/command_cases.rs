@@ -658,7 +658,7 @@ fn permission_switches_independently_across_states_queues_and_panels() {
     use pp_config::config::PermissionMode;
 
     let dir = tempfile::tempdir().unwrap();
-    let gate = pp_permission::Gate::for_process(dir.path(), dir.path(), None, false);
+    let gate = pp_permission::Gate::for_process(dir.path(), None, false);
     let (mut app, requests, _events) = plan_app();
     app.permission = gate.clone();
     app.permission_mode = Some(gate.snapshot());
@@ -797,9 +797,7 @@ fn unavailable_model_binds_configured_permission_mode_before_cycling() {
         cwd: root.clone(),
         skills: pp_config::skills::Skills::default().shared(),
         prompt: pp_runtime::system_prompt::Snapshot::bundled(),
-        permission: std::sync::Arc::new(pp_permission::Gate::for_process(
-            &root, &root, None, false,
-        )),
+        permission: std::sync::Arc::new(pp_permission::Gate::for_process(&root, None, false)),
         sandbox_override: None,
         sandbox: pp_sandbox::SharedSandbox::default(),
         mcp: std::sync::Arc::new(pp_mcp::McpManager::empty()),
@@ -824,18 +822,11 @@ fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() 
 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let rule_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let rules_path = root.join("permission.toml");
-    std::fs::write(
-        &rules_path,
-        format!(
-            "version = 1\n\n[[rules]]\nid = \"{rule_id}\"\n\n[rules.grant]\ntool = \"write\"\n"
-        ),
-    )
-    .unwrap();
+    std::fs::write(&rules_path, "tools = [\"write\"]\n").unwrap();
     std::fs::set_permissions(&rules_path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-    let gate = pp_permission::Gate::for_process(&root, &root, None, false);
+    let gate = pp_permission::Gate::for_process(&root, None, false);
     let (mut app, requests, _events) = plan_app();
     app.permission = gate.clone();
     app.permission_mode = Some(gate.snapshot());
@@ -899,7 +890,7 @@ fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() 
         0
     );
 
-    type_text(&mut app, &format!("revoke {rule_id}"));
+    type_text(&mut app, "revoke write");
     app.handle(key(KeyCode::Enter), &mut false);
     assert!(draw(&mut app, 100, 30).contains("Revoking saved permission rule..."));
     // 持锁期间事件循环未被阻塞：立即按 F6 仍可实时切换内存权限档位。

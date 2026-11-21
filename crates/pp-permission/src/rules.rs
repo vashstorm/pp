@@ -1,6 +1,6 @@
 //! 用户级的持久全局授权与跨进程文件同步。
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -19,10 +19,6 @@ const PERMISSION_LOCK: &str = "permission.lock";
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SandboxGrant {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<PathBuf>,
     pub command: String,
     #[serde(default)]
     pub writable: Vec<PathBuf>,
@@ -31,39 +27,9 @@ pub struct SandboxGrant {
 }
 
 impl SandboxGrant {
-    pub fn into_global(mut self) -> Self {
-        self.workspace = None;
-        self.cwd = None;
-        self
-    }
-
-    pub fn is_global(&self) -> bool {
-        self.workspace.is_none() && self.cwd.is_none()
-    }
-
-    pub fn matches(&self, request: &Self) -> bool {
-        self.same_scope(request)
-            && (self.is_global()
-                || (self.workspace == request.workspace && self.cwd == request.cwd))
-    }
-
-    fn same_scope(&self, other: &Self) -> bool {
-        self.command == other.command
-            && self.writable == other.writable
-            && self.network == other.network
-    }
-
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.workspace.is_some() == self.cwd.is_some(),
-            "invalid permission rule scope"
-        );
-        let paths = [self.workspace.as_deref(), self.cwd.as_deref()]
-            .into_iter()
-            .flatten()
-            .chain(self.writable.iter().map(PathBuf::as_path));
-        ensure!(
-            paths.into_iter().all(|path| {
+            self.writable.iter().all(|path| {
                 path.is_absolute()
                     && !path
                         .components()
@@ -83,7 +49,7 @@ impl SandboxGrant {
         Ok(())
     }
 
-    pub fn summary(&self) -> String {
+    pub fn summary(&self, cwd: Option<&Path>) -> String {
         let writes = self
             .writable
             .iter()
@@ -92,7 +58,7 @@ impl SandboxGrant {
             .join(", ");
         let command = pp_core::logging::diagnostic_text(&self.command);
         let mut lines = Vec::new();
-        if let Some(cwd) = &self.cwd {
+        if let Some(cwd) = cwd {
             lines.push(format!("Directory: {}", cwd.display()));
         }
         if !writes.is_empty() {
@@ -106,109 +72,44 @@ impl SandboxGrant {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ToolGrant {
-    pub(crate) tool: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) server: Option<String>,
+pub(crate) struct Document {
+    #[serde(default)]
+    pub(crate) tools: Vec<String>,
+    #[serde(default)]
+    pub(crate) sandbox: Vec<SandboxGrant>,
 }
 
-impl ToolGrant {
+impl Document {
+    fn is_empty(&self) -> bool {
+        self.tools.is_empty() && self.sandbox.is_empty()
+    }
+
     fn validate(&self) -> Result<()> {
-        ensure!(
-            !self.tool.trim().is_empty() && self.tool == self.tool.trim(),
-            "empty permission tool"
-        );
-        if let Some(server) = &self.server {
+        let mut seen_tools = HashSet::with_capacity(self.tools.len());
+        for tool in &self.tools {
+            validate_tool_name(tool)?;
+            ensure!(seen_tools.insert(tool), "duplicate permission tool");
+        }
+        let mut seen_sandbox = HashSet::with_capacity(self.sandbox.len());
+        for grant in &self.sandbox {
+            grant.validate()?;
             ensure!(
-                !server.is_empty()
-                    && server.len() <= 128
-                    && server
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric()
-                            || matches!(byte, b'-' | b'_' | b':')),
-                "invalid permission server identity"
+                seen_sandbox.insert(grant),
+                "duplicate permission sandbox rule"
             );
         }
         Ok(())
     }
-
-    fn summary(&self) -> String {
-        let tool = pp_core::text::display_text(&self.tool);
-        match &self.server {
-            Some(server) => {
-                let short = &server[..server.len().min(12)];
-                format!("Tool: {tool} (server {short})")
-            }
-            None => format!("Tool: {tool}"),
-        }
-    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(untagged)]
-pub(crate) enum Grant {
-    Sandbox(SandboxGrant),
-    Tool(ToolGrant),
-}
-
-impl Grant {
-    fn validate(&self) -> Result<()> {
-        match self {
-            Self::Sandbox(grant) => grant.validate(),
-            Self::Tool(grant) => grant.validate(),
-        }
-    }
-
-    fn scope_label(&self) -> String {
-        match self {
-            Self::Sandbox(grant) => match &grant.workspace {
-                Some(workspace) => {
-                    pp_core::text::display_text(&workspace.to_string_lossy()).into_owned()
-                }
-                None => "global".to_owned(),
-            },
-            Self::Tool(_) => "global".to_owned(),
-        }
-    }
-
-    fn summary(&self) -> String {
-        match self {
-            Self::Sandbox(grant) => grant.summary(),
-            Self::Tool(grant) => grant.summary(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Rule {
-    pub(crate) id: String,
-    pub(crate) grant: Grant,
-}
-
-impl Rule {
-    pub(crate) fn matches_tool(&self, name: &str, server: Option<&str>) -> bool {
-        matches!(&self.grant, Grant::Tool(grant) if grant.tool == name
-        && if name.starts_with("mcp__") {
-            server.is_some() && grant.server.as_deref() == server
-        } else {
-            grant.server.is_none() && server.is_none()
-        })
-    }
-
-    pub(crate) fn matches_sandbox(&self, request: &SandboxGrant) -> bool {
-        matches!(&self.grant, Grant::Sandbox(grant) if grant.matches(request))
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Document {
-    version: u32,
-    #[serde(default)]
-    rules: Vec<Rule>,
+fn validate_tool_name(tool: &str) -> Result<()> {
+    ensure!(
+        !tool.trim().is_empty() && tool == tool.trim(),
+        "empty permission tool"
+    );
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -238,7 +139,7 @@ impl Fingerprint {
 
 struct CachedRules {
     fingerprint: Fingerprint,
-    rules: Arc<[Rule]>,
+    document: Arc<Document>,
 }
 
 #[derive(Clone)]
@@ -274,12 +175,12 @@ impl Store {
     }
 
     /// 按文件指纹（dev/ino/size/mtime/ctime）按需重载持久规则；文件未变直接复用内存快照。
-    pub(crate) fn load(&self) -> Result<Arc<[Rule]>> {
+    pub(crate) fn load(&self) -> Result<Arc<Document>> {
         let meta = match fs::symlink_metadata(&self.path) {
             Ok(meta) => meta,
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                return Ok(Arc::from([]));
+                return Ok(Arc::default());
             }
             Err(error) => {
                 return Err(anyhow::Error::from(error).context(format!(
@@ -296,22 +197,22 @@ impl Store {
             if let Some(cached) = cache.as_ref()
                 && cached.fingerprint == fingerprint
             {
-                return Ok(Arc::clone(&cached.rules));
+                return Ok(Arc::clone(&cached.document));
             }
         }
-        let (rules, actual_fp) = self
+        let (document, actual_fp) = self
             .read_uncached()
             .with_context(|| format!("loading permission rules from {}", self.path.display()))?;
-        let rules: Arc<[Rule]> = Arc::from(rules);
+        let document = Arc::new(document);
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         *cache = actual_fp.map(|fingerprint| CachedRules {
             fingerprint,
-            rules: Arc::clone(&rules),
+            document: Arc::clone(&document),
         });
-        Ok(rules)
+        Ok(document)
     }
 
-    fn read_uncached(&self) -> Result<(Vec<Rule>, Option<Fingerprint>)> {
+    fn read_uncached(&self) -> Result<(Document, Option<Fingerprint>)> {
         let file = match private_file(&self.path, false) {
             Ok(file) => file,
             Err(error)
@@ -319,7 +220,7 @@ impl Store {
                     .downcast_ref::<std::io::Error>()
                     .is_some_and(|error| error.kind() == ErrorKind::NotFound) =>
             {
-                return Ok((Vec::new(), None));
+                return Ok((Document::default(), None));
             }
             Err(error) => return Err(error),
         };
@@ -338,100 +239,86 @@ impl Store {
                 "invalid TOML permission rules config: check syntax, field types, required fields, and unknown fields"
             )
         })?;
-        ensure!(document.version == 1, "unsupported permission file version");
-        let mut ids = HashSet::new();
-        for rule in &document.rules {
-            ensure!(
-                rule.id.len() == 32
-                    && rule.id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    && ids.insert(&rule.id),
-                "invalid or duplicate permission rule id"
-            );
-            rule.grant.validate()?;
-        }
-        Ok((document.rules, Some(fingerprint)))
+        document.validate()?;
+        Ok((document, Some(fingerprint)))
     }
 
     pub(crate) fn list(&self) -> Result<String> {
-        let rules = self.load()?;
-        if rules.is_empty() {
+        let doc = self.load()?;
+        if doc.is_empty() {
             return Ok("No saved permission rules.".into());
         }
-        Ok(rules
-            .iter()
-            .map(|rule| {
-                format!(
-                    "{} · {}\n{}",
-                    rule.id,
-                    rule.grant.scope_label(),
-                    rule.grant.summary()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n"))
+        let mut entries = Vec::with_capacity(doc.tools.len() + doc.sandbox.len());
+        for (index, tool) in doc.tools.iter().enumerate() {
+            let number = index + 1;
+            let tool = pp_core::text::display_text(tool);
+            entries.push(format!("{number}. Tool: {tool}"));
+        }
+        for (offset, grant) in doc.sandbox.iter().enumerate() {
+            let number = doc.tools.len() + offset + 1;
+            let summary = grant.summary(None);
+            let mut lines = summary.lines();
+            let first = lines.next().unwrap_or("");
+            let mut item = format!("{number}. {first}");
+            for line in lines {
+                item.push_str("\n   ");
+                item.push_str(line);
+            }
+            entries.push(item);
+        }
+        Ok(entries.join("\n"))
     }
 
     pub(crate) fn save(&self, grant: SandboxGrant) -> Result<()> {
-        let grant = grant.into_global();
         grant.validate()?;
-        self.update(|rules| {
-            let has_exact = rules
-                .iter()
-                .any(|rule| matches!(&rule.grant, Grant::Sandbox(existing) if existing == &grant));
-            let previous = rules.len();
-            rules.retain(|rule| {
-                !matches!(
-                    &rule.grant,
-                    Grant::Sandbox(existing) if existing != &grant && existing.same_scope(&grant)
-                )
-            });
-            let subsumed = rules.len() != previous;
-            if has_exact {
-                return Ok(subsumed);
-            }
-            rules.push(Rule {
-                id: generate_rule_id()?,
-                grant: Grant::Sandbox(grant),
-            });
-            Ok(true)
-        })
-    }
-
-    pub(crate) fn save_tool(&self, tool: &str, server: Option<&str>) -> Result<()> {
-        ensure!(
-            !tool.starts_with("mcp__") || server.is_some(),
-            "MCP persistent permission requires server identity"
-        );
-        let grant = ToolGrant {
-            tool: tool.to_owned(),
-            server: server.map(str::to_owned),
-        };
-        grant.validate()?;
-        self.update(|rules| {
-            if rules
-                .iter()
-                .any(|rule| matches!(&rule.grant, Grant::Tool(existing) if existing == &grant))
-            {
+        self.update(|doc| {
+            if doc.sandbox.iter().any(|existing| existing == &grant) {
                 return Ok(false);
             }
-            rules.push(Rule {
-                id: generate_rule_id()?,
-                grant: Grant::Tool(grant),
-            });
+            doc.sandbox.push(grant);
             Ok(true)
         })
     }
 
-    pub(crate) fn revoke(&self, id: &str) -> Result<()> {
-        self.update(|rules| {
-            let previous = rules.len();
-            rules.retain(|rule| rule.id != id);
-            ensure!(previous != rules.len(), "unknown permission rule id");
+    pub(crate) fn save_tool(&self, tool: &str) -> Result<()> {
+        validate_tool_name(tool)?;
+        self.update(|doc| {
+            if doc.tools.iter().any(|existing| existing == tool) {
+                return Ok(false);
+            }
+            doc.tools.push(tool.to_owned());
             Ok(true)
         })
     }
 
-    fn update(&self, update: impl FnOnce(&mut Vec<Rule>) -> Result<bool>) -> Result<()> {
+    pub(crate) fn revoke(&self, target: &str) -> Result<()> {
+        let target = target.trim();
+        ensure!(!target.is_empty(), "unknown permission rule: {target}");
+        self.update(|doc| {
+            if let Some(pos) = doc.tools.iter().position(|tool| tool == target) {
+                doc.tools.remove(pos);
+                return Ok(true);
+            }
+            if target.bytes().all(|byte| byte.is_ascii_digit())
+                && let Ok(number) = target.parse::<usize>()
+                && number >= 1
+            {
+                let index = number - 1;
+                if index < doc.tools.len() {
+                    doc.tools.remove(index);
+                    return Ok(true);
+                }
+                let sandbox_index = index - doc.tools.len();
+                if sandbox_index < doc.sandbox.len() {
+                    doc.sandbox.remove(sandbox_index);
+                    return Ok(true);
+                }
+            }
+            bail!("unknown permission rule: {target}");
+        })
+    }
+
+    fn update(&self, update: impl FnOnce(&mut Document) -> Result<bool>) -> Result<()> {
         let dir = self
             .path
             .parent()
@@ -445,20 +332,20 @@ impl Store {
                 result => break result.context("locking permission rules")?,
             }
         }
-        let (mut rules, disk_fp) = self
+        let (mut document, disk_fp) = self
             .read_uncached()
             .with_context(|| format!("loading permission rules from {}", self.path.display()))?;
-        let dirty = update(&mut rules)?;
+        let dirty = update(&mut document)?;
         if !dirty {
-            let rules: Arc<[Rule]> = Arc::from(rules);
+            let document = Arc::new(document);
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            *cache = disk_fp.map(|fingerprint| CachedRules { fingerprint, rules });
+            *cache = disk_fp.map(|fingerprint| CachedRules {
+                fingerprint,
+                document,
+            });
             return Ok(());
         }
-        let text = encode_document(&Document {
-            version: 1,
-            rules: rules.clone(),
-        })?;
+        let text = encode_document(&document)?;
         ensure!(
             text.len() as u64 <= MAX_BYTES,
             "permission file is too large"
@@ -477,76 +364,49 @@ impl Store {
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         *cache = new_fp.map(|fingerprint| CachedRules {
             fingerprint,
-            rules: Arc::from(rules),
+            document: Arc::new(document),
         });
         Ok(())
     }
 }
 
-fn generate_rule_id() -> Result<String> {
-    let mut random = [0; 16];
-    getrandom::fill(&mut random).map_err(|_| anyhow!("cannot generate permission rule id"))?;
-    Ok(format!("{:032x}", u128::from_be_bytes(random)))
-}
-
 fn encode_document(document: &Document) -> Result<String> {
     let mut out = String::new();
-    writeln!(out, "version = {}", document.version)?;
-    if document.rules.is_empty() {
-        writeln!(out, "rules = []")?;
+    if document.is_empty() {
+        writeln!(out, "tools = []")?;
     } else {
-        for rule in &document.rules {
+        if !document.tools.is_empty() {
+            writeln!(out, "tools = [")?;
+            for tool in &document.tools {
+                out.push_str("    ");
+                write_toml_string(&mut out, tool)?;
+                writeln!(out, ",")?;
+            }
+            writeln!(out, "]")?;
+        }
+        for grant in &document.sandbox {
+            if !out.is_empty() {
+                writeln!(out)?;
+            }
+            writeln!(out, "[[sandbox]]")?;
+            write!(out, "command = ")?;
+            write_toml_string(&mut out, &grant.command)?;
             writeln!(out)?;
-            writeln!(out, "[[rules]]")?;
-            write!(out, "id = ")?;
-            write_toml_string(&mut out, &rule.id)?;
-            writeln!(out)?;
-            writeln!(out)?;
-            writeln!(out, "[rules.grant]")?;
-            match &rule.grant {
-                Grant::Sandbox(grant) => {
-                    if let Some(workspace) = &grant.workspace {
-                        let workspace = workspace
-                            .to_str()
-                            .context("permission rule path must be valid UTF-8")?;
-                        write!(out, "workspace = ")?;
-                        write_toml_string(&mut out, workspace)?;
-                        writeln!(out)?;
+            if !grant.writable.is_empty() {
+                write!(out, "writable = [")?;
+                for (index, path) in grant.writable.iter().enumerate() {
+                    if index > 0 {
+                        out.push_str(", ");
                     }
-                    if let Some(cwd) = &grant.cwd {
-                        let cwd = cwd
-                            .to_str()
-                            .context("permission rule path must be valid UTF-8")?;
-                        write!(out, "cwd = ")?;
-                        write_toml_string(&mut out, cwd)?;
-                        writeln!(out)?;
-                    }
-                    write!(out, "command = ")?;
-                    write_toml_string(&mut out, &grant.command)?;
-                    writeln!(out)?;
-                    write!(out, "writable = [")?;
-                    for (index, path) in grant.writable.iter().enumerate() {
-                        if index > 0 {
-                            out.push_str(", ");
-                        }
-                        let path = path
-                            .to_str()
-                            .context("permission rule path must be valid UTF-8")?;
-                        write_toml_string(&mut out, path)?;
-                    }
-                    writeln!(out, "]")?;
-                    writeln!(out, "network = {}", grant.network)?;
+                    let path = path
+                        .to_str()
+                        .context("permission rule path must be valid UTF-8")?;
+                    write_toml_string(&mut out, path)?;
                 }
-                Grant::Tool(grant) => {
-                    write!(out, "tool = ")?;
-                    write_toml_string(&mut out, &grant.tool)?;
-                    writeln!(out)?;
-                    if let Some(server) = &grant.server {
-                        write!(out, "server = ")?;
-                        write_toml_string(&mut out, server)?;
-                        writeln!(out)?;
-                    }
-                }
+                writeln!(out, "]")?;
+            }
+            if grant.network {
+                writeln!(out, "network = true")?;
             }
         }
     }

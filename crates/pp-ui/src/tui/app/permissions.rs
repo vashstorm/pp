@@ -224,11 +224,11 @@ impl App {
                 );
                 return;
             }
-            PermissionCommand::Revoke(id) => {
+            PermissionCommand::Revoke(target) => {
                 self.dispatch_permission_rule_op(
                     permissions::RuleRequest::Revoke {
                         gate: self.permission.clone(),
-                        id,
+                        target,
                     },
                     "Revoking saved permission rule...",
                 );

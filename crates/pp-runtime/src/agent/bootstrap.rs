@@ -269,8 +269,8 @@ impl Agent {
         self.tools.permission.list_rules()
     }
 
-    pub fn revoke_permission_rule(&self, id: &str) -> Result<()> {
-        self.tools.permission.revoke_rule(id)
+    pub fn revoke_permission_rule(&self, target: &str) -> Result<()> {
+        self.tools.permission.revoke_rule(target)
     }
 
     pub fn sandbox_status(&self) -> pp_sandbox::SandboxStatus {

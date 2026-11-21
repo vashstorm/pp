@@ -476,7 +476,6 @@ fn run(args: Args) -> Result<()> {
         let bootstrap = global_dir.as_ref().ok().map(|dir| {
             let permission = pp_permission::Gate::for_process(
                 dir,
-                &cwd,
                 args.permission_mode,
                 sandbox_override.is_some(),
             );

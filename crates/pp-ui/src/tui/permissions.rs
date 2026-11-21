@@ -23,7 +23,7 @@ pub(super) enum RuleRequest {
     List(pp_permission::Gate),
     Revoke {
         gate: pp_permission::Gate,
-        id: String,
+        target: String,
     },
 }
 
@@ -44,8 +44,8 @@ impl Worker {
                 while let Ok(request) = receiver.recv() {
                     let reply = match request {
                         RuleRequest::List(gate) => gate.list_rules(),
-                        RuleRequest::Revoke { gate, id } => gate
-                            .revoke_rule(&id)
+                        RuleRequest::Revoke { gate, target } => gate
+                            .revoke_rule(&target)
                             .map(|()| "Saved permission revoked.".into()),
                     };
                     if sender.send(reply).is_err() {
@@ -98,10 +98,12 @@ impl Overlay {
             if rest.is_empty() || rest.starts_with(char::is_whitespace) {
                 rest.trim()
             } else {
-                bail!("usage: /permissions [always-ask|accept-edits|yolo|rules|revoke <id>]");
+                bail!(
+                    "usage: /permissions [always-ask|accept-edits|yolo|rules|revoke <index|tool>]"
+                );
             }
         } else if trimmed.starts_with('/') {
-            bail!("usage: /permissions [always-ask|accept-edits|yolo|rules|revoke <id>]");
+            bail!("usage: /permissions [always-ask|accept-edits|yolo|rules|revoke <index|tool>]");
         } else {
             trimmed
         };
@@ -248,8 +250,7 @@ impl Overlay {
             );
         }
 
-        let hint =
-            "Enter run · F6 cycle · always-ask|accept-edits|yolo|rules|revoke <id> · Esc close";
+        let hint = "Enter run · F6 cycle · always-ask|accept-edits|yolo|rules|revoke <index|tool> · Esc close";
         frame.render_widget(
             Line::styled(hint, Style::default().fg(transcript_style::muted())),
             Rect::new(inner.x, hint_y, inner.width, 1),

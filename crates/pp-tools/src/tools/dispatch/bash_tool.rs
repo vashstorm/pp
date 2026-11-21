@@ -38,12 +38,11 @@ impl Tools {
                         // 只要沙盒策略仍启用（含 YOLO 叠加显式沙盒覆盖），扩权都必须经过审批。
                         self.permission.authorize_sandbox(
                             pp_permission::SandboxGrant {
-                                workspace: Some(self.permission.workspace(&self.cwd).to_owned()),
-                                cwd: Some(self.cwd.clone()),
                                 command: args.command.clone(),
                                 writable: writable.clone(),
                                 network,
                             },
+                            Some(&self.cwd),
                             cancellation,
                         )?;
                         policy = Some(base.with_command_grant(&writable, network)?);

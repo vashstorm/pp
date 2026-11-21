@@ -328,18 +328,11 @@ impl Tools {
             };
             let sandboxed = matches!(call.policy, ToolPolicy::Execute { .. })
                 && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval");
-            let server_identity = is_mcp
-                .then(|| self.mcp.tool_server_identity(name))
-                .flatten();
             self.permission.enforce_for(
                 permissions,
                 name,
                 arguments,
-                ToolAccess {
-                    tier,
-                    sandboxed,
-                    server_identity,
-                },
+                ToolAccess { tier, sandboxed },
                 hook_ask,
                 call.cancellation,
             )?;

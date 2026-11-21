@@ -17,9 +17,11 @@ impl PermissionCommand {
         Ok(match words.as_slice() {
             [] => Self::Status,
             ["rules"] => Self::Rules,
-            ["revoke", id] => Self::Revoke((*id).into()),
+            ["revoke", target] => Self::Revoke((*target).into()),
             [mode] => Self::Select(mode.parse()?),
-            _ => bail!("usage: /permissions [always-ask|accept-edits|yolo|rules|revoke <id>]"),
+            _ => bail!(
+                "usage: /permissions [always-ask|accept-edits|yolo|rules|revoke <index|tool>]"
+            ),
         })
     }
 
@@ -41,8 +43,8 @@ impl PermissionCommand {
             }
             Self::Status => Ok(Some(status_with(permission, sandbox))),
             Self::Rules => permission.list_rules().map(Some),
-            Self::Revoke(id) => {
-                permission.revoke_rule(&id)?;
+            Self::Revoke(target) => {
+                permission.revoke_rule(&target)?;
                 Ok(Some("Saved permission revoked.".into()))
             }
         }
