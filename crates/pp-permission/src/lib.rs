@@ -62,10 +62,13 @@ pub type PermissionHandler = Box<PermissionCallback>;
 pub struct ToolAccess {
     pub tier: Tier,
     pub sandboxed: bool,
+    /// MCP 工具所属服务的身份指纹；服务定义变化后不复用旧授权。
+    pub server_identity: Option<String>,
 }
 
 #[derive(Default)]
 struct ModeState {
+    config: PermissionConfig,
     configured: PermissionMode,
     startup: Option<PermissionMode>,
     selected: Option<PermissionMode>,
@@ -76,16 +79,22 @@ impl ModeState {
     fn current(&self) -> PermissionMode {
         self.selected.or(self.startup).unwrap_or(self.configured)
     }
+
+    fn sandbox_mode(&self) -> Option<SandboxMode> {
+        self.manage_sandbox.then(|| match self.current() {
+            PermissionMode::Yolo => SandboxMode::Off,
+            PermissionMode::AcceptEdits | PermissionMode::AlwaysAsk => SandboxMode::WorkspaceWrite,
+        })
+    }
 }
 
 #[derive(Clone)]
 pub struct Gate {
-    config: PermissionConfig,
     default_mode: PermissionMode,
     is_process: bool,
     sandbox_override: bool,
-    /// 常规工具的会话级授权。
-    grants: Arc<Mutex<HashSet<String>>>,
+    /// 常规工具的会话级授权（MCP 工具含服务身份指纹）。
+    grants: Arc<Mutex<HashSet<rules::ToolGrant>>>,
     handler: Option<Arc<PermissionCallback>>,
     modes: Arc<Mutex<ModeState>>,
     sandbox_grants: Arc<Mutex<HashSet<SandboxGrant>>>,
@@ -103,7 +112,6 @@ impl Gate {
     pub fn new() -> Self {
         let default_mode = PermissionMode::Yolo;
         Self {
-            config: PermissionConfig::default(),
             default_mode,
             is_process: false,
             sandbox_override: false,
@@ -131,6 +139,7 @@ impl Gate {
             is_process: true,
             sandbox_override,
             modes: Arc::new(Mutex::new(ModeState {
+                config: PermissionConfig::default(),
                 configured: default_mode,
                 startup,
                 selected: None,
@@ -157,18 +166,17 @@ impl Gate {
     }
 
     pub fn snapshot(&self) -> PermissionMode {
-        self.modes
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .current()
+        self.snapshot_with_sandbox().0
     }
 
     pub fn sandbox_mode(&self) -> Option<SandboxMode> {
+        self.snapshot_with_sandbox().1
+    }
+
+    /// 原子读取当前生效权限档位及对应的沙盒预设，供单次工具调用入口使用。
+    pub fn snapshot_with_sandbox(&self) -> (PermissionMode, Option<SandboxMode>) {
         let state = self.modes.lock().unwrap_or_else(|error| error.into_inner());
-        state.manage_sandbox.then(|| match state.current() {
-            PermissionMode::Yolo => SandboxMode::Off,
-            PermissionMode::AcceptEdits | PermissionMode::AlwaysAsk => SandboxMode::WorkspaceWrite,
-        })
+        (state.current(), state.sandbox_mode())
     }
 
     pub fn select(&self, requested: Option<PermissionMode>) {
@@ -225,7 +233,9 @@ impl Gate {
             return Ok(());
         }
         let load_error = match self.store.as_ref().map(rules::Store::load).transpose() {
-            Ok(Some(rules)) if rules.iter().any(|rule| rule.grant == grant) => return Ok(()),
+            Ok(Some(rules)) if rules.iter().any(|rule| rule.matches_sandbox(&grant)) => {
+                return Ok(());
+            }
             Ok(_) => None,
             Err(error) => {
                 let message = pp_core::logging::diagnostic_text(&format!("{error:#}"));
@@ -292,16 +302,14 @@ impl Gate {
         }
     }
 
-    pub fn set_config(&mut self, settings: pp_config::config::ToolsSettings) {
-        {
-            let mut state = self.modes.lock().unwrap_or_else(|error| error.into_inner());
-            state.configured = settings.permission_mode.unwrap_or(self.default_mode);
-            state.manage_sandbox = state.selected.is_some()
-                || state.startup.is_some()
-                || settings.permission_mode.is_some()
-                || (self.is_process && !self.sandbox_override && settings.sandbox.is_default());
-        }
-        self.config = PermissionConfig::from(settings);
+    pub fn set_config(&self, settings: pp_config::config::ToolsSettings) {
+        let mut state = self.modes.lock().unwrap_or_else(|error| error.into_inner());
+        state.configured = settings.permission_mode.unwrap_or(self.default_mode);
+        state.manage_sandbox = state.selected.is_some()
+            || state.startup.is_some()
+            || settings.permission_mode.is_some()
+            || (self.is_process && !self.sandbox_override && settings.sandbox.is_default());
+        state.config = PermissionConfig::from(settings);
     }
 
     pub fn set_handler(&mut self, handler: PermissionHandler) {
@@ -313,13 +321,23 @@ impl Gate {
         self.snapshot()
     }
 
+    fn policy_for(&self, name: &str) -> Option<PermissionPolicy> {
+        self.modes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .config
+            .policy
+            .get(name)
+            .copied()
+    }
+
     /// 单次工具调用的权限决策。决策顺序：
     /// 1) YOLO 无条件跳过常规权限检查，包括显式 policy 和关键命令检查
     /// 2) 用户 policy（Deny 拒绝、Allow 旁路一切后续检查）
-    /// 3) bash 内置关键命令强制 prompt（无会话级选项）
-    /// 4) 用户 policy `Prompt` 强制 prompt（无会话级选项）
+    /// 3) bash 内置关键命令强制 prompt（无会话级与持久选项）
+    /// 4) 用户 policy `Prompt` 强制 prompt（无会话级与持久选项）
     /// 5) 生效模式按 tier 与沙盒状态放行或进入 prompt（`lsp` 的 tier 结合动作参数）
-    /// 6) 会话级授权命中放行，否则 prompt（无 handler 时 fail-closed）
+    /// 6) 会话级授权与全局持久授权命中放行，否则 prompt（无 handler 时 fail-closed）
     pub fn enforce(
         &self,
         name: &str,
@@ -335,6 +353,7 @@ impl Gate {
             ToolAccess {
                 tier,
                 sandboxed: false,
+                server_identity: None,
             },
             hook_ask,
             cancellation,
@@ -351,12 +370,11 @@ impl Gate {
         cancellation: &CancellationToken,
     ) -> Result<()> {
         let tier = access.tier;
+        let policy = self.policy_for(name);
         if let Some(reason) = hook_ask {
-            // hook 的 ask 强制一次确认：YOLO 与已有会话授权都不能跳过，
+            // hook 的 ask 强制一次确认：YOLO 与已有会话/持久授权都不能跳过，
             // 但非 YOLO 下用户的显式 deny 仍然优先。
-            if mode != PermissionMode::Yolo
-                && matches!(self.config.policy.get(name), Some(PermissionPolicy::Deny))
-            {
+            if mode != PermissionMode::Yolo && matches!(policy, Some(PermissionPolicy::Deny)) {
                 bail!("{name} is blocked by tools.permission policy.")
             }
             return self.prompt(
@@ -367,13 +385,15 @@ impl Gate {
                     session_grant: false,
                     persistent_grant: false,
                 },
+                None,
+                None,
                 cancellation,
             );
         }
         if mode == PermissionMode::Yolo {
             return Ok(());
         }
-        match self.config.policy.get(name) {
+        match policy {
             Some(PermissionPolicy::Allow) => return Ok(()),
             Some(PermissionPolicy::Deny) => {
                 bail!("{name} is blocked by tools.permission policy.")
@@ -391,10 +411,12 @@ impl Gate {
                     session_grant: false,
                     persistent_grant: false,
                 },
+                None,
+                None,
                 cancellation,
             );
         }
-        if matches!(self.config.policy.get(name), Some(PermissionPolicy::Prompt)) {
+        if matches!(policy, Some(PermissionPolicy::Prompt)) {
             return self.prompt(
                 PermissionRequest {
                     tool: name.to_owned(),
@@ -403,6 +425,8 @@ impl Gate {
                     session_grant: false,
                     persistent_grant: false,
                 },
+                None,
+                None,
                 cancellation,
             );
         }
@@ -417,15 +441,37 @@ impl Gate {
         if !needs_prompt {
             return Ok(());
         }
-        if self
-            .grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(name)
+        let server_identity = access.server_identity;
+        let is_mcp = name.starts_with("mcp__");
+        let grant_key = rules::ToolGrant {
+            tool: name.to_owned(),
+            server: server_identity.clone(),
+        };
+        if (!is_mcp || server_identity.is_some())
+            && self
+                .grants
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&grant_key)
         {
             return Ok(());
         }
-        let reason = match mode {
+        let load_error = match self.store.as_ref().map(rules::Store::load).transpose() {
+            Ok(Some(rules))
+                if rules
+                    .iter()
+                    .any(|rule| rule.matches_tool(name, server_identity.as_deref())) =>
+            {
+                return Ok(());
+            }
+            Ok(_) => None,
+            Err(error) => {
+                let message = pp_core::logging::diagnostic_text(&format!("{error:#}"));
+                tracing::warn!(%message, "无法读取持久授权");
+                Some(message)
+            }
+        };
+        let mut reason = match mode {
             PermissionMode::AcceptEdits => {
                 "tool runs outside the workspace sandbox and requires permission."
             }
@@ -433,20 +479,39 @@ impl Gate {
             PermissionMode::Yolo => unreachable!(),
         }
         .to_owned();
+        if let Some(message) = &load_error {
+            reason.push_str(&format!("\nSaved permissions unavailable: {message}"));
+        }
+        let has_identity = !is_mcp || server_identity.is_some();
+        let persistent_grant = self.store.is_some() && load_error.is_none() && has_identity;
         self.prompt(
             PermissionRequest {
                 tool: name.to_owned(),
                 agent: None,
                 reason,
-                session_grant: true,
-                persistent_grant: false,
+                session_grant: has_identity,
+                persistent_grant,
             },
+            server_identity,
+            load_error.as_deref(),
             cancellation,
         )
     }
 
-    fn prompt(&self, request: PermissionRequest, cancellation: &CancellationToken) -> Result<()> {
+    fn prompt(
+        &self,
+        request: PermissionRequest,
+        server_identity: Option<String>,
+        load_error: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
         let Some(handler) = self.handler.as_ref() else {
+            if let Some(message) = load_error {
+                bail!(
+                    "{} requires permission and no interactive UI is available. {message}",
+                    request.tool
+                );
+            }
             bail!(
                 "{} requires permission and no interactive UI is available; run in an interactive TUI or adjust tools.permissionMode.",
                 request.tool
@@ -454,6 +519,7 @@ impl Gate {
         };
         let name = request.tool.clone();
         let allow_session_grant = request.session_grant;
+        let allow_persistent_grant = request.persistent_grant;
         let decision = handler(request, cancellation)?;
         pp_core::cancellation::check(cancellation)?;
         match decision {
@@ -463,13 +529,25 @@ impl Gate {
                     self.grants
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .insert(name);
+                        .insert(rules::ToolGrant {
+                            tool: name,
+                            server: server_identity,
+                        });
                 }
                 Ok(())
             }
-            PermissionDecision::Deny | PermissionDecision::ApprovePersistently => {
+            PermissionDecision::ApprovePersistently if allow_persistent_grant => {
+                self.store
+                    .as_ref()
+                    .expect("持久授权选项要求有规则存储")
+                    .save_tool(&name, server_identity.as_deref())?;
+                pp_core::cancellation::check(cancellation)?;
+                Ok(())
+            }
+            PermissionDecision::ApprovePersistently => {
                 bail!("{name} was denied by the user.")
             }
+            PermissionDecision::Deny => bail!("{name} was denied by the user."),
         }
     }
 }

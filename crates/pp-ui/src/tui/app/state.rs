@@ -125,7 +125,6 @@ impl App {
         // 期望态不再有消费者：worker 已死，档位冻结在最后一次已应用值。
         self.pending_think = None;
         self.commands = None;
-        self.permission_mode = None;
         self.events = None;
         self.unavailable = Some(message.into());
         self.tree_panel = None;
@@ -297,6 +296,7 @@ impl App {
             return false;
         }
         if self.ask_panel.is_some()
+            || self.permission_overlay.is_some()
             || self.skill_panel.is_some()
             || self.skills_pending
             || self.session_panel.is_some()
@@ -612,6 +612,7 @@ impl App {
             || self.plan_panel.is_some()
             || self.review_transcript.is_some()
             || self.ask_panel.is_some()
+            || self.permission_overlay.is_some()
             || self.menu.is_some()
             || self.model_panel.is_some()
     }

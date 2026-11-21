@@ -210,8 +210,11 @@ impl Tools {
         &self,
         call: &ExecuteCall<'_, '_>,
         hook_ask: Option<&str>,
-    ) -> Result<AuthorizedAccess> {
-        let permissions = self.permission.snapshot();
+    ) -> Result<AuthorizedAccess<'_>> {
+        // 在进入任何审批等待前同时冻结权限档位与实际沙盒快照（含 /sandbox 覆盖值），
+        // 避免等待期间切换档位或清除覆盖影响当前已进入审批的调用。
+        let (permissions, sandbox_mode) = self.permission.snapshot_with_sandbox();
+        let sandbox = self.sandbox.view(sandbox_mode);
         let name = call.name;
         let arguments = call.arguments;
         ensure!(
@@ -325,11 +328,18 @@ impl Tools {
             };
             let sandboxed = matches!(call.policy, ToolPolicy::Execute { .. })
                 && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval");
+            let server_identity = is_mcp
+                .then(|| self.mcp.tool_server_identity(name))
+                .flatten();
             self.permission.enforce_for(
                 permissions,
                 name,
                 arguments,
-                ToolAccess { tier, sandboxed },
+                ToolAccess {
+                    tier,
+                    sandboxed,
+                    server_identity,
+                },
                 hook_ask,
                 call.cancellation,
             )?;
@@ -338,14 +348,16 @@ impl Tools {
             mcp_access,
             lsp_access,
             permissions,
+            sandbox,
         })
     }
 }
 
-pub(super) struct AuthorizedAccess {
+pub(super) struct AuthorizedAccess<'a> {
     pub(super) mcp_access: pp_mcp::Access,
     pub(super) lsp_access: pp_lsp::tool::Access,
     pub(super) permissions: PermissionMode,
+    pub(super) sandbox: pp_sandbox::SandboxView<'a>,
 }
 
 impl Drop for Tools {

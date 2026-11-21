@@ -139,6 +139,31 @@ impl App {
         {
             self.escape_tap.reset();
         }
+        // 权限切换独立于任务状态与面板焦点：任何时候都可立即切换并在下一次工具调用生效。
+        if let Event::Key(key) = &event
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && super::permissions::is_permission_shortcut(*key)
+        {
+            if key.kind == KeyEventKind::Press {
+                self.apply_permission_command(crate::commands::PermissionCommand::Cycle);
+            }
+            *dirty = true;
+            return false;
+        }
+        // F7 在任何状态（含确认弹窗与全屏模态面板）打开／关闭 `/permissions` 命令入口。
+        if let Event::Key(key) = &event
+            && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+            && super::permissions::is_permission_command_shortcut(*key)
+        {
+            if key.kind == KeyEventKind::Press {
+                self.toggle_permission_overlay();
+            }
+            *dirty = true;
+            return false;
+        }
+        if self.permission_overlay.is_some() {
+            return self.handle_permission_overlay_event(event, dirty);
+        }
         let input_focused = self.completion_input_focused();
         if let Some(panel) = &mut self.mcp_panel
             && (input_focused || !panel.allows_input())
@@ -456,15 +481,6 @@ impl App {
                     self.apply_model_action(action);
                     if self.model_panel.is_some() {
                         self.refresh_candidates(edited);
-                    }
-                    return false;
-                }
-                if super::permissions::is_permission_shortcut(key) {
-                    if key.kind == KeyEventKind::Press && self.completion_input_focused() {
-                        self.submit_permission_command(
-                            WorkerCommand::Permissions(crate::commands::PermissionCommand::Cycle),
-                            false,
-                        );
                     }
                     return false;
                 }

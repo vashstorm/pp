@@ -23,6 +23,16 @@ impl McpManager {
             .is_some_and(|tool| read_only_tool(&state, tool))
     }
 
+    /// 返回已发现 MCP 工具所属服务的稳定身份指纹；不获取 server 锁。
+    pub fn tool_server_identity(&self, name: &str) -> Option<String> {
+        let state = self.lock_state();
+        let tool = state.tools.get(name)?;
+        state
+            .servers
+            .get(&tool.server)
+            .map(|server| server.identity.clone())
+    }
+
     pub fn definitions(&self, access: Access) -> Vec<FunctionObject> {
         let state = self.lock_state();
         state

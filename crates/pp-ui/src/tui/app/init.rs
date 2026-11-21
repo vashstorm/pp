@@ -79,7 +79,11 @@ impl App {
             #[cfg(test)]
             history_dir: None,
             state: State::Unavailable,
+            permission: pp_permission::Gate::new(),
+            sandbox: std::sync::Arc::new(pp_sandbox::Sandbox::disabled()),
             permission_mode: None,
+            permission_worker: None,
+            permission_overlay: None,
             next_shell_id: 0,
             active_cancellation: None,
             input_queue: InputQueue::default(),
@@ -235,7 +239,9 @@ impl App {
             tracing::warn!(event = "sandbox_unavailable", %warning);
             startup_errors.push(warning);
         }
-        let permission_mode = agent.permission_mode();
+        self.permission = agent.permission_gate();
+        self.sandbox = agent.sandbox();
+        let permission_mode = self.permission.snapshot();
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
         self.favorite_models = agent.favorite_models();
@@ -431,9 +437,15 @@ impl App {
                             agent.publish_context_snapshot();
                             continue;
                         }
-                        WorkerCommand::Permissions(command) => {
-                            let result = command.apply(&mut agent);
-                            WorkerEvent::Permissions(agent.permission_mode(), result)
+                        WorkerCommand::SyncPermissions => {
+                            if let Err(error) = agent.sync_permission_mode() {
+                                tracing::warn!(
+                                    error = %error,
+                                    "failed to sync tools and instructions after permission update"
+                                );
+                            }
+                            agent.publish_context_snapshot();
+                            continue;
                         }
                         WorkerCommand::Sandbox(mode) => {
                             let result = match mode {

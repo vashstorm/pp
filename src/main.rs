@@ -473,23 +473,29 @@ fn run(args: Args) -> Result<()> {
         logging::perf::mark("skills_ready");
         let sandbox = pp_sandbox::SharedSandbox::default();
         let sandbox_override = args.sandbox.map(Into::into);
-        let bootstrap = global_dir.as_ref().ok().map(|dir| agent::Bootstrap {
-            dir: dir.clone(),
-            cwd: cwd.clone(),
-            skills: skills.clone(),
-            prompt: prompt_source
-                .clone()
-                .unwrap_or_else(system_prompt::Snapshot::bundled),
-            permission: std::sync::Arc::new(pp_permission::Gate::for_process(
+        let bootstrap = global_dir.as_ref().ok().map(|dir| {
+            let permission = pp_permission::Gate::for_process(
                 dir,
                 &cwd,
                 args.permission_mode,
                 sandbox_override.is_some(),
-            )),
-            sandbox_override,
-            sandbox: sandbox.clone(),
-            mcp: manager.clone(),
-            models: models.clone(),
+            );
+            if let Ok((_, loaded_settings)) = &settings {
+                permission.set_config(loaded_settings.tools.clone());
+            }
+            agent::Bootstrap {
+                dir: dir.clone(),
+                cwd: cwd.clone(),
+                skills: skills.clone(),
+                prompt: prompt_source
+                    .clone()
+                    .unwrap_or_else(system_prompt::Snapshot::bundled),
+                permission: std::sync::Arc::new(permission),
+                sandbox_override,
+                sandbox: sandbox.clone(),
+                mcp: manager.clone(),
+                models: models.clone(),
+            }
         });
         let mut agent = if let Some(error) = migration_error {
             Err(error)
@@ -509,11 +515,11 @@ fn run(args: Args) -> Result<()> {
                     )?;
                     tools.skills = skills.clone();
                     tools.permission = bootstrap.permission.as_ref().clone();
-                    let sbx =
-                        sandbox.get_or_init(models.catalog_snapshot().sandbox_settings(), &cwd);
-                    if let Some(mode) = sandbox_override {
-                        sbx.set_mode_override(Some(mode));
-                    }
+                    let sbx = sandbox.get_or_init_with_override(
+                        models.catalog_snapshot().sandbox_settings(),
+                        &cwd,
+                        sandbox_override,
+                    );
                     tools.set_sandbox(sbx);
                     Ok(agent::Agent::restore(models, tools, session)?)
                 }
@@ -568,6 +574,11 @@ fn run(args: Args) -> Result<()> {
             }
         }
         if use_tui {
+            if agent.is_err()
+                && let (Some(bootstrap), Ok((_, loaded_settings))) = (&bootstrap, &settings)
+            {
+                bootstrap.apply_tools_settings(&loaded_settings.tools);
+            }
             return tui::run(
                 agent,
                 &cwd,

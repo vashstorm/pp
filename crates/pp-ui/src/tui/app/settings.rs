@@ -271,6 +271,8 @@ impl App {
                         self.conversation
                             .set_bash_timeout(saved.bash_timeout_seconds);
                         self.pending_max_fps = Some(saved.tui.max_fps);
+                        self.permission.set_config(saved.tools.clone());
+                        self.permission_mode = Some(self.permission.snapshot());
                         if let Some(usage) = &mut self.usage {
                             usage.auto_compact = saved.auto_compact;
                             usage.threshold_percent = saved.auto_compact_threshold_percent;
@@ -288,6 +290,9 @@ impl App {
                                     threshold_percent: saved.auto_compact_threshold_percent,
                                 })
                                 .is_err()
+                                || commands
+                                    .send(crate::tui::WorkerCommand::SyncPermissions)
+                                    .is_err()
                                 || commands
                                     .send(crate::tui::WorkerCommand::SyncSandboxSettings(
                                         saved.tools.sandbox.mode,

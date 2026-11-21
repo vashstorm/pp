@@ -134,6 +134,10 @@ impl App {
     }
 
     pub(in crate::tui) fn submit(&mut self, kind: PendingKind) -> bool {
+        // 权限命令独立于任务、队列与加载守卫，先于其他面板／资源阻塞分支解析执行。
+        if self.try_submit_permission_command() {
+            return false;
+        }
         if self.resources.job.is_some() {
             return false;
         }
@@ -317,15 +321,8 @@ impl App {
             }
             return false;
         }
-        let permissions_command = match &command {
-            Some(Command::Sandbox(mode)) => Some(WorkerCommand::Sandbox(*mode)),
-            Some(Command::Permissions(command)) => {
-                Some(WorkerCommand::Permissions(command.clone()))
-            }
-            _ => None,
-        };
-        if let Some(command) = permissions_command {
-            if self.submit_permission_command(command, true) {
+        if let Some(Command::Sandbox(mode)) = &command {
+            if self.submit_sandbox_command(WorkerCommand::Sandbox(*mode), true) {
                 self.remember_input();
                 self.clear_input();
             }

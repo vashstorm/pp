@@ -11,6 +11,7 @@ impl App {
             || self.active_settings_tab().is_some()
             || self.skills_pending
             || self.ask_panel.is_some()
+            || self.permission_overlay.is_some()
             || self.plan_panel.is_some()
             || self.plan_list_panel.is_some()
             || self.model_panel.is_some()

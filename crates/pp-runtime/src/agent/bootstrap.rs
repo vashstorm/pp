@@ -242,15 +242,26 @@ impl Agent {
         self.tools.permission.snapshot()
     }
 
+    pub fn permission_gate(&self) -> pp_tools::permission::Gate {
+        self.tools.permission.clone()
+    }
+
+    pub fn sandbox(&self) -> std::sync::Arc<pp_sandbox::Sandbox> {
+        std::sync::Arc::clone(self.tools.sandbox())
+    }
+
+    pub fn sync_permission_mode(&mut self) -> Result<()> {
+        self.refresh_instructions_changed()?;
+        Ok(())
+    }
+
     pub fn set_permission_mode(
         &mut self,
         mode: Option<pp_config::config::PermissionMode>,
     ) -> Result<()> {
         self.tools.permission.select(mode);
         self.tools.sandbox().set_mode_override(None);
-        self.session
-            .set_tools(self.tools.all_definitions(self.workflow.mode));
-        self.refresh_instructions_changed()?;
+        self.sync_permission_mode()?;
         Ok(())
     }
 
@@ -325,15 +336,8 @@ impl Agent {
     }
 
     pub(in crate::agent) fn refresh_instructions_changed(&mut self) -> Result<bool> {
-        let definitions = if self.tools.subagent.is_some() {
-            Some(self.tools.all_definitions(self.workflow.mode))
-        } else {
-            None
-        };
-        let names = definitions.as_ref().map_or_else(
-            || self.session.tool_names(),
-            |defs| defs.iter().map(|d| d.name.clone()).collect(),
-        );
+        let definitions = self.tools.all_definitions(self.workflow.mode);
+        let names = definitions.iter().map(|d| d.name.clone()).collect();
         let (system, skills, project) = self.compose_prompt_snapshot(
             &crate::subagent::catalog::workflow_instructions(&self.workflow),
             self.workflow.mode_name(),
@@ -341,9 +345,7 @@ impl Agent {
             names,
         )?;
         let mut session_changed = false;
-        if let Some(definitions) = definitions
-            && self.session.update_tools(definitions)
-        {
+        if self.session.update_tools(definitions) {
             self.journal.tools_changed();
             session_changed = true;
         }

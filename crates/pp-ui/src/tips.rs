@@ -101,6 +101,7 @@ pub(crate) const SECTIONS: &[Section] = &[
             tip("Esc Esc", "open session tree"),
             tip("F1", "show commands/usage"),
             tip("F6", "cycle permissions"),
+            tip("F7", "permissions command"),
             tip("Alt + Shift + A", "cycle permissions"),
             tip("F8", "browse stage output"),
             tip("Tab", "complete input"),

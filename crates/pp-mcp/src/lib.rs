@@ -4,6 +4,7 @@ mod command;
 mod config;
 mod connect;
 mod connect_status;
+mod identity;
 mod lifecycle;
 mod manage;
 mod remote;
@@ -173,12 +174,14 @@ pub(crate) struct SharedServer {
     state: Arc<Mutex<ServerState>>,
     connection: SharedConnection,
     read_only_tools: BTreeSet<String>,
+    identity: String,
 }
 impl SharedServer {
     fn new(state: ServerState) -> Self {
         Self {
             connection: state.client.connection.clone(),
             read_only_tools: state.config.read_only_tools.clone(),
+            identity: state.config.identity(),
             state: Arc::new(Mutex::new(state)),
         }
     }

@@ -652,3 +652,268 @@ fn initial_shell_command_consumes_mode_prefix() {
     assert_eq!(command, "echo hi");
     assert_eq!(app.input.lines(), &[""]);
 }
+
+#[test]
+fn permission_switches_independently_across_states_queues_and_panels() {
+    use pp_config::config::PermissionMode;
+
+    let dir = tempfile::tempdir().unwrap();
+    let gate = pp_permission::Gate::for_process(dir.path(), dir.path(), None, false);
+    let (mut app, requests, _events) = plan_app();
+    app.permission = gate.clone();
+    app.permission_mode = Some(gate.snapshot());
+    app.input.insert_str("保留草稿");
+
+    // 1. 运行中、取消中、Plan 审查中、不可用状态均可使用 F6 / Alt+Shift+A 循环切换且保留草稿。
+    for (state, key_event, expected) in [
+        (State::Running, key(KeyCode::F(6)), PermissionMode::Yolo),
+        (
+            State::Cancelling,
+            Event::Key(KeyEvent::new(
+                KeyCode::Char('A'),
+                KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )),
+            PermissionMode::AlwaysAsk,
+        ),
+        (
+            State::ReviewingPlan,
+            key(KeyCode::F(6)),
+            PermissionMode::AcceptEdits,
+        ),
+        (State::Unavailable, key(KeyCode::F(6)), PermissionMode::Yolo),
+    ] {
+        app.state = state;
+        app.handle(key_event, &mut false);
+        assert_eq!(gate.snapshot(), expected);
+        assert_eq!(app.permission_mode, Some(expected));
+        assert_eq!(app.input.lines(), &["保留草稿"]);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkerCommand::SyncPermissions)
+        ));
+    }
+
+    // 2. 存在待处理输入队列且处于问询弹窗 / 面板中时，快捷键依然生效且不关闭弹窗。
+    app.state = State::Running;
+    app.input_queue
+        .enqueue(PendingKind::Steering, "queued".into(), None, true)
+        .unwrap();
+    assert!(app.has_pending());
+    let (_answers, _token) = ask_fixture(&mut app);
+    app.handle(key(KeyCode::F(6)), &mut false);
+    assert_eq!(gate.snapshot(), PermissionMode::AlwaysAsk);
+    assert_eq!(app.permission_mode, Some(PermissionMode::AlwaysAsk));
+    assert!(app.ask_panel.is_some());
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::SyncPermissions)
+    ));
+    app.ask_panel = None;
+    app.ask_reply = None;
+    app.ask_id = None;
+    app.ask_cancellation = None;
+
+    // 3. Plan 审查与待处理队列期间提交 `/permissions` 命令也立即生效。
+    app.state = State::ReviewingPlan;
+    app.clear_input();
+    app.insert_input("/permissions yolo".into());
+    app.submit(PendingKind::Steering);
+    assert_eq!(gate.snapshot(), PermissionMode::Yolo);
+    assert_eq!(app.permission_mode, Some(PermissionMode::Yolo));
+    assert_eq!(app.input.lines(), &[""]);
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::SyncPermissions)
+    ));
+}
+
+#[test]
+fn permission_dialog_offers_always_allow_globally_for_regular_tools() {
+    let (events, receiver) = mpsc::sync_channel(8);
+    let token = CancellationToken::new();
+    let handle = std::thread::spawn(move || {
+        crate::tui::app::permissions::request_permission(
+            &events,
+            pp_permission::PermissionRequest {
+                tool: "mcp__remote__echo".into(),
+                agent: None,
+                reason: "tool runs outside the workspace sandbox and requires permission.".into(),
+                session_grant: true,
+                persistent_grant: true,
+            },
+            &token,
+        )
+    });
+
+    let WorkerEvent::Ask {
+        request,
+        reply,
+        cancellation: _,
+    } = receiver.recv_timeout(Duration::from_secs(2)).unwrap()
+    else {
+        panic!("expected Ask dialog event");
+    };
+    let labels: Vec<&str> = request.args.questions[0]
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Allow once",
+            "Allow for this session",
+            "Always allow globally",
+            "Deny",
+        ]
+    );
+    reply
+        .send(vec![pp_core::interaction::AskAnswer {
+            id: "permission".into(),
+            selected_options: vec!["Always allow globally".into()],
+            custom_input: None,
+        }])
+        .unwrap();
+    let decision = handle.join().unwrap().unwrap();
+    assert_eq!(
+        decision,
+        pp_permission::PermissionDecision::ApprovePersistently
+    );
+}
+
+#[test]
+fn unavailable_model_binds_configured_permission_mode_before_cycling() {
+    use pp_config::config::PermissionMode;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("settings.yml"),
+        "tools:\n  permissionMode: always-ask\n",
+    )
+    .unwrap();
+    let bootstrap = pp_runtime::agent::Bootstrap {
+        dir: root.clone(),
+        cwd: root.clone(),
+        skills: pp_config::skills::Skills::default().shared(),
+        prompt: pp_runtime::system_prompt::Snapshot::bundled(),
+        permission: std::sync::Arc::new(pp_permission::Gate::for_process(
+            &root, &root, None, false,
+        )),
+        sandbox_override: None,
+        sandbox: pp_sandbox::SharedSandbox::default(),
+        mcp: std::sync::Arc::new(pp_mcp::McpManager::empty()),
+        models: pp_config::model_state::SharedModels::default(),
+    };
+    let mut app = App::new(Err(anyhow::anyhow!("missing models.yml"))).unwrap();
+    app.bootstrap = Some(bootstrap);
+    app.bind_bootstrap_permissions();
+    assert_eq!(app.permission_mode, Some(PermissionMode::AlwaysAsk));
+    assert_eq!(app.permission.snapshot(), PermissionMode::AlwaysAsk);
+
+    // 第一次按 F6 应从配置的 Always-ask 切到 Accept-edits，而非误从默认 Accept-edits 跳到 YOLO。
+    app.handle(key(KeyCode::F(6)), &mut false);
+    assert_eq!(app.permission_mode, Some(PermissionMode::AcceptEdits));
+    assert_eq!(app.permission.snapshot(), PermissionMode::AcceptEdits);
+}
+
+#[test]
+fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() {
+    use pp_config::config::PermissionMode;
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let rule_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let rules_path = root.join("permission.toml");
+    std::fs::write(
+        &rules_path,
+        format!(
+            "version = 1\n\n[[rules]]\nid = \"{rule_id}\"\n\n[rules.grant]\ntool = \"write\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&rules_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let gate = pp_permission::Gate::for_process(&root, &root, None, false);
+    let (mut app, requests, _events) = plan_app();
+    app.permission = gate.clone();
+    app.permission_mode = Some(gate.snapshot());
+    app.state = State::Running;
+
+    let type_text = |app: &mut App, text: &str| {
+        for ch in text.chars() {
+            app.handle(key(KeyCode::Char(ch)), &mut false);
+        }
+    };
+
+    // 1. 权限确认弹窗打开时，通过真实按键 F7 -> 输入 `yolo` -> Enter 直接切换档位，不关闭底层弹窗。
+    let (_answers, _token) = ask_fixture(&mut app);
+    app.handle(key(KeyCode::F(7)), &mut false);
+    assert!(app.permission_overlay.is_some());
+    assert!(draw(&mut app, 100, 30).contains("Permission mode: accept-edits"));
+    type_text(&mut app, "yolo");
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert_eq!(gate.snapshot(), PermissionMode::Yolo);
+    assert_eq!(app.permission_mode, Some(PermissionMode::Yolo));
+    assert!(app.ask_panel.is_some());
+    assert!(matches!(
+        requests.try_recv(),
+        Ok(WorkerCommand::SyncPermissions)
+    ));
+    app.handle(key(KeyCode::Esc), &mut false);
+    assert!(app.permission_overlay.is_none());
+    assert!(app.ask_panel.is_some());
+    app.ask_panel = None;
+    app.ask_reply = None;
+    app.ask_id = None;
+    app.ask_cancellation = None;
+
+    // 2. 在全屏模态面板（context_panel）打开时，同样可通过 F7 -> Enter 查看详情并切档。
+    app.context_panel = Some(crate::tui::context_panel::Panel::new());
+    app.handle(key(KeyCode::F(7)), &mut false);
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert!(draw(&mut app, 100, 30).contains("Permission mode: yolo"));
+    type_text(&mut app, "always-ask");
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert_eq!(gate.snapshot(), PermissionMode::AlwaysAsk);
+    assert!(app.context_panel.is_some());
+
+    // 3. 另一句柄持排他锁占用 permission.lock 时，`/permissions revoke` 交给独立 worker，不阻塞事件循环。
+    use std::os::fd::AsRawFd;
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join("permission.lock"))
+        .unwrap();
+    std::fs::set_permissions(
+        root.join("permission.lock"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    // SAFETY: `lock_file` 在此处及后续持锁期间保持打开，fd 有效。
+    assert_eq!(
+        unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) },
+        0
+    );
+
+    type_text(&mut app, &format!("revoke {rule_id}"));
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert!(draw(&mut app, 100, 30).contains("Revoking saved permission rule..."));
+    // 持锁期间事件循环未被阻塞：立即按 F6 仍可实时切换内存权限档位。
+    app.handle(key(KeyCode::F(6)), &mut false);
+    assert_eq!(gate.snapshot(), PermissionMode::AcceptEdits);
+    assert!(draw(&mut app, 100, 30).contains("Permission mode: accept-edits"));
+
+    // 释放锁后后台 worker 完成撤销并回传结果。
+    drop(lock_file);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !draw(&mut app, 100, 30).contains("Saved permission revoked.") {
+        assert!(Instant::now() < deadline, "revoke worker reply timed out");
+        app.receive();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(gate.list_rules().unwrap(), "No saved permission rules.");
+}

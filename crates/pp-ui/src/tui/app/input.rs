@@ -9,6 +9,7 @@ impl App {
     /// 补全跟随主输入框焦点，不以后台任务状态作为开关。
     pub(in crate::tui) fn completion_input_focused(&self) -> bool {
         self.auth_panel.is_none()
+            && self.permission_overlay.is_none()
             && self.active_settings_tab().is_none()
             && self.ask_panel.is_none()
             && self.subagent_panel.is_none()
@@ -784,6 +785,7 @@ impl App {
             || self.queue_paused
             || self.mcp_panel.is_some()
             || self.ask_panel.is_some()
+            || self.permission_overlay.is_some()
             || self.active_settings_tab().is_some()
             || self.skills_pending
             || self.session_panel.is_some()

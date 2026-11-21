@@ -287,7 +287,7 @@ fn accept_edits_authorizes_bash_before_start_and_does_not_replay_failed_calls() 
 fn accept_edits_applies_ordinary_policy_before_sandbox_grants() {
     use pp_config::config::{PermissionMode, PermissionPolicy, ToolsSettings};
     let dir = tempfile::tempdir().unwrap();
-    let mut tools = tools_with_sandbox(&dir, dir.path(), SandboxMode::Auto, ProbeResult::Available);
+    let tools = tools_with_sandbox(&dir, dir.path(), SandboxMode::Auto, ProbeResult::Available);
     tools.permission.set_config(ToolsSettings {
         permission_mode: Some(PermissionMode::AcceptEdits),
         permission: [("bash".into(), PermissionPolicy::Deny)].into(),
@@ -309,4 +309,316 @@ fn accept_edits_applies_ordinary_policy_before_sandbox_grants() {
             .contains("tools.permission policy")
     );
     assert!(!dir.path().join("denied").exists());
+}
+
+#[test]
+fn permission_switch_takes_effect_on_next_tool_call_and_tolerates_sandbox_permissions_in_yolo() {
+    use pp_config::config::{PermissionMode, ToolsSettings};
+    let dir = tempfile::tempdir().unwrap();
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+    tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::Auto,
+            network: false,
+            ..Default::default()
+        },
+        dir.path(),
+        None,
+        Some(Path::new("/tmp")),
+        ProbeResult::Available,
+    )));
+    tools.permission = pp_permission::Gate::for_process(
+        &agent_dir,
+        dir.path(),
+        Some(PermissionMode::AlwaysAsk),
+        false,
+    );
+    tools.permission.set_config(ToolsSettings::default());
+
+    // 1. Always-ask 下写操作拒绝（无交互 handler）。
+    let first = execute(&tools, "write", json!({"path": "a.txt", "content": "one"}));
+    assert_eq!(first["ok"], false, "{first}");
+
+    // 2. 运行中切换到 YOLO 后，下一次工具调用（含带 sandbox_permissions 的 bash）立即放行。
+    tools.permission.select(Some(PermissionMode::Yolo));
+    let second = execute(&tools, "write", json!({"path": "a.txt", "content": "one"}));
+    assert_eq!(second["ok"], true, "{second}");
+    let third = execute(
+        &tools,
+        "bash",
+        json!({
+            "command": "printf ok > b.txt",
+            "sandbox_permissions": {"network": true},
+        }),
+    );
+    assert_eq!(third["ok"], true, "{third}");
+    assert_eq!(fs::read_to_string(dir.path().join("b.txt")).unwrap(), "ok");
+}
+
+#[test]
+fn approval_wait_freezes_sandbox_override_until_next_call() {
+    use pp_config::config::{PermissionMode, ToolsSettings};
+    use pp_permission::PermissionDecision;
+
+    let dir = tempfile::tempdir().unwrap();
+    let agent_dir = dir.path().join("agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+    let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+    let sandbox = Arc::new(Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::WorkspaceWrite,
+            ..Default::default()
+        },
+        dir.path(),
+        None,
+        Some(Path::new("/tmp")),
+        ProbeResult::Available,
+    ));
+    sandbox.set_mode_override(Some(SandboxMode::ReadOnly));
+    tools.set_sandbox(Arc::clone(&sandbox));
+    tools.permission = pp_permission::Gate::for_process(
+        &agent_dir,
+        dir.path(),
+        Some(PermissionMode::AlwaysAsk),
+        true,
+    );
+    tools.permission.set_config(ToolsSettings::default());
+
+    let gate = tools.permission.clone();
+    let sbx = Arc::clone(&sandbox);
+    tools.permission.set_handler(Box::new(move |_, _| {
+        // 模拟用户在 Always-ask 确认弹窗期间按 F6 切换到 Accept-edits（清除 /sandbox read-only 覆盖）。
+        gate.select(Some(PermissionMode::AcceptEdits));
+        sbx.set_mode_override(None);
+        Ok(PermissionDecision::Approve)
+    }));
+
+    // 当前调用在进入审批前已冻结 read-only，审批通过后不得放宽为 workspace-write。
+    let first = execute(
+        &tools,
+        "write",
+        json!({"path": "frozen.txt", "content": "1"}),
+    );
+    assert_eq!(first["ok"], false, "{first}");
+    assert!(!dir.path().join("frozen.txt").exists());
+
+    // 下一次调用才应用切换后的 Accept-edits + workspace-write。
+    let second = execute(&tools, "write", json!({"path": "next.txt", "content": "2"}));
+    assert_eq!(second["ok"], true, "{second}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("next.txt")).unwrap(),
+        "2"
+    );
+}
+
+#[test]
+fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_unavailable_in_non_yolo()
+ {
+    use pp_config::config::{PermissionMode, ToolsSettings};
+    use pp_permission::PermissionDecision;
+
+    let dir = tempfile::tempdir().unwrap();
+    let agent_dir = dir.path().join("agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+
+    // 1. YOLO 叠加显式沙盒覆盖（network=false）时，扩权请求仍必须经过审批。
+    let mut yolo_sandboxed = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+    let sandbox = Arc::new(Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::WorkspaceWrite,
+            network: false,
+            ..Default::default()
+        },
+        dir.path(),
+        None,
+        Some(Path::new("/tmp")),
+        ProbeResult::Available,
+    ));
+    sandbox.set_mode_override(Some(SandboxMode::ReadOnly));
+    yolo_sandboxed.set_sandbox(sandbox);
+    yolo_sandboxed.permission =
+        pp_permission::Gate::for_process(&agent_dir, dir.path(), Some(PermissionMode::Yolo), true);
+    yolo_sandboxed
+        .permission
+        .set_config(ToolsSettings::default());
+    let denied = execute(
+        &yolo_sandboxed,
+        "bash",
+        json!({
+            "command": "printf ok",
+            "sandbox_permissions": {"network": true},
+        }),
+    );
+    assert_eq!(denied["ok"], false, "{denied}");
+    assert!(
+        denied["error"]
+            .as_str()
+            .unwrap()
+            .contains("no interactive UI"),
+        "{denied}"
+    );
+    yolo_sandboxed
+        .permission
+        .set_handler(Box::new(|request, _| {
+            assert!(request.reason.contains("outbound network"));
+            Ok(PermissionDecision::Approve)
+        }));
+    let approved = execute(
+        &yolo_sandboxed,
+        "bash",
+        json!({
+            "command": "printf ok",
+            "sandbox_permissions": {"network": true},
+        }),
+    );
+    assert_eq!(approved["ok"], true, "{approved}");
+
+    // 2. Accept-edits 下显式 /sandbox off 或 auto 降级时，带 sandbox_permissions 必须返回 sandbox is unavailable。
+    for (mode, override_mode, probe, startup) in [
+        (
+            SandboxMode::WorkspaceWrite,
+            Some(SandboxMode::Off),
+            ProbeResult::Available,
+            Some(PermissionMode::AcceptEdits),
+        ),
+        (
+            SandboxMode::Auto,
+            None,
+            ProbeResult::Unavailable {
+                reason: "degraded".into(),
+            },
+            None,
+        ),
+    ] {
+        let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+        let settings = SandboxSettings {
+            mode,
+            network: false,
+            ..Default::default()
+        };
+        let sbx = Arc::new(Sandbox::with_probe_for_test(
+            settings.clone(),
+            dir.path(),
+            None,
+            Some(Path::new("/tmp")),
+            probe,
+        ));
+        if let Some(ov) = override_mode {
+            sbx.set_mode_override(Some(ov));
+        }
+        tools.set_sandbox(sbx);
+        tools.permission = pp_permission::Gate::for_process(
+            &agent_dir,
+            dir.path(),
+            startup,
+            override_mode.is_some(),
+        );
+        tools.permission.set_config(ToolsSettings {
+            sandbox: settings,
+            ..Default::default()
+        });
+        assert_eq!(tools.permission.snapshot(), PermissionMode::AcceptEdits);
+        let res = execute(
+            &tools,
+            "bash",
+            json!({
+                "command": "printf should-not-run > nope.txt",
+                "sandbox_permissions": {"network": true},
+            }),
+        );
+        assert_eq!(res["ok"], false, "{res}");
+        assert!(
+            res["error"]
+                .as_str()
+                .unwrap()
+                .contains("sandbox is unavailable"),
+            "{res}"
+        );
+        assert!(!dir.path().join("nope.txt").exists());
+    }
+}
+
+#[test]
+fn mcp_persistent_grant_reprompts_after_reload_changes_server_identity() {
+    use pp_config::config::{PermissionMode, ToolsSettings};
+    use pp_permission::PermissionDecision;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let agent_dir = root.join("agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+    let mcp_path = agent_dir.join("mcp.json");
+    let fixture = format!(
+        "{}/../../tests/fixtures/mcp_server.sh",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let write_mcp = |value: &str| {
+        fs::write(
+            &mcp_path,
+            json!({
+                "mcpServers": {
+                    "svc": {
+                        "command": "bash",
+                        "args": [&fixture],
+                        "env": { "MCP_VALUE": value }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    };
+    write_mcp("server-one");
+
+    let mcp = Arc::new(pp_mcp::McpManager::new_isolated(
+        mcp_path.clone(),
+        root.clone(),
+    ));
+    let token = CancellationToken::new();
+    mcp.connect_enabled(&token, pp_mcp::Access::Full).unwrap();
+
+    let mut tools = Tools::with_mcp(root.clone(), EditMode::Replace, Arc::clone(&mcp)).unwrap();
+    tools.permission = pp_permission::Gate::for_process(
+        &agent_dir,
+        &root,
+        Some(PermissionMode::AcceptEdits),
+        false,
+    );
+    tools.permission.set_config(ToolsSettings::default());
+    tools.permission.set_handler(Box::new(|request, _| {
+        assert!(request.persistent_grant);
+        Ok(PermissionDecision::ApprovePersistently)
+    }));
+
+    let first = execute(&tools, "mcp__svc__echo", json!({"text": "hi"}));
+    assert_eq!(first["ok"], true, "{first}");
+
+    // 同一服务身份在无交互 handler 下直接复用全局持久授权。
+    let mut reused = Tools::with_mcp(root.clone(), EditMode::Replace, Arc::clone(&mcp)).unwrap();
+    reused.permission = pp_permission::Gate::for_process(
+        &agent_dir,
+        &root,
+        Some(PermissionMode::AcceptEdits),
+        false,
+    );
+    reused.permission.set_config(ToolsSettings::default());
+    let second = execute(&reused, "mcp__svc__echo", json!({"text": "again"}));
+    assert_eq!(second["ok"], true, "{second}");
+
+    // 同一别名切换为另一服务定义并 reload：旧持久授权不得放行新服务。
+    write_mcp("server-two");
+    mcp.manage(&pp_mcp::Action::Reload, &token, pp_mcp::Access::Full)
+        .unwrap();
+    let after_reload = execute(&reused, "mcp__svc__echo", json!({"text": "blocked"}));
+    assert_eq!(after_reload["ok"], false, "{after_reload}");
+    assert!(
+        after_reload["error"]
+            .as_str()
+            .unwrap()
+            .contains("no interactive UI"),
+        "{after_reload}"
+    );
+    mcp.shutdown().unwrap();
 }

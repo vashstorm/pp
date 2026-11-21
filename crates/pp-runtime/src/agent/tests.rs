@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 mod eval_cases;
 mod hook_cases;
+mod hook_permission_cases;
 mod input_tool_cases;
 mod model_role_cases;
 mod plan_model_cases;

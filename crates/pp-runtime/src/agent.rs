@@ -110,6 +110,17 @@ impl Bootstrap {
         self.build_with_stats(pp_stats::Database::new(pp_stats::database_path()?))
     }
 
+    /// 模型目录尚未加载成功时，独立应用已成功解析的权限与沙盒设置；
+    /// 首次初始化共享沙盒后保留运行中手动选择与覆盖，不重复覆写。
+    pub fn apply_tools_settings(&self, tools: &pp_config::config::ToolsSettings) {
+        self.permission.set_config(tools.clone());
+        let _ = self.sandbox.get_or_init_with_override(
+            &tools.sandbox,
+            &self.cwd,
+            self.sandbox_override,
+        );
+    }
+
     /// 注入进程级统计库句柄：请求、工具、hook、标题与子 Agent 复用同一连接。
     ///
     /// 根 `main::run` 构造句柄后走这里；[`Self::build`] 保留自解析路径入口。
@@ -120,13 +131,12 @@ impl Bootstrap {
         pp_core::logging::perf::mark("tools_ready");
         tools.skills = self.skills.clone();
         tools.permission = self.permission.as_ref().clone();
-        let sandbox = self
-            .sandbox
-            .get_or_init(catalog.sandbox_settings(), &self.cwd);
+        let sandbox = self.sandbox.get_or_init_with_override(
+            catalog.sandbox_settings(),
+            &self.cwd,
+            self.sandbox_override,
+        );
         pp_core::logging::perf::mark("sandbox_ready");
-        if let Some(mode) = self.sandbox_override {
-            sandbox.set_mode_override(Some(mode));
-        }
         tools.set_sandbox(sandbox);
         Agent::new_with_prompt(
             models,

@@ -117,6 +117,22 @@ impl App {
         known: Option<&MainLayout>,
         exiting: bool,
     ) {
+        let area = frame.area();
+        self.draw_base_layout(frame, context, known, exiting);
+        if !self.native_render
+            && let Some(overlay) = &mut self.permission_overlay
+        {
+            overlay.draw(frame, area);
+        }
+    }
+
+    fn draw_base_layout(
+        &mut self,
+        frame: &mut Frame,
+        context: &StatusContext,
+        known: Option<&MainLayout>,
+        exiting: bool,
+    ) {
         self.conversation.set_terminal_rows(frame.area().height);
         if let Some(review) = &mut self.review_transcript {
             review.set_terminal_rows(frame.area().height);

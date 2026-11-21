@@ -16,7 +16,7 @@ fn settings(mode: PermissionMode, policy: &[(&str, PermissionPolicy)]) -> ToolsS
 }
 
 fn gate(mode: PermissionMode, policy: &[(&str, PermissionPolicy)]) -> Gate {
-    let mut gate = Gate::new();
+    let gate = Gate::new();
     gate.set_config(settings(mode, policy));
     gate
 }
@@ -182,6 +182,7 @@ fn accept_edits_allows_sandboxed_tools_and_prompts_unsandboxed_write_or_exec() {
         ToolAccess {
             tier: Tier::Read,
             sandboxed: false,
+            server_identity: None,
         },
         None,
         &token,
@@ -199,6 +200,7 @@ fn accept_edits_allows_sandboxed_tools_and_prompts_unsandboxed_write_or_exec() {
             ToolAccess {
                 tier,
                 sandboxed: true,
+                server_identity: None,
             },
             None,
             &token,
@@ -460,8 +462,8 @@ fn test_tier(name: &str) -> Tier {
 
 fn sandbox_grant(root: &Path, command: &str) -> SandboxGrant {
     SandboxGrant {
-        workspace: root.to_owned(),
-        cwd: root.to_owned(),
+        workspace: Some(root.to_owned()),
+        cwd: Some(root.to_owned()),
         command: command.into(),
         writable: Vec::new(),
         network: true,
@@ -492,7 +494,7 @@ fn permission_presets_cycle_and_update_sandbox_mode() {
 #[test]
 fn process_defaults_to_accept_edits_and_respects_custom_sandbox_without_preset() {
     let dir = tempfile::tempdir().unwrap();
-    let mut gate = Gate::for_process(dir.path(), dir.path(), None, false);
+    let gate = Gate::for_process(dir.path(), dir.path(), None, false);
     for (settings, expected_mode, expected_sandbox) in [
         (
             "{}",
@@ -555,17 +557,32 @@ fn sandbox_grants_are_exact_session_and_persistent_permissions_in_toml() {
     assert!(toml_text.contains("version = 1"), "{toml_text}");
     assert!(toml_text.contains("[[rules]]"), "{toml_text}");
     assert!(toml_text.contains("[rules.grant]"), "{toml_text}");
+    assert!(!toml_text.contains("workspace ="), "{toml_text}");
+    assert!(!toml_text.contains("cwd ="), "{toml_text}");
+
+    // 另一项目路径与命令匹配时同样命中同一全局规则。
+    let other_workspace = root.join("other-project");
+    let other_restarted = Gate::for_process(
+        &root,
+        &other_workspace,
+        Some(PermissionMode::AcceptEdits),
+        false,
+    );
+    other_restarted
+        .authorize_sandbox(grant.clone(), &token)
+        .unwrap();
+    let mut other_grant = grant.clone();
+    other_grant.workspace = Some(other_workspace.clone());
+    other_grant.cwd = Some(other_workspace);
+    other_restarted
+        .authorize_sandbox(other_grant, &token)
+        .unwrap();
 
     let restarted = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), false);
     restarted.authorize_sandbox(grant.clone(), &token).unwrap();
     let changed_command = sandbox_grant(&root, "printf different");
     restarted
         .authorize_sandbox(changed_command, &token)
-        .unwrap_err();
-    let mut changed_project = grant.clone();
-    changed_project.workspace = root.join("other");
-    restarted
-        .authorize_sandbox(changed_project, &token)
         .unwrap_err();
     let mut changed_scope = grant.clone();
     changed_scope.writable.push(root.join("extra"));
@@ -576,8 +593,312 @@ fn sandbox_grants_are_exact_session_and_persistent_permissions_in_toml() {
     let list = restarted.list_rules().unwrap();
     let id = list.split_whitespace().next().unwrap();
     assert!(list.contains("printf"));
+    assert!(list.contains("global"));
     restarted.revoke_rule(id).unwrap();
     restarted.authorize_sandbox(grant, &token).unwrap_err();
+}
+
+#[test]
+fn global_tool_grants_persist_across_projects_and_forced_prompts_stay_transient() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let project_a = root.join("project-a");
+    let project_b = root.join("project-b");
+    std::fs::create_dir_all(&project_a).unwrap();
+    std::fs::create_dir_all(&project_b).unwrap();
+    let token = CancellationToken::new();
+
+    for (mode, tool, arguments, server) in [
+        (
+            PermissionMode::AcceptEdits,
+            "mcp__remote__echo",
+            "{}",
+            Some("server-identity-v1"),
+        ),
+        (
+            PermissionMode::AlwaysAsk,
+            "write",
+            r#"{"path":"a.txt","content":"hi"}"#,
+            None,
+        ),
+    ] {
+        let access = |identity: Option<&str>| ToolAccess {
+            tier: test_tier(tool),
+            sandboxed: false,
+            server_identity: identity.map(str::to_owned),
+        };
+        let mut gate = Gate::for_process(&root, &project_a, Some(mode), false);
+        gate.set_handler(Box::new(|request, _| {
+            assert!(request.session_grant);
+            assert!(request.persistent_grant);
+            Ok(PermissionDecision::ApprovePersistently)
+        }));
+        gate.enforce_for(mode, tool, arguments, access(server), None, &token)
+            .unwrap();
+
+        let other = Gate::for_process(&root, &project_b, Some(mode), false);
+        other
+            .enforce_for(mode, tool, arguments, access(server), None, &token)
+            .unwrap();
+
+        // MCP 服务身份变化后不得沿用旧持久授权，必须重新确认。
+        if server.is_some() {
+            other
+                .enforce_for(
+                    mode,
+                    tool,
+                    arguments,
+                    access(Some("server-identity-v2")),
+                    None,
+                    &token,
+                )
+                .unwrap_err();
+        }
+
+        // hook_ask 与显式 Prompt 策略仍必须强制询问，不读也不写持久规则。
+        let mut forced = Gate::for_process(&root, &project_b, Some(mode), false);
+        forced.set_config(settings(mode, &[(tool, PermissionPolicy::Prompt)]));
+        forced.set_handler(Box::new(|request, _| {
+            assert!(!request.session_grant);
+            assert!(!request.persistent_grant);
+            Ok(PermissionDecision::Approve)
+        }));
+        forced
+            .enforce_for(mode, tool, arguments, access(server), None, &token)
+            .unwrap();
+        forced
+            .enforce_for(
+                mode,
+                tool,
+                arguments,
+                access(server),
+                Some("hook ask"),
+                &token,
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn multi_writer_merge_subsumes_project_rules_and_reloads_on_fingerprint_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let project_a = root.join("project-a");
+    let project_b = root.join("project-b");
+    let token = CancellationToken::new();
+
+    // 预置两条同范围的旧项目级规则，保存同范围全局规则时应合并并覆盖它们。
+    let legacy_id_a = "00000000000000000000000000000001";
+    let legacy_id_b = "00000000000000000000000000000002";
+    let legacy_toml = format!(
+        "version = 1\n\n[[rules]]\nid = \"{legacy_id_a}\"\n\n[rules.grant]\nworkspace = \"{}\"\ncwd = \"{}\"\ncommand = \"curl https://example.com\"\nwritable = []\nnetwork = true\n\n[[rules]]\nid = \"{legacy_id_b}\"\n\n[rules.grant]\nworkspace = \"{}\"\ncwd = \"{}\"\ncommand = \"curl https://example.com\"\nwritable = []\nnetwork = true\n",
+        project_a.display(),
+        project_a.display(),
+        project_b.display(),
+        project_b.display(),
+    );
+    let path = root.join("permission.toml");
+    std::fs::write(&path, legacy_toml).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let reader = Gate::for_process(&root, &project_a, Some(PermissionMode::AcceptEdits), false);
+    // 首次读取命中旧项目级规则。
+    reader
+        .authorize_sandbox(
+            sandbox_grant(&project_a, "curl https://example.com"),
+            &token,
+        )
+        .unwrap();
+    // project_b 在另一进程未合并前仅能通过 legacy_id_b，而不能跨到未授权项目 project-c。
+    let project_c = root.join("project-c");
+    reader
+        .authorize_sandbox(
+            sandbox_grant(&project_c, "curl https://example.com"),
+            &token,
+        )
+        .unwrap_err();
+
+    // 模拟另一进程写入同命令同范围全局规则以及多个工具规则。
+    let writer = Gate::for_process(&root, &project_b, Some(PermissionMode::AcceptEdits), false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            writer
+                .store
+                .as_ref()
+                .unwrap()
+                .save(sandbox_grant(&project_b, "curl https://example.com"))
+                .unwrap();
+        });
+        for (tool, server) in [
+            ("mcp__a__one", Some("srv-a")),
+            ("mcp__b__two", Some("srv-b")),
+        ] {
+            let writer = &writer;
+            scope.spawn(move || {
+                writer
+                    .store
+                    .as_ref()
+                    .unwrap()
+                    .save_tool(tool, server)
+                    .unwrap()
+            });
+        }
+    });
+
+    // reader 下一次权限检查因文件指纹变化自动重载：旧项目规则已被全局规则覆盖，且 project-c 与工具均生效。
+    reader
+        .authorize_sandbox(
+            sandbox_grant(&project_c, "curl https://example.com"),
+            &token,
+        )
+        .unwrap();
+    for (tool, server) in [("mcp__a__one", "srv-a"), ("mcp__b__two", "srv-b")] {
+        reader
+            .enforce_for(
+                PermissionMode::AcceptEdits,
+                tool,
+                "{}",
+                ToolAccess {
+                    tier: Tier::Write,
+                    sandboxed: false,
+                    server_identity: Some(server.into()),
+                },
+                None,
+                &token,
+            )
+            .unwrap();
+    }
+
+    let saved_rules = writer.store.as_ref().unwrap().load().unwrap();
+    let sandbox_rules: Vec<_> = saved_rules
+        .iter()
+        .filter(|rule| matches!(&rule.grant, rules::Grant::Sandbox(_)))
+        .collect();
+    assert_eq!(sandbox_rules.len(), 1, "{saved_rules:?}");
+    assert!(matches!(
+        &sandbox_rules[0].grant,
+        rules::Grant::Sandbox(g) if g.is_global()
+    ));
+
+    // 删除 permission.toml 后，下一次检查立即失效，不复用陈旧内存缓存。
+    std::fs::remove_file(&path).unwrap();
+    reader
+        .enforce_for(
+            PermissionMode::AcceptEdits,
+            "mcp__a__one",
+            "{}",
+            ToolAccess {
+                tier: Tier::Write,
+                sandboxed: false,
+                server_identity: Some("srv-a".into()),
+            },
+            None,
+            &token,
+        )
+        .unwrap_err();
+}
+
+#[test]
+fn fingerprint_detects_in_place_overwrite_preserving_mtime_and_size() {
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = root.join("permission.toml");
+    let rule_id = "11111111111111111111111111111111";
+    let initial = format!(
+        "version = 1\n\n[[rules]]\nid = \"{rule_id}\"\n\n[rules.grant]\ntool = \"write\"\n"
+    );
+    std::fs::write(&path, &initial).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let original_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    let gate = Gate::for_process(&root, &root, Some(PermissionMode::AlwaysAsk), false);
+    let token = CancellationToken::new();
+    // 预热缓存并命中规则。
+    gate.enforce("write", "{}", Tier::Write, None, &token)
+        .unwrap();
+
+    // 等长原地覆写并恢复原 mtime：不同工具名（长度相同）撤销 write 授权，ctime 必须触发重载。
+    let replaced = format!(
+        "version = 1\n\n[[rules]]\nid = \"{rule_id}\"\n\n[rules.grant]\ntool = \"other\"\n"
+    );
+    assert_eq!(initial.len(), replaced.len());
+    {
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(replaced.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        file.set_modified(original_mtime).unwrap();
+    }
+    gate.enforce("write", "{}", Tier::Write, None, &token)
+        .unwrap_err();
+
+    // 再次等长原地覆写为非法 TOML 并恢复原 mtime：不得继续复用旧缓存，且 load 报错。
+    let broken = "x".repeat(initial.len());
+    {
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(broken.as_bytes()).unwrap();
+        file.sync_all().unwrap();
+        file.set_modified(original_mtime).unwrap();
+    }
+    assert!(gate.store.as_ref().unwrap().load().is_err());
+}
+
+#[test]
+fn legacy_unbound_mcp_rule_does_not_authorize_mcp_tool() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = root.join("permission.toml");
+    let legacy = "version = 1\n\n[[rules]]\nid = \"22222222222222222222222222222222\"\n\n[rules.grant]\ntool = \"mcp__svc__write\"\n";
+    std::fs::write(&path, legacy).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let gate = Gate::for_process(&root, &root, Some(PermissionMode::AcceptEdits), false);
+    let token = CancellationToken::new();
+    // 旧规则没有 server 身份，不得放行新的 MCP 调用。
+    gate.enforce_for(
+        PermissionMode::AcceptEdits,
+        "mcp__svc__write",
+        "{}",
+        ToolAccess {
+            tier: Tier::Write,
+            sandboxed: false,
+            server_identity: Some("new-server-id".into()),
+        },
+        None,
+        &token,
+    )
+    .unwrap_err();
+}
+
+#[test]
+fn set_config_updates_policy_and_mode_across_clones() {
+    let dir = tempfile::tempdir().unwrap();
+    let parent = Gate::for_process(dir.path(), dir.path(), None, false);
+    let child = parent.clone();
+    parent.set_config(settings(
+        PermissionMode::AlwaysAsk,
+        &[("mcp__a__tool", PermissionPolicy::Allow)],
+    ));
+    assert_eq!(child.snapshot(), PermissionMode::AlwaysAsk);
+    child
+        .enforce(
+            "mcp__a__tool",
+            "{}",
+            Tier::Write,
+            None,
+            &CancellationToken::new(),
+        )
+        .unwrap();
 }
 
 #[test]
@@ -597,7 +918,7 @@ fn concurrent_sandbox_grant_saves_preserve_all_rules_and_reject_invalid_store() 
     assert!(
         grants
             .iter()
-            .all(|grant| rules.iter().any(|rule| &rule.grant == grant))
+            .all(|grant| rules.iter().any(|rule| rule.matches_sandbox(grant)))
     );
     let path = root.join("permission.toml");
     assert_eq!(

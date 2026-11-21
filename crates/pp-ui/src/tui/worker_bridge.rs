@@ -65,7 +65,7 @@ pub(super) enum WorkerCommand {
         threshold_percent: u8,
     },
     Sandbox(Option<pp_config::config::SandboxMode>),
-    Permissions(crate::commands::PermissionCommand),
+    SyncPermissions,
     SyncSandboxSettings(pp_config::config::SandboxMode),
     SyncWebSearchSettings(pp_config::config::WebSearchSettings),
     InspectContext,
@@ -173,7 +173,6 @@ pub(super) enum WorkerEvent {
     // 压缩终态：与普通任务 Completed 是不同的判别值，不触发任务收尾展示。
     Compacted(Result<CompactionOutcome>),
     SandboxStatus(Result<(pp_sandbox::SandboxStatus, bool)>),
-    Permissions(pp_config::config::PermissionMode, Result<Option<String>>),
     ContextInspected(Result<pp_runtime::agent::context_diagnosis::ContextReport>),
     Reset,
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),

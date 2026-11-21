@@ -21,6 +21,7 @@ mod menu;
 mod mock_test;
 mod model;
 mod notification;
+mod permissions;
 mod pipes;
 mod plan;
 mod plan_leave;
@@ -154,6 +155,7 @@ pub fn run(
     app.image_view.configure(picker);
     app.cost_display = cost_display;
     app.bootstrap = bootstrap;
+    app.bind_bootstrap_permissions();
     if auto_continue && matches!(app.state, State::Ready) {
         // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
         match (
@@ -541,7 +543,11 @@ struct App {
     #[cfg(test)]
     history_dir: Option<tempfile::TempDir>,
     state: State,
+    permission: pp_permission::Gate,
+    sandbox: std::sync::Arc<pp_sandbox::Sandbox>,
     permission_mode: Option<pp_config::config::PermissionMode>,
+    permission_worker: Option<permissions::Worker>,
+    permission_overlay: Option<permissions::Overlay>,
     next_shell_id: u64,
     active_cancellation: Option<CancellationToken>,
     input_queue: InputQueue,

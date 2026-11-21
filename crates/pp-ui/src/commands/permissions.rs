@@ -23,30 +23,47 @@ impl PermissionCommand {
         })
     }
 
-    pub(crate) fn apply(self, agent: &mut Agent) -> Result<Option<String>> {
+    pub(crate) fn apply_with(
+        self,
+        permission: &pp_permission::Gate,
+        sandbox: &pp_sandbox::Sandbox,
+    ) -> Result<Option<String>> {
         match self {
             Self::Cycle => {
-                agent.set_permission_mode(None)?;
-                Ok(agent.sandbox_status().warning())
+                permission.select(None);
+                sandbox.set_mode_override(None);
+                Ok(sandbox.view(permission.sandbox_mode()).status().warning())
             }
             Self::Select(mode) => {
-                agent.set_permission_mode(Some(mode))?;
-                Ok(Some(status(agent)))
+                permission.select(Some(mode));
+                sandbox.set_mode_override(None);
+                Ok(Some(status_with(permission, sandbox)))
             }
-            Self::Status => Ok(Some(status(agent))),
-            Self::Rules => agent.list_permission_rules().map(Some),
+            Self::Status => Ok(Some(status_with(permission, sandbox))),
+            Self::Rules => permission.list_rules().map(Some),
             Self::Revoke(id) => {
-                agent.revoke_permission_rule(&id)?;
+                permission.revoke_rule(&id)?;
                 Ok(Some("Saved permission revoked.".into()))
             }
         }
     }
+
+    pub(crate) fn apply(self, agent: &mut Agent) -> Result<Option<String>> {
+        let changed = matches!(self, Self::Cycle | Self::Select(_));
+        let permission = agent.permission_gate();
+        let sandbox = agent.sandbox();
+        let output = self.apply_with(&permission, &sandbox)?;
+        if changed {
+            agent.sync_permission_mode()?;
+        }
+        Ok(output)
+    }
 }
 
-fn status(agent: &Agent) -> String {
+fn status_with(permission: &pp_permission::Gate, sandbox: &pp_sandbox::Sandbox) -> String {
     format!(
         "Permission mode: {}\n{}",
-        agent.permission_mode().as_str(),
-        agent.sandbox_status().summary()
+        permission.snapshot().as_str(),
+        sandbox.view(permission.sandbox_mode()).status().summary()
     )
 }

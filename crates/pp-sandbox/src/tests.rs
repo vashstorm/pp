@@ -297,3 +297,38 @@ fn command_sandbox_grant_only_extends_requested_paths_and_network() {
     assert!(!base.network());
     assert!(base.check_write(&approved.join("output")).is_err());
 }
+
+#[test]
+fn for_cwd_shares_mode_override_and_configured_mode_with_parent() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().canonicalize().unwrap();
+    let parent_cwd = root.join("parent");
+    let child_cwd = root.join("child");
+    std::fs::create_dir_all(&parent_cwd).unwrap();
+    std::fs::create_dir_all(&child_cwd).unwrap();
+    let parent = Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::Off,
+            ..Default::default()
+        },
+        &parent_cwd,
+        None,
+        None,
+        ProbeResult::Available,
+    );
+    parent.set_mode_override(Some(SandboxMode::WorkspaceWrite));
+    let child = parent.for_cwd(&child_cwd);
+    assert_eq!(child.status().effective, EffectiveMode::WorkspaceWrite);
+    assert_eq!(child.policy().unwrap().unwrap().cwd(), child_cwd);
+
+    // `/setting` 保存新配置会清除共享覆盖并更新配置模式，已有子 Agent 必须跟随新配置而非退回 off。
+    parent.update_settings_mode(SandboxMode::ReadOnly);
+    assert_eq!(parent.status().effective, EffectiveMode::ReadOnly);
+    assert_eq!(child.status().effective, EffectiveMode::ReadOnly);
+    assert_eq!(child.policy().unwrap().unwrap().cwd(), child_cwd);
+
+    parent.set_mode_override(Some(SandboxMode::Off));
+    assert_eq!(child.status().effective, EffectiveMode::Off);
+    parent.set_mode_override(None);
+    assert_eq!(child.status().effective, EffectiveMode::ReadOnly);
+}

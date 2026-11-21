@@ -27,25 +27,31 @@ impl Tools {
         let mut policy = sandbox.policy()?;
         if let Some(request) = args.sandbox_permissions {
             ensure!(
-                permissions == pp_config::config::PermissionMode::AcceptEdits
-                    && matches!(call.policy, ToolPolicy::Execute { .. }),
-                "sandbox_permissions requires accept-edits in Execute mode"
+                matches!(call.policy, ToolPolicy::Execute { .. }),
+                "sandbox_permissions requires Execute mode"
             );
-            let base = policy.as_ref().context("sandbox is unavailable")?;
-            let writable = base.resolve_extra_writable(&request.writable)?;
-            let network = request.network && !base.network();
-            if network || !writable.is_empty() {
-                self.permission.authorize_sandbox(
-                    pp_permission::SandboxGrant {
-                        workspace: self.permission.workspace(&self.cwd).to_owned(),
-                        cwd: self.cwd.clone(),
-                        command: args.command.clone(),
-                        writable: writable.clone(),
-                        network,
-                    },
-                    cancellation,
-                )?;
-                policy = Some(base.with_command_grant(&writable, network)?);
+            match policy.as_ref() {
+                Some(base) => {
+                    let writable = base.resolve_extra_writable(&request.writable)?;
+                    let network = request.network && !base.network();
+                    if network || !writable.is_empty() {
+                        // 只要沙盒策略仍启用（含 YOLO 叠加显式沙盒覆盖），扩权都必须经过审批。
+                        self.permission.authorize_sandbox(
+                            pp_permission::SandboxGrant {
+                                workspace: Some(self.permission.workspace(&self.cwd).to_owned()),
+                                cwd: Some(self.cwd.clone()),
+                                command: args.command.clone(),
+                                writable: writable.clone(),
+                                network,
+                            },
+                            cancellation,
+                        )?;
+                        policy = Some(base.with_command_grant(&writable, network)?);
+                    }
+                }
+                // 仅当切到 YOLO 且沙盒确实关闭时忽略旧调用中遗留的扩权参数。
+                None if permissions == pp_config::config::PermissionMode::Yolo => {}
+                None => bail!("sandbox is unavailable"),
             }
         }
         pp_core::cancellation::check(cancellation)?;

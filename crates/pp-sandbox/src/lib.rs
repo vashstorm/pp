@@ -148,11 +148,23 @@ pub struct SharedSandbox {
 
 impl SharedSandbox {
     pub fn get_or_init(&self, settings: &SandboxSettings, cwd: &Path) -> Arc<Sandbox> {
+        self.get_or_init_with_override(settings, cwd, None)
+    }
+
+    pub fn get_or_init_with_override(
+        &self,
+        settings: &SandboxSettings,
+        cwd: &Path,
+        mode_override: Option<SandboxMode>,
+    ) -> Arc<Sandbox> {
         let mut slot = self.inner.lock().expect("shared sandbox lock poisoned");
         if let Some(existing) = slot.as_ref() {
             return Arc::clone(existing);
         }
         let sbx = Arc::new(Sandbox::new(settings.clone(), cwd));
+        if let Some(mode) = mode_override {
+            sbx.set_mode_override(Some(mode));
+        }
         *slot = Some(Arc::clone(&sbx));
         sbx
     }
@@ -411,7 +423,6 @@ struct SandboxState {
     xdg_runtime_dir: Option<PathBuf>,
     /// 平台探测结果；`None` 表示以 `off` 起步、从未探测过，切到需要沙盒的模式时补测。
     probe: Option<ProbeResult>,
-    override_mode: Option<SandboxMode>,
     cached_workspace_write: Option<Arc<Policy>>,
     cached_read_only: Option<Arc<Policy>>,
 }
@@ -438,23 +449,26 @@ impl SandboxState {
         *slot = Some(Arc::clone(&policy));
         policy
     }
-    /// 当前生效模式：会话级覆盖优先于 settings 里的值。
-    fn configured(&self) -> SandboxMode {
-        self.override_mode.unwrap_or(self.settings.mode)
-    }
 
     /// 切到需要沙盒的模式后补一次探测；`off` 保持未探测，避免白起一次沙盒探针子进程。
-    fn ensure_probe(&mut self) {
-        if self.probe.is_none() && self.configured() != SandboxMode::Off {
+    fn ensure_probe(&mut self, mode: SandboxMode) {
+        if self.probe.is_none() && mode != SandboxMode::Off {
             self.probe = Some(platform_probe(self.settings.network));
         }
     }
+}
+
+#[derive(Debug)]
+struct ModeSource {
+    configured: SandboxMode,
+    override_mode: Option<SandboxMode>,
 }
 
 /// 进程级沙盒句柄，由 `main::run` 构造并向下传递给 `Bootstrap` / `Tools`。
 #[derive(Debug)]
 pub struct Sandbox {
     state: RwLock<SandboxState>,
+    modes: Arc<std::sync::Mutex<ModeSource>>,
 }
 
 impl Sandbox {
@@ -535,6 +549,7 @@ impl Sandbox {
         let norm_tmpdir = tmpdir.map(guard::normalize_path);
         let norm_xdg_cache = xdg_cache_home.map(guard::normalize_path);
         let norm_xdg_runtime = xdg_runtime_dir.map(guard::normalize_path);
+        let configured = settings.mode;
         Self {
             state: RwLock::new(SandboxState {
                 settings,
@@ -544,31 +559,41 @@ impl Sandbox {
                 xdg_cache_home: norm_xdg_cache,
                 xdg_runtime_dir: norm_xdg_runtime,
                 probe,
-                override_mode: None,
                 cached_workspace_write: None,
                 cached_read_only: None,
             }),
+            modes: Arc::new(std::sync::Mutex::new(ModeSource {
+                configured,
+                override_mode: None,
+            })),
         }
     }
 
     pub fn mode_override(&self) -> Option<SandboxMode> {
-        self.state
-            .read()
-            .expect("sandbox state lock poisoned")
+        self.modes
+            .lock()
+            .expect("sandbox modes lock poisoned")
             .override_mode
     }
 
     pub fn set_mode_override(&self, mode: Option<SandboxMode>) {
+        let effective = {
+            let mut modes = self.modes.lock().expect("sandbox modes lock poisoned");
+            modes.override_mode = mode;
+            modes.override_mode.unwrap_or(modes.configured)
+        };
         let mut state = self.state.write().expect("sandbox state lock poisoned");
-        state.override_mode = mode;
-        state.ensure_probe();
+        state.ensure_probe(effective);
     }
 
     pub fn update_settings_mode(&self, mode: SandboxMode) {
+        {
+            let mut modes = self.modes.lock().expect("sandbox modes lock poisoned");
+            modes.configured = mode;
+            modes.override_mode = None;
+        }
         let mut state = self.state.write().expect("sandbox state lock poisoned");
-        state.settings.mode = mode;
-        state.override_mode = None;
-        state.ensure_probe();
+        state.ensure_probe(mode);
     }
 
     pub fn for_cwd(&self, cwd: &Path) -> Arc<Self> {
@@ -582,19 +607,16 @@ impl Sandbox {
                 xdg_cache_home: state.xdg_cache_home.clone(),
                 xdg_runtime_dir: state.xdg_runtime_dir.clone(),
                 probe: state.probe.clone(),
-                override_mode: state.override_mode,
                 cached_workspace_write: None,
                 cached_read_only: None,
             }),
+            modes: Arc::clone(&self.modes),
         })
     }
 
     pub fn view(&self, mode: Option<SandboxMode>) -> SandboxView<'_> {
-        let state = self.state.read().expect("sandbox state lock poisoned");
-        let mode = state
-            .override_mode
-            .or(mode)
-            .unwrap_or_else(|| state.configured());
+        let modes = self.modes.lock().expect("sandbox modes lock poisoned");
+        let mode = modes.override_mode.or(mode).unwrap_or(modes.configured);
         SandboxView {
             sandbox: self,
             mode,

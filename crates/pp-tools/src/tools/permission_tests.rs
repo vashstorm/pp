@@ -4,7 +4,7 @@ use pp_core::cancellation::CancellationToken;
 use std::sync::{Arc, Mutex};
 
 fn gate(mode: PermissionMode, policies: &[(&str, PermissionPolicy)]) -> Gate {
-    let mut gate = Gate::new();
+    let gate = Gate::new();
     gate.set_config(ToolsSettings {
         permission_mode: Some(mode),
         permission: policies

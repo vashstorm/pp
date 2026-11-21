@@ -128,7 +128,7 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
     calls_reply(request, json!([call("sandbox-test", "bash", request_arguments.clone())]));
     pty.wait_for("预执行授权与持久化选项", |screen| {
         let contents = screen.contents();
-        contents.contains("outbound network") && contents.contains("Always allow in this project")
+        contents.contains("outbound network") && contents.contains("Always allow globally")
     });
     let marker = cwd.join("marker");
     let store = config_path(home.path(), "permission.toml");
@@ -146,8 +146,84 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
     assert!(rules.contains("[[rules]]"), "{rules}");
     assert!(rules.contains("[rules.grant]"), "{rules}");
     assert!(rules.contains(command), "{rules}");
+    assert!(!rules.contains("workspace ="), "{rules}");
     final_reply(request, "sandbox permission completed");
     pty.completed_after("sandbox permission completed");
+    pty.input("/quit\r");
+    pty.finish();
+    no_more(&server);
+
+    // 另一项目工作目录下启动，同名命令与范围直接命中同一全局持久化规则，不再弹确认。
+    let other_project = tempfile::tempdir().unwrap();
+    let other_cwd = other_project.path().canonicalize().unwrap();
+    let mut second_pty = Pty::start_with_args(&other_cwd, home.path(), &[]);
+    second_pty.input("run again in another project\r");
+    let (request, _) = second_pty.request(&server);
+    calls_reply(request, json!([call("sandbox-global", "bash", request_arguments)]));
+    let (request, body) = second_pty.request(&server);
+    let result = body["messages"].as_array().unwrap().iter()
+        .find(|message| message["role"] == "tool").unwrap();
+    let output: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+    assert_eq!(output["ok"], true, "{output}");
+    assert_eq!(std::fs::read_to_string(other_cwd.join("marker")).unwrap(), "approved");
+    final_reply(request, "global permission reused");
+    second_pty.completed_after("global permission reused");
+    second_pty.input("/quit\r");
+    second_pty.finish();
+    no_more(&server);
+}
+
+#[test]
+fn permission_tui_switches_independently_while_running_and_applies_to_next_tool_call() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let cwd = home.path().canonicalize().unwrap();
+    write_settings(home.path(), "tools: { permissionMode: always-ask }").unwrap();
+    std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
+    let mut pty = Pty::start_with_args(&cwd, home.path(), &[]);
+    pty.wait_for("初始 Always-ask", |screen| {
+        permission_label(screen, "Always-ask", vt100::Color::Rgb(125, 207, 255))
+    });
+
+    pty.input("run two writes\r");
+    let (request, _) = pty.request(&server);
+    calls_reply(
+        request,
+        json!([
+            call("w1", "write", json!({"path": "one.txt", "content": "1"})),
+            call("w2", "write", json!({"path": "two.txt", "content": "2"})),
+        ]),
+    );
+    // 第一个写操作在 Always-ask 下弹出权限确认；此时按 F6 切换到 Accept-edits（再按一次到 YOLO），
+    // 状态栏立即更新为 YOLO，然后确认当前第一个弹窗，紧接着的第二个 write 调用立即无弹窗放行。
+    pty.wait_for("首个工具进入权限弹窗", |screen| {
+        screen.contents().contains("Allow once")
+    });
+    pty.input("\x1b[17~");
+    pty.wait_for("弹窗期间切到 Accept-edits", |screen| {
+        permission_label(screen, "Accept-edits", vt100::Color::Rgb(254, 188, 56))
+    });
+    pty.input("\x1b[17~");
+    pty.wait_for("弹窗期间再切到 YOLO", |screen| {
+        permission_label(screen, "YOLO", vt100::Color::Rgb(224, 108, 117))
+    });
+    // 回车确认当前第一条工具的 Allow once；第二条工具直接以 YOLO 执行。
+    pty.input("\r");
+    let (request, body) = pty.request(&server);
+    let results: Vec<Value> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .map(|message| serde_json::from_str(message["content"].as_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(results.len(), 2, "{results:?}");
+    assert_eq!(results[0]["ok"], true, "{results:?}");
+    assert_eq!(results[1]["ok"], true, "{results:?}");
+    assert_eq!(std::fs::read_to_string(cwd.join("one.txt")).unwrap(), "1");
+    assert_eq!(std::fs::read_to_string(cwd.join("two.txt")).unwrap(), "2");
+    final_reply(request, "both writes done");
+    pty.completed_after("both writes done");
     pty.input("/quit\r");
     pty.finish();
     no_more(&server);

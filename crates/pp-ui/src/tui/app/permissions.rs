@@ -1,4 +1,8 @@
-use crate::tui::{App, KeyCode, KeyModifiers, Level, PendingKind, State, WorkerCommand, editor};
+use crate::commands::PermissionCommand;
+use crate::tui::{
+    App, Event, KeyCode, KeyEventKind, KeyModifiers, Level, PendingKind, State, WorkerCommand,
+    commands, editor, permissions,
+};
 use crossterm::event::KeyEvent;
 
 pub(super) fn is_permission_shortcut(key: KeyEvent) -> bool {
@@ -15,7 +19,128 @@ pub(super) fn is_permission_shortcut(key: KeyEvent) -> bool {
     }
 }
 
+pub(super) fn is_permission_command_shortcut(key: KeyEvent) -> bool {
+    key.code == KeyCode::F(7) && key.modifiers.is_empty()
+}
+
 impl App {
+    pub(in crate::tui) fn bind_bootstrap_permissions(&mut self) {
+        if self.permission_mode.is_none()
+            && let Some(bootstrap) = &self.bootstrap
+        {
+            if bootstrap.sandbox.get().is_none()
+                && let Ok(settings) =
+                    pp_config::config::read_settings(&bootstrap.dir.join("settings.yml"))
+            {
+                bootstrap.apply_tools_settings(&settings.tools);
+            }
+            self.permission = bootstrap.permission.as_ref().clone();
+            self.sandbox = bootstrap
+                .sandbox
+                .get()
+                .unwrap_or_else(|| std::sync::Arc::new(pp_sandbox::Sandbox::disabled()));
+            self.permission_mode = Some(self.permission.snapshot());
+        }
+    }
+
+    pub(in crate::tui) fn permission_status_text(&self) -> String {
+        PermissionCommand::Status
+            .apply_with(&self.permission, &self.sandbox)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| format!("Permission mode: {}", self.permission.snapshot().as_str()))
+    }
+
+    pub(super) fn toggle_permission_overlay(&mut self) {
+        if self.permission_overlay.is_some() {
+            self.permission_overlay = None;
+        } else {
+            self.permission_overlay =
+                Some(permissions::Overlay::new(self.permission_status_text()));
+        }
+    }
+
+    pub(super) fn handle_permission_overlay_event(
+        &mut self,
+        event: Event,
+        dirty: &mut bool,
+    ) -> bool {
+        *dirty = true;
+        match event {
+            Event::Key(key)
+                if key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                key.kind == KeyEventKind::Press
+            }
+            Event::Key(key) => {
+                let action = self
+                    .permission_overlay
+                    .as_mut()
+                    .map_or(permissions::OverlayAction::None, |overlay| overlay.key(key));
+                match action {
+                    permissions::OverlayAction::None => {}
+                    permissions::OverlayAction::Close => self.permission_overlay = None,
+                    permissions::OverlayAction::Submit(raw) => {
+                        match permissions::Overlay::parse_input(&raw) {
+                            Ok(command) => {
+                                self.apply_permission_command(command);
+                                if let Some(overlay) = &mut self.permission_overlay {
+                                    overlay.reset_input();
+                                }
+                            }
+                            Err(error) => {
+                                let message =
+                                    pp_core::logging::diagnostic_text(&format!("{error:#}"));
+                                if let Some(overlay) = &mut self.permission_overlay {
+                                    overlay.set_error(message);
+                                }
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            Event::Paste(text) => {
+                if let Some(overlay) = &mut self.permission_overlay {
+                    overlay.paste(&text);
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// 权限命令优先于面板／资源加载守卫执行；非 `/permissions` 命令返回 `false`。
+    pub(super) fn try_submit_permission_command(&mut self) -> bool {
+        if self.shell_mode {
+            return false;
+        }
+        let prompt = self.input.lines().join("\n");
+        let trimmed = prompt.trim_start();
+        let is_permissions = trimmed == "/permissions"
+            || trimmed
+                .strip_prefix("/permissions")
+                .is_some_and(|rest| rest.starts_with(char::is_whitespace));
+        if !is_permissions {
+            return false;
+        }
+        match commands::parse(&prompt, &self.file_commands) {
+            Ok(Some(crate::commands::Command::Permissions(command))) => {
+                self.mcp_panel = None;
+                self.apply_permission_command(command);
+                self.remember_input();
+                self.clear_input();
+                true
+            }
+            Err(error) => {
+                self.notify(Level::Error, format!("{error:#}"));
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn complete_permission_mode(
         &mut self,
         mode: pp_config::config::PermissionMode,
@@ -28,7 +153,127 @@ impl App {
         confirm && self.submit(PendingKind::Steering)
     }
 
-    pub(super) fn submit_permission_command(
+    fn dispatch_permission_rule_op(
+        &mut self,
+        request: permissions::RuleRequest,
+        pending_label: &str,
+    ) {
+        let worker = match self.permission_worker.as_ref() {
+            Some(worker) => worker,
+            None => match permissions::Worker::new() {
+                Ok(worker) => self.permission_worker.insert(worker),
+                Err(error) => {
+                    let message = pp_core::logging::diagnostic_text(&format!("{error:#}"));
+                    if let Some(overlay) = &mut self.permission_overlay {
+                        overlay.set_error(message.clone());
+                    }
+                    self.notify(Level::Error, message);
+                    return;
+                }
+            },
+        };
+        if let Err(error) = worker.send(request) {
+            self.permission_worker = None;
+            let message = pp_core::logging::diagnostic_text(&format!("{error:#}"));
+            if let Some(overlay) = &mut self.permission_overlay {
+                overlay.set_error(message.clone());
+            }
+            self.notify(Level::Error, message);
+            return;
+        }
+        if let Some(overlay) = &mut self.permission_overlay {
+            overlay.set_pending(pending_label);
+        }
+    }
+
+    pub(in crate::tui) fn receive_permissions(&mut self) -> bool {
+        let mut changed = false;
+        while let Some(reply) = self
+            .permission_worker
+            .as_ref()
+            .and_then(|worker| worker.replies.try_recv().ok())
+        {
+            match reply {
+                Ok(message) => {
+                    self.append("Permissions", &message);
+                    if let Some(overlay) = &mut self.permission_overlay {
+                        overlay.set_output(message);
+                    }
+                }
+                Err(error) => {
+                    let message = pp_core::logging::diagnostic_text(&format!("{error:#}"));
+                    if let Some(overlay) = &mut self.permission_overlay {
+                        overlay.set_error(message.clone());
+                    }
+                    self.notify(Level::Error, message);
+                }
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    pub(super) fn apply_permission_command(&mut self, command: PermissionCommand) {
+        // 规则查询与撤销涉及 `permission.toml` / `permission.lock` 磁盘锁，
+        // 统一交给独立 worker，内存中的模式切换与状态查询继续即时完成。
+        match command {
+            PermissionCommand::Rules => {
+                self.dispatch_permission_rule_op(
+                    permissions::RuleRequest::List(self.permission.clone()),
+                    "Loading saved permission rules...",
+                );
+                return;
+            }
+            PermissionCommand::Revoke(id) => {
+                self.dispatch_permission_rule_op(
+                    permissions::RuleRequest::Revoke {
+                        gate: self.permission.clone(),
+                        id,
+                    },
+                    "Revoking saved permission rule...",
+                );
+                return;
+            }
+            _ => {}
+        }
+        let changed = matches!(
+            command,
+            PermissionCommand::Cycle | PermissionCommand::Select(_)
+        );
+        match command.apply_with(&self.permission, &self.sandbox) {
+            Ok(message) => {
+                self.permission_mode = Some(self.permission.snapshot());
+                if let Some(message) = &message {
+                    self.append("Permissions", message);
+                }
+                if self.permission_overlay.is_some() {
+                    let status = message.unwrap_or_else(|| self.permission_status_text());
+                    if let Some(overlay) = &mut self.permission_overlay {
+                        overlay.set_output(status);
+                    }
+                }
+                if changed {
+                    if self.menu.is_some() {
+                        self.refresh_candidates(false);
+                    }
+                    if let Some(commands) = &self.commands
+                        && commands.send(WorkerCommand::SyncPermissions).is_err()
+                    {
+                        self.fail_worker();
+                    }
+                }
+            }
+            Err(error) => {
+                let message = pp_core::logging::diagnostic_text(&format!("{error:#}"));
+                if let Some(overlay) = &mut self.permission_overlay {
+                    overlay.set_error(message.clone());
+                }
+                self.notify(Level::Error, message);
+            }
+        }
+    }
+
+    pub(super) fn submit_sandbox_command(
         &mut self,
         command: WorkerCommand,
         report_busy: bool,
@@ -38,9 +283,9 @@ impl App {
                 let message = if matches!(self.state, State::Unavailable) {
                     self.unavailable
                         .clone()
-                        .unwrap_or_else(|| "Permissions unavailable.".into())
+                        .unwrap_or_else(|| "Sandbox unavailable.".into())
                 } else {
-                    "Finish or cancel the current task before changing permissions.".into()
+                    "Finish or cancel the current task before changing sandbox mode.".into()
                 };
                 self.notify(Level::Error, message);
             }
@@ -57,7 +302,7 @@ impl App {
     }
 }
 
-pub(super) fn request_permission(
+pub(in crate::tui) fn request_permission(
     events: &std::sync::mpsc::SyncSender<crate::tui::WorkerEvent>,
     request: pp_permission::PermissionRequest,
     token: &pp_core::cancellation::CancellationToken,
@@ -67,7 +312,7 @@ pub(super) fn request_permission(
 
     const ONCE: &str = "Allow once";
     const SESSION: &str = "Allow for this session";
-    const PERSIST: &str = "Always allow in this project";
+    const PERSIST: &str = "Always allow globally";
     let option = |label: &str, description: &str| AskOption {
         label: label.into(),
         description: Some(description.into()),
@@ -83,7 +328,7 @@ pub(super) fn request_permission(
     if request.persistent_grant {
         options.push(option(
             PERSIST,
-            "Save a rule for this exact command and permission scope",
+            "Save a global rule in permission.toml for all projects",
         ));
     }
     options.push(option("Deny", "Return tool permission denied"));

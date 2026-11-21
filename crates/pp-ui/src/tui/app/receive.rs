@@ -88,6 +88,7 @@ impl App {
         changed |= self.receive_auth();
         changed |= self.receive_settings();
         changed |= self.receive_themes();
+        changed |= self.receive_permissions();
         while let Some(reply) = self
             .stats_worker
             .as_ref()
@@ -293,7 +294,6 @@ impl App {
             | WorkerEvent::McpSnapshot(_)
             | WorkerEvent::McpManaged { .. }
             | WorkerEvent::SandboxStatus(_)
-            | WorkerEvent::Permissions(..)
             | WorkerEvent::LspWarmupFailed { .. }
             | WorkerEvent::LspPollFailed(_) => self.on_panel_event(event),
             WorkerEvent::PlansListed(_)

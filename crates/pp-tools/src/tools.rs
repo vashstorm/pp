@@ -593,8 +593,8 @@ impl Tools {
         if let Some(definition) = self.lsp_definition(lsp_readonly) {
             definitions.push(definition);
         }
-        let permissions = self.permission.snapshot();
-        let sandbox_status = self.sandbox.view(self.permission.sandbox_mode()).status();
+        let (permissions, sandbox_mode) = self.permission.snapshot_with_sandbox();
+        let sandbox_status = self.sandbox.view(sandbox_mode).status();
         if permissions == pp_config::config::PermissionMode::AcceptEdits
             && let Some(bash) = definitions
                 .iter_mut()
@@ -870,7 +870,7 @@ impl Tools {
         images: &mut Vec<read::ToolImage>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let access = self.authorize_call(call, hook_ask)?;
-        let sandbox = self.sandbox.view(self.permission.sandbox_mode());
+        let sandbox = access.sandbox;
         if let Some(value) = self.dispatch_subagent(
             call.name,
             call.arguments,

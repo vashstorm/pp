@@ -26,7 +26,7 @@ pub(crate) enum HookRole {
 pub(crate) struct HookScope {
     pub(crate) runner: std::sync::Arc<Runner>,
     pub(crate) role: Option<HookRole>,
-    pub(crate) permission_mode: &'static str,
+    pub(crate) permission: pp_tools::permission::Gate,
     pub(crate) agent_id: Option<String>,
     pub(crate) agent_type: Option<String>,
 }
@@ -71,7 +71,7 @@ pub(crate) fn scope(
     HookScope {
         runner: runner.clone(),
         role: role.filter(|_| execute),
-        permission_mode: permission_mode(permission.snapshot()),
+        permission: permission.clone(),
         agent_type: agent_id.as_ref().and(agent_type.map(str::to_owned)),
         agent_id,
     }
@@ -126,11 +126,12 @@ impl HookSession {
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
     ) -> Result<HookEffect> {
+        let permission_mode = permission_mode(self.scope.permission.snapshot());
         let context = Context {
             session_id: &self.session_id,
             transcript_path: &self.transcript,
             cwd: &self.cwd,
-            permission_mode: self.scope.permission_mode,
+            permission_mode,
             agent_id: self.scope.agent_id.as_deref(),
             agent_type: self.scope.agent_type.as_deref(),
         };
@@ -512,10 +513,12 @@ mod tests {
         });
 
         let runner = std::sync::Arc::new(Runner::compile(&settings).unwrap());
+        let permission = pp_tools::permission::Gate::new();
+        permission.select(Some(PermissionMode::AlwaysAsk));
         let hook_scope = HookScope {
             runner,
             role: Some(HookRole::Root),
-            permission_mode: "default",
+            permission,
             agent_id: None,
             agent_type: None,
         };
