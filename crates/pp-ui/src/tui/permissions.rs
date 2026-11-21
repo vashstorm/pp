@@ -29,6 +29,10 @@ pub(super) fn is_prompt(call_id: &str) -> bool {
 
 pub(super) enum RuleRequest {
     List(pp_permission::Gate),
+    SaveBash {
+        gate: pp_permission::Gate,
+        rule: pp_permission::BashRule,
+    },
     Revoke {
         gate: pp_permission::Gate,
         target: String,
@@ -52,6 +56,11 @@ impl Worker {
                 while let Ok(request) = receiver.recv() {
                     let reply = match request {
                         RuleRequest::List(gate) => gate.list_rules(),
+                        RuleRequest::SaveBash { gate, rule } => {
+                            let prefix = rule.prefix.join(" ");
+                            gate.save_bash_rule(rule)
+                                .map(|()| format!("Saved bash permission rule: {prefix}"))
+                        }
                         RuleRequest::Revoke { gate, target } => gate
                             .revoke_rule(&target)
                             .map(|()| "Saved permission revoked.".into()),
@@ -106,12 +115,10 @@ impl Overlay {
             if rest.is_empty() || rest.starts_with(char::is_whitespace) {
                 rest.trim()
             } else {
-                bail!(
-                    "usage: /permissions [always-ask|accept-edits|yolo|rules|revoke <index|tool>]"
-                );
+                bail!("{}", PermissionCommand::USAGE);
             }
         } else if trimmed.starts_with('/') {
-            bail!("usage: /permissions [always-ask|accept-edits|yolo|rules|revoke <index|tool>]");
+            bail!("{}", PermissionCommand::USAGE);
         } else {
             trimmed
         };
@@ -258,7 +265,7 @@ impl Overlay {
             );
         }
 
-        let hint = "Enter run · F6 cycle · always-ask|accept-edits|yolo|rules|revoke <index|tool> · Esc close";
+        let hint = "Enter run · F6 cycle · rules|allow|prompt|deny|revoke <index|rule> · Esc close";
         frame.render_widget(
             Line::styled(hint, Style::default().fg(transcript_style::muted())),
             Rect::new(inner.x, hint_y, inner.width, 1),

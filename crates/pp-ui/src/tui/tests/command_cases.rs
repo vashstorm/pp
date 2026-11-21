@@ -907,4 +907,28 @@ fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() 
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(gate.list_rules().unwrap(), "No saved permission rules.");
+
+    // 4. 通过浮层 `/permissions allow cargo test` 添加命令级前缀规则并按 `bash:cargo test` 撤销。
+    type_text(&mut app, "allow cargo test");
+    app.handle(key(KeyCode::Enter), &mut false);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !draw(&mut app, 100, 30).contains("Saved bash permission rule: cargo test") {
+        assert!(Instant::now() < deadline, "save bash rule timed out");
+        app.receive();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        gate.list_rules()
+            .unwrap()
+            .contains("Bash (allow): cargo test")
+    );
+    type_text(&mut app, "revoke bash:cargo test");
+    app.handle(key(KeyCode::Enter), &mut false);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !draw(&mut app, 100, 30).contains("Saved permission revoked.") {
+        assert!(Instant::now() < deadline, "revoke bash rule timed out");
+        app.receive();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(gate.list_rules().unwrap(), "No saved permission rules.");
 }

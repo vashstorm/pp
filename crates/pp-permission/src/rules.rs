@@ -1,6 +1,7 @@
 //! 用户级的持久全局授权与跨进程文件同步。
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use pp_config::config::PermissionPolicy;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -72,18 +73,60 @@ impl SandboxGrant {
     }
 }
 
+fn default_allow() -> PermissionPolicy {
+    PermissionPolicy::Allow
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BashRule {
+    pub prefix: Vec<String>,
+    #[serde(default = "default_allow")]
+    pub policy: PermissionPolicy,
+}
+
+impl BashRule {
+    pub(crate) fn validate(&self) -> Result<()> {
+        ensure!(!self.prefix.is_empty(), "empty bash permission prefix");
+        for token in &self.prefix {
+            ensure!(
+                !token.trim().is_empty()
+                    && token == token.trim()
+                    && !token.chars().any(char::is_control),
+                "invalid bash permission token"
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn display_prefix(&self) -> String {
+        pp_core::text::display_text(&self.prefix.join(" ")).into_owned()
+    }
+
+    pub(crate) fn summary(&self) -> String {
+        let policy = match self.policy {
+            PermissionPolicy::Allow => "allow",
+            PermissionPolicy::Prompt => "prompt",
+            PermissionPolicy::Deny => "deny",
+        };
+        format!("Bash ({policy}): {}", self.display_prefix())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Document {
     #[serde(default)]
     pub(crate) tools: Vec<String>,
     #[serde(default)]
+    pub(crate) bash: Vec<BashRule>,
+    #[serde(default)]
     pub(crate) sandbox: Vec<SandboxGrant>,
 }
 
 impl Document {
     fn is_empty(&self) -> bool {
-        self.tools.is_empty() && self.sandbox.is_empty()
+        self.tools.is_empty() && self.bash.is_empty() && self.sandbox.is_empty()
     }
 
     fn validate(&self) -> Result<()> {
@@ -91,6 +134,14 @@ impl Document {
         for tool in &self.tools {
             validate_tool_name(tool)?;
             ensure!(seen_tools.insert(tool), "duplicate permission tool");
+        }
+        let mut seen_bash = HashSet::with_capacity(self.bash.len());
+        for rule in &self.bash {
+            rule.validate()?;
+            ensure!(
+                seen_bash.insert(&rule.prefix),
+                "duplicate permission bash rule"
+            );
         }
         let mut seen_sandbox = HashSet::with_capacity(self.sandbox.len());
         for grant in &self.sandbox {
@@ -248,14 +299,18 @@ impl Store {
         if doc.is_empty() {
             return Ok("No saved permission rules.".into());
         }
-        let mut entries = Vec::with_capacity(doc.tools.len() + doc.sandbox.len());
+        let mut entries = Vec::with_capacity(doc.tools.len() + doc.bash.len() + doc.sandbox.len());
         for (index, tool) in doc.tools.iter().enumerate() {
             let number = index + 1;
             let tool = pp_core::text::display_text(tool);
             entries.push(format!("{number}. Tool: {tool}"));
         }
-        for (offset, grant) in doc.sandbox.iter().enumerate() {
+        for (offset, rule) in doc.bash.iter().enumerate() {
             let number = doc.tools.len() + offset + 1;
+            entries.push(format!("{number}. {}", rule.summary()));
+        }
+        for (offset, grant) in doc.sandbox.iter().enumerate() {
+            let number = doc.tools.len() + doc.bash.len() + offset + 1;
             let summary = grant.summary(None);
             let mut lines = summary.lines();
             let first = lines.next().unwrap_or("");
@@ -291,6 +346,27 @@ impl Store {
         })
     }
 
+    pub(crate) fn save_bash_batch(&self, rules: Vec<BashRule>) -> Result<()> {
+        for rule in &rules {
+            rule.validate()?;
+        }
+        self.update(|doc| {
+            let mut changed = false;
+            for rule in rules {
+                if let Some(existing) = doc.bash.iter_mut().find(|r| r.prefix == rule.prefix) {
+                    if existing.policy != rule.policy {
+                        existing.policy = rule.policy;
+                        changed = true;
+                    }
+                } else {
+                    doc.bash.push(rule);
+                    changed = true;
+                }
+            }
+            Ok(changed)
+        })
+    }
+
     pub(crate) fn revoke(&self, target: &str) -> Result<()> {
         let target = target.trim();
         ensure!(!target.is_empty(), "unknown permission rule: {target}");
@@ -298,6 +374,22 @@ impl Store {
             if let Some(pos) = doc.tools.iter().position(|tool| tool == target) {
                 doc.tools.remove(pos);
                 return Ok(true);
+            }
+            if let Some(raw_prefix) = target.strip_prefix("bash:") {
+                let normalized = raw_prefix.split_whitespace().collect::<Vec<_>>();
+                if !normalized.is_empty()
+                    && let Some(pos) = doc.bash.iter().position(|rule| {
+                        rule.prefix.len() == normalized.len()
+                            && rule
+                                .prefix
+                                .iter()
+                                .zip(normalized.iter())
+                                .all(|(a, b)| a == b)
+                    })
+                {
+                    doc.bash.remove(pos);
+                    return Ok(true);
+                }
             }
             if target.bytes().all(|byte| byte.is_ascii_digit())
                 && let Ok(number) = target.parse::<usize>()
@@ -308,7 +400,12 @@ impl Store {
                     doc.tools.remove(index);
                     return Ok(true);
                 }
-                let sandbox_index = index - doc.tools.len();
+                let bash_index = index - doc.tools.len();
+                if bash_index < doc.bash.len() {
+                    doc.bash.remove(bash_index);
+                    return Ok(true);
+                }
+                let sandbox_index = bash_index - doc.bash.len();
                 if sandbox_index < doc.sandbox.len() {
                     doc.sandbox.remove(sandbox_index);
                     return Ok(true);
@@ -383,6 +480,25 @@ fn encode_document(document: &Document) -> Result<String> {
                 writeln!(out, ",")?;
             }
             writeln!(out, "]")?;
+        }
+        for rule in &document.bash {
+            if !out.is_empty() {
+                writeln!(out)?;
+            }
+            writeln!(out, "[[bash]]")?;
+            write!(out, "prefix = [")?;
+            for (index, token) in rule.prefix.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                write_toml_string(&mut out, token)?;
+            }
+            writeln!(out, "]")?;
+            match rule.policy {
+                PermissionPolicy::Allow => {}
+                PermissionPolicy::Prompt => writeln!(out, "policy = \"prompt\"")?,
+                PermissionPolicy::Deny => writeln!(out, "policy = \"deny\"")?,
+            }
         }
         for grant in &document.sandbox {
             if !out.is_empty() {

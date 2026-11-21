@@ -3462,6 +3462,7 @@ name = "pp-permission"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "brush-core",
  "libc",
  "pp-config",
  "pp-core",

@@ -29,7 +29,7 @@ fn cloned_gate_keeps_session_grants_shared() {
     parent
         .enforce(
             "bash",
-            r#"{"command":"pwd"}"#,
+            r#"{"command":"echo hi"}"#,
             Tier::Exec,
             None,
             &CancellationToken::new(),
@@ -40,7 +40,7 @@ fn cloned_gate_keeps_session_grants_shared() {
     child
         .enforce(
             "bash",
-            r#"{"command":"pwd"}"#,
+            r#"{"command":"echo hi"}"#,
             Tier::Exec,
             None,
             &CancellationToken::new(),
@@ -50,7 +50,7 @@ fn cloned_gate_keeps_session_grants_shared() {
     once.set_handler(approve_handler());
     once.enforce(
         "bash",
-        r#"{"command":"pwd"}"#,
+        r#"{"command":"echo hi"}"#,
         Tier::Exec,
         None,
         &CancellationToken::new(),
@@ -331,17 +331,30 @@ fn destructive_commands_bypass_yolo_but_prompt_in_other_modes() {
 
 #[test]
 fn non_destructive_similar_commands_do_not_prompt() {
-    let mut gate = gate(PermissionMode::AlwaysAsk, &[]);
-    // 已有普通 bash 授权；误命中关键命令仍会因缺少 handler 而失败。
-    gate.set_handler(session_handler());
-    enforce(&gate, "bash", &bash("echo hi")).unwrap();
-    gate.handler = None;
-    enforce(&gate, "bash", &bash("rm -rf ./build")).unwrap();
-    enforce(&gate, "bash", &bash("cat /etc/passwd")).unwrap();
-    enforce(&gate, "bash", &bash("curl http://example.com")).unwrap();
-    enforce(&gate, "bash", &bash("echo hi | tee out.txt")).unwrap();
-    enforce(&gate, "bash", &bash("dd if=a of=b")).unwrap();
-    enforce(&gate, "bash", &bash("mkdir -p /tmp/work")).unwrap();
+    let gate = gate(PermissionMode::AcceptEdits, &[]);
+    let token = CancellationToken::new();
+    for command in [
+        "rm -rf ./build",
+        "cat /etc/passwd",
+        "curl http://example.com",
+        "echo hi | tee out.txt",
+        "dd if=a of=b",
+        "mkdir -p /tmp/work",
+    ] {
+        assert_eq!(destructive_reason(&bash(command)), None, "{command}");
+        gate.enforce_for(
+            PermissionMode::AcceptEdits,
+            "bash",
+            &bash(command),
+            ToolAccess {
+                tier: Tier::Exec,
+                sandboxed: true,
+            },
+            None,
+            &token,
+        )
+        .unwrap();
+    }
 }
 
 #[test]

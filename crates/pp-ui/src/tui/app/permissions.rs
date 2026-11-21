@@ -224,6 +224,16 @@ impl App {
                 );
                 return;
             }
+            PermissionCommand::AddBashRule(rule) => {
+                self.dispatch_permission_rule_op(
+                    permissions::RuleRequest::SaveBash {
+                        gate: self.permission.clone(),
+                        rule,
+                    },
+                    "Saving bash permission rule...",
+                );
+                return;
+            }
             PermissionCommand::Revoke(target) => {
                 self.dispatch_permission_rule_op(
                     permissions::RuleRequest::Revoke {

@@ -1,6 +1,9 @@
 use anyhow::{Result, bail};
-use pp_config::config::PermissionMode;
+use pp_config::config::{PermissionMode, PermissionPolicy};
+use pp_permission::BashRule;
 use pp_runtime::agent::Agent;
+
+const USAGE: &str = "usage: /permissions [always-ask|accept-edits|yolo|rules|allow <prefix...>|prompt <prefix...>|deny <prefix...>|revoke <index|rule>]";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PermissionCommand {
@@ -8,20 +11,33 @@ pub(crate) enum PermissionCommand {
     Select(PermissionMode),
     Cycle,
     Rules,
+    AddBashRule(BashRule),
     Revoke(String),
 }
 
 impl PermissionCommand {
+    pub(crate) const USAGE: &str = USAGE;
+
     pub(crate) fn parse(argument: &str) -> Result<Self> {
         let words = argument.split_whitespace().collect::<Vec<_>>();
         Ok(match words.as_slice() {
             [] => Self::Status,
             ["rules"] => Self::Rules,
-            ["revoke", target] => Self::Revoke((*target).into()),
+            ["allow", prefix @ ..] if !prefix.is_empty() => Self::AddBashRule(BashRule {
+                prefix: prefix.iter().map(|s| (*s).to_owned()).collect(),
+                policy: PermissionPolicy::Allow,
+            }),
+            ["prompt", prefix @ ..] if !prefix.is_empty() => Self::AddBashRule(BashRule {
+                prefix: prefix.iter().map(|s| (*s).to_owned()).collect(),
+                policy: PermissionPolicy::Prompt,
+            }),
+            ["deny", prefix @ ..] if !prefix.is_empty() => Self::AddBashRule(BashRule {
+                prefix: prefix.iter().map(|s| (*s).to_owned()).collect(),
+                policy: PermissionPolicy::Deny,
+            }),
+            ["revoke", target @ ..] if !target.is_empty() => Self::Revoke(target.join(" ")),
             [mode] => Self::Select(mode.parse()?),
-            _ => bail!(
-                "usage: /permissions [always-ask|accept-edits|yolo|rules|revoke <index|tool>]"
-            ),
+            _ => bail!("{USAGE}"),
         })
     }
 
@@ -43,6 +59,11 @@ impl PermissionCommand {
             }
             Self::Status => Ok(Some(status_with(permission, sandbox))),
             Self::Rules => permission.list_rules().map(Some),
+            Self::AddBashRule(rule) => {
+                let prefix = rule.prefix.join(" ");
+                permission.save_bash_rule(rule)?;
+                Ok(Some(format!("Saved bash permission rule: {prefix}")))
+            }
             Self::Revoke(target) => {
                 permission.revoke_rule(&target)?;
                 Ok(Some("Saved permission revoked.".into()))
