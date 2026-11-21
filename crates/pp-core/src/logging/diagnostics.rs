@@ -64,14 +64,14 @@ pub struct FailureContext {
 }
 
 impl FailureContext {
-    pub fn push(&mut self, raw: &str) {
+    pub fn push(&mut self, raw: String) {
         self.count += 1;
         // 常规 SSE 分片延迟到失败落盘时再脱敏；超过单条上限的超大文本就地脱敏并截断，
         // 避免直接截断原始串导致凭据跨边界漏出或占用过多内存。
         let text = if raw.len() > 16 * 1024 {
-            bounded(diagnostic_text(raw), 16 * 1024)
+            bounded(diagnostic_text(&raw), 16 * 1024)
         } else {
-            raw.to_owned()
+            raw
         };
         while self.bytes + text.len() > MAX_DETAIL_BYTES || self.events.len() >= 32 {
             let Some(old) = self.events.pop_front() else {
@@ -136,7 +136,7 @@ mod tests {
     fn diagnostics_recent_events_are_bounded_and_count_drops() {
         let mut context = FailureContext::default();
         for _ in 0..100 {
-            context.push(&"x".repeat(20 * 1024));
+            context.push("x".repeat(20 * 1024));
         }
         assert_eq!(context.count, 100);
         assert!(context.dropped > 0);
@@ -190,8 +190,9 @@ mod tests {
     fn failure_context_lazy_redaction_masks_all_recent_events() {
         register_secret("lazy-secret-xyz");
         let mut context = FailureContext::default();
-        context.push(r#"{"token":"lazy-secret-xyz","authorization":"Bearer secret.tok"}"#);
-        context.push(&format!(
+        context
+            .push(r#"{"token":"lazy-secret-xyz","authorization":"Bearer secret.tok"}"#.to_owned());
+        context.push(format!(
             "{}access_token\":\"inline-tok\"",
             "a".repeat(20 * 1024)
         ));

@@ -12,6 +12,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "logging/wire_cases.rs"]
+mod wire_cases;
+
 const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
 fn log_dir(home: &Path) -> PathBuf {

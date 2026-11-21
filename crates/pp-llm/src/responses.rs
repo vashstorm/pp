@@ -287,7 +287,8 @@ impl OpenAiClient {
                     Some(Some(event)) => {
                         let ResponseEvent(event, written, raw) =
                             event.map_err(|error| provider_failure(error, "Responses"))?;
-                        failure_context.push(&raw);
+                        // 线上原文所有权直接移交失败现场，不再额外克隆。
+                        failure_context.push(raw);
                         if record {
                             use async_openai::types::responses::ResponseStreamEvent;
                             let response = match &event {

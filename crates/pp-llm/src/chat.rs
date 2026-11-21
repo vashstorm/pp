@@ -12,7 +12,7 @@ use pp_core::events::AgentEvent;
 
 use super::parse::into_completion_turn;
 use super::retry::{ModelFailure, RequestAttempts, model_request_failed, provider_failure};
-use super::streaming::{ChatChunk, ChatStream};
+use super::streaming::{ChatChunk, ChatEvent, ChatStream};
 use super::{CompletionTurn, EMPTY_SUMMARY, OpenAiClient, elapsed_duration, elapsed_millis};
 use pp_config::auth::http as auth;
 
@@ -238,7 +238,7 @@ impl OpenAiClient {
             let opened = cancellation
                 .run_until_cancelled(async {
                     attempted = true;
-                    chat.create_stream_byot::<_, serde_json::Value>(&wire).await
+                    chat.create_stream_byot::<_, ChatEvent>(&wire).await
                 })
                 .await;
             // Persist the accepted request exactly once, before judging the
@@ -253,7 +253,6 @@ impl OpenAiClient {
             };
             let mut stream = opened.map_err(|error| provider_failure(error, "Chat Completions"))?;
             stream_opened = true;
-            let mut chunk_buf = Vec::new();
             loop {
                 match cancellation.run_until_cancelled(stream.next()).await {
                     None => return Err(Cancelled.into()),
@@ -261,13 +260,10 @@ impl OpenAiClient {
                     Some(Some(chunk)) => {
                         let chunk =
                             chunk.map_err(|error| provider_failure(error, "Chat Completions"))?;
-                        chunk_buf.clear();
-                        if serde_json::to_writer(&mut chunk_buf, &chunk).is_ok()
-                            && let Ok(raw) = std::str::from_utf8(&chunk_buf)
-                        {
-                            failure_context.push(raw);
-                        }
-                        output.push(ChatChunk::decode(chunk)?, &mut progress)?;
+                        // 反序列化边界已保留线上原文；直接移交失败现场，
+                        // 不再对每个分片做第二次 JSON 序列化。
+                        failure_context.push(chunk.raw);
+                        output.push(ChatChunk::decode(chunk.value)?, &mut progress)?;
                     }
                 }
             }

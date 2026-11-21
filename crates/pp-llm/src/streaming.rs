@@ -110,6 +110,26 @@ impl<'de> Deserialize<'de> for ResponseEvent {
     }
 }
 
+// Chat Completions 的 BYOT 事件：反序列化边界同时保留线上原文与解析后的值，
+// 失败现场不再对每个分片做第二次 JSON 序列化。
+pub(super) struct ChatEvent {
+    pub(super) value: serde_json::Value,
+    pub(super) raw: String,
+}
+
+impl<'de> Deserialize<'de> for ChatEvent {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
+        // RawValue 只做语法层校验；Syntax／Eof 分类在 BYOT 边界原样保留，
+        // 极端数字等 RawValue 通过、Value 拒绝的输入经 custom 转换为 Data。
+        let value = serde_json::from_str(raw.get()).map_err(D::Error::custom)?;
+        Ok(Self {
+            value,
+            raw: raw.get().to_owned(),
+        })
+    }
+}
+
 fn normalize_content_index(value: &mut serde_json::Value) {
     // Command Code 的 DeepSeek 流把内容索引写成 summary_index。
     // 仅兼容内容事件的有效索引别名，不覆盖标准字段，也不猜测缺失的索引。
@@ -953,5 +973,7 @@ impl ResponsesStream {
     }
 }
 
+#[cfg(test)]
+mod raw_cases;
 #[cfg(test)]
 mod tests;
