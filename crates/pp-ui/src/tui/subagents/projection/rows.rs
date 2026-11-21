@@ -496,6 +496,8 @@ impl Projection {
 
     fn upsert(&mut self, mut row: ActivityRow, key: String) {
         if let Some(index) = self.keys.get(&key).copied() {
+            // 更新分支只改 status/summary/brief（非排序字段），不置脏；
+            // 任何路径若改写 offset/timestamp/phase/agent 等排序字段，必须置 `sorted = false`。
             let target = &mut self.rows[index];
             target.status = row.status;
             if !row.summary.is_empty() {
@@ -508,6 +510,7 @@ impl Projection {
         }
         row.key = key.clone();
         self.keys.insert(key, self.rows.len());
+        // 不变量：新行插入必须置脏，排序键含 offset，缺失重排会破坏行序。
         self.rows.push(row);
         self.sorted = false;
     }
@@ -515,6 +518,7 @@ impl Projection {
     fn drop_row(&mut self, key: &str) {
         if let Some(index) = self.keys.remove(key) {
             self.rows.remove(index);
+            // 不变量：offset 变更必须置脏——删除移动后续行索引，重排前先重建 keys。
             self.reindex();
             self.sorted = false;
         }
@@ -530,6 +534,7 @@ impl Projection {
     }
 
     /// 合成旧日志缺失的 task 关联与终态 lifecycle；新日志有标记不重复。
+    /// 幂等：两端都不缺时跳过 rows 扫描，也不触发整表重排。
     pub(super) fn finalize(&mut self) {
         if !self.needs_finalize {
             return;
@@ -538,70 +543,79 @@ impl Projection {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        let runs = snapshot.runs.clone();
-        for run in runs {
-            let agent = run.agent_id.clone();
-            if !self.scanned.contains(&agent) || !self.streams.contains_key(&agent) {
-                continue;
-            }
-            if self
-                .streams
-                .get(&agent)
-                .is_some_and(|stream| stream.markers.contains(&run.id))
-            {
-                continue;
-            }
-            let bounds = self
-                .rows
-                .iter()
-                .filter(|row| row.agent == agent && row.run.as_deref() == Some(run.id.as_str()))
-                .fold(None, |bounds: Option<(u64, u64)>, row| {
-                    Some(match bounds {
-                        None => (row.offset, row.offset),
-                        Some((low, high)) => (low.min(row.offset), high.max(row.offset)),
-                    })
-                });
-            let Some((first, last)) = bounds else {
+        // 不可变预筛：不整包深拷贝快照，只收集确实要合成的 run 小字段。
+        let mut pending = Vec::new();
+        for run in &snapshot.runs {
+            let Some(stream) = self.streams.get(&run.agent_id) else {
                 continue;
             };
-            if !self
-                .streams
-                .get(&agent)
-                .is_some_and(|stream| stream.legacy_task.contains(&run.id))
-            {
+            if !self.scanned.contains(&run.agent_id) {
+                continue;
+            }
+            // 第一判据：新日志的 run 出现过 RunState 标记，真实行已存在。
+            if stream.markers.contains(&run.id) {
+                continue;
+            }
+            // 第二判据：幂等检查，两者都不缺时不计算任何 bounds。
+            let needs_task = !stream.legacy_task.contains(&run.id);
+            let terminal =
+                terminal_of(&run.status).filter(|_| !stream.legacy_terminal.contains(&run.id));
+            if !needs_task && terminal.is_none() {
+                continue;
+            }
+            // 只对缺失的一端计算端点；first/last 严格等于现存 rows 的
+            // min/max，合成行自身不推进 bounds。
+            let mut first = u64::MAX;
+            let mut last = 0;
+            let mut seen = false;
+            for row in self.rows.iter().filter(|row| {
+                row.agent == run.agent_id && row.run.as_deref() == Some(run.id.as_str())
+            }) {
+                seen = true;
+                if needs_task {
+                    first = first.min(row.offset);
+                }
+                if terminal.is_some() {
+                    last = last.max(row.offset);
+                }
+            }
+            if !seen {
+                continue;
+            }
+            pending.push(LegacyRun {
+                agent: run.agent_id.clone(),
+                run: run.id.clone(),
+                task: run.task.clone(),
+                needs_task,
+                terminal,
+                first,
+                last,
+            });
+        }
+        // 释放快照借用后再插入；插入经 upsert 置脏，无插入则不重排。
+        for item in &pending {
+            if item.needs_task {
                 self.insert_lifecycle(
-                    &agent,
-                    Some(&run.id),
-                    first,
+                    &item.agent,
+                    Some(&item.run),
+                    item.first,
                     None,
                     "Task",
-                    truncate(&run.task),
+                    truncate(&item.task),
                     RowStatus::Success,
                     0,
                 );
                 self.streams
-                    .entry(agent.clone())
+                    .entry(item.agent.clone())
                     .or_default()
                     .legacy_task
-                    .insert(run.id.clone());
+                    .insert(item.run.clone());
             }
-            let terminal = match run.status.as_str() {
-                "completed" => Some((RowStatus::Success, "completed")),
-                "failed" => Some((RowStatus::Error, "failed")),
-                "interrupted" => Some((RowStatus::Error, "interrupted")),
-                "cancelled" => Some((RowStatus::Aborted, "cancelled")),
-                _ => None,
-            };
-            if let Some((status, label)) = terminal
-                && !self
-                    .streams
-                    .get(&agent)
-                    .is_some_and(|stream| stream.legacy_terminal.contains(&run.id))
-            {
+            if let Some((status, label)) = item.terminal {
                 self.insert_lifecycle(
-                    &agent,
-                    Some(&run.id),
-                    last.saturating_add(1),
+                    &item.agent,
+                    Some(&item.run),
+                    item.last.saturating_add(1),
                     None,
                     "Run",
                     label.into(),
@@ -609,14 +623,36 @@ impl Projection {
                     2,
                 );
                 self.streams
-                    .entry(agent.clone())
+                    .entry(item.agent.clone())
                     .or_default()
                     .legacy_terminal
-                    .insert(run.id.clone());
+                    .insert(item.run.clone());
             }
         }
-        // 合成行插入后需要重排。
-        self.sorted = false;
+    }
+}
+
+/// legacy 合成的单 run 待办：预筛阶段只复制小字段，避免整包克隆快照。
+struct LegacyRun {
+    agent: String,
+    run: String,
+    task: String,
+    /// 仍缺 task 关联行：插在现存 rows 的 min(offset)。
+    needs_task: bool,
+    /// 终态行（含状态与文案）；Some 才合成，插在现存 rows 的 max(offset) + 1。
+    terminal: Option<(RowStatus, &'static str)>,
+    first: u64,
+    last: u64,
+}
+
+/// legacy run 状态到终态行的映射；非终态不合成 Run 行。
+fn terminal_of(status: &str) -> Option<(RowStatus, &'static str)> {
+    match status {
+        "completed" => Some((RowStatus::Success, "completed")),
+        "failed" => Some((RowStatus::Error, "failed")),
+        "interrupted" => Some((RowStatus::Error, "interrupted")),
+        "cancelled" => Some((RowStatus::Aborted, "cancelled")),
+        _ => None,
     }
 }
 
@@ -625,178 +661,4 @@ fn tool_key(agent: &str, run: Option<&str>, id: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::fixtures::*;
-    use super::*;
-    use pp_core::events::AgentEvent;
-    use pp_core::events::OutputStream;
-
-    #[test]
-    fn response_and_tool_update_in_place_across_runs() {
-        let mut projection = Projection::default();
-        projection.apply_snapshot(
-            snapshot(
-                vec![record("a1", "Main", "idle")],
-                vec![run("r1", "a1", "running", "work")],
-            ),
-            1,
-        );
-        let entries = vec![
-            entry(0, Some(10), "r1", AgentEvent::AssistantStarted),
-            entry(60, Some(11), "r1", delta("hello")),
-            entry(120, Some(12), "r1", delta(" world")),
-            entry(
-                180,
-                Some(13),
-                "r1",
-                AgentEvent::AssistantFinished {
-                    text: "hello world".into(),
-                },
-            ),
-            entry(
-                240,
-                Some(14),
-                "r1",
-                AgentEvent::ToolStarted {
-                    id: "c1".into(),
-                    name: "read".into(),
-                    arguments: r#"{"path":"src/main.rs"}"#.into(),
-                },
-            ),
-            entry(
-                300,
-                Some(15),
-                "r1",
-                AgentEvent::ToolFinished {
-                    id: "c1".into(),
-                    result: serde_json::json!({"ok":false,"error":"missing file"}),
-                },
-            ),
-            entry(
-                360,
-                Some(16),
-                "r1",
-                AgentEvent::ToolOutput {
-                    id: "c1".into(),
-                    stream: OutputStream::Stdout,
-                    text: "ignored".into(),
-                },
-            ),
-        ];
-        projection.ingest("a1", &page(entries, false), 1_000);
-        let rows = projection.rows();
-        assert_eq!(
-            rows.iter().filter(|row| row.kind == Kind::Response).count(),
-            1,
-            "一个 assistant turn 只产生一行"
-        );
-        let response = rows.iter().find(|row| row.kind == Kind::Response).unwrap();
-        assert_eq!(response.summary, "hello world");
-        assert_eq!(response.status, RowStatus::Success);
-        let tools = rows
-            .iter()
-            .filter(|row| row.kind == Kind::Tool)
-            .collect::<Vec<_>>();
-        assert_eq!(tools.len(), 1, "ToolOutput 不产生新活动行");
-        assert_eq!(tools[0].status, RowStatus::Error);
-        assert_eq!(tools[0].summary, "missing file");
-        assert_eq!(projection.recent("a1", 1)[0].summary, "missing file");
-        assert_eq!(projection.agents()[0].tools, 1);
-        // 新 Run 复用相同 call id 必须生成独立行。
-        let more = vec![entry(
-            420,
-            Some(20),
-            "r2",
-            AgentEvent::ToolStarted {
-                id: "c1".into(),
-                name: "read".into(),
-                arguments: "{}".into(),
-            },
-        )];
-        projection.ingest("a1", &page(more, false), 2_000);
-        assert_eq!(
-            projection
-                .rows()
-                .iter()
-                .filter(|row| row.kind == Kind::Tool)
-                .count(),
-            2
-        );
-    }
-
-    #[test]
-    fn legacy_rows_keep_file_order_and_synthesize_once() {
-        let mut projection = Projection::default();
-        projection.apply_snapshot(
-            snapshot(
-                vec![record("a1", "Main", "idle")],
-                vec![run("r1", "a1", "failed", "legacy work")],
-            ),
-            1,
-        );
-        // 旧日志：只有事件、无 timestamp、无 RunState。
-        let entries = vec![
-            entry(0, None, "r1", AgentEvent::AssistantStarted),
-            entry(
-                90,
-                None,
-                "r1",
-                AgentEvent::AssistantFinished {
-                    text: "legacy answer".into(),
-                },
-            ),
-        ];
-        projection.ingest("a1", &page(entries, false), 10);
-        projection.ingest("a1", &page(Vec::new(), false), 10);
-        let rows = projection.rows();
-        assert_eq!(
-            rows.iter().filter(|row| row.title == "Task").count(),
-            1,
-            "旧日志只合成一次 task 关联"
-        );
-        assert_eq!(
-            rows.iter().filter(|row| row.title == "Run").count(),
-            1,
-            "旧日志只合成一次终态"
-        );
-        let task = rows.iter().position(|row| row.title == "Task").unwrap();
-        let first_event = rows
-            .iter()
-            .position(|row| row.kind == Kind::Response)
-            .unwrap();
-        assert!(task < first_event, "task 关联排在 Run 第一条事件之前");
-        let terminal = rows.iter().find(|row| row.title == "Run").unwrap();
-        assert_eq!(terminal.status, RowStatus::Error);
-        assert_eq!(terminal.timestamp, None, "合成行不带伪造时间");
-        let without = rows.iter().filter(|row| row.timestamp.is_none()).count();
-        let with = rows.iter().filter(|row| row.timestamp.is_some()).count();
-        assert!(with <= 1 && without >= 3);
-        // 无时间记录排在有时间记录之前。
-        let first_ts = rows.iter().position(|row| row.timestamp.is_some());
-        if let Some(first_ts) = first_ts {
-            assert!(rows[..first_ts].iter().all(|row| row.timestamp.is_none()));
-        }
-    }
-
-    #[test]
-    fn activity_row_ids_are_stable_across_ingest() {
-        let mut projection = Projection::default();
-        projection.apply_snapshot(snapshot(vec![record("a1", "Main", "idle")], vec![]), 1);
-        projection.ingest(
-            "a1",
-            &page(
-                vec![entry(0, Some(10), "r1", AgentEvent::AssistantStarted)],
-                false,
-            ),
-            10,
-        );
-        let id = projection.rows()[0].id();
-        projection.ingest(
-            "a1",
-            &page(vec![entry(30, Some(11), "r1", delta("more"))], false),
-            20,
-        );
-        assert_eq!(projection.rows().len(), 1);
-        assert_eq!(projection.rows()[0].id(), id);
-    }
-}
+mod tests;

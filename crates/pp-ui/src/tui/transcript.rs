@@ -34,6 +34,7 @@ mod entry_layout;
 mod entry_title;
 mod entry_tool;
 mod entry_user;
+mod geometry;
 mod native;
 mod preview;
 mod progress;
@@ -352,8 +353,8 @@ pub(super) struct Transcript {
     injected_subagent_runs: BTreeSet<String>,
     offset: usize,
     browse_anchor: Option<BrowseAnchor>,
-    // 上一帧的几何信息独立保留，流式事件使 layout 失效后仍能处理滚轮。
-    displayed_heights: Vec<usize>,
+    // 备用屏幕几何按布局身份增量同步；树视图接管时清空，返回后强制全量重算。
+    geometry: geometry::Geometry,
     total: usize,
     viewport_height: usize,
     viewport_width: u16,
@@ -424,10 +425,10 @@ impl Transcript {
 
     pub(super) fn begin_browse(&mut self) {
         self.prepare_layout(self.viewport_width);
+        self.sync_geometry();
         self.offset = self.total.saturating_sub(self.viewport_height);
         self.follow_bottom = true;
         self.browse_anchor = None;
-        self.remember_heights();
     }
 
     pub(super) fn set_terminal_rows(&mut self, rows: u16) {
@@ -722,6 +723,7 @@ impl Transcript {
             }
         }
         self.prepare_layout(snapshot.area.width);
+        self.sync_geometry();
         // 分块回放全部历史，避免把整个会话分配成一个巨大的屏幕缓冲区。
         for offset in (0..self.total).step_by(64) {
             let height = (self.total - offset).min(64) as u16;
@@ -839,8 +841,8 @@ impl Transcript {
         }
         if self.browse_anchor.is_some() {
             self.prepare_layout(self.viewport_width);
+            self.sync_geometry();
             self.resolve_browse_anchor();
-            self.remember_heights();
         }
     }
 
@@ -871,20 +873,15 @@ impl Transcript {
             return false;
         }
         self.prepare_layout(self.viewport_width);
+        self.sync_geometry();
         let mut target = index;
         while target > 0 && self.entries[target].hidden {
             target -= 1;
         }
-        let offset = self.entries[..target]
-            .iter()
-            .filter_map(|entry| entry.layout.as_ref())
-            .filter(|layout| layout.height > 0)
-            .map(|layout| layout.height + 1)
-            .sum::<usize>();
+        let offset = self.geometry.start(target);
         let bottom = self.total.saturating_sub(self.viewport_height);
         self.offset = offset.min(bottom);
         self.follow_bottom = self.offset == bottom;
-        self.remember_heights();
         self.capture_browse_anchor();
         true
     }
@@ -906,8 +903,8 @@ impl Transcript {
         }
         self.read_groups_key = None;
         self.prepare_layout(width);
+        self.sync_geometry();
         self.resolve_browse_anchor();
-        self.remember_heights();
     }
 
     pub(super) fn invalidate_theme(&mut self) {
@@ -951,6 +948,7 @@ impl Transcript {
         }
         self.ensure_browse_anchor();
         self.prepare_layout(area.width);
+        self.sync_geometry();
         let bottom = self.total.saturating_sub(self.viewport_height);
         self.offset = if self.follow_bottom {
             bottom
@@ -958,8 +956,29 @@ impl Transcript {
             self.resolve_browse_anchor();
             self.offset.min(bottom)
         };
-        self.render(frame.buffer_mut(), area, self.offset);
-        self.remember_heights();
+        self.render_visible(frame.buffer_mut(), area);
+    }
+
+    /// 从几何定位的首个可见条目开始渲染备用屏幕窗口。
+    fn render_visible(&self, buffer: &mut Buffer, area: Rect) {
+        let Some((first, skip)) = self.geometry.locate(self.offset) else {
+            return;
+        };
+        // 槽位总数 = entries + 可选的结束摘要槽；first 超出 entries 时切片为空，
+        // 摘要槽紧接其后，不会错位。
+        let entries = &self.entries[first.min(self.entries.len())..];
+        Self::render_entry_layouts(
+            entries.iter().map(|entry| (entry, None, false)).chain(
+                self.activity
+                    .as_ref()
+                    .and_then(Activity::summary)
+                    .map(|entry| (entry, None, false)),
+            ),
+            buffer,
+            area,
+            skip,
+            false,
+        );
     }
 }
 

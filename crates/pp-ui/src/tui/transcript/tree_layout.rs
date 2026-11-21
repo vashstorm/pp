@@ -13,9 +13,9 @@ impl Transcript {
         reveal: bool,
     ) {
         self.viewport_height = usize::from(area.height);
-        // 树视图的边框与分组几何独立于普通历史浏览。
+        // 树视图的边框与分组几何独立于普通历史浏览；接管时丢弃备用屏幕前缀几何。
         self.browse_anchor = None;
-        self.displayed_heights.clear();
+        self.geometry.clear();
         if area.is_empty() {
             return;
         }

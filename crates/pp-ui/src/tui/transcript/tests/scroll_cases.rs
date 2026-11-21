@@ -294,7 +294,7 @@ fn streaming_scroll_static_history_survives_live_output_cancel_and_reset() {
     assert_eq!(wait_exact(&mut transcript, 60), before);
     transcript = transcript.fresh();
     assert!(transcript.browse_anchor.is_none());
-    assert!(transcript.displayed_heights.is_empty());
+    assert!(transcript.geometry.is_empty());
     assert!(transcript.following());
     assert!(!screen(&render(&mut transcript, 60, 8)).contains("static-"));
 }

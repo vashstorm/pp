@@ -151,6 +151,7 @@ mod bash_task_cases;
 mod diff_cases;
 mod entry_cases;
 mod eval_card_cases;
+mod geometry_cases;
 mod instruction_cases;
 mod layout_cases;
 mod lsp_cases;

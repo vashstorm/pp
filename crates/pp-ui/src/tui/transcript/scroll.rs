@@ -1,32 +1,16 @@
-use super::{Activity, BrowseAnchor, EntryKind, Transcript};
+use super::{BrowseAnchor, EntryKind, Transcript};
 
 impl Transcript {
-    pub(super) fn remember_heights(&mut self) {
-        self.displayed_heights.clear();
-        self.displayed_heights.extend(
-            self.entries
-                .iter()
-                .chain(self.activity.as_ref().and_then(Activity::summary))
-                .map(|entry| entry.layout.as_ref().map_or(0, |layout| layout.height)),
-        );
-    }
-
     pub(super) fn capture_browse_anchor(&mut self) {
         self.browse_anchor = None;
         if self.follow_bottom {
             return;
         }
-        let mut row = self.offset;
-        for (entry, &height) in self.displayed_heights.iter().enumerate() {
-            if height == 0 {
-                continue;
-            }
-            if row <= height {
-                self.browse_anchor = Some(BrowseAnchor { entry, row });
-                break;
-            }
-            row -= height + 1;
-        }
+        // 几何来自上一帧的内容布局，流式事件使 layout 失效后仍能处理滚轮。
+        let Some((entry, row)) = self.geometry.locate(self.offset) else {
+            return;
+        };
+        self.browse_anchor = Some(BrowseAnchor { entry, row });
     }
 
     pub(super) fn ensure_browse_anchor(&mut self) {
@@ -35,41 +19,42 @@ impl Transcript {
         }
     }
 
+    /// 内容槽位数：全部条目，外加存在结束摘要时的一个虚拟槽。
+    fn slot_count(&self) -> usize {
+        self.entries.len()
+            + usize::from(
+                self.activity
+                    .as_ref()
+                    .is_some_and(|activity| !activity.running),
+            )
+    }
+
     pub(super) fn resolve_browse_anchor(&mut self) {
         let Some(mut anchor) = self.browse_anchor else {
             return;
         };
-        let mut preceding = 0;
-        let mut last = None;
-        for (index, entry) in self
-            .entries
-            .iter()
-            .chain(self.activity.as_ref().and_then(Activity::summary))
-            .enumerate()
-        {
-            let height = entry.layout.as_ref().map_or(0, |layout| layout.height);
-            let exact = !matches!(entry.kind, EntryKind::Assistant | EntryKind::Think)
-                || !crate::tui::render_worker::enabled()
-                || entry.render.exact;
-            last = Some((index, preceding, height, exact));
-            if index == anchor.entry {
-                break;
-            }
-            if height > 0 {
-                preceding += height + 1;
-            }
-        }
-        if let Some((index, preceding, height, exact)) = last {
-            anchor.entry = index;
-            // 临时预览不足以证明正文缩短，不能永久裁掉用户希望浏览的行。
-            if exact {
-                anchor.row = anchor.row.min(height);
-            }
-            self.offset = preceding + anchor.row.min(height);
-            self.browse_anchor = Some(anchor);
-        } else {
+        let slots = self.slot_count();
+        if slots == 0 {
             self.offset = 0;
             self.browse_anchor = None;
+            return;
         }
+        // 锚点槽位可能已消失（如新一轮开始后结束摘要槽撤下）：回落到最后一个槽位。
+        anchor.entry = anchor.entry.min(slots - 1);
+        let height = self.geometry.height(anchor.entry);
+        let exact = self.entries.get(anchor.entry).is_none_or(|entry| {
+            !matches!(entry.kind, EntryKind::Assistant | EntryKind::Think)
+                || !crate::tui::render_worker::enabled()
+                || entry.render.exact
+        });
+        // 临时预览不足以证明正文缩短，不能永久裁掉用户希望浏览的行。
+        if exact {
+            anchor.row = anchor.row.min(height);
+        }
+        self.offset = self
+            .geometry
+            .start(anchor.entry)
+            .saturating_add(anchor.row.min(height));
+        self.browse_anchor = Some(anchor);
     }
 }

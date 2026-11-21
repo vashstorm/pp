@@ -10,19 +10,14 @@ impl Transcript {
     }
 
     pub(super) fn layout_entries(&mut self, width: u16, compact: bool) {
-        self.total = 0;
         self.prepare_read_groups();
         for entry in self
             .entries
             .iter_mut()
             .chain(self.activity.as_mut().and_then(Activity::summary_mut))
         {
-            let height = Self::layout_entry(entry, self.display, width, compact);
-            if height > 0 {
-                self.total += height + 1;
-            }
+            Self::layout_entry(entry, self.display, width, compact);
         }
-        self.total = self.total.saturating_sub(1);
     }
 
     pub(super) fn layout_entry(
@@ -96,6 +91,8 @@ impl Transcript {
         self.read_groups_key = Some(key);
     }
 
+    /// 完整查看器回放使用：从历史开头整段排版，不经过几何定位。
+    #[cfg(test)]
     pub(super) fn render(&self, buffer: &mut Buffer, area: Rect, skip: usize) {
         Self::render_entries(
             self.entries
