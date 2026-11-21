@@ -972,6 +972,7 @@ tools:
 - 权限档位紧跟在底栏的 effort 后，前面有盾牌图标。ASCII 图标模式用 `!` 表示权限。
 - 权限切换独立于任务与面板状态：任何时候（包括任务运行中、审批弹窗或面板打开期间）均可通过 Alt + Shift + A 或 F6 按表中顺序循环并保留输入草稿与光标，也可通过 F7 打开 `/permissions` 模态命令浮层或直接提交 `/permissions` 查看详情、`/permissions <模式>` 切换、`/permissions rules` 查看或 `/permissions revoke <index|tool>` 撤销规则；切换后的下一次工具调用立即生效。切换只在本次进程内生效，跨会话与 Plan 切换保留。启动时可用 `--permission-mode <模式>` 覆盖配置。
 - `accept-edits` 的 Bash 调用可用 `sandbox_permissions.writable` 申请增加可写目录，目录须已存在且使用绝对路径。若沙盒禁止出站，可通过 `sandbox_permissions.network: true` 申请为本次命令及其子进程开放出站网络。前台与后台命令均先确认再执行。普通失败只返回诊断，后续调用可以明确申请权限。硬性保护路径和拒绝规则继续生效。
+- TUI 的 `Permission required` 卡片展示请求权限的工具与原因。按 ↑／↓ 选择授权范围，按 Enter 确认，按 Esc 取消。原因较长时，可用 PgUp／PgDn 滚动查看。
 - 提示提供仅此一次、本会话允许、全局始终允许（`Always allow globally`）或拒绝。全局持久授权以简洁的分节 TOML 格式写入 `~/.pp/agent/permission.toml`（顶层 `tools = [...]` 保存工具名，可选 `[[sandbox]]` 保存 Bash 沙盒扩权规则）并对所有项目生效；多 `pp` 进程并发写入时通过 `permission.lock` 排他锁重读合并与原子替换避免覆盖，读取侧按文件指纹（含 `ctime`）按需重载使跨进程新增或原地覆写规则在下一次工具调用生效。`/permissions rules` 按编号列出规则，`/permissions revoke <index|tool>` 按编号或工具名撤销（TUI 内在独立后台线程执行，不阻塞界面）。文件损坏或保存失败时，持久授权无法放行。行模式和 `-p` 可以复用已保存的授权，需要新确认时返回工具错误。
 - `Always-ask` 和 `Accept-edits` 依赖可用的工作区沙盒，平台探测失败时阻止依赖沙盒的操作。启动参数 `--sandbox` 或命令 `/sandbox` 可临时覆盖本次会话的沙盒模式；可通过 `tools.permission` 为单个工具配置 `allow`／`prompt`／`deny` 覆盖策略（在非 `yolo` 模式下生效）。
 

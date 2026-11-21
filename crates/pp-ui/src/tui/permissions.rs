@@ -1,4 +1,4 @@
-//! 权限规则后台 I/O worker（避免 `permission.lock` 阻塞 TUI 事件循环）与模态 `/permissions` 命令浮层。
+//! 权限审批卡片、权限规则后台 I/O worker 与模态 `/permissions` 命令浮层。
 
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -18,6 +18,14 @@ use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::commands::PermissionCommand;
 use crate::tui::{editor, statusline, transcript_style};
+
+mod prompt;
+pub(super) use prompt::Prompt;
+
+pub(super) fn is_prompt(call_id: &str) -> bool {
+    call_id == "permission-dialog"
+        || call_id.starts_with("subagent-") && call_id.ends_with("-permission")
+}
 
 pub(super) enum RuleRequest {
     List(pp_permission::Gate),

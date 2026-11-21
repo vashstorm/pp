@@ -728,7 +728,7 @@ fn permission_switches_independently_across_states_queues_and_panels() {
 }
 
 #[test]
-fn permission_dialog_offers_always_allow_globally_for_regular_tools() {
+fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() {
     let (events, receiver) = mpsc::sync_channel(8);
     let token = CancellationToken::new();
     let handle = std::thread::spawn(move || {
@@ -737,7 +737,8 @@ fn permission_dialog_offers_always_allow_globally_for_regular_tools() {
             pp_permission::PermissionRequest {
                 tool: "mcp__remote__echo".into(),
                 agent: None,
-                reason: "tool runs outside the workspace sandbox and requires permission.".into(),
+                reason: "Runs outside the workspace sandbox.\nReview the requested permission."
+                    .into(),
                 session_grant: true,
                 persistent_grant: true,
             },
@@ -745,35 +746,34 @@ fn permission_dialog_offers_always_allow_globally_for_regular_tools() {
         )
     });
 
-    let WorkerEvent::Ask {
-        request,
-        reply,
-        cancellation: _,
-    } = receiver.recv_timeout(Duration::from_secs(2)).unwrap()
-    else {
-        panic!("expected Ask dialog event");
-    };
-    let labels: Vec<&str> = request.args.questions[0]
-        .options
-        .iter()
-        .map(|option| option.label.as_str())
-        .collect();
-    assert_eq!(
-        labels,
-        vec![
-            "Allow once",
-            "Allow for this session",
-            "Always allow globally",
-            "Deny",
-        ]
-    );
-    reply
-        .send(vec![pp_core::interaction::AskAnswer {
-            id: "permission".into(),
-            selected_options: vec!["Always allow globally".into()],
-            custom_input: None,
-        }])
-        .unwrap();
+    let mut app = app();
+    app.input.insert_str("draft");
+    app.receive_event_for_test(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
+    let screen = draw(&mut app, 100, 30);
+    for label in [
+        "Permission required",
+        "mcp__remote__echo",
+        "workspace sandbox",
+        "Allow once",
+        "Allow for this session",
+        "Always allow globally",
+        "Deny",
+    ] {
+        assert!(screen.contains(label), "{screen}");
+    }
+    let mut dirty = false;
+    let short = draw(&mut app, 48, 10);
+    assert!(short.contains("mcp__remote__echo"), "{short}");
+    assert!(!short.contains("workspace sandbox"), "{short}");
+    app.handle(key(KeyCode::PageDown), &mut dirty);
+    let scrolled = draw(&mut app, 48, 10);
+    assert!(scrolled.contains("workspace sandbox"), "{scrolled}");
+    app.handle(key(KeyCode::Down), &mut dirty);
+    app.handle(key(KeyCode::Down), &mut dirty);
+    let compact = draw(&mut app, 28, 9);
+    assert!(compact.contains("> Always allow globally"), "{compact}");
+    assert_eq!(app.input.lines(), &["draft"]);
+    app.handle(key(KeyCode::Enter), &mut dirty);
     let decision = handle.join().unwrap().unwrap();
     assert_eq!(
         decision,

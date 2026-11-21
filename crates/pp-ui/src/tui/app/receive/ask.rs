@@ -1,9 +1,9 @@
-//! worker `Ask`／`DialogFinished` 事件：打开提问面板并登记回复通道。
+//! worker `Ask`／`DialogFinished` 事件：打开交互面板并登记回复通道。
 
-use crate::tui::{App, State, WorkerEvent, ask};
+use crate::tui::{App, State, WorkerEvent, dialog};
 
 impl App {
-    /// 提问事件族；面板打开时无条件视为已变化。
+    /// 交互请求到达时重新绘制。
     pub(super) fn on_ask_event(&mut self, event: WorkerEvent) -> bool {
         let mut changed = false;
         match event {
@@ -48,11 +48,11 @@ impl App {
                     self.menu = None;
                     self.menu_dismissed = true;
                     self.queue_menu = false;
-                    // 进度视图不能挡住 ask 的键盘路由；先让位给 ask 面板。
+                    // 交互面板需要优先接收键盘输入。
                     self.plan_panel = None;
                     self.ask_id = Some(request.call_id.clone());
                     self.ask_cancellation = Some(cancellation);
-                    self.ask_panel = Some(ask::Panel::new(request));
+                    self.ask_panel = Some(dialog::Panel::new(request));
                     self.ask_reply = Some(reply);
                     self.conversation.waiting_for_input();
                 }

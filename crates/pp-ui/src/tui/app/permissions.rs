@@ -313,31 +313,25 @@ pub(in crate::tui) fn request_permission(
     const ONCE: &str = "Allow once";
     const SESSION: &str = "Allow for this session";
     const PERSIST: &str = "Always allow globally";
-    let option = |label: &str, description: &str| AskOption {
+    let option = |label: &str, description: Option<&str>| AskOption {
         label: label.into(),
-        description: Some(description.into()),
+        description: description.map(str::to_owned),
         preview: None,
     };
-    let mut options = vec![option(ONCE, "Run the current tool call only")];
+    let mut options = vec![option(ONCE, None)];
     if request.session_grant {
-        options.push(option(
-            SESSION,
-            "Granted to the root session and its subagents",
-        ));
+        options.push(option(SESSION, Some("Includes subagents")));
     }
     if request.persistent_grant {
-        options.push(option(
-            PERSIST,
-            "Save a global rule in permission.toml for all projects",
-        ));
+        options.push(option(PERSIST, Some("Saved in permission.toml")));
     }
-    options.push(option("Deny", "Return tool permission denied"));
+    options.push(option("Deny", None));
     let args = AskArgs {
         questions: vec![AskQuestion {
             id: "permission".into(),
-            question: format!("{}: {}", request.tool, request.reason),
+            question: request.reason,
             options,
-            header: None,
+            header: Some(request.tool),
             multi: false,
             recommended: None,
         }],

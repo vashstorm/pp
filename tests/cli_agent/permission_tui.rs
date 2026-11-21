@@ -128,7 +128,9 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
     calls_reply(request, json!([call("sandbox-test", "bash", request_arguments.clone())]));
     pty.wait_for("预执行授权与持久化选项", |screen| {
         let contents = screen.contents();
-        contents.contains("outbound network") && contents.contains("Always allow globally")
+        contents.contains("Permission required")
+            && contents.contains("outbound network")
+            && contents.contains("Always allow globally")
     });
     let marker = cwd.join("marker");
     let store = config_path(home.path(), "permission.toml");

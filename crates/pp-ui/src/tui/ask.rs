@@ -16,6 +16,7 @@ use ratatui::{
 };
 use ratatui_textarea::TextArea;
 
+use super::dialog::Action;
 use super::menu::{MenuEvent, MenuItem, SelectionMenu};
 use super::transcript_style::{accent, activity, ask_bg, ask_border, ask_tab_bg, dim, removed};
 use pp_core::interaction::AskAnswer;
@@ -44,13 +45,6 @@ const REVIEW_HINT: &str = "Enter submit · Tab questions · Esc cancel";
 const COMPACT_HINT: &str = "Space select · Enter confirm · Tab next · Esc cancel";
 const COMPACT_SINGLE_PAGE_HINT: &str = "Space select · Enter confirm · Esc cancel";
 
-#[derive(Debug)]
-pub(super) enum Action {
-    None,
-    Submit(Vec<AskAnswer>),
-    Cancel,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
     Question(usize),
@@ -65,13 +59,13 @@ struct QuestionState {
 }
 
 impl QuestionState {
-    fn new(question: &pp_core::interaction::AskQuestion, allow_custom: bool) -> Self {
+    fn new(question: &pp_core::interaction::AskQuestion) -> Self {
         let initial = question
             .recommended
             .filter(|index| *index < question.options.len())
             .unwrap_or(0);
-        let menu = SelectionMenu::new(menu_items(question, &[], false, allow_custom), initial)
-            .with_accent(accent());
+        let menu =
+            SelectionMenu::new(menu_items(question, &[], false), initial).with_accent(accent());
         Self {
             selected: Vec::new(),
             custom: String::new(),
@@ -88,23 +82,14 @@ pub(super) struct Panel {
     error: Option<String>,
     submitted: bool,
     review_scroll: usize,
-    permission: bool,
-    details_offset: usize,
-    details_limit: usize,
     overlay: Option<Rect>,
     review: Option<(u16, Vec<Line<'static>>)>,
 }
 
 impl Panel {
     pub(super) fn new(request: AskRequest) -> Self {
-        let AskRequest { args, call_id } = request;
-        let permission = call_id == "permission-dialog"
-            || call_id.starts_with("subagent-") && call_id.ends_with("-permission");
-        let states = args
-            .questions
-            .iter()
-            .map(|question| QuestionState::new(question, !permission))
-            .collect();
+        let args = request.args;
+        let states = args.questions.iter().map(QuestionState::new).collect();
         Self {
             questions: args,
             states,
@@ -113,9 +98,6 @@ impl Panel {
             error: None,
             submitted: false,
             review_scroll: 0,
-            permission,
-            details_offset: 0,
-            details_limit: 0,
             overlay: None,
             review: None,
         }

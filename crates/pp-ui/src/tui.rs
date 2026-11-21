@@ -5,6 +5,7 @@ mod auth;
 #[cfg(test)]
 mod auth_tests;
 mod context_panel;
+mod dialog;
 mod edit_diff;
 mod files;
 mod frame_clock;
@@ -555,7 +556,7 @@ struct App {
     queue_menu: bool,
     queue_menu_revision: Option<u64>,
     queue_snapshot: Option<QueueSnapshot>,
-    ask_panel: Option<ask::Panel>,
+    ask_panel: Option<dialog::Panel>,
     ask_reply: Option<mpsc::SyncSender<Vec<pp_core::interaction::AskAnswer>>>,
     ask_id: Option<String>,
     ask_cancellation: Option<CancellationToken>,

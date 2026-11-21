@@ -1,6 +1,6 @@
 use crate::tui::{
     App, COMMANDS, Command, Level, MenuAction, ModelPickerDraft, PendingKind, PlanCommand, Result,
-    State, WorkerCommand, ask, commands, editor, files, model, sessions, skills,
+    State, WorkerCommand, commands, dialog, editor, files, model, sessions, skills,
 };
 use anyhow::Context;
 
@@ -957,10 +957,10 @@ impl App {
         }
     }
 
-    pub(in crate::tui) fn apply_ask_action(&mut self, action: ask::Action) {
+    pub(in crate::tui) fn apply_ask_action(&mut self, action: dialog::Action) {
         match action {
-            ask::Action::None => {}
-            ask::Action::Cancel => {
+            dialog::Action::None => {}
+            dialog::Action::Cancel => {
                 let child = self
                     .ask_id
                     .as_ref()
@@ -971,7 +971,7 @@ impl App {
                     self.conversation.cancelling();
                 }
             }
-            ask::Action::Submit(answers) => {
+            dialog::Action::Submit(answers) => {
                 let child = self
                     .ask_id
                     .as_ref()

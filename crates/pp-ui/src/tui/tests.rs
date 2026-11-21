@@ -49,7 +49,7 @@ fn ask_fixture(
     app.conversation.begin_run();
     let args = pp_core::interaction::AskArgs::parse(r#"{"questions":[{"id":"choice","question":"Choose storage","options":[{"label":"SQLite"},{"label":"Postgres"}],"recommended":0}]}"#).unwrap();
     let (reply, answers) = mpsc::sync_channel(1);
-    app.ask_panel = Some(ask::Panel::new(pp_core::interaction::AskRequest {
+    app.ask_panel = Some(dialog::Panel::new(pp_core::interaction::AskRequest {
         call_id: "ask-1".into(),
         args: std::sync::Arc::new(args),
     }));
