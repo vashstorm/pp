@@ -117,12 +117,18 @@ pp enters the TUI when both stdin and stdout are terminals; otherwise, it uses l
 
 ```sh
 pp -p 'Read the current project and explain its structure without changing files.'
+# Resume a session non-interactively and append a follow-up prompt
+pp -p -r <SESSION_ID> 'Summarize what changed.'
+# Allow write/execution tools and stream JSONL events (or use --mode json for a single terminal summary)
+pp -p --mode stream-json --allowed-tools 'Read,Grep,Edit,Bash' 'Fix the failing test and verify.'
 printf 'Explain how to build the current project\n' | pp
 # Model shorthand: fuzzy provider/model[:effort] for this run only (favorites win ties, the default effort applies when omitted), then run a startup slash command
 pp --model deepseek/deepseek-flash:high /commit
 # Options after a startup slash command belong to that command, not to pp
 pp /stats --host 127.0.0.1 --port 0 --no-open
 ```
+
+Non-interactive `-p` runs default to read-only tools (`Read, Grep, Glob`) with subagents disabled. Pass `--allowed-tools` (alias `--allowed_tools`, comma-separated tool names such as `Read,Grep,Edit,Bash`, `mcp__*`, or `*`) to expand capabilities and pre-approve them for that run; include `Task` to enable subagent dispatch. `--mode stream-json` writes real-time JSONL events (`init` through terminal `result`, including `status: "error"` on failure) to `stdout` while keeping logs and errors on `stderr`; `--mode json` emits only the terminal `result` JSON object to `stdout`.
 
 > **Permissions and data** — `accept-edits` is the default preset. It uses the workspace sandbox and prompts for extra Bash access on request. Set `tools.permissionMode` in `settings.yml` to choose another preset (`always-ask`, `accept-edits`, or `yolo`). `always-ask` also asks before write and execution tools. `yolo` turns off the pp sandbox and skips routine tool permission prompts. The colored TUI footer shows the active mode. Press Alt + Shift + A or F6 to cycle, or use `/permissions` to see the effective sandbox and permission settings. API keys in the model configuration are stored in plain text. Sessions and statistics may contain source code and conversations. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
 

@@ -157,7 +157,12 @@ fn session_broken_stdout_still_persists_executed_tool_results() {
         command(
             home.path(),
             project.path(),
-            &["-p", "record with closed display"],
+            &[
+                "--allowed-tools",
+                "Write",
+                "-p",
+                "record with closed display",
+            ],
         )
         .spawn()
         .unwrap(),

@@ -123,7 +123,14 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
         );
         let resumed = LiveCli::new(Cli::spawn(
             dir.path(),
-            &["-r", id, "-p", "inspect saved logs"],
+            &[
+                "--allowed-tools",
+                "Read,Bash",
+                "-r",
+                id,
+                "-p",
+                "inspect saved logs",
+            ],
             &[],
         ));
         let (request, _) = protocol.receive(&server);

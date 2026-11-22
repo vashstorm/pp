@@ -34,6 +34,23 @@ pub fn run_cli_task(
     run_cli_execution(CliExecution::Agent { agent, prompt }, stdout, stderr)
 }
 
+pub fn run_cli_task_with_mode(
+    agent: &mut agent::Agent,
+    prompt: Option<&str>,
+    mode: super::json::OutputMode,
+    resumed: bool,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    result_written: &mut bool,
+) -> Result<()> {
+    match mode {
+        super::json::OutputMode::Text => run_cli_task(agent, prompt, stdout, stderr),
+        super::json::OutputMode::Json | super::json::OutputMode::StreamJson => {
+            super::json::run_json_task(agent, prompt, mode, resumed, stdout, stderr, result_written)
+        }
+    }
+}
+
 /// dev/test 专用入口：用内嵌 mock server 运行真实 Agent 场景，不触碰正常会话。
 #[cfg(debug_assertions)]
 pub fn run_cli_mock_test(

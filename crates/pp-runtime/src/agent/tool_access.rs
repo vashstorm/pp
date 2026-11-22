@@ -23,6 +23,30 @@ pub(in crate::agent) fn execute_web_action(
 }
 
 impl Agent {
+    pub fn cwd(&self) -> &std::path::Path {
+        self.tools.cwd()
+    }
+
+    pub fn set_subagents_enabled(&mut self, enabled: bool) {
+        self.subagents_enabled = enabled;
+    }
+
+    pub fn active_tool_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .tools
+            .all_definitions(self.workflow.mode)
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+        if self.subagents_enabled
+            && self.workflow.mode == pp_core::plan::WorkMode::Execute
+            && !names.iter().any(|name| name == "task")
+        {
+            names.push("task".to_owned());
+        }
+        names
+    }
+
     pub fn bash_timeout_seconds(&self) -> u64 {
         self.tools.limits.bash_timeout_seconds
     }

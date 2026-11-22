@@ -829,6 +829,8 @@ fn unavailable_model_binds_configured_permission_mode_before_cycling() {
         sandbox: pp_sandbox::SharedSandbox::default(),
         mcp: std::sync::Arc::new(pp_mcp::McpManager::empty()),
         models: pp_config::model_state::SharedModels::default(),
+        allowed_tools: None,
+        subagents_enabled: true,
     };
     let mut app = App::new(Err(anyhow::anyhow!("missing models.yml"))).unwrap();
     app.bootstrap = Some(bootstrap);

@@ -84,7 +84,7 @@ fn system_prompt_cli_and_discovery_keep_literal_and_required_blocks_both_protoco
                 "",
             ),
         ] {
-            let mut args = vec!["-p", "inspect"];
+            let mut args = vec!["--allowed-tools", "*", "-p", "inspect"];
             args.extend(flags);
             let cli = Cli::spawn(cwd.path(), &args, &[]);
             let (request, body) = receive_for(&server, protocol);

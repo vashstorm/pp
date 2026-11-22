@@ -94,6 +94,18 @@ impl Tools {
         self.sandbox.view(self.permission.sandbox_mode()).status()
     }
 
+    pub fn allows_any_mcp(&self) -> bool {
+        self.allowed_tools
+            .as_ref()
+            .is_none_or(crate::AllowedTools::allows_any_mcp)
+    }
+
+    pub fn allows_lsp_lifecycle(&self) -> bool {
+        self.allowed_tools
+            .as_ref()
+            .is_none_or(crate::AllowedTools::allows_lsp_lifecycle)
+    }
+
     /// 生产与子 Agent 构造入口：注入进程级共享的 `McpManager`。
     pub fn with_mcp(
         cwd: PathBuf,
@@ -231,8 +243,7 @@ impl Tools {
         }
         if let Some(allowed) = &self.allowed_tools {
             ensure!(
-                allowed.iter().any(|tool| tool == name)
-                    || name == "yield" && self.yield_schema.is_some(),
+                allowed.allows(name) || name == "yield" && self.yield_schema.is_some(),
                 "Tool is outside this agent capability set."
             );
         }

@@ -25,7 +25,7 @@ fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_prec
             let cli = Cli::start_env(
                 dir.path(),
                 dir.path(),
-                &["-p", "调用远程工具"],
+                &["--allowed-tools", "mcp__*", "-p", "调用远程工具"],
                 &[("PP_MCP_TEST_KEY", "env-secret")],
             );
             let path = if protocol == "completion" {

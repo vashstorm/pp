@@ -16,7 +16,7 @@ use pp_stats as stats;
 use pp_ui::tui;
 
 use anyhow::{Context, Result, ensure};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::{
     io::{self, IsTerminal, Write},
     process::ExitCode,
@@ -29,19 +29,19 @@ use std::{
     disable_version_flag = true,
     args_conflicts_with_subcommands = true,
     about = "Minimal coding agent using OpenAI-compatible Responses or Chat Completions",
-    after_help = "Modes:\n  pp -p 'task'          run one task and exit\n  pp -r [SESSION_ID]    open the resume picker, or resume a saved session by ID\n  pp -c [SESSION_ID]    continue a saved session\n  pp /COMMAND           run a slash command immediately after startup\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `/login` and `/logout` in the TUI to manage subscription credentials, `pp stats --help` for statistics, or `pp gc [DAYS]` to remove data older than the given days (default 90)."
+    after_help = "Modes:\n  pp -p 'task'          run one task non-interactively and exit\n  pp -p -r ID 'task'    resume session ID and run a new non-interactive prompt\n  pp -r [SESSION_ID]    open the resume picker, or resume a saved session by ID\n  pp -c [SESSION_ID]    continue a saved session\n  pp /COMMAND           run a slash command immediately after startup\n  pp                    interactive session (TUI on a terminal, line mode otherwise)\n\nUse `/login` and `/logout` in the TUI to manage subscription credentials, `pp stats --help` for statistics, or `pp gc [DAYS]` to remove data older than the given days (default 90)."
 )]
 struct Args {
     #[command(subcommand)]
     subcommand: Option<Command>,
 
-    /// Run a slash command immediately after startup (e.g. /commit); conflicts with -p, -r, and -c
+    /// Run a slash command immediately after startup (e.g. /commit), or provide the prompt in -p mode
     #[arg(
-        value_name = "COMMAND",
+        value_name = "COMMAND_OR_PROMPT",
         num_args = 1..,
         trailing_var_arg = true,
         allow_hyphen_values = true,
-        conflicts_with_all = ["prompt", "resume", "continue_session"]
+        conflicts_with = "continue_session"
     )]
     command: Vec<String>,
 
@@ -49,9 +49,22 @@ struct Args {
     #[arg(short = 'v', short_alias = 'V', long, action = clap::ArgAction::Version)]
     version: (),
 
-    /// Run one complete task and exit; omit for an interactive session
-    #[arg(short, long)]
-    prompt: Option<String>,
+    /// Run one complete task non-interactively and exit; omit for an interactive session
+    #[arg(short = 'p', long = "print", alias = "prompt", num_args = 0..=1, value_name = "PROMPT")]
+    prompt: Option<Option<String>>,
+
+    /// Output format for non-interactive -p runs (text, json, stream-json)
+    #[arg(long, value_enum, value_name = "MODE", default_value_t = OutputModeCli::Text)]
+    mode: OutputModeCli,
+
+    /// Comma-separated tools allowed in this run (non-interactive -p defaults to "Read, Grep, Glob"; include Task to enable subagents)
+    #[arg(
+        long = "allowed-tools",
+        alias = "allowed_tools",
+        value_name = "TOOLS",
+        action = clap::ArgAction::Append
+    )]
+    allowed_tools: Vec<String>,
 
     /// Replace the base system prompt with inline text or a file path
     #[arg(long, value_name = "TEXT_OR_FILE", conflicts_with_all = ["system_prompt_template", "resume", "continue_session"])]
@@ -98,6 +111,24 @@ struct Args {
     model: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+enum OutputModeCli {
+    #[default]
+    Text,
+    Json,
+    StreamJson,
+}
+
+impl From<OutputModeCli> for cli::OutputMode {
+    fn from(value: OutputModeCli) -> Self {
+        match value {
+            OutputModeCli::Text => Self::Text,
+            OutputModeCli::Json => Self::Json,
+            OutputModeCli::StreamJson => Self::StreamJson,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 enum SandboxModeCli {
     Auto,
@@ -141,11 +172,43 @@ enum Command {
     },
 }
 
+#[derive(Default)]
+struct ErrorContext {
+    session_id: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    result_written: bool,
+}
+
+fn parse_args() -> Args {
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let initial = match Args::try_parse_from(&raw) {
+        Ok(args) => args,
+        Err(error) => error.exit(),
+    };
+    if initial.prompt.is_some() {
+        let cmd = Args::command().mut_arg("command", |arg| {
+            arg.trailing_var_arg(false)
+                .allow_hyphen_values(false)
+                .num_args(0..=1)
+        });
+        match cmd.try_get_matches_from(&raw) {
+            Ok(matches) => match Args::from_arg_matches(&matches) {
+                Ok(args) => return args,
+                Err(error) => error.exit(),
+            },
+            Err(error) => error.exit(),
+        }
+    }
+    initial
+}
+
 fn main() -> ExitCode {
     logging::perf::mark("start");
     pp_runtime::raise_file_limit();
     host_defaults::install(host_defaults::capture());
-    let args = Args::parse();
+    let args = parse_args();
+    let output_mode: cli::OutputMode = args.mode.into();
     // gc reports the existing inventory without creating its own diagnostic log.
     let logging = if matches!(args.subcommand, Some(Command::Gc { .. })) {
         None
@@ -178,7 +241,8 @@ fn main() -> ExitCode {
             .as_ref()
             .map(|path| tracing::field::display(path.display()))
     );
-    let result = run(args);
+    let mut error_ctx = ErrorContext::default();
+    let result = run(args, &mut error_ctx);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     if result.is_ok() {
         tracing::info!(event = "app_stopped", pid, status = "ok", elapsed_ms);
@@ -201,7 +265,22 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            let _ = writeln!(io::stderr().lock(), "error: {error:#}");
+            if output_mode.is_structured() && !error_ctx.result_written {
+                let mut stdout = io::stdout().lock();
+                let _ = cli::write_error_result(
+                    &mut stdout,
+                    &error,
+                    error_ctx.session_id.as_deref(),
+                    error_ctx.model.as_deref(),
+                    error_ctx.effort.as_deref(),
+                    elapsed_ms,
+                );
+            }
+            let _ = writeln!(
+                io::stderr().lock(),
+                "error: {}",
+                logging::diagnostic_text(&format!("{error:#}"))
+            );
             ExitCode::FAILURE
         }
     }
@@ -292,8 +371,12 @@ fn run_gc(days: u32) -> Result<()> {
     Ok(())
 }
 
-fn run(args: Args) -> Result<()> {
+fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
     if let Some(subcommand) = args.subcommand {
+        ensure!(
+            args.mode == OutputModeCli::Text,
+            "--mode json and --mode stream-json require -p (non-interactive mode)"
+        );
         return match subcommand {
             Command::Gc { days } => run_gc(days),
             Command::Stats {
@@ -303,11 +386,38 @@ fn run(args: Args) -> Result<()> {
             } => stats::server::run(host, port, !no_open, session_titles()),
         };
     }
-    // 位置参数按单空格拼回一条斜杠命令；参数校验先于配置与网络，脚本能立即拿到失败。
-    let initial_command = {
+    let output_mode: cli::OutputMode = args.mode.into();
+    let print_mode = args.prompt.is_some();
+    if output_mode.is_structured() {
+        ensure!(
+            print_mode,
+            "--mode json and --mode stream-json require -p (non-interactive mode)"
+        );
+    }
+
+    let (non_interactive_prompt, initial_command) = if let Some(flag_prompt) = args.prompt {
+        let positional = match args.command.len() {
+            0 => None,
+            1 => Some(args.command.into_iter().next().expect("length checked")),
+            _ => anyhow::bail!("unexpected extra positional arguments in -p mode"),
+        };
+        let prompt = match (flag_prompt, positional) {
+            (Some(_), Some(_)) => {
+                anyhow::bail!("unexpected extra positional prompt when -p already has a value")
+            }
+            (Some(text), None) | (None, Some(text)) => text,
+            (None, None) => anyhow::bail!("prompt is required in -p mode"),
+        };
+        ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
+        (Some(prompt), None)
+    } else {
+        if args.resume.is_some() && !args.command.is_empty() {
+            anyhow::bail!("unexpected positional COMMAND with -r without -p");
+        }
+        // 位置参数按单空格拼回一条斜杠命令；参数校验先于配置与网络，脚本能立即拿到失败。
         let joined = args.command.join(" ");
         let trimmed = joined.trim();
-        if trimmed.is_empty() {
+        let initial = if trimmed.is_empty() {
             None
         } else {
             ensure!(
@@ -315,18 +425,28 @@ fn run(args: Args) -> Result<()> {
                 "the positional COMMAND must start with '/' or '!' (use -p TEXT for a one-shot prompt)"
             );
             Some(trimmed.to_string())
-        }
+        };
+        (None, initial)
     };
+
+    let allowed_tools = if !args.allowed_tools.is_empty() {
+        Some(pp_tools::AllowedTools::parse_cli(&args.allowed_tools)?)
+    } else if print_mode {
+        Some(pp_tools::AllowedTools::default_non_interactive())
+    } else {
+        None
+    };
+    let subagents_enabled = allowed_tools
+        .as_ref()
+        .is_none_or(pp_tools::AllowedTools::enables_subagents);
+
     #[cfg(debug_assertions)]
     let _mock_server = {
         let server = pp_mock_ai::MockServer::start()?;
         pp_mock_ai::install_endpoint(server.endpoint())?;
         server
     };
-    if let Some(prompt) = &args.prompt {
-        ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
-    }
-    let use_tui = args.prompt.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal();
+    let use_tui = !print_mode && io::stdin().is_terminal() && io::stdout().is_terminal();
     let continue_requested = args.continue_session.is_some();
     let resume_id = args
         .resume
@@ -336,13 +456,14 @@ fn run(args: Args) -> Result<()> {
     // `pp -r` without an ID opens the TUI directly on the resume session picker;
     // it still requires an interactive terminal like any other TUI entry.
     let resume_picker = args.resume.is_some() && resume_id.is_none();
-    if resume_picker && (args.prompt.is_some() || !use_tui) {
+    if resume_picker && (print_mode || !use_tui) {
         anyhow::bail!(
             "`-r` without a session ID opens the session picker and requires an interactive terminal; use `pp -r SESSION_ID` to resume directly."
         );
     }
     if let Some(id) = resume_id {
         agent::persistence::validate_id(id)?;
+        error_ctx.session_id = Some(id.to_owned());
     }
     // Restore failures are fatal even in interactive mode, unlike unavailable
     // configuration for a fresh `pp`. Load the journal before tools, skills, and
@@ -376,7 +497,7 @@ fn run(args: Args) -> Result<()> {
         .map(|(_, settings)| (settings.tui, settings.cost.clone()))
         .unwrap_or_default();
     logging::perf::mark("settings_ready");
-    let file_commands = if args.prompt.is_none() {
+    let file_commands = if !print_mode {
         match &global_dir {
             Ok(dir) => commands::FileCommands::from_dir(dir),
             Err(error) => commands::FileCommands {
@@ -482,6 +603,9 @@ fn run(args: Args) -> Result<()> {
             if let Ok((_, loaded_settings)) = &settings {
                 permission.set_config(loaded_settings.tools.clone());
             }
+            if let Some(allowed) = &allowed_tools {
+                allowed.apply_permission_grants(&permission);
+            }
             agent::Bootstrap {
                 dir: dir.clone(),
                 cwd: cwd.clone(),
@@ -494,6 +618,8 @@ fn run(args: Args) -> Result<()> {
                 sandbox: sandbox.clone(),
                 mcp: manager.clone(),
                 models: models.clone(),
+                allowed_tools: allowed_tools.clone(),
+                subagents_enabled,
             }
         });
         let mut agent = if let Some(error) = migration_error {
@@ -514,13 +640,16 @@ fn run(args: Args) -> Result<()> {
                     )?;
                     tools.skills = skills.clone();
                     tools.permission = bootstrap.permission.as_ref().clone();
+                    tools.allowed_tools = allowed_tools.clone();
                     let sbx = sandbox.get_or_init_with_override(
                         models.catalog_snapshot().sandbox_settings(),
                         &cwd,
                         sandbox_override,
                     );
                     tools.set_sandbox(sbx);
-                    Ok(agent::Agent::restore(models, tools, session)?)
+                    let mut restored_agent = agent::Agent::restore(models, tools, session)?;
+                    restored_agent.set_subagents_enabled(subagents_enabled);
+                    Ok(restored_agent)
                 }
                 None => bootstrap
                     .as_ref()
@@ -559,11 +688,20 @@ fn run(args: Args) -> Result<()> {
                 writeln!(io::stderr().lock(), "warning: {warning}")?;
             }
         }
+        if let Ok(agent) = &agent {
+            if let Some(id) = agent.session_id() {
+                error_ctx.session_id = Some(id.to_owned());
+            }
+            error_ctx.model = Some(agent.current_model().reference.clone());
+            error_ctx.effort = Some(agent.think_level().as_str().to_owned());
+        }
         // `--model` 只在本次运行生效；显式给出却无法解析时必须致命，不静默回退默认模型。
         // 配置本身不可用时 `agent` 为 Err，此时没有 catalog 可校验，沿用既有交互修复流程。
         if let (Some(query), Ok(agent)) = (args.model.as_deref(), agent.as_mut()) {
             let selection = agent.select_model(query)?;
-            if !use_tui {
+            error_ctx.model = Some(selection.reference.clone());
+            error_ctx.effort = Some(selection.effort.as_str().to_owned());
+            if !use_tui && !output_mode.is_structured() {
                 writeln!(
                     io::stderr().lock(),
                     "Model: {} (effort {})",
@@ -600,15 +738,29 @@ fn run(args: Args) -> Result<()> {
         } else {
             None
         };
+        let is_resumed = resumed_id.is_some();
         let mut stderr = io::stderr();
-        cli::prelude(&skills, &file_commands, resumed_id, &mut stderr)?;
-        if let Some(prompt) = args.prompt {
+        if !output_mode.is_structured() {
+            cli::prelude(&skills, &file_commands, resumed_id, &mut stderr)?;
+        }
+        if let Some(prompt) = non_interactive_prompt {
             let mut stdout = io::stdout().lock();
             let mut agent = agent?;
             // -p 不启动空闲轮询，也不等待迟到诊断；任务结束即显式回收服务器。
-            let task = cli::run_cli_task(&mut agent, Some(&prompt), &mut stdout, &mut stderr);
-            let hint = cli::write_resume_hint(&mut stderr, agent.session_id())
-                .map_err(anyhow::Error::from);
+            let task = cli::run_cli_task_with_mode(
+                &mut agent,
+                Some(&prompt),
+                output_mode,
+                is_resumed,
+                &mut stdout,
+                &mut stderr,
+                &mut error_ctx.result_written,
+            );
+            let hint = if output_mode.is_structured() {
+                Ok(())
+            } else {
+                cli::write_resume_hint(&mut stderr, agent.session_id()).map_err(anyhow::Error::from)
+            };
             let result = match (task, hint) {
                 (Err(error), _) => Err(error),
                 (Ok(()), Err(error)) => Err(error),

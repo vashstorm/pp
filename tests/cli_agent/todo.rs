@@ -165,7 +165,18 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
         );
         assert!(!home.path().join(".pp/plans").exists());
         let id = path.file_stem().unwrap().to_str().unwrap();
-        let resumed = Cli::spawn(home.path(), &["-r", id, "-p", "view saved todos"], &[]);
+        let resumed = Cli::spawn(
+            home.path(),
+            &[
+                "--allowed-tools",
+                "Todo",
+                "-r",
+                id,
+                "-p",
+                "view saved todos",
+            ],
+            &[],
+        );
         let (request, _) = todo_receive(&fixture, protocol);
         todo_calls(
             request,

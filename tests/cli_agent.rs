@@ -28,6 +28,8 @@ mod lsp;
 mod mcp;
 #[path = "cli_agent/mcp_remote.rs"]
 mod mcp_remote;
+#[path = "cli_agent/non_interactive.rs"]
+mod non_interactive;
 #[path = "cli_agent/permission.rs"]
 mod permission;
 #[path = "cli_agent/sandbox.rs"]
@@ -95,7 +97,7 @@ impl Cli {
     fn start_with_existing_files(cwd: &std::path::Path, prompt: Option<&str>) -> Self {
         let mut args = Vec::new();
         if let Some(prompt) = prompt {
-            args.extend(["-p", prompt]);
+            args.extend(["--allowed-tools", "*,Task", "-p", prompt]);
         }
         Self::start_env(cwd, cwd, &args, &[])
     }

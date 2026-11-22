@@ -927,3 +927,43 @@ fn persistent_grant_is_denied_if_the_store_cannot_commit() {
     assert!(format!("{err:#}").contains("opening permission lock"));
     assert!(!root.join("permission.toml").exists());
 }
+
+#[test]
+fn preapproved_allowed_tools_bypass_prompts_except_explicit_deny_and_critical_bash() {
+    let gate = gate(
+        PermissionMode::AlwaysAsk,
+        &[("write", PermissionPolicy::Deny)],
+    );
+    gate.grant_allowed_tools(
+        ["edit".into(), "bash".into(), "write".into()],
+        vec!["mcp__demo__".into()],
+        false,
+    );
+
+    // 精确匹配、前缀匹配与 bash 均无需交互 handler 即可放行，clear_session 不清除 CLI 授权。
+    enforce(&gate, "edit", "{}").unwrap();
+    enforce(&gate, "mcp__demo__run", "{}").unwrap();
+    enforce(&gate, "bash", &bash("echo ok")).unwrap();
+    gate.clear_session();
+    enforce(&gate, "edit", "{}").unwrap();
+
+    // 未在白名单的工具仍要求交互权限。
+    let err = enforce(&gate, "task", "{}").unwrap_err();
+    assert!(err.to_string().contains("no interactive UI"), "{err}");
+
+    // 显式 policy deny、hook_ask 与 critical bash 命令仍被拦截。
+    let err = enforce(&gate, "write", "{}").unwrap_err();
+    assert!(err.to_string().contains("blocked by"), "{err}");
+    let err = enforce_with_ask(&gate, "edit", "hook ask").unwrap_err();
+    assert!(err.to_string().contains("no interactive UI"), "{err}");
+    let err = enforce(&gate, "bash", &bash("rm -rf /")).unwrap_err();
+    assert!(err.to_string().contains("no interactive UI"), "{err}");
+
+    // all_standard 放行常规工具与 MCP，但不自动预批准 task。
+    let wildcard = self::gate(PermissionMode::AlwaysAsk, &[]);
+    wildcard.grant_allowed_tools([], Vec::new(), true);
+    enforce(&wildcard, "edit", "{}").unwrap();
+    enforce(&wildcard, "mcp__any__tool", "{}").unwrap();
+    let err = enforce(&wildcard, "task", "{}").unwrap_err();
+    assert!(err.to_string().contains("no interactive UI"), "{err}");
+}

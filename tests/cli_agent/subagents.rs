@@ -556,12 +556,8 @@ fn subagent_readonly_capabilities_reject_unadvertised_writes() {
         } else {
             response_models(&server, Some("response"))
         };
-        let cli = Cli::start_with(
-            dir.path(),
-            Some("readonly investigation"),
-            &settings,
-            &models,
-        );
+        let mut cli = Cli::start_with(dir.path(), None, &settings, &models);
+        cli.input("readonly investigation\n");
         let (request, _) = receive_sub(&server, protocol);
         sub_call(
             request,
@@ -666,12 +662,8 @@ fn subagent_inherits_headless_permission_and_does_not_start_denied_shell() {
     let settings = task_fixture_settings_with_tools(
         "  permissionMode: always-ask\n  permission: {task: allow}\n",
     );
-    let cli = Cli::start_with(
-        dir.path(),
-        Some("permission task"),
-        &settings,
-        &fixture_models(&server),
-    );
+    let mut cli = Cli::start_with(dir.path(), None, &settings, &fixture_models(&server));
+    cli.input("permission task\n");
     let (request, _) = receive(&server);
     sub_call(
         request,

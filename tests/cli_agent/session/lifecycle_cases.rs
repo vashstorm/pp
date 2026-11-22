@@ -489,7 +489,12 @@ fn session_continue_sends_exactly_the_saved_native_request() {
             &server,
             home.path(),
             project.path(),
-            &["-p", "create and verify a file"],
+            &[
+                "--allowed-tools",
+                "*,Task",
+                "-p",
+                "create and verify a file",
+            ],
         );
         let (request, _) = api.receive(&server);
         let write_call = api.call(

@@ -138,7 +138,7 @@ fn file_configs_override_provider_environment() {
     .unwrap();
     let cli = Cli::spawn(
         work.path(),
-        &["-p", "create file"],
+        &["--allowed-tools", "Write", "-p", "create file"],
         &[
             ("OPENAI_API_KEY", "wrong-environment-key"),
             ("OPENAI_MODEL", "wrong-environment-model"),

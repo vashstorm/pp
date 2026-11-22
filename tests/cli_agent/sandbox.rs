@@ -23,7 +23,11 @@ fn sandbox_default_blocks_protected_write_and_flag_off_allows_it() {
     std::fs::create_dir_all(root.join(".pp")).unwrap();
 
     let blocked_target = root.join(".pp/blocked.txt");
-    let cli = Cli::spawn(&root, &["-p", "try protected write"], &[]);
+    let cli = Cli::spawn(
+        &root,
+        &["--allowed-tools", "Bash", "-p", "try protected write"],
+        &[],
+    );
     let (request, body) = receive_at(&server, "/v1/chat/completions");
     let system_prompt = body["messages"][0]["content"].as_str().unwrap_or("");
     if sandbox_active {
@@ -62,7 +66,14 @@ fn sandbox_default_blocks_protected_write_and_flag_off_allows_it() {
     let allowed_target = root.join(".pp/allowed.txt");
     let cli = Cli::spawn(
         &root,
-        &["--sandbox", "off", "-p", "allow protected write"],
+        &[
+            "--sandbox",
+            "off",
+            "--allowed-tools",
+            "Bash",
+            "-p",
+            "allow protected write",
+        ],
         &[],
     );
     let (request, _) = receive_at(&server, "/v1/chat/completions");

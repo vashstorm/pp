@@ -17,6 +17,9 @@ struct SavedChild {
 }
 impl Agent {
     pub fn ensure_subagents(&mut self) -> Result<()> {
+        if !self.subagents_enabled {
+            return Ok(());
+        }
         let plan_mode = self.workflow.mode == pp_core::plan::WorkMode::Plan;
         if self
             .subagent
@@ -184,7 +187,7 @@ impl Agent {
                             mcp.is_read_only(name)
                         }))
             });
-            tools.allowed_tools = Some(allowed);
+            tools.allowed_tools = Some(pp_tools::AllowedTools::exact(allowed));
             tools.yield_schema = record.spec.output_schema.clone();
             tools.subagent = Some(Arc::new(binding.clone()));
             let interaction_binding = binding.clone();
@@ -214,6 +217,7 @@ impl Agent {
                     .map(|runtime| runtime.child(record.spec.model_role, record.id.clone())),
                 subagent_control: Default::default(),
                 subagent: Some(binding.clone()),
+                subagents_enabled: false,
                 task_status: Default::default(),
                 client: OpenAiClient::new(&config)?,
                 tools,

@@ -1040,7 +1040,7 @@ fn context_auto_resume(home: &std::path::Path, id: &str, prompt: &str) -> LiveCl
     let home = home.to_str().unwrap();
     LiveCli::new(Cli::spawn(
         std::path::Path::new(home),
-        &["--resume", id, "-p", prompt],
+        &["--allowed-tools", "*,Task", "--resume", id, "-p", prompt],
         &[("HOME", home)],
     ))
 }

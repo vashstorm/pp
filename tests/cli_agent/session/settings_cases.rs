@@ -410,7 +410,11 @@ fn session_restore_keeps_saved_edit_mode_and_execution_limits() {
             r#"{"default_model":"fixture/primary","skill_dirs":[],"edit":"hashline","read_max_bytes":64,"read_max_lines":1,"bash_timeout_seconds":1}"#,
             &models,
         );
-        let cli = start(home.path(), project.path(), &["-p", "save tool policy"]);
+        let cli = start(
+            home.path(),
+            project.path(),
+            &["--allowed-tools", "*,Task", "-p", "save tool policy"],
+        );
         let (request, _) = api.receive(&server);
         api.final_reply(request, "policy saved");
         assert!(cli.finish().status.success());
@@ -544,7 +548,7 @@ fn session_file_size_limit_latches_after_executing_whole_tool_batch() {
         .arg("trap '' XFSZ; ulimit -f 256; exec \"$@\"")
         .arg("pp")
         .arg(env!("CARGO_BIN_EXE_pp"))
-        .args(["-p", "overflow the journal"])
+        .args(["--allowed-tools", "Write", "-p", "overflow the journal"])
         .current_dir(cwd.path())
         .env("HOME", home.path())
         .stdin(Stdio::piped())

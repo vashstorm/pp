@@ -369,7 +369,11 @@ fn mcp_connections_survive_model_switch_and_reset_and_refresh_on_resume() {
     let mut changed = settings("");
     changed["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!("updated");
     crate::write_settings(home.path(), changed.to_string()).unwrap();
-    let cli = Cli::spawn(home.path(), &["-r", id, "-p", "resumed"], &[]);
+    let cli = Cli::spawn(
+        home.path(),
+        &["--allowed-tools", "mcp__*", "-r", id, "-p", "resumed"],
+        &[],
+    );
     let (request, body) = receive(&provider);
     assert!(body["tools"].to_string().contains("mcp__local__echo"));
     calls_reply(
@@ -387,7 +391,11 @@ fn mcp_connections_survive_model_switch_and_reset_and_refresh_on_resume() {
     assert!(cli.finish().status.success());
     assert_stopped(home.path());
     std::fs::write(config_path(home.path(), "mcp.json"), "{}").unwrap();
-    let cli = Cli::spawn(home.path(), &["-r", id, "-p", "removed"], &[]);
+    let cli = Cli::spawn(
+        home.path(),
+        &["--allowed-tools", "mcp__*", "-r", id, "-p", "removed"],
+        &[],
+    );
     let (request, body) = receive(&provider);
     assert!(!body["tools"].to_string().contains("mcp__"));
     calls_reply(

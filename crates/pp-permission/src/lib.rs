@@ -87,6 +87,21 @@ impl ModeState {
     }
 }
 
+#[derive(Default)]
+struct PreapprovedTools {
+    exact: HashSet<String>,
+    prefixes: Vec<String>,
+    all_standard: bool,
+}
+
+impl PreapprovedTools {
+    fn contains(&self, name: &str) -> bool {
+        (self.all_standard && name != "task")
+            || self.exact.contains(name)
+            || self.prefixes.iter().any(|prefix| name.starts_with(prefix))
+    }
+}
+
 #[derive(Clone)]
 pub struct Gate {
     default_mode: PermissionMode,
@@ -96,6 +111,8 @@ pub struct Gate {
     grants: Arc<Mutex<HashSet<String>>>,
     /// Bash 命令前缀的会话级授权。
     bash_grants: Arc<Mutex<HashSet<Vec<String>>>>,
+    /// CLI `--allowed-tools` 赋予本次运行的工具预批准集合；不随会话重置清空。
+    preapproved: Arc<Mutex<PreapprovedTools>>,
     handler: Option<Arc<PermissionCallback>>,
     modes: Arc<Mutex<ModeState>>,
     sandbox_grants: Arc<Mutex<HashSet<SandboxGrant>>>,
@@ -117,6 +134,7 @@ impl Gate {
             sandbox_override: false,
             grants: Default::default(),
             bash_grants: Default::default(),
+            preapproved: Default::default(),
             handler: None,
             modes: Arc::new(Mutex::new(ModeState {
                 configured: default_mode,
@@ -200,6 +218,29 @@ impl Gate {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
+    }
+
+    /// 登记 CLI `--allowed-tools` 的进程级预批准工具集合。
+    pub fn grant_allowed_tools(
+        &self,
+        exact: impl IntoIterator<Item = String>,
+        prefixes: Vec<String>,
+        all_standard: bool,
+    ) {
+        let mut preapproved = self
+            .preapproved
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        preapproved.exact = exact.into_iter().collect();
+        preapproved.prefixes = prefixes;
+        preapproved.all_standard = all_standard;
+    }
+
+    fn is_preapproved(&self, name: &str) -> bool {
+        self.preapproved
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(name)
     }
 
     pub fn list_rules(&self) -> Result<String> {
@@ -450,11 +491,12 @@ impl Gate {
         if !needs_prompt {
             return Ok(());
         }
-        if self
-            .grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(name)
+        if self.is_preapproved(name)
+            || self
+                .grants
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(name)
         {
             return Ok(());
         }
@@ -565,11 +607,12 @@ impl Gate {
             );
         }
 
-        let tool_granted = self
-            .grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains("bash")
+        let tool_granted = self.is_preapproved("bash")
+            || self
+                .grants
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains("bash")
             || doc
                 .as_ref()
                 .is_some_and(|d| d.tools.iter().any(|tool| tool == "bash"));

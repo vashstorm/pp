@@ -219,7 +219,14 @@ fn agents_layered_resume_refreshes_previously_loaded_child_rules_both_protocols(
         .unwrap();
         let cli = Cli::spawn(
             cwd.path(),
-            &["-r", id, "-p", "modify child"],
+            &[
+                "--allowed-tools",
+                "Read,Edit",
+                "-r",
+                id,
+                "-p",
+                "modify child",
+            ],
             &[("HOME", cwd.path().to_str().unwrap())],
         );
         let (request, body) = receive_for(&server, protocol);

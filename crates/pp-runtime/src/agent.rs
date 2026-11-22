@@ -99,6 +99,10 @@ pub struct Bootstrap {
     pub mcp: std::sync::Arc<pp_mcp::McpManager>,
     /// 进程级共享的模型状态：首次成功加载后一直复用，重建 Agent 不丢失手动覆盖。
     pub models: pp_config::model_state::SharedModels,
+    /// 可选工具能力白名单（非交互 `-p` 默认只读集合或 `--allowed-tools`）。
+    pub allowed_tools: Option<pp_tools::AllowedTools>,
+    /// 是否允许初始化与派发子 Agent（非交互 `-p` 默认关闭，仅 `--allowed-tools Task` 开启）。
+    pub subagents_enabled: bool,
 }
 
 impl Bootstrap {
@@ -133,6 +137,7 @@ impl Bootstrap {
         pp_core::logging::perf::mark("tools_ready");
         tools.skills = self.skills.clone();
         tools.permission = self.permission.as_ref().clone();
+        tools.allowed_tools = self.allowed_tools.clone();
         let sandbox = self.sandbox.get_or_init_with_override(
             catalog.sandbox_settings(),
             &self.cwd,
@@ -140,14 +145,16 @@ impl Bootstrap {
         );
         pp_core::logging::perf::mark("sandbox_ready");
         tools.set_sandbox(sandbox);
-        Agent::new_with_prompt(
+        let mut agent = Agent::new_with_prompt(
             models,
             tools,
             self.dir.join("sessions"),
             persistence::locks::directory()?,
             self.prompt.clone(),
             stats,
-        )
+        )?;
+        agent.set_subagents_enabled(self.subagents_enabled);
+        Ok(agent)
     }
 }
 
@@ -158,6 +165,7 @@ pub struct Agent {
     pub runtime_models: Option<crate::model_control::Binding>,
     pub subagent_control: std::sync::Arc<std::sync::Mutex<Option<crate::subagent::Binding>>>,
     pub(crate) subagent: Option<crate::subagent::Binding>,
+    subagents_enabled: bool,
     client: OpenAiClient,
     tools: Tools,
     session: Session,

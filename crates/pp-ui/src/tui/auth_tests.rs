@@ -233,6 +233,8 @@ fn auth_first_login_bootstraps_agent_without_restarting_ui_or_losing_draft() {
         sandbox: Default::default(),
         mcp: std::sync::Arc::new(pp_mcp::McpManager::empty()),
         models: Default::default(),
+        allowed_tools: None,
+        subagents_enabled: true,
     };
     let mut app = App::new(Err(anyhow::anyhow!("No models configured"))).unwrap();
     app.bootstrap = Some(factory);

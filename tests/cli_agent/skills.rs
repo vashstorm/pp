@@ -461,7 +461,7 @@ fn global_configs_ignore_project_files_and_keep_tool_cwd() {
     std::fs::write(project.path().join("models.yml"), "invalid project config").unwrap();
     let cli = Cli::spawn(
         project.path(),
-        &["-p", "write"],
+        &["--allowed-tools", "Write", "-p", "write"],
         &[("HOME", home.path().to_str().unwrap())],
     );
     let (request, _) = receive(&server);

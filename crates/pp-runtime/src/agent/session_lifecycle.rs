@@ -84,8 +84,12 @@ impl Agent {
         tools.permission.set_config(config.settings.tools.clone());
         // 复用进程级单例：启动期后台建连可能仍在进行，这里只登记目标 access，
         // 首个任务入口统一等待并刷新工具，切换会话不阻塞界面。
-        tools.mcp.start_connect(tools.mcp_access());
-        Self::install_lsp(&mut tools, &catalog);
+        if tools.allows_any_mcp() {
+            tools.mcp.start_connect(tools.mcp_access());
+        }
+        if tools.allows_lsp_lifecycle() {
+            Self::install_lsp(&mut tools, &catalog);
+        }
         checkpoint
             .session
             .set_tools(tools.all_definitions(checkpoint.workflow.mode));
@@ -102,6 +106,7 @@ impl Agent {
             runtime_models: None,
             subagent_control: Default::default(),
             subagent: None,
+            subagents_enabled: true,
             task_status: Default::default(),
             context_snapshot: None,
             tools,

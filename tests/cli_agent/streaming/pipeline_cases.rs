@@ -484,7 +484,14 @@ fn pipeline_restored_session_keeps_metadata_but_body_uri_is_unavailable() {
 
         let resumed = LiveCli::new(Cli::spawn(
             dir.path(),
-            &["-r", &id, "-p", "resume pipeline"],
+            &[
+                "--allowed-tools",
+                "Read,Bash",
+                "-r",
+                &id,
+                "-p",
+                "resume pipeline",
+            ],
             &[],
         ));
         let (request, body) = protocol.receive(&server);

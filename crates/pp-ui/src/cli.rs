@@ -3,6 +3,7 @@
 mod banner;
 mod events;
 mod execution;
+mod json;
 mod mcp_status;
 mod pipes;
 
@@ -16,7 +17,8 @@ use events::{cli_write, run_cli_compaction, run_cli_shell};
 use events::{run_cli_web_search, run_cli_web_search_standalone};
 #[cfg(debug_assertions)]
 pub use execution::run_cli_mock_test;
-pub use execution::run_cli_task;
+pub use execution::{run_cli_task, run_cli_task_with_mode};
+pub use json::{OutputMode, write_error_result};
 use pipes::cli_pipes_list;
 
 use anyhow::{Context, Result};

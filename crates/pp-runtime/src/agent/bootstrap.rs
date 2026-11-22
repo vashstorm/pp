@@ -103,9 +103,13 @@ impl Agent {
         let client = OpenAiClient::new(&config)?;
         // 进程级单例：启动期后台建连，不再阻塞首个界面；首个任务入口等它结束。
         // 连接失败不是启动失败：失败只落到 `/mcp list` 与提示行。
-        tools.mcp.start_connect(pp_mcp::Access::Full);
+        if tools.allows_any_mcp() {
+            tools.mcp.start_connect(pp_mcp::Access::Full);
+        }
         pp_core::logging::perf::mark("mcp_connect_started");
-        Self::install_lsp(&mut tools, &catalog);
+        if tools.allows_lsp_lifecycle() {
+            Self::install_lsp(&mut tools, &catalog);
+        }
         pp_core::logging::perf::mark("lsp_installed");
         let current_model = ModelChoice {
             reference: selection.reference.clone(),
@@ -154,6 +158,7 @@ impl Agent {
             runtime_models: None,
             subagent_control: Default::default(),
             subagent: None,
+            subagents_enabled: true,
             task_status: Default::default(),
             context_snapshot: None,
             session,

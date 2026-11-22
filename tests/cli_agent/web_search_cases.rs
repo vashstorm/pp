@@ -132,7 +132,11 @@ fn web_search_roundtrip_both_protocols_and_sandbox_network_denial() {
             fixture_models(&llm_server),
         )
         .unwrap();
-        let cli = Cli::spawn(&root, &["-p", "search blocked"], &[]);
+        let cli = Cli::spawn(
+            &root,
+            &["--allowed-tools", "WebSearch", "-p", "search blocked"],
+            &[],
+        );
         let (req, _) = receive_at(&llm_server, "/v1/chat/completions");
         calls_reply(
             req,

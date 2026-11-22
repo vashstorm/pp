@@ -84,7 +84,7 @@ impl Tools {
             if self
                 .allowed_tools
                 .as_ref()
-                .is_some_and(|allowed| !allowed.iter().any(|tool| tool == name))
+                .is_some_and(|allowed| !allowed.allows(name))
             {
                 continue;
             }

@@ -85,7 +85,7 @@ pub struct Tools {
     /// 保存联动与迟到诊断的本 Agent owner；子 Agent 必须各自新建，不共享 inbox。
     pub lsp_owner: pp_lsp::writethrough::Owner,
     pub subagent: Option<std::sync::Arc<dyn SubagentHost>>,
-    pub allowed_tools: Option<Vec<String>>,
+    pub allowed_tools: Option<crate::AllowedTools>,
     pub yield_schema: Option<Value>,
     pub yielded: RefCell<Option<Value>>,
     pub skills: pp_config::skills::SharedSkills,
@@ -357,14 +357,19 @@ fn object_schema(properties: Value, required: &[&str]) -> Value {
     })
 }
 
-fn read_definition(edit_mode: EditMode) -> FunctionObject {
+fn read_definition(edit_mode: EditMode, include_agent_uri: bool) -> FunctionObject {
     let suffix = match edit_mode {
         EditMode::Hashline => HASHLINE_READ_SUFFIX,
         EditMode::Replace => REPLACE_READ_SUFFIX,
     };
+    let agent_desc = if include_agent_uri {
+        AGENT_READ_DESC
+    } else {
+        ""
+    };
     tool_def(
         "read",
-        format!("{COMMON_READ_DESC}{AGENT_READ_DESC}{suffix}"),
+        format!("{COMMON_READ_DESC}{agent_desc}{suffix}"),
         object_schema(json!({"path": {"type": "string"}}), &["path"]),
     )
 }
@@ -551,13 +556,18 @@ impl Tools {
             definitions.push(yield_definition());
         }
         if let Some(allowed) = &self.allowed_tools {
-            definitions.retain(|d| allowed.contains(&d.name) || d.name == "yield");
+            definitions.retain(|d| allowed.allows(&d.name) || d.name == "yield");
         }
         definitions
     }
 
     fn mode_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
-        let mut base = Self::definitions(self.edit_mode, self.limits);
+        let include_agent_uri = self
+            .allowed_tools
+            .as_ref()
+            .is_none_or(crate::AllowedTools::enables_subagents);
+        let mut base =
+            Self::definitions_with_agent_uri(self.edit_mode, self.limits, include_agent_uri);
         if self.eval_available && mode == WorkMode::Execute {
             base.push(eval_definition(self.limits));
         }
@@ -677,8 +687,16 @@ impl Tools {
     }
 
     pub fn definitions(edit_mode: EditMode, limits: ToolLimits) -> Vec<FunctionObject> {
+        Self::definitions_with_agent_uri(edit_mode, limits, true)
+    }
+
+    fn definitions_with_agent_uri(
+        edit_mode: EditMode,
+        limits: ToolLimits,
+        include_agent_uri: bool,
+    ) -> Vec<FunctionObject> {
         vec![
-            read_definition(edit_mode),
+            read_definition(edit_mode, include_agent_uri),
             edit_definition(edit_mode),
             write_definition(),
             bash_definition(limits),

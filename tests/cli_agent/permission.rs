@@ -28,9 +28,16 @@ fn yolo_executes_flagged_bash_without_permission_in_both_protocols() {
             write_settings(dir.path(), settings.to_string()).unwrap();
             std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
             let args = if override_yolo {
-                vec!["--permission-mode", "yolo", "-p", "clean temporary fixture"]
+                vec![
+                    "--permission-mode",
+                    "yolo",
+                    "--allowed-tools",
+                    "Bash",
+                    "-p",
+                    "clean temporary fixture",
+                ]
             } else {
-                vec!["-p", "clean temporary fixture"]
+                vec!["--allowed-tools", "Bash", "-p", "clean temporary fixture"]
             };
             let cli = Cli::spawn(dir.path(), &args, &[]);
             let path = if protocol == "completion" {

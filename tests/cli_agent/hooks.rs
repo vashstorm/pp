@@ -127,7 +127,11 @@ printf '{"systemMessage":"hook\\u001b[2Jnotice"}'"#,
             response_models(&server, Some("response"))
         };
         std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
-        let cli = Cli::spawn(dir.path(), &["-p", "write one file"], &[]);
+        let cli = Cli::spawn(
+            dir.path(),
+            &["--allowed-tools", "Write", "-p", "write one file"],
+            &[],
+        );
         let path = if protocol == "completion" {
             "/v1/chat/completions"
         } else {

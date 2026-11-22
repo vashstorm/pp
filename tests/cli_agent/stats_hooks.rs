@@ -49,7 +49,11 @@ fn stats_hooks_are_recorded_served_by_api_and_cleaned_by_gc() {
     )
     .unwrap();
 
-    let cli = Cli::spawn(dir.path(), &["-p", "write one file"], &[]);
+    let cli = Cli::spawn(
+        dir.path(),
+        &["--allowed-tools", "Write", "-p", "write one file"],
+        &[],
+    );
     let (request, _) = receive_at(&server, "/v1/chat/completions");
     calls_reply(
         request,
