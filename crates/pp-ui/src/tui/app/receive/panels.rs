@@ -178,6 +178,16 @@ impl App {
                 }
                 changed = true;
             }
+            WorkerEvent::Dumped(result) => {
+                match result {
+                    Ok(output) => {
+                        self.append("Dump", &output.summary());
+                        self.notify(Level::Normal, output.notification());
+                    }
+                    Err(error) => self.notify(Level::Error, format!("{error:#}")),
+                }
+                changed = true;
+            }
             WorkerEvent::McpManaged { result, view, show } => {
                 self.mcp_view = view;
                 self.active_cancellation = None;

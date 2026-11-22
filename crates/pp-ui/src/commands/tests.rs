@@ -603,3 +603,24 @@ fn slash_sandbox_parses_modes_and_rejects_invalid_args() {
     assert!(parse("/sandbox invalid", &files).is_err());
     assert!(parse("/sandbox off extra", &files).is_err());
 }
+
+#[test]
+fn slash_dump_parses_modes_and_rejects_invalid_args() {
+    use pp_runtime::agent::DumpMode;
+    let files = FileCommands::default();
+    assert_eq!(
+        parse("/dump all", &files).unwrap(),
+        Some(Command::Dump(DumpMode::All))
+    );
+    assert_eq!(
+        parse(" /dump  result ", &files).unwrap(),
+        Some(Command::Dump(DumpMode::Result))
+    );
+    for invalid in ["/dump", "/dump invalid", "/dump all extra"] {
+        assert_eq!(
+            parse(invalid, &files).unwrap_err().to_string(),
+            "usage: /dump <all|result>",
+            "{invalid}"
+        );
+    }
+}

@@ -203,6 +203,24 @@ impl App {
                     })
                     .collect()
             }
+            Some(("/dump", argument)) => {
+                if argument.split_whitespace().count() > 1 {
+                    Vec::new()
+                } else {
+                    let prefix = argument.trim().to_ascii_lowercase();
+                    pp_runtime::agent::DumpMode::ALL
+                        .into_iter()
+                        .filter(|mode| mode.as_str().starts_with(&prefix))
+                        .map(|mode| MenuItem {
+                            value: MenuAction::DumpMode(mode),
+                            label: mode.as_str().into(),
+                            description: mode.description().into(),
+                            icon: None,
+                            current: false,
+                        })
+                        .collect()
+                }
+            }
             Some(("/settings" | "/setting" | "/config", argument)) => {
                 if argument.split_whitespace().count() > 1 {
                     Vec::new()
@@ -929,6 +947,7 @@ fn completion_text(item: &MenuItem<MenuAction>) -> &str {
         MenuAction::File(_) | MenuAction::FileDirectory(_) => &item.description,
         MenuAction::Effort(level) => level.as_str(),
         MenuAction::SandboxMode(mode) => mode.as_str(),
+        MenuAction::DumpMode(mode) => mode.as_str(),
         MenuAction::PermissionMode(mode) => mode.as_str(),
         MenuAction::SettingTab(tab) => tab.slug(),
         MenuAction::ThemeIcon(mode) => mode.as_str(),

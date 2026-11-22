@@ -333,6 +333,26 @@ impl App {
             }
             return false;
         }
+        if let Some(Command::Dump(mode)) = &command {
+            if !matches!(self.state, State::Ready) || self.has_pending() {
+                let message = if matches!(self.state, State::Unavailable) {
+                    self.unavailable
+                        .clone()
+                        .unwrap_or_else(|| "Session dump unavailable.".into())
+                } else {
+                    "Finish or cancel the current task before dumping the session.".into()
+                };
+                self.notify(Level::Error, message);
+            } else if let Some(commands) = &self.commands {
+                if commands.send(WorkerCommand::Dump(*mode)).is_err() {
+                    self.fail_worker();
+                } else {
+                    self.remember_input();
+                    self.clear_input();
+                }
+            }
+            return false;
+        }
         if let Some(Command::Mcp(action)) = &command {
             if !matches!(self.state, State::Ready) || self.has_pending() {
                 self.notify(
@@ -618,6 +638,7 @@ impl App {
                     | Command::Skills(_)
                     | Command::Mcp(_)
                     | Command::Sandbox(_)
+                    | Command::Dump(_)
                     | Command::Permissions(_)
                     | Command::Login
                     | Command::Logout,
@@ -801,6 +822,12 @@ impl App {
             MenuAction::SandboxMode(mode) => {
                 self.input = editor();
                 self.input.insert_str(format!("/sandbox {}", mode.as_str()));
+                self.refresh_candidates(true);
+                return confirm && self.submit(PendingKind::Steering);
+            }
+            MenuAction::DumpMode(mode) => {
+                self.input = editor();
+                self.input.insert_str(format!("/dump {}", mode.as_str()));
                 self.refresh_candidates(true);
                 return confirm && self.submit(PendingKind::Steering);
             }

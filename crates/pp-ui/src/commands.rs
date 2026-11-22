@@ -188,6 +188,14 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "Inspect session context usage breakdown and largest items (TUI)",
     },
     CommandSpec {
+        name: "/dump",
+        display_label: None,
+        aliases: &[],
+        category: CommandCategory::Session,
+        usage: "/dump <all|result>",
+        description: "Dump session transcripts/request JSONL or main conclusion Markdown to /tmp",
+    },
+    CommandSpec {
         name: "/resume",
         display_label: None,
         aliases: &[],
@@ -458,6 +466,7 @@ pub(crate) enum Command<'a> {
     New,
     Compact,
     Context,
+    Dump(pp_runtime::agent::DumpMode),
     Resume,
     Tree,
     Pipes(Option<&'a str>),
@@ -524,6 +533,14 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/init" => Command::Prompt(pp_tools::project_instructions::INIT_PROMPT.to_owned()),
         "/compact" => Command::Compact,
         "/context" | "/ctx" => Command::Context,
+        "/dump" => {
+            let mode = match argument {
+                "all" => pp_runtime::agent::DumpMode::All,
+                "result" => pp_runtime::agent::DumpMode::Result,
+                _ => bail!("usage: /dump <all|result>"),
+            };
+            return Ok(Some(Command::Dump(mode)));
+        }
         "/resume" => Command::Resume,
         "/tree" => Command::Tree,
         "/pipes" => {
@@ -710,8 +727,9 @@ fn spec_order(name: &str) -> usize {
         "/tree" => 2,
         "/compact" => 3,
         "/context" => 4,
-        "/init" => 5,
-        "/quit" => 6,
+        "/dump" => 5,
+        "/init" => 6,
+        "/quit" => 7,
         "/model" => 0,
         "/effort" => 1,
         "/roles" => 2,

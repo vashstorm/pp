@@ -69,6 +69,7 @@ pub(super) enum WorkerCommand {
     SyncSandboxSettings(pp_config::config::SandboxMode),
     SyncWebSearchSettings(pp_config::config::WebSearchSettings),
     InspectContext,
+    Dump(pp_runtime::agent::DumpMode),
     Reset,
     /// 会话根切换（/resume、/tree、/new）会停掉旧子 Agent 根；Hub 打开时按需重建。
     EnsureSubagents,
@@ -174,6 +175,7 @@ pub(super) enum WorkerEvent {
     Compacted(Result<CompactionOutcome>),
     SandboxStatus(Result<(pp_sandbox::SandboxStatus, bool)>),
     ContextInspected(Result<pp_runtime::agent::context_diagnosis::ContextReport>),
+    Dumped(Result<pp_runtime::agent::DumpOutput>),
     Reset,
     ModelSwitched(Result<(ModelChoice, ThinkLevel)>),
     DefaultThinkLevelSaved(Result<ThinkLevel>),

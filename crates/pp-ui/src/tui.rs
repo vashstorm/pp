@@ -448,6 +448,7 @@ enum MenuAction {
     Model(usize),
     Effort(ThinkLevel),
     SandboxMode(pp_config::config::SandboxMode),
+    DumpMode(pp_runtime::agent::DumpMode),
     PermissionMode(pp_config::config::PermissionMode),
     SettingTab(settings::Tab),
     ThemeIcon(pp_config::config::IconMode),

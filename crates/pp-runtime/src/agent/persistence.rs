@@ -169,6 +169,15 @@ impl SessionJournal {
         &self.dir
     }
 
+    pub(in crate::agent) fn active_transcript_path(&mut self) -> Result<Option<PathBuf>> {
+        self.check()?;
+        let Some(active) = &mut self.active else {
+            return Ok(None);
+        };
+        active.file.flush().context("flushing session transcript")?;
+        Ok(Some(self.dir.join(format!("{}.jsonl", active.id))))
+    }
+
     #[cfg(test)]
     pub(super) fn new(dir: PathBuf) -> Self {
         let lock_dir = dir.join(".locks");

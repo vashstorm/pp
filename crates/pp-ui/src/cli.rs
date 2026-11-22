@@ -445,6 +445,10 @@ pub fn run_line_mode(
                     writeln!(stderr, "error: {error:#}")?;
                 }
             }
+            Some(commands::Command::Dump(mode)) => match agent.dump(mode) {
+                Ok(output) => writeln!(stderr, "{}", output.summary())?,
+                Err(error) => writeln!(stderr, "error: {error:#}")?,
+            },
             Some(commands::Command::New) => {
                 agent.reset();
                 writeln!(stderr, "Session reset.")?;

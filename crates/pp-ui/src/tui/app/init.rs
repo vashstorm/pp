@@ -477,6 +477,7 @@ impl App {
                         WorkerCommand::InspectContext => {
                             WorkerEvent::ContextInspected(agent.diagnose_context())
                         }
+                        WorkerCommand::Dump(mode) => WorkerEvent::Dumped(agent.dump(mode)),
                         WorkerCommand::Reset => {
                             agent.reset();
                             if !publish_pipe_store(&sender, &agent) {

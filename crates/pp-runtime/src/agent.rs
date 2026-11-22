@@ -1,6 +1,7 @@
 pub mod context;
 pub mod context_diagnosis;
 mod debug;
+pub mod dump;
 mod fallback;
 mod history;
 pub(crate) mod hooks;
@@ -25,6 +26,7 @@ mod model_switch;
 mod session_lifecycle;
 mod task_entry;
 mod tool_access;
+pub use dump::{DumpFile, DumpMode, DumpOutput};
 #[cfg(debug_assertions)]
 pub use tool_access::run_web_search_standalone;
 mod turn_loop;
