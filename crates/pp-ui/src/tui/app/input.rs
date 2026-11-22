@@ -382,7 +382,7 @@ impl App {
         if items.is_empty() {
             self.menu = None;
         } else if edited || self.menu.as_ref().is_none_or(|menu| menu.items() != items) {
-            let menu = SelectionMenu::new(items, preferred);
+            let menu = SelectionMenu::new(items, preferred).with_input_anchor();
             let menu = if menu
                 .items()
                 .iter()

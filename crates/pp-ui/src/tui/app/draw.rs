@@ -25,6 +25,13 @@ impl App {
             area.width - prompt_width,
             available.saturating_sub(border_height).min(6),
         ) + border_height;
+        let slash_menu = self
+            .menu
+            .as_ref()
+            .filter(|menu| !self.native_render && menu.anchored_to_input());
+        // 为对话留一行，有空间时再为命令补全留一行。
+        let content_min =
+            1 + u16::from(slash_menu.is_some() && available.saturating_sub(input_height) > 1);
         let image_count = if self.resources.images.is_empty() {
             0
         } else {
@@ -34,11 +41,11 @@ impl App {
         let retry_height = u16::from(self.retry_visible()) * 3;
         let attachments_height = (if image_count > 0 { 8 } else { 0 }
             + u16::from(self.resources.job.is_some()))
-        .min(available.saturating_sub(input_height + retry_height + 1));
-        let retry_height =
-            retry_height.min(available.saturating_sub(input_height + attachments_height + 1));
+        .min(available.saturating_sub(input_height + retry_height + content_min));
+        let retry_height = retry_height
+            .min(available.saturating_sub(input_height + attachments_height + content_min));
         let above = available.saturating_sub(input_height + attachments_height + retry_height);
-        let activity_spacing = u16::from(activity_height > 0 && above > 1);
+        let activity_spacing = u16::from(activity_height > 0 && above > content_min);
         let above = above - activity_spacing;
         let base = Rect::new(area.x, area.y, area.width, above);
         let ask_height = if self.native_render {
@@ -52,9 +59,10 @@ impl App {
         // 极矮的终端优先保留至少一行对话内容。
         let ask_spacing = u16::from(ask_height > 0 && above - ask_height > 1);
         let remaining = above - ask_height - ask_spacing;
+        let panel_budget = remaining.saturating_sub(content_min);
         let todo_height = if self.native_render || self.plan_panel.is_none() {
             self.todo_panel
-                .height(area.width, area.height, remaining.saturating_sub(1))
+                .height(area.width, area.height, panel_budget)
         } else {
             0
         };
@@ -64,11 +72,14 @@ impl App {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .is_some_and(|b| !b.summary().is_empty());
-        let subagent_height = u16::from(has_agents && remaining > todo_height + 1);
+        let subagent_height = u16::from(has_agents && panel_budget > todo_height);
         let todo_spacing =
-            u16::from(todo_height > 0 && remaining > todo_height + subagent_height + 1);
-        let conversation_height =
+            u16::from(todo_height > 0 && panel_budget > todo_height + subagent_height);
+        let conversation_budget =
             remaining.saturating_sub(todo_height + subagent_height + todo_spacing);
+        let completion_height =
+            slash_menu.map_or(0, |menu| menu.height(conversation_budget.saturating_sub(1)));
+        let conversation_height = conversation_budget - completion_height;
         let conversation = Rect::new(area.x, area.y, area.width, conversation_height);
         let ask = Rect::new(
             area.x,
@@ -86,7 +97,14 @@ impl App {
             area.width,
             activity_height,
         );
-        let input = Rect::new(area.x, activity.bottom(), area.width, input_height);
+        let slash_completion =
+            slash_menu.map(|_| Rect::new(area.x, activity.bottom(), area.width, completion_height));
+        let input = Rect::new(
+            area.x,
+            activity.bottom() + completion_height,
+            area.width,
+            input_height,
+        );
         let status = Rect::new(area.x, input.bottom(), area.width, status_height);
         MainLayout {
             conversation,
@@ -95,6 +113,7 @@ impl App {
             ask,
             activity,
             retry,
+            slash_completion,
             input,
             attachments,
             status,
@@ -337,6 +356,7 @@ impl App {
             ask: ask_area,
             activity,
             retry,
+            slash_completion,
             input,
             attachments,
             status,
@@ -376,20 +396,22 @@ impl App {
         {
             frame.render_widget(Line::from(binding.summary()), subagents);
         }
-        // 普通补全菜单只覆盖对话区，不盖住 TODO 或 ask。
-        let menu_height = if self.native_render {
+        // 文件补全和待处理队列的浮层仍画在对话区内。
+        let menu_overlay_height = if self.native_render || slash_completion.is_some() {
             0
         } else {
             self.menu
                 .as_ref()
                 .map_or(0, |menu| menu.height(conversation.height))
         };
-        let menu_area = Rect::new(
-            conversation.x,
-            conversation.bottom().saturating_sub(menu_height),
-            conversation.width,
-            menu_height,
-        );
+        let menu_area = slash_completion.unwrap_or_else(|| {
+            Rect::new(
+                conversation.x,
+                conversation.bottom() - menu_overlay_height,
+                conversation.width,
+                menu_overlay_height,
+            )
+        });
         self.todo_panel.draw(frame, todo);
         let preview_area = conversation;
         let has_trailing = self
@@ -418,7 +440,7 @@ impl App {
             panel.draw(
                 frame,
                 Rect {
-                    height: conversation.height.saturating_sub(menu_height),
+                    height: conversation.height.saturating_sub(menu_overlay_height),
                     ..conversation
                 },
             );
@@ -514,7 +536,7 @@ impl App {
                 ));
             }
         }
-        if menu_height > 0
+        if menu_area.height > 0
             && let Some(menu) = &mut self.menu
         {
             menu.draw(frame, menu_area);

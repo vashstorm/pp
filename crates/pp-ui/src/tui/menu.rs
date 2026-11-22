@@ -89,6 +89,7 @@ pub(super) struct SelectionMenu<T> {
     selection: TableState,
     page_size: usize,
     hint: Option<Line<'static>>,
+    anchored_to_input: bool,
     accent: Color,
     style: MenuStyle,
     label_suffixes: Vec<Option<&'static str>>,
@@ -115,6 +116,7 @@ impl<T: Copy> SelectionMenu<T> {
             selection: TableState::default().with_selected(initial),
             page_size: 1,
             hint: None,
+            anchored_to_input: false,
             accent: self::selected(),
             style: MenuStyle::default(),
             label_suffixes: Vec::new(),
@@ -195,6 +197,15 @@ impl<T: Copy> SelectionMenu<T> {
         self
     }
 
+    pub(super) fn with_input_anchor(mut self) -> Self {
+        self.anchored_to_input = true;
+        self
+    }
+
+    pub(super) fn anchored_to_input(&self) -> bool {
+        self.anchored_to_input
+    }
+
     pub(super) fn set_hint(&mut self, hint: impl Into<Line<'static>>) {
         self.hint = Some(hint.into());
     }
@@ -272,14 +283,29 @@ impl<T: Copy> SelectionMenu<T> {
             return;
         }
         let hint_height = u16::from(self.hint.is_some() && area.height > 1);
-        let mut rows_area = Rect::new(area.x, area.y, area.width, area.height - hint_height);
+        let hint_above = if self.anchored_to_input {
+            hint_height
+        } else {
+            0
+        };
+        let mut rows_area = Rect::new(
+            area.x,
+            area.y + hint_above,
+            area.width,
+            area.height - hint_height,
+        );
         if hint_height > 0 {
+            let hint_y = if self.anchored_to_input {
+                area.y
+            } else {
+                rows_area.bottom()
+            };
             frame.render_widget(
                 self.hint
                     .clone()
                     .unwrap_or_default()
                     .style(Style::default().fg(self.style.detail)),
-                Rect::new(area.x, rows_area.bottom(), area.width, hint_height),
+                Rect::new(area.x, hint_y, area.width, hint_height),
             );
         }
         if self.items.is_empty() {
@@ -292,6 +318,12 @@ impl<T: Copy> SelectionMenu<T> {
             return;
         }
         self.page_size = usize::from(rows_area.height).max(1);
+        if self.anchored_to_input {
+            // 终端变高后填满候选区域，避免旧滚动偏移在输入框上方留下空行。
+            let last_page_start = self.items.len().saturating_sub(self.page_size);
+            let offset = self.selection.offset_mut();
+            *offset = (*offset).min(last_page_start);
+        }
         let scrollbar_area =
             (self.scrollbar && self.items.len() > self.page_size && rows_area.width > 1)
                 .then_some(rows_area);

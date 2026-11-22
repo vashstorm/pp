@@ -175,6 +175,97 @@ fn tui_todo_ask_and_menus_keep_priority_and_no_overlap() {
 }
 
 #[test]
+fn slash_completion_stays_above_input_with_expanded_todo() {
+    for (width, height) in [(100, 30), (18, 7)] {
+        let mut app = app();
+        app.state = State::Ready;
+        install_todos(&mut app, 10);
+        app.todo_panel.toggle();
+        let mut dirty = false;
+
+        app.handle(Event::Paste("/du".into()), &mut dirty);
+        let commands = draw(&mut app, width, height);
+        let input_row = commands
+            .lines()
+            .position(|line| line.trim_end() == "❯ /du")
+            .unwrap();
+        assert!(
+            commands
+                .lines()
+                .nth(input_row - 2)
+                .unwrap()
+                .starts_with("❯ /dump"),
+            "{commands}"
+        );
+
+        app.handle(key(KeyCode::Tab), &mut dirty);
+        app.handle(key(KeyCode::Char(' ')), &mut dirty);
+        app.handle(key(KeyCode::Down), &mut dirty);
+        let arguments = draw(&mut app, width, height);
+        let rows = arguments.lines().collect::<Vec<_>>();
+        assert_eq!(rows[input_row].trim_end(), "❯ /dump");
+        assert!(rows[input_row - 2].starts_with("❯ result"), "{arguments}");
+        assert!(
+            rows[..input_row - 2].iter().any(|row| row.contains("TODO")),
+            "{arguments}"
+        );
+        if height == 30 {
+            assert!(
+                rows[input_row - 3].trim_start().starts_with("all "),
+                "{arguments}"
+            );
+            assert!(arguments.contains("TODO_TASK_00"), "{arguments}");
+        } else {
+            assert!(
+                !rows[input_row - 3].trim_start().starts_with("all "),
+                "{arguments}"
+            );
+            let resized = draw(&mut app, 100, 30);
+            let resized_input = resized
+                .lines()
+                .position(|line| line.trim_end() == "❯ /dump")
+                .unwrap();
+            assert!(
+                resized
+                    .lines()
+                    .nth(resized_input - 3)
+                    .unwrap()
+                    .trim_start()
+                    .starts_with("all "),
+                "{resized}"
+            );
+            assert!(
+                resized
+                    .lines()
+                    .nth(resized_input - 2)
+                    .unwrap()
+                    .starts_with("❯ result"),
+                "{resized}"
+            );
+            draw(&mut app, width, height);
+        }
+        let area = Rect::new(0, 0, width, height);
+        let open = app.main_layout(area);
+        let open_todo_height = app.todo_panel.area.height;
+
+        app.handle(key(KeyCode::Esc), &mut dirty);
+        let dismissed = draw(&mut app, width, height);
+        let closed = app.main_layout(area);
+        assert_eq!(app.raw_input_text(), "/dump ");
+        assert!(app.todo_panel.expanded);
+        assert!(!dismissed.contains("❯ result"), "{dismissed}");
+        assert_eq!(open.input, closed.input);
+        assert_eq!(arguments.lines().last(), dismissed.lines().last());
+        if height == 30 {
+            assert!(closed.conversation.height > open.conversation.height);
+        } else {
+            assert_eq!(open.conversation.height, 1);
+            assert!(app.todo_panel.area.height > open_todo_height);
+        }
+    }
+}
+
+#[test]
 fn tui_todo_tiny_layout_never_overlaps_editor_and_status() {
     let mut app = app();
     install_todos(&mut app, 10);

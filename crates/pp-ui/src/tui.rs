@@ -312,6 +312,7 @@ pub(in crate::tui) struct MainLayout {
     activity: Rect,
     // 自动重试固定信息框；始终位于输入框上方，不进入对话区。
     retry: Rect,
+    slash_completion: Option<Rect>,
     pub(in crate::tui) input: Rect,
     attachments: Rect,
     status: Rect,
