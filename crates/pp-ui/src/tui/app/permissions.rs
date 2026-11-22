@@ -345,19 +345,19 @@ impl App {
 }
 
 fn permission_prompt(request: PermissionRequest) -> AskRequest {
-    let option = |label: &str, description: Option<&str>| AskOption {
+    let option = |label: &str| AskOption {
         label: label.into(),
-        description: description.map(str::to_owned),
+        description: None,
         preview: None,
     };
-    let mut options = vec![option(ONCE, None)];
+    let mut options = vec![option(ONCE)];
     if request.session_grant {
-        options.push(option(SESSION, Some("Includes subagents")));
+        options.push(option(SESSION));
     }
     if request.persistent_grant {
-        options.push(option(PERSIST, Some("Saved in permission.toml")));
+        options.push(option(PERSIST));
     }
-    options.push(option("Deny", None));
+    options.push(option("Deny"));
     let args = AskArgs {
         questions: vec![AskQuestion {
             id: "permission".into(),

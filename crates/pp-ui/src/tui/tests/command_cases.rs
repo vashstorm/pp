@@ -750,19 +750,7 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
     app.input.insert_str("draft");
     app.receive_event_for_test(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
     let screen = draw(&mut app, 100, 30);
-    for label in [
-        "Permission required",
-        "mcp__remote__echo",
-        "workspace sandbox",
-        "Allow once",
-        "Allow for this session",
-        "Includes subagents",
-        "Always allow globally",
-        "Saved in permission.toml",
-        "Deny",
-    ] {
-        assert!(screen.contains(label), "{screen}");
-    }
+    assert!(screen.contains("mcp__remote__echo"), "{screen}");
     let title = screen
         .lines()
         .find(|row| row.contains("Permission required"))
@@ -778,16 +766,18 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
             }),
         "{screen}"
     );
-    let mut rows = screen.lines();
-    let session = rows
-        .find(|row| row.contains("Allow for this session"))
-        .unwrap();
-    let description = rows.next().unwrap();
-    assert_eq!(
-        session.find("Allow for this session"),
-        description.find("Includes subagents"),
-        "{screen}"
-    );
+    let mut options = screen.lines().skip_while(|row| !row.contains("Allow once"));
+    for label in [
+        "Allow once",
+        "Allow for this session",
+        "Always allow globally",
+        "Deny",
+    ] {
+        assert!(
+            options.next().is_some_and(|row| row.contains(label)),
+            "{screen}"
+        );
+    }
     let (separator, hint) = screen
         .lines()
         .zip(screen.lines().skip(1))

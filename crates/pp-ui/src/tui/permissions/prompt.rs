@@ -137,22 +137,6 @@ impl Prompt {
         lines
     }
 
-    fn descriptions(&self, width: u16) -> Vec<Vec<Line<'static>>> {
-        let style = Style::new().fg(themes::palette().muted);
-        self.options()
-            .iter()
-            .map(|option| {
-                option.description.as_ref().map_or_else(Vec::new, |text| {
-                    wrap_block(
-                        Line::styled(text.clone(), style),
-                        width.saturating_sub(2),
-                        "",
-                    )
-                })
-            })
-            .collect()
-    }
-
     pub(in crate::tui) fn height(&self, available: Rect, screen_height: u16) -> u16 {
         if available.is_empty() {
             return 0;
@@ -161,12 +145,7 @@ impl Prompt {
         let width = available.width - u16::from(bordered) * (2 + 2 * CARD_PADDING);
         let details = self.detail_lines(width).len();
         let chrome = if bordered { CARD_CHROME } else { 2 };
-        let descriptions = if bordered {
-            self.descriptions(width).iter().map(Vec::len).sum()
-        } else {
-            0
-        };
-        let needed = details + self.options().len().max(1) + descriptions + usize::from(chrome);
+        let needed = details + self.options().len().max(1) + usize::from(chrome);
         let cap = (u32::from(screen_height) * 7 / 10).max(1) as u16;
         needed.min(usize::from(cap.min(available.height))) as u16
     }
@@ -207,15 +186,9 @@ impl Prompt {
             (inner, footer)
         };
 
-        // 优先容纳选项和请求详情，空间充足时再显示选项说明。
         let details = self.detail_lines(inner.width);
         let body = usize::from(inner.height - footer);
-        let extra_rows = body.saturating_sub(count.max(1));
-        let descriptions = bordered.then(|| self.descriptions(inner.width));
-        let description_rows: usize = descriptions.iter().flatten().map(Vec::len).sum();
-        let descriptions =
-            descriptions.filter(|_| description_rows + details.len().min(2) <= extra_rows);
-        let detail_budget = extra_rows - descriptions.as_ref().map_or(0, |_| description_rows);
+        let detail_budget = body.saturating_sub(count.max(1));
         let detail_rows = details.len().min(detail_budget);
         self.details_area = Rect {
             height: detail_rows as u16,
@@ -250,12 +223,6 @@ impl Prompt {
                 index == self.focused,
             );
             y += 1;
-            if let Some(descriptions) = &descriptions {
-                for line in &descriptions[index] {
-                    frame.render_widget(line, Rect::new(inner.x + 2, y, inner.width - 2, 1));
-                    y += 1;
-                }
-            }
         }
         if footer > 0 {
             let y = inner.bottom() - 1;
