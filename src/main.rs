@@ -35,7 +35,7 @@ struct Args {
     #[command(subcommand)]
     subcommand: Option<Command>,
 
-    /// 启动后立即执行的一条斜杠命令（例如 /commit）；与 -p、-r、-c 互斥
+    /// Run a slash command immediately after startup (e.g. /commit); conflicts with -p, -r, and -c
     #[arg(
         value_name = "COMMAND",
         num_args = 1..,
@@ -53,15 +53,15 @@ struct Args {
     #[arg(short, long)]
     prompt: Option<String>,
 
-    /// 替换基础系统指令，参数可为正文或文件路径
+    /// Replace the base system prompt with inline text or a file path
     #[arg(long, value_name = "TEXT_OR_FILE", conflicts_with_all = ["system_prompt_template", "resume", "continue_session"])]
     system_prompt: Option<String>,
 
-    /// 从文件读取 Handlebars 基础系统指令模板
+    /// Read a Handlebars base system prompt template from a file
     #[arg(long, value_name = "PATH", conflicts_with_all = ["resume", "continue_session"])]
     system_prompt_template: Option<String>,
 
-    /// 追加系统指令，参数可为正文或文件路径
+    /// Append to the system prompt from inline text or a file path
     #[arg(long, value_name = "TEXT_OR_FILE", conflicts_with_all = ["resume", "continue_session"])]
     append_system_prompt: Option<String>,
 
@@ -93,7 +93,7 @@ struct Args {
     #[arg(long, value_enum, value_name = "MODE")]
     sandbox: Option<SandboxModeCli>,
 
-    /// 本次运行使用的模型，写法为 [provider/]model[:effort]；不写入偏好
+    /// Select the model for this run as [provider/]model[:effort] without saving preferences
     #[arg(long, value_name = "MODEL")]
     model: Option<String>,
 }
@@ -119,7 +119,7 @@ impl From<SandboxModeCli> for pp_config::config::SandboxMode {
 
 #[derive(Subcommand)]
 enum Command {
-    /// 清理超过指定天数（默认 90 天，上限 36500）的日志、SQLite 请求数据和未被占用的 session 锁文件
+    /// Remove logs, SQLite request data, and unused session lock files older than the given days (default 90, max 36500)
     Gc {
         // 100 年上限：远低于 chrono DateTime 可表示的年代下限，避免 cutoff 运算溢出。
         #[arg(
@@ -135,7 +135,7 @@ enum Command {
         host: std::net::IpAddr,
         #[arg(long, default_value_t = 3848)]
         port: u16,
-        /// 仅启动服务，不自动打开浏览器
+        /// Start the server without opening a browser
         #[arg(long)]
         no_open: bool,
     },
