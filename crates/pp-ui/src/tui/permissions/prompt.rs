@@ -11,14 +11,17 @@ use ratatui::{
     Frame,
     layout::{Position, Rect},
     style::Style,
-    text::{Line, Span},
-    widgets::{Block, Clear},
+    text::Line,
+    widgets::{Block, BorderType, Borders, Clear, Padding},
 };
 
 use crate::tui::{dialog::Action, themes, transcript::wrap_block};
 
-const MAX_WIDTH: u16 = 88;
 const TITLE: &str = "Permission required";
+const MIN_BORDER_WIDTH: u16 = 28;
+const CARD_PADDING: u16 = 1;
+// 两行外框、一行分隔线、一行快捷键。
+const CARD_CHROME: u16 = 4;
 
 pub(in crate::tui) struct Prompt {
     args: Arc<AskArgs>,
@@ -116,175 +119,192 @@ impl Prompt {
         let Some(question) = self.question() else {
             return Vec::new();
         };
-        let tool = question.header.as_deref().unwrap_or_default();
-        let mut lines = wrap_block(
-            Line::styled(tool.to_owned(), Style::new().fg(palette.text).bold()),
-            width,
-            "",
-        );
-        let reason_style = Style::new().fg(palette.activity);
+        let mut lines = Vec::new();
+        if let Some(tool) = question.header.as_ref().filter(|tool| !tool.is_empty()) {
+            lines.extend(wrap_block(
+                Line::styled(tool.clone(), Style::new().fg(palette.text).bold()),
+                width,
+                "",
+            ));
+        }
+        let reason = Style::new().fg(palette.activity);
         lines.extend(
-            question.question.lines().flat_map(|line| {
-                wrap_block(Line::styled(line.to_owned(), reason_style), width, "")
-            }),
+            question
+                .question
+                .lines()
+                .flat_map(|line| wrap_block(Line::styled(line.to_owned(), reason), width, "")),
         );
         lines
+    }
+
+    fn descriptions(&self, width: u16) -> Vec<Vec<Line<'static>>> {
+        let style = Style::new().fg(themes::palette().muted);
+        self.options()
+            .iter()
+            .map(|option| {
+                option.description.as_ref().map_or_else(Vec::new, |text| {
+                    wrap_block(
+                        Line::styled(text.clone(), style),
+                        width.saturating_sub(2),
+                        "",
+                    )
+                })
+            })
+            .collect()
     }
 
     pub(in crate::tui) fn height(&self, available: Rect, screen_height: u16) -> u16 {
         if available.is_empty() {
             return 0;
         }
-        let width = available.width.min(MAX_WIDTH).saturating_sub(3);
-        let needed = self.detail_lines(width).len() + self.options().len() + 3;
+        let bordered = available.width >= MIN_BORDER_WIDTH;
+        let width = available.width - u16::from(bordered) * (2 + 2 * CARD_PADDING);
+        let details = self.detail_lines(width).len();
+        let chrome = if bordered { CARD_CHROME } else { 2 };
+        let descriptions = if bordered {
+            self.descriptions(width).iter().map(Vec::len).sum()
+        } else {
+            0
+        };
+        let needed = details + self.options().len().max(1) + descriptions + usize::from(chrome);
         let cap = (u32::from(screen_height) * 7 / 10).max(1) as u16;
         needed.min(usize::from(cap.min(available.height))) as u16
     }
 
-    pub(in crate::tui) fn draw(&mut self, frame: &mut Frame, available: Rect) {
-        let width = available.width.min(MAX_WIDTH);
-        let area = Rect::new(
-            available.x + (available.width - width) / 2,
-            available.y,
-            width,
-            available.height,
-        );
+    pub(in crate::tui) fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.area = area;
         self.details_area = Rect::default();
         if area.is_empty() {
             return;
         }
-
         let palette = themes::palette();
-        let warning = Style::new().fg(palette.plan_mode);
+        let title = Style::new().fg(palette.plan_mode).bold();
+        let background = Style::new().bg(palette.panel_bg);
+        let count = self.options().len();
+        let bordered = area.width >= MIN_BORDER_WIDTH
+            && usize::from(area.height) >= count.max(1) + usize::from(CARD_CHROME) + 1;
         frame.render_widget(Clear, area);
-        frame.render_widget(
-            Block::new().style(Style::new().bg(palette.welcome_card_bg)),
-            area,
-        );
 
-        let count = self.options().len() as u16;
-        let header = u16::from(area.height > 1);
-        if header > 0 {
-            let row = Rect::new(area.x, area.y, width, 1);
-            let style = warning.bg(palette.tool_bg).bold();
-            frame.render_widget(Block::new().style(style), row);
-            let title = if usize::from(width) >= TITLE.len() + 4 {
-                " !  Permission required"
-            } else {
-                TITLE
-            };
-            frame.render_widget(Line::styled(title, style), row);
-        }
-
-        // 矮终端优先保留当前操作。宽度不足时省略装饰边线。
-        let body = area.height - header;
-        let rail = if width >= 6 { 3 } else { 0 };
-        let details = self.detail_lines(width - rail);
-        let footer = u16::from(body >= count + 2);
-        let detail_budget = (body - footer).saturating_sub(count.max(1));
-        let detail_rows = details.len().min(usize::from(detail_budget)) as u16;
-        let gap = u16::from(detail_rows > 0 && detail_budget > detail_rows);
-        self.details_area = Rect::new(area.x, area.y + header, width, detail_rows);
-        self.details_limit = if detail_rows > 0 {
-            details.len() - usize::from(detail_rows)
+        let (inner, footer) = if bordered {
+            let block = Block::new()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(palette.panel_border))
+                .padding(Padding::horizontal(CARD_PADDING))
+                .style(background)
+                .title(Line::styled(format!(" {TITLE} "), title));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            (inner, 2)
         } else {
+            let header = u16::from(area.height > 1);
+            frame.render_widget(Block::new().style(background), area);
+            if header > 0 {
+                frame.render_widget(Line::styled(TITLE, title), Rect { height: 1, ..area });
+            }
+            let inner = Rect::new(area.x, area.y + header, area.width, area.height - header);
+            let footer = u16::from(usize::from(inner.height) >= count.max(1) + 2);
+            (inner, footer)
+        };
+
+        // 优先容纳选项和请求详情，空间充足时再显示选项说明。
+        let details = self.detail_lines(inner.width);
+        let body = usize::from(inner.height - footer);
+        let extra_rows = body.saturating_sub(count.max(1));
+        let descriptions = bordered.then(|| self.descriptions(inner.width));
+        let description_rows: usize = descriptions.iter().flatten().map(Vec::len).sum();
+        let descriptions =
+            descriptions.filter(|_| description_rows + details.len().min(2) <= extra_rows);
+        let detail_budget = extra_rows - descriptions.as_ref().map_or(0, |_| description_rows);
+        let detail_rows = details.len().min(detail_budget);
+        self.details_area = Rect {
+            height: detail_rows as u16,
+            ..inner
+        };
+        self.details_limit = if detail_rows == 0 {
             0
+        } else {
+            details.len() - detail_rows
         };
         self.details_offset = self.details_offset.min(self.details_limit);
-        if detail_rows > 0 {
-            frame.render_widget(
-                Block::new().style(Style::new().bg(palette.tool_bg)),
-                self.details_area,
-            );
-        }
-        for (index, line) in details
+        for (row, line) in details
             .iter()
             .skip(self.details_offset)
-            .take(detail_rows.into())
+            .take(detail_rows)
             .enumerate()
         {
-            let y = self.details_area.y + index as u16;
-            if rail > 0 {
-                let edge = if themes::is_ascii() { " | " } else { " │ " };
-                frame.render_widget(Line::styled(edge, warning), Rect::new(area.x, y, rail, 1));
-            }
-            frame.render_widget(line, Rect::new(area.x + rail, y, width - rail, 1));
+            frame.render_widget(
+                line,
+                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            );
         }
 
-        let rows = (body - footer - detail_rows - gap).min(count);
-        let first = self
-            .focused
-            .saturating_add(1)
-            .saturating_sub(usize::from(rows));
-        for (row, option) in self
-            .options()
-            .iter()
-            .skip(first)
-            .take(rows.into())
-            .enumerate()
-        {
-            let y = self.details_area.bottom() + gap + row as u16;
+        let visible = (body - detail_rows).min(count);
+        let first = (self.focused + 1).saturating_sub(visible);
+        let mut y = self.details_area.bottom();
+        for (index, option) in self.options().iter().enumerate().skip(first).take(visible) {
             self.draw_option(
                 frame,
-                Rect::new(area.x, y, width, 1),
+                Rect::new(inner.x, y, inner.width, 1),
                 option,
-                first + row == self.focused,
+                index == self.focused,
             );
+            y += 1;
+            if let Some(descriptions) = &descriptions {
+                for line in &descriptions[index] {
+                    frame.render_widget(line, Rect::new(inner.x + 2, y, inner.width - 2, 1));
+                    y += 1;
+                }
+            }
         }
         if footer > 0 {
-            let hint = match (width, self.details_limit > 0) {
-                (64.., true) => " Up/Down choose   Enter confirm   Esc cancel   PgUp/PgDn details",
-                (45.., true) => " Enter confirm   Esc cancel   PgUp/PgDn details",
-                (29.., true) => " Enter · Esc · PgUp/PgDn",
-                (45.., false) => " Up/Down choose   Enter confirm   Esc cancel",
-                _ => " Enter confirm   Esc cancel",
-            };
+            let y = inner.bottom() - 1;
+            if bordered {
+                frame.render_widget(
+                    Line::styled(
+                        "─".repeat(usize::from(inner.width)),
+                        Style::new().fg(palette.panel_border),
+                    ),
+                    Rect::new(inner.x, y - 1, inner.width, 1),
+                );
+            }
+            let hint = self.hint(inner.width);
             frame.render_widget(
-                Line::styled(hint, Style::new().fg(palette.activity)),
-                Rect::new(area.x, area.bottom() - 1, width, 1),
+                Line::styled(hint, Style::new().fg(palette.muted)),
+                Rect::new(inner.x, y, inner.width, 1),
             );
+        }
+    }
+
+    fn hint(&self, width: u16) -> &'static str {
+        match (width, self.details_limit > 0) {
+            (61.., true) => "↑/↓ choose   Enter confirm   Esc cancel   PgUp/PgDn details",
+            (36.., true) => "↑/↓   Enter   Esc   PgUp/PgDn",
+            (_, true) => "Enter · Esc · PgUp/PgDn",
+            (40.., false) => "↑/↓ choose   Enter confirm   Esc cancel",
+            _ => "↑/↓ · Enter · Esc",
         }
     }
 
     fn draw_option(&self, frame: &mut Frame, row: Rect, option: &AskOption, focused: bool) {
         let palette = themes::palette();
-        let label_color = if option.label == "Deny" {
+        let color = if option.label == "Deny" {
             palette.removed
+        } else if focused {
+            palette.accent
         } else {
             palette.text
         };
-        let (label, detail) = if focused {
-            let style = Style::new().fg(palette.tool_bg).bg(palette.plan_mode);
-            frame.render_widget(Block::new().style(style), row);
-            (style.bold(), style)
+        let style = Style::new().fg(color);
+        let (prefix, style) = if focused {
+            (if themes::is_ascii() { "> " } else { "❯ " }, style.bold())
         } else {
-            (
-                Style::new().fg(label_color),
-                Style::new().fg(palette.activity),
-            )
+            ("  ", style)
         };
-        let mut spans = Vec::new();
-        if row.width >= 6 {
-            spans.push(Span::styled(if focused { " > " } else { "   " }, label));
-        }
-        spans.push(Span::styled(display_text(&option.label), label));
-        frame.render_widget(Line::from(spans), row);
-
-        const DESCRIPTION_COLUMN: u16 = 27;
-        if let Some(description) = option.description.as_deref() {
-            let span = Span::styled(display_text(description), detail);
-            if span.width() + usize::from(DESCRIPTION_COLUMN) < usize::from(row.width) {
-                frame.render_widget(
-                    Line::from(span),
-                    Rect::new(
-                        row.x + DESCRIPTION_COLUMN,
-                        row.y,
-                        row.width - DESCRIPTION_COLUMN,
-                        1,
-                    ),
-                );
-            }
-        }
+        let prefix = if row.width > 2 { prefix } else { "" };
+        frame.render_widget(
+            Line::styled(format!("{prefix}{}", display_text(&option.label)), style),
+            row,
+        );
     }
 }

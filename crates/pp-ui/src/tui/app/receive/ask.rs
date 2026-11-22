@@ -3,6 +3,44 @@
 use crate::tui::{App, State, WorkerEvent, dialog};
 
 impl App {
+    pub(in crate::tui) fn apply_ask_action(&mut self, action: dialog::Action) {
+        match action {
+            dialog::Action::None => {}
+            #[cfg(debug_assertions)]
+            dialog::Action::Cancel if self.ask_reply.is_none() => self.ask_panel = None,
+            dialog::Action::Cancel => {
+                let child = self
+                    .ask_id
+                    .as_ref()
+                    .is_some_and(|id| id.starts_with("subagent-"));
+                self.close_ask_on_exit();
+                if !child {
+                    self.state = State::Cancelling;
+                    self.conversation.cancelling();
+                }
+            }
+            dialog::Action::Submit(answers) => {
+                let child = self
+                    .ask_id
+                    .as_ref()
+                    .is_some_and(|id| id.starts_with("subagent-"));
+                self.ask_panel = None;
+                self.ask_cancellation = None;
+                self.ask_id = None;
+                if let Some(reply) = self.ask_reply.take()
+                    && reply.send(answers).is_err()
+                    && !child
+                {
+                    if let Some(token) = &self.active_cancellation {
+                        token.cancel();
+                    }
+                    self.state = State::Cancelling;
+                    self.conversation.cancelling();
+                }
+            }
+        }
+    }
+
     /// 交互请求到达时重新绘制。
     pub(super) fn on_ask_event(&mut self, event: WorkerEvent) -> bool {
         let mut changed = false;
@@ -40,7 +78,8 @@ impl App {
                             .is_some_and(|token| !token.is_cancelled())
                         || request.call_id.starts_with("subagent-")
                         || request.call_id == "permission-dialog")
-                    && self.ask_panel.is_none()
+                    // 真实请求可以替换没有回复通道的本地预览。
+                    && self.ask_reply.is_none()
                     && (self.conversation.has_running_ask(&request.call_id)
                         || request.call_id.starts_with("subagent-")
                         || request.call_id == "permission-dialog")

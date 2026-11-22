@@ -1,5 +1,75 @@
 use super::*;
 
+#[cfg(debug_assertions)]
+#[test]
+fn test_permission_previews_approval_and_closes_without_dispatch() {
+    for (state, close) in [
+        (State::Ready, KeyCode::Enter),
+        (State::Unavailable, KeyCode::Esc),
+    ] {
+        let mut app = app();
+        app.state = state;
+        let (commands, requests) = mpsc::channel();
+        app.commands = Some(commands);
+        let mut dirty = false;
+        if matches!(state, State::Ready) {
+            app.submit_initial_command("/test-permission");
+        } else {
+            app.handle(Event::Paste("/test-permission".into()), &mut dirty);
+            app.handle(key(KeyCode::Enter), &mut dirty);
+        }
+        assert!(app.needs_alternate());
+        let screen = draw(&mut app, 100, 30);
+        for label in [
+            "Permission required",
+            "Preview only",
+            "Allow once",
+            "Allow for this session",
+            "Always allow globally",
+            "Deny",
+        ] {
+            assert!(screen.contains(label), "{screen}");
+        }
+        app.handle(key(KeyCode::Down), &mut dirty);
+        app.handle(key(KeyCode::Down), &mut dirty);
+        app.handle(key(close), &mut dirty);
+        assert!(!app.needs_alternate());
+        assert!(matches!(
+            (state, app.state),
+            (State::Ready, State::Ready) | (State::Unavailable, State::Unavailable)
+        ));
+        assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
+        assert!(app.permission_worker.is_none());
+    }
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn real_permission_request_replaces_the_preview_and_receives_its_answer() {
+    use pp_core::interaction::{AskArgs, AskRequest};
+
+    let mut app = app();
+    app.submit_initial_command("/test-permission");
+    let (reply, answers) = mpsc::sync_channel(1);
+    let args = AskArgs::parse(
+        r#"{"questions":[{"id":"permission","question":"Real request","options":[{"label":"Deny"}]}]}"#,
+    )
+    .unwrap();
+    app.receive_event_for_test(WorkerEvent::Ask {
+        request: AskRequest {
+            call_id: "permission-dialog".into(),
+            args: std::sync::Arc::new(args),
+        },
+        reply,
+        cancellation: CancellationToken::new(),
+    });
+    let screen = draw(&mut app, 100, 30);
+    assert!(screen.contains("Real request"), "{screen}");
+    assert!(!screen.contains("Preview only"), "{screen}");
+    app.handle(key(KeyCode::Enter), &mut false);
+    assert_eq!(answers.try_recv().unwrap()[0].selected_options, ["Deny"]);
+}
+
 #[test]
 fn ask_roundtrip_disconnect_and_cancelled_answer_return_typed_cancelled() {
     for cancel_before_reply in [false, true] {

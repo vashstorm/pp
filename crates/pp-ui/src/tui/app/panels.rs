@@ -1,6 +1,6 @@
 use crate::tui::{
     App, COMMANDS, Command, Level, MenuAction, ModelPickerDraft, PendingKind, PlanCommand, Result,
-    State, WorkerCommand, commands, dialog, editor, files, model, sessions, skills,
+    State, WorkerCommand, commands, editor, files, model, sessions, skills,
 };
 use anyhow::Context;
 
@@ -172,6 +172,11 @@ impl App {
         }
         // 提交时恢复对话区，让命令结果和后续输出可见。
         self.mcp_panel = None;
+        #[cfg(debug_assertions)]
+        if matches!(command, Some(Command::TestPermission)) {
+            self.open_permission_preview();
+            return false;
+        }
         if matches!(command, Some(Command::Context))
             && matches!(
                 self.state,
@@ -530,7 +535,9 @@ impl App {
                 Some(Command::Pipes(_)) => unreachable!("handled above"),
                 Some(Command::Shell(_)) => unreachable!("handled before the state match"),
                 #[cfg(debug_assertions)]
-                Some(Command::MockTest(_) | Command::TestWebSearch(_)) => {
+                Some(
+                    Command::MockTest(_) | Command::TestWebSearch(_) | Command::TestPermission,
+                ) => {
                     unreachable!("debug commands handled before the state match")
                 }
                 Some(Command::Think(Some(_))) => {
@@ -949,47 +956,14 @@ impl App {
                 token.cancel();
             }
             self.ask_id = None;
-            if !child && let Some(token) = &self.active_cancellation {
+            if !child
+                && self.ask_reply.is_some()
+                && let Some(token) = &self.active_cancellation
+            {
                 token.cancel();
             }
             self.ask_reply = None;
             self.ask_panel = None;
-        }
-    }
-
-    pub(in crate::tui) fn apply_ask_action(&mut self, action: dialog::Action) {
-        match action {
-            dialog::Action::None => {}
-            dialog::Action::Cancel => {
-                let child = self
-                    .ask_id
-                    .as_ref()
-                    .is_some_and(|id| id.starts_with("subagent-"));
-                self.close_ask_on_exit();
-                if !child {
-                    self.state = State::Cancelling;
-                    self.conversation.cancelling();
-                }
-            }
-            dialog::Action::Submit(answers) => {
-                let child = self
-                    .ask_id
-                    .as_ref()
-                    .is_some_and(|id| id.starts_with("subagent-"));
-                self.ask_panel = None;
-                self.ask_cancellation = None;
-                self.ask_id = None;
-                if let Some(reply) = self.ask_reply.take()
-                    && reply.send(answers).is_err()
-                    && !child
-                {
-                    if let Some(token) = &self.active_cancellation {
-                        token.cancel();
-                    }
-                    self.state = State::Cancelling;
-                    self.conversation.cancelling();
-                }
-            }
         }
     }
 }

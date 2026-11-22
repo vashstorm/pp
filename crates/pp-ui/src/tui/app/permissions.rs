@@ -4,6 +4,12 @@ use crate::tui::{
     commands, editor, permissions,
 };
 use crossterm::event::KeyEvent;
+use pp_core::interaction::{AskArgs, AskOption, AskQuestion, AskRequest};
+use pp_permission::{PermissionDecision, PermissionRequest};
+
+const ONCE: &str = "Allow once";
+const SESSION: &str = "Allow for this session";
+const PERSIST: &str = "Always allow globally";
 
 pub(super) fn is_permission_shortcut(key: KeyEvent) -> bool {
     let alt_or_meta = KeyModifiers::ALT | KeyModifiers::META;
@@ -24,6 +30,32 @@ pub(super) fn is_permission_command_shortcut(key: KeyEvent) -> bool {
 }
 
 impl App {
+    #[cfg(debug_assertions)]
+    pub(super) fn open_permission_preview(&mut self) {
+        if !matches!(self.state, State::Ready | State::Unavailable)
+            || self.active_cancellation.is_some()
+            || self.ask_panel.is_some()
+            || self.has_pending()
+        {
+            self.notify(
+                Level::Error,
+                "Wait until the TUI is idle before using /test-permission.".into(),
+            );
+            return;
+        }
+        let request = permission_prompt(PermissionRequest {
+            tool: "bash".into(),
+            agent: None,
+            reason: "Preview only. Example request for access outside the workspace sandbox."
+                .into(),
+            session_grant: true,
+            persistent_grant: true,
+        });
+        self.remember_input();
+        self.clear_input();
+        self.ask_panel = Some(crate::tui::dialog::Panel::new(request));
+    }
+
     pub(in crate::tui) fn bind_bootstrap_permissions(&mut self) {
         if self.permission_mode.is_none()
             && let Some(bootstrap) = &self.bootstrap
@@ -312,17 +344,7 @@ impl App {
     }
 }
 
-pub(in crate::tui) fn request_permission(
-    events: &std::sync::mpsc::SyncSender<crate::tui::WorkerEvent>,
-    request: pp_permission::PermissionRequest,
-    token: &pp_core::cancellation::CancellationToken,
-) -> anyhow::Result<pp_permission::PermissionDecision> {
-    use pp_core::interaction::{AskArgs, AskOption, AskQuestion, AskRequest};
-    use pp_permission::PermissionDecision;
-
-    const ONCE: &str = "Allow once";
-    const SESSION: &str = "Allow for this session";
-    const PERSIST: &str = "Always allow globally";
+fn permission_prompt(request: PermissionRequest) -> AskRequest {
     let option = |label: &str, description: Option<&str>| AskOption {
         label: label.into(),
         description: description.map(str::to_owned),
@@ -350,21 +372,30 @@ pub(in crate::tui) fn request_permission(
         || "permission-dialog".into(),
         |id| format!("subagent-{id}-permission"),
     );
-    let answers = crate::tui::request_ask(
-        events,
-        AskRequest {
-            call_id,
-            args: std::sync::Arc::new(args),
-        },
-        token,
-    )?;
+    AskRequest {
+        call_id,
+        args: std::sync::Arc::new(args),
+    }
+}
+
+pub(in crate::tui) fn request_permission(
+    events: &std::sync::mpsc::SyncSender<crate::tui::WorkerEvent>,
+    request: PermissionRequest,
+    token: &pp_core::cancellation::CancellationToken,
+) -> anyhow::Result<PermissionDecision> {
+    let PermissionRequest {
+        session_grant,
+        persistent_grant,
+        ..
+    } = request;
+    let answers = crate::tui::request_ask(events, permission_prompt(request), token)?;
     let selected = answers
         .first()
         .and_then(|answer| answer.selected_options.first());
     Ok(match selected.map(String::as_str) {
         Some(ONCE) => PermissionDecision::Approve,
-        Some(SESSION) if request.session_grant => PermissionDecision::ApproveSession,
-        Some(PERSIST) if request.persistent_grant => PermissionDecision::ApprovePersistently,
+        Some(SESSION) if session_grant => PermissionDecision::ApproveSession,
+        Some(PERSIST) if persistent_grant => PermissionDecision::ApprovePersistently,
         _ => PermissionDecision::Deny,
     })
 }

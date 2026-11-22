@@ -258,6 +258,8 @@ fn slash_extra_arguments_are_local_errors() {
         "/test-todo",
         #[cfg(debug_assertions)]
         "/test-ask",
+        #[cfg(debug_assertions)]
+        "/test-permission",
     ] {
         assert_eq!(
             parse(&format!("{command} extra"), &FileCommands::default())
@@ -385,7 +387,7 @@ fn slash_help_lists_debug_only_commands_in_debug_builds() {
     for name in TEST_COMMAND_NAMES
         .iter()
         .copied()
-        .chain(std::iter::once("/test-web-search"))
+        .chain(["/test-web-search", "/test-permission"])
     {
         assert_eq!(
             lines
@@ -466,7 +468,7 @@ fn slash_test_commands_are_unknown_without_debug_assertions() {
     for name in TEST_COMMAND_NAMES
         .iter()
         .copied()
-        .chain(std::iter::once("/test-web-search"))
+        .chain(["/test-web-search", "/test-permission"])
     {
         assert_eq!(
             parse(name, &files).unwrap(),

@@ -756,11 +756,48 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
         "workspace sandbox",
         "Allow once",
         "Allow for this session",
+        "Includes subagents",
         "Always allow globally",
+        "Saved in permission.toml",
         "Deny",
     ] {
         assert!(screen.contains(label), "{screen}");
     }
+    let title = screen
+        .lines()
+        .find(|row| row.contains("Permission required"))
+        .unwrap();
+    assert!(title.starts_with('╭') && title.ends_with('╮'), "{screen}");
+    assert!(
+        screen
+            .lines()
+            .zip(screen.lines().skip(1))
+            .any(|(first, second)| {
+                first.contains("workspace sandbox")
+                    && second.contains("Review the requested permission")
+            }),
+        "{screen}"
+    );
+    let mut rows = screen.lines();
+    let session = rows
+        .find(|row| row.contains("Allow for this session"))
+        .unwrap();
+    let description = rows.next().unwrap();
+    assert_eq!(
+        session.find("Allow for this session"),
+        description.find("Includes subagents"),
+        "{screen}"
+    );
+    let (separator, hint) = screen
+        .lines()
+        .zip(screen.lines().skip(1))
+        .find(|(_, row)| row.contains("Enter confirm"))
+        .unwrap();
+    assert!(
+        separator.contains("────") && hint.contains("Esc cancel"),
+        "{screen}"
+    );
+
     let mut dirty = false;
     let short = draw(&mut app, 48, 10);
     assert!(short.contains("mcp__remote__echo"), "{short}");
@@ -771,7 +808,7 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
     app.handle(key(KeyCode::Down), &mut dirty);
     app.handle(key(KeyCode::Down), &mut dirty);
     let compact = draw(&mut app, 28, 9);
-    assert!(compact.contains("> Always allow globally"), "{compact}");
+    assert!(compact.contains("❯ Always allow globally"), "{compact}");
     assert_eq!(app.input.lines(), &["draft"]);
     app.handle(key(KeyCode::Enter), &mut dirty);
     let decision = handle.join().unwrap().unwrap();

@@ -362,6 +362,15 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
     #[cfg(debug_assertions)]
     CommandSpec {
+        name: "/test-permission",
+        display_label: None,
+        aliases: &[],
+        category: CommandCategory::Debug,
+        usage: "/test-permission",
+        description: "Debug build: preview the TUI permission prompt",
+    },
+    #[cfg(debug_assertions)]
+    CommandSpec {
         name: "/test-fail",
         display_label: None,
         aliases: &[],
@@ -461,6 +470,8 @@ pub(crate) enum Command<'a> {
     MockTest(MockTest),
     #[cfg(debug_assertions)]
     TestWebSearch(WebSearchTestCommand),
+    #[cfg(debug_assertions)]
+    TestPermission,
     Login,
     Logout,
     Plan(PlanCommand<'a>),
@@ -504,6 +515,8 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         )?)));
     }
     let command = match name {
+        #[cfg(debug_assertions)]
+        "/test-permission" => Command::TestPermission,
         "/help" => Command::Help,
         "/tips" => Command::Tips,
         "/stats" => return Ok(Some(Command::Stats(argument))),

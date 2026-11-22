@@ -159,6 +159,7 @@ pp /stats --host 127.0.0.1 --port 0 --no-open
 | `/test-tools`、`/test-read`、`/test-edit`、`/test-rg`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 dev/test：运行全部或单个隔离真实工具场景；edit 覆盖 replace/hashline，ask 在 TUI 中答题 |
 | `/test-eval-py` | 仅 dev/test：隔离 Python `eval` 场景，演练流式 stdout/stderr、持久状态、嵌套工具桥、预期异常与 `reset: true` 恢复 |
 | `/test-web-search [--provider PROVIDER] [QUERY]` | 按 `webSearch` 配置或指定引擎发起真实搜索，无需调用大模型。无参数时依次运行两条示例查询：限定到 `news.ycombinator.com`（`auto` 优先尝试 Hacker News）与 `github.com`。仅 dev/test 构建可用。 |
+| `/test-permission` | 在空闲 TUI 中预览权限审批卡片，无需模型配置。按 Enter 或 Esc 关闭预览。仅 dev/test 构建可用。 |
 | `/test-write` | 仅 dev/test：12.5 mock token/s 的打字机回复；24/28 行正文以 240 mock token/s 写入 `/tmp/pp-test-write/demo.txt`，写入卡片可见尾部滚动；随后越界失败，最后用 bash 工具删除 |
 | `/test-ui` | 仅 dev/test：以 12.5 mock token/s 输出原生 Responses SSE 思考与 Markdown／代码分片 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |

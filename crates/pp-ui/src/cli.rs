@@ -338,6 +338,14 @@ pub fn run_line_mode(
                 writeln!(stderr, "/plan-list requires the TUI; run pp in a terminal.")?;
                 continue;
             }
+            #[cfg(debug_assertions)]
+            Some(commands::Command::TestPermission) => {
+                writeln!(
+                    stderr,
+                    "/test-permission requires the TUI; run pp in a terminal."
+                )?;
+                continue;
+            }
             _ => {}
         }
         #[cfg(debug_assertions)]
@@ -498,9 +506,11 @@ pub fn run_line_mode(
             ) => unreachable!(),
             Some(commands::Command::Unknown) => unreachable!(),
             #[cfg(debug_assertions)]
-            Some(commands::Command::MockTest(_) | commands::Command::TestWebSearch(_)) => {
-                unreachable!()
-            }
+            Some(
+                commands::Command::MockTest(_)
+                | commands::Command::TestWebSearch(_)
+                | commands::Command::TestPermission,
+            ) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {
                 if let Err(error) = run_cli_task(agent, Some(&prompt), &mut stdout, &mut stderr) {
                     writeln!(stderr, "error: {error:#}")?;

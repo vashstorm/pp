@@ -67,6 +67,8 @@ pub(crate) const SECTIONS: &[Section] = &[
             #[cfg(debug_assertions)]
             tip("/test-glob", "debug glob tool"),
             #[cfg(debug_assertions)]
+            tip("/test-permission", "preview permission"),
+            #[cfg(debug_assertions)]
             tip("/test-rg", "debug rg tool"),
             #[cfg(debug_assertions)]
             tip("/test-read", "debug read tool"),
