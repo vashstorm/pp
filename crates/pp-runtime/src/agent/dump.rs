@@ -1,19 +1,9 @@
 //! 会话与子 Agent 数据导出：支持导出主 transcript、原生 LLM 请求 JSON、
 //! 逐子 Agent JSONL 文件，以及主 Agent 最终结论 Markdown。
 
-use super::{
-    Agent, Session,
-    persistence::{ReplayRecord, SessionRef},
-};
+use super::{Agent, persistence::SessionRef};
 use anyhow::{Context, Result, bail};
-use async_openai::types::{
-    chat::{
-        ChatCompletionRequestAssistantMessageContent,
-        ChatCompletionRequestAssistantMessageContentPart, ChatCompletionRequestMessage,
-    },
-    responses::{InputItem, InputParam, Item, MessageItem, OutputMessageContent},
-};
-use pp_core::{events::AgentEvent, session_jsonl::Reader as SessionReader};
+use pp_core::session_jsonl::Reader as SessionReader;
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
@@ -215,8 +205,8 @@ impl Agent {
         Ok(files)
     }
 
-    fn dump_result(&self, id: &str, dir: &Path) -> Result<DumpFile> {
-        let Some(mut markdown) = latest_main_conclusion(&self.session, &self.replay) else {
+    fn dump_result(&mut self, id: &str, dir: &Path) -> Result<DumpFile> {
+        let Some(mut markdown) = self.journal.latest_conclusion()? else {
             bail!("No main agent conclusion available to dump.");
         };
         if !markdown.ends_with('\n') {
@@ -297,57 +287,6 @@ fn append_events_jsonl(path: &Path, out: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-fn latest_main_conclusion(session: &Session, replay: &[ReplayRecord]) -> Option<String> {
-    let from_session = match session {
-        Session::Completion(request) => request.messages.iter().rev().find_map(|message| {
-            let ChatCompletionRequestMessage::Assistant(assistant) = message else {
-                return None;
-            };
-            let text = match assistant.content.as_ref()? {
-                ChatCompletionRequestAssistantMessageContent::Text(text) => text.clone(),
-                ChatCompletionRequestAssistantMessageContent::Array(parts) => parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        ChatCompletionRequestAssistantMessageContentPart::Text(part) => {
-                            Some(part.text.as_str())
-                        }
-                        ChatCompletionRequestAssistantMessageContentPart::Refusal(_) => None,
-                    })
-                    .collect::<String>(),
-            };
-            (!text.trim().is_empty()).then_some(text)
-        }),
-        Session::Response(request) => {
-            let InputParam::Items(items) = &request.input else {
-                return None;
-            };
-            items.iter().rev().find_map(|item| {
-                let InputItem::Item(Item::Message(MessageItem::Output(message))) = item else {
-                    return None;
-                };
-                let text = message
-                    .content
-                    .iter()
-                    .filter_map(|part| match part {
-                        OutputMessageContent::OutputText(part) => Some(part.text.as_str()),
-                        OutputMessageContent::Refusal(_) => None,
-                    })
-                    .collect::<String>();
-                (!text.trim().is_empty()).then_some(text)
-            })
-        }
-    };
-    if from_session.is_some() {
-        return from_session;
-    }
-    replay.iter().rev().find_map(|record| match record {
-        ReplayRecord::Event(AgentEvent::AssistantFinished { text }) if !text.trim().is_empty() => {
-            Some(text.clone())
-        }
-        _ => None,
-    })
-}
-
 fn write_dump_file(dir: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf> {
     fs::create_dir_all(dir)
         .with_context(|| format!("creating dump directory {}", dir.display()))?;
@@ -373,10 +312,14 @@ fn write_dump_file(dir: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::persistence::Metadata;
+    use crate::agent::{
+        Session,
+        persistence::{Metadata, load_test, tree::Kind},
+    };
     use crate::subagent::{Spec, atomic_json};
     use pp_config::config::{EditMode, ModelCatalog};
     use pp_config::models::Protocol;
+    use pp_core::events::AgentEvent;
     use pp_core::model::ThinkLevel;
     use pp_tools::Tools;
 
@@ -657,6 +600,55 @@ mod tests {
                 .summary()
                 .contains(&output.files[0].path.display().to_string())
         );
+    }
+
+    #[test]
+    fn dump_result_exports_saved_conclusion_after_resuming_with_another_responses_model() {
+        let (dir, mut agent) = make_agent(Protocol::Response);
+        let conclusion = "# Saved conclusion\n\n- Original Markdown";
+        append_turn(&mut agent, "Review the changes", conclusion);
+        agent.journal.event(&AgentEvent::AssistantStarted);
+        agent.journal.event(&AgentEvent::AssistantFinished {
+            text: "Uncommitted answer".into(),
+        });
+        agent.journal.error("fixture error");
+        let id = agent.session_id().unwrap().to_owned();
+        drop(agent);
+
+        let settings = dir.path().join("settings.yml");
+        let models = dir.path().join("models.yml");
+        let mut model_config: Value = serde_json::from_slice(&fs::read(&models).unwrap()).unwrap();
+        model_config["providers"]["fixture"]["models"]["primary"]["model"] =
+            json!("replacement-model");
+        fs::write(&models, model_config.to_string()).unwrap();
+        let sessions = dir.path().join("sessions");
+        let saved = load_test(&sessions, &sessions.join(".locks"), Some(&id), true).unwrap();
+        let mut agent = Agent::restore(
+            pp_config::model_state::ModelState::shared(
+                ModelCatalog::from_files(&settings, &models).unwrap(),
+            ),
+            Tools::new(dir.path().join("workspace"), EditMode::Replace).unwrap(),
+            saved,
+        )
+        .unwrap();
+        agent.take_replay();
+
+        let output = agent.dump_to(DumpMode::Result, dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(&output.files[0].path).unwrap(),
+            format!("{conclusion}\n")
+        );
+
+        let user = agent
+            .journal
+            .tree()
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find(|node| node.kind == Kind::User)
+            .unwrap();
+        agent.navigate_tree(&user.id).unwrap();
+        assert!(agent.dump_to(DumpMode::Result, dir.path()).is_err());
     }
 
     #[test]

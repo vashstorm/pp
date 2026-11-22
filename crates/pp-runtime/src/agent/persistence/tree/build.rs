@@ -71,6 +71,7 @@ impl Tree {
                     parent: *parent,
                     kind: *kind,
                     text: (*text).into(),
+                    is_conclusion: false,
                     native: Cursor { offset: 0, len: 0 },
                     before: Cursor { offset: 0, len: 0 },
                     replay: (0, 0),
@@ -276,6 +277,9 @@ impl Tree {
                     id,
                     parent: tree.leaf,
                     kind,
+                    is_conclusion: kind == Kind::Assistant
+                        && custom == "pp.native_append"
+                        && !text.trim().is_empty(),
                     text,
                     native,
                     before,

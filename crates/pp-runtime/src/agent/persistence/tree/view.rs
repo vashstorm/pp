@@ -39,6 +39,27 @@ fn replay_range(
 }
 
 impl Tree {
+    pub(in crate::agent) fn latest_conclusion(&self, file: &File) -> Result<Option<String>> {
+        let mut reader = SessionReader::new(BufReader::new(file));
+        reader.rewind()?;
+        let mut line = Vec::new();
+        let mut records = Vec::new();
+        for node in self.nodes.iter().rev().filter(|node| node.is_conclusion) {
+            replay_range(&mut reader, &mut line, node.replay, &mut records)?;
+            if let Some(text) = records.drain(..).rev().find_map(|record| match record {
+                ReplayRecord::Event(AgentEvent::AssistantFinished { text })
+                    if !text.trim().is_empty() =>
+                {
+                    Some(text)
+                }
+                _ => None,
+            }) {
+                return Ok(Some(text));
+            }
+        }
+        Ok(None)
+    }
+
     pub(in crate::agent) fn view(self, file: &File) -> Result<View> {
         let mut reader = SessionReader::new(BufReader::new(file));
         reader.rewind()?;

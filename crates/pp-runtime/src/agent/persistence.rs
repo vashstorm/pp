@@ -375,6 +375,14 @@ impl SessionJournal {
         }
     }
 
+    pub(super) fn latest_conclusion(&mut self) -> Result<Option<String>> {
+        let tree = self.tree()?;
+        match &self.active {
+            Some(active) => tree.latest_conclusion(&active.file),
+            None => Ok(None),
+        }
+    }
+
     pub(super) fn prepare_tree(&mut self, id: &str) -> Result<tree::Prepared> {
         let tree = self.tree()?;
         let active = self.active.as_ref().context("empty session tree")?;

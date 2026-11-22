@@ -51,6 +51,7 @@ pub struct Node {
     pub parent: Option<usize>,
     pub kind: Kind,
     pub text: String,
+    is_conclusion: bool,
     native: Cursor,
     before: Cursor,
     replay: (u64, u64),
