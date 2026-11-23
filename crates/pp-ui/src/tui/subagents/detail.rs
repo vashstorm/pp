@@ -12,6 +12,7 @@ use crate::tui::Transcript;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use pp_core::events::AgentEvent;
 use pp_core::text::display_text;
+use pp_runtime::subagent::Binding;
 use pp_runtime::subagent::EventPage;
 use pp_runtime::subagent::HubEvent;
 use pp_runtime::subagent::ObservedEntry;
@@ -42,6 +43,8 @@ pub(super) struct Detail {
     pub view: u64,
     transcript: Transcript,
     token_speed: statusline::TokenSpeed,
+    /// 当前模型请求的 worker 代次及起始事件序号。
+    speed_request: Option<(u64, u64)>,
     /// run -> 首个 user 卡片条目索引。
     by_run: BTreeMap<String, usize>,
     /// 源行起始偏移 -> 条目索引。
@@ -102,6 +105,7 @@ impl Detail {
             view,
             transcript,
             token_speed: Default::default(),
+            speed_request: None,
             by_run: BTreeMap::new(),
             by_offset: BTreeMap::new(),
             by_tool: BTreeMap::new(),
@@ -132,6 +136,16 @@ impl Detail {
     pub(super) fn tick(&mut self, now: std::time::Instant) -> bool {
         let speed_changed = self.token_speed.tick(now);
         self.transcript.tick(now) || speed_changed
+    }
+
+    pub(super) fn sample_model_progress(&mut self, binding: &Binding) {
+        if let Some(run_id) = &self.active_run
+            && let Some((generation, sequence)) = self.speed_request
+            && let Some((bytes, first_output)) =
+                binding.model_output_progress(&self.agent, run_id, generation, sequence)
+        {
+            self.token_speed.progress(bytes, first_output);
+        }
     }
 
     /// settled 是 worker 读页前冻结的终态；只有读完本页历史后才可用它补齐。
@@ -187,6 +201,7 @@ impl Detail {
                 self.apply_terminal(&previous.id, &previous.status, None);
             }
             self.active_run = Some(run.clone());
+            self.speed_request = None;
             self.token_speed.clear();
             self.transcript
                 .begin_recorded_run("Requesting model", None, now_ms, now);
@@ -215,32 +230,10 @@ impl Detail {
                 self.by_offset.insert(entry.start_offset, index);
             }
             (Some(event), _) => {
-                // 按事件时间回放采样，避免把历史分页读取的速度误当成模型速度。
-                let recorded_at = record
-                    .timestamp_ms
-                    .and_then(|timestamp| {
-                        now.checked_sub(std::time::Duration::from_millis(
-                            now_ms.saturating_sub(timestamp),
-                        ))
-                    })
-                    .unwrap_or(now);
-                match event {
-                    AgentEvent::ModelRequestStarted => self.token_speed.start(recorded_at),
-                    AgentEvent::ModelOutputProgress { output_bytes } => {
-                        self.token_speed.progress(*output_bytes, recorded_at);
-                        self.token_speed.tick(recorded_at);
-                    }
-                    AgentEvent::ModelRequestFinished {
-                        elapsed_ms,
-                        usage,
-                        success,
-                    } => self.token_speed.finish(
-                        *elapsed_ms,
-                        usage.map(|usage| usage.output_tokens),
-                        *success,
-                    ),
-                    AgentEvent::CompactionFinished { .. } => self.token_speed.clear(),
-                    _ => {}
+                if (record.run_id.is_none() || record.run_id == self.active_run)
+                    && !self.terminal.contains_key(&run)
+                {
+                    self.observe_speed(event, record, now_ms, now);
                 }
                 let before = self.transcript.entry_count();
                 self.transcript
@@ -276,6 +269,58 @@ impl Detail {
         }
     }
 
+    fn observe_speed(
+        &mut self,
+        event: &AgentEvent,
+        record: &pp_runtime::subagent::ObservedRecord,
+        now_ms: u64,
+        now: std::time::Instant,
+    ) {
+        // 旧日志按事件时间回放采样，避免把分页读取的速度误当成模型速度。
+        let recorded_at = || {
+            record
+                .timestamp_ms
+                .and_then(|timestamp| {
+                    now.checked_sub(std::time::Duration::from_millis(
+                        now_ms.saturating_sub(timestamp),
+                    ))
+                })
+                .unwrap_or(now)
+        };
+        match event {
+            AgentEvent::ModelRequestStarted => {
+                self.speed_request = record
+                    .run_id
+                    .as_ref()
+                    .zip(record.sequence)
+                    .map(|(_, sequence)| (record.generation, sequence));
+                self.token_speed.start(recorded_at());
+            }
+            AgentEvent::ModelOutputProgress { output_bytes } => {
+                let at = recorded_at();
+                self.token_speed.progress(*output_bytes, at);
+                self.token_speed.tick(at);
+            }
+            AgentEvent::ModelRequestFinished {
+                elapsed_ms,
+                usage,
+                success,
+            } => {
+                self.speed_request = None;
+                self.token_speed.finish(
+                    *elapsed_ms,
+                    usage.map(|usage| usage.output_tokens),
+                    *success,
+                );
+            }
+            AgentEvent::CompactionFinished { .. } => {
+                self.speed_request = None;
+                self.token_speed.clear();
+            }
+            _ => {}
+        }
+    }
+
     /// 只有对应 Run 已读完（或读到终态 lifecycle）才应用终态。
     fn apply_terminal(&mut self, run: &str, status: &str, timestamp_ms: Option<u64>) {
         if let Some(terminal) = self.terminal.get_mut(run) {
@@ -291,6 +336,7 @@ impl Detail {
             },
         );
         if self.active_run.as_deref() == Some(run) {
+            self.speed_request = None;
             if self.token_speed.is_active() {
                 self.token_speed.clear();
             }

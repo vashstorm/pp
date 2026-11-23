@@ -1,7 +1,7 @@
 //! Agent Hub：Agents 总览、完整 Activity 与独立 child 详情。
 //!
-//! 面板只持快照、投影与动作队列，不做直接 I/O；所有读取与控制在观察线程里
-//! 完成。关闭 Hub 只停止观察，不取消任何 child。
+//! 面板只持快照、投影与动作队列。历史读取与控制在观察线程完成，测速读取内存快照。
+//! 关闭 Hub 只停止观察，不取消任何 child。
 
 mod activity;
 mod detail;
@@ -330,7 +330,12 @@ impl Panel {
         }
     }
 
-    pub(super) fn tick(&mut self, now_ms: u64, instant: std::time::Instant) -> bool {
+    pub(super) fn tick(
+        &mut self,
+        now_ms: u64,
+        instant: std::time::Instant,
+        binding: Option<&pp_runtime::subagent::Binding>,
+    ) -> bool {
         let clock_changed = waiting_clock(u128::from(self.clock))
             != waiting_clock(u128::from(now_ms))
             && self.detail.is_none()
@@ -340,10 +345,12 @@ impl Panel {
                 .iter()
                 .any(|agent| agent.status == AgentStatus::Running);
         self.clock = now_ms;
-        let detail_changed = self
-            .detail
-            .as_mut()
-            .is_some_and(|detail| detail.tick(instant));
+        let detail_changed = self.detail.as_mut().is_some_and(|detail| {
+            if let Some(binding) = binding {
+                detail.sample_model_progress(binding);
+            }
+            detail.tick(instant)
+        });
         // age/elapsed 每秒刷新一次，不为时钟重读全文件。
         if now_ms.saturating_sub(self.rendered) >= 1000 {
             self.rendered = now_ms;

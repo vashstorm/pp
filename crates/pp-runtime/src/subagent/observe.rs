@@ -13,6 +13,7 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     sync::atomic::Ordering,
+    time::Instant,
 };
 
 /// 单页最多返回的完整记录条数。
@@ -99,6 +100,14 @@ pub struct EventPage {
     pub warnings: Vec<String>,
 }
 
+pub(super) struct ModelProgress {
+    run_id: String,
+    generation: u64,
+    request_sequence: u64,
+    /// 累计输出字节和首个输出的单调时间。
+    sample: Option<(u64, Instant)>,
+}
+
 impl EventPage {
     fn empty() -> Self {
         Self {
@@ -142,6 +151,57 @@ impl Inner {
         self.append_gate(agent_id)
     }
 
+    fn observe_model_progress(
+        &self,
+        agent_id: &str,
+        run_id: &str,
+        generation: u64,
+        sequence: u64,
+        event: &AgentEvent,
+    ) {
+        match event {
+            AgentEvent::ModelRequestStarted => {
+                let mut requests = lock(&self.model_progress);
+                if requests
+                    .get(agent_id)
+                    .is_none_or(|request| generation >= request.generation)
+                {
+                    requests.insert(
+                        agent_id.to_owned(),
+                        ModelProgress {
+                            run_id: run_id.to_owned(),
+                            generation,
+                            request_sequence: sequence,
+                            sample: None,
+                        },
+                    );
+                }
+            }
+            AgentEvent::ModelOutputProgress { output_bytes } if *output_bytes > 0 => {
+                let mut requests = lock(&self.model_progress);
+                if let Some(request) = requests.get_mut(agent_id)
+                    && request.run_id == run_id
+                    && request.generation == generation
+                    && sequence > request.request_sequence
+                {
+                    let (bytes, _) = request.sample.get_or_insert_with(|| (0, Instant::now()));
+                    *bytes = (*bytes).max(*output_bytes);
+                }
+            }
+            AgentEvent::ModelRequestFinished { .. } => {
+                let mut requests = lock(&self.model_progress);
+                if requests.get(agent_id).is_some_and(|request| {
+                    request.run_id == run_id
+                        && request.generation == generation
+                        && sequence > request.request_sequence
+                }) {
+                    requests.remove(agent_id);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// 追加一条观察记录；失败只记录脱敏健康提示，绝不取消真实任务。
     pub(super) fn observe(
         &self,
@@ -152,7 +212,22 @@ impl Inner {
         event: Option<&AgentEvent>,
         hub: Option<HubEvent>,
     ) {
-        // 瞬时诊断与拒绝只用于根会话展示，不写子 Agent 事件流，也不新增 Hub 状态。
+        if let Some(run_id) = run_id {
+            if let Some(HubEvent::RunState { status }) = &hub
+                && !matches!(status.as_str(), "queued" | "running")
+            {
+                let mut requests = lock(&self.model_progress);
+                if requests
+                    .get(agent_id)
+                    .is_some_and(|request| request.run_id == run_id)
+                {
+                    requests.remove(agent_id);
+                }
+            } else if let (Some(event), Some(sequence)) = (event, sequence) {
+                self.observe_model_progress(agent_id, run_id, generation, sequence, event);
+            }
+        }
+        // 输出进度只保留内存采样，诊断与拒绝只用于根会话展示。
         let event = if matches!(
             event,
             Some(
@@ -267,6 +342,26 @@ impl Binding {
     /// 进程内观察修订号，只用于增量刷新判断。
     pub fn hub_revision(&self) -> u64 {
         self.inner.revision.load(Ordering::Relaxed)
+    }
+
+    /// 读取匹配请求的累计输出字节及首个输出时间，只访问进程内存。
+    pub fn model_output_progress(
+        &self,
+        agent_id: &str,
+        run_id: &str,
+        generation: u64,
+        request_sequence: u64,
+    ) -> Option<(u64, Instant)> {
+        let requests = lock(&self.inner.model_progress);
+        let request = requests.get(agent_id)?;
+        if request.run_id == run_id
+            && request.generation == generation
+            && request.request_sequence == request_sequence
+        {
+            request.sample
+        } else {
+            None
+        }
     }
 
     /// 类型化快照：state 锁内只克隆记录，释放后再查询模型控制注册表。
@@ -707,8 +802,16 @@ mod tests {
     fn progress_does_not_write_or_bump_revision_and_sequence_gaps_are_valid() {
         let home = tempfile::tempdir().unwrap();
         let binding = binding(home.path(), "a1");
+        binding.inner.observe(
+            "a1",
+            Some("r1"),
+            1,
+            Some(1),
+            Some(&AgentEvent::ModelRequestStarted),
+            None,
+        );
         let revision = binding.hub_revision();
-        for sequence in 1..100 {
+        let progress = |sequence| {
             binding.inner.observe(
                 "a1",
                 Some("r1"),
@@ -719,10 +822,20 @@ mod tests {
                 }),
                 None,
             );
+        };
+        progress(2);
+        let (bytes, first_output) = binding.model_output_progress("a1", "r1", 1, 1).unwrap();
+        assert_eq!(bytes, 2);
+        for sequence in 3..100 {
+            progress(sequence);
         }
+        assert_eq!(
+            binding.model_output_progress("a1", "r1", 1, 1),
+            Some((99, first_output))
+        );
         assert_eq!(binding.hub_revision(), revision);
         assert!(binding.hub_snapshot().output_previews.is_empty());
-        assert!(read_all(&binding, "a1").is_empty());
+        assert_eq!(read_all(&binding, "a1").len(), 1);
         for sequence in [100, 200] {
             binding.inner.observe(
                 "a1",
@@ -736,9 +849,9 @@ mod tests {
             );
         }
         let entries = read_all(&binding, "a1");
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].record.sequence, Some(100));
-        assert_eq!(entries[1].record.sequence, Some(200));
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[1].record.sequence, Some(100));
+        assert_eq!(entries[2].record.sequence, Some(200));
         binding.inner.observe(
             "a1",
             Some("r1"),
@@ -750,8 +863,60 @@ mod tests {
             }),
         );
         let entries = read_all(&binding, "a1");
-        assert!(entries[2].record.event.is_none());
-        assert!(entries[2].record.hub.is_some());
+        assert!(entries[3].record.event.is_none());
+        assert!(entries[3].record.hub.is_some());
+        assert!(binding.model_output_progress("a1", "r1", 1, 1).is_none());
+    }
+
+    #[test]
+    fn model_progress_is_scoped_to_the_current_request() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path(), "a1");
+        let observe = |run, generation, sequence, event| {
+            binding.inner.observe(
+                "a1",
+                Some(run),
+                generation,
+                Some(sequence),
+                Some(&event),
+                None,
+            );
+        };
+        let progress = |bytes| AgentEvent::ModelOutputProgress {
+            output_bytes: bytes,
+        };
+        let finished = AgentEvent::ModelRequestFinished {
+            elapsed_ms: 100,
+            usage: None,
+            success: false,
+        };
+        observe("r1", 1, 1, AgentEvent::ModelRequestStarted);
+        observe("r1", 1, 2, progress(300));
+        observe("r1", 1, 3, finished.clone());
+        assert!(binding.model_output_progress("a1", "r1", 1, 1).is_none());
+
+        observe("r1", 1, 4, AgentEvent::ModelRequestStarted);
+        observe("r1", 1, 5, progress(15));
+        assert!(binding.model_output_progress("a1", "r1", 1, 1).is_none());
+        assert_eq!(
+            binding
+                .model_output_progress("a1", "r1", 1, 4)
+                .map(|sample| sample.0),
+            Some(15)
+        );
+
+        observe("r2", 2, 1, AgentEvent::ModelRequestStarted);
+        observe("r2", 2, 2, progress(30));
+        observe("r1", 1, 6, progress(600));
+        observe("r1", 1, 7, finished);
+        assert!(binding.model_output_progress("a1", "r1", 1, 4).is_none());
+        assert!(binding.model_output_progress("a1", "r2", 1, 1).is_none());
+        assert_eq!(
+            binding
+                .model_output_progress("a1", "r2", 2, 1)
+                .map(|sample| sample.0),
+            Some(30)
+        );
     }
 
     #[test]

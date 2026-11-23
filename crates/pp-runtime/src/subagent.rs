@@ -184,6 +184,7 @@ struct Inner {
     /// 管道阶段预览与主输出快照分开保留；种类之间不互相覆盖。
     pipeline_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
     shell_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
+    model_progress: Mutex<BTreeMap<String, observe::ModelProgress>>,
     runtime_models: Mutex<Option<crate::model_control::Binding>>,
     model_roles: Mutex<pp_config::config::ModelRoles>,
     accounting: Mutex<Option<pp_config::task_status::Ledger>>,

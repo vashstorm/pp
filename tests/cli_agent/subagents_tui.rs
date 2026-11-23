@@ -304,6 +304,8 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.text("ToolFailure");
         pty.input("\r");
         pty.text("hub-stream-first");
+        pty.wait_for("子 Agent 在流式请求结束前显示正速率", context_tui_positive_speed);
+        let (first_rate, _) = context_tui_speed(pty.parser.screen()).unwrap();
         pty.wait_for("子 Agent 详情显示实时时钟", |screen| {
             let text = screen.contents();
             WAIT_CLOCKS
@@ -325,10 +327,14 @@ fn agent_hub_streams_and_anchors_activity() {
         });
         // 第二段只追加一次。
         // 分片拼接必须与最终文本一致，否则 Responses 协议会判定冲突。
-        streaming_delta(&mut live, protocol, " hub-stream-second");
+        let second = format!(" hub-stream-second{}", " more".repeat(100));
+        streaming_delta(&mut live, protocol, &second);
         pty.text("hub-stream-second");
         assert_eq!(hub_count(&pty.contents(), "hub-stream-second"), 1);
-        streaming_complete(&mut live, protocol, "hub-stream-first hub-stream-second");
+        pty.wait_for("子 Agent 在后续输出到达时提高速率", |screen| {
+            context_tui_speed(screen).is_some_and(|(rate, _)| rate > first_rate)
+        });
+        streaming_complete(&mut live, protocol, &format!("hub-stream-first{second}"));
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         ask_final_reply(request, protocol, "hub-parent-stream-done");
         pty.text("✻ Completed");

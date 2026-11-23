@@ -354,7 +354,7 @@ impl App {
         changed |= self.subagent_status.map_or(0, |(_, count)| count) != previous_count;
         let now = std::time::Instant::now();
         if let Some(panel) = &mut self.subagent_panel {
-            changed |= panel.tick(subagents::now(), now);
+            changed |= panel.tick(subagents::now(), now, self.hub_bound.as_ref());
         }
         changed
     }

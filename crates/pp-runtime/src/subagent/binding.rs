@@ -103,6 +103,7 @@ impl Binding {
             output_previews: Mutex::new(BTreeMap::new()),
             pipeline_previews: Mutex::new(BTreeMap::new()),
             shell_previews: Mutex::new(BTreeMap::new()),
+            model_progress: Mutex::new(BTreeMap::new()),
             runtime_models: Mutex::new(None),
             model_roles: Mutex::new(Default::default()),
             accounting: Mutex::default(),
