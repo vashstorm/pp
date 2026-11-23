@@ -35,15 +35,16 @@ impl Panel {
                 muted(),
             )));
         }
-        let status = agent
-            .run_status
-            .as_deref()
-            .unwrap_or_else(|| agent.status.label());
         let age = self.age(agent);
-        lines.push(Line::from(vec![
-            colored(status.to_owned(), status_color(agent.status)),
-            colored(format!(" · {} · active {age}", agent_time(agent)), dim()),
-        ]));
+        let mut status_line = vec![colored(agent.status.label(), status_color(agent.status))];
+        if agent.parked && agent.status == AgentStatus::Completed {
+            status_line.push(colored(" · parked", muted()));
+        }
+        status_line.push(colored(
+            format!(" · {} · active {age}", agent_time(agent)),
+            dim(),
+        ));
+        lines.push(Line::from(status_line));
         lines.push(model_line(agent, width));
         if let Some(change) = &agent.model_change {
             lines.push(Line::from(colored(projection::truncate(change), muted())));
@@ -66,7 +67,7 @@ impl Panel {
         )));
         section(&mut lines, "Usage");
         lines.push(Line::from(colored(usage(agent, " · "), activity())));
-        if agent.run_status.as_deref() == Some("running")
+        if agent.status == AgentStatus::Running
             && let Some(context) = agent.context
             && let Some(window) = context.context_window.filter(|window| *window > 0)
             && let Some(percent) = context.percent()
@@ -197,7 +198,16 @@ pub(super) fn model_line(agent: &AgentView, width: usize) -> Line<'static> {
 pub(super) fn status_icon(status: AgentStatus, clock: u64) -> &'static str {
     let icons = super::super::themes::current_icons();
     match status {
-        AgentStatus::Running => waiting_clock(u128::from(clock)),
+        AgentStatus::Running => {
+            let frames: &[&str] = if super::super::themes::is_ascii() {
+                &[".", ":", "*", ":"]
+            } else {
+                &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+            };
+            frames[(clock / 120 % frames.len() as u64) as usize]
+        }
+        AgentStatus::Queued => waiting_clock(u128::from(clock)),
+        AgentStatus::Completed => done_icon(icons),
         // Material Design 实心圆，与运行中的时钟图标同字体族、同尺寸。
         AgentStatus::Idle | AgentStatus::Parked => {
             if super::super::themes::is_ascii() {
@@ -225,9 +235,9 @@ pub(super) fn compact(value: u64) -> String {
 }
 
 pub(super) fn agent_time(agent: &AgentView) -> String {
-    let (time, label) = if agent.status == AgentStatus::Running && agent.active_ms.is_some() {
+    let (time, label) = if agent.status.is_active() && agent.active_ms.is_some() {
         (agent.active_ms, "active")
-    } else if agent.status != AgentStatus::Running && agent.span_ms.is_some() {
+    } else if !agent.status.is_active() && agent.span_ms.is_some() {
         (agent.span_ms, "span")
     } else {
         (agent.time_ms, "run time")
@@ -389,7 +399,8 @@ mod tests {
         panel.opened("a1", 1, None, crate::tui::Transcript::new());
         let screen = render(&mut panel, &mut drafts, 120, 30);
         assert!(
-            screen[0].contains("Agent Hub · a1-name / a1 · running · parent Main"),
+            screen[0].contains("Agent Hub · a1-name / a1")
+                && screen[0].contains("running · parent Main"),
             "{}",
             screen[0]
         );

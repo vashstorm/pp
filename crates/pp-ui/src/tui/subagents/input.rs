@@ -225,7 +225,7 @@ impl Panel {
             KeyCode::Char('e') if self.page == Page::Agents && press => {
                 if let Some(agent) = self.selected_agent() {
                     let agent_id = agent.id.clone();
-                    if agent.status == AgentStatus::Aborted && agent.run_status.is_none() {
+                    if agent.status == AgentStatus::Aborted && !agent.has_active_run {
                         self.notice =
                             Some("Aborted agents need r or a new message to resume.".into());
                     }
@@ -245,7 +245,7 @@ impl Panel {
             KeyCode::Char('r') if press && self.page == Page::Agents => {
                 if let Some(agent) = self.selected_agent() {
                     // 有活动 Run 时恢复没有意义；parked/aborted 才真正重建实例。
-                    if agent.run_status.is_some() {
+                    if agent.has_active_run {
                         self.notice =
                             Some("Agent is busy; cancel the run or send a message.".into());
                     } else {
@@ -263,9 +263,9 @@ impl Panel {
             return;
         };
         let available = match action {
-            Control::Cancel => agent.run_status.is_some(),
+            Control::Cancel => agent.has_active_run,
             // 恢复是幂等的：空闲实例上为无操作，parked/aborted 才重建。
-            Control::Revive => agent.run_status.is_none(),
+            Control::Revive => !agent.has_active_run,
             Control::Kill | Control::Send => true,
         };
         if !available {

@@ -406,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_rank_ignores_status_heartbeat() {
+    fn live_priorities_preserve_frozen_order_within_each_priority() {
         let mut projection = Projection::default();
         projection.apply_snapshot(
             snapshot(
@@ -424,7 +424,7 @@ mod tests {
             ["a1", "a2"],
             "初次按 running/idle/parked/aborted 排序"
         );
-        // 状态心跳不重排。
+        // 运行中的任务越过其他状态。
         projection.apply_snapshot(
             snapshot(
                 vec![record("a1", "Main", "parked"), record("a2", "Main", "idle")],
@@ -438,9 +438,9 @@ mod tests {
                 .iter()
                 .map(|agent| agent.id.as_str())
                 .collect::<Vec<_>>(),
-            ["a1", "a2"]
+            ["a2", "a1"]
         );
-        // 新批次插到前面。
+        // 同优先级恢复冻结顺序，新批次插到前面。
         projection.apply_snapshot(
             snapshot(
                 vec![
@@ -452,6 +452,13 @@ mod tests {
             ),
             3,
         );
-        assert_eq!(projection.agents()[0].id, "a3");
+        assert_eq!(
+            projection
+                .agents()
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a3", "a1", "a2"]
+        );
     }
 }

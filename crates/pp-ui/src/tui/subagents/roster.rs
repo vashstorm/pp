@@ -1,6 +1,6 @@
 //! Roster 页：选择校验、列表绘制与概览指标。
 
-use super::inspector::{compact, format_cost, model_line, status_icon, usage};
+use super::inspector::{compact, format_cost, model_line, usage};
 use super::*;
 
 impl Panel {
@@ -231,32 +231,53 @@ impl Panel {
 
     fn draw_roster_header(&self, frame: &mut Frame, mut area: Rect) -> Rect {
         let agents = self.projection.agents();
-        let mut spans = vec![
+        let mut heading = vec![
             colored("Roster · ", activity()),
             colored("Flat", if self.tree { muted() } else { accent() }),
             colored(" / ", dim()),
             colored("By parent", if self.tree { accent() } else { muted() }),
         ];
+        let mut counts = Vec::new();
         for status in [
             AgentStatus::Running,
+            AgentStatus::Queued,
+            AgentStatus::Completed,
             AgentStatus::Parked,
             AgentStatus::Idle,
             AgentStatus::Aborted,
         ] {
             let count = agents.iter().filter(|agent| agent.status == status).count();
-            if count > 0 || matches!(status, AgentStatus::Running | AgentStatus::Parked) {
-                spans.push(colored(" · ", dim()));
-                spans.push(colored(
-                    format!(
-                        "{} {count} {}",
-                        status_icon(status, self.clock),
-                        status.label()
-                    ),
+            if count > 0
+                || matches!(
+                    status,
+                    AgentStatus::Running | AgentStatus::Queued | AgentStatus::Parked
+                )
+            {
+                let clock = if count > 0 { self.clock } else { 0 };
+                counts.push(colored(" · ", dim()));
+                counts.push(colored(
+                    format!("{} {count} {}", status_icon(status, clock), status.label()),
                     status_color(status),
                 ));
             }
         }
-        draw_line(frame, area, Line::from(spans));
+        let combined_width = heading
+            .iter()
+            .chain(&counts)
+            .map(Span::width)
+            .sum::<usize>();
+        if combined_width <= area.width as usize {
+            heading.extend(counts);
+            draw_line(frame, area, Line::from(heading));
+        } else {
+            draw_line(frame, area, Line::from(heading));
+            area = below(area, 1);
+            draw_line(
+                frame,
+                area,
+                Line::from(counts.into_iter().skip(1).collect::<Vec<_>>()),
+            );
+        }
         area = below(area, 1);
         let totals = |value: fn(&AgentView) -> Option<u64>| {
             agents.iter().filter_map(value).reduce(u64::saturating_add)
@@ -371,7 +392,7 @@ impl Panel {
         let heights = rows
             .iter()
             .map(|row| {
-                if self.projection.agents()[row.agent].status == AgentStatus::Running {
+                if self.projection.agents()[row.agent].status.is_active() {
                     3
                 } else {
                     2
@@ -426,7 +447,7 @@ impl Panel {
         first.spans.extend(model.spans);
         let indent = 3 + Line::raw(&row.prefix).width() + Line::raw(icon).width();
         let mut lines = vec![first];
-        if agent.status == AgentStatus::Running {
+        if agent.status.is_active() {
             lines.push(indented(
                 agent.task.as_deref().unwrap_or("—"),
                 indent,
@@ -470,13 +491,13 @@ mod tests {
             ],
             vec![run("r1", "a2", "running", "child work")],
         );
+        panel.clock = 0;
         let screen = render(&mut panel, &mut drafts, 140, 40).join("\n");
         assert!(screen.contains("Roster · Flat / By parent"), "{screen}");
         assert!(screen.contains("1:agents"));
         assert!(screen.contains("2:activity"));
         assert!(screen.contains("a1-name") && screen.contains("a2-name"));
         assert!(screen.contains("running"));
-        // 选中项语义色：running 使用 ACCENT。
         let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
         terminal
             .draw(|frame| panel.draw(frame, frame.area(), &mut drafts, &Default::default()))
@@ -498,13 +519,74 @@ mod tests {
         let marker = &buffer[(2, 4)];
         assert_eq!(marker.symbol(), "›");
         assert_eq!(marker.fg, accent());
-        assert_eq!(
-            buffer[(4, 4)].symbol(),
-            waiting_clock(u128::from(panel.clock))
-        );
+        assert_eq!(buffer[(4, 4)].symbol(), "⠋");
+        assert_eq!(buffer[(4, 4)].fg, Color::Rgb(140, 217, 123));
         assert_eq!(buffer[(5, 4)].symbol(), " ");
         assert_eq!(buffer[(6, 4)].fg, activity());
         assert_eq!(buffer[(81, 5)].bg, selected_bg());
+    }
+
+    #[test]
+    fn task_status_icons_animate_across_the_roster_and_inspector() {
+        let mut panel = panel(
+            vec![
+                record("a1", "Main", "idle"),
+                record("a2", "Main", "idle"),
+                record("a3", "Main", "parked"),
+            ],
+            vec![
+                run("r1", "a1", "queued", "waiting task"),
+                run("r2", "a2", "running", "working task"),
+                run("r3", "a3", "completed", "finished task"),
+                run("r4", "a2", "queued", "next task"),
+            ],
+        );
+        panel.clock = 0;
+        panel.selected = Some("a1".into());
+        let mut drafts = Drafts::default();
+        let before = render_cells(&mut panel, &mut drafts, &Default::default(), 140, 30);
+        assert!(panel.tick(120, std::time::Instant::now(), None));
+        let after = render_cells(&mut panel, &mut drafts, &Default::default(), 140, 30);
+        let screen = rows(&after, 140, 30).join("\n");
+        assert!(screen.contains("1 running") && screen.contains("1 queued"));
+        assert!(screen.contains("1 completed") && screen.contains("queued ·"));
+        assert!(screen.contains("working task") && !screen.contains("next task"));
+        for (name, first, second, color) in [
+            ("a2-name", "⠋", "⠙", Color::Rgb(140, 217, 123)),
+            (
+                "a1-name",
+                "\u{f1456}",
+                "\u{f144b}",
+                Color::Rgb(244, 176, 74),
+            ),
+            ("a3-name", "\u{f00c}", "\u{f00c}", Color::Rgb(176, 183, 198)),
+        ] {
+            let row = screen
+                .lines()
+                .position(|line| {
+                    line.split('│')
+                        .nth(1)
+                        .is_some_and(|left| left.contains(name))
+                })
+                .unwrap() as u16;
+            let before = &before[(4, row)];
+            let after = &after[(4, row)];
+            assert_eq!(
+                (before.symbol(), after.symbol(), after.fg),
+                (first, second, color)
+            );
+        }
+        let queued_icon = &after[(85, 1)];
+        assert_eq!(queued_icon.symbol(), "\u{f144b}");
+        assert_eq!(queued_icon.fg, Color::Rgb(244, 176, 74));
+        let count_row = screen
+            .lines()
+            .position(|line| line.contains("1 queued"))
+            .unwrap() as u16;
+        assert!((2..83).any(|column| {
+            let cell = &after[(column, count_row)];
+            cell.symbol() == queued_icon.symbol() && cell.fg == queued_icon.fg
+        }));
     }
 
     #[test]

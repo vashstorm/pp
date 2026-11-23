@@ -1,6 +1,7 @@
 //! Agent 视图重建：排序权重、指标与耗时。
 
 use super::*;
+use pp_runtime::subagent::Record;
 
 impl Projection {
     /// 冻结首次出现的 (id, generation) 排序权重；新批次整体插到前面。
@@ -19,12 +20,12 @@ impl Projection {
         }
         fresh.sort_by(|left, right| {
             (
-                status_of(snapshot, &left.record.id),
+                initial_status(snapshot, &left.record),
                 std::cmp::Reverse(left.record.updated_ms),
                 agent_number(&left.record.id),
             )
                 .cmp(&(
-                    status_of(snapshot, &right.record.id),
+                    initial_status(snapshot, &right.record),
                     std::cmp::Reverse(right.record.updated_ms),
                     agent_number(&right.record.id),
                 ))
@@ -50,15 +51,28 @@ impl Projection {
                     .filter(|run| run.agent_id == record.id)
                     .collect::<Vec<&Run>>();
                 let stream = self.streams.get(&record.id);
-                let status = status_of(snapshot, &record.id);
-                let run_status = runs
+                let latest = runs.iter().copied().max_by_key(|run| run_number(&run.id));
+                let lifecycle = record_status(record);
+                let active_run = runs
                     .iter()
-                    .find(|run| matches!(run.status.as_str(), "queued" | "running"))
-                    .map(|run| run.status.clone());
-                let latest = runs.iter().max_by_key(|run| run_number(&run.id));
-                let task = latest.map(|run| run.task.clone());
+                    .copied()
+                    .filter(|run| matches!(run.status.as_str(), "running" | "queued"))
+                    .max_by_key(|run| (run.status == "running", run_number(&run.id)));
+                let status = match (lifecycle, active_run, latest) {
+                    (AgentStatus::Aborted, _, _) => AgentStatus::Aborted,
+                    (_, Some(run), _) if run.status == "running" => AgentStatus::Running,
+                    (_, Some(_), _) => AgentStatus::Queued,
+                    (_, None, Some(run)) if run.status == "completed" => AgentStatus::Completed,
+                    _ => lifecycle,
+                };
+                let displayed = if status.is_active() {
+                    active_run
+                } else {
+                    latest
+                };
+                let task = displayed.map(|run| run.task.clone());
                 let current = stream.and_then(|stream| {
-                    let key = latest.map_or("", |run| run.id.as_str());
+                    let key = displayed.map_or("", |run| run.id.as_str());
                     stream
                         .work
                         .get(key)
@@ -133,7 +147,8 @@ impl Projection {
                     thinking: record.spec.thinking.as_str().to_owned(),
                     model_change: agent.model_change.clone(),
                     status,
-                    run_status,
+                    has_active_run: active_run.is_some(),
+                    parked: lifecycle == AgentStatus::Parked,
                     task,
                     current,
                     requests,
@@ -171,7 +186,10 @@ impl Projection {
                     .copied()
                     .unwrap_or(0)
             };
-            weight(right).cmp(&weight(left))
+            left.status
+                .roster_priority()
+                .cmp(&right.status.roster_priority())
+                .then_with(|| weight(right).cmp(&weight(left)))
         });
         self.index = views
             .iter()
@@ -218,26 +236,23 @@ fn generation_of(snapshot: &HubSnapshot, id: &str) -> u64 {
         .map_or(0, |agent| agent.record.generation)
 }
 
-fn status_of(snapshot: &HubSnapshot, id: &str) -> AgentStatus {
-    let record = snapshot
-        .agents
-        .iter()
-        .find(|agent| agent.record.id == id)
-        .map(|agent| &agent.record);
-    // aborted 的 Agent 状态优先。
-    if record.is_some_and(|record| record.status == "aborted") {
-        return AgentStatus::Aborted;
-    }
-    if snapshot
-        .runs
-        .iter()
-        .any(|run| run.agent_id == id && matches!(run.status.as_str(), "queued" | "running"))
+fn initial_status(snapshot: &HubSnapshot, record: &Record) -> AgentStatus {
+    let status = record_status(record);
+    if status != AgentStatus::Aborted
+        && snapshot.runs.iter().any(|run| {
+            run.agent_id == record.id && matches!(run.status.as_str(), "queued" | "running")
+        })
     {
-        return AgentStatus::Running;
+        AgentStatus::Running
+    } else {
+        status
     }
-    match record.map(|record| record.status.as_str()) {
-        Some("parked") => AgentStatus::Parked,
-        Some("aborted") => AgentStatus::Aborted,
+}
+
+fn record_status(record: &Record) -> AgentStatus {
+    match record.status.as_str() {
+        "parked" => AgentStatus::Parked,
+        "aborted" => AgentStatus::Aborted,
         _ => AgentStatus::Idle,
     }
 }

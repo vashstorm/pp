@@ -151,6 +151,94 @@ fn hub_close(pty: &mut Pty) {
 }
 
 #[test]
+fn agent_hub_moves_queued_tasks_above_completed_tasks_when_they_start() {
+    let protocol = "completion";
+    let fixture = server();
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config_path(home.path(), "settings.yml"),
+        format!("{}task: {{max_concurrency: 1}}\n", task_fixture_settings()),
+    )
+    .unwrap();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        fixture_models(&fixture),
+    )
+    .unwrap();
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    pty.ready();
+    pty.resize(35, 150);
+    pty.input("delegate two tasks\r");
+    let (request, _) = pty.request_at(&fixture, api_path(protocol));
+    ask_reply_calls(
+        request,
+        protocol,
+        json!([call("task", "task", json!({
+            "context": "Check queue ordering.",
+            "tasks": [
+                {"name":"queue-alpha","role":"fast","task":"alpha marker"},
+                {"name":"queue-beta","role":"fast","task":"beta marker"},
+            ],
+        }))]),
+    );
+    let mut active = None;
+    for _ in 0..2 {
+        let (request, body) = pty.request_at(&fixture, api_path(protocol));
+        if hub_is_child(&body) {
+            let names = if hub_body_text(&body).contains("alpha marker") {
+                ("queue-alpha", "queue-beta")
+            } else {
+                ("queue-beta", "queue-alpha")
+            };
+            active = Some((request, names));
+        } else {
+            ask_reply_calls(request, protocol, json!([call("wait", "wait", json!({}))]));
+        }
+    }
+    let (first, (running, queued)) = active.expect("first child request");
+    pty.input("/agents\r");
+    let ordered = |text: &str, first, second| {
+        text.find(first).zip(text.find(second)).is_some_and(|(a, b)| a < b)
+    };
+    pty.wait_for("running above queued", |screen| {
+        let text = screen.contents();
+        text.contains("1 running") && text.contains("1 queued") && ordered(&text, running, queued)
+    });
+    pty.input("j");
+    pty.wait_for("queued task selected", |screen| {
+        screen.contents().matches(queued).count() == 2
+    });
+    ask_final_reply(first, protocol, "first child finished");
+    let (second, body) = pty.request_at(&fixture, api_path(protocol));
+    assert!(hub_is_child(&body), "{body}");
+    pty.wait_for("selected task running above completed", |screen| {
+        let text = screen.contents();
+        text.contains("1 running")
+            && text.contains("0 queued")
+            && text.contains("1 completed")
+            && ordered(&text, queued, running)
+            && text.matches(queued).count() == 2
+    });
+    pty.input("t");
+    pty.wait_for("parent view orders siblings by status", |screen| {
+        let text = screen.contents();
+        let by_parent_selected = screen
+            .cell(1, 18)
+            .is_some_and(|cell| cell.fgcolor() == vt100::Color::Rgb(254, 188, 56));
+        by_parent_selected && text.contains("1 completed") && ordered(&text, queued, running)
+    });
+    ask_final_reply(second, protocol, "second child finished");
+    let (parent, _) = pty.request_at(&fixture, api_path(protocol));
+    ask_final_reply(parent, protocol, "queue check finished");
+    pty.text("2 completed");
+    hub_close(&mut pty);
+    pty.text("queue check finished");
+    pty.input("\x03");
+    pty.finish();
+}
+
+#[test]
 fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
     for protocol in ["completion", "response"] {
         let fixture = server();
@@ -295,11 +383,11 @@ fn agent_hub_streams_and_anchors_activity() {
         // 先发第一段，再进入详情：无需额外按键即可看到。
         streaming_delta(&mut live, protocol, "hub-stream-first");
         pty.input("/agents\r");
-        pty.wait_for("运行中的子 Agent 名称前显示时钟", |screen| {
+        pty.wait_for("运行中的子 Agent 名称前显示动态转轮", |screen| {
             let text = screen.contents();
-            WAIT_CLOCKS
-                .iter()
-                .any(|clock| text.contains(&format!("{clock} LiveWriter")))
+            "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+                .chars()
+                .any(|frame| text.contains(&format!("{frame} LiveWriter")))
         });
         pty.text("ToolFailure");
         pty.input("\r");
@@ -685,9 +773,17 @@ fn agent_hub_layout_tree_scope_and_follow() {
     assert!(main.contains("task"), "{main}");
     // 真实 SGR 鼠标点击 roster 的可见物理行：打开该 Agent 的详情。
     pty.input("\x1ba");
-    pty.text("Agent Hub");
-    pty.input("\x1b[<0;6;5M");
-    pty.input("\x1b[<0;6;5m");
+    let beta_row = |text: &str| {
+        text.lines()
+            .position(|line| line.split('│').nth(1).is_some_and(|left| left.contains("Beta")))
+            .map(|row| row + 1)
+    };
+    pty.wait_for("Beta roster row visible", |screen| {
+        screen.contents().contains("Agent Hub") && beta_row(&screen.contents()).is_some()
+    });
+    let row = beta_row(&pty.contents()).unwrap();
+    pty.input(&format!("\x1b[<0;6;{row}M"));
+    pty.input(&format!("\x1b[<0;6;{row}m"));
     pty.text(" / a");
     pty.resize(40, 100);
     pty.resize(40, 140);

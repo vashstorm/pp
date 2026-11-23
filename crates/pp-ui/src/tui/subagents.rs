@@ -20,6 +20,7 @@ use crossterm::event::{
 };
 pub(in crate::tui) use detail::Anchor;
 use detail::Detail;
+use inspector::status_icon;
 pub(in crate::tui) use projection::now_ms as now;
 use projection::{
     ActivityRow, AgentStatus, AgentView, Category, Kind, Projection, RowStatus, Scope, TreeRow,
@@ -336,14 +337,29 @@ impl Panel {
         instant: std::time::Instant,
         binding: Option<&pp_runtime::subagent::Binding>,
     ) -> bool {
-        let clock_changed = waiting_clock(u128::from(self.clock))
-            != waiting_clock(u128::from(now_ms))
-            && self.detail.is_none()
-            && self
-                .projection
-                .agents()
-                .iter()
-                .any(|agent| agent.status == AgentStatus::Running);
+        let frame_changed = |status| status_icon(status, self.clock) != status_icon(status, now_ms);
+        let running_changed = frame_changed(AgentStatus::Running);
+        let queued_changed = frame_changed(AgentStatus::Queued);
+        let agent_frame_changed = |agent: &AgentView| match agent.status {
+            AgentStatus::Running => running_changed,
+            AgentStatus::Queued => queued_changed,
+            _ => false,
+        };
+        let clock_changed = if let Some(detail) = &self.detail {
+            self.projection
+                .agent(&detail.agent)
+                .is_some_and(agent_frame_changed)
+        } else if self.page == Page::Activity {
+            queued_changed
+                && self
+                    .projection
+                    .rows()
+                    .iter()
+                    .any(|row| row.status == RowStatus::Pending)
+        } else {
+            (running_changed || queued_changed)
+                && self.projection.agents().iter().any(agent_frame_changed)
+        };
         self.clock = now_ms;
         let detail_changed = self.detail.as_mut().is_some_and(|detail| {
             if let Some(binding) = binding {
@@ -361,12 +377,19 @@ impl Panel {
     }
 }
 
-fn status_color(status: AgentStatus) -> ratatui::style::Color {
-    match status {
-        AgentStatus::Running => accent(),
-        AgentStatus::Idle => added(),
-        AgentStatus::Parked => muted(),
-        AgentStatus::Aborted => removed(),
+fn status_color(status: AgentStatus) -> Color {
+    let light = matches!(hub_bg(), Color::Rgb(r, g, b)
+        if 299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b) >= 128_000);
+    match (status, light) {
+        (AgentStatus::Running, false) => Color::Rgb(140, 217, 123),
+        (AgentStatus::Running, true) => Color::Rgb(37, 109, 52),
+        (AgentStatus::Queued, false) => Color::Rgb(244, 176, 74),
+        (AgentStatus::Queued, true) => Color::Rgb(139, 81, 0),
+        (AgentStatus::Completed, false) => Color::Rgb(176, 183, 198),
+        (AgentStatus::Completed, true) => Color::Rgb(86, 96, 113),
+        (AgentStatus::Idle, _) => added(),
+        (AgentStatus::Parked, _) => muted(),
+        (AgentStatus::Aborted, _) => removed(),
     }
 }
 

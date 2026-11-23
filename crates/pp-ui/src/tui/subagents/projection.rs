@@ -25,6 +25,8 @@ const SUMMARY_SCALARS: usize = 512;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum AgentStatus {
     Running,
+    Queued,
+    Completed,
     Idle,
     Parked,
     Aborted,
@@ -34,9 +36,24 @@ impl AgentStatus {
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Running => "running",
+            Self::Queued => "queued",
+            Self::Completed => "completed",
             Self::Idle => "idle",
             Self::Parked => "parked",
             Self::Aborted => "aborted",
+        }
+    }
+
+    pub(super) fn is_active(self) -> bool {
+        matches!(self, Self::Running | Self::Queued)
+    }
+
+    fn roster_priority(self) -> u8 {
+        match self {
+            Self::Running => 0,
+            Self::Queued => 1,
+            Self::Completed => 2,
+            Self::Idle | Self::Parked | Self::Aborted => 3,
         }
     }
 }
@@ -148,8 +165,10 @@ pub(super) struct AgentView {
     pub thinking: String,
     pub model_change: Option<String>,
     pub status: AgentStatus,
-    /// 真实 queued/running Run 状态；用于副行说明。
-    pub run_status: Option<String>,
+    /// 强制停止后，Run 仍可能正在收尾。
+    pub has_active_run: bool,
+    /// 已完成任务仍可同时属于已停泊的 Agent。
+    pub parked: bool,
     pub task: Option<String>,
     pub current: Option<String>,
     pub requests: usize,

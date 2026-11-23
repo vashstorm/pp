@@ -5,7 +5,7 @@
 //! `Binding::control`，不在 UI 线程做 I/O。
 
 use super::super::statusline;
-use super::super::transcript_style::{accent, activity, added, dim, muted, removed};
+use super::super::transcript_style::{accent, activity, dim, removed};
 use super::Drafts;
 use super::projection::AgentView;
 use crate::tui::Transcript;
@@ -567,11 +567,12 @@ impl Detail {
         let transcript_height =
             input_space.saturating_sub(input_height + activity_height + activity_spacing);
         // 单行身份与真实状态；模型、effort 与用量由输入框指标行及底部状态栏承载。
-        let status_color = match view.status {
-            super::projection::AgentStatus::Running => accent(),
-            super::projection::AgentStatus::Idle => added(),
-            super::projection::AgentStatus::Parked => muted(),
-            super::projection::AgentStatus::Aborted => removed(),
+        let status_color = super::status_color(view.status);
+        let status_icon = super::status_icon(view.status, now_ms);
+        let parked = if view.parked && view.status == super::AgentStatus::Completed {
+            " · parked"
+        } else {
+            ""
         };
         let model_change = view
             .model_change
@@ -586,17 +587,20 @@ impl Detail {
             Line::from(vec![
                 Span::styled("Agent Hub", Style::default().fg(accent())),
                 Span::styled(
-                    format!(" · {} / {}", display_text(&view.name), view.id),
+                    format!(" · {} / {} · ", display_text(&view.name), view.id),
                     Style::default().fg(activity()),
                 ),
                 Span::styled(
+                    format!("{status_icon} {}", view.status.label()),
+                    Style::default().fg(status_color),
+                ),
+                Span::styled(
                     format!(
-                        " · {} · parent {}{}",
-                        view.status.label(),
+                        "{parked} · parent {}{}",
                         display_text(&view.parent),
                         model_change
                     ),
-                    Style::default().fg(status_color),
+                    Style::default().fg(activity()),
                 ),
                 Span::styled(
                     format!(

@@ -1,6 +1,5 @@
 //! Activity 页：分类／范围过滤后的行选择与绘制。
 
-use super::inspector::status_icon;
 use super::*;
 
 impl Panel {
@@ -177,7 +176,7 @@ impl Panel {
 pub(super) fn activity_icon(status: RowStatus, clock: u64) -> &'static str {
     let icons = super::super::themes::current_icons();
     match status {
-        RowStatus::Pending => status_icon(AgentStatus::Running, clock),
+        RowStatus::Pending => waiting_clock(u128::from(clock)),
         RowStatus::Success => done_icon(icons),
         RowStatus::Error => fail_icon(icons),
         RowStatus::Aborted => "■",
