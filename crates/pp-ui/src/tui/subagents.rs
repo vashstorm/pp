@@ -123,7 +123,9 @@ pub(super) enum Command {
         agent: String,
         anchor: Option<Anchor>,
     },
-    CloseDetail,
+    CloseDetail {
+        view: u64,
+    },
     FocusEditor,
     Submit {
         agent: String,
@@ -275,6 +277,7 @@ impl Panel {
     }
 
     pub(super) fn apply(&mut self, reply: Reply) {
+        let update_previews = matches!(&reply, Reply::Snapshot { .. } | Reply::Detail { .. });
         match reply {
             Reply::Snapshot { snapshot, .. } => {
                 self.projection.apply_snapshot(*snapshot, self.clock);
@@ -297,9 +300,7 @@ impl Panel {
                         // 文件替换后从头重建，保留草稿与 follow 偏好。
                         detail.rebuild();
                     }
-                    if let Some(detail) = self.detail.as_mut() {
-                        detail.ingest(page, &history.runs, &history.settled, projection::now_ms());
-                    }
+                    detail.ingest(page, &history.runs, &history.settled, projection::now_ms());
                 }
             }
             Reply::Reset { agent, .. } => {
@@ -307,11 +308,19 @@ impl Panel {
                 self.validate_selection();
             }
             Reply::Control { agent, result, .. } => self.send_settled(&agent, result),
-            Reply::Error { message, .. } => {
-                self.error = Some(message);
+            Reply::Error { view, message, .. } => {
+                if let Some(view) = view {
+                    if let Some(detail) = self.detail.as_mut().filter(|detail| detail.view == view)
+                    {
+                        detail.history_failed(message);
+                    }
+                } else {
+                    self.set_error(message);
+                }
             }
         }
-        if let Some(detail) = &mut self.detail
+        if update_previews
+            && let Some(detail) = &mut self.detail
             && let Some(snapshot) = self.projection.snapshot()
         {
             for preview in &snapshot.output_previews {

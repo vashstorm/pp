@@ -59,6 +59,7 @@ pub(super) struct Detail {
     accepted: BTreeSet<(String, u64)>,
     last_offset: Option<u64>,
     caught_up: bool,
+    history_error: Option<String>,
     pending: Option<Anchor>,
     pub notice: Option<String>,
     pub focus: bool,
@@ -115,6 +116,7 @@ impl Detail {
             accepted: BTreeSet::new(),
             last_offset: None,
             caught_up: false,
+            history_error: None,
             pending: None,
             notice: None,
             focus: false,
@@ -138,6 +140,10 @@ impl Detail {
         self.transcript.tick(now) || speed_changed
     }
 
+    pub(super) fn history_failed(&mut self, message: String) {
+        self.history_error = Some(message);
+    }
+
     pub(super) fn sample_model_progress(&mut self, binding: &Binding) {
         if let Some(run_id) = &self.active_run
             && let Some((generation, sequence)) = self.speed_request
@@ -157,6 +163,7 @@ impl Detail {
         now_ms: u64,
     ) {
         let now = std::time::Instant::now();
+        self.history_error = None;
         self.caught_up = false;
         for entry in &page.entries {
             if self
@@ -583,6 +590,7 @@ impl Detail {
             .last_activity
             .map(|timestamp| format_age(now_ms.saturating_sub(timestamp)))
             .unwrap_or_else(|| "—".into());
+        let history_loading = !self.caught_up && self.history_error.is_none();
         let header = super::fit_line(
             Line::from(vec![
                 Span::styled("Agent Hub", Style::default().fg(accent())),
@@ -605,7 +613,11 @@ impl Detail {
                 Span::styled(
                     format!(
                         " · active {age}{}",
-                        if view.loading { " · loading" } else { "" }
+                        if view.loading || history_loading {
+                            " · loading"
+                        } else {
+                            ""
+                        }
                     ),
                     Style::default().fg(dim()),
                 ),
@@ -634,14 +646,30 @@ impl Detail {
         // 首批历史可能在首帧获得宽度前读完，定位不能等待下一批事件。
         self.resolve_pending();
         self.transcript.draw(frame, transcript_area);
+        if transcript_height > 0 && self.transcript.entry_count() == 0 {
+            // 首帧使用已有任务快照，正文由有序日志接管。Activity 锚点可能指向旧任务。
+            let mut lines = Vec::new();
+            if history_loading {
+                lines.push(Line::styled(
+                    "Loading task history…",
+                    Style::default().fg(dim()),
+                ));
+            }
+            if self.pending.is_none()
+                && let Some(task) = view.task.as_deref()
+            {
+                let task = super::projection::truncate(task);
+                lines.push(Line::raw(display_text(&task).into_owned()));
+            }
+            frame.render_widget(Paragraph::new(lines), transcript_area);
+        }
         self.transcript.draw_live_activity(frame, activity_area);
         if hint_height > 0 {
-            let notice = self.notice.is_some();
-            let hint = self.notice.clone().unwrap_or_else(|| HINT.into());
+            let notice = self.history_error.as_ref().or(self.notice.as_ref());
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    display_text(&hint).into_owned(),
-                    Style::default().fg(if notice { removed() } else { dim() }),
+                    display_text(notice.map_or(HINT, String::as_str)).into_owned(),
+                    Style::default().fg(if notice.is_some() { removed() } else { dim() }),
                 ))),
                 hint_area,
             );

@@ -407,6 +407,8 @@ mod tests {
         for absent in ["fixture-model", "effort", "tokens"] {
             assert!(!screen[0].contains(absent), "{absent}: {}", screen[0]);
         }
+        assert!(screen[1].contains("Loading task history"), "{screen:#?}");
+        assert!(screen[2].contains("child work"), "{screen:#?}");
         panel.apply(Reply::Detail {
             epoch: 1,
             view: 1,
@@ -434,11 +436,30 @@ mod tests {
             },
         });
         let screen = render(&mut panel, &mut drafts, 120, 30);
+        assert!(
+            !screen
+                .iter()
+                .any(|line| line.contains("Loading task history"))
+        );
+        assert!(screen.iter().any(|line| line.contains("line-29")));
         let activity = screen
             .iter()
             .position(|line| line.contains("Responding"))
             .unwrap();
         assert!(screen[activity - 1].trim().is_empty(), "{screen:#?}");
+        panel.opened(
+            "a1",
+            2,
+            Some(Anchor {
+                run: Some("r0".into()),
+                offset: 0,
+                tool: None,
+            }),
+            crate::tui::Transcript::new(),
+        );
+        let screen = render(&mut panel, &mut drafts, 120, 30).join("\n");
+        assert!(screen.contains("Loading task history"), "{screen}");
+        assert!(!screen.contains("child work"), "{screen}");
     }
 
     #[test]

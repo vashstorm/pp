@@ -47,7 +47,8 @@ impl Panel {
             Event::Key(key) => {
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
                     // Esc 保留 child 草稿，返回来源页。
-                    self.commands.push(Command::CloseDetail);
+                    self.commands
+                        .push(Command::CloseDetail { view: detail.view });
                     self.detail = None;
                     return false;
                 }

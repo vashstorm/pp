@@ -817,9 +817,9 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
         json!({"context":"legacy context","tasks":[{"role":"fast","task":"legacy child work"}]}),
         &["legacy child work"],
     );
-    // 让 child 的完整历史超过 64 KiB，最早的 task 卡片只能靠完整读取看到。
+    // 跨过观察日志的分页边界，验证详情可以看到最新输出并滚回首条任务。
     let mut stream = children.remove(0).start_sse().unwrap();
-    for index in 0..40 {
+    for index in 0..140 {
         streaming_delta(&mut stream, protocol, &format!("{}-{index}\n", "x".repeat(2_000)));
     }
     streaming_delta(&mut stream, protocol, "hub-tail-marker");

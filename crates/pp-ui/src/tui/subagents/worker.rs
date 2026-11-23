@@ -17,6 +17,8 @@ use std::{
 
 /// Hub 可见时的修订轮询间隔。
 const POLL: Duration = Duration::from_millis(250);
+/// 回复拥塞时短暂让出 CPU，期间仍可立即接收控制请求。
+const REPLY_RETRY: Duration = Duration::from_millis(5);
 /// 快照合并窗口：流式事件只按此频率重建类型化快照。
 const COALESCE: Duration = Duration::from_millis(200);
 /// 每轮最多处理的分页数；之后必须回到请求队列检查控制。
@@ -93,10 +95,7 @@ pub(in crate::tui) enum Reply {
         history: DetailHistory,
     },
     /// 该 agent 的旧投影与锚点已失效，需要只重建这一路。
-    Reset {
-        epoch: u64,
-        agent: String,
-    },
+    Reset { epoch: u64, agent: String },
     Control {
         epoch: u64,
         request: u64,
@@ -105,6 +104,7 @@ pub(in crate::tui) enum Reply {
     },
     Error {
         epoch: u64,
+        view: Option<u64>,
         message: String,
     },
 }
@@ -170,7 +170,6 @@ struct State {
     revision: u64,
     force: bool,
     pending_snapshot: bool,
-    snapshot_taken: bool,
     last_snapshot: Instant,
     order: Vec<String>,
     /// 每个 agent 的 Activity 游标。
@@ -191,7 +190,6 @@ impl State {
             revision: 0,
             force: true,
             pending_snapshot: true,
-            snapshot_taken: false,
             last_snapshot: Instant::now() - Duration::from_secs(1),
             order: Vec::new(),
             cursors: BTreeMap::new(),
@@ -203,13 +201,23 @@ impl State {
         }
     }
 
-    fn busy(&self) -> bool {
-        !self.pending.is_empty()
-            || self.snapshot.is_some()
-            || self.force
-            || self.pending_snapshot
+    fn request_wait(&self) -> Duration {
+        if self.has_unsent_replies() {
+            REPLY_RETRY
+        } else if self.force
             || self.more.values().any(|more| *more)
             || self.detail.as_ref().is_some_and(|detail| detail.more)
+        {
+            Duration::ZERO
+        } else if self.pending_snapshot {
+            COALESCE.saturating_sub(self.last_snapshot.elapsed())
+        } else {
+            POLL
+        }
+    }
+
+    fn has_unsent_replies(&self) -> bool {
+        !self.pending.is_empty() || self.snapshot.is_some()
     }
 
     fn push(&mut self, reply: Reply) {
@@ -259,7 +267,6 @@ impl State {
         }
         self.force = false;
         self.pending_snapshot = false;
-        self.snapshot_taken = true;
         self.last_snapshot = Instant::now();
         let snapshot = self.binding.hub_snapshot();
         for agent in &snapshot.agents {
@@ -314,6 +321,7 @@ impl State {
                     }
                     self.push(Reply::Error {
                         epoch: self.epoch,
+                        view: Some(view),
                         message: format!("{error:#}"),
                     });
                 }
@@ -357,6 +365,7 @@ impl State {
                     self.more.insert(agent, false);
                     self.push(Reply::Error {
                         epoch: self.epoch,
+                        view: None,
                         message: format!("{error:#}"),
                     });
                 }
@@ -405,15 +414,15 @@ impl State {
 fn run(requests: Receiver<Request>, replies: SyncSender<Reply>) {
     let mut state: Option<State> = None;
     loop {
-        let busy = state.as_ref().is_some_and(State::busy);
-        let request = if busy {
+        let wait = state.as_ref().map_or(POLL, State::request_wait);
+        let request = if wait.is_zero() {
             match requests.try_recv() {
                 Ok(request) => Some(request),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => break,
             }
         } else {
-            match requests.recv_timeout(POLL) {
+            match requests.recv_timeout(wait) {
                 Ok(request) => Some(request),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -502,8 +511,11 @@ fn run(requests: Receiver<Request>, replies: SyncSender<Reply>) {
         }
         if let Some(state) = &mut state {
             state.flush(&replies);
-            state.step();
-            state.flush(&replies);
+            // 通道满时保留本轮已读的页，等它们入队后再推进任一游标。
+            if !state.has_unsent_replies() {
+                state.step();
+                state.flush(&replies);
+            }
         }
     }
 }

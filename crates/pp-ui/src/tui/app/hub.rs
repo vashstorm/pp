@@ -4,9 +4,12 @@ use crate::tui::{App, Event, KeyEventKind, KeyModifiers, WorkerCommand, subagent
 use crossterm::event::{Event as CrosstermEvent, KeyCode};
 use pp_runtime::subagent::Binding;
 use std::sync::mpsc::TryRecvError;
+use std::time::{Duration, Instant};
 
 /// 没有任何根绑定时面板显示的固定提示：不是运行错误，而是当前会话不提供 task 能力。
 const UNAVAILABLE: &str = "Subagents are unavailable in this session; no binding was granted.";
+/// 历史投影按回复让出主循环，使积压期间仍可绘制和处理按键。
+const REPLY_BUDGET: Duration = Duration::from_millis(4);
 
 /// 一次已发出的控制请求；成功后才清掉同一份草稿。
 pub(in crate::tui) struct HubSend {
@@ -171,15 +174,9 @@ impl App {
                         panel.focus_editor();
                     }
                 }
-                subagents::Command::CloseDetail => {
-                    let view = self
-                        .subagent_panel
-                        .as_ref()
-                        .and_then(|panel| panel.detail_view());
-                    if let Some(view) = view {
-                        let epoch = self.hub_root_epoch;
-                        self.hub_send(subagents::Request::CloseDetail { epoch, view });
-                    }
+                subagents::Command::CloseDetail { view } => {
+                    let epoch = self.hub_root_epoch;
+                    self.hub_send(subagents::Request::CloseDetail { epoch, view });
                 }
                 subagents::Command::Submit {
                     agent,
@@ -242,6 +239,7 @@ impl App {
     /// 收取观察线程回复；旧根/旧详情/关闭后的页面按 epoch 丢弃。
     pub(in crate::tui) fn receive_hub(&mut self) -> bool {
         let mut changed = false;
+        let started = Instant::now();
         for _ in 0..64 {
             let Some(worker) = &self.hub_worker else {
                 break;
@@ -261,6 +259,9 @@ impl App {
                 }
             };
             changed |= self.apply_hub_reply(reply);
+            if started.elapsed() >= REPLY_BUDGET {
+                break;
+            }
         }
         changed
     }
@@ -299,20 +300,18 @@ impl App {
         if epoch != self.hub_root_epoch {
             return false;
         }
-        if let subagents::Reply::Detail { view, .. } = &reply
+        let view = match &reply {
+            subagents::Reply::Detail { view, .. } => Some(*view),
+            subagents::Reply::Error { view, .. } => *view,
+            _ => None,
+        };
+        if let Some(view) = view
             && self
                 .subagent_panel
                 .as_ref()
                 .and_then(|panel| panel.detail_view())
-                != Some(*view)
+                != Some(view)
         {
-            return false;
-        }
-        if let subagents::Reply::Error { message, .. } = reply {
-            if let Some(panel) = &mut self.subagent_panel {
-                panel.set_error(message);
-                return true;
-            }
             return false;
         }
         let Some(panel) = &mut self.subagent_panel else {
@@ -352,7 +351,7 @@ impl App {
             }
         });
         changed |= self.subagent_status.map_or(0, |(_, count)| count) != previous_count;
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         if let Some(panel) = &mut self.subagent_panel {
             changed |= panel.tick(subagents::now(), now, self.hub_bound.as_ref());
         }
