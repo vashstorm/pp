@@ -21,10 +21,8 @@ use crossterm::event::{
 pub(in crate::tui) use detail::Anchor;
 use detail::Detail;
 use inspector::status_icon;
-pub(in crate::tui) use projection::now_ms as now;
-use projection::{
-    ActivityRow, AgentStatus, AgentView, Category, Kind, Projection, RowStatus, Scope, TreeRow,
-};
+use projection::{ActivityRow, AgentStatus, AgentView, Category, Kind, RowStatus, Scope, TreeRow};
+pub(in crate::tui) use projection::{Projection, now_ms as now};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -215,6 +213,30 @@ impl Default for Panel {
 }
 
 impl Panel {
+    pub(in crate::tui) fn with_projection(projection: Projection) -> Self {
+        let mut panel = Self {
+            projection,
+            ..Self::default()
+        };
+        panel.validate_selection();
+        panel
+    }
+
+    pub(in crate::tui) fn into_projection(self) -> Projection {
+        self.projection
+    }
+
+    pub(in crate::tui) fn reset_projection(&mut self) {
+        self.projection = Projection::default();
+        self.detail = None;
+        self.selected = None;
+        self.inspector = 0;
+        self.notice = None;
+        self.error = None;
+        self.agent_notices.clear();
+        self.sending = None;
+    }
+
     pub(super) fn take_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut self.commands)
     }
@@ -288,6 +310,17 @@ impl Panel {
                     self.error = Some(page.warnings.join("; "));
                 }
                 self.projection.ingest(&agent, &page, self.clock);
+                self.validate_selection();
+            }
+            Reply::ActivityBatch { pages, .. } => {
+                let mut warnings = Vec::new();
+                for (_, page) in &pages {
+                    warnings.extend(page.warnings.iter().cloned());
+                }
+                if !warnings.is_empty() {
+                    self.error = Some(warnings.join("; "));
+                }
+                self.projection.ingest_overview_batch(&pages, self.clock);
                 self.validate_selection();
             }
             Reply::Detail { agent, history, .. } => {

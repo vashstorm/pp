@@ -136,6 +136,23 @@ impl Binding {
             readonly: false,
         })
     }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fixture_root(dir: &Path) -> Result<Self> {
+        Self::root(
+            RootOptions {
+                user: dir.to_path_buf(),
+                dir: dir.to_path_buf(),
+                cwd: PathBuf::from("."),
+                model: "fixture-model".into(),
+                thinking: ThinkLevel::None,
+                settings: Default::default(),
+                plan_mode: false,
+            },
+            Arc::new(|_, _| anyhow::bail!("fixture launch disabled")),
+            Arc::new(|_| Ok(())),
+        )
+    }
+
     pub(crate) fn plan_mode(&self) -> bool {
         self.inner.plan_mode
     }

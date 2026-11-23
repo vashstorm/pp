@@ -138,7 +138,11 @@ impl Panel {
             .clamp(1, 20);
         let recent = self.projection.recent(&agent.id, limit);
         if recent.is_empty() {
-            lines.push(Line::from(colored("—", dim())));
+            if agent.loading {
+                lines.push(Line::from(colored("Loading activity…", muted())));
+            } else {
+                lines.push(Line::from(colored("—", dim())));
+            }
         }
         for row in recent {
             let symbol = if row.kind == Kind::Response {
@@ -250,11 +254,16 @@ pub(super) fn agent_time(agent: &AgentView) -> String {
 
 pub(super) fn usage(agent: &AgentView, separator: &str) -> String {
     let tokens = agent.tokens.map_or_else(|| "—".into(), compact);
+    let tools = if agent.loading {
+        "— tools".to_owned()
+    } else {
+        format!("{} tools", agent.tools)
+    };
     [
         format_cost(agent.cost),
         agent_time(agent),
         format!("{} req", agent.requests),
-        format!("{} tools", agent.tools),
+        tools,
         format!("{tokens} tok"),
     ]
     .join(separator)

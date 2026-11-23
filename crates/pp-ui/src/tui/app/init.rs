@@ -162,6 +162,9 @@ impl App {
             hub_view_epoch: 0,
             hub_request: 0,
             hub_bound: None,
+            hub_attached: false,
+            hub_projection: Default::default(),
+            hub_preload_error: None,
             hub_sends: BTreeMap::new(),
             child_drafts: Default::default(),
             pipe_store: None,
@@ -544,6 +547,12 @@ impl App {
                         WorkerCommand::NavigateTree(id) => {
                             let result = agent.navigate_tree(&id);
                             if result.is_ok() {
+                                if let Err(error) = agent.ensure_subagents() {
+                                    tracing::warn!(
+                                        error = %error,
+                                        "failed to preload subagent root after tree navigation"
+                                    );
+                                }
                                 if !publish_pipe_store(&sender, &agent) {
                                     break;
                                 }
@@ -564,6 +573,12 @@ impl App {
                             let result = agent.resume(&id, &cancellation);
                             match result {
                                 Ok(preparation) => {
+                                    if let Err(error) = agent.ensure_subagents() {
+                                        tracing::warn!(
+                                            error = %error,
+                                            "failed to preload subagent root after resume"
+                                        );
+                                    }
                                     // 恢复已是新会话根：先重绑临时管道，再交接执行快照。
                                     if !publish_pipe_store(&sender, &agent) {
                                         break;

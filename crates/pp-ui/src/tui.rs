@@ -615,6 +615,9 @@ struct App {
     hub_view_epoch: u64,
     hub_request: u64,
     hub_bound: Option<pp_runtime::subagent::Binding>,
+    hub_attached: bool,
+    hub_projection: subagents::Projection,
+    hub_preload_error: Option<String>,
     hub_sends: BTreeMap<u64, app::hub::HubSend>,
     child_drafts: subagents::Drafts,
     /// worker 最近发布的根会话临时管道 registry；面板据此判断换根。

@@ -17,7 +17,7 @@ mod workspace;
 
 pub use observe::HubAgent;
 pub use observe::ObservedRecord;
-pub use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry};
+pub use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry, OverviewPage};
 
 use pp_config::config::TaskSettings;
 use tokio::sync::Semaphore;

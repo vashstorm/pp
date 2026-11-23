@@ -290,6 +290,12 @@ impl Panel {
         let tokens = totals(|agent| agent.tokens).map_or_else(|| "—".into(), compact);
         let requests: usize = agents.iter().map(|agent| agent.requests).sum();
         let tools: usize = agents.iter().map(|agent| agent.tools).sum();
+        let any_loading = agents.iter().any(|agent| agent.loading);
+        let tools_display = if any_loading {
+            "—".to_owned()
+        } else {
+            tools.to_string()
+        };
         let timed = agents
             .iter()
             .filter(|agent| agent.active_ms.is_some())
@@ -298,10 +304,10 @@ impl Panel {
         let count = agents.len();
         let cost = format_cost(cost);
         let full = format!(
-            " · {active} active agent time · {requests} req · {tools} tools · {tokens} tok · {timed}/{count} timed · {measured}/{count} measured"
+            " · {active} active agent time · {requests} req · {tools_display} tools · {tokens} tok · {timed}/{count} timed · {measured}/{count} measured"
         );
         let compact = format!(
-            " {active} {requests}req {tools}tools {tokens}tok {timed}/{count} timed {measured}/{count} measured"
+            " {active} {requests}req {tools_display}tools {tokens}tok {timed}/{count} timed {measured}/{count} measured"
         );
         let metrics = if Line::raw(&full).width() + Line::raw(&cost).width() <= area.width as usize
         {
@@ -310,7 +316,7 @@ impl Panel {
             compact
         };
         let mut stats = vec![colored(cost, cost_color()), colored(metrics, dim())];
-        if agents.iter().any(|agent| agent.loading) {
+        if any_loading {
             stats.push(colored(" · loading", accent()));
         }
         draw_line(frame, area, Line::from(stats));

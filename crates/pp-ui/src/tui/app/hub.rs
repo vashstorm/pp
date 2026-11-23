@@ -43,17 +43,38 @@ impl App {
     pub(in crate::tui) fn open_hub(&mut self) {
         self.menu = None;
         self.menu_dismissed = true;
-        self.subagent_panel = Some(subagents::Panel::default());
-        self.ensure_hub_worker();
+        let projection = std::mem::take(&mut self.hub_projection);
+        let mut panel = subagents::Panel::with_projection(projection);
+        if let Some(error) = self.hub_preload_error.take() {
+            panel.set_error(error);
+        }
+        self.subagent_panel = Some(panel);
         self.subagent_status = None;
         match self.hub_binding() {
             Some(binding) => {
-                self.hub_bound = Some(binding);
-                self.hub_attach();
+                let same = self.hub_attached
+                    && self
+                        .hub_bound
+                        .as_ref()
+                        .is_some_and(|bound| bound.same_root(&binding));
+                if same {
+                    self.ensure_hub_worker();
+                    let epoch = self.hub_root_epoch;
+                    self.hub_send(subagents::Request::SetVisible {
+                        epoch,
+                        visible: true,
+                    });
+                } else {
+                    self.hub_bound = Some(binding);
+                    self.hub_attach(true);
+                }
             }
             // `/resume`、`/tree`、`/new` 与计划交接会停掉旧根；
             // 此时绑定为空并不代表会话没有历史子 Agent，交由 worker 用当前会话目录重建。
-            None => self.request_subagents(),
+            None => {
+                self.ensure_hub_worker();
+                self.request_subagents();
+            }
         }
     }
 
@@ -78,9 +99,22 @@ impl App {
         match result {
             Ok(()) => match self.hub_binding() {
                 Some(binding) => {
+                    let same = self.hub_attached
+                        && self
+                            .hub_bound
+                            .as_ref()
+                            .is_some_and(|bound| bound.same_root(&binding));
                     self.hub_bound = Some(binding);
                     self.subagent_status = None;
-                    self.hub_attach();
+                    if same {
+                        let epoch = self.hub_root_epoch;
+                        self.hub_send(subagents::Request::SetVisible {
+                            epoch,
+                            visible: true,
+                        });
+                    } else {
+                        self.hub_attach(true);
+                    }
                 }
                 None => self.set_hub_error(UNAVAILABLE),
             },
@@ -94,19 +128,29 @@ impl App {
         }
     }
 
-    /// 用当前根重新扫描；同一根保留 child 草稿。
-    fn hub_attach(&mut self) {
+    /// 绑定并开始读取当前根；换根或首次附着时清空旧投影。
+    fn hub_attach(&mut self, visible: bool) {
         let Some(binding) = self.hub_binding() else {
             return;
         };
         self.ensure_hub_worker();
+        self.hub_projection = subagents::Projection::default();
+        self.hub_preload_error = None;
+        if let Some(panel) = &mut self.subagent_panel {
+            panel.reset_projection();
+        }
         self.hub_root_epoch += 1;
         self.hub_view_epoch += 1;
+        self.hub_attached = true;
         let epoch = self.hub_root_epoch;
-        self.hub_send(subagents::Request::Bind { epoch, binding });
+        self.hub_send(subagents::Request::Bind {
+            epoch,
+            binding,
+            visible,
+        });
     }
 
-    /// 关闭 Hub：只停止观察，不取消任何 child，也不丢弃在途控制 ACK。
+    /// 关闭 Hub：保留投影与游标以便重开复用，通知观察线程停止后台轮询。
     pub(in crate::tui) fn close_hub(&mut self) {
         if let Some(panel) = self.subagent_panel.take() {
             let view = panel.detail_view();
@@ -116,13 +160,19 @@ impl App {
                     view,
                 });
             }
+            self.hub_projection = panel.into_projection();
         }
-        let epoch = self.hub_root_epoch;
-        self.hub_send(subagents::Request::Unbind { epoch });
+        if self.hub_attached {
+            let epoch = self.hub_root_epoch;
+            self.hub_send(subagents::Request::SetVisible {
+                epoch,
+                visible: false,
+            });
+        }
         self.menu_dismissed = true;
     }
 
-    /// 根变化时清空旧草稿与详情缓存；pending→真实目录不算换根。
+    /// 根变化时清空旧草稿、投影缓存与详情状态；已有历史子 Agent 时静默预热。
     pub(in crate::tui) fn hub_sync_root(&mut self) -> bool {
         let current = self.hub_binding();
         let same = match (&current, &self.hub_bound) {
@@ -137,9 +187,21 @@ impl App {
         self.subagent_status = None;
         self.child_drafts.clear();
         self.hub_sends.clear();
+        self.hub_projection = subagents::Projection::default();
+        self.hub_preload_error = None;
+        if let Some(panel) = &mut self.subagent_panel {
+            panel.reset_projection();
+        }
+        self.hub_attached = false;
         self.hub_view_epoch += 1;
-        if self.subagent_panel.is_some() {
-            self.hub_attach();
+        let visible = self.subagent_panel.is_some();
+        if let Some(binding) = &self.hub_bound {
+            if visible || binding.has_agents() {
+                self.hub_attach(visible);
+            } else {
+                let epoch = self.hub_root_epoch;
+                self.hub_send(subagents::Request::Unbind { epoch });
+            }
         } else {
             let epoch = self.hub_root_epoch;
             self.hub_send(subagents::Request::Unbind { epoch });
@@ -249,6 +311,7 @@ impl App {
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.hub_worker = None;
+                    self.hub_attached = false;
                     if let Some(panel) = &mut self.subagent_panel {
                         panel.set_error(
                             "Agent hub observer stopped; press F5 after reopening.".into(),
@@ -292,6 +355,7 @@ impl App {
         let epoch = match &reply {
             subagents::Reply::Snapshot { epoch, .. }
             | subagents::Reply::Activity { epoch, .. }
+            | subagents::Reply::ActivityBatch { epoch, .. }
             | subagents::Reply::Detail { epoch, .. }
             | subagents::Reply::Reset { epoch, .. }
             | subagents::Reply::Error { epoch, .. }
@@ -314,11 +378,47 @@ impl App {
         {
             return false;
         }
-        let Some(panel) = &mut self.subagent_panel else {
-            return false;
-        };
-        panel.apply(reply);
-        true
+        if let Some(panel) = &mut self.subagent_panel {
+            panel.apply(reply);
+            return true;
+        }
+        // Hub 未打开时在后台静默预热投影缓存；不触发主界面多余重绘。
+        let clock = subagents::now();
+        match reply {
+            subagents::Reply::Snapshot { snapshot, .. } => {
+                self.hub_projection.apply_snapshot(*snapshot, clock);
+            }
+            subagents::Reply::Activity { agent, page, .. } => {
+                if !page.warnings.is_empty() {
+                    self.hub_preload_error = Some(page.warnings.join("; "));
+                }
+                self.hub_projection.ingest(&agent, &page, clock);
+            }
+            subagents::Reply::ActivityBatch { pages, .. } => {
+                let mut warnings = Vec::new();
+                for (_, page) in &pages {
+                    warnings.extend(page.warnings.iter().cloned());
+                }
+                if !warnings.is_empty() {
+                    self.hub_preload_error = Some(warnings.join("; "));
+                }
+                self.hub_projection.ingest_overview_batch(&pages, clock);
+            }
+            subagents::Reply::Reset { agent, .. } => {
+                self.hub_projection.reset(&agent);
+            }
+            subagents::Reply::Error {
+                view: None,
+                message,
+                ..
+            } => {
+                self.hub_preload_error = Some(message);
+            }
+            subagents::Reply::Detail { .. }
+            | subagents::Reply::Error { view: Some(_), .. }
+            | subagents::Reply::Control { .. } => {}
+        }
+        false
     }
 
     /// Alt+A 只在主视图与 Hub 接收，不被其他模态面板抢占。

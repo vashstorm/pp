@@ -7,6 +7,7 @@ use pp_runtime::subagent::EventPage;
 use pp_runtime::subagent::HubEvent;
 use pp_runtime::subagent::HubSnapshot;
 use pp_runtime::subagent::ObservedEntry;
+use pp_runtime::subagent::OverviewPage;
 use pp_runtime::subagent::Run;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -236,7 +237,7 @@ struct Stream {
 }
 
 #[derive(Default)]
-pub(super) struct Projection {
+pub(in crate::tui) struct Projection {
     snapshot: Option<HubSnapshot>,
     agents: Vec<AgentView>,
     index: BTreeMap<String, usize>,
@@ -265,6 +266,11 @@ impl Projection {
         self.index.get(id).map(|index| &self.agents[*index])
     }
 
+    #[cfg(test)]
+    pub(in crate::tui) fn agent_ready(&self, id: &str) -> bool {
+        self.agent(id).is_some_and(|agent| !agent.loading)
+    }
+
     pub(super) fn rows(&self) -> &[ActivityRow] {
         &self.rows
     }
@@ -275,7 +281,7 @@ impl Projection {
     }
 
     /// 该 agent 的旧投影与详情锚点失效：只清空这一路。
-    pub(super) fn reset(&mut self, agent: &str) {
+    pub(in crate::tui) fn reset(&mut self, agent: &str) {
         self.rows.retain(|row| row.agent != agent);
         self.streams.remove(agent);
         self.scanned.remove(agent);
@@ -290,14 +296,14 @@ impl Projection {
         }
     }
 
-    pub(super) fn apply_snapshot(&mut self, snapshot: HubSnapshot, now_ms: u64) {
+    pub(in crate::tui) fn apply_snapshot(&mut self, snapshot: HubSnapshot, now_ms: u64) {
         self.snapshot = Some(snapshot);
         self.needs_finalize = true;
         self.rebuild(now_ms);
     }
 
     /// 摄入一页观察记录；`page.has_more == false` 表示该 agent 历史已读完。
-    pub(super) fn ingest(&mut self, agent: &str, page: &EventPage, now_ms: u64) {
+    pub(in crate::tui) fn ingest(&mut self, agent: &str, page: &EventPage, now_ms: u64) {
         for entry in &page.entries {
             self.consume(agent, entry);
         }
@@ -308,11 +314,37 @@ impl Projection {
         self.rebuild(now_ms);
     }
 
+    /// 批量摄入总览／Activity 聚合页，全部消费完只执行一次投影重建。
+    pub(in crate::tui) fn ingest_overview_batch(
+        &mut self,
+        pages: &[(String, OverviewPage)],
+        now_ms: u64,
+    ) {
+        if pages.is_empty() {
+            return;
+        }
+        for (agent, page) in pages {
+            if let Some(ts) = page.last_activity_ms {
+                let stream = self.streams.entry(agent.clone()).or_default();
+                stream.last_activity = Some(stream.last_activity.map_or(ts, |old| old.max(ts)));
+            }
+            for entry in &page.entries {
+                self.consume(agent, entry);
+            }
+            if !page.has_more {
+                self.scanned.insert(agent.clone());
+                self.needs_finalize = true;
+            }
+        }
+        self.rebuild(now_ms);
+    }
+
     fn rebuild(&mut self, now_ms: u64) {
         self.finalize();
-        if let Some(snapshot) = self.snapshot.clone() {
+        if let Some(snapshot) = self.snapshot.take() {
             self.freeze_ranks(&snapshot);
             self.rebuild_agents(&snapshot, now_ms);
+            self.snapshot = Some(snapshot);
         }
         if !self.sorted {
             self.sort_rows();

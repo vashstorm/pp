@@ -7,6 +7,7 @@ use pp_runtime::subagent::Binding;
 use pp_runtime::subagent::EventCursor;
 use pp_runtime::subagent::EventPage;
 use pp_runtime::subagent::HubSnapshot;
+use pp_runtime::subagent::OverviewPage;
 use pp_runtime::subagent::Run;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -21,8 +22,8 @@ const POLL: Duration = Duration::from_millis(250);
 const REPLY_RETRY: Duration = Duration::from_millis(5);
 /// 快照合并窗口：流式事件只按此频率重建类型化快照。
 const COALESCE: Duration = Duration::from_millis(200);
-/// 每轮最多处理的分页数；之后必须回到请求队列检查控制。
-const PAGES_PER_ROUND: usize = 2;
+/// 总览批量扫描的每轮时间预算，之后回到请求队列检查控制或退让通道。
+const OVERVIEW_BATCH_BUDGET: Duration = Duration::from_millis(25);
 /// 回复通道容量；满时保留未发送页与游标，绝不丢有序事件。
 const REPLY_CAPACITY: usize = 4;
 
@@ -50,6 +51,11 @@ pub(in crate::tui) enum Request {
     Bind {
         epoch: u64,
         binding: Binding,
+        visible: bool,
+    },
+    SetVisible {
+        epoch: u64,
+        visible: bool,
     },
     Unbind {
         epoch: u64,
@@ -81,11 +87,17 @@ pub(in crate::tui) enum Reply {
         epoch: u64,
         snapshot: Box<HubSnapshot>,
     },
-    /// 无详情索引的 Activity 尾部。
+    /// 无详情索引的 Activity 尾部（单页测试与兼容入口）。
+    #[cfg_attr(not(test), allow(dead_code))]
     Activity {
         epoch: u64,
         agent: String,
         page: EventPage,
+    },
+    /// 总览批量聚合后的全量／增量页面。
+    ActivityBatch {
+        epoch: u64,
+        pages: Vec<(String, OverviewPage)>,
     },
     /// 详情从头导入的完整历史。
     Detail {
@@ -167,6 +179,7 @@ struct Detail {
 struct State {
     epoch: u64,
     binding: Binding,
+    visible: bool,
     revision: u64,
     force: bool,
     pending_snapshot: bool,
@@ -176,6 +189,9 @@ struct State {
     cursors: BTreeMap<String, Option<EventCursor>>,
     /// 该 agent 还有未读完整页。
     more: BTreeMap<String, bool>,
+    /// 已完成首次历史扫描到 EOF 的 agent；首次扫完前暂存分段而不把半成品推给 UI。
+    primed: BTreeSet<String>,
+    staged: BTreeMap<String, OverviewPage>,
     turn: usize,
     detail: Option<Detail>,
     pending: VecDeque<Reply>,
@@ -183,10 +199,11 @@ struct State {
 }
 
 impl State {
-    fn new(epoch: u64, binding: Binding) -> Self {
+    fn new(epoch: u64, binding: Binding, visible: bool) -> Self {
         Self {
             epoch,
             binding,
+            visible,
             revision: 0,
             force: true,
             pending_snapshot: true,
@@ -194,6 +211,8 @@ impl State {
             order: Vec::new(),
             cursors: BTreeMap::new(),
             more: BTreeMap::new(),
+            primed: BTreeSet::new(),
+            staged: BTreeMap::new(),
             turn: 0,
             detail: None,
             pending: VecDeque::new(),
@@ -201,18 +220,20 @@ impl State {
         }
     }
 
-    fn request_wait(&self) -> Duration {
+    fn request_wait(&self) -> Option<Duration> {
         if self.has_unsent_replies() {
-            REPLY_RETRY
+            Some(REPLY_RETRY)
         } else if self.force
             || self.more.values().any(|more| *more)
             || self.detail.as_ref().is_some_and(|detail| detail.more)
         {
-            Duration::ZERO
+            Some(Duration::ZERO)
         } else if self.pending_snapshot {
-            COALESCE.saturating_sub(self.last_snapshot.elapsed())
+            Some(COALESCE.saturating_sub(self.last_snapshot.elapsed()))
+        } else if self.visible {
+            Some(POLL)
         } else {
-            POLL
+            None
         }
     }
 
@@ -284,12 +305,11 @@ impl State {
 
     fn step(&mut self) {
         self.refresh();
-        let mut budget = PAGES_PER_ROUND;
-        // 当前详情优先。
+        // 当前详情优先（每轮至多读 1 页以保证控制响应）。
         let detail = self
             .detail
             .as_ref()
-            .filter(|detail| detail.more && budget > 0)
+            .filter(|detail| detail.more)
             .map(|detail| (detail.agent.clone(), detail.cursor.clone(), detail.view));
         if let Some((agent, cursor, view)) = detail {
             match self.read_detail(&agent, cursor.as_ref()) {
@@ -301,7 +321,6 @@ impl State {
                         detail.cursor = page.cursor.clone();
                         detail.more = more;
                     }
-                    budget -= 1;
                     if reset {
                         self.push(Reply::Reset {
                             epoch: self.epoch,
@@ -327,7 +346,9 @@ impl State {
                 }
             }
         }
-        while budget > 0 && !self.order.is_empty() {
+        let started = Instant::now();
+        let mut ready_batch: Vec<(String, OverviewPage)> = Vec::new();
+        while !self.order.is_empty() {
             let len = self.order.len();
             let mut picked = None;
             for offset in 0..len {
@@ -341,28 +362,55 @@ impl State {
             let Some((index, agent)) = picked else {
                 break;
             };
-            self.turn = (index + 1) % len;
             let cursor = self.cursors.get(&agent).cloned().flatten();
-            match self.read(&agent, cursor.as_ref()) {
+            match self.binding.read_overview_events(&agent, cursor.as_ref()) {
                 Ok(page) => {
                     let reset = page.reset;
+                    let has_more = page.has_more;
                     self.cursors.insert(agent.clone(), page.cursor.clone());
-                    self.more.insert(agent.clone(), page.has_more);
-                    budget -= 1;
+                    self.more.insert(agent.clone(), has_more);
+                    if !has_more {
+                        self.turn = (index + 1) % len;
+                    }
                     if reset {
+                        if !ready_batch.is_empty() {
+                            self.push(Reply::ActivityBatch {
+                                epoch: self.epoch,
+                                pages: std::mem::take(&mut ready_batch),
+                            });
+                        }
+                        self.staged.remove(&agent);
+                        self.primed.remove(&agent);
                         self.push(Reply::Reset {
                             epoch: self.epoch,
                             agent: agent.clone(),
                         });
                     }
-                    self.push(Reply::Activity {
-                        epoch: self.epoch,
-                        agent,
-                        page,
-                    });
+                    if !self.primed.contains(&agent) {
+                        if has_more {
+                            merge_overview(self.staged.entry(agent).or_default(), page);
+                        } else {
+                            self.primed.insert(agent.clone());
+                            let final_page = match self.staged.remove(&agent) {
+                                Some(mut staged) => {
+                                    merge_overview(&mut staged, page);
+                                    staged
+                                }
+                                None => page,
+                            };
+                            ready_batch.push((agent, final_page));
+                        }
+                    } else if reset
+                        || !page.entries.is_empty()
+                        || page.last_activity_ms.is_some()
+                        || !page.warnings.is_empty()
+                    {
+                        ready_batch.push((agent, page));
+                    }
                 }
                 Err(error) => {
                     self.more.insert(agent, false);
+                    self.turn = (index + 1) % len;
                     self.push(Reply::Error {
                         epoch: self.epoch,
                         view: None,
@@ -370,6 +418,15 @@ impl State {
                     });
                 }
             }
+            if started.elapsed() >= OVERVIEW_BATCH_BUDGET {
+                break;
+            }
+        }
+        if !ready_batch.is_empty() {
+            self.push(Reply::ActivityBatch {
+                epoch: self.epoch,
+                pages: ready_batch,
+            });
         }
     }
 
@@ -411,26 +468,51 @@ impl State {
     }
 }
 
+fn merge_overview(target: &mut OverviewPage, page: OverviewPage) {
+    target.entries.extend(page.entries);
+    if let Some(ts) = page.last_activity_ms {
+        target.last_activity_ms = Some(target.last_activity_ms.map_or(ts, |old| old.max(ts)));
+    }
+    target.cursor = page.cursor;
+    target.reset |= page.reset;
+    target.has_more = page.has_more;
+    target.warnings.extend(page.warnings);
+}
+
 fn run(requests: Receiver<Request>, replies: SyncSender<Reply>) {
     let mut state: Option<State> = None;
     loop {
-        let wait = state.as_ref().map_or(POLL, State::request_wait);
-        let request = if wait.is_zero() {
-            match requests.try_recv() {
+        let wait = state.as_ref().and_then(State::request_wait);
+        let request = match wait {
+            Some(wait) if wait.is_zero() => match requests.try_recv() {
                 Ok(request) => Some(request),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => break,
-            }
-        } else {
-            match requests.recv_timeout(wait) {
+            },
+            Some(wait) => match requests.recv_timeout(wait) {
                 Ok(request) => Some(request),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
+            },
+            None => match requests.recv() {
+                Ok(request) => Some(request),
+                Err(_) => break,
+            },
         };
         match request {
-            Some(Request::Bind { epoch, binding }) => {
-                state = Some(State::new(epoch, binding));
+            Some(Request::Bind {
+                epoch,
+                binding,
+                visible,
+            }) => {
+                state = Some(State::new(epoch, binding, visible));
+            }
+            Some(Request::SetVisible { epoch, visible }) => {
+                if let Some(state) = &mut state
+                    && state.epoch == epoch
+                {
+                    state.visible = visible;
+                }
             }
             Some(Request::Unbind { epoch }) => {
                 if state.as_ref().is_some_and(|state| state.epoch == epoch) {
@@ -517,5 +599,139 @@ fn run(requests: Receiver<Request>, replies: SyncSender<Reply>) {
                 state.flush(&replies);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn worker_batches_overview_until_eof_and_resumes_incremental_updates_on_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = serde_json::json!({
+            "version": 1,
+            "agents": {
+                "a1": {
+                    "id": "a1",
+                    "name": "worker-1",
+                    "parent": "Main",
+                    "generation": 1,
+                    "status": "parked",
+                    "spec": {
+                        "definition": "fast",
+                        "prompt": "",
+                        "context": "",
+                        "model": "fixture-model",
+                        "thinking": "none",
+                        "tools": ["read"],
+                        "spawns": [],
+                        "output_schema": null,
+                        "cwd": ".",
+                        "depth": 1,
+                        "readonly": false,
+                        "isolated": false
+                    },
+                    "session_file": null,
+                    "updated_ms": 100
+                }
+            },
+            "runs": {},
+            "next_id": 1
+        });
+        std::fs::write(dir.path().join("registry.json"), registry.to_string()).unwrap();
+
+        // 超过 OVERVIEW_PAGE_ENTRIES(2048)，强制分页读取，但对未 primed 历史只合并成一次交付。
+        {
+            let mut log = std::fs::File::create(dir.path().join("a1.events.jsonl")).unwrap();
+            for index in 0..2200u64 {
+                let line = serde_json::json!({
+                    "agent_id": "a1",
+                    "run_id": "r1",
+                    "generation": 1,
+                    "timestamp_ms": 1_000 + index,
+                    "event": {
+                        "tool_started": {
+                            "id": format!("t{index}"),
+                            "name": "read",
+                            "arguments": "{}"
+                        }
+                    }
+                });
+                writeln!(log, "{line}").unwrap();
+            }
+        }
+
+        let binding = Binding::fixture_root(dir.path()).unwrap();
+        let worker = Worker::start();
+        worker.send(Request::Bind {
+            epoch: 1,
+            binding,
+            visible: false,
+        });
+
+        let mut snapshots = 0usize;
+        let mut batches = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && batches.is_empty() {
+            match worker.replies.recv_timeout(Duration::from_millis(20)) {
+                Ok(Reply::Snapshot { .. }) => snapshots += 1,
+                Ok(Reply::ActivityBatch { pages, .. }) => batches.push(pages),
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("worker stopped"),
+            }
+        }
+        assert!(snapshots >= 1);
+        assert_eq!(
+            batches.len(),
+            1,
+            "首次历史必须合并为单次 ActivityBatch 交付"
+        );
+        assert_eq!(batches[0].len(), 1);
+        assert!(!batches[0][0].1.has_more);
+        assert_eq!(batches[0][0].1.entries.len(), 2200);
+
+        // 追加一条后续记录（模拟 /resume 后继续对话），并在可见时触发增量读取。
+        {
+            let mut log = std::fs::OpenOptions::new()
+                .append(true)
+                .open(dir.path().join("a1.events.jsonl"))
+                .unwrap();
+            let line = serde_json::json!({
+                "agent_id": "a1",
+                "run_id": "r2",
+                "generation": 1,
+                "timestamp_ms": 5_000,
+                "event": {
+                    "tool_started": {
+                        "id": "t_new",
+                        "name": "bash",
+                        "arguments": "{}"
+                    }
+                }
+            });
+            writeln!(log, "{line}").unwrap();
+        }
+        worker.send(Request::SetVisible {
+            epoch: 1,
+            visible: true,
+        });
+        worker.send(Request::Refresh { epoch: 1 });
+
+        let mut incremental = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && incremental.is_empty() {
+            match worker.replies.recv_timeout(Duration::from_millis(20)) {
+                Ok(Reply::ActivityBatch { pages, .. }) => incremental.push(pages),
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("worker stopped"),
+            }
+        }
+        assert_eq!(incremental.len(), 1);
+        assert_eq!(incremental[0][0].1.entries.len(), 1);
+        assert_eq!(incremental[0][0].1.last_activity_ms, Some(5_000));
     }
 }

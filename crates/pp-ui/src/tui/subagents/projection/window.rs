@@ -6,7 +6,7 @@ use super::*;
 
 impl Projection {
     pub(super) fn sort_rows(&mut self) {
-        self.rows.sort_by_key(row_sort_key);
+        self.rows.sort_by(compare_rows);
         self.reindex();
         self.sorted = true;
     }
@@ -256,7 +256,7 @@ impl Projection {
                 })
             }));
         }
-        rows.sort_by_key(row_sort_key);
+        rows.sort_by(compare_rows);
         rows.drain(..rows.len().saturating_sub(limit));
         for row in &mut rows {
             if row.status != RowStatus::Error
@@ -269,15 +269,23 @@ impl Projection {
     }
 }
 
-fn row_sort_key(row: &ActivityRow) -> (bool, u64, u64, String, u64, u8) {
+fn compare_rows(left: &ActivityRow, right: &ActivityRow) -> std::cmp::Ordering {
     (
-        row.timestamp.is_some(),
-        row.timestamp.unwrap_or(0),
-        agent_number(&row.agent),
-        row.agent.clone(),
-        row.offset,
-        row.phase,
+        left.timestamp.is_some(),
+        left.timestamp.unwrap_or(0),
+        agent_number(&left.agent),
+        left.agent.as_str(),
+        left.offset,
+        left.phase,
     )
+        .cmp(&(
+            right.timestamp.is_some(),
+            right.timestamp.unwrap_or(0),
+            agent_number(&right.agent),
+            right.agent.as_str(),
+            right.offset,
+            right.phase,
+        ))
 }
 
 #[cfg(test)]
