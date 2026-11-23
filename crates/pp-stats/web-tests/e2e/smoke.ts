@@ -205,6 +205,49 @@ function seedStatsDatabase(homeDir: string): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(now - 119_500, rootSession, "demo-app", "/tmp/demo-app", "PreToolUse", "read", "ok", 1, 12);
 
+  // 恰好 50 条失败（含上面的 rk-2），且全部新增行 usage 未知：
+  // 浏览器同时验证 Tools 的未知值与 Errors 的完整单页边界。
+  const insertUnknownFailure = db.query(
+    `INSERT INTO requests (
+      id, request_key, timestamp, model, provider, model_reference, api,
+      project, cwd, purpose, session_file, entry_id, duration_ms, ttft_ms,
+      input_tokens, output_tokens, cached_tokens, status, stop_reason, error_message,
+      cache_write_tokens, cost_json, rate_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  for (let id = 3; id <= 51; id += 1) {
+    insertUnknownFailure.run(
+      id,
+      `rk-${id}`,
+      now - id,
+      "unknown-model",
+      "unknown-provider",
+      "unknown-provider/unknown-model",
+      "responses",
+      "demo-app",
+      "/tmp/demo-app",
+      "task",
+      rootSession,
+      null,
+      20,
+      null,
+      null,
+      null,
+      null,
+      "failed",
+      "error",
+      `unknown usage failure ${id}`,
+      null,
+      null,
+      null,
+    );
+  }
+  db.query("INSERT INTO request_tools (request_id, tool, args_chars) VALUES (?, ?, ?)").run(
+    3,
+    "unknown-tool",
+    1,
+  );
+
   db.close();
 }
 
@@ -283,6 +326,26 @@ async function run(): Promise<void> {
     await seededPage.reload({ waitUntil: "networkidle" });
     await seededPage.waitForFunction(() => document.documentElement.dataset.style === "modern");
     await seededPage.click("#theme");
+
+    // 真实 DOM：未知 usage 不折成 0；恰好 50 条且 has_more=false 时不显示加载更多。
+    await seededPage.goto(`${server.baseUrl}/#/tools?range=24h`, { waitUntil: "networkidle" });
+    const unknownTool = seededPage.locator('[data-toolselect="unknown-tool"]');
+    await unknownTool.waitFor();
+    if (!(await unknownTool.textContent())?.includes("—")) {
+      throw new Error("Tools page did not preserve unknown token usage as —");
+    }
+    if (!(await seededPage.locator("#page").textContent())?.includes("of calls known")) {
+      throw new Error("Tools page did not report partial known-usage coverage");
+    }
+
+    await seededPage.goto(`${server.baseUrl}/#/errors?range=24h`, { waitUntil: "networkidle" });
+    const errorsText = await seededPage.locator("#page").textContent();
+    if (
+      errorsText?.includes("older ones are not loaded") ||
+      (await seededPage.locator("[data-errors-load]").count()) !== 0
+    ) {
+      throw new Error("Errors page marked an exact complete page as incomplete");
+    }
 
     // 验证 Requests 抽屉 + Context 阅读器。
     await seededPage.goto(`${server.baseUrl}/#/requests?range=24h`, { waitUntil: "networkidle" });

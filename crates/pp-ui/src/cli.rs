@@ -66,7 +66,7 @@ pub fn run_line_mode(
         Err(error) => return stop_cli_lsp(agent.as_ref().ok(), Err(error)),
     };
     let mut initial = initial_command;
-    let mut stats = None;
+    let mut stats: Option<crate::stats::Worker> = None;
     let mut prompt_shown = false;
     loop {
         // 启动命令只合成一行：不打印提示符，执行后继续等待真实 stdin。
@@ -299,6 +299,10 @@ pub fn run_line_mode(
                 continue;
             }
             Some(commands::Command::Stats(arguments)) => {
+                // 浏览器 warning 与 launcher 回复分属两个通道：各自排空，互不丢行。
+                if let Some(worker) = stats.as_ref() {
+                    worker.drain_warnings(&mut stderr);
+                }
                 let result = (|| -> Result<String> {
                     if stats.is_none() {
                         stats = Some(crate::stats::Worker::new()?);
@@ -313,6 +317,9 @@ pub fn run_line_mode(
                 match result {
                     Ok(message) => writeln!(stderr, "{message}")?,
                     Err(error) => writeln!(stderr, "error: {error:#}")?,
+                }
+                if let Some(worker) = stats.as_ref() {
+                    worker.drain_warnings(&mut stderr);
                 }
                 continue;
             }

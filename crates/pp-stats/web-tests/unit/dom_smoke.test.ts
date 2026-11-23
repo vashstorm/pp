@@ -369,8 +369,110 @@ function makeFixtures(empty = false) {
 }
 
 let happyWindow: Window;
-let activeFixture = makeFixtures(false);
+let activeFixture: Record<string, unknown> = makeFixtures(false);
 let failStylePost = false;
+
+const TOOL_METRIC_BASE = {
+  calls: 1,
+  args_chars: 10,
+  cost: 0.5,
+  priced: 1,
+  unpriced: 0,
+  last_seen: NOW,
+  errors: 0,
+  cancelled: 0,
+  executions: 1,
+  result_chars: 8,
+  result_calls: 1,
+  avg_duration_ms: 5,
+  buckets: [],
+  error_buckets: [],
+  recent: [],
+};
+
+function toolRow(tool: string, calls: number, tokens: number | null, usageKnown: number) {
+  const metric = {
+    ...TOOL_METRIC_BASE,
+    calls,
+    tokens,
+    output_tokens: tokens == null ? null : Math.round(tokens / 5),
+    usage_known: usageKnown,
+  };
+  return {
+    ...metric,
+    key: tool,
+    tool,
+    models: [
+      {
+        ...metric,
+        key: "anthropic/claude",
+        model: "claude",
+        provider: "anthropic",
+        buckets: [],
+      },
+    ],
+  };
+}
+
+function toolsFixture(rows: ReturnType<typeof toolRow>[]) {
+  const calls = rows.reduce((sum, row) => sum + row.calls, 0);
+  const knownTokens = rows.flatMap((row) => (row.tokens == null ? [] : [row.tokens]));
+  return {
+    ...makeFixtures(false).tools,
+    summary: {
+      ...TOOL_METRIC_BASE,
+      calls,
+      tokens: knownTokens.length ? knownTokens.reduce((sum, value) => sum + value, 0) : null,
+      usage_known: rows.reduce((sum, row) => sum + row.usage_known, 0),
+      buckets: [],
+    },
+    tools: rows,
+    updated_at: NOW,
+  };
+}
+
+function errorsFixture(count: number, hasMore: boolean) {
+  const base = makeFixtures(false).errors;
+  return {
+    ...base,
+    requests: Array.from({ length: count }, (_, index) => ({
+      ...base.requests[0],
+      id: index + 1,
+      timestamp: NOW - (index + 1) * 60_000,
+      error_message: `upstream 500 after ${index + 1} attempts`,
+    })),
+    has_more: hasMore,
+    updated_at: NOW,
+  };
+}
+
+function statText(pageEl: HTMLElement, label: string) {
+  const stat = [...pageEl.querySelectorAll(".x-stat")].find(
+    (element) => element.querySelector(".x-stat-label")?.textContent === label,
+  );
+  return {
+    value: stat?.querySelector(".x-stat-value")?.textContent?.trim() ?? null,
+    hint: stat?.querySelector(".x-stat-foot")?.textContent?.trim() ?? null,
+  };
+}
+
+function columnTexts(pageEl: HTMLElement, sortKey: string, table: string) {
+  const header = pageEl.querySelector(`th[data-toolsort="${sortKey}"][data-tooltable="${table}"]`);
+  const scope = header?.closest("table");
+  if (!header || !scope) return [];
+  const index = [...scope.querySelectorAll("thead th")].indexOf(header);
+  return [...scope.querySelectorAll("tbody tr")].map(
+    (row) => row.querySelectorAll("td")[index]?.textContent?.trim() ?? "",
+  );
+}
+
+async function openRoute(route: string) {
+  const { onRoute } = await import("../../src/stats.js");
+  happyWindow.location.hash = `/${route}?range=24h`;
+  onRoute();
+  await new Promise((r) => setTimeout(r, 15));
+  return happyWindow.document.getElementById("page") as unknown as HTMLElement;
+}
 
 describe("pp-stats DOM smoke & invariants", () => {
   beforeAll(async () => {
@@ -499,5 +601,72 @@ describe("pp-stats DOM smoke & invariants", () => {
     expect(happyWindow.document.documentElement.dataset.style).toBe("default");
     expect(styleBtn?.disabled).toBe(false);
     failStylePost = false;
+  });
+
+  test("tools page shows unknown attributed usage as — and keeps known coverage", async () => {
+    activeFixture = {
+      ...makeFixtures(false),
+      tools: toolsFixture([toolRow("read", 3, 3000, 3), toolRow("bash", 1, null, 0)]),
+    };
+    const pageEl = await openRoute("tools");
+    const tokens = statText(pageEl, "Attributed tokens");
+    expect(tokens.value).toBe("3K");
+    expect(tokens.hint).toContain("75% of calls known");
+
+    const toolTokens = columnTexts(pageEl, "tokens", "tool");
+    expect(toolTokens[0]).toContain("3K");
+    expect(toolTokens[1]).toBe("—");
+    const modelTokens = columnTexts(pageEl, "tokens", "model");
+    expect(modelTokens[0]).toContain("3K");
+    expect(modelTokens[1]).toBe("—");
+
+    activeFixture = {
+      ...makeFixtures(false),
+      tools: toolsFixture([toolRow("read", 3, null, 0), toolRow("bash", 1, null, 0)]),
+    };
+    const unknownPage = await openRoute("tools");
+    const unknownTokens = statText(unknownPage, "Attributed tokens");
+    expect(unknownTokens.value).toBe("—");
+    expect(unknownTokens.hint).toBe("No token usage recorded");
+  });
+
+  test("tools page sorts unknown usage below known zero tokens", async () => {
+    activeFixture = {
+      ...makeFixtures(false),
+      tools: toolsFixture([toolRow("read", 2, 0, 2), toolRow("bash", 1, null, 0)]),
+    };
+    const pageEl = await openRoute("tools");
+    const order = () =>
+      [...pageEl.querySelectorAll("tr[data-toolselect]")].map((row) =>
+        row.getAttribute("data-toolselect"),
+      );
+    const tokensHeader = pageEl.querySelector('[data-toolsort="tokens"]');
+    expect(tokensHeader).not.toBeNull();
+    expect(statText(pageEl, "Attributed tokens").value).toBe("0");
+    (tokensHeader as HTMLElement).click();
+    await new Promise((r) => setTimeout(r, 15));
+    expect(order()).toEqual(["read", "bash"]);
+    (pageEl.querySelector('[data-toolsort="tokens"]') as HTMLElement).click();
+    await new Promise((r) => setTimeout(r, 15));
+    expect(order()).toEqual(["bash", "read"]);
+  });
+
+  test("errors page reports completeness from has_more, not from the loaded count", async () => {
+    for (const count of [50, 200, 1000]) {
+      activeFixture = { ...makeFixtures(false), errors: errorsFixture(count, false) };
+      const pageEl = await openRoute("errors");
+      expect(pageEl.textContent).not.toContain("older ones are not loaded");
+      expect(pageEl.querySelector("[data-errors-load]")).toBeNull();
+      expect(statText(pageEl, "Failures").hint).toBe("in the last 24 hours");
+    }
+
+    for (const count of [50, 200]) {
+      activeFixture = { ...makeFixtures(false), errors: errorsFixture(count, true) };
+      const pageEl = await openRoute("errors");
+      expect(pageEl.textContent).toContain("older ones are not loaded");
+      const load = pageEl.querySelector("[data-errors-load]");
+      expect(load?.textContent?.trim()).toBe("Load latest 200");
+      expect(statText(pageEl, "Failures").hint).toBe(`latest ${count} loaded`);
+    }
   });
 });

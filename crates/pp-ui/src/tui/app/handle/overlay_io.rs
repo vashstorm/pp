@@ -194,8 +194,9 @@ impl App {
                     *dirty = true;
                 }
                 MouseEventKind::ScrollDown => {
+                    // 与 PageDown 一致：按当前显示的转录判断是否回到底部。
                     self.active_transcript().scroll_down(MOUSE_SCROLL_LINES);
-                    if self.conversation.following() {
+                    if self.active_transcript().following() {
                         self.history_browser = false;
                     }
                     *dirty = true;

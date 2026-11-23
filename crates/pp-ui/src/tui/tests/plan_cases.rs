@@ -794,3 +794,101 @@ fn failed_read_after_review_shows_report_without_execution_token() {
     assert!(screen.contains("plan file vanished"));
     assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
 }
+
+/// 审查页填入超过一屏的正文并追加无空格行尾标记（避免折行影响文本断言）。
+fn long_review(app: &mut App, lines: usize, marker: &str) {
+    let body = (0..lines)
+        .map(|index| format!("review line {index:03}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app.receive_event_for_test(WorkerEvent::ReviewProgress(AgentEvent::AssistantDelta {
+        text: format!("{body}\n{marker}\n"),
+        refusal: false,
+    }));
+}
+
+fn review_wheel(kind: MouseEventKind) -> Event {
+    Event::Mouse(MouseEvent {
+        kind,
+        column: 50,
+        row: 10,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+/// 审查页浏览后的 Esc 只恢复 review 转录的跟随：第一次 Esc 不取消 reviewer，
+/// 主对话滚动位置保持不变；第二次 Esc 才取消审查。
+#[test]
+fn review_page_up_esc_restores_review_follow_before_cancelling() {
+    let (mut app, requests, _events) = plan_app();
+    app.workflow = ready_plan_workflow();
+    let WorkerCommand::ReviewPlan { cancellation, .. } = start_review(&mut app, &requests) else {
+        panic!("expected ReviewPlan command");
+    };
+    // 主对话先停在历史位置：审查期间的 Esc 不得把它拉回底部。
+    app.conversation.begin_browse();
+    app.conversation.scroll_up(5);
+    assert!(!app.conversation.following());
+    long_review(&mut app, 80, "review-tail-before-browse");
+    draw(&mut app, 100, 30);
+    app.input.insert_str("preserved reviewer draft");
+
+    app.handle(key(KeyCode::PageUp), &mut false);
+    assert!(app.history_browser);
+    assert!(!app.active_transcript().following());
+    let screen = draw(&mut app, 100, 30);
+    assert!(!screen.contains("review-tail-before-browse"), "{screen}");
+
+    app.handle(key(KeyCode::Esc), &mut false);
+    // 第一次 Esc：退出浏览并恢复审查页跟随；reviewer 仍在运行。
+    assert!(!app.history_browser);
+    assert!(app.active_transcript().following());
+    assert!(!app.conversation.following());
+    assert!(!cancellation.is_cancelled());
+    assert!(matches!(app.state, State::ReviewingPlan));
+    app.receive_event_for_test(WorkerEvent::ReviewProgress(AgentEvent::AssistantDelta {
+        text: "review-tail-after-esc\n".into(),
+        refusal: false,
+    }));
+    let screen = draw(&mut app, 100, 30);
+    assert!(screen.contains("review-tail-after-esc"), "{screen}");
+    assert_eq!(app.input.lines(), &["preserved reviewer draft"]);
+
+    // 第二次 Esc：取消 reviewer，等待 worker 的受控收尾。
+    app.handle(key(KeyCode::Esc), &mut false);
+    assert!(cancellation.is_cancelled());
+    assert!(matches!(app.state, State::ReviewingPlan));
+    assert_eq!(
+        app.secondary_status.as_deref(),
+        Some("Cancelling review...")
+    );
+}
+
+/// 滚轮下滚按当前显示的审查页判断是否回到底部：主对话停在历史时，
+/// 审查页滚到尾部仍要退出浏览态。
+#[test]
+fn review_scroll_down_clears_browse_only_at_review_bottom() {
+    let (mut app, requests, _events) = plan_app();
+    app.workflow = ready_plan_workflow();
+    start_review(&mut app, &requests);
+    app.conversation.begin_browse();
+    app.conversation.scroll_up(5);
+    long_review(&mut app, 80, "review-tail-before-wheel");
+    draw(&mut app, 100, 30);
+
+    // 连滚三格（每格 3 行）才真正离开底部：单格下滚不应提前退出浏览态。
+    for _ in 0..3 {
+        app.handle(review_wheel(MouseEventKind::ScrollUp), &mut false);
+    }
+    assert!(app.history_browser);
+    assert!(!app.active_transcript().following());
+    app.handle(review_wheel(MouseEventKind::ScrollDown), &mut false);
+    assert!(app.history_browser);
+
+    for _ in 0..40 {
+        app.handle(review_wheel(MouseEventKind::ScrollDown), &mut false);
+    }
+    assert!(app.active_transcript().following());
+    assert!(!app.history_browser);
+    assert!(!app.conversation.following());
+}

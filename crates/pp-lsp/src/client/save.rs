@@ -26,14 +26,15 @@ impl Client {
     /// `didChange`/`didSave`；缺失或不再是普通文件：关闭已打开的文档、丢弃
     /// 文档状态与诊断。两种情况都发出对应的 watched-files 变更。
     ///
-    /// 磁盘读取失败返回错误且不改写 overlay：调用方可以把它记成警告，但已提交
-    /// 的事实不会因此被改写。
+    /// 磁盘读取失败不中断同批其余事件：清除 `pending_write`、使诊断失效、把已知的
+    /// change kind 记入 watched 列表，并以 warning 返回给调用方。已提交的事实不会
+    /// 因此被改写，但失败也不会阻塞后续 reconcile。
     #[cfg(test)]
     pub(crate) fn sync_committed_in_operation(
         &self,
         op: &mut Op<'_>,
         paths: &[PathBuf],
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         self.sync_committed_locked(op, paths.iter().map(|path| (path.as_path(), 2)))
     }
 
@@ -52,9 +53,9 @@ impl Client {
         deadline: Instant,
         cancellation: &CancellationToken,
         paths: &[PathBuf],
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         if paths.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let mut deny = |request: ServerRequest| request.respond(unauthorized_edit());
         let service: &mut dyn FnMut(ServerRequest) = &mut deny;
@@ -72,7 +73,7 @@ impl Client {
         &self,
         op: &mut Op<'_>,
         events: &[(PathBuf, u8)],
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
         self.sync_committed_locked(
             op,
             events.iter().map(|(path, kind)| (path.as_path(), *kind)),
@@ -83,7 +84,8 @@ impl Client {
         &self,
         op: &mut Op<'_>,
         events: impl IntoIterator<Item = (&'a Path, u8)>,
-    ) -> Result<()> {
+    ) -> Result<Vec<String>> {
+        let mut warnings = Vec::new();
         let mut watched = Vec::new();
         for (path, change_kind) in events {
             let uri = path_to_uri(path);
@@ -93,13 +95,21 @@ impl Client {
                         Ok(text) => text,
                         Err(error) => {
                             // 已提交但无法表示为 UTF-8 文本：不清除 pending_write
-                            // 会让后续 reconcile 永远被挡住，所以先清除标记再报错；
-                            // 调用方仍会看到错误并保留“已提交”的事实。
+                            // 会让后续 reconcile 永远被挡住，所以先清标记、失效诊断，
+                            // 再把已知的 change kind 记进 watched；错误本身降为
+                            // warning，同批其余文件继续同步。
                             if let Some(mut state) = self.take_document(path) {
                                 state.pending_write = false;
                                 self.store_document(path, &state);
                             }
-                            return Err(error);
+                            self.diagnostics.invalidate(&uri);
+                            watched.push(json!({"uri": uri, "type": change_kind}));
+                            warnings.push(format!(
+                                "Failed to sync the committed text of {} with {}: {error:#}",
+                                path.display(),
+                                self.name
+                            ));
+                            continue;
                         }
                     };
                     let state = self.take_document(path);
@@ -159,13 +169,15 @@ impl Client {
                 json!({"changes": watched}),
             )?;
         }
-        Ok(())
+        Ok(warnings)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::*;
+    use crate::uri::path_to_uri;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn lsp_client_current_operation_sync_does_not_reenter_lock() {
@@ -185,6 +197,124 @@ mod tests {
         let state = client.document(&path).unwrap();
         assert_eq!(state.text, "committed\n");
         assert!(!state.pending_write);
+        client.shutdown().unwrap();
+    }
+
+    #[test]
+    fn lsp_client_sync_continues_batch_after_unreadable_file() {
+        let (dir, client) = fixture_client(&[]);
+        let broken = dir.path().join("broken.fixture");
+        let normal = dir.path().join("normal.fixture");
+        std::fs::write(&broken, [0xff, 0xfe]).unwrap();
+        std::fs::write(&normal, "committed\n").unwrap();
+        // 两个文件各有 overlay（pending_write）；didOpen 的推送会在客户端缓存里
+        // 建立旧报告，这是同步前必须存在的前置条件。
+        with_client(&client, |op| {
+            client.set_overlay(op, &broken, "pending\n", true)?;
+            client.set_overlay(op, &normal, "pending\n", true)?;
+            Ok(())
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let cached = [&broken, &normal].into_iter().all(|path| {
+                client
+                    .diagnostics
+                    .snapshot(&path_to_uri(path))
+                    .is_some_and(|entry| entry.seq > 0)
+            });
+            if cached || Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        for path in [&broken, &normal] {
+            assert!(
+                client
+                    .diagnostics
+                    .snapshot(&path_to_uri(path))
+                    .is_some_and(|entry| entry.seq > 0),
+                "the didOpen push for {} must be cached before syncing",
+                path.display()
+            );
+        }
+
+        let result = with_client(&client, |op| {
+            Ok(client.sync_committed_in_operation(op, &[broken.clone(), normal.clone()]))
+        });
+        let warnings = match result {
+            Ok(warnings) => warnings,
+            Err(error) => vec![format!("{error:#}")],
+        };
+        // 读取失败以 warning 返回，而不是中止整批同步。
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("not valid UTF-8")),
+            "the unreadable file must produce a readable warning: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("broken.fixture")),
+            "warnings must name the file that failed: {warnings:?}"
+        );
+
+        // 读取失败的文件之后不会再有任何推送，所以旧报告必须停在已失效状态。
+        let broken_entry = client.diagnostics.snapshot(&path_to_uri(&broken));
+        assert!(
+            broken_entry.is_some_and(|entry| entry.seq == 0),
+            "the diagnostics cache for {} must be invalidated",
+            broken.display()
+        );
+
+        // 两份文件的 watched 通知都送达：非 UTF-8 不能挤掉同批的正常文件。
+        let events = wait_logged(&dir, Instant::now() + Duration::from_secs(5), |events| {
+            events.iter().any(|event| {
+                event["method"] == "workspace/didChangeWatchedFiles"
+                    && event["params"]["changes"]
+                        .as_array()
+                        .is_some_and(|changes| changes.len() == 2)
+            })
+        });
+        let watched = events
+            .iter()
+            .filter(|event| event["method"] == "workspace/didChangeWatchedFiles")
+            .flat_map(|event| {
+                event["params"]["changes"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let watched_uris: Vec<String> = watched
+            .iter()
+            .filter_map(|change| change["uri"].as_str().map(str::to_owned))
+            .collect();
+        assert!(
+            watched_uris.contains(&path_to_uri(&broken)),
+            "the unreadable file must still be reported as changed: {watched:?}"
+        );
+        assert!(
+            watched_uris.contains(&path_to_uri(&normal)),
+            "a later normal file in the same batch must be synced: {watched:?}"
+        );
+
+        // 正常文件的文档状态继续推进：overlay 被 committed 内容替换并清除 pending_write。
+        let state = client.document(&normal).unwrap();
+        assert_eq!(state.text, "committed\n");
+        assert!(!state.pending_write);
+        // 失败文件的 overlay 也被清掉 pending_write，后续 reconcile 不再被挡；
+        // 磁盘内容无法表示，所以保留它上一次已知的文本。
+        let broken_state = client.document(&broken).unwrap();
+        assert!(!broken_state.pending_write);
+        assert_eq!(broken_state.text, "pending\n");
+
+        // 失败之后同一客户端的后续同步仍可继续。
+        let follow_up = with_client(&client, |op| {
+            Ok(client.sync_committed_in_operation(op, std::slice::from_ref(&normal)))
+        })
+        .unwrap();
+        assert!(follow_up.is_empty(), "a readable batch reports no warnings");
         client.shutdown().unwrap();
     }
 }

@@ -773,3 +773,179 @@ fn plan_move_refuses_symlinks_escapes_and_finish_mismatch() {
     );
     assert!(dir.path().join(".pp/plans/b.md").exists());
 }
+
+// --- 目录快照字节预算与计划链接发布后的清理 ---
+
+/// linkat 前把源名换成指向外部的符号链接：macOS 上不带 `AT_SYMLINK_FOLLOW`
+/// 的 linkat 会发布符号链接本身，Linux 上以 EPERM 拒绝；两种平台都不得把
+/// 目标名留在盘上，也不得吞掉错误。
+struct SwapSourceWithSymlink {
+    source: PathBuf,
+    outside: PathBuf,
+}
+
+impl PlanLinkOperations for SwapSourceWithSymlink {
+    fn publish(
+        &self,
+        source_parent: &File,
+        source_name: &OsStr,
+        destination_parent: &File,
+        destination_name: &OsStr,
+    ) -> rustix::io::Result<()> {
+        std::fs::remove_file(&self.source).unwrap();
+        symlink(&self.outside, &self.source).unwrap();
+        SystemPlanLink.publish(
+            source_parent,
+            source_name,
+            destination_parent,
+            destination_name,
+        )
+    }
+}
+
+#[test]
+fn plan_move_symlink_swap_during_publish_leaves_no_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = outside_dir();
+    let peer = outside.path().join("peer");
+    std::fs::write(&peer, b"outside").unwrap();
+    let workspace = Workspace::open(dir.path()).unwrap();
+    std::fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();
+    std::fs::create_dir_all(dir.path().join(".pp/plans")).unwrap();
+    let source = dir.path().join(".pp/drafts/a.md");
+    std::fs::write(&source, b"inside").unwrap();
+    let target = dir.path().join(".pp/plans/b.md");
+    let error = workspace
+        .link_plan_with(
+            Path::new(".pp/drafts/a.md"),
+            Path::new(".pp/plans/b.md"),
+            b"inside",
+            &SwapSourceWithSymlink {
+                source: source.clone(),
+                outside: peer.clone(),
+            },
+        )
+        .unwrap_err();
+    // 错误可诊断：清理分支返回固定文案，不吞掉失败。
+    assert!(error.to_string().contains("unverified link"), "{error}");
+    // 旧行为会在目标名留下指向外部的符号链接；修复后目标名不存在。
+    assert!(
+        std::fs::symlink_metadata(&target).is_err(),
+        "published plan link target must be cleaned up, found: {}",
+        target.display()
+    );
+    // 外部文件未被触碰，源名（此时已是指向它的符号链接）也保留。
+    assert_eq!(std::fs::read(&peer).unwrap(), b"outside");
+    assert!(
+        std::fs::symlink_metadata(&source).is_ok(),
+        "the failed move must keep the source name"
+    );
+}
+
+#[test]
+fn walk_byte_budget_boundary_table() {
+    // 小预算表驱动：每棵树都是 top.bin 4 字节 + sub/deep.bin 1 字节，总量
+    // 恰好 5 字节；预算等于总量时通过，少一个字节即拒绝。两个文件分别
+    // 位于不同层级，跨递归累计因此也被覆盖；目录本身不占字节预算。
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = Workspace::open(dir.path()).unwrap();
+    for (budget, case) in [
+        (5_u64, "exact"),
+        (4_u64, "one-byte-over"),
+        (5_u64, "flat-exact"),
+        (4_u64, "flat-over"),
+    ] {
+        let root = dir.path().join(case);
+        let nested = root.join("sub");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(root.join("top.bin"), b"abcd").unwrap();
+        // flat 用例把第二个文件放进顶层，总量不变，层级结构不同。
+        if case.starts_with("flat") {
+            std::fs::write(root.join("side.bin"), b"e").unwrap();
+        } else {
+            std::fs::write(nested.join("deep.bin"), b"e").unwrap();
+        }
+        let over = case.ends_with("over");
+        let result = workspace.walk_directory_cancellable(
+            Path::new(case),
+            RESOURCE_FILE_LIMIT,
+            budget,
+            &CancellationToken::new(),
+        );
+        if over {
+            let error = result.err().expect("over-budget walk must be refused");
+            assert!(
+                error.to_string().contains("more than") && error.to_string().contains("bytes"),
+                "{case}: {error}"
+            );
+        } else {
+            let entries = result.expect("the total equals the budget exactly");
+            let total: u64 = entries
+                .iter()
+                .filter_map(|entry| entry.content.as_ref())
+                .map(|content| content.len() as u64)
+                .sum();
+            assert_eq!(total, 5, "{case}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[test]
+fn walk_budget_rejects_sparse_file_over_the_limit() {
+    // 稀疏文件无需真实分配 256 MiB 即可证明：set_len 超限的普通文件在
+    // metadata 预检处被拒绝，不会被读入内存。
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = Workspace::open(dir.path()).unwrap();
+    std::fs::create_dir(dir.path().join("d")).unwrap();
+    let big = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.path().join("d/big.bin"))
+        .unwrap();
+    big.set_len(RESOURCE_BYTE_LIMIT + 1).unwrap();
+    drop(big);
+    let error = workspace
+        .walk_directory_cancellable(
+            Path::new("d"),
+            RESOURCE_FILE_LIMIT,
+            RESOURCE_BYTE_LIMIT,
+            &CancellationToken::new(),
+        )
+        .err()
+        .expect("sparse file over the limit must be refused");
+    assert!(
+        error.to_string().contains("more than") && error.to_string().contains("bytes"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("d")).unwrap().count(),
+        1,
+        "rejection must not delete or commit anything"
+    );
+}
+
+#[test]
+fn walk_budget_respects_cancellation() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = Workspace::open(dir.path()).unwrap();
+    std::fs::create_dir(dir.path().join("d")).unwrap();
+    std::fs::write(dir.path().join("d/a.bin"), b"a").unwrap();
+    std::fs::create_dir(dir.path().join("d/sub")).unwrap();
+    std::fs::write(dir.path().join("d/sub/b.bin"), b"b").unwrap();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let error = workspace
+        .walk_directory_cancellable(
+            Path::new("d"),
+            RESOURCE_FILE_LIMIT,
+            RESOURCE_BYTE_LIMIT,
+            &cancelled,
+        )
+        .err()
+        .expect("cancelled walk must be refused");
+    assert!(error.to_string().contains("cancelled"), "{error}");
+    // 现有文件保持原样：拒绝只放弃快照，不提交/删除任何东西。
+    assert!(dir.path().join("d/a.bin").exists());
+    assert!(dir.path().join("d/sub/b.bin").exists());
+}

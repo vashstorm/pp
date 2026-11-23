@@ -409,6 +409,38 @@ pub(crate) struct KernelState {
     pub(crate) restarted_notice: bool,
     pub(crate) closed: bool,
     pub(crate) sandbox_fingerprint: Option<(pp_sandbox::EffectiveMode, bool)>,
+    /// 测试专用：下一次循环内内核回收返回固定 `CleanupError`，确定性覆盖清理失败收尾。
+    #[cfg(test)]
+    fail_next_shutdown: bool,
+}
+
+impl KernelState {
+    /// 取出并回收当前常驻内核，供主循环内的清理路径统一调用。
+    /// 测试可注入清理故障，模拟「循环内 shutdown 失败」的错误边界。
+    pub(crate) fn shutdown_running(&mut self) -> Result<()> {
+        #[cfg(test)]
+        if self.fail_next_shutdown {
+            self.fail_next_shutdown = false;
+            // 模拟「SIGKILL 已发出但进程未回收」的清理失败：先组内强杀，再固定返回错误。
+            if let Some(mut kernel) = self.running.take() {
+                kernel.send_signal_group(libc::SIGKILL);
+                drop(kernel);
+            }
+            return Err(CleanupError(anyhow::anyhow!(
+                "Python kernel shutdown failed (injected for test)"
+            ))
+            .into());
+        }
+        match self.running.take() {
+            Some(kernel) => kernel.shutdown(),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_shutdown_for_test(&mut self) {
+        self.fail_next_shutdown = true;
+    }
 }
 
 pub(crate) fn run_cell(
@@ -427,14 +459,10 @@ pub(crate) fn run_cell(
     let mut notice: Option<String> = None;
 
     if req.reset {
-        if let Some(kernel) = state.running.take() {
-            kernel.shutdown()?;
-        }
+        state.shutdown_running()?;
         state.restarted_notice = false;
     } else if state.running.is_some() && state.sandbox_fingerprint != desired_fp {
-        if let Some(kernel) = state.running.take() {
-            kernel.shutdown()?;
-        }
+        state.shutdown_running()?;
         state.restarted_notice = false;
         notice = Some(
             "Kernel restarted: sandbox mode changed; earlier state is unavailable.".to_owned(),
@@ -487,7 +515,7 @@ pub(crate) fn run_cell(
     let mut images = Vec::new();
     let mut dirty = false;
     let mut last_preview = Instant::now();
-    let mut active_budget = Duration::from_secs(req.timeout_seconds);
+    let active_budget = Duration::from_secs(req.timeout_seconds);
     let mut active_elapsed = Duration::ZERO;
     let mut last_tick = Instant::now();
     let mut interrupt_sent: Option<Instant> = None;
@@ -498,205 +526,207 @@ pub(crate) fn run_cell(
     let mut kernel_died = false;
     let mut error_summary: Option<String> = None;
 
-    loop {
-        let now = Instant::now();
-        active_elapsed += now.saturating_duration_since(last_tick);
-        last_tick = now;
+    // 主帧循环包在内层结果边界内：循环内任何内核回收失败（CleanupError）
+    // 都会先落到下方统一的幂等 sink.finish()，再把错误上浮，
+    // 避免 artifact 永久滞留在 Store 的 live 表且元数据未封存。
+    let loop_result: Result<()> = (|| {
+        loop {
+            let now = Instant::now();
+            active_elapsed += now.saturating_duration_since(last_tick);
+            last_tick = now;
 
-        if interrupt_sent.is_none() {
-            if cancellation.is_cancelled() {
-                cancelled = true;
-                interrupt_sent = Some(now);
-                if let Some(kernel) = state.running.as_mut() {
-                    let _ = kernel.send_line(&json!({ "type": "interrupt", "id": rid }));
-                    kernel.send_sigint_leader();
-                }
-            } else if active_elapsed >= active_budget {
-                timed_out = true;
-                interrupt_sent = Some(now);
-                if let Some(kernel) = state.running.as_mut() {
-                    let _ = kernel.send_line(&json!({ "type": "interrupt", "id": rid }));
-                    kernel.send_sigint_leader();
-                }
-            }
-        } else if let Some(sent_at) = interrupt_sent
-            && now.saturating_duration_since(sent_at) >= INTERRUPT_GRACE
-        {
-            // Python 主线程卡在 C 扩展或阻塞子进程无法响应 SIGINT：升级销毁整个进程组。
-            if let Some(kernel) = state.running.take() {
-                kernel.shutdown()?;
-            }
-            state.restarted_notice = true;
-            kernel_died = true;
-            exec_status = "error".to_owned();
-            if error_summary.is_none() {
-                error_summary = Some(if timed_out {
-                    format!(
-                        "Python cell timed out after {}s and did not respond to SIGINT; kernel was terminated.",
-                        req.timeout_seconds
-                    )
-                } else {
-                    "Python cell cancelled and did not respond to SIGINT; kernel was terminated."
-                        .to_owned()
-                });
-            }
-            break;
-        }
-
-        if dirty && last_preview.elapsed() >= PREVIEW_INTERVAL {
-            emit(AgentEvent::ToolOutputSnapshot {
-                id: req.call_id.to_owned(),
-                output: sink.preview(),
-            });
-            dirty = false;
-            last_preview = Instant::now();
-        }
-
-        let frame = {
-            let Some(kernel) = state.running.as_ref() else {
-                kernel_died = true;
-                break;
-            };
-            let Some(frames) = kernel.frames.as_ref() else {
-                kernel_died = true;
-                break;
-            };
-            frames.recv_timeout(POLL_INTERVAL)
-        };
-
-        match frame {
-            Ok(KernelFrame::Started) => {}
-            Ok(KernelFrame::Stdout { id, data }) if id == rid => {
-                sink.append(OutputStream::Stdout, data.as_bytes());
-                dirty = true;
-            }
-            Ok(KernelFrame::Stderr { id, data }) if id == rid => {
-                sink.append(OutputStream::Stderr, data.as_bytes());
-                dirty = true;
-            }
-            Ok(KernelFrame::Stdout { .. } | KernelFrame::Stderr { .. }) => {}
-            Ok(KernelFrame::Image {
-                id,
-                mime_type,
-                data,
-            }) if id == rid => {
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data.trim()) {
-                    images.push(CapturedImage { mime_type, bytes });
-                }
-            }
-            Ok(KernelFrame::Image { .. }) => {}
-            Ok(KernelFrame::ToolCall {
-                id,
-                call_id: bridge_id,
-                name,
-                args,
-            }) if id == rid => {
-                // 嵌套宿主工具调用期间暂停 Python 计算超时窗口，返回后再顺延。
-                let bridge_start = Instant::now();
-                if dirty {
-                    emit(AgentEvent::ToolOutputSnapshot {
-                        id: req.call_id.to_owned(),
-                        output: sink.preview(),
-                    });
-                    dirty = false;
-                    last_preview = Instant::now();
-                }
-                let reply = match bridge(&name, &args) {
-                    Ok(value) => json!({
-                        "type": "tool_result",
-                        "call_id": bridge_id,
-                        "value": value,
-                    }),
-                    Err(err) => json!({
-                        "type": "tool_result",
-                        "call_id": bridge_id,
-                        "error": format!("{err:#}"),
-                    }),
-                };
-                let bridge_elapsed = bridge_start.elapsed();
-                active_budget = active_budget.saturating_add(bridge_elapsed);
-                last_tick = Instant::now();
-                if let Some(kernel) = state.running.as_mut()
-                    && let Err(err) = kernel.send_line(&reply)
-                {
-                    let _ = state
-                        .running
-                        .take()
-                        .map(RunningKernel::shutdown)
-                        .transpose()?;
-                    state.restarted_notice = true;
-                    kernel_died = true;
-                    exec_status = "error".to_owned();
-                    error_summary =
-                        Some(format!("Python kernel exited during tool bridge: {err:#}"));
-                    break;
-                }
-            }
-            Ok(KernelFrame::ToolCall { .. }) => {}
-            Ok(KernelFrame::Error {
-                id,
-                ename,
-                evalue,
-                traceback,
-            }) if id == rid || id.is_empty() => {
-                let text = if traceback.is_empty() {
-                    format!("{ename}: {evalue}\n")
-                } else {
-                    let mut joined = traceback.join("\n");
-                    if !joined.ends_with('\n') {
-                        joined.push('\n');
-                    }
-                    joined
-                };
-                sink.append(OutputStream::Stderr, text.as_bytes());
-                dirty = true;
-                exec_status = "error".to_owned();
-                if error_summary.is_none() {
-                    error_summary = Some(if evalue.is_empty() {
-                        ename
-                    } else {
-                        format!("{ename}: {evalue}")
-                    });
-                }
-            }
-            Ok(KernelFrame::Error { .. }) => {}
-            Ok(KernelFrame::Done {
-                id,
-                status,
-                execution_count: count,
-                cancelled: py_cancelled,
-            }) if id == rid => {
-                exec_status = status;
-                execution_count = count;
-                if py_cancelled && !timed_out {
+            if interrupt_sent.is_none() {
+                if cancellation.is_cancelled() {
                     cancelled = true;
+                    interrupt_sent = Some(now);
+                    if let Some(kernel) = state.running.as_mut() {
+                        let _ = kernel.send_line(&json!({ "type": "interrupt", "id": rid }));
+                        kernel.send_sigint_leader();
+                    }
+                } else if active_elapsed >= active_budget {
+                    timed_out = true;
+                    interrupt_sent = Some(now);
+                    if let Some(kernel) = state.running.as_mut() {
+                        let _ = kernel.send_line(&json!({ "type": "interrupt", "id": rid }));
+                        kernel.send_sigint_leader();
+                    }
                 }
-                break;
-            }
-            Ok(KernelFrame::Done { .. }) => {}
-            Ok(KernelFrame::Eof) | Err(RecvTimeoutError::Disconnected) => {
-                let stderr_note = state
-                    .running
-                    .as_ref()
-                    .map(RunningKernel::stderr_summary)
-                    .unwrap_or_default();
-                if let Some(dead) = state.running.take() {
-                    dead.shutdown()?;
-                }
+            } else if let Some(sent_at) = interrupt_sent
+                && now.saturating_duration_since(sent_at) >= INTERRUPT_GRACE
+            {
+                // Python 主线程卡在 C 扩展或阻塞子进程无法响应 SIGINT：升级销毁整个进程组。
+                state.shutdown_running()?;
                 state.restarted_notice = true;
                 kernel_died = true;
                 exec_status = "error".to_owned();
-                error_summary = Some(if stderr_note.is_empty() {
-                    "Python kernel exited unexpectedly.".to_owned()
-                } else {
-                    format!("Python kernel exited unexpectedly: {stderr_note}")
-                });
+                if error_summary.is_none() {
+                    error_summary = Some(if timed_out {
+                        format!(
+                            "Python cell timed out after {}s and did not respond to SIGINT; kernel was terminated.",
+                            req.timeout_seconds
+                        )
+                    } else {
+                        "Python cell cancelled and did not respond to SIGINT; kernel was terminated."
+                        .to_owned()
+                    });
+                }
                 break;
             }
-            Err(RecvTimeoutError::Timeout) => {}
-        }
-    }
 
+            if dirty && last_preview.elapsed() >= PREVIEW_INTERVAL {
+                emit(AgentEvent::ToolOutputSnapshot {
+                    id: req.call_id.to_owned(),
+                    output: sink.preview(),
+                });
+                dirty = false;
+                last_preview = Instant::now();
+            }
+
+            let frame = {
+                let Some(kernel) = state.running.as_ref() else {
+                    kernel_died = true;
+                    break;
+                };
+                let Some(frames) = kernel.frames.as_ref() else {
+                    kernel_died = true;
+                    break;
+                };
+                frames.recv_timeout(POLL_INTERVAL)
+            };
+
+            match frame {
+                Ok(KernelFrame::Started) => {}
+                Ok(KernelFrame::Stdout { id, data }) if id == rid => {
+                    sink.append(OutputStream::Stdout, data.as_bytes());
+                    dirty = true;
+                }
+                Ok(KernelFrame::Stderr { id, data }) if id == rid => {
+                    sink.append(OutputStream::Stderr, data.as_bytes());
+                    dirty = true;
+                }
+                Ok(KernelFrame::Stdout { .. } | KernelFrame::Stderr { .. }) => {}
+                Ok(KernelFrame::Image {
+                    id,
+                    mime_type,
+                    data,
+                }) if id == rid => {
+                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data.trim())
+                    {
+                        images.push(CapturedImage { mime_type, bytes });
+                    }
+                }
+                Ok(KernelFrame::Image { .. }) => {}
+                Ok(KernelFrame::ToolCall {
+                    id,
+                    call_id: bridge_id,
+                    name,
+                    args,
+                }) if id == rid => {
+                    if dirty {
+                        emit(AgentEvent::ToolOutputSnapshot {
+                            id: req.call_id.to_owned(),
+                            output: sink.preview(),
+                        });
+                        dirty = false;
+                        last_preview = Instant::now();
+                    }
+                    let reply = match bridge(&name, &args) {
+                        Ok(value) => json!({
+                            "type": "tool_result",
+                            "call_id": bridge_id,
+                            "value": value,
+                        }),
+                        Err(err) => json!({
+                            "type": "tool_result",
+                            "call_id": bridge_id,
+                            "error": format!("{err:#}"),
+                        }),
+                    };
+                    // 嵌套宿主工具调用期间的墙钟时间不计入 Python 计算预算，
+                    // 返回后只重置计时起点，避免宿主慢工具变相延长计算额度。
+                    last_tick = Instant::now();
+                    if let Some(kernel) = state.running.as_mut()
+                        && let Err(err) = kernel.send_line(&reply)
+                    {
+                        let _ = state
+                            .running
+                            .take()
+                            .map(RunningKernel::shutdown)
+                            .transpose()?;
+                        state.restarted_notice = true;
+                        kernel_died = true;
+                        exec_status = "error".to_owned();
+                        error_summary =
+                            Some(format!("Python kernel exited during tool bridge: {err:#}"));
+                        break;
+                    }
+                }
+                Ok(KernelFrame::ToolCall { .. }) => {}
+                Ok(KernelFrame::Error {
+                    id,
+                    ename,
+                    evalue,
+                    traceback,
+                }) if id == rid || id.is_empty() => {
+                    let text = if traceback.is_empty() {
+                        format!("{ename}: {evalue}\n")
+                    } else {
+                        let mut joined = traceback.join("\n");
+                        if !joined.ends_with('\n') {
+                            joined.push('\n');
+                        }
+                        joined
+                    };
+                    sink.append(OutputStream::Stderr, text.as_bytes());
+                    dirty = true;
+                    exec_status = "error".to_owned();
+                    if error_summary.is_none() {
+                        error_summary = Some(if evalue.is_empty() {
+                            ename
+                        } else {
+                            format!("{ename}: {evalue}")
+                        });
+                    }
+                }
+                Ok(KernelFrame::Error { .. }) => {}
+                Ok(KernelFrame::Done {
+                    id,
+                    status,
+                    execution_count: count,
+                    cancelled: py_cancelled,
+                }) if id == rid => {
+                    exec_status = status;
+                    execution_count = count;
+                    if py_cancelled && !timed_out {
+                        cancelled = true;
+                    }
+                    break;
+                }
+                Ok(KernelFrame::Done { .. }) => {}
+                Ok(KernelFrame::Eof) | Err(RecvTimeoutError::Disconnected) => {
+                    let mut stderr_note = String::new();
+                    if let Some(dead) = state.running.as_ref() {
+                        stderr_note = dead.stderr_summary();
+                    }
+                    state.shutdown_running()?;
+                    state.restarted_notice = true;
+                    kernel_died = true;
+                    exec_status = "error".to_owned();
+                    error_summary = Some(if stderr_note.is_empty() {
+                        "Python kernel exited unexpectedly.".to_owned()
+                    } else {
+                        format!("Python kernel exited unexpectedly: {stderr_note}")
+                    });
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+        Ok(())
+    })();
+
+    // 无论循环内 shutdown 成败，都先做一次幂等收尾：封存捕获并发布元数据，
+    // 错误（含 CleanupError）在收尾完成后才上浮，不伪造 cell 成功。
     sink.finish();
     if dirty {
         emit(AgentEvent::ToolOutputSnapshot {
@@ -704,6 +734,7 @@ pub(crate) fn run_cell(
             output: sink.preview(),
         });
     }
+    loop_result?;
 
     let mut result = sink.value();
     let ok = exec_status == "ok" && !timed_out && !cancelled && !kernel_died;

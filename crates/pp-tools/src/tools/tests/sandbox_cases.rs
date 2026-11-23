@@ -100,6 +100,202 @@ fn sandbox_read_rg_and_glob_enforce_credential_denylist() {
     assert!(!glob_text.contains("id_ed25519"), "{glob_parent}");
 }
 
+#[test]
+fn accept_edits_reflects_real_sandbox_policy_per_tool_tier() {
+    use pp_config::config::{PermissionMode, ToolsSettings};
+    use pp_permission::PermissionDecision;
+
+    let root = tempfile::tempdir().unwrap();
+    let agent_dir = root.path().join("agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+    let ws = root.path().join("ws");
+    fs::create_dir_all(&ws).unwrap();
+
+    // (说明, 配置模式, 覆盖, 探针, 写工具, 期望放行)
+    // 可用 workspace-write: accept-edits 下 write/edit/bash 自动执行;
+    // off 与 auto 降级: 同一批写工具必须回到审批 (无 handler 时 fail-closed);
+    // 显式 workspace-write + 不可用探针: 直接 fail-closed。
+    for (case, configured, mode_override, probe) in [
+        (
+            "available workspace-write",
+            SandboxMode::WorkspaceWrite,
+            None,
+            ProbeResult::Available,
+        ),
+        (
+            "explicit /sandbox off override",
+            SandboxMode::WorkspaceWrite,
+            Some(SandboxMode::Off),
+            ProbeResult::Available,
+        ),
+        (
+            "auto degraded to off",
+            SandboxMode::Auto,
+            None,
+            ProbeResult::Unavailable {
+                reason: "degraded".into(),
+            },
+        ),
+    ] {
+        let ws_dir = tempfile::Builder::new().tempdir_in(&ws).unwrap();
+        fs::write(ws_dir.path().join("edit-target.txt"), "before\n").unwrap();
+        let mut tools = Tools::new(ws_dir.path().to_path_buf(), EditMode::Replace).unwrap();
+        // auto 场景还原 settings.yml 显式配置 tools.sandbox 的生产路径：
+        // 无启动档位/覆盖（manage_sandbox=false），view 回退到 configured=auto，
+        // 探针不可用时降级为 off；权限档位来自 set_config 后的默认 AcceptEdits。
+        // 其余场景保持默认启动路径（--permission-mode / /sandbox 覆盖）。
+        let sandbox_settings = SandboxSettings {
+            mode: configured,
+            network: !case.contains("auto degraded"),
+            ..Default::default()
+        };
+        let sbx = Arc::new(Sandbox::with_probe_for_test(
+            sandbox_settings.clone(),
+            ws_dir.path(),
+            None,
+            Some(Path::new("/tmp")),
+            probe,
+        ));
+        if let Some(mode) = mode_override {
+            sbx.set_mode_override(Some(mode));
+        }
+        tools.set_sandbox(sbx);
+        let startup = if case.contains("auto degraded") {
+            None
+        } else {
+            Some(PermissionMode::AcceptEdits)
+        };
+        tools.permission =
+            pp_permission::Gate::for_process(&agent_dir, startup, mode_override.is_some());
+        tools.permission.set_config(ToolsSettings {
+            sandbox: sandbox_settings,
+            ..Default::default()
+        });
+        assert_eq!(tools.permission.snapshot(), PermissionMode::AcceptEdits);
+
+        let expect_auto = case.contains("available workspace-write");
+        for (tool, arguments, marker) in [
+            (
+                "write",
+                json!({"path": "w.txt", "content": "written"}),
+                "w.txt",
+            ),
+            (
+                "edit",
+                json!({"path": "edit-target.txt", "edits": [
+                    {"oldText": "before", "newText": "after"}
+                ]}),
+                "edit-target.txt",
+            ),
+        ] {
+            let marker_path = ws_dir.path().join(marker);
+            let before = fs::read_to_string(&marker_path).ok();
+            let result = execute(&tools, tool, arguments);
+            assert_eq!(result["ok"], expect_auto, "{case} / {tool}: {result}");
+            if !expect_auto {
+                assert!(
+                    result["error"]
+                        .as_str()
+                        .is_some_and(|error| error.contains("requires permission")),
+                    "{case} / {tool}: {result}"
+                );
+            }
+            if expect_auto {
+                assert!(marker_path.exists(), "{case} / {tool}: {result}");
+            } else {
+                assert_eq!(before, fs::read_to_string(&marker_path).ok());
+            }
+        }
+
+        // 普通写 Bash: 同一沙盒判定决定免确认或 fail-closed, marker 不落盘。
+        let bash_marker = ws_dir.path().join("bash-marker");
+        let bash = execute(
+            &tools,
+            "bash",
+            json!({"command": format!("printf x > {}", bash_marker.display())}),
+        );
+        assert_eq!(bash["ok"], expect_auto, "{case} / bash: {bash}");
+        assert_eq!(bash_marker.exists(), expect_auto);
+    }
+
+    // 显式 workspace-write + 平台不可用: 在审批之前 fail-closed。
+    let ws_dir = tempfile::Builder::new().tempdir_in(&ws).unwrap();
+    let mut tools = Tools::new(ws_dir.path().to_path_buf(), EditMode::Replace).unwrap();
+    tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::WorkspaceWrite,
+            ..Default::default()
+        },
+        ws_dir.path(),
+        None,
+        Some(Path::new("/tmp")),
+        ProbeResult::Unavailable {
+            reason: "nested".into(),
+        },
+    )));
+    tools.permission =
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AcceptEdits), false);
+    tools.permission.set_config(ToolsSettings::default());
+    tools.permission.set_handler(Box::new(|_, _| {
+        panic!("显式开启但不可用必须直接 fail-closed, 不进入审批")
+    }));
+    let blocked = execute(
+        &tools,
+        "bash",
+        json!({"command": format!("printf x > {}", ws_dir.path().join("nope").display())}),
+    );
+    assert_eq!(blocked["ok"], false, "{blocked}");
+    assert!(
+        blocked["error"]
+            .as_str()
+            .unwrap()
+            .contains("is enabled but unavailable"),
+        "{blocked}"
+    );
+    assert!(!ws_dir.path().join("nope").exists());
+
+    // 有 handler 时降级场景走正常审批, 批准后正常执行。
+    let ws_dir = tempfile::Builder::new().tempdir_in(&ws).unwrap();
+    let mut tools = Tools::new(ws_dir.path().to_path_buf(), EditMode::Replace).unwrap();
+    let sandbox_settings = SandboxSettings {
+        mode: SandboxMode::Auto,
+        network: false,
+        ..Default::default()
+    };
+    tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
+        sandbox_settings.clone(),
+        ws_dir.path(),
+        None,
+        Some(Path::new("/tmp")),
+        ProbeResult::Unavailable {
+            reason: "degraded".into(),
+        },
+    )));
+    tools.permission = pp_permission::Gate::for_process(&agent_dir, None, false);
+    tools.permission.set_config(ToolsSettings {
+        sandbox: sandbox_settings,
+        ..Default::default()
+    });
+    tools.permission.set_handler(Box::new(|request, _| {
+        assert!(
+            request.reason.contains("outside the workspace sandbox"),
+            "{reason}",
+            reason = request.reason
+        );
+        Ok(PermissionDecision::Approve)
+    }));
+    let approved = execute(
+        &tools,
+        "write",
+        json!({"path": "approved.txt", "content": "ok"}),
+    );
+    assert_eq!(approved["ok"], true, "{approved}");
+    assert_eq!(
+        fs::read_to_string(ws_dir.path().join("approved.txt")).unwrap(),
+        "ok"
+    );
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn sandbox_bash_tool_reports_sandbox_metadata_and_unavailable_fails_closed() {
@@ -516,12 +712,14 @@ fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_un
                 "sandbox_permissions": {"network": true},
             }),
         );
+        // 降级后审批反映真实策略：写命令先被权限门拦截（无 handler 时
+        // fail-closed），不再落到 dispatch 层的 "sandbox is unavailable"。
         assert_eq!(res["ok"], false, "{res}");
         assert!(
             res["error"]
                 .as_str()
                 .unwrap()
-                .contains("sandbox is unavailable"),
+                .contains("requires permission and no interactive UI"),
             "{res}"
         );
         assert!(!dir.path().join("nope.txt").exists());

@@ -215,3 +215,38 @@ fn fallback_retry_preserves_committed_tools_and_excludes_partial_stream() {
         no_more(&server);
     }
 }
+
+#[test]
+fn fallback_requests_count_toward_max_turns_in_both_protocols() {
+    for protocol in ["completion", "response"] {
+        let server = server();
+        let home = tempfile::tempdir().unwrap();
+        write_settings(home.path(), &settings(0)).unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            &models(&server, protocol, protocol),
+        )
+        .unwrap();
+        let cli = Cli::spawn(
+            home.path(),
+            &["-p", "--max-turns", "1", "fail the primary model"],
+            &[],
+        );
+        let (request, body) = receive_at(&server, path(protocol));
+        assert_eq!(body["model"], "main-model");
+        reject(request);
+        // 旧实现会激活备用模型并发出 backup 请求；先回复让进程收尾，
+        // 再由退出码与 no_more 断言报告失败，避免测试挂在无响应的 backup 请求上。
+        if let Some(backup) = server.recv_timeout(Duration::from_millis(500)).unwrap() {
+            finish(backup, protocol, "backup answer");
+        }
+        let output = cli.finish();
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "protocol {protocol}: {output:?}"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("--max-turns"));
+        no_more(&server);
+    }
+}

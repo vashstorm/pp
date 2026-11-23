@@ -1,0 +1,240 @@
+// 行模式 `/stats` 的真实终端场景：stdin 是 FIFO（非 TTY），stdout/stderr 共用 PTY，
+// 因此进程选择行模式，但 `stdout` 仍是终端，`/stats` 会真的尝试启动浏览器。
+//
+// 请求节奏与浏览器失败时机都由用例控制：`/stats` 通过 FIFO 逐条发送，
+// 浏览器 opener 由夹具替身实现——它先登记被调用的 URL，再等用例释放后才以非零码退出。
+
+/// 行模式 `/stats` 的 URL 前缀；浏览器失败的 warning 不含它。
+const URL_MARKER: &str = "pp stats: http://";
+
+// 远离真实供应商的固定配置：本场景不发送模型请求，只要求启动期配置有效。
+const LINE_MODE_MODELS: &str = "providers:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://127.0.0.1:1/v1\n    models:\n      primary:\n        model: fixture-model\n";
+
+/// 浏览器替身：记录被调用的 URL，然后以非零码退出（浏览器启动失败）。
+fn opener_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let script = bin.join(program);
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" >> \"$HOME/opened-url\"\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+fn fifo(path: &std::path::Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let status = Command::new("mkfifo").arg(path).status().unwrap();
+    assert!(status.success(), "mkfifo {}", path.display());
+}
+
+/// 行模式进程的 stdin 是 FIFO：用例按需投递命令行，因此可以逐请求观察输出。
+struct LineModePty {
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    // PTY 两端都要活到子进程退出。
+    _master: Box<dyn portable_pty::MasterPty + Send>,
+    _slave: Box<dyn portable_pty::SlavePty + Send>,
+    lines: mpsc::Sender<String>,
+    output: mpsc::Receiver<Vec<u8>>,
+    raw: Vec<u8>,
+}
+
+impl Drop for LineModePty {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+impl LineModePty {
+    /// stdin 重定向到 FIFO：`is_terminal()` 为假，进程选择行模式。
+    fn start(project: &std::path::Path, home: &std::path::Path, bin: &std::path::Path) -> Self {
+        std::fs::write(config_path(home, "settings.yml"), fixture_settings()).unwrap();
+        std::fs::write(config_path(home, "models.yml"), LINE_MODE_MODELS).unwrap();
+        let input = home.join("stdin.fifo");
+        fifo(&input);
+        let spawn_guard = super::tui::PTY_SPAWN
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 30,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = portable_pty::CommandBuilder::new("/bin/sh");
+        command.cwd(project);
+        command.env("HOME", home);
+        command.env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        );
+        command.arg("-c");
+        command.arg("exec \"$1\" < \"$2\"");
+        command.arg("sh");
+        command.arg(env!("CARGO_BIN_EXE_pp"));
+        command.arg(&input);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let child = pair.slave.spawn_command(command).unwrap();
+        drop(spawn_guard);
+        let (sender, output) = mpsc::channel();
+        thread::spawn(move || {
+            use std::io::Read;
+            let mut buffer = [0u8; 8192];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        if sender.send(buffer[..count].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+        // 打开写端会阻塞到行模式进程打开读端，因此这条线程同时是启动栅栏。
+        let (lines, queue) = mpsc::channel::<String>();
+        let path = input.clone();
+        thread::spawn(move || {
+            use std::io::Write;
+            let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(&path) else {
+                return;
+            };
+            while let Ok(line) = queue.recv() {
+                if file.write_all(line.as_bytes()).is_err() || file.flush().is_err() {
+                    return;
+                }
+            }
+        });
+        Self {
+            child,
+            _master: pair.master,
+            _slave: pair.slave,
+            lines,
+            output,
+            raw: Vec::new(),
+        }
+    }
+
+    fn send(&self, line: &str) {
+        self.lines.send(line.to_owned()).unwrap();
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.raw).into_owned()
+    }
+
+    // 以“输出出现”为栅栏，不用 sleep 推测异步完成。
+    fn wait_for(&mut self, what: &str, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let text = self.text();
+            if text.contains(needle) {
+                return text;
+            }
+            match self.output.recv_timeout(Duration::from_millis(10)) {
+                Ok(bytes) => self.raw.extend_from_slice(&bytes),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}; output so far: {}",
+                self.text()
+            );
+        }
+    }
+
+    fn wait_for_urls(&mut self, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.text().matches(URL_MARKER).count() < expected {
+            match self.output.recv_timeout(Duration::from_millis(10)) {
+                Ok(bytes) => self.raw.extend_from_slice(&bytes),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {expected} stats URLs; output so far: {}",
+                self.text()
+            );
+        }
+    }
+
+    fn finish(&mut self) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "line mode did not exit; output so far: {}",
+                self.text()
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+        while let Ok(bytes) = self.output.try_recv() {
+            self.raw.extend_from_slice(&bytes);
+        }
+        assert!(status.success(), "line mode failed: {status}");
+        self.text()
+    }
+}
+
+/// 浏览器线程的失败提示不能占掉 launcher 的回复位置：两次 `/stats` 必须各自打印
+/// 自己那个服务进程的地址。
+#[test]
+fn stats_line_mode_prints_one_url_per_request_when_the_browser_opener_fails() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let bin = opener_fixture(project.path());
+    let mut pty = LineModePty::start(project.path(), home.path(), &bin);
+
+    pty.send("/stats --port 0\n");
+    pty.wait_for("the first stats URL", URL_MARKER);
+    // 第二条命令用不同参数强制换一个服务进程：两次回复属于不同的地址，
+    // 因此“各打印一次”无法由任何一次重复输出冒充。
+    pty.send("/stats --host 127.0.0.1 --port 0\n");
+    pty.send("/quit\n");
+    pty.wait_for_urls(2);
+    let text = pty.finish();
+
+    let addresses: Vec<&str> = text
+        .split(URL_MARKER)
+        .skip(1)
+        .filter_map(|rest| rest.split('/').next())
+        .collect();
+    assert_eq!(
+        addresses.len(),
+        2,
+        "each /stats request must print its own address: {text}"
+    );
+    assert!(
+        addresses
+            .iter()
+            .all(|address| address.starts_with("127.0.0.1:")),
+        "every printed address must come from a served launcher reply: {text}"
+    );
+    // opener 替身确实被调用过：本场景真的走了浏览器失败分支。
+    let opened = std::fs::read_to_string(home.path().join("opened-url")).unwrap();
+    assert!(
+        opened.contains("http://127.0.0.1:"),
+        "browser opener never ran: {opened}"
+    );
+}

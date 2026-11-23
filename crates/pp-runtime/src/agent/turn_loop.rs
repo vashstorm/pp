@@ -189,10 +189,18 @@ impl Agent {
                 Ok(finished) => finished,
                 Err(error) if pp_llm::retry::model_request_failed(&error) => {
                     cancellation::check(cancellation)?;
+                    // 主模型失败的请求同样占用 --max-turns 额度：轮次已满时直接以上限
+                    // 终止，不先激活备用模型或发出额外请求；备用自身的失败维持原有
+                    // 语义，直接把模型错误上浮。
+                    if !self.model_source.is_fallback()
+                        && let Some(limit) = self.max_turns
+                        && request_count >= limit
+                    {
+                        return Err(pp_core::cancellation::MaxTurnsExceeded { limit }.into());
+                    }
                     self.pending_instructions = None;
                     if self.activate_fallback(emit)? {
                         claim_boundary = false;
-                        request_count -= 1;
                         // 备用模型可能换协议并重建历史。
                         estimate.invalidate();
                         continue;

@@ -200,6 +200,20 @@ fn accept_edits_prompts_high_impact_commands_and_unanalyzable_commands_never_per
         "git branch -D feature",
         "cargo publish",
         "sudo ls",
+        // 配置覆盖前缀不能让高危命令静默漏报：危险分类要跳过选项取值识别真实子命令。
+        "git -c core.fsmonitor=false push origin main",
+        "git --exec-path=/tmp reset --hard",
+        "git --config-env core.fsmonitor=VAR push",
+        "cargo --config a=b publish",
+        "cargo --config=a=b publish",
+        "cargo -Z unstable-options publish",
+        "cargo +nightly publish",
+        "npm --prefix ./pkg publish",
+        "npm -w ./pkg publish",
+        "pnpm --dir ./pkg publish",
+        "pnpm -w publish",
+        "yarn --cwd ./pkg publish",
+        "bun --cwd ./pkg publish",
     ] {
         let err = sandboxed_bash(&gate, PermissionMode::AcceptEdits, cmd).unwrap_err();
         assert!(
@@ -248,4 +262,78 @@ fn accept_edits_prompts_high_impact_commands_and_unanalyzable_commands_never_per
             "dynamic command must not allow session/persistent grant: {dynamic}"
         );
     }
+}
+
+#[test]
+fn config_override_commands_prompt_once_without_persistent_prefix_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let mut gate = process_gate(&root, PermissionMode::AcceptEdits);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    gate.set_handler(Box::new(move |request, _| {
+        recorded
+            .lock()
+            .unwrap()
+            .push((request.session_grant, request.persistent_grant));
+        assert!(
+            !request.reason.contains("Allow rule prefix"),
+            "config override must not suggest a memorizable prefix: {}",
+            request.reason
+        );
+        Ok(PermissionDecision::Approve)
+    }));
+
+    // 携带配置覆盖或带值全局选项的高危命令必须弹窗，但不可安全记住前缀：
+    // 只提供单次批准，不能生成会把其它变体一并放行的过宽持久 allow 规则。
+    for cmd in [
+        "git -c core.fsmonitor=false push origin main",
+        "git --exec-path=/tmp reset --hard",
+        "git --config-env core.fsmonitor=ENV push",
+        "cargo --config a=b publish",
+        "cargo --config=a=b publish",
+        "cargo -Z unstable-options publish",
+        "npm --prefix ./pkg publish",
+        "npm --prefix=./pkg publish",
+        "npm -w ./pkg publish",
+        "pnpm --dir ./pkg publish",
+        "pnpm --registry https://example.invalid publish",
+        "yarn --cwd ./pkg publish",
+        "bun --cwd=./pkg publish",
+    ] {
+        seen.lock().unwrap().clear();
+        sandboxed_bash(&gate, PermissionMode::AcceptEdits, cmd).unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(false, false)],
+            "config override must not offer prefix grants: {cmd}"
+        );
+    }
+
+    // 单次批准不落盘任何 bash 规则，同类命令下次仍需重新确认。
+    assert!(!root.join("permission.toml").exists());
+    seen.lock().unwrap().clear();
+    sandboxed_bash(
+        &gate,
+        PermissionMode::AcceptEdits,
+        "git -c core.fsmonitor=false push",
+    )
+    .unwrap();
+    assert_eq!(*seen.lock().unwrap(), vec![(false, false)]);
+
+    // 普通只读与安全带值选项命令不误判为高危，accept-edits 沙盒下直接放行。
+    seen.lock().unwrap().clear();
+    for ordinary in [
+        "git status",
+        "git -C sub status",
+        "git -c user.name=t status",
+        "cargo --locked test",
+        "npm install",
+    ] {
+        sandboxed_bash(&gate, PermissionMode::AcceptEdits, ordinary).unwrap();
+    }
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "ordinary commands must not prompt as high-impact"
+    );
 }

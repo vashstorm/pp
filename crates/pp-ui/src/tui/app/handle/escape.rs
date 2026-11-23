@@ -8,7 +8,9 @@ impl App {
     pub(super) fn handle_escape_key(&mut self, key: KeyEvent) {
         if self.history_browser {
             self.history_browser = false;
-            self.conversation.follow();
+            // 只恢复当前显示的转录：审查页浏览后 Esc 回跟随，而不是无条件
+            // 把主对话拉回底部（主对话的滚动位置保持不变）。
+            self.active_transcript().follow();
             self.escape_tap.reset();
             return;
         }

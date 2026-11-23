@@ -1,8 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Window } from "happy-dom";
+import { toolView } from "../../src/insights.js";
 import { fillBuckets } from "../../src/web/analytics-shared.js";
 import { toolNiceScale } from "../../src/web/charts.js";
 import { modelCacheSavings, modelLabels, modelPivot } from "../../src/web/models.js";
-import type { ModelAggregate } from "../../web-types/api.d.ts";
+import type {
+  ModelAggregate,
+  ToolMetricRow,
+  ToolRow,
+  ToolsResponse,
+} from "../../web-types/api.d.ts";
 
 function makeModel(overrides: Partial<ModelAggregate>): ModelAggregate {
   return {
@@ -39,6 +46,132 @@ function makeModel(overrides: Partial<ModelAggregate>): ModelAggregate {
     ...overrides,
   };
 }
+
+const NOW = 1_700_000_000_000;
+
+function toolMetric(calls: number, tokens: number | null, usageKnown: number): ToolMetricRow {
+  return {
+    calls,
+    args_chars: calls * 10,
+    tokens,
+    output_tokens: tokens == null ? null : Math.round(tokens / 5),
+    usage_known: usageKnown,
+    cost: 0.5,
+    priced: calls,
+    unpriced: 0,
+    last_seen: NOW,
+    errors: 0,
+    cancelled: 0,
+    executions: calls,
+    result_chars: calls * 4,
+    result_calls: calls,
+    avg_duration_ms: 5,
+    buckets: [],
+    error_buckets: [],
+    recent: [],
+  };
+}
+
+function toolRow(tool: string, calls: number, tokens: number | null, usageKnown: number): ToolRow {
+  return {
+    ...toolMetric(calls, tokens, usageKnown),
+    key: tool,
+    tool,
+    models: [
+      {
+        ...toolMetric(calls, tokens, usageKnown),
+        key: "anthropic/claude-sonnet",
+        model: "claude-sonnet",
+        provider: "anthropic",
+      },
+    ],
+  };
+}
+
+function toolsResponse(rows: ToolRow[]): ToolsResponse {
+  const calls = rows.reduce((sum, row) => sum + row.calls, 0);
+  const knownTokens = rows.flatMap((row) => (row.tokens == null ? [] : [row.tokens]));
+  const knownOutput = rows.flatMap((row) => (row.output_tokens == null ? [] : [row.output_tokens]));
+  return {
+    summary: {
+      ...toolMetric(
+        calls,
+        null,
+        rows.reduce((sum, row) => sum + row.usage_known, 0),
+      ),
+      tokens: knownTokens.length ? knownTokens.reduce((sum, value) => sum + value, 0) : null,
+      output_tokens: knownOutput.length ? knownOutput.reduce((sum, value) => sum + value, 0) : null,
+    },
+    tools: rows,
+    requests_with_tools: 0,
+    partial_requests: 0,
+    updated_at: NOW,
+    range: "24h",
+  };
+}
+
+let happyWindow: Window | null = null;
+
+describe("tools view keeps unknown usage unknown", () => {
+  beforeAll(() => {
+    happyWindow = new Window({ url: "http://127.0.0.1:3848/" });
+    (globalThis as Record<string, unknown>).document = happyWindow.document;
+  });
+
+  afterAll(() => {
+    happyWindow?.close();
+    happyWindow = null;
+  });
+
+  test("all-unknown usage keeps tokens null and never reports a zero share", () => {
+    const view = toolView(
+      toolsResponse([toolRow("read", 3, null, 0), toolRow("bash", 1, null, 0)]),
+    );
+    expect(view.totals.tokens).toBeNull();
+    expect(view.totals.output).toBeNull();
+    expect(view.totals.usageKnown).toBe(0);
+    expect(view.totals.tokenCoverage).toBeNull();
+    for (const row of view.rows) {
+      expect(row.totalTokensShare).toBeNull();
+      expect(row.outputTokensShare).toBeNull();
+      expect(row.tokenFraction).toBeNull();
+    }
+  });
+
+  test("partially known usage sums known tokens only and reports known-call coverage", () => {
+    const view = toolView(
+      toolsResponse([toolRow("read", 3, 3000, 3), toolRow("bash", 1, null, 0)]),
+    );
+    expect(view.totals.tokens).toBe(3000);
+    expect(view.totals.output).toBe(600);
+    expect(view.totals.usageKnown).toBe(3);
+    expect(view.totals.tokenCoverage).toBeCloseTo(0.75, 6);
+    const readRow = view.rows.find((row) => row.tool === "read");
+    const bashRow = view.rows.find((row) => row.tool === "bash");
+    expect(readRow?.tokenFraction).toBe(1);
+    expect(bashRow?.tokenFraction).toBeNull();
+    expect(bashRow?.totalTokensShare).toBeNull();
+  });
+
+  test("all-known usage keeps summed totals and full coverage", () => {
+    const view = toolView(
+      toolsResponse([toolRow("read", 2, 2000, 2), toolRow("bash", 2, 1000, 2)]),
+    );
+    expect(view.totals.tokens).toBe(3000);
+    expect(view.totals.output).toBe(600);
+    expect(view.totals.tokenCoverage).toBe(1);
+    for (const row of view.rows) expect(row.tokenFraction).not.toBeNull();
+  });
+
+  test("an empty tools response keeps the existing zero baseline", () => {
+    const view = toolView(toolsResponse([]));
+    expect(view.totals.calls).toBe(0);
+    expect(view.totals.tools).toBe(0);
+    expect(view.totals.tokens).toBe(0);
+    expect(view.totals.output).toBe(0);
+    expect(view.totals.tokenCoverage).toBeNull();
+  });
+});
 
 describe("models & insights analytics calculations", () => {
   test("modelCacheSavings returns null unless all requests are priced with consistent rates and cache-write usage", () => {

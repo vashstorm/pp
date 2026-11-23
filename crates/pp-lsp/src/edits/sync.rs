@@ -34,13 +34,16 @@ pub(crate) fn sync_file_events(
                 "failureReason": crate::transport::UNAUTHORIZED_EDIT
             }));
         };
-        if let Err(error) = client.operation(deadline, cancellation, &mut deny, |op| {
+        // 逐文件 warning（如无法按 UTF-8 同步的内容）与传输/取消失败合并进同一份报告；
+        // 正常工具失败不会被吞掉，也不会挤掉同批其它文件的通知。
+        match client.operation(deadline, cancellation, &mut deny, |op| {
             client.sync_file_events_in_operation(op, &events)
         }) {
-            warnings.push(format!(
+            Ok(sync_warnings) => warnings.extend(sync_warnings),
+            Err(error) => warnings.push(format!(
                 "Failed to sync committed files with {}: {error}",
                 client.name
-            ));
+            )),
         }
     }
     warnings

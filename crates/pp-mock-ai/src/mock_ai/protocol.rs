@@ -283,10 +283,16 @@ fn validate_instruction(instruction: &Instruction) -> std::result::Result<(), Sc
                 "mock status must be an HTTP error status",
             ));
         }
+        // 显式 `response:null` 等同未声明，不会产生回显正文。
+        let echoes_response = instruction
+            .response
+            .as_ref()
+            .is_some_and(|response| !response.is_null());
         if instruction.auto_continue
             || instruction.tool.is_some()
             || !instruction.content.is_empty()
             || !instruction.think.is_empty()
+            || echoes_response
             || instruction.usage.is_some()
         {
             return Err(ScriptError::invalid(
@@ -532,10 +538,14 @@ mod tests {
             r#"[{"status":503,"auto_continue":true}]"#,
             r#"[{"status":503,"tool":{"name":"read","arguments":{}}}]"#,
             r#"[{"status":503,"usage":{"input_tokens":1,"output_tokens":1}}]"#,
+            r#"[{"status":503,"response":{"echo":true}}]"#,
+            r#"[{"status":400,"response":"echo"}]"#,
             r#"[{"status":503},{}]"#,
         ] {
             assert_eq!(code(script), "invalid_mock_script", "{script}");
         }
+        // 显式 `response:null` 不产生回显正文，仍是合法的独立失败指令。
+        assert!(parse(r#"[{"status":503,"response":null}]"#).is_ok());
     }
 
     #[test]

@@ -76,6 +76,14 @@ pub(super) struct State {
     pub(super) stop: Option<StopReason>,
     pub(super) permit: Option<Arc<Permit>>,
     pub(super) grace_deadline: Option<Instant>,
+    /// SIGKILL 升级后的独立回收截止时间；到期且外部进程仍未被 SIGKILL 终止时
+    /// 放弃回收（仅剩解释器待释放的组租约/anchor 时刷新窗口继续等待，不算
+    /// 回收失败）。它不复用早已过期的 `grace_deadline`，约束 Killing 阶段的
+    /// 等待上界。
+    pub(super) kill_deadline: Option<Instant>,
+    /// SIGKILL 宽限期已过而外部进程仍未退出：注册表仍保留未回收记录，终态判定
+    /// 豁免 live work 检查，记录保持真实的观察/reaped 状态。
+    pub(super) abandoned: bool,
     pub(super) errors: BTreeSet<String>,
     pub(super) groups: BTreeMap<u64, GroupRecord>,
     pub(super) procs: BTreeMap<i32, ProcessRecord>,
@@ -96,6 +104,8 @@ impl State {
             stop: None,
             permit: None,
             grace_deadline: None,
+            kill_deadline: None,
+            abandoned: false,
             errors: BTreeSet::new(),
             groups: BTreeMap::new(),
             procs: BTreeMap::new(),

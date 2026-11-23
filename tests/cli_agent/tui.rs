@@ -38,6 +38,8 @@ include!("native_tui.rs");
 include!("sqlite_tui.rs");
 include!("initial_command_tui.rs");
 include!("permission_tui.rs");
+// 行模式 `/stats` 需要 stdout 是真实 PTY、stdin 不是，因此由本模块的 PTY 夹具引入。
+include!("stats_line_mode_tui.rs");
 use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
 use std::{
     io::Read,

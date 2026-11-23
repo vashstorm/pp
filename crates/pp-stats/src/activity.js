@@ -398,7 +398,8 @@ export function errorsPage() {
   const limitIndex = ERROR_LIMITS.indexOf(errorLimit);
   const next =
     limitIndex >= 0 && limitIndex + 1 < ERROR_LIMITS.length ? ERROR_LIMITS[limitIndex + 1] : null;
-  const complete = loaded < errorLimit;
+  // 完整性仅由服务端 has_more 决定；已加载行数恰好等于上限时仍可能是完整一页。
+  const complete = !payload.has_more;
   const selectedModel = models.find((item) => item.key === model);
   const filteredSignature = groups.find((group) => group.signature === signature);
   const windowLabel = descriptions[app.range];

@@ -18,6 +18,7 @@ use pp_core::cancellation::check;
 use pp_workspace::diff::Original;
 use pp_workspace::save::DirectoryEntry;
 use pp_workspace::save::EntryKind;
+use pp_workspace::save::RESOURCE_BYTE_LIMIT;
 use pp_workspace::save::RESOURCE_FILE_LIMIT;
 use pp_workspace::save::Workspace;
 use serde_json::Value;
@@ -448,6 +449,7 @@ impl<'a> Planner<'a> {
             for entry in self.workspace.walk_directory_cancellable(
                 path,
                 RESOURCE_FILE_LIMIT,
+                RESOURCE_BYTE_LIMIT,
                 self.cancellation,
             )? {
                 check(self.cancellation)?;
@@ -504,14 +506,23 @@ impl<'a> Planner<'a> {
                 entries.entry(prefix.clone()).or_insert((None, None));
             }
         }
-        // 上限只约束普通文件；目录本身不消耗文件额度。
+        // 上限只约束普通文件；目录本身不消耗文件额度。虚拟创建/覆盖/移动
+        // 叠加后重新校验总字节数与文件数，超限只拒绝该次建议。
         let files = entries
             .values()
             .filter(|(content, _)| content.is_some())
             .count();
+        let bytes: u64 = entries
+            .values()
+            .filter_map(|(content, _)| content.as_ref().map(|c| c.len() as u64))
+            .sum();
         ensure!(
             files <= RESOURCE_FILE_LIMIT,
             "directory contains more than {RESOURCE_FILE_LIMIT} files; resource operation refused"
+        );
+        ensure!(
+            bytes <= RESOURCE_BYTE_LIMIT,
+            "directory contains more than 256 MiB of regular files; resource operation refused"
         );
         Ok(entries
             .into_iter()

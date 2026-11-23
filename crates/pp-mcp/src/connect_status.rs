@@ -140,6 +140,8 @@ pub(crate) struct Progress {
     finished: bool,
     // 已向行模式输出过总状态：同一进程的后续任务不重复打印。
     reported: bool,
+    // 逐服务已报告游标：只前进不后退，新一轮 begin/reserve 重置。
+    claimed: usize,
     error: Option<String>,
 }
 
@@ -152,6 +154,7 @@ impl Default for Progress {
             total: None,
             finished: true,
             reported: false,
+            claimed: 0,
             error: None,
         }
     }
@@ -168,6 +171,7 @@ impl Progress {
         self.started = Some(Instant::now());
         self.total = None;
         self.reported = false;
+        self.claimed = 0;
         self.error = None;
         self.finished = false;
     }
@@ -186,6 +190,7 @@ impl Progress {
         self.started = Some(Instant::now());
         self.total = None;
         self.reported = false;
+        self.claimed = 0;
         self.error = None;
         self.finished = self.servers.is_empty();
         if self.finished {
@@ -268,6 +273,20 @@ impl Progress {
             elapsed,
             error: self.error.clone(),
         }
+    }
+
+    /// 行模式一次性领取新完成的连续服务：已领取的不再重复，被取消打断后继续领取
+    /// 也不会重打已输出过的行。遇到尚未结束的服务即停，保持输出顺序连续。
+    pub(crate) fn take_claimed(&mut self) -> Vec<ServerConnect> {
+        let mut claimed = Vec::new();
+        while let Some(server) = self.servers.get(self.claimed) {
+            if server.elapsed.is_none() {
+                break;
+            }
+            claimed.push(server.clone());
+            self.claimed += 1;
+        }
+        claimed
     }
 
     /// 行模式一次性取走总状态：同一进程的后续任务不重复打印。
@@ -397,5 +416,37 @@ mod tests {
         assert_eq!(progress.unfinished(), vec!["b".to_string()]);
         progress.finish();
         assert!(progress.unfinished().is_empty());
+    }
+
+    #[test]
+    fn claimed_services_are_reported_once_and_only_while_contiguous() {
+        let mut progress = Progress::default();
+        progress.begin(names(&["a", "b", "c"]));
+        // 后一个服务先完成也不越过尚未完成的前一个：输出顺序与配置顺序一致。
+        progress.complete("b", true, Duration::from_millis(20), None);
+        assert!(progress.take_claimed().is_empty());
+        progress.complete("a", true, Duration::from_millis(10), None);
+        let claimed: Vec<String> = progress
+            .take_claimed()
+            .into_iter()
+            .map(|server| server.name)
+            .collect();
+        assert_eq!(claimed, names(&["a", "b"]));
+        // 已领取的不再重复：取消后继续领取同一轮不会重打。
+        assert!(progress.take_claimed().is_empty());
+        progress.complete("c", true, Duration::from_millis(30), None);
+        progress.finish();
+        let claimed: Vec<String> = progress
+            .take_claimed()
+            .into_iter()
+            .map(|server| server.name)
+            .collect();
+        assert_eq!(claimed, names(&["c"]));
+        assert!(progress.take_claimed().is_empty());
+        // 新一轮 begin 重置游标：新完成的服务重新可领取。
+        progress.begin(names(&["a"]));
+        progress.complete("a", true, Duration::from_millis(5), None);
+        assert_eq!(progress.take_claimed().len(), 1);
+        assert!(progress.take_claimed().is_empty());
     }
 }

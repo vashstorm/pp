@@ -512,4 +512,88 @@ print('scheduled')"#,
         assert_eq!(reset_ok.value["ok"], true, "{}", reset_ok.value);
         assert_eq!(reset_ok.value["output"], "reset-ok\n");
     }
+
+    #[test]
+    fn bridge_wall_clock_stays_exempt_from_compute_budget() {
+        let h = Harness::new(65_536);
+
+        // 4 次宿主 bridge 合计约 2.4s 墙钟必须全部豁免计算预算；
+        // 随后纯 Python sleep(3) 超出 2s 计算额度，必须在额度处超时中断。
+        let res = h.run_with(
+            r#"
+import time
+for _ in range(4):
+    tool.slow({})
+time.sleep(3)
+print('never')
+"#,
+            false,
+            2,
+            &CancellationToken::new(),
+            &mut |name, _args| {
+                assert_eq!(name, "slow");
+                std::thread::sleep(Duration::from_millis(600));
+                Ok(json!({"ok": true}))
+            },
+        );
+        assert_eq!(res.value["timed_out"], true, "{}", res.value);
+        assert_eq!(res.value["ok"], false, "{}", res.value);
+        assert_eq!(res.value["cancelled"], false, "{}", res.value);
+        assert_eq!(res.value["kernel_restarted"], Value::Null, "{}", res.value);
+
+        // 超时走软中断路径：内核存活，后续 cell 可继续执行。
+        let after = h.run("print('alive')", false, 10);
+        assert_eq!(after.value["ok"], true, "{}", after.value);
+        assert_eq!(after.value["output"], "alive\n");
+    }
+
+    #[test]
+    fn mid_cell_shutdown_failure_seals_artifact_before_cleanup_error() {
+        let h = Harness::new(64);
+
+        // 注入一次循环内内核回收故障：artifact 已产生后清理失败，
+        // 资源仍必须在错误上浮前封存（finish 幂等收尾），不伪造 cell 成功。
+        lock(&h.session.state).fail_next_shutdown_for_test();
+
+        let result = h.session.execute(
+            CellRequest {
+                cwd: h.work.path(),
+                cache_dir: h.cache.path(),
+                interpreter: None,
+                code: "print('A' * 200)\nimport signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\ntime.sleep(30)",
+                call_id: "call-cleanup",
+                timeout_seconds: 1,
+                reset: false,
+                sandbox: None,
+            },
+            &CancellationToken::new(),
+            OutputSink::new(h.settings, h.store.clone()),
+            &mut |_| {},
+            &mut |_, _| unreachable!(),
+        );
+        let err = result
+            .err()
+            .expect("cleanup failure must surface instead of fake success");
+        assert!(
+            err.downcast_ref::<pp_core::cancellation::CleanupError>()
+                .is_some(),
+            "{err:#}"
+        );
+        assert!(format!("{err:#}").contains("injected for test"), "{err:#}");
+
+        // live 捕获已被摘除并可从磁盘完整读回：等价断言 live_is_empty_for_test()，
+        // 捕获 metadata 已封存发布（complete 为 true 仅在 meta.json 发布后成立）。
+        let snapshot = h
+            .store
+            .snapshot("artifact://0", &CancellationToken::new())
+            .unwrap();
+        assert_eq!(
+            snapshot.metadata["capturing"], false,
+            "{}",
+            snapshot.metadata
+        );
+        assert_eq!(snapshot.metadata["complete"], true, "{}", snapshot.metadata);
+        let text = fs::read_to_string(snapshot.path).unwrap();
+        assert_eq!(text, format!("{}\n", "A".repeat(200)));
+    }
 }

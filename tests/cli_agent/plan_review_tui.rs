@@ -354,3 +354,68 @@ fn plan_review_tui_binds_reports_to_revision_and_restores_without_replaying() {
         resumed.finish();
     }
 }
+
+/// 审查流式输出期间滚回历史：第一次 Esc 只恢复审查页尾端跟随、reviewer 继续运行；
+/// 第二次 Esc 才受控取消。草稿全程保留，计划文件不被改动。
+#[test]
+fn plan_review_tui_pageup_escape_restores_review_follow_before_cancel() {
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let mut pty = plan_start(&fixture, home.path(), project.path(), protocol);
+        plan_enter(&mut pty, &fixture);
+        plan_drive_ready(
+            &mut pty,
+            &fixture,
+            protocol,
+            "Plan for review scrolling",
+            PLAN_TUI_BODY,
+        );
+        let path = plan_path(project.path());
+        let original = std::fs::read(&path).unwrap();
+        plan_choose(&mut pty, 3);
+        let (request, _) = pty.request_at(&fixture, api_path(protocol));
+        let mut stream = request.start_sse().unwrap();
+        // 长审查正文：三批列表项各占一行，远超一屏，只有跟随到底部才看得到尾段。
+        for batch in 0..3 {
+            let mut text = String::new();
+            for index in 0..40 {
+                text.push_str(&format!("- review-head-{:03}\n", batch * 40 + index));
+            }
+            streaming_delta(&mut stream, protocol, &text);
+        }
+        streaming_delta(&mut stream, protocol, "- review-tail-marker\n");
+        pty.text("review-tail-marker");
+        pty.input("preserved reviewer draft");
+        pty.draft("preserved reviewer draft");
+
+        // 滚回历史：早期前缀重新可见，尾段标记滚出屏幕。
+        pty.input(&"\x1b[5~".repeat(60));
+        pty.wait_for("审查页滚回历史", |screen| {
+            let text = screen.contents();
+            text.contains("review-head-000") && !text.contains("review-tail-marker")
+        });
+        pty.draft("preserved reviewer draft");
+
+        // 第一次 Esc 不是取消：恢复审查页尾端跟随，后续分片立即可见。
+        pty.input("\x1b");
+        pty.wait_for("审查页恢复尾端跟随", |screen| {
+            let text = screen.contents();
+            !text.contains("review-head-000") && text.contains("review-tail-marker")
+        });
+        streaming_delta(&mut stream, protocol, "- review-after-esc-marker\n");
+        pty.text("review-after-esc-marker");
+        pty.draft("preserved reviewer draft");
+        no_more(&fixture);
+
+        // 第二次 Esc 才取消 reviewer，等待受控收尾回到五项菜单。
+        pty.input("\x1b");
+        plan_wait_review(&mut pty, 1);
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        drop(stream);
+        no_more(&fixture);
+        pty.input("\x03");
+        pty.finish();
+    }
+}

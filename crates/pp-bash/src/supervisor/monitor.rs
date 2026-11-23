@@ -19,6 +19,13 @@ use super::{
     ACTIVE_POLL, ACTIVE_POLL_MAX, GRACE, IDLE_POLL, Permit, Phase, Shared, State, StopReason,
 };
 
+#[cfg(test)]
+mod killing_tests;
+
+/// TERM 宽限耗尽后升级 SIGKILL 时记录的固定诊断：SIGKILL 后的回收宽限期
+/// 已过而外部进程仍未退出，放弃等待而非无限重发信号。
+const KILL_ABANDONED: &str = "external work remained after SIGKILL; abandoning reclamation";
+
 /// active 轮询的指数退避：基线 5ms，无状态变化时逐轮翻倍到 50ms 上限。
 /// 退避只是为了减少空转唤醒，任何注册表或事件变化都让它回到基线。
 struct Backoff {
@@ -66,8 +73,10 @@ fn poll_interval(active: bool, changed: bool, backoff: &mut Backoff) -> Duration
 /// 时间，并保留下限 `ACTIVE_POLL` 以免截止时间已过时忙等。
 fn clamp_to_pending_deadline(state: &State, now: Instant, interval: Duration) -> Duration {
     let deadline = match state.phase {
-        // `Killing` 沿用已过的 grace 截止时间，因此仍按基线重发 SIGKILL。
-        Phase::Stopping | Phase::Killing => state.grace_deadline,
+        Phase::Stopping => state.grace_deadline,
+        // `Killing` 使用独立的回收截止时间，不复用早已过期的 grace 截止：
+        // 到期且外部进程仍未被 SIGKILL 终止就放弃回收，而不是无限重发 SIGKILL。
+        Phase::Killing => state.kill_deadline,
         Phase::Running if !state.interpreter_done => state.deadline,
         _ => None,
     };
@@ -143,32 +152,21 @@ pub(super) fn monitor(
                 } else if now >= state.grace_deadline.unwrap_or(now) {
                     // The cleanup window is over: revoke new cleanup spawns and
                     // kill everything still registered.
-                    if let Some(permit) = state.permit.take() {
-                        permit.revoked.store(true, Ordering::Release);
-                    }
-                    state.phase = Phase::Killing;
-                    signal_registered(&mut state, libc::SIGKILL);
+                    begin_killing(&mut state, now);
                 }
             }
             Phase::Killing => {
-                if state.has_live_work() {
-                    // A descendant can be forked between TERM and the first
-                    // KILL; repeat the group/direct PID kill until the registry
-                    // is empty.
-                    signal_registered(&mut state, libc::SIGKILL);
-                } else {
-                    state.phase = Phase::Draining;
-                }
+                advance_killing(&mut state, now);
             }
             Phase::Draining => {
-                if state.interpreter_done && !state.has_live_work() {
+                if draining_reaches_finished(&state) {
                     state.phase = Phase::Finished;
                 }
             }
             Phase::Finished => break,
         }
 
-        if state.phase == Phase::Draining && state.interpreter_done && !state.has_live_work() {
+        if state.phase == Phase::Draining && draining_reaches_finished(&state) {
             state.phase = Phase::Finished;
         }
         if state.phase == Phase::Finished {
@@ -203,6 +201,94 @@ fn begin_reclaim(state: &mut State, now: Instant) {
     state.phase = Phase::Stopping;
     state.grace_deadline = Some(now.checked_add(GRACE).unwrap_or(now));
     signal_registered(state, libc::SIGTERM);
+}
+
+/// TERM 清理窗口结束：吊销清理许可并升级 SIGKILL。SIGKILL 之后的回收改用独立的
+/// `kill_deadline`，不复用早已过期的 grace 截止，等待因此有界。
+fn begin_killing(state: &mut State, now: Instant) {
+    if let Some(permit) = state.permit.take() {
+        permit.revoked.store(true, Ordering::Release);
+    }
+    state.kill_deadline = Some(now.checked_add(GRACE).unwrap_or(now));
+    state.phase = Phase::Killing;
+    signal_registered(state, libc::SIGKILL);
+}
+
+/// SIGKILL 后的回收宽限期已过而外部进程仍未退出（见
+/// `external_work_survives_kill`）：记录固定诊断，给尚未完成的 `ProcessCell`
+/// 写入清理错误并唤醒 waker，使解释器与 `Supervisor::wait()` 能收尾。未回收
+/// 记录保留真实的观察/reaped 状态，不伪造退出码或成功回收；终态由既有 outcome
+/// 生成 `CleanupError`。
+fn abandon_killing(state: &mut State) {
+    state.errors.insert(KILL_ABANDONED.to_owned());
+    for (pid, record) in state.procs.iter() {
+        // 幂等：已完成的 cell 保持真实退出状态，只有尚未完成的拿到清理错误。
+        record.cell.complete_error(
+            io::ErrorKind::Other,
+            format!("external process {pid} was not reclaimed after SIGKILL"),
+        );
+    }
+    state.abandoned = true;
+    state.phase = Phase::Draining;
+}
+
+/// Draining 阶段的终态判定：解释器已结束，且（注册表已清空，或 SIGKILL 后的
+/// 回收已被放弃）。放弃后注册表仍保留未回收记录，但不再阻塞收尾。
+fn draining_reaches_finished(state: &State) -> bool {
+    state.interpreter_done && (state.abandoned || !state.has_live_work())
+}
+
+/// Killing 阶段的一轮转移：注册表已清空则进入 Draining；仍有 live work 时在
+/// 独立 kill 宽限期内重发 SIGKILL；到期且外部进程真的扛住了 SIGKILL 才放弃
+/// 回收并唤醒等待者。抽出为独立函数以便用假 ProcessCell 与显式 deadline 单测。
+fn advance_killing(state: &mut State, now: Instant) {
+    if !state.has_live_work() {
+        state.phase = Phase::Draining;
+        return;
+    }
+    // 兜底：未经 `begin_killing` 就进入 Killing 的状态也必须拿到有界截止，
+    // 否则等待会退化为无限重发信号。
+    let deadline = *state
+        .kill_deadline
+        .get_or_insert(now.checked_add(GRACE).unwrap_or(now));
+    if now >= deadline {
+        if external_work_survives_kill(state) {
+            // SIGKILL 后的回收宽限期已过而外部进程仍未退出：放弃回收并唤醒
+            // 等待者，不无限重发信号。
+            abandon_killing(state);
+            return;
+        }
+        // 所有注册的外部进程都已观察为退出、注册进程组内也无存活成员：SIGKILL
+        // 已经生效，剩下的只是等待解释器释放组租约并回收 anchor 的簿记工作，
+        // 它的进度由调用方（例如阻塞的输出回调）决定而不是内核拒绝回收。刷新
+        // 窗口继续等待，不把正常收尾误判成回收失败。
+        state.kill_deadline = Some(now.checked_add(GRACE).unwrap_or(now));
+    }
+    // A descendant can be forked between TERM and the first KILL; repeat the
+    // group/direct PID kill until the registry is empty or the kill window
+    // abandons it.
+    signal_registered(state, libc::SIGKILL);
+}
+
+/// SIGKILL 之后外部进程是否真的扛住了信号：仍有注册进程未被观察为退出，或某个
+/// 注册进程组在核心里还有存活成员（排除已观察退出但作为 anchor 未回收的自身）。
+/// 只有这些情况才算回收失败；已全部退出的注册表只剩等待解释器释放租约，不是
+/// 内核层面的回收失败。组存活查询失败不当作“已回收”，也不据此放弃：`reap`
+/// 已把该错误记入清理诊断并强制释放 anchor，瞬时无法判定不应伪装成 SIGKILL
+/// 失效。
+fn external_work_survives_kill(state: &State) -> bool {
+    if state.procs.values().any(|process| !process.observed) {
+        return true;
+    }
+    state.groups.iter().any(|(&key, group)| {
+        let pinned: BTreeSet<i32> = state
+            .procs
+            .values()
+            .filter(|process| process.group == key && process.observed && !process.reaped)
+            .map(|process| process.cell.pid)
+            .collect();
+        matches!(group_members_live(group.pgid, &pinned), Ok(true))
+    })
 }
 
 fn signal_registered(state: &mut State, signal: i32) {
@@ -778,10 +864,23 @@ mod tests {
             clamp_to_pending_deadline(&stopping, now, ACTIVE_POLL_MAX),
             ACTIVE_POLL
         );
+        // Killing 阶段改用独立的回收截止时间，不再沿用已过期的 grace 截止。
         stopping.phase = Phase::Killing;
         assert_eq!(
             clamp_to_pending_deadline(&stopping, now, ACTIVE_POLL_MAX),
-            ACTIVE_POLL
+            ACTIVE_POLL_MAX,
+            "a stale grace deadline must not clamp the Killing phase"
+        );
+        stopping.kill_deadline = Some(now + Duration::from_millis(30));
+        assert_eq!(
+            clamp_to_pending_deadline(&stopping, now, ACTIVE_POLL_MAX),
+            Duration::from_millis(30)
+        );
+        stopping.kill_deadline = Some(now - Duration::from_millis(1));
+        assert_eq!(
+            clamp_to_pending_deadline(&stopping, now, ACTIVE_POLL_MAX),
+            ACTIVE_POLL,
+            "an expired kill deadline must wake at the baseline to abandon"
         );
     }
 }

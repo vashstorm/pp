@@ -5,6 +5,10 @@ mod sandbox_cases;
 mod settings_cases;
 mod web_search_cases;
 
+/// 跨进程设置保存的确定性交错控制点：仅当写线程显式注册后才同步，
+/// 其他调用方零开销直通。见 `update_settings_fields_returning` 的持锁临界区。
+pub(crate) mod settings_interleave;
+
 const VALID_SETTINGS: &str = "{}";
 const VALID_MODELS: &str = r#"{"providers":{"fixture": {"api_key":"secret-marker-fixture-key",
         "models":{"primary": {"model":"fixture-model"}}

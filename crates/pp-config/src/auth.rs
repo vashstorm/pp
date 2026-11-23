@@ -277,14 +277,52 @@ pub(super) fn save_yaml(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
-// 所有进程共享同一个锁；刷新期间持锁，避免轮换 refresh token 被旧进程覆盖。
+// 所有进程共享同一把锁；同一目录、同一领域内串行化跨进程写。
+// 领域决定锁文件名与错误用词：授权刷新用 `auth.lock`，settings 保存用 `settings.lock`；
+// 两个领域互不阻塞（各自保护各自的资源）。
 pub struct StoreLock(File);
 
+/// 锁的领域：固定锁文件名与固定错误提示（脱敏，不包含路径或配置值）。
+#[derive(Clone, Copy, Debug)]
+struct LockDomain {
+    file_name: &'static str,
+    label: &'static str,
+    directory_error: &'static str,
+}
+
+impl LockDomain {
+    const AUTH: Self = Self {
+        file_name: "auth.lock",
+        label: "auth",
+        directory_error: "invalid auth file directory",
+    };
+    const SETTINGS: Self = Self {
+        file_name: "settings.lock",
+        label: "settings",
+        directory_error: "invalid settings file directory",
+    };
+}
+
 impl StoreLock {
+    /// 取得同目录 `auth.lock`，保护 agent.db 授权写与迁移；公共签名与错误文本保持不变。
     pub fn acquire(path: &Path, cancellation: &CancellationToken) -> Result<Self> {
-        let parent = path.parent().context("invalid auth file directory")?;
+        Self::acquire_domain(path, cancellation, LockDomain::AUTH)
+    }
+
+    /// 取得同目录 `settings.lock`，串行化 `settings.yml` 跨进程保存；
+    /// 设置保存无外部取消令牌，调用方传入未取消的令牌，锁等待沿用 30 秒上限。
+    pub(super) fn acquire_settings(path: &Path, cancellation: &CancellationToken) -> Result<Self> {
+        Self::acquire_domain(path, cancellation, LockDomain::SETTINGS)
+    }
+
+    fn acquire_domain(
+        path: &Path,
+        cancellation: &CancellationToken,
+        domain: LockDomain,
+    ) -> Result<Self> {
+        let parent = path.parent().context(domain.directory_error)?;
         fs::create_dir_all(parent)
-            .map_err(|_| anyhow::anyhow!("failed to create auth directory"))?;
+            .map_err(|_| anyhow::anyhow!("failed to create {} directory", domain.label))?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -292,11 +330,12 @@ impl StoreLock {
             .truncate(false)
             .mode(0o600)
             .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(parent.join("auth.lock"))
-            .map_err(|_| anyhow::anyhow!("failed to open auth lock"))?;
+            .open(parent.join(domain.file_name))
+            .map_err(|_| anyhow::anyhow!("failed to open {} lock", domain.label))?;
         ensure!(
             file.metadata()?.is_file(),
-            "auth lock must be a regular file"
+            "{} lock must be a regular file",
+            domain.label
         );
         let started = Instant::now();
         loop {
@@ -306,11 +345,12 @@ impl StoreLock {
             match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
                 Ok(()) => return Ok(Self(file)),
                 Err(rustix::io::Errno::INTR | rustix::io::Errno::WOULDBLOCK) => {}
-                Err(_) => anyhow::bail!("failed to acquire the auth lock"),
+                Err(_) => anyhow::bail!("failed to acquire the {} lock", domain.label),
             }
             ensure!(
                 started.elapsed() < Duration::from_secs(30),
-                "timed out waiting for the auth lock"
+                "timed out waiting for the {} lock",
+                domain.label
             );
             std::thread::sleep(Duration::from_millis(25));
         }

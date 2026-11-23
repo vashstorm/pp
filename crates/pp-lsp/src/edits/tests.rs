@@ -214,3 +214,42 @@ fn lsp_edits_suggestions_reject_unproved_versions_and_symlinks() {
     assert!(plan(&workspace, None, &proposal, &CancellationToken::new()).is_err());
     assert_eq!(fs::read(&path).unwrap(), b"old");
 }
+
+#[test]
+fn lsp_edits_virtual_overlay_revalidates_byte_budget() {
+    // 磁盘目录恰好占满 256 MiB 预算（稀疏文件，不真实分配），叠加一个
+    // 1 字节的虚拟文件后超限：目录 rename 的建议必须整体拒绝，不提交
+    // 任何文件，也不吞掉错误。
+    let (dir, workspace) = fixture();
+    let target_dir = dir.path().join("res");
+    fs::create_dir(&target_dir).unwrap();
+    let sparse = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target_dir.join("big.bin"))
+        .unwrap();
+    sparse
+        .set_len(pp_workspace::save::RESOURCE_BYTE_LIMIT)
+        .unwrap();
+    drop(sparse);
+    let extra = target_dir.join("extra.bin");
+    let renamed = dir.path().join("moved");
+    let proposal = edit(serde_json::json!({
+        "documentChanges":[
+            {"kind":"create","uri":uri(&extra)},
+            {"textDocument":{"uri":uri(&extra),"version":null},"edits":[
+                {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":0}},
+                 "newText":"x"}
+            ]},
+            {"kind":"rename","oldUri":uri(&target_dir),"newUri":uri(&renamed)}
+        ]
+    }));
+    let error = plan(&workspace, None, &proposal, &CancellationToken::new())
+        .err()
+        .expect("overlay over the byte budget must refuse the suggestion");
+    assert!(error.to_string().contains("256 MiB"), "{error}");
+    // 只读建议：磁盘状态完全不变。
+    assert!(!extra.exists());
+    assert!(!renamed.exists());
+    assert!(target_dir.join("big.bin").exists());
+}

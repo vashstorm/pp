@@ -1,19 +1,22 @@
+mod walk;
+
 use anyhow::{Context, Result, ensure};
 use pp_core::cancellation::CancellationToken;
-use pp_core::cancellation::check;
 use rustix::{
-    fs::{self, AtFlags, Dir, FileType, Mode, OFlags, RawMode},
+    fs::{self, AtFlags, FileType, Mode, OFlags, RawMode},
     io::Errno,
 };
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
     io::{self, Read, Write},
-    os::unix::{ffi::OsStrExt, fs::MetadataExt},
+    os::unix::fs::MetadataExt,
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::SystemTime,
 };
+pub use walk::{DirectoryEntry, EntryKind, RESOURCE_BYTE_LIMIT, RESOURCE_FILE_LIMIT};
+use walk::{WalkBudget, walk_entries};
 
 /// 保存层的工作区句柄：启动目录是主受管根，临时目录（`/tmp` 与其真实
 /// 路径）是唯一额外的受管根。两者都用 NOFOLLOW 逐级打开的目录 fd 承接
@@ -58,36 +61,10 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 /// 也不得把碰撞伪装成保存失败以外的其他错误。
 const PLAN_SAVE_NEW_CONFLICT: &str = "Plan file name already exists; choose another file_name.";
 
-/// 资源事务递归操作的上限：普通文件最多 1000 个。目录本身不占配额——
-/// 一个普通文件配一个子目录的合法树仍要能通过；符号链接与特殊文件在
-/// 逐节点检查中直接拒绝。
-pub const RESOURCE_FILE_LIMIT: usize = 1000;
-
-/// 目录深度上限：只为防止空目录链无限递归/爆栈（文件配额已不再约束
-/// 目录），不是文件数量限制。
-const RESOURCE_MAX_DEPTH: usize = 1000;
-
 /// 排他新建的冲突说明；计划保存与普通 write 各自提供明确原因。
 #[derive(Clone, Copy)]
 enum NewConflict {
     Message(&'static str),
-}
-
-/// 资源节点类型：`lstat` 语义，不跟随符号链接。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EntryKind {
-    File,
-    Directory,
-    Missing,
-}
-
-/// 目录快照的一项：普通文件带内容，目录内容为 `None`。相对路径用于
-/// 重命名两端与递归删除的逐节点记录；`permissions` 是快照时的权限位
-/// （`st_mode & 0o7777`），重建时用来保留可执行位，不能丢。
-pub struct DirectoryEntry {
-    pub relative: PathBuf,
-    pub content: Option<Vec<u8>>,
-    pub permissions: Option<u32>,
 }
 
 /// 只读资源句柄：父目录按 NOFOLLOW 打开，读取时核对最终节点类型。
@@ -194,9 +171,35 @@ impl Workspace {
     /// 计划生命周期搬迁的第一步：核对源普通文件与精确字节后，用 `linkat`
     /// 在目标位置发布同一 inode 的硬链接；绝不复制覆盖。已存在的目标仅在
     /// 同设备/inode 时允许幂等重入（返回 `None`）；不同 inode 的同名、符号
-    /// 链接、路径逃逸与跨文件系统一律失败并保留源文件。提交后的父目录
-    /// 同步失败只作为警告返回，不撤回已发布的链接。
+    /// 链接、路径逃逸与跨文件系统一律失败并保留源文件。发布后的身份核对
+    /// 把 Err、不符与缺失统一送入清理分支：先移除刚发布的目标名再返回
+    /// 固定错误，不把指向外部的残留链接留在盘上。提交后的父目录同步失败
+    /// 只作为警告返回，不撤回已发布的链接。
     pub fn link_plan(&self, from: &Path, to: &Path, expected: &[u8]) -> Result<Option<String>> {
+        self.link_plan_impl(from, to, expected, &SystemPlanLink)
+    }
+
+    /// 与 [`Self::link_plan`] 相同的搬迁流程，但发布动作可注入：仅供测试
+    /// 构造“核对与发布之间源名被替换”的确定交错，不进入生产构建。
+    #[cfg(test)]
+    fn link_plan_with(
+        &self,
+        from: &Path,
+        to: &Path,
+        expected: &[u8],
+        operations: &dyn PlanLinkOperations,
+    ) -> Result<Option<String>> {
+        self.link_plan_impl(from, to, expected, operations)
+    }
+
+    /// 搬迁的实现：发布动作由端口提供，生产实现是 `linkat`。
+    fn link_plan_impl(
+        &self,
+        from: &Path,
+        to: &Path,
+        expected: &[u8],
+        operations: &dyn PlanLinkOperations,
+    ) -> Result<Option<String>> {
         let source = self.target(from, false)?;
         source
             .compare_bytes(expected)
@@ -205,12 +208,11 @@ impl Workspace {
             .stat_optional()?
             .context("Plan source vanished during the move; the source file is kept.")?;
         let destination = self.target(to, true)?;
-        match fs::linkat(
+        match operations.publish(
             &source.parent,
             &source.name,
             &destination.parent,
             &destination.name,
-            AtFlags::empty(),
         ) {
             Ok(()) => {}
             Err(Errno::EXIST) => {
@@ -225,16 +227,20 @@ impl Workspace {
             }
             Err(error) => return Err(error).context("publishing the plan link"),
         }
-        // 提交后核对目标身份：源名在核对与发布之间被换成符号链接时，
-        // `linkat` 会链接符号链接本身；此时移除刚创建的目标名并报错，
-        // 源文件保持原样。
-        if destination.stat_optional()? != Some(identity) {
+        // 提交后核对目标身份：Err、身份不符与缺失都进入清理分支，先移除
+        // 刚发布的目标名再返回固定错误，源文件保持原样。Err 包含源名被
+        // 换成符号链接时 NOFOLLOW 打开的真实 IO 错误（ELOOP），不能把已
+        // 发布的目标丢在盘上。
+        if destination.stat_optional().ok().flatten() != Some(identity) {
             let _ = fs::unlinkat(&destination.parent, &destination.name, AtFlags::empty());
             anyhow::bail!("Plan move published an unverified link; the source file is kept.");
         }
-        Ok(destination.parent.sync_all().err().map(|error| {
-            format!("plan link committed, but syncing parent directory failed: {error}")
-        }))
+        Ok(operations
+            .sync_directory(&destination.parent)
+            .err()
+            .map(|error| {
+                format!("plan link committed, but syncing parent directory failed: {error}")
+            }))
     }
 
     /// 计划生命周期搬迁的提交步骤：确认目标与源仍同 inode 且字节精确匹配
@@ -339,15 +345,17 @@ impl Workspace {
         &self,
         path: &Path,
         limit: usize,
+        byte_budget: u64,
         cancellation: &CancellationToken,
     ) -> Result<Vec<DirectoryEntry>> {
-        self.walk_directory_bounded(path, limit, Some(cancellation))
+        self.walk_directory_bounded(path, limit, byte_budget, Some(cancellation))
     }
 
     fn walk_directory_bounded(
         &self,
         path: &Path,
         limit: usize,
+        byte_budget: u64,
         cancellation: Option<&CancellationToken>,
     ) -> Result<Vec<DirectoryEntry>> {
         let target = self
@@ -359,15 +367,8 @@ impl Workspace {
         );
         let dir = target.open_directory()?;
         let mut entries = Vec::new();
-        let mut files = 0_usize;
-        walk_entries(
-            &dir,
-            Path::new(""),
-            &mut entries,
-            &mut files,
-            limit,
-            cancellation,
-        )?;
+        let mut budget = WalkBudget::new(limit, byte_budget);
+        walk_entries(&dir, Path::new(""), &mut entries, &mut budget, cancellation)?;
         Ok(entries)
     }
 }
@@ -429,77 +430,6 @@ fn split_parts(relative: &Path) -> Result<Vec<OsString>> {
         }
     }
     Ok(parts)
-}
-
-/// 递归快照的公用遍历：调用方已经用 NOFOLLOW 打开目录句柄。
-fn walk_entries(
-    dir: &File,
-    prefix: &Path,
-    entries: &mut Vec<DirectoryEntry>,
-    files: &mut usize,
-    limit: usize,
-    cancellation: Option<&CancellationToken>,
-) -> Result<()> {
-    let mut names = Vec::new();
-    for entry in Dir::read_from(dir)? {
-        let entry = entry.context("listing directory")?;
-        let name = entry.file_name();
-        if name.to_bytes() == b"." || name.to_bytes() == b".." {
-            continue;
-        }
-        names.push(OsStr::from_bytes(name.to_bytes()).to_os_string());
-    }
-    names.sort();
-    for name in names {
-        if let Some(cancellation) = cancellation {
-            check(cancellation)?;
-        }
-        let relative = prefix.join(&name);
-        let stat = fs::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW)?;
-        match FileType::from_raw_mode(stat.st_mode) {
-            FileType::RegularFile => {
-                // 只有普通文件占配额；目录不计数，合法树不会被目录数挤爆。
-                *files += 1;
-                ensure!(
-                    *files <= limit,
-                    "directory contains more than {limit} regular files; resource operation refused"
-                );
-                let file = File::from(fs::openat(
-                    dir,
-                    &name,
-                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )?);
-                entries.push(DirectoryEntry {
-                    relative,
-                    content: Some(read_regular_file(file)?),
-                    permissions: Some(permission_bits(stat.st_mode)),
-                });
-            }
-            FileType::Directory => {
-                ensure!(
-                    relative.components().count() <= RESOURCE_MAX_DEPTH,
-                    "directory nesting exceeds {RESOURCE_MAX_DEPTH} levels; resource operation refused"
-                );
-                let file = File::from(fs::openat(
-                    dir,
-                    &name,
-                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                )?);
-                entries.push(DirectoryEntry {
-                    relative: relative.clone(),
-                    content: None,
-                    permissions: Some(permission_bits(stat.st_mode)),
-                });
-                walk_entries(&file, &relative, entries, files, limit, cancellation)?;
-            }
-            _ => anyhow::bail!(
-                "directory contains a symlink or special file; resource operation refused"
-            ),
-        }
-    }
-    Ok(())
 }
 
 impl ResourceTarget {
@@ -900,6 +830,31 @@ trait SaveOperations {
 }
 struct SystemSave;
 impl SaveOperations for SystemSave {}
+
+/// 计划链接发布的可注入端口：生产实现是 `linkat`，测试用它在发布前把
+/// 源名换成符号链接，构造确定交错（类别：测试无法构造的外部副作用）。
+trait PlanLinkOperations {
+    fn publish(
+        &self,
+        source_parent: &File,
+        source_name: &OsStr,
+        destination_parent: &File,
+        destination_name: &OsStr,
+    ) -> rustix::io::Result<()> {
+        fs::linkat(
+            source_parent,
+            source_name,
+            destination_parent,
+            destination_name,
+            AtFlags::empty(),
+        )
+    }
+    fn sync_directory(&self, parent: &File) -> io::Result<()> {
+        parent.sync_all()
+    }
+}
+struct SystemPlanLink;
+impl PlanLinkOperations for SystemPlanLink {}
 
 #[cfg(test)]
 mod tests;

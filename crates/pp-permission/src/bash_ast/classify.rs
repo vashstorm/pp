@@ -3,8 +3,8 @@
 use brush_core::parser::word::{self, TildeExpr, WordPiece};
 
 use super::wrappers::{
-    SUBCOMMAND_PROGRAMS, extract_safe_subcommand_index, extract_subcommand_for,
-    extract_subcommand_index, strip_privilege_prefix, tokens_start_with,
+    SUBCOMMAND_PROGRAMS, extract_hazard_subcommand_for, extract_safe_subcommand_index,
+    extract_subcommand_for, extract_subcommand_index, strip_privilege_prefix, tokens_start_with,
 };
 use super::{ArgToken, LeafCommand};
 
@@ -140,7 +140,7 @@ impl LeafCommand {
             .filter_map(ArgToken::as_literal)
             .collect();
         match program {
-            "git" => match extract_subcommand_for("git", &self.tokens[1..]).as_deref() {
+            "git" => match extract_hazard_subcommand_for("git", &self.tokens[1..]).as_deref() {
                 Some("push") => true,
                 Some("reset") => literals.iter().any(|a| matches!(*a, "--hard" | "--merge")),
                 Some("clean") => literals.iter().any(|a| {
@@ -152,7 +152,8 @@ impl LeafCommand {
                 _ => false,
             },
             "cargo" | "npm" | "pnpm" | "yarn" | "bun" => {
-                extract_subcommand_for(program, &self.tokens[1..]).as_deref() == Some("publish")
+                extract_hazard_subcommand_for(program, &self.tokens[1..]).as_deref()
+                    == Some("publish")
             }
             _ => false,
         }

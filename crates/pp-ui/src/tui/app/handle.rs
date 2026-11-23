@@ -730,8 +730,9 @@ impl App {
                         self.active_transcript().page_up();
                     }
                     KeyCode::PageDown => {
+                        // 只有当前显示的转录回到底部才退出浏览态。
                         self.active_transcript().page_down();
-                        if self.conversation.following() {
+                        if self.active_transcript().following() {
                             self.history_browser = false;
                         }
                     }

@@ -116,6 +116,23 @@ fn shell_display_overflow_preserves_original_and_has_bounded_nodes() {
 }
 
 #[test]
+fn shell_display_deep_extended_test_falls_back_verbatim() {
+    // 浅层扩展测试仍输出原语义（含 And 与括号包裹）。
+    let (trace, _, _) = parsed("[[ -n x && -n y ]]");
+    assert_eq!(text(&trace), vec!["\"x\" != \"\" and \"y\" != \"\""]);
+    let (trace, _, _) = parsed("[[ ( -n x ) ]]");
+    assert_eq!(text(&trace), vec!["(\"x\" != \"\")"]);
+    // 嵌套 AST 深度超过 MAX_DEPTH 的扩展测试逐字回退 source，节点有界。
+    let source = format!(
+        "[[ {}-n x ]]",
+        "-n x && ".repeat(usize::from(MAX_DEPTH) + 8)
+    );
+    let (trace, _, _) = parsed(&source);
+    assert_eq!(text(&trace), vec![source]);
+    trace.with(|model| assert!(model.nodes.len() <= MAX_NODES));
+}
+
+#[test]
 fn shell_display_quotes_documents_and_dynamic_values_stay_literal() {
     let (trace, _, _) = parsed("cat <<'EOF'\na && b; c | d\nEOF\necho 'literal $HOME'\n");
     let rows = text(&trace);

@@ -46,7 +46,7 @@ printf '说明当前项目的构建方式\n' | ./target/debug/pp
 
 ## 配置
 
-声明式应用设置保存在 `~/.pp/agent/settings.yml`（可通过 `/setting` 或 `/config` 面板可视化修改常用配置），手动模型保存在 `models.yml`，发现模型保存在 `models-sub.yml`。默认模型、TUI 收藏、七项模型 Role、全局默认 effort、模型请求次数与订阅授权统一保存在 `~/.pp/agent/agent.db`；持久输入历史、会话置顶偏好与会话搜索索引保存在 `~/.pp/agent/history.db`。这两个库由 TUI 菜单、`/effort`、`/roles`、`/login` 和 `/resume` 维护，不通过编辑 YAML 修改。YAML 配置使用块映射、列表和 `#` 注释，启动目录中的同名文件不读取。`models.yml` 内同一供应商的模型共享凭证、接口地址和协议；发现的 Copilot 模型按各自支持的接口选择协议。跨文件同名供应商按完整模型引用合并，保留各模型所属来源的配置。`settings.yml` 可省略；未指定有效默认模型时使用目录中的首个模型。[系统提示词](#系统提示词)独立支持项目 `.pp/` 文件，不改变这些配置的加载规则。
+声明式应用设置保存在 `~/.pp/agent/settings.yml`（可通过 `/setting` 或 `/config` 面板可视化修改常用配置），手动模型保存在 `models.yml`，发现模型保存在 `models-sub.yml`。默认模型、TUI 收藏、七项模型 Role、全局默认 effort、模型请求次数与订阅授权统一保存在 `~/.pp/agent/agent.db`；持久输入历史、会话置顶偏好与会话搜索索引保存在 `~/.pp/agent/history.db`。这两个库由 TUI 菜单、`/effort`、`/roles`、`/login` 和 `/resume` 维护，不通过编辑 YAML 修改。YAML 配置使用块映射、列表和 `#` 注释，启动目录中的同名文件不读取。`models.yml` 内同一供应商的模型共享凭证、接口地址和协议；发现的 Copilot 模型按各自支持的接口选择协议。跨文件同名供应商按完整模型引用合并，保留各模型所属来源的配置。`settings.yml` 可省略；未指定有效默认模型时使用目录中的首个模型。所有设置保存入口都在首次读取前取得同目录 `settings.lock`，持锁完成解析、更新、冲突比较与原子替换，避免跨进程保存互相覆盖。[系统提示词](#系统提示词)独立支持项目 `.pp/` 文件，不改变这些配置的加载规则。
 
 ### 本地数据库
 
@@ -866,7 +866,7 @@ lsp:
 配置拒绝重复键和未知字段；LSP 配置错误在工具内报告，不阻止 Agent 启动。修复磁盘配置后使用 `reload`，它会重新读取配置并重建目标连接，不调用服务器私有命令。客户端身份包含 cwd、命令、参数和初始化选项；`idleTimeoutMs` 缺失或为 0 时不自动回收。
 
 - rename、rename_file、format 始终返回建议，不写盘、不移动文件。code_actions 默认列出动作；`query` 筛选类型，`selection` 按 0-based 序号或标题子串选择并 resolve。原始 `request` 入口已移除；旧 `apply=false` 兼容接受，`apply=true` 明确拒绝。
-- 建议带来源服务器、原始编辑与版本、基线／候选文本及 diff；原始 LSP 坐标为从 0 开始的 UTF-16 位置。版本、范围和重叠先校验；资源操作保持原有顺序，在虚拟状态中验证。多服务器建议独立呈现，失败和覆盖不完整明确标记，AI 须比较冲突并重新读取文件后操作。
+- 建议带来源服务器、原始编辑与版本、基线／候选文本及 diff；原始 LSP 坐标为从 0 开始的 UTF-16 位置。版本、范围和重叠先校验；资源操作保持原有顺序，在虚拟状态中验证。目录 rename/delete 的普通文件总正文上限为 256 MiB，磁盘遍历与虚拟创建／覆盖／移动叠加都计入同一预算；超限只拒绝建议，不提交文件。多服务器建议独立呈现，失败和覆盖不完整明确标记，AI 须比较冲突并重新读取文件后操作。
 - 服务器 `workspace/applyEdit` 一律回复 `applied:false`；不执行任何 `workspace/executeCommand`。命令型 code action 不可执行，edit 与 command 并存时提示建议可能不完整。
 - diagnostics 接受文件与有界 glob（最多 20 个文件），不执行 CLI adapter。`file:"*"` 不再运行 cargo／tsc／go／pyright；需要全项目检查时由 AI 使用 bash。Biome／SwiftLint 的旧 CLI 适配器不再自动运行。
 - 信息与建议查询属于 Read 档，Plan／Review 和只读子 Agent 也可使用；reload 属于 Write 档。实际修改沿用文件／bash 工具的权限，分步执行不保证跨工具原子性。

@@ -281,6 +281,106 @@ pub(super) fn extract_subcommand_for(program: &str, args: &[ArgToken]) -> Option
     extract_safe_subcommand_index(program, args).map(|(sub, _)| sub)
 }
 
+/// git 全局取值选项：危险扫描跳过取值继续向后识别真实子命令；
+/// 安全前缀提取则将它们视为不可安全记住而拒绝。
+const GIT_VALUED_GLOBALS: &[&str] = &[
+    "-c",
+    "--config-env",
+    "--exec-path",
+    "-C",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+];
+
+/// cargo 的 `--config`/`-Z` 等取值选项同理。
+const CARGO_VALUED_GLOBALS: &[&str] = &["--config", "-Z", "--manifest-path", "-C"];
+
+/// JS 包管理器的带值全局选项：`--prefix`/`--registry`/`--workspace` 等会改写执行目录、
+/// 安装源或配置，其取值绝不能被当作可记忆的子命令。pnpm 的 `-w` 是布尔型
+/// `--workspace-root`，与 npm 的带值 `-w|--workspace` 语义不同，因此不列入 pnpm 表。
+const NPM_VALUED_GLOBALS: &[&str] = &[
+    "-w",
+    "--workspace",
+    "--prefix",
+    "--registry",
+    "--userconfig",
+];
+const PNPM_VALUED_GLOBALS: &[&str] = &["-C", "--dir", "--prefix", "--registry", "--filter"];
+const YARN_VALUED_GLOBALS: &[&str] = &["--cwd", "--registry", "--use-yarnrc"];
+const BUN_VALUED_GLOBALS: &[&str] = &["-F", "--filter", "--cwd", "--registry"];
+
+fn valued_globals(program: &str) -> Option<&'static [&'static str]> {
+    match program {
+        "git" => Some(GIT_VALUED_GLOBALS),
+        "cargo" => Some(CARGO_VALUED_GLOBALS),
+        "npm" => Some(NPM_VALUED_GLOBALS),
+        "pnpm" => Some(PNPM_VALUED_GLOBALS),
+        "yarn" => Some(YARN_VALUED_GLOBALS),
+        "bun" => Some(BUN_VALUED_GLOBALS),
+        _ => None,
+    }
+}
+
+/// token 是否为表中的带值全局选项（分离、`=` 附加或短选项附加形态）。
+fn valued_global_form(arg: &str, valued: &[&str]) -> bool {
+    valued.iter().any(|flag| {
+        if arg == *flag {
+            return true;
+        }
+        if flag.starts_with("--") {
+            return arg.starts_with(&format!("{flag}="));
+        }
+        arg.starts_with(flag) && arg.len() > flag.len()
+    })
+}
+
+/// 危险分类专用的子命令扫描。
+///
+/// 与 [`extract_safe_subcommand_index`] 的分工：后者服务于持久授权前缀推导，
+/// 遇到不可安全记住的配置覆盖参数（`git -c`、`cargo --config`、npm 系 `--registry` 等）
+/// 必须返回 `None`；本函数则跳过这些选项及其取值（分离或 `=` 形式）继续向后识别
+/// 真实子命令，防止 `git -c …=… push` 之类命令因前置配置参数被静默放行。
+/// 动态参数等无法静态证明的形态仍返回 `None`，由调用方按既有语义处理。
+pub(super) fn extract_hazard_subcommand_for(program: &str, args: &[ArgToken]) -> Option<String> {
+    let Some(valued) = valued_globals(program) else {
+        return extract_subcommand_index(args, &[]).map(|(sub, _)| sub);
+    };
+    let mut idx = 0;
+    while idx < args.len() {
+        match &args[idx] {
+            ArgToken::Literal(arg) => {
+                if arg == "--" {
+                    idx += 1;
+                    return match args.get(idx) {
+                        Some(ArgToken::Literal(sub)) if !sub.starts_with('-') => Some(sub.clone()),
+                        _ => None,
+                    };
+                }
+                // `--opt=value` 与短选项附加形态（如 `-Csub`）单 token 自带取值；
+                // 分离形态需同时跳过取值 token。cargo 的 `+toolchain` 全局参数
+                // 与取值选项同理，跳过后继续识别真实子命令。
+                let attached = if arg.starts_with("--") {
+                    arg.contains('=')
+                } else {
+                    arg.len() > 2
+                };
+                if program == "cargo" && arg.starts_with('+') {
+                    idx += 1;
+                } else if valued_global_form(arg, valued) {
+                    idx += if attached { 1 } else { 2 };
+                } else if arg.starts_with('-') {
+                    idx += 1;
+                } else {
+                    return Some(arg.clone());
+                }
+            }
+            ArgToken::Dynamic => return None,
+        }
+    }
+    None
+}
+
 /// 提取子命令及其在 `args` 后的索引位置；会拒绝不安全的配置覆盖参数（如 `git -c`、`cargo --config`）。
 pub(super) fn extract_safe_subcommand_index(
     program: &str,
@@ -339,6 +439,37 @@ pub(super) fn extract_safe_subcommand_index(
                         } else if matches!(arg.as_str(), "--manifest-path" | "-C") {
                             idx += 2;
                         } else if arg.starts_with('-') {
+                            idx += 1;
+                        } else {
+                            return Some((arg.clone(), idx + 1));
+                        }
+                    }
+                    ArgToken::Dynamic => return None,
+                }
+            }
+            None
+        }
+        "npm" | "pnpm" | "yarn" | "bun" => {
+            let valued = valued_globals(program).unwrap_or(&[]);
+            let mut idx = 0;
+            while idx < args.len() {
+                match &args[idx] {
+                    ArgToken::Literal(arg) => {
+                        // 带值全局选项改写执行目录、安装源或配置，其取值不可当作
+                        // 可记忆的子命令；出现即拒绝持久前缀推导。
+                        if valued_global_form(arg, valued) {
+                            return None;
+                        }
+                        if arg == "--" {
+                            idx += 1;
+                            return match args.get(idx) {
+                                Some(ArgToken::Literal(sub)) if !sub.starts_with('-') => {
+                                    Some((sub.clone(), idx + 1))
+                                }
+                                _ => None,
+                            };
+                        }
+                        if arg.starts_with('-') {
                             idx += 1;
                         } else {
                             return Some((arg.clone(), idx + 1));

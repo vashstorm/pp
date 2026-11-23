@@ -100,6 +100,15 @@ impl App {
             }
             changed = true;
         }
+        // 浏览器 warning 是独立通道，单独轮询；它不占用 `/stats` 的回复。
+        while let Some(warning) = self
+            .stats_worker
+            .as_ref()
+            .and_then(|worker| worker.warnings.try_recv().ok())
+        {
+            self.append("Stats", &warning);
+            changed = true;
+        }
         while let Ok(reply) = self.skill_worker.replies.try_recv() {
             let still_skills = self.skills_pending || self.skill_panel.is_some();
             self.skills_pending = false;

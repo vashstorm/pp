@@ -3,7 +3,7 @@
 use brush_core::parser::ast::{self, CommandPrefixOrSuffixItem as Item, SourceLocation};
 use pp_core::shell_display::{ShellSegment, ShellStyle as S};
 
-use super::super::{segment, words};
+use super::super::{MAX_DEPTH, segment, words};
 use super::Printer;
 use super::idioms::{argument_language, set_meaning, test, timeout_duration};
 use super::{arguments, has_redirections, items};
@@ -65,7 +65,10 @@ impl<'a> Printer<'a> {
                 converted
             }
             ast::Command::ExtendedTest(test, redirects) => {
-                let mut segments = vec![segment(self.extended(&test.expr), S::Variable, node)];
+                let mut segments = self
+                    .extended(&test.expr, self.base)
+                    .map(|rendered| vec![segment(rendered, S::Variable, node)])
+                    .unwrap_or_default();
                 if let Some(redirects) = redirects {
                     segments.extend(self.redirections(&redirects.0, node));
                 }
@@ -368,28 +371,39 @@ impl<'a> Printer<'a> {
         out
     }
 
-    fn extended(&self, expression: &ast::ExtendedTestExpr) -> String {
+    fn extended(&mut self, expression: &ast::ExtendedTestExpr, depth: u16) -> Option<String> {
+        if depth > MAX_DEPTH {
+            // 展示转换是可丢弃的；超深表达式由 Trace::parsed 回退原始命令。
+            self.overflow = true;
+            return None;
+        }
         match expression {
-            ast::ExtendedTestExpr::And(a, b) => {
-                format!("{} and {}", self.extended(a), self.extended(b))
+            ast::ExtendedTestExpr::And(a, b) => Some(format!(
+                "{} and {}",
+                self.extended(a, depth + 1)?,
+                self.extended(b, depth + 1)?
+            )),
+            ast::ExtendedTestExpr::Or(a, b) => Some(format!(
+                "{} or {}",
+                self.extended(a, depth + 1)?,
+                self.extended(b, depth + 1)?
+            )),
+            ast::ExtendedTestExpr::Not(a) => Some(format!("not {}", self.extended(a, depth + 1)?)),
+            ast::ExtendedTestExpr::Parenthesized(a) => {
+                Some(format!("({})", self.extended(a, depth + 1)?))
             }
-            ast::ExtendedTestExpr::Or(a, b) => {
-                format!("{} or {}", self.extended(a), self.extended(b))
-            }
-            ast::ExtendedTestExpr::Not(a) => format!("not {}", self.extended(a)),
-            ast::ExtendedTestExpr::Parenthesized(a) => format!("({})", self.extended(a)),
-            ast::ExtendedTestExpr::UnaryTest(predicate, value) => test(
+            ast::ExtendedTestExpr::UnaryTest(predicate, value) => Some(test(
                 &[predicate.to_string(), value.value.clone()],
                 &self.constants,
-            ),
-            ast::ExtendedTestExpr::BinaryTest(predicate, left, right) => test(
+            )),
+            ast::ExtendedTestExpr::BinaryTest(predicate, left, right) => Some(test(
                 &[
                     left.value.clone(),
                     predicate.to_string(),
                     right.value.clone(),
                 ],
                 &self.constants,
-            ),
+            )),
         }
     }
 

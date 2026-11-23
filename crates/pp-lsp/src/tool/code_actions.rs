@@ -137,7 +137,7 @@ fn diagnostic_json(diagnostic: &Diagnostic) -> Value {
     value
 }
 
-/// `code_actions` 的快速修复上下文：优先使用当前版本的缓存报告，否则做一次
+/// `code_actions` 的快速修复上下文：优先使用当前代次且版本匹配的缓存报告，否则做一次
 /// 有界采集；诊断失败本身不会阻止重构类动作。
 fn code_action_diagnostics(
     client: &Client,
@@ -147,8 +147,9 @@ fn code_action_diagnostics(
     cancellation: &CancellationToken,
 ) -> Result<Vec<Diagnostic>> {
     let expected = client.document(path).map(|state| state.version as u64);
-    if let Some(entry) = client.diagnostics.snapshot(uri)
-        && entry.seq > 0
+    // 新鲜度（未被失效、代次未被 refresh 推进）与 push 复用/`unchanged` 同一判定；
+    // 这里只额外要求缓存报告的版本与当前文档一致或不带版本。
+    if let Some(entry) = client.diagnostics.fresh_snapshot(uri)
         && entry
             .version
             .is_none_or(|version| Some(version) == expected)
@@ -374,4 +375,92 @@ fn command_only(action: Action, server: &str, command: &Command) -> Value {
     result["details"]["applied"] = json!(false);
     result["details"]["command"] = json!(command);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config;
+    use pp_config::config::LspSettings;
+    use serde_json::{Value, json};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// 隔离的 fixture 注册表；日志留在临时目录里供拉取计数断言。
+    fn fixture_registry(dir: &Path) -> Registry {
+        std::fs::create_dir_all(dir.join(".pp")).unwrap();
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lsp_server.py");
+        let log = dir.join("requests.jsonl");
+        std::fs::write(
+            dir.join(".pp/lsp.json"),
+            json!({"servers": {"fixture": {
+                "command": "python3",
+                "args": [script, "--log", log],
+                "fileTypes": [".rs"],
+                "rootMarkers": [".pp"],
+            }}})
+            .to_string(),
+        )
+        .unwrap();
+        let config = config::Config::load_with(dir, None).unwrap();
+        Registry::from_config(
+            dir.to_path_buf(),
+            LspSettings::default(),
+            Ok(Arc::new(config)),
+        )
+    }
+
+    fn pull_count(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("requests.jsonl"))
+            .unwrap()
+            .lines()
+            .filter(|line| {
+                serde_json::from_str::<Value>(line)
+                    .is_ok_and(|value| value["method"] == "textDocument/diagnostic")
+            })
+            .count()
+    }
+
+    #[test]
+    fn lsp_code_actions_diagnostics_are_refetched_after_refresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::fs::canonicalize(dir.path()).unwrap();
+        let registry = fixture_registry(&cwd);
+        let mut cleanup = registry.cleanup();
+        let path = cwd.join("sample.rs");
+        std::fs::write(&path, "wrong\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let token = CancellationToken::new();
+        let client = registry.ensure_client("fixture", deadline, &token).unwrap();
+
+        // publish：一次 pull 采集把当前版本的报告发布进缓存。
+        let outcome = client.collect_diagnostics(&path, deadline, &token).unwrap();
+        assert!(
+            outcome
+                .diagnostics
+                .as_ref()
+                .is_some_and(|items| !items.is_empty()),
+            "the fixture must publish an issue for the broken file"
+        );
+        assert_eq!(pull_count(&cwd), 1);
+        let uri = crate::uri::path_to_uri(&path);
+
+        // refresh：服务器要求重新计算，旧代次的报告不得再当作新鲜结果。
+        client.diagnostics.refresh();
+        // 磁盘内容已同时修复：复用旧缓存会把旧错误继续当作快速修复上下文。
+        std::fs::write(&path, "fine\n").unwrap();
+
+        let diagnostics = code_action_diagnostics(&client, &path, &uri, deadline, &token).unwrap();
+        assert!(
+            diagnostics.is_empty(),
+            "code actions must see the refreshed file, not the stale cache: {diagnostics:?}"
+        );
+        assert_eq!(
+            pull_count(&cwd),
+            2,
+            "a refreshed epoch must force a fresh diagnostic pull"
+        );
+        cleanup.stop().unwrap();
+    }
 }

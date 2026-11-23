@@ -887,6 +887,13 @@ pub(crate) fn update_settings_fields_returning(
     path: &Path,
     update: impl FnOnce(Settings) -> Result<Vec<(&'static str, serde_yaml::Value)>>,
 ) -> Result<Settings> {
+    // 首次读取之前取得同目录 settings.lock，把解析、更新、临时文件写入、
+    // 比较和 persist 全程串行化：跨进程的两个保存入口不再各自基于旧文本覆盖对方。
+    // 锁获取失败不保存；设置保存没有外部取消令牌，锁等待沿用认证锁的 30 秒上限。
+    let _lock = crate::auth::StoreLock::acquire_settings(
+        path,
+        &pp_core::cancellation::CancellationToken::new(),
+    )?;
     let read = || match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -922,6 +929,9 @@ pub(crate) fn update_settings_fields_returning(
         read()? == original,
         "Configuration was modified by another process; please try again."
     );
+    // 测试专用控制点：只在显式注册的写线程同步一次，用于确定性复现并发保存交错。
+    #[cfg(test)]
+    crate::config::tests::settings_interleave::pre_commit();
     temporary
         .persist(path)
         .map_err(|error| error.error)

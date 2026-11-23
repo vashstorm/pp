@@ -978,19 +978,8 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
     stop_mcp(&mcp, result)
 }
 
-/// 所有模式返回后停止进程级 MCP 服务；`CleanupError` 保持类型并合并进返回错误，
-/// 不能只依赖 `McpManager::Drop` 兜底。
+/// 所有模式返回后停止进程级 MCP 服务；合并走 core 的共享清理结果，`CleanupError`
+/// 保持类型并保留原语义退出码，不能只依赖 `McpManager::Drop` 兜底。
 fn stop_mcp(mcp: &pp_mcp::McpManager, result: Result<()>) -> Result<()> {
-    let stop = mcp.shutdown();
-    match (result, stop) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Ok(()), Err(error)) | (Err(error), Ok(())) => Err(error),
-        (Err(error), Err(stop)) => {
-            if stop.is::<cancellation::CleanupError>() {
-                Err(stop.context(format!("{error:#}")))
-            } else {
-                Err(error.context(format!("stopping MCP servers: {stop:#}")))
-            }
-        }
-    }
+    cancellation::merge_cleanup_result(result, mcp.shutdown(), "stopping MCP servers")
 }

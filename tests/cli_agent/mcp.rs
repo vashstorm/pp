@@ -656,3 +656,48 @@ fn mcp_legacy_settings_require_manual_migration_without_writing_mcp_json() {
     assert!(!config_path(home.path(), "mcp.json").exists());
     no_more(&provider);
 }
+
+/// 同一行模式进程完成两项任务：逐服务状态与总状态各只输出一次。
+/// 逐服务行由 peer 侧游标去重，不能靠每次任务归零的局部计数。
+#[test]
+fn mcp_line_mode_reports_each_service_and_the_total_once_per_process() {
+    let provider = server();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cli = Cli::start_with(
+        dir.path(),
+        None,
+        &settings("").to_string(),
+        &fixture_models(&provider),
+    );
+    cli.input("first\nsecond\n");
+    for (index, text) in ["one", "two"].into_iter().enumerate() {
+        let (request, body) = receive(&provider);
+        assert!(
+            body["tools"].to_string().contains("mcp__local__echo"),
+            "{index}: {}",
+            body["tools"]
+        );
+        final_reply(request, text);
+    }
+    cli.input("/quit\n");
+    let output = cli.finish();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches("MCP: local connected (").count(),
+        1,
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr
+            .matches("Connected to MCP servers: 1 succeeded (")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert_stopped(dir.path());
+}

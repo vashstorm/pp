@@ -129,6 +129,17 @@ impl Diagnostics {
         self.seq.load(Ordering::SeqCst)
     }
 
+    /// 统一的新鲜快照判定：`seq > 0`（未被 [`Diagnostics::invalidate`] 标脏）且
+    /// `epoch` 仍是当前代次（未被 [`Diagnostics::refresh`] 推进）。
+    ///
+    /// 版本是否匹配按调用方语义另行追加；但这两条基线只在这里判定，
+    /// push 复用、`unchanged` 报告与快速修复上下文不得各写一套。
+    pub(crate) fn fresh_snapshot(&self, uri: &str) -> Option<Published> {
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let entry = self.snapshot(uri)?;
+        (entry.seq > 0 && entry.epoch == epoch).then_some(entry)
+    }
+
     /// `workspace/diagnostic/refresh`：使旧代次的报告不再算新鲜。
     pub(crate) fn refresh(&self) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
@@ -137,12 +148,9 @@ impl Diagnostics {
     /// `unchanged` 报告只有缓存版本与当前文档版本一致、且代次未被刷新时才可信；
     /// 没有可信缓存时必须按未验证处理，绝不能读作干净。
     pub(crate) fn unchanged_report(&self, uri: &str, expected: u64) -> Option<Vec<Diagnostic>> {
-        let entry = self.snapshot(uri)?;
-        // seq == 0 由 `invalidate` 标记：内容已变，这个报告不再能证明当前版本干净。
-        (entry.seq > 0
-            && entry.version == Some(expected)
-            && entry.epoch == self.epoch.load(Ordering::SeqCst))
-        .then_some(entry.diagnostics)
+        // 新鲜度由 `fresh_snapshot` 统一判定；这里只追加“版本必须与当前文档一致”。
+        let entry = self.fresh_snapshot(uri)?;
+        (entry.version == Some(expected)).then_some(entry.diagnostics)
     }
 
     fn set_result_id(&self, uri: &str, result_id: &str) {
@@ -442,11 +450,9 @@ impl Client {
 
     /// 基线之后到达、版本匹配且代次仍有效的 push 报告。
     fn fresh_push(&self, uri: &str, expected: u64, seq_before: u64) -> Option<DiagnosticOutcome> {
-        let entry = self.diagnostics.snapshot(uri)?;
-        if entry.seq <= seq_before
-            || entry.epoch != self.diagnostics.epoch.load(Ordering::SeqCst)
-            || entry.version != Some(expected)
-        {
+        // 基线之前到达的报告不能证明本次请求之后的状态，因此还要比 `seq_before`。
+        let entry = self.diagnostics.fresh_snapshot(uri)?;
+        if entry.seq <= seq_before || entry.version != Some(expected) {
             return None;
         }
         Some(DiagnosticOutcome::reported(
@@ -472,11 +478,7 @@ impl Client {
         } = target;
         // 本次未向服务器发送 didOpen/didChange 时，若当前版本与 epoch 已有新鲜缓存，直接复用，
         // 避免 push-only 服务器重复查询未改文件或保存联动早于收集返回时等待到超时。
-        if !synced
-            && let Some(entry) = self.diagnostics.snapshot(uri)
-            && entry.seq > 0
-            && entry.epoch == self.diagnostics.epoch.load(Ordering::SeqCst)
-        {
+        if !synced && let Some(entry) = self.diagnostics.fresh_snapshot(uri) {
             match entry.version {
                 Some(version) if version == expected => {
                     return Ok(DiagnosticOutcome::reported(
@@ -505,9 +507,8 @@ impl Client {
         loop {
             // 等待期间也响应取消；不能在后台等满 deadline 才返回。
             pp_core::cancellation::check(cancellation)?;
-            if let Some(entry) = self.diagnostics.snapshot(uri)
+            if let Some(entry) = self.diagnostics.fresh_snapshot(uri)
                 && entry.seq > seq_before
-                && entry.epoch == self.diagnostics.epoch.load(Ordering::SeqCst)
             {
                 match entry.version {
                     Some(version) if version == expected => {

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::{
-    io::{BufRead, BufReader, IsTerminal, Read},
+    io::{BufRead, BufReader, IsTerminal, Read, Write},
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver, Sender},
     thread::{self, JoinHandle},
@@ -11,6 +11,8 @@ use std::{
 pub(crate) struct Worker {
     requests: Option<Sender<String>>,
     pub(crate) replies: Receiver<Result<String>>,
+    // 浏览器启动失败的提示走独立通道：它与 launcher 的“一次请求一条回复”互不挤占。
+    pub(crate) warnings: Receiver<String>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -18,6 +20,7 @@ impl Worker {
     pub(crate) fn new() -> Result<Self> {
         let (requests, receiver) = mpsc::channel::<String>();
         let (sender, replies) = mpsc::channel();
+        let (warnings_sender, warnings) = mpsc::channel::<String>();
         let interactive = std::io::stdout().is_terminal();
         let thread = thread::Builder::new()
             .name("stats-launcher".into())
@@ -27,22 +30,19 @@ impl Worker {
                     let result = (|| {
                         let args = arguments.split_whitespace().collect::<Vec<_>>();
                         if let Some(active) = &mut server
-                            && (active.arguments != arguments
-                                || active.child.try_wait()?.is_some())
+                            && (active.arguments != arguments || active.child.try_wait()?.is_some())
                         {
                             server = None;
                         }
                         if server.is_none() {
                             server = Some(Server::start(&arguments, &args)?);
                         }
-                        let url = &server.as_ref().context("statistics server unavailable")?.url;
-                        if interactive
-                            && !args.contains(&"--no-open")
-                            && open_browser(url.clone(), sender.clone()).is_err()
-                        {
-                            return Ok(format!(
-                                "pp stats: {url}\nwarning: could not start browser opener; open the URL manually"
-                            ));
+                        let url = &server
+                            .as_ref()
+                            .context("statistics server unavailable")?
+                            .url;
+                        if interactive && !args.contains(&"--no-open") {
+                            open_browser(url, &warnings_sender);
                         }
                         Ok(format!("pp stats: {url}"))
                     })();
@@ -55,6 +55,7 @@ impl Worker {
         Ok(Self {
             requests: Some(requests),
             replies,
+            warnings,
             thread: Some(thread),
         })
     }
@@ -66,11 +67,23 @@ impl Worker {
             .send(arguments.to_owned())
             .map_err(|_| anyhow::anyhow!("statistics launcher stopped"))
     }
+
+    /// 非阻塞排空已到达的浏览器 warning；调用方在 `/stats` 前后各调用一次。
+    pub(crate) fn drain_warnings(&self, sink: &mut impl Write) {
+        while let Ok(warning) = self.warnings.try_recv() {
+            let _ = writeln!(sink, "{warning}");
+            let _ = sink.flush();
+        }
+    }
 }
 
 // 与独立 stats 入口一致：浏览器启动不阻塞服务或退出收尾。
-fn open_browser(url: String, replies: Sender<Result<String>>) -> std::io::Result<()> {
-    thread::Builder::new()
+fn open_browser(url: &str, warnings: &Sender<String>) {
+    let opened_url = url.to_owned();
+    let failure_url = url.to_owned();
+    let inner_warnings = warnings.clone();
+    let outer_warnings = warnings.clone();
+    let spawned = thread::Builder::new()
         .name("stats-browser".into())
         .spawn(move || {
             let program = if cfg!(target_os = "macos") {
@@ -79,19 +92,23 @@ fn open_browser(url: String, replies: Sender<Result<String>>) -> std::io::Result
                 "xdg-open"
             };
             let opened = Command::new(program)
-                .arg(&url)
+                .arg(&opened_url)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
                 .is_ok_and(|status| status.success());
             if !opened {
-                let _ = replies.send(Ok(format!(
-                    "warning: could not open browser; open {url} manually"
-                )));
+                let _ = inner_warnings.send(format!(
+                    "warning: could not open browser; open {opened_url} manually"
+                ));
             }
-        })
-        .map(|_| ())
+        });
+    if spawned.is_err() {
+        let _ = outer_warnings.send(format!(
+            "warning: could not start browser opener; open {failure_url} manually"
+        ));
+    }
 }
 
 impl Drop for Worker {

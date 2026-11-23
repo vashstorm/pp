@@ -16,8 +16,8 @@ use super::client::{Client, ConnectionSlot, SharedConnection};
 #[cfg(test)]
 use super::validate_config;
 use super::{
-    Access, ConnectSnapshot, McpManager, POLL, RemoteTool, ServerConfig, ServerState, SharedServer,
-    TOOL_LIMIT, VERSIONS, config, safe_name,
+    Access, ConnectSnapshot, McpManager, POLL, RemoteTool, ServerConfig, ServerConnect,
+    ServerState, SharedServer, TOOL_LIMIT, VERSIONS, config, safe_name,
 };
 use std::time::Instant;
 
@@ -94,6 +94,12 @@ impl McpManager {
     /// 行模式一次性取走建连总状态：同一进程的后续任务不重复输出。
     pub fn take_connect_report(&self) -> Option<String> {
         self.lock_state().connect.take_report()
+    }
+
+    /// 行模式一次性领取尚未输出的已完成服务（按配置顺序连续）；重复调用与取消后重试
+    /// 都不会重复已输出过的服务。
+    pub fn take_connect_services(&self) -> Vec<ServerConnect> {
+        self.lock_state().connect.take_claimed()
     }
 
     /// 任务入口屏障：等启动期建连结束。未启动过的实例（测试、mock）立即返回。

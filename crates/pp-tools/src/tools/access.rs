@@ -336,8 +336,13 @@ impl Tools {
             } else {
                 permission::tier_of_arguments(name, arguments)
             };
+            // 审批必须反映当次冻结的真实沙盒策略：仅 Execute 下受沙盒约束的
+            // 工具在策略真实存在时才算 sandboxed。off / auto 降级（policy 为
+            // None）回退到普通审批；显式开启但平台不可用则 fail-closed，
+            // 在进入审批或产生任何副作用之前返回错误。
             let sandboxed = matches!(call.policy, ToolPolicy::Execute { .. })
-                && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval");
+                && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval")
+                && sandbox.policy()?.is_some();
             self.permission.enforce_for(
                 permissions,
                 name,

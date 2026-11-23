@@ -101,8 +101,9 @@ function toolNormalize(tool) {
     argsChars: tool.args_chars ?? 0,
     resultChars: tool.result_chars,
     resultCalls: tool.result_calls ?? 0,
-    totalTokensShare: tool.tokens ?? 0,
-    outputTokensShare: tool.output_tokens ?? 0,
+    totalTokensShare: tool.tokens ?? null,
+    outputTokensShare: tool.output_tokens ?? null,
+    usageKnown: tool.usage_known ?? 0,
     costShare: tool.cost,
     unpricedRequestsShare: tool.unpriced ?? 0,
     lastUsed: tool.last_seen,
@@ -132,13 +133,31 @@ export function toolView(source = /** @type {ToolsResponse | null} */ (app.data)
             ? null
             : row.resultChars / row.resultCalls,
         callFraction: 0,
-        tokenFraction: 0,
+        tokenFraction: /** @type {number | null} */ (null),
         costFraction: 0,
       };
     })
     .sort((a, b) => b.calls - a.calls);
   const calls = rows.reduce((sum, row) => sum + row.calls, 0);
-  const tokens = rows.reduce((sum, row) => sum + row.totalTokensShare, 0);
+  const knownTokens = rows.flatMap((row) =>
+    row.totalTokensShare == null ? [] : [row.totalTokensShare],
+  );
+  const tokens = knownTokens.length
+    ? knownTokens.reduce((sum, value) => sum + value, 0)
+    : rows.length === 0
+      ? 0
+      : null;
+  const knownOutput = rows.flatMap((row) =>
+    row.outputTokensShare == null ? [] : [row.outputTokensShare],
+  );
+  const output = knownOutput.length
+    ? knownOutput.reduce((sum, value) => sum + value, 0)
+    : rows.length === 0
+      ? 0
+      : null;
+  const usageKnown = rows.reduce((sum, row) => sum + row.usageKnown, 0);
+  // 已知请求覆盖：完全未知时为 null，不把未知行当作已覆盖。
+  const tokenCoverage = tokens == null || calls === 0 ? null : usageKnown / calls;
   const knownCosts = rows.filter((row) => row.costShare != null);
   const cost = knownCosts.length
     ? knownCosts.reduce((sum, row) => sum + (row.costShare ?? 0), 0)
@@ -153,7 +172,12 @@ export function toolView(source = /** @type {ToolsResponse | null} */ (app.data)
   const argsChars = rows.reduce((sum, row) => sum + row.argsChars, 0);
   for (const row of rows) {
     row.callFraction = calls > 0 ? row.calls / calls : 0;
-    row.tokenFraction = tokens > 0 ? row.totalTokensShare / tokens : 0;
+    row.tokenFraction =
+      row.totalTokensShare == null
+        ? null
+        : tokens != null && tokens > 0
+          ? row.totalTokensShare / tokens
+          : 0;
     row.costFraction = cost != null && cost > 0 ? (row.costShare ?? 0) / cost : 0;
   }
   const colors = toolColorLookup(source?.tools || []);
@@ -197,7 +221,9 @@ export function toolView(source = /** @type {ToolsResponse | null} */ (app.data)
     errorsKnown,
     tools: rows.length,
     tokens,
-    output: rows.reduce((sum, row) => sum + row.outputTokensShare, 0),
+    output,
+    usageKnown,
+    tokenCoverage,
     cost,
     unpriced: rows.reduce((sum, row) => sum + row.unpricedRequestsShare, 0),
     resultChars,
@@ -235,6 +261,13 @@ function toolStatGrids(view) {
     totals.unpriced > 0
       ? `${number(Math.round(totals.unpriced))} unpriced requests`
       : "API-equivalent";
+  const outputHint = compact(totals.output == null ? null : Math.round(totals.output));
+  const tokensHint =
+    totals.tokens == null
+      ? "No token usage recorded"
+      : totals.tokenCoverage != null && totals.tokenCoverage < 1
+        ? `${outputHint} output · ${ratioPercent(totals.tokenCoverage, 0)} of calls known`
+        : `${outputHint} output`;
   const resultCells = [
     toolStat(
       "Result text",
@@ -286,8 +319,8 @@ function toolStatGrids(view) {
       })}
       ${toolStat(
         "Attributed tokens",
-        compact(Math.round(totals.tokens)),
-        `${compact(Math.round(totals.output))} output`,
+        compact(totals.tokens == null ? null : Math.round(totals.tokens)),
+        tokensHint,
         { title: TOOL_ATTRIBUTION },
       )}
       ${toolStat("Attributed cost", estimatedCost(totals.cost, totals.unpriced), costHint, {
@@ -411,9 +444,11 @@ function toolColumns(view) {
       header: "Attr. tokens",
       title: TOOL_ATTRIBUTION,
       align: "right",
-      sort: (row) => row.totalTokensShare,
+      sort: (row) => row.totalTokensShare ?? -1,
       render: (row) =>
-        `<span class="x-num" title="${ratioPercent(row.tokenFraction)} of attributed tokens">${compact(Math.round(row.totalTokensShare))}<span class="x-dim x-tools-share">${ratioPercent(row.tokenFraction, 0)}</span></span>`,
+        row.totalTokensShare == null || row.tokenFraction == null
+          ? '<span class="x-num x-muted" title="Token usage not recorded for these calls">—</span>'
+          : `<span class="x-num" title="${ratioPercent(row.tokenFraction)} of attributed tokens">${compact(Math.round(row.totalTokensShare))}<span class="x-dim x-tools-share">${ratioPercent(row.tokenFraction, 0)}</span></span>`,
     },
     {
       key: "cost",
@@ -489,7 +524,9 @@ function toolModelRows(view) {
         errorRate: calls > 0 ? (errors ?? 0) / calls : 0,
         resultChars: model.result_chars,
         resultKnown: model.result_chars != null,
-        totalTokensShare: model.tokens ?? 0,
+        totalTokensShare: model.tokens ?? null,
+        outputTokensShare: model.output_tokens ?? null,
+        usageKnown: model.usage_known ?? 0,
         costShare: model.cost,
         unpricedRequestsShare: model.unpriced ?? 0,
         lastUsed: model.last_seen,
@@ -548,8 +585,11 @@ function toolModelColumns(rows, view) {
       header: "Attr. tokens",
       title: TOOL_ATTRIBUTION,
       align: "right",
-      sort: (row) => row.totalTokensShare,
-      render: (row) => `<span class="x-num">${compact(Math.round(row.totalTokensShare))}</span>`,
+      sort: (row) => row.totalTokensShare ?? -1,
+      render: (row) =>
+        row.totalTokensShare == null
+          ? '<span class="x-num x-muted" title="Token usage not recorded for these calls">—</span>'
+          : `<span class="x-num">${compact(Math.round(row.totalTokensShare))}</span>`,
     },
     {
       key: "cost",

@@ -799,4 +799,91 @@ mod tests {
             "expected prompt exit in Stopping phase, got {elapsed:?}"
         );
     }
+
+    /// SIGKILL 之后注册表若始终无法清空（组内仍有不可杀的成员），monitor
+    /// 不得无限重发信号：必须在独立的 kill 宽限期后放弃回收，让
+    /// `Supervisor::wait()` 返回；未回收的记录保持真实状态。
+    #[test]
+    fn embedded_shell_supervisor_killing_deadline_lets_wait_return() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        use std::sync::Weak;
+        use std::sync::mpsc;
+
+        let supervisor = Supervisor::new_with_stop(
+            None,
+            CancellationToken::new(),
+            CancellationToken::new(),
+            None,
+        )
+        .expect("supervisor");
+        // 模拟“组长已观察退出、租约已释放、组内仍有存活成员”的顽固状态：
+        // 宿主进程组必然有存活成员，注册表永远不会自行清空。
+        let pid = 2_000_000_000;
+        let cell = Arc::new(ProcessCell {
+            pid,
+            pgid: host_pgid(),
+            inner: Mutex::new(CellInner::default()),
+        });
+        cell.complete(super::process::CellOutcome::Status(ExitStatus::from_raw(0)));
+        {
+            let mut state = lock(&supervisor.shared.state);
+            state.phase = Phase::Stopping;
+            state.interpreter_done = true;
+            // TERM 宽限期已过，monitor 下一轮就会升级到 SIGKILL。
+            state.grace_deadline = Some(Instant::now() - Duration::from_millis(1));
+            state.groups.insert(
+                0,
+                GroupRecord {
+                    pgid: host_pgid(),
+                    leader: pid,
+                    lease: Weak::new(),
+                },
+            );
+            state.procs.insert(
+                pid,
+                ProcessRecord {
+                    cell,
+                    group: 0,
+                    leader: true,
+                    observed: true,
+                    reaped: false,
+                },
+            );
+        }
+        supervisor.shared.notify();
+
+        let waiting = supervisor.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let outcome = waiting.wait();
+            let _ = tx.send(outcome);
+        });
+        let outcome = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("supervisor wait() never returned: Killing with live work must finish");
+
+        assert_eq!(outcome.termination, Termination::Exited);
+        let message = outcome
+            .cleanup_error
+            .expect("abandoned reclamation must report a cleanup failure")
+            .to_string();
+        assert!(
+            message.contains("after SIGKILL"),
+            "unexpected cleanup error: {message}"
+        );
+        {
+            let state = lock(&supervisor.shared.state);
+            let record = state
+                .procs
+                .get(&pid)
+                .expect("the unreclaimed record must keep its real state");
+            assert!(
+                !record.reaped,
+                "an unreclaimed process must not be marked reaped"
+            );
+            assert!(record.observed);
+            assert!(state.groups.contains_key(&0));
+        }
+    }
 }
