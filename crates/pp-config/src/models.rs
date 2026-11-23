@@ -301,14 +301,14 @@ impl ModelCost {
 
     /// 与统计页面共享严格计价：未知缓存读量不能按零计费。
     ///
-    /// 费率没有独立 `cacheWrite` 价时，缓存写入按输入价计入未缓存部分，
-    /// 写入量是否已知不改变总价；有独立写入价时未知写入量仍未定价。
+    /// 缓存写入量未知时，若写入价未配置或与输入价相同，则将这部分费用并入普通输入。
+    /// 写入价与输入价不同时，需要知道写入量才能计价。
     pub fn calculate(self, usage: pp_core::context::TokenUsage) -> Option<TokenCost> {
         let cached = usage.cached_tokens?;
         let written = match (usage.cache_write_tokens, self.cache_write) {
             (Some(written), _) => written,
-            (None, None) => 0,
-            (None, Some(_)) => return None,
+            (None, rate) if rate.is_none_or(|rate| rate == self.input) => 0,
+            (None, _) => return None,
         };
         let uncached = usage
             .input_tokens
@@ -613,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_cache_write_is_priced_only_without_a_write_rate() {
+    fn unknown_cache_write_is_priced_when_total_does_not_depend_on_it() {
         let usage = pp_core::context::TokenUsage {
             input_tokens: 1000,
             output_tokens: 100,
