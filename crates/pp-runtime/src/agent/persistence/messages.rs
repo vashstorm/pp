@@ -12,6 +12,9 @@ impl SessionJournal {
         instructions: Option<&str>,
     ) -> Result<()> {
         self.check()?;
+        if self.ephemeral {
+            return Ok(());
+        }
         self.ensure_active()?;
         let first = !self
             .active
@@ -135,6 +138,9 @@ impl SessionJournal {
         Ok(())
     }
     pub(in crate::agent) fn event(&mut self, event: &AgentEvent) {
+        if self.ephemeral {
+            return;
+        }
         if matches!(
             event,
             AgentEvent::ContextUpdated { .. }

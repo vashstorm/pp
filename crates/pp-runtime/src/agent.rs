@@ -8,6 +8,7 @@ pub(crate) mod hooks;
 pub mod input;
 mod lsp;
 mod mcp_management;
+mod output_schema;
 pub mod persistence;
 pub mod plan_management;
 mod plan_open;
@@ -103,6 +104,14 @@ pub struct Bootstrap {
     pub allowed_tools: Option<pp_tools::AllowedTools>,
     /// 是否允许初始化与派发子 Agent（非交互 `-p` 默认关闭，仅 `--allowed-tools Task` 开启）。
     pub subagents_enabled: bool,
+    /// 是否启用生命周期 hooks（`--no-hooks` 传 `false` 跳过加载与执行）。
+    pub hooks_enabled: bool,
+    /// 是否以无持久化内存模式运行（`--ephemeral` 绝不写盘或申请会话锁）。
+    pub ephemeral: bool,
+    /// 非交互单次任务最大模型请求轮次（`--max-turns`）。
+    pub max_turns: Option<usize>,
+    /// 非交互终态输出 JSON Schema 约束（`--output-schema`）。
+    pub output_schema: Option<serde_json::Value>,
 }
 
 impl Bootstrap {
@@ -145,15 +154,19 @@ impl Bootstrap {
         );
         pp_core::logging::perf::mark("sandbox_ready");
         tools.set_sandbox(sandbox);
-        let mut agent = Agent::new_with_prompt(
+        let mut agent = Agent::new_with_prompt_with_options(
             models,
             tools,
             self.dir.join("sessions"),
             persistence::locks::directory()?,
             self.prompt.clone(),
             stats,
+            self.hooks_enabled,
+            self.ephemeral,
         )?;
         agent.set_subagents_enabled(self.subagents_enabled);
+        agent.set_max_turns(self.max_turns);
+        agent.set_output_schema(self.output_schema.clone())?;
         Ok(agent)
     }
 }
@@ -203,6 +216,11 @@ pub struct Agent {
     hooks: std::sync::Arc<crate::hooks::Runner>,
     /// 子 Agent 的角色定义名（`agent_type`）；根 Agent 为 `None`。
     hook_agent_type: Option<String>,
+    ephemeral: bool,
+    max_turns: Option<usize>,
+    output_schema: Option<output_schema::OutputSchema>,
+    /// 声明在 `tools`/`subagent` 之后，确保先关闭子 Agent 再清理临时目录。
+    ephemeral_subagent_dir: Option<tempfile::TempDir>,
 }
 
 /// Everything the UI must adopt after a mode transition: the worker publishes

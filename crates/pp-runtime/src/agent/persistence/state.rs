@@ -78,6 +78,9 @@ impl SessionJournal {
         workflow: &WorkflowState,
     ) -> Result<()> {
         self.check()?;
+        if self.ephemeral {
+            return Ok(());
+        }
         ensure!(
             self.active
                 .as_ref()
@@ -194,6 +197,9 @@ impl SessionJournal {
         prompt: &str,
     ) -> Result<()> {
         self.check()?;
+        if self.ephemeral {
+            return Ok(());
+        }
         self.ensure_active()?;
         let rollback = self.rollback_offset()?;
         let result = (|| -> Result<()> {
@@ -236,6 +242,9 @@ impl SessionJournal {
         workflow: &WorkflowState,
     ) -> Result<(String, std::path::PathBuf)> {
         self.check()?;
+        if self.ephemeral {
+            return Ok(("ephemeral".to_owned(), std::path::PathBuf::new()));
+        }
         self.ensure_active()?;
         let first = !self
             .active
@@ -256,7 +265,7 @@ impl SessionJournal {
     }
 
     pub(super) fn ensure_active(&mut self) -> Result<()> {
-        if self.active.is_some() {
+        if self.ephemeral || self.active.is_some() {
             return Ok(());
         }
         let created = (|| {

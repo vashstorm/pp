@@ -31,6 +31,17 @@ impl Agent {
         self.subagents_enabled = enabled;
     }
 
+    pub fn set_max_turns(&mut self, limit: Option<usize>) {
+        self.max_turns = limit;
+    }
+
+    pub fn set_output_schema(&mut self, schema: Option<serde_json::Value>) -> Result<()> {
+        self.output_schema = schema
+            .map(super::output_schema::OutputSchema::new)
+            .transpose()?;
+        Ok(())
+    }
+
     pub fn active_tool_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .tools

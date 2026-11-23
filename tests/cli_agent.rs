@@ -30,6 +30,8 @@ mod mcp;
 mod mcp_remote;
 #[path = "cli_agent/non_interactive.rs"]
 mod non_interactive;
+#[path = "cli_agent/non_interactive_v2.rs"]
+mod non_interactive_v2;
 #[path = "cli_agent/permission.rs"]
 mod permission;
 #[path = "cli_agent/sandbox.rs"]
@@ -108,13 +110,18 @@ impl Cli {
         args: &[&str],
         envs: &[(&str, &str)],
     ) -> Self {
+        let non_interactive = args.iter().any(|arg| *arg == "-p" || *arg == "--print");
         let mut command = Command::new(env!("CARGO_BIN_EXE_pp"));
         command
             .current_dir(cwd)
             .env("HOME", home)
             .args(args)
             .envs(envs.iter().copied())
-            .stdin(Stdio::piped())
+            .stdin(if non_interactive {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         Self(Some(command.spawn().unwrap()))

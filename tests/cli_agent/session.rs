@@ -234,11 +234,16 @@ fn configure(home: &Path, settings: &str, models: &str) {
 }
 
 fn command(home: &Path, cwd: &Path, args: &[&str]) -> Command {
+    let non_interactive = args.iter().any(|arg| *arg == "-p" || *arg == "--print");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pp"));
     command
         .current_dir(cwd)
         .env("HOME", home)
-        .stdin(Stdio::piped())
+        .stdin(if non_interactive {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .args(args);

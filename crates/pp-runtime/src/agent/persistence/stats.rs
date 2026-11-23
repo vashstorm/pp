@@ -42,7 +42,7 @@ impl SessionJournal {
         &self.stats
     }
     pub(in crate::agent) fn unlinked_stats(&self) -> Option<Arc<Mutex<Vec<String>>>> {
-        self.id().is_none().then(|| self.unlinked_stats.clone())
+        (!self.ephemeral && self.id().is_none()).then(|| self.unlinked_stats.clone())
     }
 
     pub(in crate::agent) fn link_unassigned_stats(&self) {

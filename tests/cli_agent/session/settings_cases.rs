@@ -551,7 +551,7 @@ fn session_file_size_limit_latches_after_executing_whole_tool_batch() {
         .args(["--allowed-tools", "Write", "-p", "overflow the journal"])
         .current_dir(cwd.path())
         .env("HOME", home.path())
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let cli = Live::new(Cli(Some(command.spawn().unwrap())));

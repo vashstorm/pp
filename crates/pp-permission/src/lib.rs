@@ -8,7 +8,10 @@ use pp_config::config::{PermissionMode, PermissionPolicy, SandboxMode};
 use std::path::Path;
 
 mod bash_ast;
+mod preapproved;
 mod rules;
+use preapproved::PreapprovedTools;
+pub use preapproved::{BashCommandPattern, check_bash_command_rules};
 pub use rules::{BashRule, SandboxGrant};
 
 use anyhow::{Result, bail};
@@ -84,21 +87,6 @@ impl ModeState {
             PermissionMode::Yolo => SandboxMode::Off,
             PermissionMode::AcceptEdits | PermissionMode::AlwaysAsk => SandboxMode::WorkspaceWrite,
         })
-    }
-}
-
-#[derive(Default)]
-struct PreapprovedTools {
-    exact: HashSet<String>,
-    prefixes: Vec<String>,
-    all_standard: bool,
-}
-
-impl PreapprovedTools {
-    fn contains(&self, name: &str) -> bool {
-        (self.all_standard && name != "task")
-            || self.exact.contains(name)
-            || self.prefixes.iter().any(|prefix| name.starts_with(prefix))
     }
 }
 
@@ -220,12 +208,13 @@ impl Gate {
             .clear();
     }
 
-    /// 登记 CLI `--allowed-tools` 的进程级预批准工具集合。
+    /// 登记 CLI `--allowed-tools` 的进程级预批准工具与细粒度 Bash 命令规则集合。
     pub fn grant_allowed_tools(
         &self,
         exact: impl IntoIterator<Item = String>,
         prefixes: Vec<String>,
         all_standard: bool,
+        bash_patterns: Vec<BashCommandPattern>,
     ) {
         let mut preapproved = self
             .preapproved
@@ -234,6 +223,7 @@ impl Gate {
         preapproved.exact = exact.into_iter().collect();
         preapproved.prefixes = prefixes;
         preapproved.all_standard = all_standard;
+        preapproved.bash_patterns = bash_patterns;
     }
 
     fn is_preapproved(&self, name: &str) -> bool {
@@ -241,6 +231,13 @@ impl Gate {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .contains(name)
+    }
+
+    fn matches_preapproved_bash_leaf(&self, leaf: &bash_ast::LeafCommand) -> bool {
+        self.preapproved
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .matches_bash_leaf(leaf)
     }
 
     pub fn list_rules(&self) -> Result<String> {
@@ -625,6 +622,9 @@ impl Gate {
 
         let is_leaf_approved = |leaf: &bash_ast::LeafCommand| -> bool {
             if tool_granted {
+                return true;
+            }
+            if self.matches_preapproved_bash_leaf(leaf) {
                 return true;
             }
             if matching_bash_rule(leaf, saved_bash_rules)

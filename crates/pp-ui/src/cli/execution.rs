@@ -6,11 +6,21 @@ use std::io::Write;
 use super::banner::cli_lsp_report;
 use super::events::{cli_context_event, cli_output_result, cli_output_text, cli_write};
 use super::mcp_status;
+use super::non_interactive::RunGuard;
 use pp_core::cancellation;
 use pp_core::events;
 #[cfg(debug_assertions)]
 use pp_mock_ai as mock_ai;
 use pp_runtime::agent;
+
+/// 非交互任务运行选项（输出模式、恢复标记、Schema 缓冲与取消守卫）。
+#[derive(Default)]
+pub struct NonInteractiveOptions<'a> {
+    pub mode: super::json::OutputMode,
+    pub resumed: bool,
+    pub buffer_text: bool,
+    pub guard: Option<&'a RunGuard>,
+}
 
 /// 行模式下单个执行单元：正常 Agent 任务，或 dev 构建的内嵌 mock 场景。
 enum CliExecution<'a> {
@@ -31,7 +41,14 @@ pub fn run_cli_task(
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<()> {
-    run_cli_execution(CliExecution::Agent { agent, prompt }, stdout, stderr)
+    run_cli_execution(
+        CliExecution::Agent { agent, prompt },
+        false,
+        None,
+        stdout,
+        stderr,
+    )
+    .map(|_| ())
 }
 
 pub fn run_cli_task_with_mode(
@@ -43,10 +60,49 @@ pub fn run_cli_task_with_mode(
     stderr: &mut impl Write,
     result_written: &mut bool,
 ) -> Result<()> {
-    match mode {
-        super::json::OutputMode::Text => run_cli_task(agent, prompt, stdout, stderr),
+    run_cli_task_with_options(
+        agent,
+        prompt,
+        NonInteractiveOptions {
+            mode,
+            resumed,
+            buffer_text: false,
+            guard: None,
+        },
+        stdout,
+        stderr,
+        result_written,
+    )
+    .map(|_| ())
+}
+
+pub fn run_cli_task_with_options(
+    agent: &mut agent::Agent,
+    prompt: Option<&str>,
+    options: NonInteractiveOptions<'_>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    result_written: &mut bool,
+) -> Result<String> {
+    match options.mode {
+        super::json::OutputMode::Text => run_cli_execution(
+            CliExecution::Agent { agent, prompt },
+            options.buffer_text,
+            options.guard,
+            stdout,
+            stderr,
+        ),
         super::json::OutputMode::Json | super::json::OutputMode::StreamJson => {
-            super::json::run_json_task(agent, prompt, mode, resumed, stdout, stderr, result_written)
+            super::json::run_json_task(
+                agent,
+                prompt,
+                options.mode,
+                options.resumed,
+                options.guard,
+                stdout,
+                stderr,
+                result_written,
+            )
         }
     }
 }
@@ -59,19 +115,28 @@ pub fn run_cli_mock_test(
     stderr: &mut impl Write,
 ) -> Result<()> {
     let endpoint = mock_ai::current_endpoint()?;
-    run_cli_execution(CliExecution::Mock { test, endpoint }, stdout, stderr)
+    run_cli_execution(
+        CliExecution::Mock { test, endpoint },
+        false,
+        None,
+        stdout,
+        stderr,
+    )
+    .map(|_| ())
 }
 
 fn run_cli_execution(
     mut execution: CliExecution<'_>,
+    buffer_text: bool,
+    guard: Option<&RunGuard>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
-) -> Result<()> {
+) -> Result<String> {
     use events::{AgentEvent, OutputStream};
     match &execution {
         CliExecution::Agent { agent, .. } => {
             // 启动期建连可能仍在后台进行：首个任务前滚动输出逐服务结果与总状态。
-            mcp_status::wait(agent, stderr);
+            mcp_status::wait(agent, stderr, guard.map(RunGuard::token));
             for warning in agent.mcp_view().warnings() {
                 writeln!(stderr, "{warning}")?;
             }
@@ -86,6 +151,8 @@ fn run_cli_execution(
     let mut thinking_newline = true;
     let mut context_usage = None;
     let mut streamed_output = String::new();
+    let mut final_text = String::new();
+    let mut current_delta_text = String::new();
     let mut emit = |event: AgentEvent| {
         // 运行时指标事件只服务 TUI，CLI 不输出，也不得触发思考换行。
         if matches!(
@@ -150,6 +217,7 @@ fn run_cli_execution(
                 visible = false;
                 content = false;
                 newline = true;
+                current_delta_text.clear();
             }
             AgentEvent::ThinkingDelta { text } | AgentEvent::ReasoningSummaryDelta { text } => {
                 if !text.is_empty() {
@@ -162,21 +230,32 @@ fn run_cli_execution(
                 refusal: false,
             } => {
                 if !text.is_empty() {
-                    cli_write(stdout, &text, &mut out_broken, &mut first_error);
-                    visible = true;
-                    content |= !text.trim().is_empty();
-                    newline = text.ends_with('\n');
+                    current_delta_text.push_str(&text);
+                    if !buffer_text {
+                        cli_write(stdout, &text, &mut out_broken, &mut first_error);
+                        visible = true;
+                        content |= !text.trim().is_empty();
+                        newline = text.ends_with('\n');
+                    }
                 }
             }
             AgentEvent::AssistantDelta { refusal: true, .. } => {}
             AgentEvent::AssistantFinished { text } => {
-                if !content && !text.is_empty() {
-                    cli_write(stdout, &text, &mut out_broken, &mut first_error);
-                    visible = true;
-                    newline = text.ends_with('\n');
+                if !text.is_empty() {
+                    final_text = text.clone();
+                } else if !current_delta_text.is_empty() {
+                    final_text = std::mem::take(&mut current_delta_text);
                 }
-                if visible && !newline {
-                    cli_write(stdout, "\n", &mut out_broken, &mut first_error);
+                current_delta_text.clear();
+                if !buffer_text {
+                    if !content && !text.is_empty() {
+                        cli_write(stdout, &text, &mut out_broken, &mut first_error);
+                        visible = true;
+                        newline = text.ends_with('\n');
+                    }
+                    if visible && !newline {
+                        cli_write(stdout, "\n", &mut out_broken, &mut first_error);
+                    }
                 }
                 visible = false;
                 newline = true;
@@ -477,27 +556,43 @@ fn run_cli_execution(
             | AgentEvent::TodoStateUpdated { .. } => {}
         }
     };
-    let cancellation = cancellation::CancellationToken::new();
-    let result = match &mut execution {
+    let fallback_token = cancellation::CancellationToken::new();
+    let cancellation = guard.map_or(&fallback_token, RunGuard::token);
+    let outcome = match &mut execution {
         CliExecution::Agent { agent, prompt } => match prompt {
-            Some(prompt) => agent.run(prompt, &cancellation, None, &mut emit),
-            None => agent.continue_session(&cancellation, None, &mut emit),
-        }
-        .map(|_| ()),
+            Some(prompt) => agent.run(prompt, cancellation, None, &mut emit),
+            None => agent.continue_session(cancellation, None, &mut emit),
+        },
         #[cfg(debug_assertions)]
         CliExecution::Mock { test, endpoint } => {
-            mock_ai::run_test(*test, endpoint.clone(), None, &cancellation, &mut |event| {
+            mock_ai::run_test(*test, endpoint.clone(), None, cancellation, &mut |event| {
                 if let mock_ai::MockTestEvent::Progress(event) = event {
                     emit(event);
                 }
             })
-            .map(|_| ())
+            .map(|_| cancellation::RunOutcome::Completed)
         }
+    };
+    let result = match outcome {
+        Ok(cancellation::RunOutcome::Cancelled) => Err(match guard {
+            Some(guard) => guard.cancellation_error(),
+            None => cancellation::Cancelled.into(),
+        }),
+        Ok(_) => Ok(()),
+        Err(error) => Err(match guard {
+            Some(guard) => guard.remap_error(error),
+            None => error,
+        }),
     };
     if !thinking_newline {
         cli_write(stderr, "\n", &mut err_broken, &mut first_error);
     }
-    if visible && !newline {
+    if buffer_text && result.is_ok() && !final_text.is_empty() {
+        cli_write(stdout, &final_text, &mut out_broken, &mut first_error);
+        if !final_text.ends_with('\n') {
+            cli_write(stdout, "\n", &mut out_broken, &mut first_error);
+        }
+    } else if !buffer_text && visible && !newline {
         cli_write(stdout, "\n", &mut out_broken, &mut first_error);
     }
     match &mut execution {
@@ -536,5 +631,6 @@ fn run_cli_execution(
     if let Some(error) = first_error {
         return Err(error).context("writing task output");
     }
-    result
+    result?;
+    Ok(final_text)
 }

@@ -7,12 +7,19 @@ use std::time::Duration;
 
 const POLL: Duration = Duration::from_millis(25);
 
-/// 等启动期建连结束，期间把新完成的服务逐条写到 stderr。
+/// 等启动期建连结束（或在收到取消信号时提前退出），期间把新完成的服务逐条写到 stderr。
 /// 提示不影响任务结果：写失败（例如管道断开）被忽略，不改变任务输出。
-pub(crate) fn wait(agent: &Agent, stderr: &mut impl Write) {
+pub(crate) fn wait(
+    agent: &Agent,
+    stderr: &mut impl Write,
+    cancellation: Option<&pp_core::cancellation::CancellationToken>,
+) {
     let manager = agent.mcp();
     let mut printed = 0usize;
     loop {
+        if cancellation.is_some_and(pp_core::cancellation::CancellationToken::is_cancelled) {
+            return;
+        }
         let snapshot = manager.connect_snapshot();
         // 结束时也要把最后一批已完成的服务排完，再输出总状态。
         for server in &snapshot.servers[printed..] {

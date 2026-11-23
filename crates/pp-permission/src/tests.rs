@@ -938,6 +938,7 @@ fn preapproved_allowed_tools_bypass_prompts_except_explicit_deny_and_critical_ba
         ["edit".into(), "bash".into(), "write".into()],
         vec!["mcp__demo__".into()],
         false,
+        Vec::new(),
     );
 
     // 精确匹配、前缀匹配与 bash 均无需交互 handler 即可放行，clear_session 不清除 CLI 授权。
@@ -961,9 +962,34 @@ fn preapproved_allowed_tools_bypass_prompts_except_explicit_deny_and_critical_ba
 
     // all_standard 放行常规工具与 MCP，但不自动预批准 task。
     let wildcard = self::gate(PermissionMode::AlwaysAsk, &[]);
-    wildcard.grant_allowed_tools([], Vec::new(), true);
+    wildcard.grant_allowed_tools([], Vec::new(), true, Vec::new());
     enforce(&wildcard, "edit", "{}").unwrap();
     enforce(&wildcard, "mcp__any__tool", "{}").unwrap();
     let err = enforce(&wildcard, "task", "{}").unwrap_err();
     assert!(err.to_string().contains("no interactive UI"), "{err}");
+}
+
+#[test]
+fn preapproved_bash_command_patterns_check_every_ast_leaf_and_enforce_critical_rules() {
+    let patterns = vec![
+        BashCommandPattern::Prefix(vec!["echo".into()]),
+        BashCommandPattern::Exact(vec!["git".into(), "status".into()]),
+    ];
+    // 能力规则层：允许的单个/复合命令通过，越权/复合夹带/动态脚本被拦截。
+    check_bash_command_rules(&bash("echo hello && git status"), Some(&patterns), &[]).unwrap();
+    check_bash_command_rules(&bash("git -C /tmp status"), Some(&patterns), &[]).unwrap();
+    assert!(check_bash_command_rules(&bash("git status -s"), Some(&patterns), &[]).is_err());
+    assert!(check_bash_command_rules(&bash("echo ok && pwd"), Some(&patterns), &[]).is_err());
+    assert!(check_bash_command_rules(&bash("eval 'echo ok'"), Some(&patterns), &[]).is_err());
+
+    let disallowed = vec![BashCommandPattern::Prefix(vec!["rm".into()])];
+    assert!(check_bash_command_rules(&bash("echo ok && rm -f x"), None, &disallowed).is_err());
+    check_bash_command_rules(&bash("echo ok"), None, &disallowed).unwrap();
+
+    // 权限门层：matched leaf 在 always-ask 下免弹窗，未匹配 leaf 或 critical 写入仍被拒。
+    let gate = self::gate(PermissionMode::AlwaysAsk, &[]);
+    gate.grant_allowed_tools([], Vec::new(), false, patterns);
+    enforce(&gate, "bash", &bash("echo safe && git status")).unwrap();
+    assert!(enforce(&gate, "bash", &bash("touch foo")).is_err());
+    assert!(enforce(&gate, "bash", &bash("echo x > /etc/passwd")).is_err());
 }

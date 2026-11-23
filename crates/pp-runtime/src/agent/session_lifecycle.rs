@@ -18,8 +18,17 @@ use std::path::PathBuf;
 impl Agent {
     pub fn restore(
         models: std::sync::Arc<ModelState>,
+        tools: Tools,
+        restored: persistence::RestoredSession,
+    ) -> Result<Self> {
+        Self::restore_with_options(models, tools, restored, true)
+    }
+
+    pub fn restore_with_options(
+        models: std::sync::Arc<ModelState>,
         mut tools: Tools,
         restored: persistence::RestoredSession,
+        hooks_enabled: bool,
     ) -> Result<Self> {
         let persistence::RestoredSession {
             mut checkpoint,
@@ -69,8 +78,13 @@ impl Agent {
             replay.push(persistence::ReplayRecord::Event(snapshot));
         }
         let client = OpenAiClient::new(&config)?;
-        // hook 配置不从 checkpoint 恢复：始终重新读取用户级与项目级 hooks 文件。
-        let hooks = Self::compile_hooks(&catalog, tools.cwd())?;
+        let ephemeral = journal.is_ephemeral();
+        // hook 配置不从 checkpoint 恢复：始终重新读取用户级与项目级 hooks 文件；`--no-hooks` 时跳过。
+        let hooks = if hooks_enabled {
+            Self::compile_hooks(&catalog, tools.cwd())?
+        } else {
+            std::sync::Arc::new(crate::hooks::Runner::empty())
+        };
         tools.limits = checkpoint.tool_limits;
         tools.configure_eval(catalog.eval_settings());
         tools.configure_web_search(catalog.web_search_settings().clone());
@@ -135,13 +149,17 @@ impl Agent {
             request_skills: Vec::new(),
             journal,
             replay,
-            debug: debug::DebugState::new(config.settings.debug, true),
+            debug: debug::DebugState::new(config.settings.debug && !ephemeral, true),
             workflow: checkpoint.workflow,
             plan_cleanup_error: None,
             plan_lease: None,
             lsp_injected: Default::default(),
             hooks,
             hook_agent_type: None,
+            ephemeral,
+            max_turns: None,
+            output_schema: None,
+            ephemeral_subagent_dir: None,
         };
         if let Some(source) = &agent.prompt_source {
             let context = crate::system_prompt::RenderContext::new(

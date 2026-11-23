@@ -44,6 +44,10 @@ impl Agent {
         let mut cached_usage: Option<pp_core::context::ContextUsage> = None;
         // 本次任务运行的增量用量记账：只有新增消息会被序列化，整段替换历史时显式失效。
         let mut estimate = SessionEstimate::default();
+        if let Some(schema) = &mut self.output_schema {
+            schema.reset_retries();
+            append_developer_to(&mut self.session, schema.instruction_message());
+        }
         loop {
             self.journal.check()?;
             self.ensure_subagents()?;
@@ -144,6 +148,11 @@ impl Agent {
                 }
             }
             self.publish_context_snapshot_with_usage(published_usage);
+            if let Some(limit) = self.max_turns
+                && request_count >= limit
+            {
+                return Err(pp_core::cancellation::MaxTurnsExceeded { limit }.into());
+            }
             request_count += 1;
             emit(AgentEvent::AssistantStarted);
             let update = RequestUpdate {
@@ -294,6 +303,25 @@ impl Agent {
                     reminder.awaiting_progress = true;
                     emit(event);
                     continue;
+                }
+                if !awaiting_user_answer
+                    && let Err(reason) = self
+                        .output_schema
+                        .as_ref()
+                        .map_or(Ok(()), |schema| schema.validate(&text))
+                {
+                    if self
+                        .output_schema
+                        .as_mut()
+                        .is_some_and(super::output_schema::OutputSchema::consume_retry)
+                    {
+                        let message =
+                            super::output_schema::OutputSchema::correction_message(&reason);
+                        append_developer_to(&mut self.session, message);
+                        self.journal.commit((&self.session).into())?;
+                        continue;
+                    }
+                    bail!("output does not match --output-schema: {reason}");
                 }
                 if stop_hooks {
                     // 脚本执行期间不持队列锁；返回后重新仲裁停止决定与输入。

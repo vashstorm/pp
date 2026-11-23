@@ -241,11 +241,10 @@ impl Tools {
                 "wait for the subagent result to complete and commit to context before submitting a plan."
             );
         }
-        if let Some(allowed) = &self.allowed_tools {
-            ensure!(
-                allowed.allows(name) || name == "yield" && self.yield_schema.is_some(),
-                "Tool is outside this agent capability set."
-            );
+        if let Some(allowed) = &self.allowed_tools
+            && !(name == "yield" && self.yield_schema.is_some())
+        {
+            allowed.authorize_call(name, arguments)?;
         }
         // A sealed batch (plan already submitted) refuses every call before
         // any parsing or dispatch, while still producing one result per call

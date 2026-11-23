@@ -83,13 +83,37 @@ impl Agent {
         Ok((config, selection))
     }
 
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn new_with_prompt(
+        models: std::sync::Arc<ModelState>,
+        tools: Tools,
+        sessions_dir: PathBuf,
+        lock_dir: PathBuf,
+        prompt_source: crate::system_prompt::Snapshot,
+        stats: impl Into<pp_stats::Database>,
+    ) -> Result<Self> {
+        Self::new_with_prompt_with_options(
+            models,
+            tools,
+            sessions_dir,
+            lock_dir,
+            prompt_source,
+            stats,
+            true,
+            false,
+        )
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn new_with_prompt_with_options(
         models: std::sync::Arc<ModelState>,
         mut tools: Tools,
         sessions_dir: PathBuf,
         lock_dir: PathBuf,
         prompt_source: crate::system_prompt::Snapshot,
         stats: impl Into<pp_stats::Database>,
+        hooks_enabled: bool,
+        ephemeral: bool,
     ) -> Result<Self> {
         tools.reset_project_instructions([]);
         let catalog = models.catalog_snapshot();
@@ -143,7 +167,11 @@ impl Agent {
             )
             .context(crate::system_prompt::PromptFailure)?;
         // 无效正则或结构错误阻止 Agent 构造；脚本本身只在匹配时启动。
-        let hooks = Self::compile_hooks(&catalog, tools.cwd())?;
+        let hooks = if hooks_enabled {
+            Self::compile_hooks(&catalog, tools.cwd())?
+        } else {
+            std::sync::Arc::new(crate::hooks::Runner::empty())
+        };
         let initial_system = system.clone();
         let mut session = Session::new_with_tools(
             config.model,
@@ -152,6 +180,11 @@ impl Agent {
             Some(definitions),
         );
         session.set_think_level(think_level);
+        let journal = if ephemeral {
+            SessionJournal::ephemeral(sessions_dir, lock_dir, stats)
+        } else {
+            SessionJournal::with_locks(sessions_dir, lock_dir, stats)
+        };
         Ok(Self {
             role_route: None,
             client,
@@ -179,15 +212,19 @@ impl Agent {
             pending_project_load: Vec::new(),
             reported_project_load: Default::default(),
             request_skills: Vec::new(),
-            journal: SessionJournal::with_locks(sessions_dir, lock_dir, stats),
+            journal,
             replay: Vec::new(),
-            debug: debug::DebugState::new(config.settings.debug, false),
+            debug: debug::DebugState::new(config.settings.debug && !ephemeral, false),
             workflow: pp_core::plan::WorkflowState::default(),
             plan_cleanup_error: None,
             plan_lease: None,
             lsp_injected: Default::default(),
             hooks,
             hook_agent_type: None,
+            ephemeral,
+            max_turns: None,
+            output_schema: None,
+            ephemeral_subagent_dir: None,
         })
     }
 

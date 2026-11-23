@@ -117,10 +117,16 @@ pp enters the TUI when both stdin and stdout are terminals; otherwise, it uses l
 
 ```sh
 pp -p 'Read the current project and explain its structure without changing files.'
-# Resume a session non-interactively and append a follow-up prompt
+# Pipe stdin (standalone or appended after an explicit -p prompt)
+git diff | pp -p 'Review this diff for bugs.'
+# Resume a session by ID or continue the latest session non-interactively
 pp -p -r <SESSION_ID> 'Summarize what changed.'
-# Allow write/execution tools and stream JSONL events (or use --mode json for a single terminal summary)
-pp -p --mode stream-json --allowed-tools 'Read,Grep,Edit,Bash' 'Fix the failing test and verify.'
+pp -p -c 'Check the failing edge case too.'
+# One-off ephemeral run in a target workspace with turn/time guardrails, scoped Bash, JSON Schema validation, and file output
+pp -C /path/to/repo -p --ephemeral --max-turns 5 --timeout 2m --effort high --no-hooks \
+  --allowed-tools 'Read,Grep,Bash(git status:*),Bash(cargo test:*)' --disallowed-tools 'Bash(cargo publish:*)' \
+  --output-schema '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}' \
+  -o summary.json --mode stream-json 'Run the suite and report status.'
 printf 'Explain how to build the current project\n' | pp
 # Model shorthand: fuzzy provider/model[:effort] for this run only (favorites win ties, the default effort applies when omitted), then run a startup slash command
 pp --model deepseek/deepseek-flash:high /commit
@@ -128,7 +134,9 @@ pp --model deepseek/deepseek-flash:high /commit
 pp /stats --host 127.0.0.1 --port 0 --no-open
 ```
 
-Non-interactive `-p` runs default to read-only tools (`Read, Grep, Glob`) with subagents disabled. Pass `--allowed-tools` (alias `--allowed_tools`, comma-separated tool names such as `Read,Grep,Edit,Bash`, `mcp__*`, or `*`) to expand capabilities and pre-approve them for that run; include `Task` to enable subagent dispatch. `--mode stream-json` writes real-time JSONL events (`init` through terminal `result`, including `status: "error"` on failure) to `stdout` while keeping logs and errors on `stderr`; `--mode json` emits only the terminal `result` JSON object to `stdout`.
+Non-interactive `-p` runs default to read-only tools (`Read, Grep, Glob`) with subagents disabled, and accept piped stdin (combined after any explicit prompt). Pass `--allowed-tools` (alias `--allowed_tools`, supporting comma-separated tool names, `mcp__*`, `*`, `Task` for subagents, and AST-checked `Bash(prefix:*)` / `Bash(exact)` rules) to expand and pre-approve capabilities for that run, and `--disallowed-tools` (alias `--disallowed_tools`) to subtract tools or `Bash(...)` patterns. `--mode stream-json` writes real-time JSONL events (`init` through terminal `result`, including `status: "error"` on failure) to `stdout` while keeping logs and errors on `stderr`; `--mode json` emits only the terminal `result` JSON object to `stdout`.
+
+Automation flags for `-p` runs: `-C`/`--cd <DIR>` sets the working directory before agent initialization (while `-o`/`--output-file` and `--output-schema` file paths resolve relative to the caller's directory), `--ephemeral` (`--no-session-persistence`) disables session disk writes and locks (even when reading `-r`/`-c`), `--max-turns <N>` caps model requests, `--timeout <DURATION>` enforces a wall-clock deadline, `--output-schema` validates final assistant JSON (retrying up to 2 times), `-o`/`--output-file` atomically writes the final assistant text on success, `--effort` overrides reasoning effort without saving, and `--no-hooks` skips lifecycle hooks. Exit codes: `0` success, `1` runtime error, `2` CLI usage error, `3` `--max-turns` exceeded, `124` `--timeout`, `130` `SIGINT`, `143` `SIGTERM`.
 
 > **Permissions and data** — `accept-edits` is the default preset. It uses the workspace sandbox and prompts for extra Bash access on request. Set `tools.permissionMode` in `settings.yml` to choose another preset (`always-ask`, `accept-edits`, or `yolo`). `always-ask` also asks before write and execution tools. `yolo` turns off the pp sandbox and skips routine tool permission prompts. The colored TUI footer shows the active mode. Press Alt + Shift + A or F6 to cycle, or use `/permissions` to see the effective sandbox and permission settings. API keys in the model configuration are stored in plain text. Sessions and statistics may contain source code and conversations. [Full permissions guide (Chinese) →](docs/guide.md#工具执行与权限)
 

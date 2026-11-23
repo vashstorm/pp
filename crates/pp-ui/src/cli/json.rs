@@ -34,14 +34,19 @@ pub(crate) fn run_json_task(
     prompt: Option<&str>,
     mode: OutputMode,
     resumed: bool,
+    guard: Option<&super::non_interactive::RunGuard>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
     result_written: &mut bool,
-) -> Result<()> {
+) -> Result<String> {
     let started = Instant::now();
     // 结构化模式等待启动期 MCP 建连完成但不打印人类进度横幅；配置告警仍输出到 stderr。
     let mut sink = io::sink();
-    mcp_status::wait(agent, &mut sink);
+    mcp_status::wait(
+        agent,
+        &mut sink,
+        guard.map(super::non_interactive::RunGuard::token),
+    );
     for warning in agent.mcp_view().warnings() {
         writeln!(stderr, "{warning}")?;
     }
@@ -75,12 +80,23 @@ pub(crate) fn run_json_task(
         }
     };
 
-    let cancellation = cancellation::CancellationToken::new();
-    let task_result = match prompt {
-        Some(prompt) => agent.run(prompt, &cancellation, None, &mut emit),
-        None => agent.continue_session(&cancellation, None, &mut emit),
-    }
-    .map(|_| ());
+    let fallback_token = cancellation::CancellationToken::new();
+    let cancellation = guard.map_or(&fallback_token, super::non_interactive::RunGuard::token);
+    let outcome = match prompt {
+        Some(prompt) => agent.run(prompt, cancellation, None, &mut emit),
+        None => agent.continue_session(cancellation, None, &mut emit),
+    };
+    let task_result = match outcome {
+        Ok(cancellation::RunOutcome::Cancelled) => Err(match guard {
+            Some(guard) => guard.cancellation_error(),
+            None => cancellation::Cancelled.into(),
+        }),
+        Ok(_) => Ok(()),
+        Err(error) => Err(match guard {
+            Some(guard) => guard.remap_error(error),
+            None => error,
+        }),
+    };
 
     let _ = agent.take_session_notice();
     let error_text = task_result
@@ -105,7 +121,7 @@ pub(crate) fn run_json_task(
     if let Some(error) = first_error {
         return Err(error).context("writing JSON output");
     }
-    Ok(())
+    Ok(final_text)
 }
 
 /// 在任务循环尚未开始即失败（如参数/配置/恢复错误）时补写终态错误 JSON。

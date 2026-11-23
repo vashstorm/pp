@@ -103,6 +103,12 @@ pub(crate) struct Runner {
 }
 
 impl Runner {
+    pub(crate) fn empty() -> Self {
+        Self {
+            events: std::array::from_fn(|_| Vec::new()),
+        }
+    }
+
     /// 读取用户级与项目级 hooks 文件后编译；项目级组追加在用户级之后。
     pub(crate) fn load(user: &Path, project: &Path) -> Result<Self> {
         Self::compile(&pp_config::config::load_hooks(user, project)?)

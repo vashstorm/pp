@@ -52,6 +52,24 @@ impl LeafCommand {
         false
     }
 
+    pub(crate) fn matches_exact(&self, expected: &[String]) -> bool {
+        if self.dynamic_exec || self.is_function_call || expected.is_empty() {
+            return false;
+        }
+        let matches = |tokens: &[ArgToken]| -> bool {
+            tokens.len() == expected.len()
+                && tokens
+                    .iter()
+                    .zip(expected)
+                    .all(|(token, literal)| matches!(token, ArgToken::Literal(value) if value == literal))
+        };
+        if matches(&self.tokens) {
+            return true;
+        }
+        self.normalized_subcommand_tokens()
+            .is_some_and(|normalized| matches(&normalized))
+    }
+
     fn normalized_subcommand_tokens(&self) -> Option<Vec<ArgToken>> {
         let program = self.program()?;
         if !SUBCOMMAND_PROGRAMS.contains(&program) {

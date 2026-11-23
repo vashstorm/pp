@@ -85,7 +85,18 @@ impl Agent {
         let lsp_path = self.catalog.lsp_path();
         let sandbox = Arc::clone(self.tools.sandbox());
         let parent_cwd = self.tools.cwd().to_path_buf();
-        let root_dir = self.journal.directory().join(format!("{id}.subagents"));
+        let root_dir = if self.ephemeral {
+            let dir = match &self.ephemeral_subagent_dir {
+                Some(dir) => dir,
+                None => {
+                    let created = tempfile::tempdir()?;
+                    self.ephemeral_subagent_dir.insert(created)
+                }
+            };
+            dir.path().join(format!("{id}.subagents"))
+        } else {
+            self.journal.directory().join(format!("{id}.subagents"))
+        };
         // 子 Agent 的请求与工具记录写入父级同一个统计库。
         let stats_db = self.journal.stats_database().to_owned();
         // 配置在进程内冻结：子 Agent 复用父级编译结果，不重读 settings。
@@ -280,6 +291,10 @@ impl Agent {
                 lsp_injected: Default::default(),
                 hooks: hooks.clone(),
                 hook_agent_type: Some(record.spec.definition.clone()),
+                ephemeral: false,
+                max_turns: None,
+                output_schema: None,
+                ephemeral_subagent_dir: None,
             };
             #[cfg(debug_assertions)]
             if let Some(scripts) = &mock_scripts {

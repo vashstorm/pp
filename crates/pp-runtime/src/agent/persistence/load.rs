@@ -16,6 +16,28 @@ pub fn load(
     include_replay: bool,
     stats_db: &Path,
 ) -> Result<RestoredSession> {
+    load_with_options(dir, lock_dir, id, include_replay, stats_db, false)
+}
+
+/// 以只读快照方式恢复历史会话：不获取会话锁、不截断或追加原文件，后续运行全程 `--ephemeral`。
+pub fn load_readonly(
+    dir: &Path,
+    lock_dir: &Path,
+    id: Option<&str>,
+    include_replay: bool,
+    stats_db: &Path,
+) -> Result<RestoredSession> {
+    load_with_options(dir, lock_dir, id, include_replay, stats_db, true)
+}
+
+fn load_with_options(
+    dir: &Path,
+    lock_dir: &Path,
+    id: Option<&str>,
+    include_replay: bool,
+    stats_db: &Path,
+    readonly: bool,
+) -> Result<RestoredSession> {
     let id = match id {
         Some(id) => {
             validate_id(id)?;
@@ -23,11 +45,18 @@ pub fn load(
         }
         None => latest(dir)?,
     };
-    let session_lock = SessionLock::acquire(lock_dir, &id)?;
+    let session_lock = if readonly {
+        None
+    } else {
+        Some(SessionLock::acquire(lock_dir, &id)?)
+    };
     let path = dir.join(format!("{id}.jsonl"));
-    let file = OpenOptions::new()
-        .read(true)
-        .append(true)
+    let mut open_options = OpenOptions::new();
+    open_options.read(true);
+    if !readonly {
+        open_options.append(true);
+    }
+    let file = open_options
         .custom_flags(
             rustix::fs::OFlags::NOFOLLOW.bits() as i32 | rustix::fs::OFlags::NONBLOCK.bits() as i32,
         )
@@ -158,12 +187,12 @@ pub fn load(
             replay = tree.replay(&file, tree.leaf, true)?;
         }
     }
-    Ok(RestoredSession {
-        checkpoint,
-        journal: SessionJournal {
+    let journal = match session_lock {
+        Some(session_lock) => SessionJournal {
             dir: dir.to_owned(),
             lock_dir: lock_dir.to_owned(),
             stats: pp_stats::Database::new(stats_db.to_owned()),
+            ephemeral: false,
             active: Some(Active {
                 id,
                 created_at_ms,
@@ -193,6 +222,15 @@ pub fn load(
             unlinked_stats: Default::default(),
             first_request: Arc::new(AtomicBool::new(false)),
         },
+        None => SessionJournal::ephemeral(
+            dir.to_owned(),
+            lock_dir.to_owned(),
+            pp_stats::Database::new(stats_db.to_owned()),
+        ),
+    };
+    Ok(RestoredSession {
+        checkpoint,
+        journal,
         replay,
     })
 }

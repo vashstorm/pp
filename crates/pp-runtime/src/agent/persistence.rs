@@ -42,7 +42,7 @@ pub use listing::{SessionListing, SessionSummary, delete, validate_id};
 pub(in crate::agent::persistence) use listing::{
     compact_summary, create, latest, now_ms, parse_timestamp, timestamp,
 };
-pub use load::load;
+pub use load::{load, load_readonly};
 use stats::PendingToolStat;
 
 pub enum ReplayRecord {
@@ -141,6 +141,7 @@ pub(super) struct SessionJournal {
     lock_dir: PathBuf,
     /// 统计库句柄；由 `Agent` 构造方从 `pp_stats::database_path` 或临时目录传入。
     stats: pp_stats::Database,
+    ephemeral: bool,
     active: Option<Active>,
     committed: usize,
     capture: replay::Capture,
@@ -194,6 +195,7 @@ impl SessionJournal {
             dir,
             lock_dir,
             stats: stats.into(),
+            ephemeral: false,
             active: None,
             committed: 0,
             capture: replay::Capture::default(),
@@ -214,6 +216,22 @@ impl SessionJournal {
             first_request: Arc::new(AtomicBool::new(true)),
         }
     }
+
+    pub(super) fn ephemeral(
+        dir: PathBuf,
+        lock_dir: PathBuf,
+        stats: impl Into<pp_stats::Database>,
+    ) -> Self {
+        Self {
+            ephemeral: true,
+            ..Self::with_locks(dir, lock_dir, stats)
+        }
+    }
+
+    pub(super) fn is_ephemeral(&self) -> bool {
+        self.ephemeral
+    }
+
     pub(super) fn id(&self) -> Option<&str> {
         self.active.as_ref().map(|active| active.id.as_str())
     }
@@ -221,11 +239,13 @@ impl SessionJournal {
         self.notice.take()
     }
     pub(super) fn reset(&mut self) {
+        let ephemeral = self.ephemeral;
         *self = Self::with_locks(
             std::mem::take(&mut self.dir),
             std::mem::take(&mut self.lock_dir),
             self.stats.clone(),
         );
+        self.ephemeral = ephemeral;
     }
     pub(super) fn lock_dir(&self) -> &Path {
         &self.lock_dir
@@ -345,7 +365,10 @@ impl SessionJournal {
 
     /// 新上下文复用会话目录与锁目录，独立持有新会话的锁。
     pub(super) fn fork_empty(&self) -> Self {
-        Self::with_locks(self.dir.clone(), self.lock_dir.clone(), self.stats.clone())
+        Self {
+            ephemeral: self.ephemeral,
+            ..Self::with_locks(self.dir.clone(), self.lock_dir.clone(), self.stats.clone())
+        }
     }
 
     /// Test-only fault injection: swap the active descriptor for a read-only

@@ -67,11 +67,9 @@ pub(in crate::agent) fn response_turn(
                 &mut journal,
                 &mut **emit.borrow_mut(),
             )?;
-            update.record_prompt(
-                SessionRef::Response(request),
-                metadata,
-                journal.id().expect("sent request has a session ID"),
-            );
+            if let Some(id) = journal.id() {
+                update.record_prompt(SessionRef::Response(request), metadata, id);
+            }
             journal.event(&AgentEvent::AssistantStarted);
             journal.check()
         };

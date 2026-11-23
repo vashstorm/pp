@@ -120,10 +120,16 @@ chmod 600 ~/.pp/agent/models.yml
 
 ```sh
 pp -p '阅读当前项目并说明结构，不修改文件。'
-# 非交互恢复指定会话并追加新的 prompt 继续运行
+# 通过 stdin 传入或追加上下文
+git diff | pp -p '检查这段改动是否存在缺陷。'
+# 非交互恢复指定会话，或直接续跑最近会话
 pp -p -r <SESSION_ID> '总结刚才的改动。'
-# 按需开放编辑/命令工具，并以 JSONL 事件流输出（或使用 --mode json 仅输出单条终态摘要）
-pp -p --mode stream-json --allowed-tools 'Read,Grep,Edit,Bash' '修复失败测试并验证。'
+pp -p -c '顺便检查边界条件。'
+# 自动化护栏组合：切工作目录、无持久化运行、轮次/超时上限、Bash 前缀白名单与禁止规则、Schema 校验及结果落盘
+pp -C /path/to/repo -p --ephemeral --max-turns 5 --timeout 2m --effort high --no-hooks \
+  --allowed-tools 'Read,Grep,Bash(git status:*),Bash(cargo test:*)' --disallowed-tools 'Bash(cargo publish:*)' \
+  --output-schema '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}' \
+  -o summary.json --mode stream-json '运行测试并汇报状态。'
 printf '说明当前项目的构建方式\n' | pp
 # 模型简写：本次运行用模糊匹配的 provider/model[:effort]（同档收藏优先，省略档位时用模型默认档），并启动即执行一条斜杠命令
 pp --model deepseek/deepseek-flash:high /commit
@@ -131,7 +137,9 @@ pp --model deepseek/deepseek-flash:high /commit
 pp /stats --host 127.0.0.1 --port 0 --no-open
 ```
 
-非交互 `-p` 模式默认仅开放只读工具（`Read, Grep, Glob`）且禁用子 Agent。可通过 `--allowed-tools`（兼容别名 `--allowed_tools`，逗号分隔如 `Read,Grep,Edit,Bash`、`mcp__*` 或 `*`）扩展工具白名单并在本次运行免交互审批放行；仅在显式包含 `Task` 时开启子 Agent 派发。`--mode stream-json` 将事件流（从 `init` 到终态 `result`，失败时同样写一条 `status: "error"` 的终态记录）实时输出到 `stdout`，日志与报错走 `stderr`；`--mode json` 仅在结束时向 `stdout` 输出单条终态 `result` JSON 对象。
+非交互 `-p` 模式默认仅开放只读工具（`Read, Grep, Glob`）、禁用子 Agent，并自动读取管道 stdin（存在显式 prompt 时追加在其后）。可通过 `--allowed-tools`（兼容别名 `--allowed_tools`，支持逗号分隔工具名、`mcp__*`、`*`、开启子 Agent 的 `Task`，以及基于 AST 校验每个叶子命令的 `Bash(prefix:*)` / `Bash(exact)` 规则）扩展能力并在本次运行免交互审批放行，也可通过 `--disallowed-tools`（别名 `--disallowed_tools`）叠加禁用工具或特定 `Bash(...)` 命令。`--mode stream-json` 将事件流（从 `init` 到终态 `result`，失败时同样写一条 `status: "error"` 的终态记录）实时输出到 `stdout`，日志与报错走 `stderr`；`--mode json` 仅在结束时向 `stdout` 输出单条终态 `result` JSON 对象。
+
+2 期非交互参数：`-C`/`--cd <DIR>` 在启动前切换工作目录（`-o` 与 `--output-schema` 文件路径仍按调用方目录解析）；`--ephemeral`（别名 `--no-session-persistence`）内存运行不落盘、不加锁（配合 `-r`/`-c` 时只读恢复）；`--max-turns <N>` 限制最大模型轮次；`--timeout <DURATION>` 与 `SIGINT`/`SIGTERM` 触发优雅取消并回收子进程；`--output-schema` 校验最终输出 JSON（最多自动纠错重试 2 次）；`-o`/`--output-file` 在成功后原子写入最终助手正文；`--effort` 临时覆盖思考档位；`--no-hooks` 跳过生命周期 Hooks。退出码约定：`0` 成功、`1` 运行期错误、`2` CLI 用法错误、`3` 超出 `--max-turns`、`124` `--timeout` 超时、`130` `SIGINT`、`143` `SIGTERM`。
 
 > **权限与数据** · 默认使用 `accept-edits`，在工作区沙盒内运行，并按需询问 Bash 的额外权限。可以在 `settings.yml` 中通过 `tools.permissionMode` 选择其他预设（`always-ask`、`accept-edits` 或 `yolo`）。`always-ask` 还会在写入与执行工具运行前询问，`yolo` 关闭 pp 沙盒并跳过常规工具权限确认。TUI 底栏用颜色标明档位，按 Alt + Shift + A 或 F6 循环，也可通过 `/permissions` 查看生效状态。模型配置中的接口密钥以明文保存，会话与统计可能包含源码和对话。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
 
