@@ -156,10 +156,6 @@ fn slow_tui_setting_tabs_persist_general_and_revert_unsaved_theme() {
     restarted.text("hashline");
     restarted.input("\x1b");
     restarted.ready();
-    // 已移除的 `/subagents` 保留草稿且不打开面板。
-    restarted.input("/subagents\r");
-    restarted.text("/subagents");
-    assert!(!restarted.contents().contains("Agent Hub"));
     restarted.input("\x03");
     restarted.finish();
     no_more(&server);

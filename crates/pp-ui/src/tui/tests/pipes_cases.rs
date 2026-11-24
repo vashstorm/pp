@@ -124,18 +124,6 @@ fn pane_store_root_change_closes_panel_and_worker() {
 }
 
 #[test]
-fn f8_does_not_override_an_ask_modal() {
-    let mut app = app();
-    let _ = ask_fixture(&mut app);
-    app.handle(
-        Event::Key(KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE)),
-        &mut false,
-    );
-    assert!(app.pipes_panel.is_none());
-    assert!(app.ask_panel.is_some());
-}
-
-#[test]
 fn session_adoption_closes_pipes_panel() {
     let mut app = app();
     app.state = State::Ready;

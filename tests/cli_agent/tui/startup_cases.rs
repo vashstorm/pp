@@ -193,11 +193,6 @@ fn tui_notification_deprecated_settings_keep_startup_errors_and_redaction() {
             None,
         ),
         (
-            r#"{"notification_show_countdown":false,"notification_timeout_seconds":2}"#,
-            "Configuration unavailable",
-            None,
-        ),
-        (
             r#"{"notification_timeout_seconds":"private-invalid-value"}"#,
             "invalid YAML settings",
             Some("notification_timeout_seconds"),

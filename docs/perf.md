@@ -11,13 +11,11 @@
   零输出、零分配，不进入 `~/.pp/logs` 契约。
 - 回环 mock provider（Chat Completions SSE）由 `docs/perf.md` 记录的最小 Python 脚本提供，
   通过 `probe.json` 指定本轮要触发的一次工具调用与轮数，因此既能测启动，也能测真实工具路径。
-- `crates/pp-tools/tests/perf_probe.rs` 是 release 探针用例（`#[ignore]`，默认不跑），
-  在进程内直接调用工具执行器，排除进程启动与模型往返。
 
 release profile 本轮保持不变（`opt-level = "z"`、`codegen-units = 16`、`strip = true`）。
 
 ```sh
-# 夹具（$PERF_FIXTURES）：1k / 10k / 50k 个文件的多层目录，5k 行文本，3k 行文本
+# 夹具（/private/tmp/perf_fixtures）：1k / 10k / 50k 个文件的多层目录，5k 行文本，3k 行文本
 mkdir -p /private/tmp/perf_fixtures && cd /private/tmp/perf_fixtures
 python3 - <<'PY'
 import os
@@ -111,8 +109,7 @@ printf '{"tool":"read","arguments":{"path":"/private/tmp/perf_fixtures/big5k.txt
 
 ## 3. 大输入工具路径
 
-进程内探针（`cargo nextest run --release --locked -p pp-tools --run-ignored only -E 'test(perf_probe)'`，
-`PERF_FIXTURES=/private/tmp/perf_fixtures`），排除进程启动与模型往返：
+历史基线（进程内直接调用工具执行器，排除进程启动与模型往返；采集探针已移除）：
 
 | 用例 | 历史基线 | 上轮优化后 | 本轮前复测 | 本轮优化后 |
 | --- | ---: | ---: | ---: | ---: |

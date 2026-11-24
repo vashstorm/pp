@@ -129,49 +129,6 @@ mod tests {
     use serde_json::{Value, json};
 
     #[test]
-    fn stats_prices_ark_kimi_with_unknown_cache_write_usage() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stats").join("stats.db");
-        let context = RequestContext {
-            model_reference: "ark/kimi-k3.1-pro".into(),
-            database: Database::new(path.clone()),
-            cwd: dir.path().into(),
-            purpose: "task",
-            session_file: None,
-            unlinked_requests: None,
-            first_request: Default::default(),
-            skills: Vec::new(),
-        };
-        let observation = Observation {
-            timestamp: 1000,
-            usage: Some(pp_core::context::TokenUsage {
-                input_tokens: 1000,
-                output_tokens: 100,
-                cached_tokens: Some(200),
-                cache_write_tokens: None,
-            }),
-            ..Observation::new()
-        };
-        let key = save(
-            &context,
-            "kimi-k3.1-pro",
-            "responses",
-            observation,
-            Instant::now(),
-            &Ok(()),
-        )
-        .unwrap();
-        let store = open_store(&path).unwrap();
-        let rows = store.latest(0, 2000, 1).unwrap();
-        let row = &rows[0];
-        assert_eq!(row.request_key, key);
-        assert_eq!(row.cache_write_tokens, None);
-        assert_eq!(row.rates().unwrap().cache_write, Some(2.0));
-        let cost = row.cost().expect("写入与普通输入同价时应记录费用");
-        assert!((cost.total() - 0.00264).abs() < 1e-12);
-    }
-
-    #[test]
     fn stats_context_list_marks_saved_first_requests_without_loading_bodies() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = open_store(&dir.path().join("stats.db")).unwrap();

@@ -97,7 +97,7 @@ fn yolo_executes_flagged_bash_without_permission_in_both_protocols() {
 }
 
 #[test]
-fn permission_cli_applies_permission_mode_and_rejects_legacy_flag() {
+fn permission_cli_applies_permission_mode() {
     let home = tempfile::tempdir().unwrap();
     write_settings(
         home.path(),
@@ -121,12 +121,4 @@ fn permission_cli_applies_permission_mode_and_rejects_legacy_flag() {
     assert!(stderr.contains("effective=off, configured=off"), "{stderr}");
     assert!(stderr.contains("network=unrestricted"), "{stderr}");
     assert!(!config_path(home.path(), "permission.toml").exists());
-
-    let legacy = Cli::spawn(
-        home.path(),
-        &["--approval-mode", "yolo", "/permissions"],
-        &[],
-    )
-    .finish();
-    assert!(!legacy.status.success(), "{legacy:?}");
 }

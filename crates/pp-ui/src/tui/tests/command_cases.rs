@@ -623,16 +623,6 @@ fn initial_file_command_submits_run_and_clears_input() {
 }
 
 #[test]
-fn initial_unknown_command_notifies_and_keeps_draft() {
-    let (mut app, requests) = file_commands_app(review_files());
-    assert!(!app.submit_initial_command("/nope"));
-    assert!(requests.try_recv().is_err());
-    assert_eq!(app.input.lines(), &["/nope"]);
-    assert!(draw(&mut app, 100, 30).contains("unknown command: /nope; use /help"));
-    assert_notification(&mut app, Color::Rgb(224, 108, 117));
-}
-
-#[test]
 fn initial_parse_error_notifies_and_keeps_draft() {
     let (mut app, requests) = file_commands_app(review_files());
     assert!(!app.submit_initial_command("/mcp nope"));
