@@ -140,7 +140,7 @@ impl SettingItem {
             }
             SettingId::LspRequestTimeout => format!("{}s", settings.lsp.request_timeout),
             SettingId::TaskMaxConcurrency => settings.task.max_concurrency.to_string(),
-            SettingId::TaskMaxRecursionDepth => settings.task.max_recursion_depth.to_string(),
+            SettingId::TaskMaxRecursionDepth => bool_label(settings.task.max_recursion_depth != 0),
             SettingId::TaskIdleTtlMs => format!("{}ms", settings.task.idle_ttl_ms),
             SettingId::TaskRequestBudget => settings.task.request_budget.to_string(),
             SettingId::TuiMaxFps => format!("{} fps", settings.tui.max_fps),
@@ -168,7 +168,6 @@ impl SettingItem {
             }
             SettingId::LspRequestTimeout => settings.lsp.request_timeout.to_string(),
             SettingId::TaskMaxConcurrency => settings.task.max_concurrency.to_string(),
-            SettingId::TaskMaxRecursionDepth => settings.task.max_recursion_depth.to_string(),
             SettingId::TaskIdleTtlMs => settings.task.idle_ttl_ms.to_string(),
             SettingId::TaskRequestBudget => settings.task.request_budget.to_string(),
             SettingId::TuiMaxFps => settings.tui.max_fps.to_string(),
@@ -194,7 +193,6 @@ impl SettingItem {
             }
             SettingId::LspRequestTimeout => settings.lsp.request_timeout as i128,
             SettingId::TaskMaxConcurrency => settings.task.max_concurrency as i128,
-            SettingId::TaskMaxRecursionDepth => settings.task.max_recursion_depth as i128,
             SettingId::TaskIdleTtlMs => settings.task.idle_ttl_ms as i128,
             SettingId::TaskRequestBudget => settings.task.request_budget as i128,
             SettingId::TuiMaxFps => i128::from(settings.tui.max_fps),
@@ -243,9 +241,6 @@ impl SettingItem {
             SettingId::TaskMaxConcurrency => {
                 SettingPatch::TaskMaxConcurrency(usize::try_from(value).context("value too large")?)
             }
-            SettingId::TaskMaxRecursionDepth => SettingPatch::TaskMaxRecursionDepth(
-                usize::try_from(value).context("value too large")?,
-            ),
             SettingId::TaskIdleTtlMs => {
                 SettingPatch::TaskIdleTtlMs(u64::try_from(value).context("value too large")?)
             }
@@ -280,6 +275,9 @@ impl SettingItem {
                 SettingId::LspDiagnosticsDeduplicate => {
                     SettingPatch::LspDiagnosticsDeduplicate(!settings.lsp.diagnostics_deduplicate)
                 }
+                SettingId::TaskMaxRecursionDepth => SettingPatch::TaskMaxRecursionDepth(
+                    usize::from(settings.task.max_recursion_depth == 0),
+                ),
                 SettingId::Debug => SettingPatch::Debug(!settings.debug),
                 _ => unreachable!("non-bool setting id"),
             }),
@@ -632,12 +630,8 @@ pub(super) const ITEMS: &[SettingItem] = &[
         category: Category::Subagents,
         key: "task.max_recursion_depth",
         label: "Max recursion depth",
-        description: "Maximum nested subagent spawn depth (0..=8); next launch",
-        kind: ValueKind::Int {
-            step: 1,
-            min: 0,
-            max: Some(8),
-        },
+        description: "Allow nested subagent spawning (off = 0, on = 1); next launch",
+        kind: ValueKind::Bool,
     },
     SettingItem {
         id: SettingId::TaskIdleTtlMs,

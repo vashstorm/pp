@@ -47,6 +47,54 @@ fn tui_themes_save_color_theme_without_changing_icon_style() {
 }
 
 #[test]
+fn tui_setting_max_recursion_depth_toggles_between_zero_and_one() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let mut pty = Pty::start(&server, home.path());
+    pty.ready();
+    let settings_path = config_path(home.path(), "settings.yml");
+
+    pty.input("/setting\r");
+    pty.text("General —");
+    pty.text("edit");
+    pty.input("\t\x1b[B\x1b[B\x1b[B\r");
+    pty.wait_for("默认非零递归深度在 TUI 中显示为 on", |screen| {
+        screen
+            .contents()
+            .lines()
+            .any(|line| line.contains("Max recursion depth") && line.trim_end().ends_with("on"))
+    });
+
+    pty.input("\x1b[B\r");
+    pty.wait_for("关闭递归并只写入 0", |screen| {
+        let displayed_off = screen
+            .contents()
+            .lines()
+            .any(|line| line.contains("Max recursion depth") && line.trim_end().ends_with("off"));
+        displayed_off
+            && read_settings(&settings_path)
+                .is_ok_and(|settings| settings.task.max_recursion_depth == 0)
+    });
+
+    pty.input(" ");
+    pty.wait_for("开启递归并只写入 1", |screen| {
+        let displayed_on = screen
+            .contents()
+            .lines()
+            .any(|line| line.contains("Max recursion depth") && line.trim_end().ends_with("on"));
+        displayed_on
+            && read_settings(&settings_path)
+                .is_ok_and(|settings| settings.task.max_recursion_depth == 1)
+    });
+
+    pty.input("\x1b");
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
 fn slow_tui_setting_tabs_persist_general_and_revert_unsaved_theme() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
