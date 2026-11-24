@@ -51,8 +51,12 @@ impl Transcript {
                 AgentEvent::CompactionFinished { .. } => {}
                 // 用户输入确认由 App 消费；不重置活动阶段、不产生重复卡片。
                 AgentEvent::UserInputAccepted { .. } | AgentEvent::UserInputRejected { .. } => {}
-                // hook 诊断只是提示，不改变活动阶段。
+                // hook 诊断与 auto_review 只作阶段提示，不改变对话记录结构。
                 AgentEvent::HookDiagnostic { .. } => {}
+                AgentEvent::AutoReviewStarted { tool } => {
+                    activity.phase(&format!("Reviewing {}", pp_core::text::display_text(tool)));
+                }
+                AgentEvent::AutoReviewFinished { .. } => {}
             }
         }
     }
@@ -74,7 +78,10 @@ impl Transcript {
                 self.preview_arguments(index, &tool, &text);
             }
             // 用量更新不产生对话条目。
-            AgentEvent::ContextUpdated { .. } | AgentEvent::PlanProgressUpdated { .. } => {}
+            AgentEvent::ContextUpdated { .. }
+            | AgentEvent::PlanProgressUpdated { .. }
+            | AgentEvent::AutoReviewStarted { .. }
+            | AgentEvent::AutoReviewFinished { .. } => {}
             AgentEvent::SubagentResultsInjected { run_ids } => {
                 self.injected_subagent_runs.extend(run_ids);
                 for entry in &mut self.entries {

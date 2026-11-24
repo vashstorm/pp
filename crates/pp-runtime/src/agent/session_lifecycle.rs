@@ -159,6 +159,7 @@ impl Agent {
             ephemeral,
             max_turns: None,
             output_schema: None,
+            auto_review: None,
             ephemeral_subagent_dir: None,
         };
         if let Some(source) = &agent.prompt_source {
@@ -198,6 +199,7 @@ impl Agent {
                 .checkpoint(&metadata, (&agent.session).into(), &agent.workflow)?;
         }
         agent.restore_session_usage();
+        agent.init_auto_review();
         Ok(agent)
     }
 
@@ -344,6 +346,10 @@ impl Agent {
         self.reported_project_load = reported_project_load(&replay);
         self.tools
             .reset_project_instructions(self.reported_project_load.keys().map(PathBuf::from));
+        if let Some(state) = &self.auto_review {
+            state.clear_user_intent();
+        }
+        self.sync_auto_review();
         Ok(TreeNavigation { replay, draft })
     }
     pub fn take_session_notice(&mut self) -> Option<String> {
@@ -369,7 +375,11 @@ impl Agent {
             ..Default::default()
         };
         self.tools.permission.clear_session();
+        if let Some(state) = &self.auto_review {
+            state.clear_user_intent();
+        }
         self.journal.reset();
+        self.sync_auto_review();
         self.tools.artifacts = Default::default();
         // /new 是新的会话根：旧临时管道正文与 URI 一律失效。
         self.tools.reset_pipe_store();

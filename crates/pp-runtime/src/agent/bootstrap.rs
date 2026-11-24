@@ -185,7 +185,7 @@ impl Agent {
         } else {
             SessionJournal::with_locks(sessions_dir, lock_dir, stats)
         };
-        Ok(Self {
+        let mut agent = Self {
             role_route: None,
             client,
             runtime_models: None,
@@ -224,8 +224,11 @@ impl Agent {
             ephemeral,
             max_turns: None,
             output_schema: None,
+            auto_review: None,
             ephemeral_subagent_dir: None,
-        })
+        };
+        agent.init_auto_review();
+        Ok(agent)
     }
 
     #[cfg(debug_assertions)]
@@ -247,6 +250,7 @@ impl Agent {
             sessions_dir.join(".stats/stats.db"),
         )?;
         agent.client.set_mock_scripts(scripts)?;
+        agent.sync_auto_review();
         Ok(agent)
     }
 

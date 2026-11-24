@@ -366,7 +366,8 @@ mod tests {
         assert!(
             outputs
                 .iter()
-                .any(|r| r["output"] == "partial-output" && r["status"] == "stopped")
+                .any(|r| r["output"] == "partial-output" && r["status"] == "stopped"),
+            "{outputs:?}"
         );
         assert_eq!(
             tools

@@ -395,9 +395,10 @@ fn permission_field(mode: pp_config::config::PermissionMode) -> Span<'static> {
     use pp_config::config::PermissionMode;
     let theme = themes::palette();
     let (label, color) = match mode {
-        PermissionMode::AlwaysAsk => ("Always-ask", theme.status_input),
-        PermissionMode::AcceptEdits => ("Accept-edits", theme.plan_mode),
-        PermissionMode::Yolo => ("YOLO", theme.error_border),
+        PermissionMode::WorkspaceWrite => ("Ask for approval", theme.status_input),
+        PermissionMode::AutoReview => ("Approve for me", theme.plan_mode),
+        PermissionMode::DangerFullAccess => ("Full Access", theme.error_border),
+        PermissionMode::ReadOnly => ("Read Only", theme.plan_mode),
     };
     let icon = match themes::current_icons() {
         IconMode::Nerd => "\u{ed25}",
@@ -514,25 +515,25 @@ mod tests {
 
         let (theme, icons) = themes::current();
         themes::set_active(Theme::Default, IconMode::Ascii);
-        for width in [0, 1, 8, 14, 17, 20, 24, 32, 48, 100] {
+        for width in [0, 1, 8, 17, 20, 24, 32, 48, 100] {
             let line = primary(
                 None,
                 ThinkLevel::High,
                 WorkMode::Plan,
-                Some(PermissionMode::AcceptEdits),
+                Some(PermissionMode::AutoReview),
                 &StatusContext::default(),
                 width,
             );
             let text = line_text(&line);
             assert!(line.width() <= usize::from(width), "{width}: {text}");
-            if width >= 14 {
-                assert!(text.contains("! Accept-edits"), "{width}: {text}");
+            if width >= 17 {
+                assert!(text.contains("! Approve for me"), "{width}: {text}");
             }
             if width == 20 {
                 assert!(text.ends_with(" · P"), "{text}");
             }
             if width == 100 {
-                assert!(text.contains("hig · ! Accept-edits ·"), "{text}");
+                assert!(text.contains("hig · ! Approve for me ·"), "{text}");
             }
         }
         themes::set_active(theme, icons);

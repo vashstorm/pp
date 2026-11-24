@@ -91,8 +91,15 @@ fn write_and_both_edit_modes_reject_external_and_symlink_paths() {
     let path = outside.path().join("file");
     fs::write(&path, "original\n").unwrap();
     symlink(&path, dir.path().join("link")).unwrap();
+    let agent_dir = dir.path().join("agent");
+    fs::create_dir_all(&agent_dir).unwrap();
     for mode in [EditMode::Replace, EditMode::Hashline] {
-        let tools = Tools::new(dir.path().into(), mode).unwrap();
+        let mut tools = Tools::new(dir.path().into(), mode).unwrap();
+        tools.permission = pp_permission::Gate::for_process(
+            &agent_dir,
+            Some(pp_config::config::PermissionMode::WorkspaceWrite),
+            false,
+        );
         for path in [path.clone(), dir.path().join("link")] {
             assert_eq!(
                 execute(&tools, "write", json!({"path":path,"content":"bad"}))["ok"],

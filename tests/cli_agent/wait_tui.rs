@@ -138,7 +138,6 @@ fn wait_tui_esc_cancels_background_and_restores_input_in_both_protocols() {
 
 fn wait_subagent_settings() -> String {
     let mut settings: Value = serde_json::from_str(CANCEL_SETTINGS).unwrap();
-    settings["tools"]["permissionMode"] = json!("yolo");
     settings["model_roles"] = json!({"fast":{"model":"fixture/primary","effort":"none"}});
     settings.to_string()
 }
@@ -151,7 +150,7 @@ fn slow_wait_tui_batch_updates_one_card_and_blocks_parent_until_all_children_set
         let project = tempfile::tempdir().unwrap();
         std::fs::write(config_path(home.path(), "settings.yml"), wait_subagent_settings()).unwrap();
         std::fs::write(config_path(home.path(), "models.yml"), response_models(&fixture, Some(protocol))).unwrap();
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
         pty.ready();
         pty.resize(50, 160);
         pty.input("wait batch stages\r");
@@ -241,7 +240,7 @@ fn wait_tui_implicit_batch_also_queues_steering_until_all_children_settle() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(config_path(home.path(), "settings.yml"), wait_subagent_settings()).unwrap();
         std::fs::write(config_path(home.path(), "models.yml"), response_models(&fixture, Some(protocol))).unwrap();
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
         pty.ready();
         pty.input("implicit barrier\r");
         let mut children = hub_dispatch(&mut pty, &fixture, protocol,
@@ -273,7 +272,7 @@ fn wait_tui_esc_reaps_subagent_background_process_before_restoring_input() {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(config_path(home.path(), "settings.yml"), wait_subagent_settings()).unwrap();
         std::fs::write(config_path(home.path(), "models.yml"), response_models(&fixture, Some(protocol))).unwrap();
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
         pty.ready();
         pty.input("cancel child batch\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));

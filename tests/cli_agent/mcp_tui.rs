@@ -4,7 +4,7 @@ fn mcp_tui_runs_tools_in_worker_and_keeps_input_draft_responsive() {
     let dir = tempfile::tempdir().unwrap();
     crate::write_settings(dir.path(), super::mcp::settings("call_timeout").to_string()).unwrap();
     std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
-    let mut pty = Pty::start_with_existing_files(dir.path());
+    let mut pty = Pty::start_with_args(dir.path(), dir.path(), &["--yolo"]);
     pty.ready();
     pty.input("MCP task\r");
     let (request, _) = pty.request(&provider);

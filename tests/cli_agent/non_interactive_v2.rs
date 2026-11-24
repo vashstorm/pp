@@ -434,14 +434,14 @@ fn phase2_bash_rules_disallowed_tools_effort_and_no_hooks() {
     let blocked = Cli::spawn(dir.path(), &["-p", "blocked by hook"], &[]).finish();
     assert!(!blocked.status.success());
 
-    // 2. always-ask 下 `Bash(echo:*)` 预批准放行，但 `&& pwd` 与 `eval` 被 AST 门禁拒绝；同时验证 `--effort high` 与 `--disallowed-tools`。
+    // 2. workspace-write 下 `Bash(echo:*)` 预批准放行，但 `&& pwd` 与 `eval` 被 AST 门禁拒绝；同时验证 `--effort high` 与 `--disallowed-tools`。
     let cli = Cli::spawn(
         dir.path(),
         &[
             "-p",
             "--no-hooks",
             "--permission-mode",
-            "always-ask",
+            "workspace-write",
             "--effort",
             "high",
             "--allowed-tools",

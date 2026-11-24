@@ -230,9 +230,7 @@ fn allowed_tools_preapproves_in_always_ask_and_gates_subagent_via_task() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("target.txt"), "before\n").unwrap();
-    let settings = task_fixture_settings_with_tools(
-        "  permissionMode: always-ask\n  permission:\n    write: deny\n",
-    );
+    let settings = task_fixture_settings_with_tools("  permission:\n    write: deny\n");
     write_settings(dir.path(), &settings).unwrap();
     std::fs::write(
         config_path(dir.path(), "models.yml"),

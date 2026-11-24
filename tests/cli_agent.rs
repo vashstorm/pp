@@ -92,12 +92,28 @@ impl Cli {
         settings: &str,
         models: &str,
     ) -> Self {
+        Self::start_with_mode(cwd, prompt, settings, models, &["--yolo"])
+    }
+    fn start_with_mode(
+        cwd: &std::path::Path,
+        prompt: Option<&str>,
+        settings: &str,
+        models: &str,
+        extra_args: &[&str],
+    ) -> Self {
         write_settings(cwd, settings).unwrap();
         std::fs::write(config_path(cwd, "models.yml"), models).unwrap();
-        Self::start_with_existing_files(cwd, prompt)
+        Self::start_with_existing_files_args(cwd, prompt, extra_args)
     }
     fn start_with_existing_files(cwd: &std::path::Path, prompt: Option<&str>) -> Self {
-        let mut args = Vec::new();
+        Self::start_with_existing_files_args(cwd, prompt, &[])
+    }
+    fn start_with_existing_files_args(
+        cwd: &std::path::Path,
+        prompt: Option<&str>,
+        extra_args: &[&str],
+    ) -> Self {
+        let mut args = extra_args.to_vec();
         if let Some(prompt) = prompt {
             args.extend(["--allowed-tools", "*,Task", "-p", prompt]);
         }
@@ -183,17 +199,12 @@ impl Drop for Cli {
 }
 
 fn fixture_settings() -> &'static str {
-    "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  permissionMode: yolo\n  sandbox:\n    mode: off\n"
+    "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n"
 }
 
 fn fixture_settings_with_tools(tools_yaml: &str) -> String {
-    let mode = if tools_yaml.contains("permissionMode:") {
-        ""
-    } else {
-        "  permissionMode: yolo\n"
-    };
     format!(
-        "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n{mode}  sandbox:\n    mode: off\n{tools_yaml}"
+        "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n{tools_yaml}"
     )
 }
 

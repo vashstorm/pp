@@ -6,13 +6,13 @@ use std::sync::{Arc, Mutex};
 fn gate(mode: PermissionMode, policies: &[(&str, PermissionPolicy)]) -> Gate {
     let gate = Gate::new();
     gate.set_config(ToolsSettings {
-        permission_mode: Some(mode),
         permission: policies
             .iter()
             .map(|(name, policy)| (name.to_string(), *policy))
             .collect(),
         ..Default::default()
     });
+    gate.select(Some(mode));
     gate
 }
 
@@ -60,8 +60,8 @@ fn lsp_write(action: &str) -> String {
 }
 
 #[test]
-fn lsp_read_actions_stay_read_tier_and_skip_always_ask_prompt() {
-    let gate = gate(PermissionMode::AlwaysAsk, &[]);
+fn lsp_read_actions_stay_read_tier_and_skip_read_only_prompt() {
+    let gate = gate(PermissionMode::ReadOnly, &[]);
     for action in [
         "definition",
         "type_definition",
@@ -74,7 +74,6 @@ fn lsp_read_actions_stay_read_tier_and_skip_always_ask_prompt() {
     ] {
         enforce(&gate, "lsp", &lsp_read(action)).unwrap();
     }
-    // 单文件诊断是只读动作；显式 timeout 不改变分档。
     enforce(
         &gate,
         "lsp",
@@ -91,23 +90,19 @@ fn lsp_read_actions_stay_read_tier_and_skip_always_ask_prompt() {
 
 #[test]
 fn lsp_write_actions_are_write_tier_even_for_preview() {
-    // accept-edits 放行沙盒内 Write/Exec，非沙盒 Write 仍受权限门约束；
-    // always-ask 只放行 Read 档：写入动作（含 apply=false 预览）必须询问，
-    // 无交互 handler 时 fail-closed。
-    let accept_edits = gate(PermissionMode::AcceptEdits, &[]);
+    let workspace_write = gate(PermissionMode::WorkspaceWrite, &[]);
     for action in ["reload", "request"] {
-        enforce(&accept_edits, "lsp", &lsp_write(action)).unwrap_err();
+        enforce(&workspace_write, "lsp", &lsp_write(action)).unwrap_err();
     }
-    let always = gate(PermissionMode::AlwaysAsk, &[]);
+    let read_only = gate(PermissionMode::ReadOnly, &[]);
     for action in ["reload", "request"] {
-        enforce(&always, "lsp", &lsp_write(action)).unwrap_err();
+        enforce(&read_only, "lsp", &lsp_write(action)).unwrap_err();
     }
 }
 
 #[test]
 fn lsp_invalid_arguments_are_conservatively_write() {
-    // 无效参数既不能降成 Read 档，也不能跳过权限检查：按 Write 处理。
-    let yolo = gate(PermissionMode::Yolo, &[]);
+    let yolo = gate(PermissionMode::DangerFullAccess, &[]);
     for arguments in [
         "{broken",
         "{}",
@@ -119,29 +114,26 @@ fn lsp_invalid_arguments_are_conservatively_write() {
         enforce(&yolo, "lsp", arguments).unwrap();
         assert_eq!(tier_of_arguments("lsp", arguments), Tier::Write);
     }
-    let always = gate(PermissionMode::AlwaysAsk, &[]);
+    let read_only = gate(PermissionMode::ReadOnly, &[]);
     for arguments in ["{broken", "{}", r#"{"action":"bogus"}"#] {
-        enforce(&always, "lsp", arguments).unwrap_err();
+        enforce(&read_only, "lsp", arguments).unwrap_err();
     }
 }
 
 #[test]
 fn lsp_policy_overrides_action_tiers() {
-    // 显式 tools.permission.lsp 优先于动作分档：deny 拦只读动作。
     let denied = gate(
-        PermissionMode::AcceptEdits,
+        PermissionMode::WorkspaceWrite,
         &[("lsp", PermissionPolicy::Deny)],
     );
     enforce(&denied, "lsp", &lsp_read("definition")).unwrap_err();
-    // allow 旁路写入动作的权限询问。
     let allowed = gate(
-        PermissionMode::AlwaysAsk,
+        PermissionMode::ReadOnly,
         &[("lsp", PermissionPolicy::Allow)],
     );
     enforce(&allowed, "lsp", &lsp_write("rename")).unwrap();
-    // prompt 强制每次询问，优先于动作分档。
     let prompted = gate(
-        PermissionMode::AcceptEdits,
+        PermissionMode::WorkspaceWrite,
         &[("lsp", PermissionPolicy::Prompt)],
     );
     enforce(&prompted, "lsp", &lsp_read("hover")).unwrap_err();
@@ -149,7 +141,7 @@ fn lsp_policy_overrides_action_tiers() {
 
 #[test]
 fn lsp_write_action_permission_reaches_handler_for_every_call() {
-    let mut gate = gate(PermissionMode::AlwaysAsk, &[]);
+    let mut gate = gate(PermissionMode::ReadOnly, &[]);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&seen);
     gate.set_handler(Box::new(move |request, _cancellation| {
@@ -158,7 +150,6 @@ fn lsp_write_action_permission_reaches_handler_for_every_call() {
     }));
     enforce(&gate, "lsp", &lsp_write("reload")).unwrap();
     enforce(&gate, "lsp", &lsp_write("reload")).unwrap();
-    // 只读动作不进入权限询问，handler 不被调用。
     enforce(&gate, "lsp", &lsp_read("hover")).unwrap();
     assert_eq!(*seen.lock().unwrap(), vec![true, true]);
 }

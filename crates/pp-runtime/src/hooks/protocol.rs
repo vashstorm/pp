@@ -16,7 +16,7 @@ pub(crate) struct Context<'a> {
     pub(crate) session_id: &'a str,
     pub(crate) transcript_path: &'a std::path::Path,
     pub(crate) cwd: &'a std::path::Path,
-    /// `bypassPermissions`／`acceptEdits`／`default`，由生效审批档位映射而来。
+    /// `bypassPermissions`／`auto_review`／`default`／`read-only`，由生效审批档位映射而来。
     pub(crate) permission_mode: &'a str,
     pub(crate) agent_id: Option<&'a str>,
     pub(crate) agent_type: Option<&'a str>,

@@ -193,8 +193,7 @@ fn general_tab_persists_edits_guards_numeric_typing_and_updates_live_state() {
         EditMode::Hashline
     );
 
-    // 2. 移动到第 4 项 `read.maxLines`（跳过 permissionMode 与 sandbox.mode），进入内联数字编辑并输入包含 `2` `3` 的数字，不应误切标签页。
-    app.handle(key(KeyCode::Down), &mut false);
+    // 2. 移动到第 3 项 `read.maxLines`（跳过 sandbox.mode），进入内联数字编辑并输入包含 `2` `3` 的数字，不应误切标签页。
     app.handle(key(KeyCode::Down), &mut false);
     app.handle(key(KeyCode::Down), &mut false);
     app.handle(key(KeyCode::Enter), &mut false);

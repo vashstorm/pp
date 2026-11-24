@@ -1,8 +1,7 @@
 //! `General` 设置页的分类、字段元数据与校验/步进规则单源定义。
 use anyhow::{Context, Result, ensure};
 use pp_config::config::{
-    CostDisplay, EditMode, PermissionMode, SandboxMode, SettingPatch, Settings, StatsStyle,
-    WebSearchProvider,
+    CostDisplay, EditMode, SandboxMode, SettingPatch, Settings, StatsStyle, WebSearchProvider,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,7 +41,6 @@ impl Category {
 pub(super) enum ValueKind {
     Bool,
     EditMode,
-    PermissionMode,
     SandboxMode,
     WebSearchProvider,
     StatsStyle,
@@ -60,7 +58,6 @@ pub(super) enum ValueKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingId {
     Edit,
-    PermissionMode,
     SandboxMode,
     ReadMaxLines,
     ReadMaxBytes,
@@ -105,12 +102,6 @@ impl SettingItem {
     pub(super) fn display_value(&self, settings: &Settings) -> String {
         match self.id {
             SettingId::Edit => settings.edit.as_str().to_owned(),
-            SettingId::PermissionMode => settings
-                .tools
-                .permission_mode
-                .unwrap_or_default()
-                .as_str()
-                .to_owned(),
             SettingId::SandboxMode => settings.tools.sandbox.mode.as_str().to_owned(),
             SettingId::ReadMaxLines => settings.read_max_lines.to_string(),
             SettingId::ReadMaxBytes => settings.read_max_bytes.to_string(),
@@ -285,19 +276,6 @@ impl SettingItem {
                 EditMode::Replace => EditMode::Hashline,
                 EditMode::Hashline => EditMode::Replace,
             })),
-            ValueKind::PermissionMode => {
-                let modes = PermissionMode::ALL;
-                let idx = modes
-                    .iter()
-                    .position(|mode| *mode == settings.tools.permission_mode.unwrap_or_default())
-                    .unwrap_or(0);
-                let next = if forward {
-                    (idx + 1) % modes.len()
-                } else {
-                    (idx + modes.len() - 1) % modes.len()
-                };
-                Ok(SettingPatch::PermissionMode(modes[next]))
-            }
             ValueKind::SandboxMode => {
                 let modes = SandboxMode::ALL;
                 let idx = modes
@@ -401,14 +379,6 @@ pub(super) const ITEMS: &[SettingItem] = &[
         label: "Edit mode",
         description: "File edit strategy: replace (text match) or hashline (line anchor); next task",
         kind: ValueKind::EditMode,
-    },
-    SettingItem {
-        id: SettingId::PermissionMode,
-        category: Category::EditingTools,
-        key: "tools.permissionMode",
-        label: "Permission mode",
-        description: "Default permission preset: always-ask, accept-edits, or yolo",
-        kind: ValueKind::PermissionMode,
     },
     SettingItem {
         id: SettingId::SandboxMode,

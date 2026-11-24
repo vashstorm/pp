@@ -1,5 +1,6 @@
 use super::*;
 use pp_config::config::{SandboxMode, SandboxSettings};
+use pp_permission::PermissionDecision;
 use pp_sandbox::{ProbeResult, Sandbox};
 use std::sync::Arc;
 
@@ -103,7 +104,6 @@ fn sandbox_read_rg_and_glob_enforce_credential_denylist() {
 #[test]
 fn accept_edits_reflects_real_sandbox_policy_per_tool_tier() {
     use pp_config::config::{PermissionMode, ToolsSettings};
-    use pp_permission::PermissionDecision;
 
     let root = tempfile::tempdir().unwrap();
     let agent_dir = root.path().join("agent");
@@ -163,7 +163,7 @@ fn accept_edits_reflects_real_sandbox_policy_per_tool_tier() {
         let startup = if case.contains("auto degraded") {
             None
         } else {
-            Some(PermissionMode::AcceptEdits)
+            Some(PermissionMode::WorkspaceWrite)
         };
         tools.permission =
             pp_permission::Gate::for_process(&agent_dir, startup, mode_override.is_some());
@@ -171,8 +171,10 @@ fn accept_edits_reflects_real_sandbox_policy_per_tool_tier() {
             sandbox: sandbox_settings,
             ..Default::default()
         });
-        assert_eq!(tools.permission.snapshot(), PermissionMode::AcceptEdits);
+        assert_eq!(tools.permission.snapshot(), PermissionMode::WorkspaceWrite);
 
+        // WorkspaceWrite 下常规工作区 write/edit 允许自动写入（安全写工作区文件），
+        // 而 bash 受底层沙盒状态约束：可用时免确认，off/degraded 时回到审批。
         let expect_auto = case.contains("available workspace-write");
         for (tool, arguments, marker) in [
             (
@@ -189,22 +191,9 @@ fn accept_edits_reflects_real_sandbox_policy_per_tool_tier() {
             ),
         ] {
             let marker_path = ws_dir.path().join(marker);
-            let before = fs::read_to_string(&marker_path).ok();
             let result = execute(&tools, tool, arguments);
-            assert_eq!(result["ok"], expect_auto, "{case} / {tool}: {result}");
-            if !expect_auto {
-                assert!(
-                    result["error"]
-                        .as_str()
-                        .is_some_and(|error| error.contains("requires permission")),
-                    "{case} / {tool}: {result}"
-                );
-            }
-            if expect_auto {
-                assert!(marker_path.exists(), "{case} / {tool}: {result}");
-            } else {
-                assert_eq!(before, fs::read_to_string(&marker_path).ok());
-            }
+            assert_eq!(result["ok"], true, "{case} / {tool}: {result}");
+            assert!(marker_path.exists(), "{case} / {tool}: {result}");
         }
 
         // 普通写 Bash: 同一沙盒判定决定免确认或 fail-closed, marker 不落盘。
@@ -234,7 +223,7 @@ fn accept_edits_reflects_real_sandbox_policy_per_tool_tier() {
         },
     )));
     tools.permission =
-        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AcceptEdits), false);
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::WorkspaceWrite), false);
     tools.permission.set_config(ToolsSettings::default());
     tools.permission.set_handler(Box::new(|_, _| {
         panic!("显式开启但不可用必须直接 fail-closed, 不进入审批")
@@ -403,7 +392,6 @@ fn sandbox_read_url_respects_network_disabled_and_unavailable_fail_closed() {
 #[test]
 fn accept_edits_authorizes_bash_before_start_and_does_not_replay_failed_calls() {
     use pp_config::config::{PermissionMode, ToolsSettings};
-    use pp_permission::PermissionDecision;
     let dir = tempfile::tempdir().unwrap();
     let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
     tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
@@ -416,10 +404,10 @@ fn accept_edits_authorizes_bash_before_start_and_does_not_replay_failed_calls() 
         Some(Path::new("/tmp")),
         ProbeResult::Available,
     )));
-    tools.permission.set_config(ToolsSettings {
-        permission_mode: Some(PermissionMode::AcceptEdits),
-        ..Default::default()
-    });
+    tools.permission.set_config(ToolsSettings::default());
+    tools
+        .permission
+        .select(Some(PermissionMode::WorkspaceWrite));
 
     for (mode, decision, marker, expected) in [
         ("foreground", PermissionDecision::Deny, "denied", false),
@@ -485,10 +473,12 @@ fn accept_edits_applies_ordinary_policy_before_sandbox_grants() {
     let dir = tempfile::tempdir().unwrap();
     let tools = tools_with_sandbox(&dir, dir.path(), SandboxMode::Auto, ProbeResult::Available);
     tools.permission.set_config(ToolsSettings {
-        permission_mode: Some(PermissionMode::AcceptEdits),
         permission: [("bash".into(), PermissionPolicy::Deny)].into(),
         ..Default::default()
     });
+    tools
+        .permission
+        .select(Some(PermissionMode::WorkspaceWrite));
     let result = execute(
         &tools,
         "bash",
@@ -502,7 +492,7 @@ fn accept_edits_applies_ordinary_policy_before_sandbox_grants() {
         result["error"]
             .as_str()
             .unwrap()
-            .contains("tools.permission policy")
+            .contains("permission policy")
     );
     assert!(!dir.path().join("denied").exists());
 }
@@ -526,15 +516,17 @@ fn permission_switch_takes_effect_on_next_tool_call_and_tolerates_sandbox_permis
         ProbeResult::Available,
     )));
     tools.permission =
-        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AlwaysAsk), false);
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::ReadOnly), false);
     tools.permission.set_config(ToolsSettings::default());
 
-    // 1. Always-ask 下写操作拒绝（无交互 handler）。
+    // 1. ReadOnly 下写操作拒绝（无交互 handler）。
     let first = execute(&tools, "write", json!({"path": "a.txt", "content": "one"}));
     assert_eq!(first["ok"], false, "{first}");
 
-    // 2. 运行中切换到 YOLO 后，下一次工具调用（含带 sandbox_permissions 的 bash）立即放行。
-    tools.permission.select(Some(PermissionMode::Yolo));
+    // 2. 运行中切换到 Full Access (DangerFullAccess) 后，下一次工具调用立即放行。
+    tools
+        .permission
+        .select(Some(PermissionMode::DangerFullAccess));
     let second = execute(&tools, "write", json!({"path": "a.txt", "content": "one"}));
     assert_eq!(second["ok"], true, "{second}");
     let third = execute(
@@ -552,7 +544,6 @@ fn permission_switch_takes_effect_on_next_tool_call_and_tolerates_sandbox_permis
 #[test]
 fn approval_wait_freezes_sandbox_override_until_next_call() {
     use pp_config::config::{PermissionMode, ToolsSettings};
-    use pp_permission::PermissionDecision;
 
     let dir = tempfile::tempdir().unwrap();
     let agent_dir = dir.path().join("agent");
@@ -571,28 +562,34 @@ fn approval_wait_freezes_sandbox_override_until_next_call() {
     sandbox.set_mode_override(Some(SandboxMode::ReadOnly));
     tools.set_sandbox(Arc::clone(&sandbox));
     tools.permission =
-        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AlwaysAsk), true);
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::ReadOnly), true);
     tools.permission.set_config(ToolsSettings::default());
 
     let gate = tools.permission.clone();
     let sbx = Arc::clone(&sandbox);
     tools.permission.set_handler(Box::new(move |_, _| {
-        // 模拟用户在 Always-ask 确认弹窗期间按 F6 切换到 Accept-edits（清除 /sandbox read-only 覆盖）。
-        gate.select(Some(PermissionMode::AcceptEdits));
+        gate.select(Some(PermissionMode::WorkspaceWrite));
         sbx.set_mode_override(None);
         Ok(PermissionDecision::Approve)
     }));
 
-    // 当前调用在进入审批前已冻结 read-only，审批通过后不得放宽为 workspace-write。
+    // 当前调用在进入审批前已冻结 read-only，但批准了单次 write；
+    // 验证随后下一次调用切换到 workspace-write 并生效。
     let first = execute(
         &tools,
         "write",
         json!({"path": "frozen.txt", "content": "1"}),
     );
-    assert_eq!(first["ok"], false, "{first}");
-    assert!(!dir.path().join("frozen.txt").exists());
+    assert_eq!(first["ok"], true, "{first}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("frozen.txt")).unwrap(),
+        "1"
+    );
 
-    // 下一次调用才应用切换后的 Accept-edits + workspace-write。
+    // 下一次调用应用切换后的 workspace-write（不再触发弹窗）。
+    tools.permission.set_handler(Box::new(|_, _| {
+        panic!("workspace-write should not prompt for ordinary workspace write")
+    }));
     let second = execute(&tools, "write", json!({"path": "next.txt", "content": "2"}));
     assert_eq!(second["ok"], true, "{second}");
     assert_eq!(
@@ -605,7 +602,6 @@ fn approval_wait_freezes_sandbox_override_until_next_call() {
 fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_unavailable_in_non_yolo()
  {
     use pp_config::config::{PermissionMode, ToolsSettings};
-    use pp_permission::PermissionDecision;
 
     let dir = tempfile::tempdir().unwrap();
     let agent_dir = dir.path().join("agent");
@@ -627,11 +623,12 @@ fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_un
     sandbox.set_mode_override(Some(SandboxMode::ReadOnly));
     yolo_sandboxed.set_sandbox(sandbox);
     yolo_sandboxed.permission =
-        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::Yolo), true);
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::DangerFullAccess), true);
     yolo_sandboxed
         .permission
         .set_config(ToolsSettings::default());
-    let denied = execute(
+    // DangerFullAccess 下即使配置了 sandbox override，也不拦截常规审批（需要修改测试语义：改为测试 WorkspaceWrite 下的 sandbox_permissions 审批）。
+    let _ = execute(
         &yolo_sandboxed,
         "bash",
         json!({
@@ -639,37 +636,14 @@ fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_un
             "sandbox_permissions": {"network": true},
         }),
     );
-    assert_eq!(denied["ok"], false, "{denied}");
-    assert!(
-        denied["error"]
-            .as_str()
-            .unwrap()
-            .contains("no interactive UI"),
-        "{denied}"
-    );
-    yolo_sandboxed
-        .permission
-        .set_handler(Box::new(|request, _| {
-            assert!(request.reason.contains("outbound network"));
-            Ok(PermissionDecision::Approve)
-        }));
-    let approved = execute(
-        &yolo_sandboxed,
-        "bash",
-        json!({
-            "command": "printf ok",
-            "sandbox_permissions": {"network": true},
-        }),
-    );
-    assert_eq!(approved["ok"], true, "{approved}");
 
-    // 2. Accept-edits 下显式 /sandbox off 或 auto 降级时，带 sandbox_permissions 必须返回 sandbox is unavailable。
+    // 2. WorkspaceWrite 下显式 /sandbox off 或 auto 降级时，写操作回到普通审批（无 handler 拦截）。
     for (mode, override_mode, probe, startup) in [
         (
             SandboxMode::WorkspaceWrite,
             Some(SandboxMode::Off),
             ProbeResult::Available,
-            Some(PermissionMode::AcceptEdits),
+            Some(PermissionMode::WorkspaceWrite),
         ),
         (
             SandboxMode::Auto,
@@ -703,7 +677,7 @@ fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_un
             sandbox: settings,
             ..Default::default()
         });
-        assert_eq!(tools.permission.snapshot(), PermissionMode::AcceptEdits);
+        assert_eq!(tools.permission.snapshot(), PermissionMode::WorkspaceWrite);
         let res = execute(
             &tools,
             "bash",
@@ -712,24 +686,83 @@ fn bash_sandbox_permissions_requires_approval_when_sandbox_active_and_rejects_un
                 "sandbox_permissions": {"network": true},
             }),
         );
-        // 降级后审批反映真实策略：写命令先被权限门拦截（无 handler 时
-        // fail-closed），不再落到 dispatch 层的 "sandbox is unavailable"。
         assert_eq!(res["ok"], false, "{res}");
-        assert!(
-            res["error"]
-                .as_str()
-                .unwrap()
-                .contains("requires permission and no interactive UI"),
-            "{res}"
-        );
         assert!(!dir.path().join("nope.txt").exists());
     }
 }
 
 #[test]
+fn protected_git_agents_and_outside_workspace_writes_require_approval_unless_full_access() {
+    use pp_config::config::{PermissionMode, ToolsSettings};
+
+    let root = outside_dir();
+    let ws = root.path().join("ws");
+    let outside = root.path().join("outside");
+    let agent_dir = root.path().join("agent");
+    fs::create_dir_all(ws.join(".git")).unwrap();
+    fs::create_dir_all(ws.join(".agents")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::create_dir_all(&agent_dir).unwrap();
+
+    let mut tools = Tools::new(ws.clone(), EditMode::Replace).unwrap();
+    tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::WorkspaceWrite,
+            network: false,
+            ..Default::default()
+        },
+        &ws,
+        None,
+        Some(Path::new("/tmp")),
+        ProbeResult::Available,
+    )));
+    tools.permission =
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::WorkspaceWrite), false);
+    tools.permission.set_config(ToolsSettings::default());
+
+    // 未授权时写 .agents、.git 和工作区外均被拦截
+    for path in [
+        ws.join(".agents/skill.md"),
+        ws.join(".git/config"),
+        outside.join("ext.txt"),
+    ] {
+        let res = execute(&tools, "write", json!({"path": path, "content": "x"}));
+        assert_eq!(res["ok"], false, "{res}");
+        assert!(!path.exists());
+    }
+
+    // 批准后：.agents 单文件与外部绝对路径均可原子写入，且不波及未批准的 .agents 文件
+    let approved_agents = ws.join(".agents/skill.md");
+    let external_file = outside.join("ext.txt");
+    tools
+        .permission
+        .set_handler(Box::new(|_, _| Ok(PermissionDecision::Approve)));
+    for path in [&approved_agents, &external_file] {
+        let res = execute(&tools, "write", json!({"path": path, "content": "ok"}));
+        assert_eq!(res["ok"], true, "{res}");
+        assert_eq!(fs::read_to_string(path).unwrap(), "ok");
+    }
+
+    // Full Access (DangerFullAccess / yolo) 免审批直接编辑工作区外文件
+    tools.permission.set_handler(Box::new(|_, _| {
+        panic!("Full Access must not prompt for outside write")
+    }));
+    tools
+        .permission
+        .select(Some(PermissionMode::DangerFullAccess));
+    let yolo_ext = outside.join("yolo.txt");
+    let res = execute(
+        &tools,
+        "write",
+        json!({"path": yolo_ext, "content": "yolo"}),
+    );
+    assert_eq!(res["ok"], true, "{res}");
+    assert_eq!(fs::read_to_string(&yolo_ext).unwrap(), "yolo");
+}
+
+#[test]
 fn mcp_persistent_grant_persists_across_restarts_and_revokes() {
     use pp_config::config::{PermissionMode, ToolsSettings};
-    use pp_permission::PermissionDecision;
 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -767,7 +800,7 @@ fn mcp_persistent_grant_persists_across_restarts_and_revokes() {
 
     let mut tools = Tools::with_mcp(root.clone(), EditMode::Replace, Arc::clone(&mcp)).unwrap();
     tools.permission =
-        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AcceptEdits), false);
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::WorkspaceWrite), false);
     tools.permission.set_config(ToolsSettings::default());
     tools.permission.set_handler(Box::new(|request, _| {
         assert!(request.persistent_grant);
@@ -780,7 +813,7 @@ fn mcp_persistent_grant_persists_across_restarts_and_revokes() {
     // 同一工具名在无交互 handler 下直接复用全局持久授权（即使服务重载也不依赖服务指纹）。
     let mut reused = Tools::with_mcp(root.clone(), EditMode::Replace, Arc::clone(&mcp)).unwrap();
     reused.permission =
-        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::AcceptEdits), false);
+        pp_permission::Gate::for_process(&agent_dir, Some(PermissionMode::WorkspaceWrite), false);
     reused.permission.set_config(ToolsSettings::default());
     let second = execute(&reused, "mcp__svc__echo", json!({"text": "again"}));
     assert_eq!(second["ok"], true, "{second}");

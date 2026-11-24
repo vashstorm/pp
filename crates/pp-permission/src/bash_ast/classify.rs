@@ -1,13 +1,16 @@
 //! 叶子命令的危险度分级、只读安全判定与规范前缀推导。
 
+use std::path::{Component, Path, PathBuf};
+
 use brush_core::parser::word::{self, TildeExpr, WordPiece};
 
 use super::wrappers::{
     SUBCOMMAND_PROGRAMS, extract_hazard_subcommand_for, extract_hazard_subcommand_index,
-    extract_safe_subcommand_index, extract_subcommand_for, extract_subcommand_index,
-    strip_privilege_prefix, tokens_start_with,
+    extract_safe_subcommand_index, extract_subcommand_for, strip_privilege_prefix,
+    tokens_start_with,
 };
 use super::{ArgToken, LeafCommand};
+use crate::rules::{BashRule, MatchMode};
 
 pub(super) const AUTH_FILES: &[&str] = &["/etc/passwd", "/etc/shadow", "/etc/sudoers"];
 
@@ -40,6 +43,20 @@ const GIT_READ_ONLY_SUBCOMMANDS: &[&str] = &[
 ];
 
 impl LeafCommand {
+    pub(crate) fn matches_rule(&self, rule: &BashRule) -> bool {
+        match rule.match_mode {
+            MatchMode::Exact => self.matches_exact(&rule.pattern),
+            MatchMode::Prefix => self.matches_prefix(&rule.pattern),
+        }
+    }
+
+    pub(crate) fn matches_restrictive_rule(&self, rule: &BashRule) -> bool {
+        match rule.match_mode {
+            MatchMode::Exact => self.matches_restrictive_exact(&rule.pattern),
+            MatchMode::Prefix => self.matches_restrictive_prefix(&rule.pattern),
+        }
+    }
+
     pub(crate) fn matches_prefix(&self, prefix: &[String]) -> bool {
         self.matches_prefix_with(prefix, false)
     }
@@ -107,44 +124,130 @@ impl LeafCommand {
         Some(out)
     }
 
-    /// 推导适合持久化到 `[[bash]]` 的命令前缀。
-    pub(crate) fn suggested_prefix(&self) -> Option<Vec<String>> {
+    /// 推导细粒度到具体参数/文件的精确命令规则（用于 `[[rules]]` `match = "exact"`）。
+    ///
+    /// - 动态命令、函数调用、shell 解释器脚本、`eval`/`source` 或带不安全配置覆盖参数
+    ///   （`git -c`、`cargo --config`、`npm --registry` 等）均拒绝记忆，只允许单次确认。
+    /// - 保留全部安全参数及清理后的文件参数，确保批准 `git add aaa.txt` 不会连带放行
+    ///   `git add bbb.txt` 或 `git add .`。
+    pub(crate) fn suggested_exact_pattern(&self) -> Option<Vec<String>> {
         if self.dynamic_exec || self.is_function_call {
             return None;
         }
         let program = self.program()?;
-        if matches!(program, "eval" | "source" | ".") {
+        if matches!(
+            program,
+            "eval" | "source" | "." | "bash" | "sh" | "zsh" | "dash" | "ksh"
+        ) {
             return None;
         }
-        if matches!(program, "bash" | "sh" | "zsh" | "dash" | "ksh") {
-            return match self.tokens.get(1) {
-                Some(ArgToken::Literal(script)) if !script.starts_with('-') => {
-                    Some(vec![program.to_owned(), script.clone()])
-                }
-                _ => None,
-            };
-        }
-        if matches!(program, "sudo" | "su" | "doas" | "runuser") {
-            let (inner, _) = extract_subcommand_index(&self.tokens[1..], &[])?;
-            let inner_base = inner.rsplit('/').next().unwrap_or(&inner).to_owned();
-            return Some(vec![program.to_owned(), inner_base]);
-        }
         if SUBCOMMAND_PROGRAMS.contains(&program) {
-            let (sub, rest_idx) = extract_safe_subcommand_index(program, &self.tokens[1..])?;
-            if program == "cargo"
-                && sub == "nextest"
-                && let Some((next, _)) =
-                    extract_subcommand_index(self.tokens.get(1 + rest_idx..).unwrap_or(&[]), &[])
-                && matches!(next.as_str(), "run" | "list")
-            {
-                return Some(vec![program.to_owned(), sub, next]);
-            }
-            return Some(vec![program.to_owned(), sub]);
+            extract_safe_subcommand_index(program, &self.tokens[1..])?;
         }
-        Some(vec![program.to_owned()])
+        let mut out = Vec::with_capacity(self.tokens.len());
+        for (idx, token) in self.tokens.iter().enumerate() {
+            let ArgToken::Literal(value) = token else {
+                return None;
+            };
+            if value.is_empty() || value.chars().any(char::is_control) {
+                return None;
+            }
+            if idx == 0 {
+                out.push(value.clone());
+            } else {
+                out.push(normalize_arg_token(value));
+            }
+        }
+        (!out.is_empty()).then_some(out)
     }
 
-    /// 是否高影响命令（`AcceptEdits` 下默认需确认，但允许按前缀记住）。
+    /// 静态识别该命令是否需要写入工作区内的受保护目录（`.git`、`.agents`、`.pp`）。
+    pub(crate) fn protected_write_targets(&self, cwd: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut push_unique = |path: PathBuf| {
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        };
+        if let Some(program) = self.program()
+            && program == "git"
+            && !self.is_safe_read_only()
+        {
+            let sub = extract_hazard_subcommand_for("git", &self.tokens[1..]);
+            // 纯远程查询（如 `git ls-remote`）不写 `.git`；其余非只读 git 命令默认写入 `.git` 目录。
+            if sub.as_deref() != Some("ls-remote") {
+                push_unique(cwd.join(".git"));
+            }
+        }
+        // 对于非纯只读命令（或带写重定向的命令），检查字面量参数中指向 .git / .agents / .pp 的路径。
+        if !self.is_safe_read_only() {
+            for token in self.tokens.iter().skip(1) {
+                if let ArgToken::Literal(arg) = token
+                    && !arg.starts_with('-')
+                    && let Some(prot) = match_protected_path(arg, cwd)
+                {
+                    push_unique(prot);
+                }
+            }
+        }
+        out
+    }
+
+    /// 静态识别明显需要出站互联网访问的命令。
+    pub(crate) fn needs_network(&self) -> bool {
+        let (tokens, _) = strip_privilege_prefix(&self.tokens, &self.raw_args);
+        let Some(ArgToken::Literal(raw_program)) = tokens.first() else {
+            return false;
+        };
+        let program = raw_program.rsplit('/').next().unwrap_or(raw_program);
+        let args = &tokens[1..];
+        let has_offline = args
+            .iter()
+            .filter_map(ArgToken::as_literal)
+            .any(|arg| arg == "--offline" || arg == "-o");
+        match program {
+            "curl" | "wget" | "ssh" | "scp" | "sftp" | "nc" | "ncat" | "telnet" | "ftp"
+            | "ping" | "dig" | "nslookup" | "host" | "gh" | "aws" | "gcloud" | "az" => true,
+            "rsync" => args
+                .iter()
+                .filter_map(ArgToken::as_literal)
+                .any(|arg| arg.contains(':')),
+            "git" => matches!(
+                extract_hazard_subcommand_for("git", args).as_deref(),
+                Some("push" | "pull" | "fetch" | "clone" | "ls-remote" | "submodule")
+            ),
+            "cargo" => {
+                !has_offline
+                    && matches!(
+                        extract_hazard_subcommand_for("cargo", args).as_deref(),
+                        Some("publish" | "install" | "update" | "search" | "fetch" | "login")
+                    )
+            }
+            "npm" | "pnpm" | "yarn" | "bun" => {
+                !has_offline
+                    && matches!(
+                        extract_hazard_subcommand_for(program, args).as_deref(),
+                        Some(
+                            "install" | "i" | "add" | "update" | "up" | "publish" | "dlx" | "login"
+                        )
+                    )
+            }
+            "pip" | "pip3" | "uv" => {
+                !has_offline
+                    && matches!(
+                        extract_hazard_subcommand_for(program, args).as_deref(),
+                        Some("install" | "download" | "publish" | "sync" | "pip")
+                    )
+            }
+            "brew" => matches!(
+                extract_hazard_subcommand_for("brew", args).as_deref(),
+                Some("install" | "upgrade" | "update" | "reinstall" | "fetch")
+            ),
+            _ => false,
+        }
+    }
+
+    /// 是否高影响命令（非 YOLO 下默认需确认）。
     pub(crate) fn is_high_impact(&self) -> bool {
         if self.dynamic_exec {
             return false;
@@ -448,4 +551,42 @@ pub(super) fn is_remote_fetch_leaf(leaf: &LeafCommand) -> bool {
         Some(ArgToken::Literal(name))
             if matches!(name.rsplit('/').next().unwrap_or(name), "curl" | "wget")
     )
+}
+
+fn normalize_arg_token(raw: &str) -> String {
+    if raw.starts_with("./") && raw.len() > 2 && !raw.contains("..") {
+        let stripped = raw.trim_start_matches("./");
+        if !stripped.is_empty() && !stripped.starts_with('-') {
+            return stripped.to_owned();
+        }
+    }
+    raw.to_owned()
+}
+
+pub(super) fn match_protected_path(raw: &str, cwd: &Path) -> Option<PathBuf> {
+    let candidate = Path::new(raw);
+    let joined = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        cwd.join(candidate)
+    };
+    let mut cleaned = PathBuf::new();
+    for comp in joined.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                cleaned.pop();
+            }
+            _ => cleaned.push(comp.as_os_str()),
+        }
+    }
+    let rel = cleaned.strip_prefix(cwd).ok()?;
+    let mut comps = rel.components();
+    let Some(Component::Normal(first)) = comps.next() else {
+        return None;
+    };
+    if matches!(first.to_str(), Some(".git" | ".agents" | ".pp")) {
+        return Some(cwd.join(first));
+    }
+    None
 }

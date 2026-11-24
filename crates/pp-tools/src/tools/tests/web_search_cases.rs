@@ -135,7 +135,7 @@ fn web_search_enforces_sandbox_network_policy_and_allows_loopback_searxng() {
     )));
     let workflow = WorkflowState::default();
 
-    // 默认无本地 SearXNG 时，断网沙盒直接拒绝。
+    // 默认无本地 SearXNG 时，断网沙盒未授权前拒绝。
     let denied = tools.execute_with_web(
         "web_search",
         &json!({"query": "rust"}).to_string(),
@@ -151,7 +151,9 @@ fn web_search_enforces_sandbox_network_policy_and_allows_loopback_searxng() {
     let val: Value = serde_json::from_str(&denied.output).unwrap();
     assert_eq!(val["ok"], false);
     assert!(
-        val["error"].as_str().is_some_and(|e| e.contains("sandbox")),
+        val["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("requires permission")),
         "{val}"
     );
 
@@ -210,6 +212,52 @@ fn web_search_enforces_sandbox_network_policy_and_allows_loopback_searxng() {
     );
     let val: Value = serde_json::from_str(&explicit_ext.output).unwrap();
     assert_eq!(val["ok"], false);
+
+    // 批准联网后，断网沙盒下的 web_search 放行并传入 allow_external=true
+    let mut approved_tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+    approved_tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::WorkspaceWrite,
+            network: false,
+            ..Default::default()
+        },
+        dir.path(),
+        Some(home.path()),
+        Some(Path::new("/tmp")),
+        ProbeResult::Available,
+    )));
+    approved_tools.permission = pp_permission::Gate::for_process(
+        home.path(),
+        Some(pp_config::config::PermissionMode::WorkspaceWrite),
+        false,
+    );
+    approved_tools.permission.set_handler(Box::new(|req, _| {
+        assert!(req.reason.contains("Internet access"));
+        Ok(pp_permission::PermissionDecision::Approve)
+    }));
+    let ok_search = approved_tools.execute_with_web(
+        "web_search",
+        &json!({"query": "rust", "provider": "duckduckgo"}).to_string(),
+        "sbx-approved",
+        ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        None,
+        &CancellationToken::new(),
+        &mut |_| {},
+        &mut |action, _| match action {
+            web_search::WebAction::Search { allow_external, .. } => {
+                assert!(allow_external);
+                Ok(web_search::WebOutcome::Search(ok_response(
+                    "duckduckgo",
+                    "DuckDuckGo",
+                )))
+            }
+            web_search::WebAction::Read(_) => unreachable!(),
+        },
+    );
+    let val: Value = serde_json::from_str(&ok_search.output).unwrap();
+    assert_eq!(val["ok"], true, "{val}");
 
     // 显式开启沙盒但平台不可用时，必须 fail-closed 拒绝外部搜索。
     let unavailable = Sandbox::with_probe_for_test(

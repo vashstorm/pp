@@ -210,10 +210,8 @@ fn forced_readonly_execute_rejects_mutating_actions_before_permission() {
     let prompts = Arc::new(AtomicUsize::new(0));
     let mut tools = tools_with_lsp(&dir);
     tools.set_lsp_readonly(true);
-    tools.permission.set_config(ToolsSettings {
-        permission_mode: Some(PermissionMode::AlwaysAsk),
-        ..Default::default()
-    });
+    tools.permission.set_config(ToolsSettings::default());
+    tools.permission.select(Some(PermissionMode::ReadOnly));
     tools.permission.set_handler(deny_handler(&prompts));
 
     let result = run_lsp(
@@ -237,10 +235,8 @@ fn execute_mutating_action_reaches_permission_with_exact_arguments() {
     let workflow = WorkflowState::default();
     let prompts = Arc::new(AtomicUsize::new(0));
     let mut tools = tools_with_lsp(&dir);
-    tools.permission.set_config(ToolsSettings {
-        permission_mode: Some(PermissionMode::AlwaysAsk),
-        ..Default::default()
-    });
+    tools.permission.set_config(ToolsSettings::default());
+    tools.permission.select(Some(PermissionMode::ReadOnly));
     tools.permission.set_handler(deny_handler(&prompts));
 
     // reload 是 Write 档：always-ask 下必须经过权限询问，询问发生在分发之前。
@@ -269,10 +265,8 @@ fn execute_readonly_action_skips_permission_and_never_starts_when_unsupported() 
     let workflow = WorkflowState::default();
     let prompts = Arc::new(AtomicUsize::new(0));
     let mut tools = tools_with_lsp(&dir);
-    tools.permission.set_config(ToolsSettings {
-        permission_mode: Some(PermissionMode::AlwaysAsk),
-        ..Default::default()
-    });
+    tools.permission.set_config(ToolsSettings::default());
+    tools.permission.select(Some(PermissionMode::ReadOnly));
     tools.permission.set_handler(deny_handler(&prompts));
 
     // 无匹配服务器的扩展名：动作是只读档，跳过审批，由工具返回无服务器结果。

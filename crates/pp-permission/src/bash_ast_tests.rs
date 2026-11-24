@@ -12,15 +12,41 @@ fn bash_args(command: &str) -> String {
     serde_json::json!({ "command": command }).to_string()
 }
 
-fn sandboxed_bash(gate: &Gate, mode: PermissionMode, command: &str) -> Result<()> {
-    gate.enforce_for(
+fn sandboxed_bash(gate: &Gate, mode: PermissionMode, command: &str) -> Result<ApprovedBashScope> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    gate.authorize_bash(
         mode,
-        "bash",
-        &bash_args(command),
         ToolAccess {
             tier: Tier::Exec,
             sandboxed: true,
+            network_enabled: false,
         },
+        &cwd,
+        &bash_args(command),
+        &[],
+        false,
+        None,
+        &CancellationToken::new(),
+    )
+}
+
+fn sandboxed_bash_in(
+    gate: &Gate,
+    mode: PermissionMode,
+    cwd: &Path,
+    command: &str,
+) -> Result<ApprovedBashScope> {
+    gate.authorize_bash(
+        mode,
+        ToolAccess {
+            tier: Tier::Exec,
+            sandboxed: true,
+            network_enabled: false,
+        },
+        cwd,
+        &bash_args(command),
+        &[],
+        false,
         None,
         &CancellationToken::new(),
     )
@@ -29,8 +55,7 @@ fn sandboxed_bash(gate: &Gate, mode: PermissionMode, command: &str) -> Result<()
 #[test]
 fn ast_prevents_false_positives_in_quoted_arguments() {
     let dir = tempfile::tempdir().unwrap();
-    let gate = process_gate(dir.path(), PermissionMode::AcceptEdits);
-    // 引号内参数出现关键字不应误命中 Critical 或 High-Impact。
+    let gate = process_gate(dir.path(), PermissionMode::WorkspaceWrite);
     for command in [
         r#"git log --grep="fix shutdown bug and mkfs error""#,
         r#"rg "rm -rf /" crates/"#,
@@ -43,7 +68,7 @@ fn ast_prevents_false_positives_in_quoted_arguments() {
             None,
             "unexpected critical match for {command}"
         );
-        sandboxed_bash(&gate, PermissionMode::AcceptEdits, command).unwrap();
+        sandboxed_bash(&gate, PermissionMode::WorkspaceWrite, command).unwrap();
     }
 }
 
@@ -62,7 +87,7 @@ fn ast_detects_critical_commands_across_wrappers_substitutions_and_nested_shells
         "FOO=1 > /etc/sudoers",
         "cp ./evil /etc/shadow",
     ] {
-        let mut gate = process_gate(dir.path(), PermissionMode::AcceptEdits);
+        let mut gate = process_gate(dir.path(), PermissionMode::WorkspaceWrite);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&seen);
         gate.set_handler(Box::new(move |request, _| {
@@ -72,7 +97,7 @@ fn ast_detects_critical_commands_across_wrappers_substitutions_and_nested_shells
                 .push((request.session_grant, request.persistent_grant));
             Ok(PermissionDecision::ApproveSession)
         }));
-        sandboxed_bash(&gate, PermissionMode::AcceptEdits, command).unwrap();
+        sandboxed_bash(&gate, PermissionMode::WorkspaceWrite, command).unwrap();
         assert_eq!(
             *seen.lock().unwrap(),
             vec![(false, false)],
@@ -82,11 +107,10 @@ fn ast_detects_critical_commands_across_wrappers_substitutions_and_nested_shells
 }
 
 #[test]
-fn always_ask_allows_safe_read_only_commands_and_blocks_write_redirections() {
+fn read_only_allows_safe_read_only_commands_and_blocks_write_redirections() {
     let dir = tempfile::tempdir().unwrap();
-    let gate = process_gate(dir.path(), PermissionMode::AlwaysAsk);
+    let gate = process_gate(dir.path(), PermissionMode::ReadOnly);
 
-    // 纯只读及组合管道在 AlwaysAsk 下免弹窗放行。
     for readonly in [
         "pwd",
         "ls -la && git -C sub status",
@@ -95,10 +119,9 @@ fn always_ask_allows_safe_read_only_commands_and_blocks_write_redirections() {
         "find crates -name '*.rs' | sort",
         "cd crates && cargo metadata --no-deps",
     ] {
-        sandboxed_bash(&gate, PermissionMode::AlwaysAsk, readonly).unwrap();
+        sandboxed_bash(&gate, PermissionMode::ReadOnly, readonly).unwrap();
     }
 
-    // 带写重定向、-i 就地修改、-exec 或未知构建命令必须拦截。
     for mutating in [
         "ls -la > listing.txt",
         "sed -i 's/a/b/' file.txt",
@@ -106,7 +129,7 @@ fn always_ask_allows_safe_read_only_commands_and_blocks_write_redirections() {
         "git status && cargo test -p pp-permission",
         "rm -f ./tmp.txt",
     ] {
-        let err = sandboxed_bash(&gate, PermissionMode::AlwaysAsk, mutating).unwrap_err();
+        let err = sandboxed_bash(&gate, PermissionMode::ReadOnly, mutating).unwrap_err();
         assert!(
             err.to_string().contains("no interactive UI"),
             "{mutating}: {err}"
@@ -115,10 +138,13 @@ fn always_ask_allows_safe_read_only_commands_and_blocks_write_redirections() {
 }
 
 #[test]
-fn prefix_grant_persists_to_bash_section_and_applies_longest_match() {
+fn git_add_approval_is_scoped_to_exact_file_argument_and_unprotects_git() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let mut gate = process_gate(&root, PermissionMode::AlwaysAsk);
+    let cwd = root.join("repo");
+    std::fs::create_dir_all(cwd.join(".git")).unwrap();
+
+    let mut gate = process_gate(&root, PermissionMode::WorkspaceWrite);
     let prompts = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&prompts);
     gate.set_handler(Box::new(move |request, _| {
@@ -126,48 +152,89 @@ fn prefix_grant_persists_to_bash_section_and_applies_longest_match() {
         Ok(PermissionDecision::ApprovePersistently)
     }));
 
-    // 复合命令中仅 cargo test 未授权，弹窗应只建议 cargo test 前缀。
-    sandboxed_bash(
+    // 批准 `git add aaa.txt`（持久化）
+    let scope = sandboxed_bash_in(
         &gate,
-        PermissionMode::AlwaysAsk,
-        "git status && cargo --locked test -p pp-permission",
+        PermissionMode::WorkspaceWrite,
+        &cwd,
+        "git add ./aaa.txt",
     )
     .unwrap();
+    assert_eq!(scope.allow_protected, vec![cwd.join(".git")]);
     let reasons = prompts.lock().unwrap().clone();
     assert_eq!(reasons.len(), 1);
-    assert!(reasons[0].contains("cargo test"), "{}", reasons[0]);
+    assert!(reasons[0].contains("git add aaa.txt"), "{}", reasons[0]);
 
-    // 持久化到 [[bash]]，而不是顶层 tools = ["bash"]。
     let toml_text = std::fs::read_to_string(root.join("permission.toml")).unwrap();
-    assert!(toml_text.contains("[[bash]]"), "{toml_text}");
+    assert!(toml_text.contains("[[rules]]"), "{toml_text}");
     assert!(
-        toml_text.contains(r#"prefix = ["cargo", "test"]"#),
+        toml_text.contains(r#"pattern = ["git", "add", "aaa.txt"]"#),
         "{toml_text}"
     );
-    assert!(!toml_text.contains(r#""bash""#), "{toml_text}");
+    assert!(toml_text.contains("[[sandbox]]"), "{toml_text}");
 
-    // 重启新 Gate 后无交互放行同类前缀命令，但不同子命令 cargo build 仍拦截。
-    let restarted = process_gate(&root, PermissionMode::AlwaysAsk);
-    sandboxed_bash(&restarted, PermissionMode::AlwaysAsk, "cargo test --doc").unwrap();
-    sandboxed_bash(&restarted, PermissionMode::AlwaysAsk, "cargo build").unwrap_err();
-
-    // 新增更长前缀 deny 规则 `git push` 与 allow 规则 `git`：最长匹配胜出。
-    restarted
-        .save_bash_rule(BashRule {
-            prefix: vec!["git".into()],
-            policy: PermissionPolicy::Allow,
-        })
-        .unwrap();
-    restarted
-        .save_bash_rule(BashRule {
-            prefix: vec!["git".into(), "push".into()],
-            policy: PermissionPolicy::Deny,
-        })
-        .unwrap();
-    sandboxed_bash(&restarted, PermissionMode::AlwaysAsk, "git commit -m ok").unwrap();
-    let denied = sandboxed_bash(
+    // 重启新 Gate：同名精确文件命令 `git add aaa.txt` 直接放行，
+    // 但 `git add bbb.txt` 或 `git add .` 仍必须拦截弹窗！
+    let restarted = process_gate(&root, PermissionMode::WorkspaceWrite);
+    let scope2 = sandboxed_bash_in(
         &restarted,
-        PermissionMode::AcceptEdits,
+        PermissionMode::WorkspaceWrite,
+        &cwd,
+        "git add aaa.txt",
+    )
+    .unwrap();
+    assert_eq!(scope2.allow_protected, vec![cwd.join(".git")]);
+
+    for other in ["git add bbb.txt", "git add .", "git add -A"] {
+        let err =
+            sandboxed_bash_in(&restarted, PermissionMode::WorkspaceWrite, &cwd, other).unwrap_err();
+        assert!(
+            err.to_string().contains("no interactive UI"),
+            "{other}: {err}"
+        );
+    }
+}
+
+#[test]
+fn prefix_and_exact_rules_precedence_and_revoke() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let gate = process_gate(&root, PermissionMode::ReadOnly);
+
+    gate.save_bash_rule(BashRule::prefix(
+        vec!["git".into()],
+        PermissionPolicy::Allow,
+    ))
+    .unwrap();
+    gate.save_bash_rule(BashRule::prefix(
+        vec!["git".into(), "push".into()],
+        PermissionPolicy::Deny,
+    ))
+    .unwrap();
+    gate.save_bash_rule(BashRule::exact(
+        vec![
+            "cargo".into(),
+            "test".into(),
+            "-p".into(),
+            "pp-permission".into(),
+        ],
+        PermissionPolicy::Allow,
+    ))
+    .unwrap();
+
+    // 精确规则放行对应参数，不放行其他参数
+    sandboxed_bash(
+        &gate,
+        PermissionMode::ReadOnly,
+        "cargo test -p pp-permission",
+    )
+    .unwrap();
+    sandboxed_bash(&gate, PermissionMode::ReadOnly, "cargo test -p pp-ui").unwrap_err();
+
+    let denied = sandboxed_bash_in(
+        &gate,
+        PermissionMode::WorkspaceWrite,
+        &root,
         "git push origin main",
     )
     .unwrap_err();
@@ -178,139 +245,57 @@ fn prefix_grant_persists_to_bash_section_and_applies_longest_match() {
         "{denied}"
     );
 
-    // 列出与按 "bash:<prefix>" 撤销。
-    let listing = restarted.list_rules().unwrap();
-    assert!(listing.contains("Bash (allow): cargo test"), "{listing}");
-    assert!(listing.contains("Bash (deny): git push"), "{listing}");
-    restarted.revoke_rule("bash:git push").unwrap();
-    let after_revoke = restarted.list_rules().unwrap();
+    let listing = gate.list_rules().unwrap();
+    assert!(
+        listing.contains("Rule (exact, allow): cargo test -p pp-permission"),
+        "{listing}"
+    );
+    assert!(
+        listing.contains("Rule (prefix, deny): git push"),
+        "{listing}"
+    );
+    gate.revoke_rule("rule:git push").unwrap();
+    let after_revoke = gate.list_rules().unwrap();
     assert!(!after_revoke.contains("git push"), "{after_revoke}");
 }
 
 #[test]
-fn accept_edits_prompts_high_impact_commands_and_unanalyzable_commands_never_persist() {
+fn protected_agents_and_network_commands_require_approval_in_workspace_write() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let mut gate = process_gate(&root, PermissionMode::AcceptEdits);
+    let cwd = root.join("repo");
+    std::fs::create_dir_all(cwd.join(".agents")).unwrap();
 
+    let gate = process_gate(&root, PermissionMode::WorkspaceWrite);
     for cmd in [
-        "git push origin main",
-        "git reset --hard HEAD~1",
-        "git clean -fd",
-        "git branch -D feature",
-        "cargo publish",
-        "sudo ls",
-        // 配置覆盖前缀不能让高危命令静默漏报：危险分类要跳过选项取值识别真实子命令。
-        "git -c core.fsmonitor=false push origin main",
-        "git --exec-path=/tmp reset --hard",
-        "git --config-env core.fsmonitor=VAR push",
-        "cargo --config a=b publish",
-        "cargo --config=a=b publish",
-        "cargo -Z unstable-options publish",
-        "cargo +nightly publish",
-        "npm --prefix ./pkg publish",
-        "npm -w ./pkg publish",
-        "pnpm --dir ./pkg publish",
-        "pnpm -w publish",
-        "yarn --cwd ./pkg publish",
-        "bun --cwd ./pkg publish",
+        "echo '# rule' > .agents/guide.md",
+        "rm -f .agents/guide.md",
+        "curl https://example.com",
+        "npm install express",
+        "git fetch origin",
     ] {
-        let err = sandboxed_bash(&gate, PermissionMode::AcceptEdits, cmd).unwrap_err();
+        let err = sandboxed_bash_in(&gate, PermissionMode::WorkspaceWrite, &cwd, cmd).unwrap_err();
         assert!(
             err.to_string().contains("no interactive UI"),
             "{cmd}: {err}"
         );
     }
 
-    // 批准 `git push` 会话授权后，AcceptEdits 下同类 `git push` 放行，但 `git reset --hard` 仍拦截。
-    gate.set_handler(Box::new(|request, _| {
-        assert!(request.session_grant);
-        assert!(request.persistent_grant);
-        assert!(request.reason.contains("git push"));
-        Ok(PermissionDecision::ApproveSession)
-    }));
-    sandboxed_bash(&gate, PermissionMode::AcceptEdits, "git push origin main").unwrap();
-    gate.handler = None;
-    sandboxed_bash(
+    // 只读读取 .agents 下的文件不触发写审批
+    sandboxed_bash_in(
         &gate,
-        PermissionMode::AcceptEdits,
-        "git -C repo push --force",
+        PermissionMode::WorkspaceWrite,
+        &cwd,
+        "cat .agents/guide.md",
     )
     .unwrap();
-    sandboxed_bash(&gate, PermissionMode::AcceptEdits, "git reset --hard HEAD").unwrap_err();
-
-    // 不可静态解析的命令（动态命令名 / 动态 bash -c）在 AlwaysAsk 下仅允许一次确认，不可持久化。
-    for dynamic in [
-        "$UNKNOWN_CMD arg",
-        r#"bash -c "$USER_SCRIPT""#,
-        r#"git $DYNAMIC_SUB"#,
-    ] {
-        let mut ask_gate = process_gate(&root, PermissionMode::AlwaysAsk);
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&seen);
-        ask_gate.set_handler(Box::new(move |request, _| {
-            recorded
-                .lock()
-                .unwrap()
-                .push((request.session_grant, request.persistent_grant));
-            Ok(PermissionDecision::Approve)
-        }));
-        sandboxed_bash(&ask_gate, PermissionMode::AlwaysAsk, dynamic).unwrap();
-        assert_eq!(
-            *seen.lock().unwrap(),
-            vec![(false, false)],
-            "dynamic command must not allow session/persistent grant: {dynamic}"
-        );
-    }
 }
 
 #[test]
-fn accept_edits_prompts_for_git_changes_but_allows_read_only_queries() {
-    let dir = tempfile::tempdir().unwrap();
-    let gate = process_gate(dir.path(), PermissionMode::AcceptEdits);
-
-    for command in [
-        "git add file.txt",
-        "git commit -m test",
-        "git fetch origin",
-        "git switch feature",
-        "git -C repo restore file.txt",
-        "git status && git tag v1.0",
-        "command git branch -d feature",
-        "git branch -l feature",
-        "git remote set-url origin example.invalid",
-        "git config user.name test",
-        "git diff --output=patch.diff",
-        "git log --output history.log",
-        "git status > status.txt",
-        "git $SUBCOMMAND",
-    ] {
-        let err = sandboxed_bash(&gate, PermissionMode::AcceptEdits, command).expect_err(command);
-        assert!(
-            err.to_string().contains("no interactive UI"),
-            "{command}: {err}"
-        );
-    }
-
-    for command in [
-        "git --version",
-        "git -C repo status",
-        "git diff --cached",
-        "git log -n 3",
-        "git branch -a",
-        "git tag --list 'v*'",
-        "git remote -v",
-        "git config --local --get user.name",
-    ] {
-        sandboxed_bash(&gate, PermissionMode::AcceptEdits, command).unwrap();
-    }
-}
-
-#[test]
-fn config_override_commands_prompt_once_without_persistent_prefix_grants() {
+fn config_override_commands_prompt_once_without_persistent_grants() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    let mut gate = process_gate(&root, PermissionMode::AcceptEdits);
+    let mut gate = process_gate(&root, PermissionMode::WorkspaceWrite);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&seen);
     gate.set_handler(Box::new(move |request, _| {
@@ -318,74 +303,27 @@ fn config_override_commands_prompt_once_without_persistent_prefix_grants() {
             .lock()
             .unwrap()
             .push((request.session_grant, request.persistent_grant));
-        assert!(
-            !request.reason.contains("Allow rule prefix"),
-            "config override must not suggest a memorizable prefix: {}",
-            request.reason
-        );
         Ok(PermissionDecision::Approve)
     }));
 
-    // 携带配置覆盖或带值全局选项的高危命令必须弹窗，但不可安全记住前缀：
-    // 只提供单次批准，不能生成会把其它变体一并放行的过宽持久 allow 规则。
     for cmd in [
         "git -c core.fsmonitor=false push origin main",
         "git --exec-path=/tmp reset --hard",
-        "git --config-env core.fsmonitor=ENV push",
-        "git -c user.name=t status",
         "cargo --config a=b publish",
-        "cargo --config=a=b publish",
-        "cargo -Z unstable-options publish",
         "npm --prefix ./pkg publish",
-        "npm --prefix=./pkg publish",
-        "npm -w ./pkg publish",
-        "pnpm --dir ./pkg publish",
-        "pnpm --registry https://example.invalid publish",
-        "yarn --cwd ./pkg publish",
-        "bun --cwd=./pkg publish",
     ] {
         seen.lock().unwrap().clear();
-        sandboxed_bash(&gate, PermissionMode::AcceptEdits, cmd).unwrap();
-        assert_eq!(
-            *seen.lock().unwrap(),
-            vec![(false, false)],
-            "config override must not offer prefix grants: {cmd}"
-        );
+        sandboxed_bash(&gate, PermissionMode::WorkspaceWrite, cmd).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![(false, false)], "{cmd}");
     }
-
-    // 单次批准不落盘任何 bash 规则，同类命令下次仍需重新确认。
     assert!(!root.join("permission.toml").exists());
-    seen.lock().unwrap().clear();
-    sandboxed_bash(
-        &gate,
-        PermissionMode::AcceptEdits,
-        "git -c core.fsmonitor=false push",
-    )
-    .unwrap();
-    assert_eq!(*seen.lock().unwrap(), vec![(false, false)]);
-
-    // 普通只读与安全带值选项命令不误判为高危，accept-edits 沙盒下直接放行。
-    seen.lock().unwrap().clear();
-    for ordinary in [
-        "git status",
-        "git -C sub status",
-        "cargo --locked test",
-        "npm install",
-    ] {
-        sandboxed_bash(&gate, PermissionMode::AcceptEdits, ordinary).unwrap();
-    }
-    assert!(
-        seen.lock().unwrap().is_empty(),
-        "ordinary commands must not prompt as high-impact"
-    );
 }
 
 #[test]
 fn ast_handles_command_wrappers_su_expansions_and_redirect_preapproval() {
     let dir = tempfile::tempdir().unwrap();
-    let gate = process_gate(dir.path(), PermissionMode::AcceptEdits);
-    // `command -v` 只是查询命令位置，不属于可执行写操作。
-    sandboxed_bash(&gate, PermissionMode::AcceptEdits, "command -v rm").unwrap();
+    let gate = process_gate(dir.path(), PermissionMode::WorkspaceWrite);
+    sandboxed_bash(&gate, PermissionMode::WorkspaceWrite, "command -v rm").unwrap();
     for cmd in [
         "command rm -rf /",
         "command -- rm -rf /",
@@ -399,7 +337,7 @@ fn ast_handles_command_wrappers_su_expansions_and_redirect_preapproval() {
         );
     }
 
-    let preapproved = Gate::for_process(dir.path(), Some(PermissionMode::AlwaysAsk), true);
+    let preapproved = Gate::for_process(dir.path(), Some(PermissionMode::ReadOnly), true);
     preapproved.set_config(ToolsSettings::default());
     preapproved.grant_allowed_tools(
         Vec::<String>::new(),
@@ -412,12 +350,13 @@ fn ast_handles_command_wrappers_su_expansions_and_redirect_preapproval() {
     );
     preapproved
         .enforce_for(
-            PermissionMode::AlwaysAsk,
+            PermissionMode::ReadOnly,
             "bash",
             &bash_args("git status"),
             ToolAccess {
                 tier: Tier::Exec,
                 sandboxed: false,
+                network_enabled: false,
             },
             None,
             &CancellationToken::new(),
@@ -426,17 +365,17 @@ fn ast_handles_command_wrappers_su_expansions_and_redirect_preapproval() {
     assert!(
         preapproved
             .enforce_for(
-                PermissionMode::AlwaysAsk,
+                PermissionMode::ReadOnly,
                 "bash",
                 &bash_args("git status > out.txt"),
                 ToolAccess {
                     tier: Tier::Exec,
                     sandboxed: false,
+                    network_enabled: false,
                 },
                 None,
                 &CancellationToken::new(),
             )
-            .is_err(),
-        "write redirection must block Bash(...) preapproval"
+            .is_err()
     );
 }

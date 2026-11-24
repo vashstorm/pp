@@ -41,7 +41,7 @@ fn sandbox_default_blocks_protected_write_and_flag_off_allows_it() {
         json!([call(
             "sbx-write-1",
             "bash",
-            json!({"command": "touch .pp/blocked.txt"})
+            json!({"command": "d=.pp; touch \"$d/blocked.txt\""})
         )]),
     );
     let (request, body) = receive_at(&server, "/v1/chat/completions");
@@ -63,6 +63,13 @@ fn sandbox_default_blocks_protected_write_and_flag_off_allows_it() {
     no_more(&server);
 
     // 显式 --sandbox off 关闭沙盒后，同一受保护路径写入应成功。
+    let perm_path = config_path(&root, "permission.toml");
+    std::fs::write(&perm_path, "[default.tools]\nbash = \"allow\"\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&perm_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
     let allowed_target = root.join(".pp/allowed.txt");
     let cli = Cli::spawn(
         &root,
@@ -107,18 +114,19 @@ fn sandbox_line_mode_slash_command_inspects_and_overrides_runtime_mode() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let sandbox_active = runtime_sandbox_available(&root);
-    let mut cli = LiveCli::new(Cli::start_with(
+    let mut cli = LiveCli::new(Cli::start_with_mode(
         &root,
         None,
-        "rate_limit_retry_budget_seconds: 0\ntools: {permissionMode: accept-edits}\n",
+        "rate_limit_retry_budget_seconds: 0\n",
         &fixture_models(&server),
+        &[],
     ));
 
     cli.input("/sandbox\n");
     if sandbox_active {
         cli.wait_for(
             Pipe::Stderr,
-            "Sandbox: effective=workspace-write, configured=workspace-write",
+            "Sandbox: effective=workspace-write, configured=auto",
         );
         cli.input("/sandbox read-only\n");
         cli.wait_for(

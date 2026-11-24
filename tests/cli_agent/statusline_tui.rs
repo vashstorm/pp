@@ -11,7 +11,7 @@ fn statusline_home(server: &TestServer, protocol: &str, fast: bool) -> tempfile:
     } else {
         ""
     };
-    std::fs::write(config_path(home.path(), "settings.yml"), format!("default_model: main/primary\nrate_limit_retry_budget_seconds: 0\nauto_compact: false\ntools: {{permissionMode: yolo}}\nmodel_roles:\n  slow: {{model: main/primary, effort: none}}\n{role}")).unwrap();
+    std::fs::write(config_path(home.path(), "settings.yml"), format!("default_model: main/primary\nrate_limit_retry_budget_seconds: 0\nauto_compact: false\nmodel_roles:\n  slow: {{model: main/primary, effort: none}}\n{role}")).unwrap();
     let model = |name: &str, rate: f64| json!({"model":name,"context_window":40000,"cost":{"input":rate,"cacheRead":rate,"cacheWrite":rate,"output":rate}});
     std::fs::write(config_path(home.path(), "models.yml"), json!({"providers":{
         "main":slash_provider(server,"main",protocol,json!({"primary":model("main-model",1.0)})),
@@ -22,7 +22,7 @@ fn statusline_home(server: &TestServer, protocol: &str, fast: bool) -> tempfile:
 
 fn statusline_start(server: &TestServer, protocol: &str, fast: bool) -> (tempfile::TempDir, Pty) {
     let home = statusline_home(server, protocol, fast);
-    let mut pty = Pty::start_with_existing_files(home.path());
+    let mut pty = Pty::start_with_args(home.path(), home.path(), &["--yolo"]);
     pty.ready();
     pty.resize(30, 180);
     (home, pty)

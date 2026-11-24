@@ -859,7 +859,7 @@ fn create_tool_session(server: &TestServer, home: &Path, protocol: &str) -> Stri
     )
     .unwrap();
     let path = api_path(protocol);
-    let mut pty = Pty::start_with_existing_files(home);
+    let mut pty = Pty::start_with_args(home, home, &["--yolo"]);
     pty.ready();
     pty.input("remember tui-marker\r");
     let (request, _) = receive_at(server, path);

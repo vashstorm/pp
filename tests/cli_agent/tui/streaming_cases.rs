@@ -128,7 +128,7 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
             response_models(&server, Some(protocol)),
         )
         .unwrap();
-        let mut pty = Pty::start_with_existing_files(dir.path());
+        let mut pty = Pty::start_with_args(dir.path(), dir.path(), &["--yolo"]);
         pty.ready();
         pty.input("live task\r");
         let path = if protocol == "completion" {

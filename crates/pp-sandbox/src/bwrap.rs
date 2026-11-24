@@ -12,7 +12,9 @@ pub(crate) struct BwrapSpec<'a> {
     pub mode: EffectiveMode,
     pub cwd: &'a PathBuf,
     pub writable: &'a [PathBuf],
+    pub allow_write_files: &'a [PathBuf],
     pub protect: &'a [PathBuf],
+    pub immutable_protect: &'a [PathBuf],
     pub deny_read: &'a [PathBuf],
     pub allow_read: &'a [PathBuf],
     pub docker_sockets: &'a [PathBuf],
@@ -152,7 +154,9 @@ pub(crate) fn compile_args(spec: &BwrapSpec<'_>) -> Result<(Vec<OsString>, Vec<S
     for path in spec
         .writable
         .iter()
+        .chain(spec.allow_write_files)
         .chain(spec.protect)
+        .chain(spec.immutable_protect)
         .chain(spec.deny_read)
         .chain(spec.allow_read)
         .chain(spec.docker_sockets)
@@ -218,6 +222,28 @@ pub(crate) fn compile_args(spec: &BwrapSpec<'_>) -> Result<(Vec<OsString>, Vec<S
                     path.display()
                 ));
             }
+        }
+    }
+
+    for path in sort_by_depth_unique(spec.allow_write_files) {
+        if let Ok(meta) = std::fs::symlink_metadata(&path)
+            && !meta.file_type().is_symlink()
+        {
+            push_bind_try(&mut args, &path);
+        } else if let Some(parent) = path.parent()
+            && let Ok(meta) = std::fs::symlink_metadata(parent)
+            && !meta.file_type().is_symlink()
+            && meta.is_dir()
+        {
+            push_bind_try(&mut args, parent);
+        }
+    }
+
+    for path in sort_by_depth_unique(spec.immutable_protect) {
+        if let Ok(meta) = std::fs::symlink_metadata(&path)
+            && !meta.file_type().is_symlink()
+        {
+            push_ro_bind(&mut args, &path);
         }
     }
 
@@ -441,7 +467,9 @@ mod tests {
             mode: EffectiveMode::WorkspaceWrite,
             cwd: &cwd,
             writable: &writable,
+            allow_write_files: &[],
             protect: &protect,
+            immutable_protect: &[],
             deny_read: &deny_read,
             allow_read: &allow_read,
             docker_sockets: &sockets,
@@ -509,7 +537,9 @@ mod tests {
             mode: EffectiveMode::ReadOnly,
             cwd: &cwd,
             writable: &ro_writable,
+            allow_write_files: &[],
             protect: &[],
+            immutable_protect: &[],
             deny_read: &[],
             allow_read: &[],
             docker_sockets: &[],
@@ -541,7 +571,9 @@ mod tests {
             mode: EffectiveMode::WorkspaceWrite,
             cwd: &cwd,
             writable: std::slice::from_ref(&cwd),
+            allow_write_files: &[],
             protect: &[],
+            immutable_protect: &[],
             deny_read: &deny,
             allow_read: &[],
             docker_sockets: &[],
@@ -600,7 +632,9 @@ mod tests {
             mode: EffectiveMode::WorkspaceWrite,
             cwd: &workspace,
             writable: &writable,
+            allow_write_files: &[],
             protect: &protect,
+            immutable_protect: &[],
             deny_read: &deny_read,
             allow_read: &allow_read,
             docker_sockets: &[],
@@ -651,7 +685,9 @@ mod tests {
             mode: EffectiveMode::ReadOnly,
             cwd: &workspace,
             writable: &[cache.clone(), PathBuf::from("/tmp")],
+            allow_write_files: &[],
             protect: &protect,
+            immutable_protect: &[],
             deny_read: &[],
             allow_read: &[],
             docker_sockets: &[],

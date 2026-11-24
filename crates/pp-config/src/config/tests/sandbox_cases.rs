@@ -2,10 +2,10 @@ use super::*;
 use crate::config::{SettingPatch, read_settings, update_general_setting};
 
 #[test]
-fn sandbox_settings_defaults_to_auto_and_network_enabled() {
+fn sandbox_settings_defaults_to_auto_and_network_disabled() {
     let settings = Settings::default();
     assert_eq!(settings.tools.sandbox.mode, SandboxMode::Auto);
-    assert!(settings.tools.sandbox.network);
+    assert!(!settings.tools.sandbox.network);
 }
 
 #[test]
@@ -103,15 +103,43 @@ fn sandbox_mode_patch_persists_and_from_str_parses() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.yml");
-    std::fs::write(&path, "# keep\ntools:\n  permissionMode: always-ask\n").unwrap();
+    std::fs::write(&path, "# keep\ntools:\n  sandbox:\n    network: true\n").unwrap();
 
     let saved =
         update_general_setting(&path, SettingPatch::SandboxMode(SandboxMode::ReadOnly)).unwrap();
     assert_eq!(saved.tools.sandbox.mode, SandboxMode::ReadOnly);
-    assert_eq!(saved.tools.permission_mode, Some(PermissionMode::AlwaysAsk));
+    assert!(saved.tools.sandbox.network);
     assert!(
         std::fs::read_to_string(&path)
             .unwrap()
             .starts_with("# keep\n")
     );
+}
+
+#[test]
+fn permission_mode_parses_new_names_yolo_alias_and_rejects_persisted_setting() {
+    assert_eq!(PermissionMode::default(), PermissionMode::WorkspaceWrite);
+    for (raw, expected) in [
+        ("workspace-write", PermissionMode::WorkspaceWrite),
+        ("auto_review", PermissionMode::AutoReview),
+        ("danger-full-access", PermissionMode::DangerFullAccess),
+        ("yolo", PermissionMode::DangerFullAccess),
+        (" YOLO ", PermissionMode::DangerFullAccess),
+        ("read-only", PermissionMode::ReadOnly),
+    ] {
+        assert_eq!(
+            raw.parse::<PermissionMode>().unwrap(),
+            expected,
+            "raw={raw}"
+        );
+    }
+    for legacy in ["always-ask", "accept-edits", "unknown"] {
+        assert!(legacy.parse::<PermissionMode>().is_err(), "legacy={legacy}");
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.yml");
+    std::fs::write(&path, "tools:\n  permissionMode: workspace-write\n").unwrap();
+    let err = format!("{:#}", read_settings(&path).unwrap_err());
+    assert!(err.contains("tools.permissionMode was removed"), "{err}");
 }

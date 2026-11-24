@@ -656,21 +656,29 @@ fn permission_switches_independently_across_states_queues_and_panels() {
 
     // 1. 运行中、取消中、Plan 审查中、不可用状态均可使用 F6 / Alt+Shift+A 循环切换且保留草稿。
     for (state, key_event, expected) in [
-        (State::Running, key(KeyCode::F(6)), PermissionMode::Yolo),
+        (
+            State::Running,
+            key(KeyCode::F(6)),
+            PermissionMode::AutoReview,
+        ),
         (
             State::Cancelling,
             Event::Key(KeyEvent::new(
                 KeyCode::Char('A'),
                 KeyModifiers::ALT | KeyModifiers::SHIFT,
             )),
-            PermissionMode::AlwaysAsk,
+            PermissionMode::DangerFullAccess,
         ),
         (
             State::ReviewingPlan,
             key(KeyCode::F(6)),
-            PermissionMode::AcceptEdits,
+            PermissionMode::ReadOnly,
         ),
-        (State::Unavailable, key(KeyCode::F(6)), PermissionMode::Yolo),
+        (
+            State::Unavailable,
+            key(KeyCode::F(6)),
+            PermissionMode::WorkspaceWrite,
+        ),
     ] {
         app.state = state;
         app.handle(key_event, &mut false);
@@ -691,8 +699,8 @@ fn permission_switches_independently_across_states_queues_and_panels() {
     assert!(app.has_pending());
     let (_answers, _token) = ask_fixture(&mut app);
     app.handle(key(KeyCode::F(6)), &mut false);
-    assert_eq!(gate.snapshot(), PermissionMode::AlwaysAsk);
-    assert_eq!(app.permission_mode, Some(PermissionMode::AlwaysAsk));
+    assert_eq!(gate.snapshot(), PermissionMode::AutoReview);
+    assert_eq!(app.permission_mode, Some(PermissionMode::AutoReview));
     assert!(app.ask_panel.is_some());
     assert!(matches!(
         requests.try_recv(),
@@ -708,8 +716,8 @@ fn permission_switches_independently_across_states_queues_and_panels() {
     app.clear_input();
     app.insert_input("/permissions yolo".into());
     app.submit(PendingKind::Steering);
-    assert_eq!(gate.snapshot(), PermissionMode::Yolo);
-    assert_eq!(app.permission_mode, Some(PermissionMode::Yolo));
+    assert_eq!(gate.snapshot(), PermissionMode::DangerFullAccess);
+    assert_eq!(app.permission_mode, Some(PermissionMode::DangerFullAccess));
     assert_eq!(app.input.lines(), &[""]);
     assert!(matches!(
         requests.try_recv(),
@@ -814,11 +822,6 @@ fn unavailable_model_binds_configured_permission_mode_before_cycling() {
 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
-    std::fs::write(
-        root.join("settings.yml"),
-        "tools:\n  permissionMode: always-ask\n",
-    )
-    .unwrap();
     let bootstrap = pp_runtime::agent::Bootstrap {
         dir: root.clone(),
         cwd: root.clone(),
@@ -839,13 +842,13 @@ fn unavailable_model_binds_configured_permission_mode_before_cycling() {
     let mut app = App::new(Err(anyhow::anyhow!("missing models.yml"))).unwrap();
     app.bootstrap = Some(bootstrap);
     app.bind_bootstrap_permissions();
-    assert_eq!(app.permission_mode, Some(PermissionMode::AlwaysAsk));
-    assert_eq!(app.permission.snapshot(), PermissionMode::AlwaysAsk);
+    assert_eq!(app.permission_mode, Some(PermissionMode::WorkspaceWrite));
+    assert_eq!(app.permission.snapshot(), PermissionMode::WorkspaceWrite);
 
-    // 第一次按 F6 应从配置的 Always-ask 切到 Accept-edits，而非误从默认 Accept-edits 跳到 YOLO。
+    // 第一次按 F6 应从默认 WorkspaceWrite 切到 AutoReview。
     app.handle(key(KeyCode::F(6)), &mut false);
-    assert_eq!(app.permission_mode, Some(PermissionMode::AcceptEdits));
-    assert_eq!(app.permission.snapshot(), PermissionMode::AcceptEdits);
+    assert_eq!(app.permission_mode, Some(PermissionMode::AutoReview));
+    assert_eq!(app.permission.snapshot(), PermissionMode::AutoReview);
 }
 
 #[test]
@@ -856,7 +859,7 @@ fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() 
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let rules_path = root.join("permission.toml");
-    std::fs::write(&rules_path, "tools = [\"write\"]\n").unwrap();
+    std::fs::write(&rules_path, "[default.tools]\nwrite = \"allow\"\n").unwrap();
     std::fs::set_permissions(&rules_path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
     let gate = pp_permission::Gate::for_process(&root, None, false);
@@ -875,11 +878,13 @@ fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() 
     let (_answers, _token) = ask_fixture(&mut app);
     app.handle(key(KeyCode::F(7)), &mut false);
     assert!(app.permission_overlay.is_some());
-    assert!(draw(&mut app, 100, 30).contains("Permission mode: accept-edits"));
+    assert!(
+        draw(&mut app, 100, 30).contains("Permission mode: Ask for approval (workspace-write)")
+    );
     type_text(&mut app, "yolo");
     app.handle(key(KeyCode::Enter), &mut false);
-    assert_eq!(gate.snapshot(), PermissionMode::Yolo);
-    assert_eq!(app.permission_mode, Some(PermissionMode::Yolo));
+    assert_eq!(gate.snapshot(), PermissionMode::DangerFullAccess);
+    assert_eq!(app.permission_mode, Some(PermissionMode::DangerFullAccess));
     assert!(app.ask_panel.is_some());
     assert!(matches!(
         requests.try_recv(),
@@ -897,10 +902,10 @@ fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() 
     app.context_panel = Some(crate::tui::context_panel::Panel::new());
     app.handle(key(KeyCode::F(7)), &mut false);
     app.handle(key(KeyCode::Enter), &mut false);
-    assert!(draw(&mut app, 100, 30).contains("Permission mode: yolo"));
-    type_text(&mut app, "always-ask");
+    assert!(draw(&mut app, 100, 30).contains("Permission mode: Full Access (danger-full-access)"));
+    type_text(&mut app, "auto_review");
     app.handle(key(KeyCode::Enter), &mut false);
-    assert_eq!(gate.snapshot(), PermissionMode::AlwaysAsk);
+    assert_eq!(gate.snapshot(), PermissionMode::AutoReview);
     assert!(app.context_panel.is_some());
 
     // 3. 另一句柄持排他锁占用 permission.lock 时，`/permissions revoke` 交给独立 worker，不阻塞事件循环。
@@ -928,8 +933,8 @@ fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() 
     assert!(draw(&mut app, 100, 30).contains("Revoking saved permission rule..."));
     // 持锁期间事件循环未被阻塞：立即按 F6 仍可实时切换内存权限档位。
     app.handle(key(KeyCode::F(6)), &mut false);
-    assert_eq!(gate.snapshot(), PermissionMode::AcceptEdits);
-    assert!(draw(&mut app, 100, 30).contains("Permission mode: accept-edits"));
+    assert_eq!(gate.snapshot(), PermissionMode::DangerFullAccess);
+    assert!(draw(&mut app, 100, 30).contains("Permission mode: Full Access (danger-full-access)"));
 
     // 释放锁后后台 worker 完成撤销并回传结果。
     drop(lock_file);
@@ -953,7 +958,7 @@ fn modal_permission_overlay_accepts_real_keys_and_runs_rule_io_off_event_loop() 
     assert!(
         gate.list_rules()
             .unwrap()
-            .contains("Bash (allow): cargo test")
+            .contains("Rule (exact, allow): cargo test")
     );
     type_text(&mut app, "revoke bash:cargo test");
     app.handle(key(KeyCode::Enter), &mut false);

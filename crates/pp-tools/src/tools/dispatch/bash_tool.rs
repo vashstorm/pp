@@ -8,6 +8,7 @@ impl Tools {
         call: &mut ExecuteCall<'_, '_>,
         permissions: pp_config::config::PermissionMode,
         sandbox: pp_sandbox::SandboxView<'_>,
+        hook_ask: Option<&str>,
     ) -> Result<Value> {
         let args: BashArgs =
             serde_json::from_str(call.arguments).context("invalid bash arguments")?;
@@ -25,7 +26,7 @@ impl Tools {
             self.limits.bash_timeout_seconds
         );
         let mut policy = sandbox.policy()?;
-        if let Some(request) = args.sandbox_permissions {
+        let (extra_writable, extra_network) = if let Some(request) = args.sandbox_permissions {
             ensure!(
                 matches!(call.policy, ToolPolicy::Execute { .. }),
                 "sandbox_permissions requires Execute mode"
@@ -34,24 +35,42 @@ impl Tools {
                 Some(base) => {
                     let writable = base.resolve_extra_writable(&request.writable)?;
                     let network = request.network && !base.network();
-                    if network || !writable.is_empty() {
-                        // 只要沙盒策略仍启用（含 YOLO 叠加显式沙盒覆盖），扩权都必须经过审批。
-                        self.permission.authorize_sandbox(
-                            pp_permission::SandboxGrant {
-                                command: args.command.clone(),
-                                writable: writable.clone(),
-                                network,
-                            },
-                            Some(&self.cwd),
-                            cancellation,
-                        )?;
-                        policy = Some(base.with_command_grant(&writable, network)?);
-                    }
+                    (writable, network)
                 }
-                // 仅当切到 YOLO 且沙盒确实关闭时忽略旧调用中遗留的扩权参数。
-                None if permissions == pp_config::config::PermissionMode::Yolo => {}
+                None if permissions == pp_config::config::PermissionMode::DangerFullAccess => {
+                    (Vec::new(), false)
+                }
                 None => bail!("sandbox is unavailable"),
             }
+        } else {
+            (Vec::new(), false)
+        };
+        let access = pp_permission::ToolAccess {
+            tier: permission::Tier::Exec,
+            sandboxed: policy.is_some(),
+            network_enabled: policy.as_ref().is_some_and(|p| p.network()),
+        };
+        let approved = self.permission.authorize_bash(
+            permissions,
+            access,
+            &self.cwd,
+            call.arguments,
+            &extra_writable,
+            extra_network,
+            hook_ask,
+            cancellation,
+        )?;
+        if let Some(base) = policy.as_ref()
+            && (!approved.writable.is_empty()
+                || !approved.allow_protected.is_empty()
+                || approved.network)
+        {
+            policy = Some(base.with_approved_scope(
+                &approved.writable,
+                &[],
+                &approved.allow_protected,
+                approved.network,
+            )?);
         }
         pp_core::cancellation::check(cancellation)?;
         let cache = self.workspace.cache_dir()?;

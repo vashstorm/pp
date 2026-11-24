@@ -295,7 +295,7 @@ fn run_scenario(
         };
         fs::write(config_dir.join("settings.yml"), json!({
         "edit":edit, "auto_compact":false, "lsp":{"enabled":false},
-        "tools":{"permissionMode":"yolo"}, "rate_limit_retry_budget_seconds":scenario.retry_budget_seconds, "request_timeout_seconds":300
+        "rate_limit_retry_budget_seconds":scenario.retry_budget_seconds, "request_timeout_seconds":300
     }).to_string())?;
         fs::write(
             config_dir.join("mcp.json"),

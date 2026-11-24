@@ -85,19 +85,41 @@ pub(super) fn definition() -> FunctionObject {
     )
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NetworkDecision {
+    AllowExternal,
+    LoopbackOnly,
+    NeedsApproval,
+}
+
+#[cfg(test)]
 pub(crate) fn sandbox_network_decision(
     sandbox: SandboxView<'_>,
     settings: &WebSearchSettings,
     requested: Option<WebSearchProvider>,
 ) -> Result<bool> {
+    match sandbox_network_check(sandbox, settings, requested)? {
+        NetworkDecision::AllowExternal => Ok(true),
+        NetworkDecision::LoopbackOnly => Ok(false),
+        NetworkDecision::NeedsApproval => {
+            anyhow::bail!("web_search is blocked by sandbox policy (outbound network is disabled).")
+        }
+    }
+}
+
+pub(crate) fn sandbox_network_check(
+    sandbox: SandboxView<'_>,
+    settings: &WebSearchSettings,
+    requested: Option<WebSearchProvider>,
+) -> Result<NetworkDecision> {
     let Some(policy) = sandbox.policy()? else {
-        return Ok(true);
+        return Ok(NetworkDecision::AllowExternal);
     };
     if policy.network() {
-        return Ok(true);
+        return Ok(NetworkDecision::AllowExternal);
     }
     if policy.backend() == "bubblewrap" {
-        anyhow::bail!("web_search is blocked by sandbox policy (network access is isolated).");
+        return Ok(NetworkDecision::NeedsApproval);
     }
 
     let effective = requested.unwrap_or(settings.provider);
@@ -107,23 +129,20 @@ pub(crate) fn sandbox_network_decision(
         .is_some_and(|cfg| cfg.is_loopback_endpoint());
 
     match effective {
-        WebSearchProvider::Searxng if loopback_searxng => Ok(false),
-        WebSearchProvider::Auto if loopback_searxng => Ok(false),
-        WebSearchProvider::Searxng => anyhow::bail!(
-            "web_search SearXNG endpoint is blocked by sandbox policy (outbound network is disabled)."
-        ),
-        other => anyhow::bail!(
-            "web_search provider '{}' is blocked by sandbox policy (outbound network is disabled).",
-            other.as_str()
-        ),
+        WebSearchProvider::Searxng | WebSearchProvider::Auto if loopback_searxng => {
+            Ok(NetworkDecision::LoopbackOnly)
+        }
+        _ => Ok(NetworkDecision::NeedsApproval),
     }
 }
 
-pub(super) fn run(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_with_approval(
     arguments: &str,
     settings: &WebSearchSettings,
     sandbox: SandboxView<'_>,
     cancellation: &CancellationToken,
+    authorize: &mut dyn FnMut(&str) -> Result<()>,
     runner: &mut Runner<'_>,
 ) -> Result<Value> {
     let args: WebSearchArgs =
@@ -137,7 +156,14 @@ pub(super) fn run(
         );
     }
 
-    let allow_external_network = sandbox_network_decision(sandbox, settings, args.provider)?;
+    let allow_external_network = match sandbox_network_check(sandbox, settings, args.provider)? {
+        NetworkDecision::AllowExternal => true,
+        NetworkDecision::LoopbackOnly => false,
+        NetworkDecision::NeedsApproval => {
+            authorize(&format!("query={trimmed}"))?;
+            true
+        }
+    };
     let request = WebSearchRequest {
         query: trimmed.to_owned(),
         recency: args.recency,

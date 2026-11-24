@@ -254,6 +254,15 @@ pub enum AgentEvent {
         id: Option<String>,
         report: crate::lsp_report::DiagnosticReport,
     },
+    /// `auto_review` 模式下由 REVIEW Role 执行独立安全审阅时的瞬时事件，不写 journal。
+    AutoReviewStarted {
+        tool: String,
+    },
+    AutoReviewFinished {
+        tool: String,
+        passed: bool,
+        reason: String,
+    },
 }
 
 #[cfg(test)]

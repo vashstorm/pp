@@ -123,7 +123,7 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
         for name in ["one", "two"] {
             std::fs::write(project.path().join(name), (0..20).map(|i|format!("body-{name}-{i:02}\n")).collect::<String>()).unwrap();
         }
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
         pty.ready();
         pty.resize(80, 100);
         pty.input("read summary\r");
@@ -261,7 +261,7 @@ fn tool_folding_omp_mcp_multiline_result_and_write_preview() {
         settings["mcpServers"]["local"]["env"]["MCP_VALUE"] = json!(&encoded[1..encoded.len()-1]);
         crate::write_settings(home.path(), settings.to_string()).unwrap();
         std::fs::write(config_path(home.path(), "models.yml"), response_models(&provider, Some(protocol))).unwrap();
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
         pty.ready();
         pty.resize(90, 100);
         pty.input("mcp and write\r");

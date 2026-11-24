@@ -8,7 +8,7 @@ fn sqlite_input_history_survives_restart_with_original_text_and_pages() {
     std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
     std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
     let original = "sqlite 多行原文\n第二行 retained";
-    let mut first = Pty::start_with_args(a.path(), home.path(), &[]);
+    let mut first = Pty::start_with_args(a.path(), home.path(), &["--yolo"]);
     first.ready_model("fixture/primary");
     first.input(&format!("\x1b[200~{original}\x1b[201~\r"));
     let (request, body) = first.request(&server);

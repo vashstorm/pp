@@ -46,7 +46,7 @@ impl FromStr for SandboxMode {
 }
 
 fn default_network() -> bool {
-    true
+    false
 }
 
 /// settings.yml `tools.sandbox` 配置。

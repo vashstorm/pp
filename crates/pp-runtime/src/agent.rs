@@ -1,3 +1,4 @@
+mod auto_review;
 pub mod context;
 pub mod context_diagnosis;
 mod debug;
@@ -219,6 +220,8 @@ pub struct Agent {
     ephemeral: bool,
     max_turns: Option<usize>,
     output_schema: Option<output_schema::OutputSchema>,
+    /// `auto_review` 模式下的独立安全审阅器共享状态。
+    auto_review: Option<std::sync::Arc<auto_review::AutoReviewState>>,
     /// 声明在 `tools`/`subagent` 之后，确保先关闭子 Agent 再清理临时目录。
     ephemeral_subagent_dir: Option<tempfile::TempDir>,
 }

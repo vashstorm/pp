@@ -59,24 +59,51 @@ impl LeafCommand {
 pub(crate) struct ProgramAnalysis {
     pub(crate) leaves: Vec<LeafCommand>,
     pub(crate) has_write_redirection: bool,
+    pub(crate) write_redirect_targets: Vec<String>,
     pub(crate) critical_reason: Option<&'static str>,
     pub(crate) unanalyzable: bool,
 }
 
 impl ProgramAnalysis {
-    /// 当命令含多条未授权命令时提取去重后的建议前缀列表；
-    /// 任一未授权叶子无法推导出安全前缀时返回 `None`（仅可单次放行）。
-    pub(crate) fn suggested_prefixes<'a>(
+    /// 当命令含多条未授权命令时提取去重后的建议精确规则（`Exact` 模式）；
+    /// 任一未授权叶子无法推导出安全规则时返回 `None`（仅可单次放行）。
+    pub(crate) fn suggested_rules<'a>(
         leaves: impl IntoIterator<Item = &'a LeafCommand>,
-    ) -> Option<Vec<Vec<String>>> {
-        let mut prefixes = Vec::new();
+    ) -> Option<Vec<crate::rules::BashRule>> {
+        let mut rules = Vec::new();
         for leaf in leaves {
-            let prefix = leaf.suggested_prefix()?;
-            if !prefixes.contains(&prefix) {
-                prefixes.push(prefix);
+            let pattern = leaf.suggested_exact_pattern()?;
+            let rule =
+                crate::rules::BashRule::exact(pattern, pp_config::config::PermissionPolicy::Allow);
+            if !rules.contains(&rule) {
+                rules.push(rule);
             }
         }
-        (!prefixes.is_empty()).then_some(prefixes)
+        (!rules.is_empty()).then_some(rules)
+    }
+
+    pub(crate) fn protected_write_targets(&self, cwd: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut targets = Vec::new();
+        let mut push_unique = |path: std::path::PathBuf| {
+            if !targets.contains(&path) {
+                targets.push(path);
+            }
+        };
+        for leaf in &self.leaves {
+            for target in leaf.protected_write_targets(cwd) {
+                push_unique(target);
+            }
+        }
+        for target in &self.write_redirect_targets {
+            if let Some(prot) = classify::match_protected_path(target, cwd) {
+                push_unique(prot);
+            }
+        }
+        targets
+    }
+
+    pub(crate) fn needs_network(&self) -> bool {
+        self.leaves.iter().any(LeafCommand::needs_network)
     }
 }
 
@@ -430,6 +457,9 @@ impl Analyzer {
                                 if !is_dev_null {
                                     writes = true;
                                     self.analysis.has_write_redirection = true;
+                                    if let ArgToken::Literal(path) = &tok {
+                                        self.analysis.write_redirect_targets.push(path.clone());
+                                    }
                                 }
                                 if let ArgToken::Literal(path) = &tok {
                                     if is_auth_path(path) {
@@ -456,6 +486,9 @@ impl Analyzer {
                     if !is_dev_null {
                         writes = true;
                         self.analysis.has_write_redirection = true;
+                        if let ArgToken::Literal(path) = &tok {
+                            self.analysis.write_redirect_targets.push(path.clone());
+                        }
                     }
                     if matches!(&tok, ArgToken::Literal(path) if is_auth_path(path)) {
                         self.set_critical("write to system authentication files");

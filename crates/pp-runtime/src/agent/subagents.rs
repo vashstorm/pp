@@ -313,6 +313,7 @@ impl Agent {
                 ephemeral: false,
                 max_turns: None,
                 output_schema: None,
+                auto_review: None,
                 ephemeral_subagent_dir: None,
             };
             #[cfg(debug_assertions)]

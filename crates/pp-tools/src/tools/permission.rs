@@ -1,6 +1,9 @@
 //! 工具与参数分类在分发层维护，权限状态与规则由 pp-permission 管理。
 
-pub use pp_permission::{Gate, PermissionDecision, PermissionHandler, PermissionRequest, Tier};
+pub use pp_permission::{
+    ApprovedBashScope, Gate, PathWriteKind, PermissionDecision, PermissionHandler,
+    PermissionRequest, Tier,
+};
 
 /// 内置工具按风险分级；未获只读授权的 MCP 工具按写档处理，
 /// 未知名按 exec 处理（安全默认）。

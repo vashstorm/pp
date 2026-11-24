@@ -121,6 +121,9 @@ fn policy_sets_expected_defaults_for_workspace_write_and_read_only() {
             .check_write(&cwd.join(".git/hooks/pre-commit"))
             .is_err()
     );
+    assert!(policy.check_write(&cwd.join(".git/index")).is_err());
+    assert!(policy.check_write(&cwd.join(".agents/skill.md")).is_err());
+    assert!(!policy.network());
     assert!(policy.check_write(&home.join(".zshrc")).is_err());
     assert!(policy.check_read(&home.join(".ssh/id_rsa")).is_err());
     assert!(policy.check_read(&home.join(".ssh/known_hosts")).is_ok());
@@ -335,4 +338,71 @@ fn for_cwd_shares_mode_override_and_configured_mode_with_parent() {
     assert_eq!(child.status().effective, EffectiveMode::Off);
     parent.set_mode_override(None);
     assert_eq!(child.status().effective, EffectiveMode::ReadOnly);
+}
+
+#[test]
+fn git_and_agents_protection_supports_scoped_override_while_keeping_immutable_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let cwd = root.join("repo");
+    let home = root.join("home");
+    let worktree_gitdir = root.join("shared-git/worktrees/wt1");
+    std::fs::create_dir_all(cwd.join(".agents")).unwrap();
+    std::fs::create_dir_all(home.join(".pp/agent")).unwrap();
+    std::fs::create_dir_all(&worktree_gitdir).unwrap();
+    std::fs::write(
+        cwd.join(".git"),
+        format!("gitdir: {}\n", worktree_gitdir.display()),
+    )
+    .unwrap();
+
+    let sbx = Sandbox::with_probe_for_test(
+        SandboxSettings {
+            mode: SandboxMode::WorkspaceWrite,
+            ..Default::default()
+        },
+        &cwd,
+        Some(&home),
+        Some(Path::new("/tmp")),
+        ProbeResult::Available,
+    );
+    let policy = sbx.policy().unwrap().unwrap();
+    assert_eq!(
+        policy.classify_write(&cwd.join(".agents/notes.md")),
+        WriteAccessCheck::NeedsProtectedApproval(cwd.join(".agents"))
+    );
+    assert_eq!(
+        policy.classify_write(&worktree_gitdir.join("index")),
+        WriteAccessCheck::NeedsProtectedApproval(worktree_gitdir.clone())
+    );
+    assert!(matches!(
+        policy.classify_write(&home.join(".pp/agent/permission.toml")),
+        WriteAccessCheck::ImmutableDenied(_)
+    ));
+
+    // 单文件精确批准只放行目标文件，不放行同目录其他文件。
+    let approved_file = cwd.join(".agents/notes.md");
+    let scoped = policy
+        .with_approved_scope(&[], std::slice::from_ref(&approved_file), &[], false)
+        .unwrap();
+    assert_eq!(
+        scoped.classify_write(&approved_file),
+        WriteAccessCheck::Allowed
+    );
+    assert!(matches!(
+        scoped.classify_write(&cwd.join(".agents/other.md")),
+        WriteAccessCheck::NeedsProtectedApproval(_)
+    ));
+
+    // 禁止对 permission.toml 或 deny_read 凭据目录解除保护。
+    assert!(
+        policy
+            .with_approved_scope(&[], &[home.join(".pp/agent/permission.toml")], &[], false)
+            .is_err()
+    );
+    assert!(
+        policy
+            .with_approved_scope(&[], &[], &[home.join(".ssh")], false)
+            .is_err()
+    );
 }

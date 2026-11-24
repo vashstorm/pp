@@ -31,33 +31,77 @@ impl OutputSettings {
     }
 }
 
-/// 同时选择工具权限策略和沙盒边界。
+/// 同时选择工具权限策略与沙盒边界（进程内状态，不再持久化到配置文件）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
-    AlwaysAsk,
     #[default]
-    AcceptEdits,
-    Yolo,
+    #[serde(rename = "workspace-write")]
+    WorkspaceWrite,
+    #[serde(rename = "auto_review")]
+    AutoReview,
+    #[serde(rename = "danger-full-access", alias = "yolo")]
+    DangerFullAccess,
+    #[serde(rename = "read-only")]
+    ReadOnly,
 }
 
 impl PermissionMode {
-    pub const ALL: [Self; 3] = [Self::AlwaysAsk, Self::AcceptEdits, Self::Yolo];
-    pub const OPTIONS: &str = "always-ask, accept-edits, yolo";
+    pub const ALL: [Self; 4] = [
+        Self::WorkspaceWrite,
+        Self::AutoReview,
+        Self::DangerFullAccess,
+        Self::ReadOnly,
+    ];
+    pub const OPTIONS: &str = "workspace-write, auto_review, danger-full-access (yolo), read-only";
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::AlwaysAsk => "always-ask",
-            Self::AcceptEdits => "accept-edits",
-            Self::Yolo => "yolo",
+            Self::WorkspaceWrite => "workspace-write",
+            Self::AutoReview => "auto_review",
+            Self::DangerFullAccess => "danger-full-access",
+            Self::ReadOnly => "read-only",
+        }
+    }
+
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::WorkspaceWrite => "Ask for approval",
+            Self::AutoReview => "Approve for me",
+            Self::DangerFullAccess => "Full Access",
+            Self::ReadOnly => "Read Only",
+        }
+    }
+
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::WorkspaceWrite => "Ask",
+            Self::AutoReview => "Auto",
+            Self::DangerFullAccess => "YOLO",
+            Self::ReadOnly => "RO",
+        }
+    }
+
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::WorkspaceWrite => {
+                "Read and edit workspace files and run commands, with approval required for internet access or edits outside the workspace"
+            }
+            Self::AutoReview => "Only ask for actions detected as potentially unsafe",
+            Self::DangerFullAccess => {
+                "Use with caution: pp can edit files outside this workspace and access the internet without approval"
+            }
+            Self::ReadOnly => {
+                "Read workspace files, with approval required for edits or internet access"
+            }
         }
     }
 
     pub const fn next(self) -> Self {
         match self {
-            Self::AlwaysAsk => Self::AcceptEdits,
-            Self::AcceptEdits => Self::Yolo,
-            Self::Yolo => Self::AlwaysAsk,
+            Self::WorkspaceWrite => Self::AutoReview,
+            Self::AutoReview => Self::DangerFullAccess,
+            Self::DangerFullAccess => Self::ReadOnly,
+            Self::ReadOnly => Self::WorkspaceWrite,
         }
     }
 }
@@ -66,10 +110,14 @@ impl std::str::FromStr for PermissionMode {
     type Err = anyhow::Error;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        Self::ALL
-            .into_iter()
-            .find(|mode| mode.as_str() == raw)
-            .ok_or_else(|| anyhow::anyhow!("expected one of {}", Self::OPTIONS))
+        let normalized = raw.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "workspace-write" => Ok(Self::WorkspaceWrite),
+            "auto_review" => Ok(Self::AutoReview),
+            "danger-full-access" | "yolo" => Ok(Self::DangerFullAccess),
+            "read-only" => Ok(Self::ReadOnly),
+            _ => Err(anyhow::anyhow!("expected one of {}", Self::OPTIONS)),
+        }
     }
 }
 

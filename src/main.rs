@@ -139,9 +139,13 @@ struct Args {
     )]
     continue_session: Option<Option<String>>,
 
-    /// Select a permission preset for this run (always-ask, accept-edits, yolo)
+    /// Select a permission preset for this run (workspace-write, auto_review, danger-full-access, yolo, read-only)
     #[arg(long, value_name = "MODE", conflicts_with = "sandbox")]
     permission_mode: Option<pp_config::config::PermissionMode>,
+
+    /// Shortcut for --permission-mode danger-full-access (Full Access)
+    #[arg(long, conflicts_with_all = ["permission_mode", "sandbox"])]
+    yolo: bool,
 
     /// Override tools.sandbox.mode from settings.yml for this run
     #[arg(long, value_enum, value_name = "MODE")]
@@ -757,10 +761,15 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
         logging::perf::mark("skills_ready");
         let sandbox = pp_sandbox::SharedSandbox::default();
         let sandbox_override = args.sandbox.map(Into::into);
+        let startup_permission = if args.yolo {
+            Some(pp_config::config::PermissionMode::DangerFullAccess)
+        } else {
+            args.permission_mode
+        };
         let bootstrap = global_dir.as_ref().ok().map(|dir| {
             let permission = pp_permission::Gate::for_process(
                 dir,
-                args.permission_mode,
+                startup_permission,
                 sandbox_override.is_some(),
             );
             if let Ok((_, loaded_settings)) = &settings {
@@ -962,12 +971,7 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
             } else {
                 cli::write_resume_hint(&mut stderr, agent.session_id()).map_err(anyhow::Error::from)
             };
-            let result = match (task, output_write, hint) {
-                (Err(error), _, _) => Err(error),
-                (Ok(_), Err(error), _) => Err(error),
-                (Ok(_), Ok(()), Err(error)) => Err(error),
-                (Ok(_), Ok(()), Ok(())) => Ok(()),
-            };
+            let result = task.and(output_write).and(hint);
             drop(guard);
             return cli::stop_cli_lsp(Some(&agent), result);
         }

@@ -5,7 +5,7 @@ const PLAN_TUI_BODY: &str = "# Create canary\n\nCreate canary.txt with the exact
 fn plan_start(server: &TestServer, home: &Path, project: &Path, protocol: &str) -> Pty {
     std::fs::write(
         config_path(home, "settings.yml"),
-        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0,"tools":{"permissionMode":"yolo"}}"#,
+        r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"rate_limit_retry_budget_seconds":0}"#,
     )
     .unwrap();
     std::fs::write(
@@ -18,6 +18,7 @@ fn plan_start(server: &TestServer, home: &Path, project: &Path, protocol: &str) 
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
         command.cwd(project);
         command.env("HOME", home);
+        command.arg("--yolo");
         let mut paths = vec![fake];
         paths.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
@@ -25,7 +26,7 @@ fn plan_start(server: &TestServer, home: &Path, project: &Path, protocol: &str) 
         command.env("PATH", std::env::join_paths(paths).unwrap());
         Pty::spawn(command)
     } else {
-        Pty::start_with_args(project, home, &[])
+        Pty::start_with_args(project, home, &["--yolo"])
     }
 }
 

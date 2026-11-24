@@ -57,9 +57,9 @@ impl Worker {
                     let reply = match request {
                         RuleRequest::List(gate) => gate.list_rules(),
                         RuleRequest::SaveBash { gate, rule } => {
-                            let prefix = rule.prefix.join(" ");
+                            let pattern = rule.display_pattern();
                             gate.save_bash_rule(rule)
-                                .map(|()| format!("Saved bash permission rule: {prefix}"))
+                                .map(|()| format!("Saved bash permission rule: {pattern}"))
                         }
                         RuleRequest::Revoke { gate, target } => gate
                             .revoke_rule(&target)

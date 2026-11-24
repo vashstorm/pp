@@ -46,7 +46,9 @@ pub(crate) struct SeatbeltSpec<'a> {
     pub mode: crate::EffectiveMode,
     pub cwd: &'a PathBuf,
     pub writable: &'a [PathBuf],
+    pub allow_write_files: &'a [PathBuf],
     pub protect: &'a [PathBuf],
+    pub immutable_protect: &'a [PathBuf],
     pub deny_read: &'a [PathBuf],
     pub allow_read: &'a [PathBuf],
     pub docker_user_sock: Option<&'a PathBuf>,
@@ -155,6 +157,28 @@ pub(crate) fn compile_profile(
         sb.push_str(")\n");
     }
 
+    if !spec.allow_write_files.is_empty() {
+        sb.push_str("(allow file-write*\n");
+        for (idx, path) in spec.allow_write_files.iter().enumerate() {
+            ensure_valid_param_path(path)?;
+            let key = format!("AF{idx}");
+            let _ = writeln!(sb, "  (literal (param \"{key}\"))");
+            params.push((key, path.as_os_str().to_os_string()));
+        }
+        sb.push_str(")\n");
+    }
+
+    if !spec.immutable_protect.is_empty() {
+        sb.push_str("(deny file-write*\n");
+        for (idx, path) in spec.immutable_protect.iter().enumerate() {
+            ensure_valid_param_path(path)?;
+            let key = format!("IP{idx}");
+            let _ = writeln!(sb, "  (subpath (param \"{key}\"))");
+            params.push((key, path.as_os_str().to_os_string()));
+        }
+        sb.push_str(")\n");
+    }
+
     if !spec.deny_read.is_empty() {
         sb.push_str("(deny file-read*\n");
         for idx in 0..spec.deny_read.len() {
@@ -232,7 +256,9 @@ mod tests {
             mode: crate::EffectiveMode::WorkspaceWrite,
             cwd: &cwd,
             writable: &writable,
+            allow_write_files: &[],
             protect: &protect,
+            immutable_protect: &[],
             deny_read: &deny_read,
             allow_read: &allow_read,
             docker_user_sock: Some(&docker_sock),
@@ -268,7 +294,9 @@ mod tests {
             mode: crate::EffectiveMode::WorkspaceWrite,
             cwd: &cwd,
             writable: &writable,
+            allow_write_files: &[],
             protect: &[],
+            immutable_protect: &[],
             deny_read: &[],
             allow_read: &[],
             docker_user_sock: None,
@@ -316,7 +344,9 @@ mod tests {
             mode: crate::EffectiveMode::WorkspaceWrite,
             cwd: &workspace,
             writable: &writable,
+            allow_write_files: &[],
             protect: &protect,
+            immutable_protect: &[],
             deny_read: &deny_read,
             allow_read: &allow_read,
             docker_user_sock: None,

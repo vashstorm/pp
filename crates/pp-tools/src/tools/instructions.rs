@@ -116,9 +116,16 @@ impl Tools {
         {
             return Ok(None);
         }
-        let key = self.workspace.key(Path::new(&path))?;
-        self.workspace.resource_target(Path::new(&path), false)?;
-        Ok(Some(self.cwd.join(key)))
+        if let Ok(key) = self.workspace.key(Path::new(&path)) {
+            self.workspace.resource_target(Path::new(&path), false)?;
+            return Ok(Some(self.cwd.join(key)));
+        }
+        // 工作区与 /tmp 之外的绝对路径没有项目级 AGENTS.md 规则链；工作区相对逃逸仍拒绝。
+        if Path::new(&path).is_absolute() {
+            return Ok(None);
+        }
+        self.workspace.key(Path::new(&path))?;
+        unreachable!()
     }
 
     pub(super) fn check_mutation_instructions(&self, name: &str, arguments: &str) -> Result<()> {

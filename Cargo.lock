@@ -3466,6 +3466,7 @@ dependencies = [
  "libc",
  "pp-config",
  "pp-core",
+ "pp-sandbox",
  "pp-workspace",
  "rustix 1.1.5",
  "serde",

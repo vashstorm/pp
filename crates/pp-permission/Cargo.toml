@@ -10,6 +10,7 @@ anyhow = { workspace = true }
 brush-core = { workspace = true }
 pp-config = { path = "../pp-config" }
 pp-core = { path = "../pp-core" }
+pp-sandbox = { path = "../pp-sandbox" }
 pp-workspace = { path = "../pp-workspace" }
 libc = { workspace = true }
 rustix = { workspace = true }

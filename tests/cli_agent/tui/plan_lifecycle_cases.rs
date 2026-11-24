@@ -229,7 +229,7 @@ fn plan_mcp_session(
         response_models(&fixture, Some(protocol)),
     )
     .unwrap();
-    let pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    let pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
     (fixture, home, project, pty)
 }
 
@@ -323,7 +323,7 @@ fn plan_mcp_process_boundary_case(off: bool) {
         pty.input("\x03");
         pty.finish();
         cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo", "-r", &id]);
         pty.ready();
         plan_wait_mode(&mut pty, "Plan");
         no_more(&fixture);

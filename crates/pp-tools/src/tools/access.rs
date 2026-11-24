@@ -218,13 +218,15 @@ impl Tools {
         }
     }
 
-    pub(super) fn authorize_call(
-        &self,
+    pub(super) fn authorize_call<'a>(
+        &'a self,
         call: &ExecuteCall<'_, '_>,
-        hook_ask: Option<&str>,
-    ) -> Result<AuthorizedAccess<'_>> {
+        hook_ask: Option<&'a str>,
+    ) -> Result<AuthorizedAccess<'a>> {
         // 在进入任何审批等待前同时冻结权限档位与实际沙盒快照（含 /sandbox 覆盖值），
         // 避免等待期间切换档位或清除覆盖影响当前已进入审批的调用。
+        self.sandbox
+            .set_permission_overlay(self.permission.sandbox_overlay(&self.cwd));
         let (permissions, sandbox_mode) = self.permission.snapshot_with_sandbox();
         let sandbox = self.sandbox.view(sandbox_mode);
         let name = call.name;
@@ -340,23 +342,46 @@ impl Tools {
             // 工具在策略真实存在时才算 sandboxed。off / auto 降级（policy 为
             // None）回退到普通审批；显式开启但平台不可用则 fail-closed，
             // 在进入审批或产生任何副作用之前返回错误。
-            let sandboxed = matches!(call.policy, ToolPolicy::Execute { .. })
-                && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval")
-                && sandbox.policy()?.is_some();
-            self.permission.enforce_for(
-                permissions,
-                name,
-                arguments,
-                ToolAccess { tier, sandboxed },
-                hook_ask,
-                call.cancellation,
-            )?;
+            let sandbox_checked_tool = matches!(call.policy, ToolPolicy::Execute { .. })
+                && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval");
+            let policy = if sandbox_checked_tool
+                || (matches!(call.policy, ToolPolicy::Execute { .. })
+                    && matches!(name, "web_search" | "read"))
+            {
+                sandbox.policy()?
+            } else {
+                None
+            };
+            let sandboxed = sandbox_checked_tool && policy.is_some();
+            let network_enabled = policy.as_ref().is_none_or(|p| p.network());
+            let read_is_http = name == "read"
+                && serde_json::from_str::<super::ReadArgs>(arguments)
+                    .ok()
+                    .and_then(|args| super::read::is_http_url(&args.path, &self.cwd).ok())
+                    .unwrap_or(false);
+            let deferred_to_dispatch = matches!(call.policy, ToolPolicy::Execute { .. })
+                && (matches!(name, "bash" | "write" | "edit" | "web_search") || read_is_http);
+            if !deferred_to_dispatch {
+                self.permission.enforce_for(
+                    permissions,
+                    name,
+                    arguments,
+                    ToolAccess {
+                        tier,
+                        sandboxed,
+                        network_enabled,
+                    },
+                    hook_ask,
+                    call.cancellation,
+                )?;
+            }
         }
         Ok(AuthorizedAccess {
             mcp_access,
             lsp_access,
             permissions,
             sandbox,
+            hook_ask,
         })
     }
 }
@@ -366,6 +391,7 @@ pub(super) struct AuthorizedAccess<'a> {
     pub(super) lsp_access: pp_lsp::tool::Access,
     pub(super) permissions: PermissionMode,
     pub(super) sandbox: pp_sandbox::SandboxView<'a>,
+    pub(super) hook_ask: Option<&'a str>,
 }
 
 impl Drop for Tools {

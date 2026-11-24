@@ -366,6 +366,20 @@ fn process_event(
             "max_attempts": max_attempts,
             "todos": todos,
         })),
+        AgentEvent::AutoReviewStarted { tool } => Some(json!({
+            "type": "auto_review_started",
+            "tool": tool,
+        })),
+        AgentEvent::AutoReviewFinished {
+            tool,
+            passed,
+            reason,
+        } => Some(json!({
+            "type": "auto_review_finished",
+            "tool": tool,
+            "passed": passed,
+            "reason": reason,
+        })),
         AgentEvent::ModelRequestStarted
         | AgentEvent::ToolArgumentsDelta { .. }
         | AgentEvent::ModelOutputProgress { .. }

@@ -3,31 +3,35 @@
 use super::*;
 
 impl Tools {
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::tools) fn run_edit(
         &self,
         arguments: &str,
         call_id: &str,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
+        permissions: pp_config::config::PermissionMode,
         sandbox: Option<pp_sandbox::SandboxView<'_>>,
+        hook_ask: Option<&str>,
     ) -> Result<Value> {
         let request = edit::Request::parse(self.edit_mode, arguments)?;
         let path = request.path().to_owned();
         ensure!(!path.starts_with("artifact://"), "artifacts are read-only");
         self.check_mutation_instructions("edit", arguments)?;
-        let normalized_path = self.workspace.key(Path::new(&path))?;
-        let target_path = self.cwd.join(&normalized_path);
-        ensure!(
-            !self.permission.protects_path(&target_path),
-            "permission rules must be managed with /permissions"
-        );
-        if let Some(sandbox) = sandbox
-            && let Some(policy) = sandbox.policy()?
-        {
-            policy.check_write(&target_path)?;
-        }
-        let target = self.workspace.target(Path::new(&path), false)?;
-        let registry = self.lsp_save_registry();
+        let MutationTarget {
+            record_key: normalized_path,
+            is_external,
+            target,
+        } = self.prepare_mutation_target(
+            "edit",
+            &path,
+            false,
+            permissions,
+            sandbox,
+            hook_ask,
+            cancellation,
+        )?;
+        let registry = (!is_external).then(|| self.lsp_save_registry()).flatten();
         let absolute = registry
             .map(|registry| registry.cwd().join(&normalized_path))
             .unwrap_or_else(|| self.cwd.join(&normalized_path));

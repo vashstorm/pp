@@ -281,7 +281,9 @@ impl Projection {
             | AgentEvent::ToolArgumentsDelta { .. }
             | AgentEvent::ToolOutputSnapshot { .. }
             | AgentEvent::ToolPipelineSnapshot { .. }
-            | AgentEvent::ToolShellSnapshot { .. } => {}
+            | AgentEvent::ToolShellSnapshot { .. }
+            | AgentEvent::AutoReviewStarted { .. }
+            | AgentEvent::AutoReviewFinished { .. } => {}
             AgentEvent::UserInputAccepted { text, .. } => self.insert_lifecycle(
                 agent,
                 run,

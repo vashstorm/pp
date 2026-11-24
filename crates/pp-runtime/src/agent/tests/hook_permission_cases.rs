@@ -67,16 +67,17 @@ fn hooks_and_next_tool_call_pick_up_mid_batch_permission_switch() {
             dir.path(),
             protocol,
             &server.addr().to_string(),
-            "tools:\n  permissionMode: always-ask\n",
+            "",
             Some(&hook_yaml("PostToolUse", &script)),
         );
         let gate = agent.permission_gate();
+        gate.select(Some(pp_config::config::PermissionMode::ReadOnly));
         let prompt_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count_ref = Arc::clone(&prompt_count);
         agent.set_permission_handler(Box::new(move |_request, _| {
             let n = count_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             assert_eq!(n, 0, "切换为 YOLO 后同批次后续调用不得再次询问");
-            gate.select(Some(pp_config::config::PermissionMode::Yolo));
+            gate.select(Some(pp_config::config::PermissionMode::DangerFullAccess));
             Ok(pp_permission::PermissionDecision::Approve)
         }));
 

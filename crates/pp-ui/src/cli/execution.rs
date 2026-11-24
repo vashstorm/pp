@@ -536,6 +536,27 @@ fn run_cli_execution(
                     &mut first_error,
                 );
             }
+            AgentEvent::AutoReviewStarted { tool } => {
+                cli_write(
+                    stderr,
+                    &format!("auto_review: reviewing {tool}\n"),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
+            AgentEvent::AutoReviewFinished {
+                tool,
+                passed,
+                reason,
+            } => {
+                let verdict = if passed { "pass" } else { "deny" };
+                cli_write(
+                    stderr,
+                    &format!("auto_review ({tool}): {verdict} — {reason}\n"),
+                    &mut err_broken,
+                    &mut first_error,
+                );
+            }
             AgentEvent::ModelRequestStarted
             | AgentEvent::ToolArgumentsDelta { .. }
             | AgentEvent::ModelOutputProgress { .. }

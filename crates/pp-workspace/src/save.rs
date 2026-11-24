@@ -49,6 +49,7 @@ struct Location<'a> {
     parts: Vec<OsString>,
 }
 
+#[derive(Debug)]
 pub struct Target {
     parent: File,
     name: OsString,
@@ -303,18 +304,26 @@ impl Workspace {
         } = self.resolve(path)?;
         let name = parts.pop().context("write/edit requires a file path")?;
         let parent = open_contained_directory(root, &parts, create_parents)?;
-        let mode = match fs::statat(&parent, &name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(stat) => {
-                ensure!(
-                    FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile,
-                    "write/edit target must be a regular file; symlinks are forbidden"
-                );
-                Some(Mode::from_raw_mode(stat.st_mode))
-            }
-            Err(Errno::NOENT) => None,
-            Err(error) => return Err(error).context("checking write/edit target"),
-        };
-        Ok(Target { parent, name, mode })
+        open_target_at(parent, name)
+    }
+
+    /// 已获权限门显式放行的工作区外绝对路径保存入口：
+    /// 保留与工作区内一致的 `O_NOFOLLOW` 逐级目录打开、常规文件核对与原子替换，
+    /// 仅对 macOS 系统根别名（`/tmp`、`/var`、`/etc`）做前缀折叠。
+    pub fn external_target(&self, path: &Path, create_parents: bool) -> Result<Target> {
+        ensure!(
+            path.is_absolute(),
+            "external write/edit target must be an absolute path"
+        );
+        let folded = fold_system_root_alias(path);
+        let relative = folded
+            .strip_prefix(Path::new("/"))
+            .context("external write/edit path must be rooted")?;
+        let mut parts = split_parts(relative)?;
+        let name = parts.pop().context("write/edit requires a file path")?;
+        let fs_root = File::open("/").context("opening filesystem root")?;
+        let parent = open_contained_directory(&fs_root, &parts, create_parents)?;
+        open_target_at(parent, name)
     }
 
     /// 资源事务入口：解析最终名的父目录。`create=false` 时缺失的父目录
@@ -384,6 +393,38 @@ impl TempRoot {
             .is_dir()
             .then_some(Self { root, path })
     }
+}
+
+fn open_target_at(parent: File, name: OsString) -> Result<Target> {
+    let mode = match fs::statat(&parent, &name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => {
+            ensure!(
+                FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile,
+                "write/edit target must be a regular file; symlinks are forbidden"
+            );
+            Some(Mode::from_raw_mode(stat.st_mode))
+        }
+        Err(Errno::NOENT) => None,
+        Err(error) => return Err(error).context("checking write/edit target"),
+    };
+    Ok(Target { parent, name, mode })
+}
+
+#[cfg(target_os = "macos")]
+fn fold_system_root_alias(path: &Path) -> PathBuf {
+    for alias in ["/tmp", "/var", "/etc"] {
+        if let Ok(relative) = path.strip_prefix(alias)
+            && let Ok(canon) = Path::new(alias).canonicalize()
+        {
+            return canon.join(relative);
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fold_system_root_alias(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 /// 从给定受管根逐级以 NOFOLLOW 打开目录，`create` 时建出缺失的一级。

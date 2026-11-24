@@ -159,22 +159,19 @@ impl App {
             }
             Some(("/permissions", argument)) => {
                 use pp_config::config::PermissionMode;
+                let query = argument.trim().to_ascii_lowercase();
                 PermissionMode::ALL
                     .into_iter()
-                    .filter(|mode| mode.as_str().starts_with(argument.trim()))
+                    .filter(|mode| {
+                        mode.as_str().starts_with(&query)
+                            || mode.title().to_ascii_lowercase().starts_with(&query)
+                            || (mode == &PermissionMode::DangerFullAccess
+                                && "yolo".starts_with(&query))
+                    })
                     .map(|mode| MenuItem {
                         value: MenuAction::PermissionMode(mode),
-                        label: mode.as_str().into(),
-                        description: match mode {
-                            PermissionMode::AlwaysAsk => "Confirm write and execution tools",
-                            PermissionMode::AcceptEdits => {
-                                "Confirm requests for extra sandbox permissions"
-                            }
-                            PermissionMode::Yolo => {
-                                "Disable sandbox and routine permission prompts"
-                            }
-                        }
-                        .into(),
+                        label: format!("{} ({})", mode.title(), mode.as_str()),
+                        description: mode.description().into(),
                         icon: None,
                         current: self.permission_mode == Some(mode),
                     })

@@ -31,6 +31,15 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(
                 "settings.yml.hooks was removed. Move the hooks block to ~/.pp/agent/hooks.yml (user level) or .pp/hooks.yml (project level) and delete the old field"
             );
         }
+        if value
+            .get("tools")
+            .and_then(|tools| tools.get("permissionMode"))
+            .is_some()
+        {
+            anyhow::bail!(
+                "settings.yml tools.permissionMode was removed because permission presets are no longer persisted; remove tools.permissionMode and use --permission-mode or --yolo on the CLI when needed"
+            );
+        }
     }
     if !value.is_mapping() {
         return Err(anyhow!(

@@ -80,7 +80,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         display_label: None,
         aliases: &[],
         category: CommandCategory::Workflow,
-        usage: "/permissions [always-ask|accept-edits|yolo|rules|allow|prompt|deny|revoke]",
+        usage: "/permissions [workspace-write|auto_review|danger-full-access|yolo|read-only|rules|allow|prompt|deny|revoke]",
         description: "View or switch permissions, or manage saved rules",
     },
     CommandSpec {

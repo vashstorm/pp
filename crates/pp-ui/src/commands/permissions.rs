@@ -3,7 +3,7 @@ use pp_config::config::{PermissionMode, PermissionPolicy};
 use pp_permission::BashRule;
 use pp_runtime::agent::Agent;
 
-const USAGE: &str = "usage: /permissions [always-ask|accept-edits|yolo|rules|allow <prefix...>|prompt <prefix...>|deny <prefix...>|revoke <index|rule>]";
+const USAGE: &str = "usage: /permissions [workspace-write|auto_review|danger-full-access|yolo|read-only|rules|allow [--prefix] <cmd...>|prompt [--prefix] <cmd...>|deny [--prefix] <cmd...>|revoke <index|rule>]";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PermissionCommand {
@@ -15,6 +15,26 @@ pub(crate) enum PermissionCommand {
     Revoke(String),
 }
 
+fn parse_bash_rule(words: &[&str], policy: PermissionPolicy) -> Result<BashRule> {
+    if words.first() == Some(&"--prefix") {
+        let prefix = &words[1..];
+        if prefix.is_empty() {
+            bail!("{USAGE}");
+        }
+        return Ok(BashRule::prefix(
+            prefix.iter().map(|s| (*s).to_owned()).collect(),
+            policy,
+        ));
+    }
+    if words.is_empty() {
+        bail!("{USAGE}");
+    }
+    Ok(BashRule::exact(
+        words.iter().map(|s| (*s).to_owned()).collect(),
+        policy,
+    ))
+}
+
 impl PermissionCommand {
     pub(crate) const USAGE: &str = USAGE;
 
@@ -23,18 +43,15 @@ impl PermissionCommand {
         Ok(match words.as_slice() {
             [] => Self::Status,
             ["rules"] => Self::Rules,
-            ["allow", prefix @ ..] if !prefix.is_empty() => Self::AddBashRule(BashRule {
-                prefix: prefix.iter().map(|s| (*s).to_owned()).collect(),
-                policy: PermissionPolicy::Allow,
-            }),
-            ["prompt", prefix @ ..] if !prefix.is_empty() => Self::AddBashRule(BashRule {
-                prefix: prefix.iter().map(|s| (*s).to_owned()).collect(),
-                policy: PermissionPolicy::Prompt,
-            }),
-            ["deny", prefix @ ..] if !prefix.is_empty() => Self::AddBashRule(BashRule {
-                prefix: prefix.iter().map(|s| (*s).to_owned()).collect(),
-                policy: PermissionPolicy::Deny,
-            }),
+            ["allow", args @ ..] if !args.is_empty() => {
+                Self::AddBashRule(parse_bash_rule(args, PermissionPolicy::Allow)?)
+            }
+            ["prompt", args @ ..] if !args.is_empty() => {
+                Self::AddBashRule(parse_bash_rule(args, PermissionPolicy::Prompt)?)
+            }
+            ["deny", args @ ..] if !args.is_empty() => {
+                Self::AddBashRule(parse_bash_rule(args, PermissionPolicy::Deny)?)
+            }
             ["revoke", target @ ..] if !target.is_empty() => Self::Revoke(target.join(" ")),
             [mode] => Self::Select(mode.parse()?),
             _ => bail!("{USAGE}"),
@@ -60,9 +77,9 @@ impl PermissionCommand {
             Self::Status => Ok(Some(status_with(permission, sandbox))),
             Self::Rules => permission.list_rules().map(Some),
             Self::AddBashRule(rule) => {
-                let prefix = rule.prefix.join(" ");
+                let pattern = rule.display_pattern();
                 permission.save_bash_rule(rule)?;
-                Ok(Some(format!("Saved bash permission rule: {prefix}")))
+                Ok(Some(format!("Saved bash permission rule: {pattern}")))
             }
             Self::Revoke(target) => {
                 permission.revoke_rule(&target)?;
@@ -84,9 +101,11 @@ impl PermissionCommand {
 }
 
 fn status_with(permission: &pp_permission::Gate, sandbox: &pp_sandbox::Sandbox) -> String {
+    let mode = permission.snapshot();
     format!(
-        "Permission mode: {}\n{}",
-        permission.snapshot().as_str(),
+        "Permission mode: {} ({})\n{}",
+        mode.title(),
+        mode.as_str(),
         sandbox.view(permission.sandbox_mode()).status().summary()
     )
 }

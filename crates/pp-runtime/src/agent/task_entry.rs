@@ -187,6 +187,10 @@ impl Agent {
             self.ensure_task_plan_lease()?;
             self.refresh_instructions()?;
             self.begin_task_status(prompt, cancellation);
+            if let Some(state) = &self.auto_review {
+                state.set_user_intent(prompt);
+            }
+            self.sync_auto_review();
             self.publish_context(emit)?;
             pp_core::logging::perf::mark("request_ready");
             if let Some(prepared) = prepared {
@@ -230,6 +234,7 @@ impl Agent {
             self.prepare_plan_task("")?;
             self.ensure_task_plan_lease()?;
             self.continue_task_status();
+            self.sync_auto_review();
             self.run_loop(None, input, cancellation, emit)
         })();
         self.finish_task("continue", started, result, cancellation, input, emit)

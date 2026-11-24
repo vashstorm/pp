@@ -605,7 +605,7 @@ impl Tools {
         }
         let (permissions, sandbox_mode) = self.permission.snapshot_with_sandbox();
         let sandbox_status = self.sandbox.view(sandbox_mode).status();
-        if permissions == pp_config::config::PermissionMode::AcceptEdits
+        if permissions != pp_config::config::PermissionMode::DangerFullAccess
             && let Some(bash) = definitions
                 .iter_mut()
                 .find(|definition| definition.name == "bash")
@@ -878,116 +878,6 @@ impl Tools {
                 }
             }
         }
-    }
-
-    fn execute_inner(
-        &self,
-        call: &mut ExecuteCall<'_, '_>,
-        hook: Option<&dyn ToolHookCall>,
-        hook_ask: Option<&str>,
-        images: &mut Vec<read::ToolImage>,
-    ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
-        let access = self.authorize_call(call, hook_ask)?;
-        let sandbox = access.sandbox;
-        if let Some(value) = self.dispatch_subagent(
-            call.name,
-            call.arguments,
-            call.call_id,
-            &call.policy,
-            call.cancellation,
-            call.emit,
-        )? {
-            return Ok((value, None, None));
-        }
-        let file_sandbox =
-            (access.permissions != pp_config::config::PermissionMode::Yolo).then_some(sandbox);
-        match call.name {
-            "yield" => {
-                let value: Value = serde_json::from_str(call.arguments)?;
-                let data = value.get("data").context("yield requires data")?;
-                validate_output(
-                    self.yield_schema.as_ref().context("yield unavailable")?,
-                    data,
-                )?;
-                *self.yielded.borrow_mut() = Some(data.clone());
-                Ok(json!({"ok":true,"completed":true}))
-            }
-            "ask" => self.run_ask(call.arguments, call.call_id, call.cancellation),
-            "read" => {
-                return self.run_read(call.arguments, call.cancellation, call.web, images, sandbox);
-            }
-            "edit" => self.run_edit(
-                call.arguments,
-                call.call_id,
-                call.cancellation,
-                call.emit,
-                file_sandbox,
-            ),
-            "write" => return self.run_write(call, file_sandbox),
-            "bash" => self.run_bash(call, access.permissions, sandbox),
-            "bash_task" => self.run_bash_task(call.arguments, call.call_id, call.emit),
-            "eval" => return self.run_eval(call, hook, images, sandbox),
-            "rg" => rg::run_with_sandbox(
-                &self.cwd,
-                self.limits.rg,
-                self.edit_mode,
-                &self.workspace,
-                &mut self.snapshots.borrow_mut(),
-                call.arguments,
-                call.cancellation,
-                Some(&self.artifacts),
-                sandbox,
-            ),
-            "glob" => glob::run_with_sandbox(&self.cwd, call.arguments, call.cancellation, sandbox),
-            "web_search" => {
-                return self.run_web_search(call.arguments, call.cancellation, call.web, sandbox);
-            }
-            "lsp" => pp_lsp::tool::run(
-                self,
-                call.arguments,
-                call.call_id,
-                access.lsp_access,
-                call.cancellation,
-                call.emit,
-            ),
-            "find" | "plan_find" => bail!("{} is no longer available; use glob", call.name),
-            "plan_submit" => {
-                // Only ToolPolicy::Plan passes the gate for plan tools; the
-                // outcome is reported to the caller instead of mutating any
-                // workflow state here.
-                let ToolPolicy::Plan {
-                    document, input, ..
-                } = call.policy
-                else {
-                    unreachable!("plan tools are gated to ToolPolicy::Plan");
-                };
-                return plan::run(&self.workspace, document, input, call.name, call.arguments)
-                    .map(|(value, change)| (value, change, None));
-            }
-            "todo" => {
-                return self
-                    .run_todo(&call.policy, call.arguments)
-                    .map(|(value, change)| (value, None, change));
-            }
-            _ => {
-                if self.mcp_shared {
-                    self.mcp.proxy_call(
-                        call.name,
-                        call.arguments,
-                        access.mcp_access,
-                        call.cancellation,
-                    )
-                } else {
-                    self.mcp.call(
-                        call.name,
-                        call.arguments,
-                        access.mcp_access,
-                        call.cancellation,
-                    )
-                }
-            }
-        }
-        .map(|value| (value, None, None))
     }
 }
 

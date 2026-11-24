@@ -1,18 +1,26 @@
-//! 生效权限、工具门禁与用户授权。
+//! 生效权限、工具门禁、自动审阅回调与用户授权。
 //!
 //! 交互请求经 `PermissionHandler` 交给调用方，
 //! 无 handler 时拒绝调用。工具白名单先于权限检查；Execute 工具与
 //! Plan 中未标为只读的 MCP 工具经过本模块。
 
 use pp_config::config::{PermissionMode, PermissionPolicy, SandboxMode};
-use std::path::Path;
+use pp_sandbox::SandboxOverlay;
+use std::path::{Path, PathBuf};
 
+mod auto_review;
 mod bash_ast;
+mod enforce;
 mod preapproved;
 mod rules;
+
+pub use auto_review::{
+    AutoReviewCallback, AutoReviewDecision, AutoReviewRequest, AutoReviewVerdict,
+};
+pub use enforce::{ApprovedBashScope, PathWriteKind};
 use preapproved::PreapprovedTools;
 pub use preapproved::{BashCommandPattern, check_bash_command_rules};
-pub use rules::{BashRule, SandboxGrant};
+pub use rules::{BashRule, FsAccess, MatchMode, SandboxGrant};
 
 use anyhow::{Result, bail};
 use std::{
@@ -66,6 +74,7 @@ pub type PermissionHandler = Box<PermissionCallback>;
 pub struct ToolAccess {
     pub tier: Tier,
     pub sandboxed: bool,
+    pub network_enabled: bool,
 }
 
 #[derive(Default)]
@@ -84,8 +93,11 @@ impl ModeState {
 
     fn sandbox_mode(&self) -> Option<SandboxMode> {
         self.manage_sandbox.then(|| match self.current() {
-            PermissionMode::Yolo => SandboxMode::Off,
-            PermissionMode::AcceptEdits | PermissionMode::AlwaysAsk => SandboxMode::WorkspaceWrite,
+            PermissionMode::DangerFullAccess => SandboxMode::Off,
+            PermissionMode::WorkspaceWrite | PermissionMode::AutoReview => {
+                SandboxMode::WorkspaceWrite
+            }
+            PermissionMode::ReadOnly => SandboxMode::ReadOnly,
         })
     }
 }
@@ -93,15 +105,18 @@ impl ModeState {
 #[derive(Clone)]
 pub struct Gate {
     default_mode: PermissionMode,
-    is_process: bool,
-    sandbox_override: bool,
     /// 常规工具的会话级授权。
     grants: Arc<Mutex<HashSet<String>>>,
-    /// Bash 命令前缀的会话级授权。
-    bash_grants: Arc<Mutex<HashSet<Vec<String>>>>,
+    /// Bash 命令规则的会话级授权（精确到参数/文件）。
+    bash_grants: Arc<Mutex<HashSet<BashRule>>>,
+    /// 具体文件路径的会话级写授权（用于 .git/.agents/工作区外/read-only）。
+    path_grants: Arc<Mutex<HashSet<PathBuf>>>,
+    /// 会话级互联网访问授权。
+    network_grant: Arc<Mutex<bool>>,
     /// CLI `--allowed-tools` 赋予本次运行的工具预批准集合；不随会话重置清空。
     preapproved: Arc<Mutex<PreapprovedTools>>,
     handler: Option<Arc<PermissionCallback>>,
+    auto_review: Arc<Mutex<Option<Arc<AutoReviewCallback>>>>,
     modes: Arc<Mutex<ModeState>>,
     sandbox_grants: Arc<Mutex<HashSet<SandboxGrant>>>,
     store: Option<rules::Store>,
@@ -115,15 +130,16 @@ impl Default for Gate {
 
 impl Gate {
     pub fn new() -> Self {
-        let default_mode = PermissionMode::Yolo;
+        let default_mode = PermissionMode::DangerFullAccess;
         Self {
             default_mode,
-            is_process: false,
-            sandbox_override: false,
             grants: Default::default(),
             bash_grants: Default::default(),
+            path_grants: Default::default(),
+            network_grant: Default::default(),
             preapproved: Default::default(),
             handler: None,
+            auto_review: Default::default(),
             modes: Arc::new(Mutex::new(ModeState {
                 configured: default_mode,
                 ..Default::default()
@@ -136,19 +152,17 @@ impl Gate {
     pub fn for_process(
         agent_dir: &Path,
         startup: Option<PermissionMode>,
-        sandbox_override: bool,
+        _sandbox_override: bool,
     ) -> Self {
-        let default_mode = PermissionMode::AcceptEdits;
+        let default_mode = PermissionMode::WorkspaceWrite;
         Self {
             default_mode,
-            is_process: true,
-            sandbox_override,
             modes: Arc::new(Mutex::new(ModeState {
                 config: PermissionConfig::default(),
                 configured: default_mode,
                 startup,
                 selected: None,
-                manage_sandbox: startup.is_some() || !sandbox_override,
+                manage_sandbox: startup.is_some(),
             })),
             store: Some(rules::Store::new(agent_dir)),
             ..Self::new()
@@ -175,6 +189,21 @@ impl Gate {
         (state.current(), state.sandbox_mode())
     }
 
+    /// 导出当前 `permission.toml` 激活 profile 的文件系统与网络叠加配置供沙盒同步。
+    pub fn sandbox_overlay(&self, cwd: &Path) -> SandboxOverlay {
+        let Some(store) = &self.store else {
+            return SandboxOverlay::default();
+        };
+        let home = std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+        store
+            .load()
+            .ok()
+            .and_then(|doc| doc.sandbox_overlay(cwd, home.as_deref()).ok())
+            .unwrap_or_default()
+    }
+
     pub fn select(&self, requested: Option<PermissionMode>) {
         let mut state = self.modes.lock().unwrap_or_else(|error| error.into_inner());
         let current = state.current();
@@ -182,14 +211,7 @@ impl Gate {
         state.selected = Some(selected);
         state.manage_sandbox = true;
         if current != selected {
-            self.grants
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clear();
-            self.bash_grants
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .clear();
+            self.clear_session();
         }
     }
 
@@ -202,6 +224,14 @@ impl Gate {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
+        self.path_grants
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        *self
+            .network_grant
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = false;
         self.sandbox_grants
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -226,14 +256,14 @@ impl Gate {
         preapproved.bash_patterns = bash_patterns;
     }
 
-    fn is_preapproved(&self, name: &str) -> bool {
+    pub(crate) fn is_preapproved(&self, name: &str) -> bool {
         self.preapproved
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .contains(name)
     }
 
-    fn matches_preapproved_bash_leaf(&self, leaf: &bash_ast::LeafCommand) -> bool {
+    pub(crate) fn matches_preapproved_bash_leaf(&self, leaf: &bash_ast::LeafCommand) -> bool {
         self.preapproved
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -287,6 +317,55 @@ impl Gate {
                 Some(message)
             }
         };
+        let mut reason = grant.summary(cwd);
+        if let Some(message) = &load_error {
+            reason.push_str(&format!("\nSaved permissions unavailable: {message}"));
+        }
+        let persistent_grant = self.store.is_some() && load_error.is_none();
+        let mode = self.snapshot();
+        if mode == PermissionMode::AutoReview
+            && let Some(reviewer) = self
+                .auto_review
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+        {
+            let review_req = AutoReviewRequest {
+                tool: "bash".into(),
+                agent: None,
+                mode,
+                cwd: cwd
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("/")),
+                trigger_reason: grant.summary(cwd),
+                action_summary: pp_core::logging::diagnostic_text(&grant.command),
+                requested_writable: grant.writable.clone(),
+                requested_protected: grant.allow_protected.clone(),
+                requested_network: grant.network,
+            };
+            match reviewer(review_req, cancellation) {
+                Ok(verdict) if verdict.decision == AutoReviewDecision::Pass => return Ok(()),
+                Ok(verdict) => {
+                    reason = format!(
+                        "Reviewer flagged as potentially unsafe: {}\n{reason}",
+                        pp_core::text::display_text(&verdict.reason)
+                    );
+                }
+                Err(error) => {
+                    if error
+                        .chain()
+                        .any(|cause| cause.is::<pp_core::cancellation::Cancelled>())
+                    {
+                        return Err(error);
+                    }
+                    let msg = pp_core::logging::diagnostic_text(&format!("{error:#}"));
+                    reason = format!(
+                        "Auto-review unavailable ({msg}); manual approval required.\n{reason}"
+                    );
+                }
+            }
+        }
+
         let Some(handler) = &self.handler else {
             if let Some(message) = load_error {
                 bail!(
@@ -295,11 +374,6 @@ impl Gate {
             }
             bail!("Bash requires sandbox permission and no interactive UI is available.");
         };
-        let mut reason = grant.summary(cwd);
-        if let Some(message) = &load_error {
-            reason.push_str(&format!("\nSaved permissions unavailable: {message}"));
-        }
-        let persistent_grant = self.store.is_some() && load_error.is_none();
         let decision = handler(
             PermissionRequest {
                 tool: "bash".into(),
@@ -348,11 +422,8 @@ impl Gate {
 
     pub fn set_config(&self, settings: pp_config::config::ToolsSettings) {
         let mut state = self.modes.lock().unwrap_or_else(|error| error.into_inner());
-        state.configured = settings.permission_mode.unwrap_or(self.default_mode);
-        state.manage_sandbox = state.selected.is_some()
-            || state.startup.is_some()
-            || settings.permission_mode.is_some()
-            || (self.is_process && !self.sandbox_override && settings.sandbox.is_default());
+        state.configured = self.default_mode;
+        state.manage_sandbox = state.selected.is_some() || state.startup.is_some();
         state.config = PermissionConfig::from(settings);
     }
 
@@ -360,12 +431,19 @@ impl Gate {
         self.handler = Some(Arc::from(handler));
     }
 
+    pub fn set_auto_review_handler(&self, handler: Arc<AutoReviewCallback>) {
+        *self
+            .auto_review
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(handler);
+    }
+
     /// 生效权限档位；只读查询，不另存状态。
     pub fn effective_mode(&self) -> PermissionMode {
         self.snapshot()
     }
 
-    fn policy_for(&self, name: &str) -> Option<PermissionPolicy> {
+    pub(crate) fn policy_for(&self, name: &str) -> Option<PermissionPolicy> {
         self.modes
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -375,162 +453,7 @@ impl Gate {
             .copied()
     }
 
-    /// 单次工具调用的权限决策。决策顺序：
-    /// 1) YOLO 无条件跳过常规权限检查，包括显式 policy 和关键命令检查
-    /// 2) 用户 policy（Deny 拒绝、Allow 旁路一切后续检查）
-    /// 3) bash 内置关键命令强制 prompt（无会话级与持久选项）
-    /// 4) 用户 policy `Prompt` 强制 prompt（无会话级与持久选项）
-    /// 5) 生效模式按 tier 与沙盒状态放行或进入 prompt（`lsp` 的 tier 结合动作参数）
-    /// 6) 会话级授权与全局持久授权命中放行，否则 prompt（无 handler 时 fail-closed）
-    pub fn enforce(
-        &self,
-        name: &str,
-        arguments: &str,
-        tier: Tier,
-        hook_ask: Option<&str>,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
-        self.enforce_for(
-            self.snapshot(),
-            name,
-            arguments,
-            ToolAccess {
-                tier,
-                sandboxed: false,
-            },
-            hook_ask,
-            cancellation,
-        )
-    }
-
-    pub fn enforce_for(
-        &self,
-        mode: PermissionMode,
-        name: &str,
-        arguments: &str,
-        access: ToolAccess,
-        hook_ask: Option<&str>,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
-        let tier = access.tier;
-        let policy = self.policy_for(name);
-        if let Some(reason) = hook_ask {
-            // hook 的 ask 强制一次确认：YOLO 与已有会话/持久授权都不能跳过，
-            // 但非 YOLO 下用户的显式 deny 仍然优先。
-            if mode != PermissionMode::Yolo && matches!(policy, Some(PermissionPolicy::Deny)) {
-                bail!("{name} is blocked by tools.permission policy.")
-            }
-            return self.prompt(
-                PermissionRequest {
-                    tool: name.to_owned(),
-                    agent: None,
-                    reason: reason.to_owned(),
-                    session_grant: false,
-                    persistent_grant: false,
-                },
-                None,
-                None,
-                cancellation,
-            );
-        }
-        if mode == PermissionMode::Yolo {
-            return Ok(());
-        }
-        match policy {
-            Some(PermissionPolicy::Allow) => return Ok(()),
-            Some(PermissionPolicy::Deny) => {
-                bail!("{name} is blocked by tools.permission policy.")
-            }
-            _ => {}
-        }
-        let bash_analysis = (name == "bash")
-            .then(|| bash_ast::analyze_bash_arguments(arguments))
-            .flatten();
-        if let Some(reason) = bash_analysis.as_ref().and_then(|a| a.critical_reason) {
-            return self.prompt(
-                PermissionRequest {
-                    tool: name.to_owned(),
-                    agent: None,
-                    reason: reason.to_owned(),
-                    session_grant: false,
-                    persistent_grant: false,
-                },
-                None,
-                None,
-                cancellation,
-            );
-        }
-        if matches!(policy, Some(PermissionPolicy::Prompt)) {
-            return self.prompt(
-                PermissionRequest {
-                    tool: name.to_owned(),
-                    agent: None,
-                    reason: "required by the tools.permission policy for this tool.".to_owned(),
-                    session_grant: false,
-                    persistent_grant: false,
-                },
-                None,
-                None,
-                cancellation,
-            );
-        }
-        if let Some(analysis) = bash_analysis {
-            return self.enforce_bash(mode, access, analysis, cancellation);
-        }
-        let needs_prompt = match (mode, tier) {
-            (PermissionMode::Yolo, _) => false,
-            (PermissionMode::AcceptEdits, _) if access.sandboxed => false,
-            (PermissionMode::AcceptEdits, Tier::Read) => false,
-            (PermissionMode::AcceptEdits, Tier::Write | Tier::Exec) => true,
-            (PermissionMode::AlwaysAsk, Tier::Read) => false,
-            (PermissionMode::AlwaysAsk, Tier::Write | Tier::Exec) => true,
-        };
-        if !needs_prompt {
-            return Ok(());
-        }
-        if self.is_preapproved(name)
-            || self
-                .grants
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains(name)
-        {
-            return Ok(());
-        }
-        let (doc, load_error) = self.load_store();
-        if doc
-            .as_ref()
-            .is_some_and(|doc| doc.tools.iter().any(|tool| tool == name))
-        {
-            return Ok(());
-        }
-        let mut reason = match mode {
-            PermissionMode::AcceptEdits => {
-                "tool runs outside the workspace sandbox and requires permission."
-            }
-            PermissionMode::AlwaysAsk => "tool requires permission in always-ask mode.",
-            PermissionMode::Yolo => unreachable!(),
-        }
-        .to_owned();
-        if let Some(message) = &load_error {
-            reason.push_str(&format!("\nSaved permissions unavailable: {message}"));
-        }
-        let persistent_grant = self.store.is_some() && load_error.is_none();
-        self.prompt(
-            PermissionRequest {
-                tool: name.to_owned(),
-                agent: None,
-                reason,
-                session_grant: true,
-                persistent_grant,
-            },
-            Some(GrantTarget::Tool(name.to_owned())),
-            load_error.as_deref(),
-            cancellation,
-        )
-    }
-
-    fn load_store(&self) -> (Option<Arc<rules::Document>>, Option<String>) {
+    pub(crate) fn load_store(&self) -> (Option<Arc<rules::Document>>, Option<String>) {
         match self.store.as_ref().map(rules::Store::load).transpose() {
             Ok(doc) => (doc, None),
             Err(error) => {
@@ -541,183 +464,7 @@ impl Gate {
         }
     }
 
-    fn enforce_bash(
-        &self,
-        mode: PermissionMode,
-        access: ToolAccess,
-        analysis: bash_ast::ProgramAnalysis,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
-        if let Some(reason) = analysis.critical_reason {
-            return self.prompt(
-                PermissionRequest {
-                    tool: "bash".to_owned(),
-                    agent: None,
-                    reason: reason.to_owned(),
-                    session_grant: false,
-                    persistent_grant: false,
-                },
-                None,
-                None,
-                cancellation,
-            );
-        }
-
-        let (doc, load_error) = self.load_store();
-        let saved_bash_rules = doc.as_ref().map_or(&[][..], |d| d.bash.as_slice());
-
-        let mut forced_prompt_prefixes = Vec::new();
-        for leaf in &analysis.leaves {
-            if let Some(rule) = matching_bash_rule(leaf, saved_bash_rules) {
-                match rule.policy {
-                    PermissionPolicy::Deny => {
-                        bail!(
-                            "bash command is blocked by saved permission rule: {}",
-                            rule.display_prefix()
-                        );
-                    }
-                    PermissionPolicy::Prompt => {
-                        let display = rule.display_prefix();
-                        if !forced_prompt_prefixes.contains(&display) {
-                            forced_prompt_prefixes.push(display);
-                        }
-                    }
-                    PermissionPolicy::Allow => {}
-                }
-            }
-        }
-        if !forced_prompt_prefixes.is_empty() {
-            return self.prompt(
-                PermissionRequest {
-                    tool: "bash".to_owned(),
-                    agent: None,
-                    reason: format!(
-                        "Command matched a prompt permission rule ({}).",
-                        forced_prompt_prefixes.join("; ")
-                    ),
-                    session_grant: false,
-                    persistent_grant: false,
-                },
-                None,
-                load_error.as_deref(),
-                cancellation,
-            );
-        }
-
-        let tool_granted = self.is_preapproved("bash")
-            || self
-                .grants
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .contains("bash")
-            || doc
-                .as_ref()
-                .is_some_and(|d| d.tools.iter().any(|tool| tool == "bash"));
-
-        let session_bash = self
-            .bash_grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-
-        let is_leaf_approved = |leaf: &bash_ast::LeafCommand| -> bool {
-            if tool_granted {
-                return true;
-            }
-            if !analysis.has_write_redirection && self.matches_preapproved_bash_leaf(leaf) {
-                return true;
-            }
-            if matching_bash_rule(leaf, saved_bash_rules)
-                .is_some_and(|rule| rule.policy == PermissionPolicy::Allow)
-            {
-                return true;
-            }
-            session_bash
-                .iter()
-                .any(|prefix| leaf.matches_prefix(prefix))
-        };
-
-        let ask_all = mode == PermissionMode::AlwaysAsk || !access.sandboxed;
-        let mut unapproved_high_impact = Vec::new();
-        let mut unapproved_regular = Vec::new();
-        for leaf in &analysis.leaves {
-            if is_leaf_approved(leaf) {
-                continue;
-            }
-            if leaf.is_high_impact() {
-                unapproved_high_impact.push(leaf);
-            } else if ask_all
-                && !(leaf.is_safe_read_only()
-                    && !analysis.has_write_redirection
-                    && !analysis.unanalyzable)
-            {
-                unapproved_regular.push(leaf);
-            }
-        }
-
-        let needs_unanalyzable_prompt = ask_all && analysis.unanalyzable && !tool_granted;
-        if unapproved_high_impact.is_empty()
-            && unapproved_regular.is_empty()
-            && !needs_unanalyzable_prompt
-        {
-            return Ok(());
-        }
-
-        let all_unapproved = unapproved_high_impact
-            .iter()
-            .chain(unapproved_regular.iter())
-            .copied()
-            .collect::<Vec<_>>();
-        let suggested = if analysis.unanalyzable {
-            None
-        } else {
-            bash_ast::ProgramAnalysis::suggested_prefixes(all_unapproved)
-        };
-
-        let mut reason = if !unapproved_high_impact.is_empty() {
-            "High-impact shell command requires permission.".to_owned()
-        } else if analysis.unanalyzable {
-            "Dynamic or unanalyzable shell command requires one-time approval.".to_owned()
-        } else if !access.sandboxed && mode == PermissionMode::AcceptEdits {
-            "bash runs outside the workspace sandbox and requires permission.".to_owned()
-        } else {
-            "bash requires permission in always-ask mode.".to_owned()
-        };
-
-        if let Some(prefixes) = &suggested {
-            let formatted = prefixes
-                .iter()
-                .map(|p| pp_core::text::display_text(&p.join(" ")).into_owned())
-                .collect::<Vec<_>>()
-                .join("; ");
-            let label = if prefixes.len() == 1 {
-                "Allow rule prefix"
-            } else {
-                "Allow rule prefixes"
-            };
-            reason.push_str(&format!("\n{label}: {formatted}"));
-        }
-        if let Some(message) = &load_error {
-            reason.push_str(&format!("\nSaved permissions unavailable: {message}"));
-        }
-
-        let session_grant = suggested.is_some();
-        let persistent_grant = session_grant && self.store.is_some() && load_error.is_none();
-        self.prompt(
-            PermissionRequest {
-                tool: "bash".to_owned(),
-                agent: None,
-                reason,
-                session_grant,
-                persistent_grant,
-            },
-            suggested.map(GrantTarget::BashPrefixes),
-            load_error.as_deref(),
-            cancellation,
-        )
-    }
-
-    fn prompt(
+    pub(crate) fn prompt_user(
         &self,
         request: PermissionRequest,
         target: Option<GrantTarget>,
@@ -725,14 +472,22 @@ impl Gate {
         cancellation: &CancellationToken,
     ) -> Result<()> {
         let Some(handler) = self.handler.as_ref() else {
+            let reason_note = request
+                .reason
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(|line| format!(" ({line})"))
+                .unwrap_or_default();
             if let Some(message) = load_error {
                 bail!(
-                    "{} requires permission and no interactive UI is available. {message}",
+                    "{} requires permission and no interactive UI is available{reason_note}. {message}",
                     request.tool
                 );
             }
             bail!(
-                "{} requires permission and no interactive UI is available; run in an interactive TUI or adjust tools.permissionMode.",
+                "{} requires permission and no interactive UI is available{reason_note}; run in an interactive TUI or use --permission-mode / --yolo.",
                 request.tool
             );
         };
@@ -752,12 +507,40 @@ impl Gate {
                                 .unwrap_or_else(|e| e.into_inner())
                                 .insert(tool_name);
                         }
-                        Some(GrantTarget::BashPrefixes(prefixes)) => {
+                        Some(GrantTarget::BashRules(rules)) => {
                             let mut bash_grants =
                                 self.bash_grants.lock().unwrap_or_else(|e| e.into_inner());
-                            for prefix in prefixes {
-                                bash_grants.insert(prefix);
+                            for rule in rules {
+                                bash_grants.insert(rule);
                             }
+                        }
+                        Some(GrantTarget::Sandbox(grant)) => {
+                            self.sandbox_grants
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(grant);
+                        }
+                        Some(GrantTarget::BashAndSandbox { rules, sandbox }) => {
+                            let mut bash_grants =
+                                self.bash_grants.lock().unwrap_or_else(|e| e.into_inner());
+                            for rule in rules {
+                                bash_grants.insert(rule);
+                            }
+                            drop(bash_grants);
+                            self.sandbox_grants
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(sandbox);
+                        }
+                        Some(GrantTarget::WorkspacePath { abs, .. })
+                        | Some(GrantTarget::HostPath(abs)) => {
+                            self.path_grants
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(abs);
+                        }
+                        Some(GrantTarget::Network) => {
+                            *self.network_grant.lock().unwrap_or_else(|e| e.into_inner()) = true;
                         }
                         None => {}
                     }
@@ -767,17 +550,25 @@ impl Gate {
             PermissionDecision::ApprovePersistently if allow_persistent_grant => {
                 let store = self.store.as_ref().expect("持久授权选项要求有规则存储");
                 match target {
-                    Some(GrantTarget::Tool(tool_name)) => store.save_tool(&tool_name)?,
-                    Some(GrantTarget::BashPrefixes(prefixes)) => {
-                        let rules = prefixes
-                            .into_iter()
-                            .map(|prefix| BashRule {
-                                prefix,
-                                policy: PermissionPolicy::Allow,
-                            })
-                            .collect();
-                        store.save_bash_batch(rules)?;
+                    Some(GrantTarget::Tool(tool_name)) => {
+                        store.save_tool(&tool_name, PermissionPolicy::Allow)?
                     }
+                    Some(GrantTarget::BashRules(rules)) => store.save_bash_batch(rules)?,
+                    Some(GrantTarget::Sandbox(grant)) => store.save(grant)?,
+                    Some(GrantTarget::BashAndSandbox { rules, sandbox }) => {
+                        store.save_bash_batch(rules)?;
+                        store.save(sandbox)?;
+                    }
+                    Some(GrantTarget::WorkspacePath { rel, .. }) => {
+                        store.save_workspace_fs(&rel, FsAccess::Write)?
+                    }
+                    Some(GrantTarget::HostPath(abs)) => {
+                        let raw = abs
+                            .to_str()
+                            .ok_or_else(|| anyhow::anyhow!("non-UTF-8 path cannot be saved"))?;
+                        store.save_host_fs(raw, FsAccess::Write)?;
+                    }
+                    Some(GrantTarget::Network) => store.save_network_enabled(true)?,
                     None => bail!("{name} was denied by the user."),
                 }
                 pp_core::cancellation::check(cancellation)?;
@@ -792,40 +583,30 @@ impl Gate {
 }
 
 #[derive(Clone, Debug)]
-enum GrantTarget {
+pub(crate) enum GrantTarget {
     Tool(String),
-    BashPrefixes(Vec<Vec<String>>),
-}
-
-fn policy_severity(policy: PermissionPolicy) -> u8 {
-    match policy {
-        PermissionPolicy::Allow => 0,
-        PermissionPolicy::Prompt => 1,
-        PermissionPolicy::Deny => 2,
-    }
-}
-
-fn matching_bash_rule<'a>(
-    leaf: &bash_ast::LeafCommand,
-    rules: &'a [BashRule],
-) -> Option<&'a BashRule> {
-    rules
-        .iter()
-        .filter(|rule| match rule.policy {
-            PermissionPolicy::Allow => leaf.matches_prefix(&rule.prefix),
-            PermissionPolicy::Prompt | PermissionPolicy::Deny => {
-                leaf.matches_restrictive_prefix(&rule.prefix)
-            }
-        })
-        .max_by_key(|rule| (rule.prefix.len(), policy_severity(rule.policy)))
+    BashRules(Vec<BashRule>),
+    Sandbox(SandboxGrant),
+    BashAndSandbox {
+        rules: Vec<BashRule>,
+        sandbox: SandboxGrant,
+    },
+    WorkspacePath {
+        abs: PathBuf,
+        rel: String,
+    },
+    HostPath(PathBuf),
+    Network,
 }
 
 #[cfg(test)]
 fn destructive_reason(arguments: &str) -> Option<&'static str> {
-    bash_ast::analyze_bash_arguments(arguments).and_then(|analysis| analysis.critical_reason)
+    bash_ast::analyze_bash_arguments(arguments)?.critical_reason
 }
 
 #[cfg(test)]
+#[path = "bash_ast_tests.rs"]
 mod bash_ast_tests;
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests;

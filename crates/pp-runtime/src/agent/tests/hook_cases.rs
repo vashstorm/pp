@@ -631,9 +631,12 @@ fn hooks_pre_tool_use_allow_keeps_the_original_permission_denial() {
             dir.path(),
             protocol,
             &server.addr().to_string(),
-            "tools:\n  permissionMode: always-ask\n",
+            "",
             Some(&hook_yaml("PreToolUse", &script)),
         );
+        agent
+            .permission_gate()
+            .select(Some(pp_config::config::PermissionMode::ReadOnly));
         agent.set_permission_handler(Box::new(|_request, _cancellation| {
             Ok(pp_tools::permission::PermissionDecision::Deny)
         }));

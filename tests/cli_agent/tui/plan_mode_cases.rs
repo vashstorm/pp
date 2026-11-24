@@ -66,7 +66,6 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
         let mut settings = super::super::mcp::settings("");
         settings["notification_timeout_seconds"] = json!(1);
         settings["tools"] = json!({
-            "permissionMode": "accept-edits",
             "permission": {
                 "mcp__local__echo": "allow",
                 "mcp__local__fail": "deny"
@@ -144,7 +143,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
         assert_eq!(outputs[0].1["result"]["content"][0]["text"], "中文结果");
         assert_eq!(
             outputs[1].1["error"],
-            "mcp__local__fail is blocked by tools.permission policy."
+            "mcp__local__fail is blocked by permission policy."
         );
         assert_eq!(
             outputs[2].1,

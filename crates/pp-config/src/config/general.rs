@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde_yaml::Value;
 
 use super::{
-    EditMode, PermissionMode, SandboxMode, Settings, StatsStyle, WebSearchProvider,
+    EditMode, SandboxMode, Settings, StatsStyle, WebSearchProvider,
     update_settings_fields_returning,
 };
 
@@ -12,7 +12,6 @@ use super::{
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingPatch {
     Edit(EditMode),
-    PermissionMode(PermissionMode),
     SandboxMode(SandboxMode),
     ReadMaxLines(usize),
     ReadMaxBytes(usize),
@@ -51,14 +50,6 @@ impl SettingPatch {
                 "edit",
                 serde_yaml::to_value(value).context("Failed to serialize edit")?,
             ),
-            Self::PermissionMode(value) => {
-                settings.tools.permission_mode = Some(value);
-                (
-                    "tools",
-                    serde_yaml::to_value(&settings.tools)
-                        .context("Failed to serialize tools settings")?,
-                )
-            }
             Self::SandboxMode(value) => {
                 settings.tools.sandbox.mode = value;
                 (
@@ -234,10 +225,10 @@ mod tests {
 
         let saved = update_general_setting(
             &path,
-            SettingPatch::PermissionMode(PermissionMode::AlwaysAsk),
+            SettingPatch::SandboxMode(SandboxMode::WorkspaceWrite),
         )
         .unwrap();
-        assert_eq!(saved.tools.permission_mode, Some(PermissionMode::AlwaysAsk));
+        assert_eq!(saved.tools.sandbox.mode, SandboxMode::WorkspaceWrite);
         assert_eq!(saved.tui.theme, crate::config::Theme::TokyoNight);
 
         let saved = update_general_setting(&path, SettingPatch::LspRequestTimeout(30)).unwrap();

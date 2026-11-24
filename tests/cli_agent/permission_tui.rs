@@ -25,14 +25,14 @@ fn permission_tui_cycles_modes_with_both_shortcuts_and_keeps_draft() {
     permission_fixture(home.path());
     let default_footer = |screen: &vt100::Screen| {
         let (rows, cols) = screen.size();
-        permission_label(screen, "Accept-edits", Rgb(254, 188, 56))
+        permission_label(screen, "Ask for approval", Rgb(125, 207, 255))
             && screen
                 .rows(0, cols)
                 .nth(usize::from(rows - 1))
-                .is_some_and(|row| row.contains("off · \u{ed25} Accept-edits ·"))
+                .is_some_and(|row| row.contains("off · \u{ed25} Ask for approval ·"))
     };
     let mut pty = Pty::start_with_existing_files(home.path());
-    pty.wait_for("默认启动时 effort 后带盾牌的 Accept-edits", default_footer);
+    pty.wait_for("默认启动时 effort 后带盾牌的 Ask for approval", default_footer);
     pty.input("permission draft");
     pty.draft("permission draft");
     pty.input("\x1b[D");
@@ -40,12 +40,14 @@ fn permission_tui_cycles_modes_with_both_shortcuts_and_keeps_draft() {
     pty.wait_for("草稿内光标", |screen| screen.cursor_position() == (row, column.saturating_sub(1)));
     let cursor = pty.parser.screen().cursor_position();
     for (keys, label, color) in [
-        ("\x1b[17~", "YOLO", Rgb(224, 108, 117)),
-        ("\x1bA", "Always-ask", Rgb(125, 207, 255)),
-        ("\x1b[97;4u", "Accept-edits", Rgb(254, 188, 56)),
-        ("\x1b[27;4;65~", "YOLO", Rgb(224, 108, 117)),
-        ("\x1b[27;10;65~", "Always-ask", Rgb(125, 207, 255)),
-        ("\x1b[65;3u", "Accept-edits", Rgb(254, 188, 56)),
+        ("\x1b[17~", "Approve for me", Rgb(254, 188, 56)),
+        ("\x1b[17~", "Full Access", Rgb(224, 108, 117)),
+        ("\x1b[17~", "Read Only", Rgb(254, 188, 56)),
+        ("\x1bA", "Ask for approval", Rgb(125, 207, 255)),
+        ("\x1b[97;4u", "Approve for me", Rgb(254, 188, 56)),
+        ("\x1b[27;4;65~", "Full Access", Rgb(224, 108, 117)),
+        ("\x1b[27;10;65~", "Read Only", Rgb(254, 188, 56)),
+        ("\x1b[65;3u", "Ask for approval", Rgb(125, 207, 255)),
     ] {
         pty.input(keys);
         pty.wait_for(&format!("{keys:?} 切换至 {label}"), |screen| {
@@ -54,19 +56,19 @@ fn permission_tui_cycles_modes_with_both_shortcuts_and_keeps_draft() {
         assert_eq!(pty.prompt(), "permission draft");
         assert_eq!(pty.parser.screen().cursor_position(), cursor);
     }
-    pty.resize(24, 17);
-    pty.wait_for("窄屏 Accept-edits", |screen| {
-        permission_label(screen, "Accept-edits", Rgb(254, 188, 56))
+    pty.resize(24, 22);
+    pty.wait_for("窄屏 Ask for approval", |screen| {
+        permission_label(screen, "Ask for approval", Rgb(125, 207, 255))
     });
-    pty.input("\x1b[17~");
-    pty.wait_for("窄屏 YOLO", |screen| {
-        permission_label(screen, "YOLO", Rgb(224, 108, 117))
+    pty.input("\x1b[17~\x1b[17~");
+    pty.wait_for("窄屏 Full Access", |screen| {
+        permission_label(screen, "Full Access", Rgb(224, 108, 117))
     });
     pty.input("\x03");
     pty.finish();
 
     let mut restarted = Pty::start_with_existing_files(home.path());
-    restarted.wait_for("重启后恢复默认 Accept-edits", default_footer);
+    restarted.wait_for("重启后恢复默认 Ask for approval", default_footer);
     restarted.input("\x03");
     restarted.finish();
 }
@@ -75,22 +77,23 @@ fn permission_tui_cycles_modes_with_both_shortcuts_and_keeps_draft() {
 fn permission_tui_preserves_mode_across_new_and_plan() {
     let home = tempfile::tempdir().unwrap();
     permission_fixture(home.path());
-    write_settings(home.path(), "tools: { permissionMode: always-ask }").unwrap();
     let mut pty = Pty::start_with_existing_files(home.path());
-    pty.wait_for("初始模式", |screen| screen.contents().contains("Always-ask"));
+    pty.wait_for("初始模式", |screen| {
+        screen.contents().contains("Ask for approval")
+    });
     pty.input("/permissions yolo\r");
-    pty.wait_for("切换到新版 YOLO", |screen| {
-        permission_label(screen, "YOLO", vt100::Color::Rgb(224, 108, 117))
+    pty.wait_for("切换到 Full Access", |screen| {
+        permission_label(screen, "Full Access", vt100::Color::Rgb(224, 108, 117))
     });
     pty.input("/new\r");
-    pty.wait_for("新会话保留 YOLO 并清空权限详情", |screen| {
-        permission_label(screen, "YOLO", vt100::Color::Rgb(224, 108, 117))
-            && !screen.contents().contains("Permission mode: yolo")
+    pty.wait_for("新会话保留 Full Access 并清空权限详情", |screen| {
+        permission_label(screen, "Full Access", vt100::Color::Rgb(224, 108, 117))
+            && !screen.contents().contains("Permission mode: Full Access")
     });
     pty.input("/plan\r");
-    pty.wait_for("Plan 和 YOLO 标签", |screen| {
+    pty.wait_for("Plan 和 Full Access 标签", |screen| {
         let (rows, cols) = screen.size();
-        permission_label(screen, "YOLO", vt100::Color::Rgb(224, 108, 117))
+        permission_label(screen, "Full Access", vt100::Color::Rgb(224, 108, 117))
             && screen.rows(0, cols).nth(usize::from(rows - 1)).unwrap().contains("Plan")
     });
     pty.input("\x03");
@@ -114,7 +117,7 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
         // 平台上的隔离能力由 pp-sandbox 定向用例验证。
         return;
     }
-    write_settings(home.path(), "tools: { permissionMode: accept-edits, sandbox: { network: false } }").unwrap();
+    write_settings(home.path(), "tools: { sandbox: { network: false } }").unwrap();
     std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
     let mut pty = Pty::start_with_args(&cwd, home.path(), &[]);
     let command = "printf approved > marker";
@@ -144,11 +147,16 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
     assert_eq!(output["ok"], true, "{output}");
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "approved");
     let rules = std::fs::read_to_string(&store).unwrap();
+    assert!(rules.contains("[[rules]]"), "{rules}");
+    assert!(
+        rules.contains("pattern = [\"printf\", \"approved\"]"),
+        "{rules}"
+    );
     assert!(rules.contains("[[sandbox]]"), "{rules}");
     assert!(rules.contains("network = true"), "{rules}");
-    assert!(rules.contains(command), "{rules}");
+    assert!(rules.contains("command = \"printf approved\""), "{rules}");
+    assert!(!rules.contains("permissions."), "{rules}");
     assert!(!rules.contains("version"), "{rules}");
-    assert!(!rules.contains("[[rules]]"), "{rules}");
     assert!(!rules.contains("[rules.grant]"), "{rules}");
     assert!(!rules.contains("id ="), "{rules}");
     assert!(!rules.contains("workspace ="), "{rules}");
@@ -185,11 +193,10 @@ fn permission_tui_switches_independently_while_running_and_applies_to_next_tool_
     let server = server();
     let home = tempfile::tempdir().unwrap();
     let cwd = home.path().canonicalize().unwrap();
-    write_settings(home.path(), "tools: { permissionMode: always-ask }").unwrap();
     std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
-    let mut pty = Pty::start_with_args(&cwd, home.path(), &[]);
-    pty.wait_for("初始 Always-ask", |screen| {
-        permission_label(screen, "Always-ask", vt100::Color::Rgb(125, 207, 255))
+    let mut pty = Pty::start_with_args(&cwd, home.path(), &["--permission-mode", "read-only"]);
+    pty.wait_for("初始 Read Only", |screen| {
+        permission_label(screen, "Read Only", vt100::Color::Rgb(254, 188, 56))
     });
 
     pty.input("run two writes\r");
@@ -201,20 +208,16 @@ fn permission_tui_switches_independently_while_running_and_applies_to_next_tool_
             call("w2", "write", json!({"path": "two.txt", "content": "2"})),
         ]),
     );
-    // 第一个写操作在 Always-ask 下弹出权限确认；此时按 F6 切换到 Accept-edits（再按一次到 YOLO），
-    // 状态栏立即更新为 YOLO，然后确认当前第一个弹窗，紧接着的第二个 write 调用立即无弹窗放行。
+    // 第一个写操作在 Read Only 下弹出权限确认；此时按 F6 切换到 Ask for approval，
+    // 状态栏立即更新，然后确认当前第一个弹窗，紧接着的第二个 write 调用立即无弹窗放行。
     pty.wait_for("首个工具进入权限弹窗", |screen| {
         screen.contents().contains("Allow once")
     });
     pty.input("\x1b[17~");
-    pty.wait_for("弹窗期间切到 Accept-edits", |screen| {
-        permission_label(screen, "Accept-edits", vt100::Color::Rgb(254, 188, 56))
+    pty.wait_for("弹窗期间切到 Ask for approval", |screen| {
+        permission_label(screen, "Ask for approval", vt100::Color::Rgb(125, 207, 255))
     });
-    pty.input("\x1b[17~");
-    pty.wait_for("弹窗期间再切到 YOLO", |screen| {
-        permission_label(screen, "YOLO", vt100::Color::Rgb(224, 108, 117))
-    });
-    // 回车确认当前第一条工具的 Allow once；第二条工具直接以 YOLO 执行。
+    // 回车确认当前第一条工具的 Allow once；第二条工具直接以 Ask for approval 放行。
     pty.input("\r");
     let (request, body) = pty.request(&server);
     let results: Vec<Value> = body["messages"]

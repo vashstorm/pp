@@ -155,6 +155,8 @@ impl SessionJournal {
                 | AgentEvent::UserInputAccepted { .. }
                 | AgentEvent::UserInputRejected { .. }
                 | AgentEvent::HookDiagnostic { .. }
+                | AgentEvent::AutoReviewStarted { .. }
+                | AgentEvent::AutoReviewFinished { .. }
                 | AgentEvent::ModelRequestStarted
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. }

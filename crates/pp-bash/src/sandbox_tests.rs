@@ -105,17 +105,29 @@ fn sandbox_bash_enforces_workspace_write_protect_and_read_deny() {
     assert_eq!(secret["ok"], false, "{secret}");
     assert_eq!(secret["sandbox"]["blocked"], true, "{secret}");
 
-    // 4. 在已有 git 仓库中 git add / git commit 正常工作（只读 .git/config/.git/hooks 不影响提交）
+    // 4. 在已有 git 仓库中，未批准时 .git 默认受沙盒写保护；显式批准 .git 后可完成 git add / git commit
     let init_status = std::process::Command::new("git")
         .args(["init", "-q"])
         .current_dir(&repo)
         .status()
         .unwrap();
     assert!(init_status.success());
+    let blocked_git = run_cmd(
+        &repo,
+        "git -c user.name=t -c user.email=t@t add inside.txt",
+        policy.clone(),
+    )
+    .unwrap();
+    assert_eq!(blocked_git["ok"], false, "{blocked_git}");
+    assert_eq!(blocked_git["sandbox"]["blocked"], true, "{blocked_git}");
+
+    let approved_git_policy = policy
+        .with_approved_scope(&[], &[], &[repo.join(".git")], false)
+        .unwrap();
     let git_res = run_cmd(
         &repo,
         "git -c user.name=t -c user.email=t@t add inside.txt && git -c user.name=t -c user.email=t@t commit -q -m init",
-        policy,
+        approved_git_policy,
     )
     .unwrap();
     assert_eq!(git_res["ok"], true, "{git_res}");

@@ -248,8 +248,7 @@ fn macos_tmp_alias_spelling_is_accepted_inside_a_private_tmp_workspace() {
     );
     let root_missing_file = workspace
         .target(&alias_root, false)
-        .err()
-        .expect("directory target has no file path")
+        .expect_err("directory target has no file path")
         .to_string();
     assert_eq!(root_missing_file, "write/edit requires a file path");
     // 工作区在临时根内：兄弟目录同属临时根，可写，且键是真实绝对路径而不是
@@ -948,4 +947,27 @@ fn walk_budget_respects_cancellation() {
     // 现有文件保持原样：拒绝只放弃快照，不提交/删除任何东西。
     assert!(dir.path().join("d/a.bin").exists());
     assert!(dir.path().join("d/sub/b.bin").exists());
+}
+
+#[test]
+fn external_target_writes_regular_files_and_rejects_symlinks() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = outside_dir();
+    let workspace = Workspace::open(dir.path()).unwrap();
+
+    let external_file = outside.path().join("nested/note.txt");
+    let target = workspace.external_target(&external_file, true).unwrap();
+    target.save_new_with_conflict(b"hello", "exists").unwrap();
+    assert_eq!(std::fs::read(&external_file).unwrap(), b"hello");
+
+    let link = outside.path().join("sym.txt");
+    symlink(&external_file, &link).unwrap();
+    let err = workspace.external_target(&link, false).unwrap_err();
+    assert!(err.to_string().contains("symlinks are forbidden"), "{err}");
+
+    assert!(
+        workspace
+            .external_target(Path::new("relative.txt"), false)
+            .is_err()
+    );
 }

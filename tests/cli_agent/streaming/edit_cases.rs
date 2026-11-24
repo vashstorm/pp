@@ -389,6 +389,8 @@ fn hardened_tools_recover_after_limits_timeout_and_rejected_edits_in_both_protoc
         let outside = outside_tempdir();
         let external = outside.path().join("external");
         std::fs::write(&external, "keep").unwrap();
+        let ext_link = dir.path().join("ext-link");
+        std::os::unix::fs::symlink(&external, &ext_link).unwrap();
         std::fs::write(dir.path().join("demo"), "one\ntwo\nthree\n").unwrap();
         let settings = r#"{"read_max_bytes":8,"read_max_lines":1,"bash_timeout_seconds":1}"#;
         let cli =
@@ -397,7 +399,7 @@ fn hardened_tools_recover_after_limits_timeout_and_rejected_edits_in_both_protoc
         protocol.calls_reply(request, json!([
             protocol.call("page", "read", json!({"path":"demo"})),
             protocol.call("bad-limit", "read", json!({"path":"demo","limit":2})),
-            protocol.call("outside", "write", json!({"path":external,"content":"bad"})),
+            protocol.call("outside", "write", json!({"path":"ext-link","content":"bad"})),
             protocol.call("bad-edit", "edit", json!({"path":"demo","edits":[
                 {"oldText":"one","newText":"bad"}, {"oldText":"missing","newText":"bad"}
             ]})),

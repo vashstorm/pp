@@ -79,9 +79,10 @@ pub(crate) fn scope(
 
 fn permission_mode(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::Yolo => "bypassPermissions",
-        PermissionMode::AcceptEdits => "acceptEdits",
-        PermissionMode::AlwaysAsk => "default",
+        PermissionMode::DangerFullAccess => "bypassPermissions",
+        PermissionMode::AutoReview => "auto_review",
+        PermissionMode::WorkspaceWrite => "default",
+        PermissionMode::ReadOnly => "read-only",
     }
 }
 
@@ -518,7 +519,7 @@ mod tests {
 
         let runner = std::sync::Arc::new(Runner::compile(&settings).unwrap());
         let permission = pp_tools::permission::Gate::new();
-        permission.select(Some(PermissionMode::AlwaysAsk));
+        permission.select(Some(PermissionMode::WorkspaceWrite));
         let hook_scope = HookScope {
             runner,
             role: Some(HookRole::Root),

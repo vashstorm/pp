@@ -85,7 +85,7 @@ pub(crate) fn paths_overlap(left: &Path, right: &Path) -> bool {
     path_starts_with(left, right) || path_starts_with(right, left)
 }
 
-fn path_eq_platform(left: &Path, right: &Path) -> bool {
+pub(crate) fn path_eq_platform(left: &Path, right: &Path) -> bool {
     path_starts_with(left, right) && path_starts_with(right, left)
 }
 
@@ -261,23 +261,29 @@ pub(crate) fn is_read_denied_path(
         .any(|denied| path_starts_with(target, denied))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_write_path(
     target: &Path,
     mode: crate::EffectiveMode,
     cwd: &Path,
     writable: &[PathBuf],
+    allow_write_files: &[PathBuf],
     protect: &[PathBuf],
+    immutable_protect: &[PathBuf],
     deny_read: &[PathBuf],
     allow_read: &[PathBuf],
 ) -> io::Result<()> {
     if is_safe_device_write(target) {
         return Ok(());
     }
-    if protect.iter().any(|prot| path_starts_with(target, prot)) {
+    if immutable_protect
+        .iter()
+        .any(|prot| path_starts_with(target, prot))
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
-                "blocked by sandbox policy (protected path is read-only): {}",
+                "blocked by sandbox policy (immutable protected path is read-only): {}",
                 target.display()
             ),
         ));
@@ -287,6 +293,21 @@ pub(crate) fn check_write_path(
             io::ErrorKind::PermissionDenied,
             format!(
                 "blocked by sandbox policy (credential or protected path write denied): {}",
+                target.display()
+            ),
+        ));
+    }
+    if allow_write_files
+        .iter()
+        .any(|allowed| path_eq_platform(target, allowed))
+    {
+        return Ok(());
+    }
+    if protect.iter().any(|prot| path_starts_with(target, prot)) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "blocked by sandbox policy (protected path is read-only): {}",
                 target.display()
             ),
         ));
@@ -378,7 +399,9 @@ mod tests {
                 crate::EffectiveMode::WorkspaceWrite,
                 Path::new("/work/repo"),
                 &writable,
+                &[],
                 &protect,
+                &[],
                 &[],
                 &[],
             );
@@ -455,6 +478,8 @@ mod tests {
                 &root,
                 std::slice::from_ref(&root),
                 &[],
+                &[],
+                &[],
                 std::slice::from_ref(&secret),
                 std::slice::from_ref(&allowed),
             )
@@ -466,6 +491,8 @@ mod tests {
                 crate::EffectiveMode::WorkspaceWrite,
                 &root,
                 std::slice::from_ref(&root),
+                &[],
+                &[],
                 &[],
                 std::slice::from_ref(&secret),
                 std::slice::from_ref(&allowed),

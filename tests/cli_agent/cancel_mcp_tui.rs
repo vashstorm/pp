@@ -94,7 +94,7 @@ fn tui_cancel_mcp_stops_real_work_and_restarts_only_for_new_call() {
         let dir = tempfile::tempdir().unwrap();
         crate::write_settings(dir.path(), cancel_mcp_settings("cancel_once", false)).unwrap();
         std::fs::write(config_path(dir.path(), "models.yml"), response_models(&provider, Some(protocol))).unwrap();
-        let mut pty = Pty::start_with_existing_files(dir.path());
+        let mut pty = Pty::start_with_args(dir.path(), dir.path(), &["--yolo"]);
         cancel_mcp_begin(&mut pty, &provider, dir.path(), protocol);
         pty.input("new MCP task\r");
         let (request, body) = receive_at(&provider, cancel_mcp_protocol_path(protocol));
@@ -128,7 +128,7 @@ fn tui_cancel_mcp_schema_change_rejects_new_call_without_poisoning_local_tools()
     let dir = tempfile::tempdir().unwrap();
     crate::write_settings(dir.path(), cancel_mcp_settings("cancel_then_schema_change", false)).unwrap();
     std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
-    let mut pty = Pty::start_with_existing_files(dir.path());
+    let mut pty = Pty::start_with_args(dir.path(), dir.path(), &["--yolo"]);
     cancel_mcp_begin(&mut pty, &provider, dir.path(), "completion");
     pty.input("schema check\r");
     let (request, before) = receive(&provider);
@@ -170,7 +170,7 @@ fn tui_cancel_mcp_ctrl_c_reaps_replacement_during_rediscovery() {
     let dir = tempfile::tempdir().unwrap();
     crate::write_settings(dir.path(), cancel_mcp_settings("cancel_once", true)).unwrap();
     std::fs::write(config_path(dir.path(), "models.yml"), fixture_models(&provider)).unwrap();
-    let mut pty = Pty::start_with_existing_files(dir.path());
+    let mut pty = Pty::start_with_args(dir.path(), dir.path(), &["--yolo"]);
     cancel_mcp_begin(&mut pty, &provider, dir.path(), "completion");
     pty.input("restart task\r");
     let (request, _) = receive(&provider);

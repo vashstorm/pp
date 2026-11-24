@@ -166,7 +166,7 @@ fn agent_hub_moves_queued_tasks_above_completed_tasks_when_they_start() {
         fixture_models(&fixture),
     )
     .unwrap();
-    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
     pty.ready();
     pty.resize(35, 150);
     pty.input("delegate two tasks\r");
@@ -250,7 +250,7 @@ fn subagent_tui_inspects_cancels_revives_and_sends_literal_followups() {
             response_models(&fixture, Some(protocol)),
         )
         .unwrap();
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
         pty.ready();
         // `/agents` 打开 Hub，已移除的 `/subagents` 保留草稿且不打开 Hub，`/roles` 独立入口保留。
         pty.input("/agents\r");
@@ -332,14 +332,14 @@ fn agent_hub_streams_and_anchors_activity() {
         std::fs::write(project.path().join("probe.txt"), "hub-probe-body").unwrap();
         std::fs::write(
             config_path(home.path(), "settings.yml"),
-            r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"bash_timeout_seconds":37,"read":{"toolResultPreview":true},"tools":{"permissionMode":"yolo"},"model_roles":{"fast":{"model":"fixture/primary","effort":"none"}}}"#,
+            r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"bash_timeout_seconds":37,"read":{"toolResultPreview":true},"model_roles":{"fast":{"model":"fixture/primary","effort":"none"}}}"#,
         ).unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),
             response_models(&fixture, Some(protocol)),
         )
         .unwrap();
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
         pty.ready();
         pty.input("delegate hub stream task\r");
         let mut children = hub_dispatch(
@@ -466,7 +466,7 @@ fn agent_hub_literal_input_drafts_and_parent_isolation() {
             response_models(&fixture, Some(protocol)),
         )
         .unwrap();
-        let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
         pty.ready();
         pty.input("delegate drafts task\r");
         let mut children = hub_dispatch(
@@ -569,7 +569,7 @@ fn agent_hub_controls_do_not_revive_on_inspect() {
         response_models(&fixture, Some(protocol)),
     )
     .unwrap();
-    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
     pty.ready();
     pty.input("delegate controls task\r");
     let children = hub_dispatch(
@@ -665,7 +665,7 @@ fn agent_hub_layout_tree_scope_and_follow() {
         response_models(&fixture, Some(protocol)),
     )
     .unwrap();
-    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
     pty.ready();
     pty.input("delegate layout task\r");
     let mut children = hub_dispatch(
@@ -807,7 +807,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
         response_models(&fixture, Some(protocol)),
     )
     .unwrap();
-    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
     pty.ready();
     pty.input("delegate long history task\r");
     let mut children = hub_dispatch(
@@ -879,7 +879,7 @@ fn agent_hub_reads_full_history_and_restores_legacy() {
     pty.finish();
     // 恢复根后旧 child 仍可查看，且不会自动发送模型请求。
     let id = saved_session_id(home.path());
-    let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
+    let mut resumed = Pty::start_with_args(project.path(), home.path(), &["--yolo", "-r", &id]);
     resumed.ready();
     resumed.input("/agents\r");
     resumed.text("a1");
@@ -907,7 +907,7 @@ fn slow_agent_hub_rebinds_after_slash_resume_without_a_turn() {
     )
     .unwrap();
 
-    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
     pty.ready();
     pty.input("rebind resume task\r");
     let mut children = hub_dispatch(
@@ -931,7 +931,7 @@ fn slow_agent_hub_rebinds_after_slash_resume_without_a_turn() {
     no_more(&fixture);
 
     // 同一目录下的新进程：/resume 选中该会话后不发任务，直接打开 Hub。
-    let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
+    let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
     pty.ready();
     pty.input("/resume\r");
     pty.wait_for("history lists the saved session", |screen| {

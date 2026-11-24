@@ -205,10 +205,10 @@ fn eval_nested_tools_keep_permission_instructions_and_hooks() {
     tools
         .permission
         .set_config(pp_config::config::ToolsSettings {
-            permission_mode: Some(PermissionMode::AlwaysAsk),
             permission: policy_map,
             ..Default::default()
         });
+    tools.permission.select(Some(PermissionMode::ReadOnly));
     let prompts: Arc<Mutex<Vec<PermissionRequest>>> = Arc::new(Mutex::new(Vec::new()));
     let prompts_ref = prompts.clone();
     tools.permission.set_handler(Box::new(move |req, _| {
@@ -238,10 +238,10 @@ fn eval_nested_tools_keep_permission_instructions_and_hooks() {
     // 4) 切回 Yolo 模式验证嵌套 PreToolUse / PostToolUse Hook 拦截与参数改写。
     tools
         .permission
-        .set_config(pp_config::config::ToolsSettings {
-            permission_mode: Some(PermissionMode::Yolo),
-            ..Default::default()
-        });
+        .set_config(pp_config::config::ToolsSettings::default());
+    tools
+        .permission
+        .select(Some(PermissionMode::DangerFullAccess));
     let mut hook = StubHook::new();
     hook.deny_tool = Some("rg".to_owned());
     hook.rewrite_write_content = Some("hook-rewritten\n".to_owned());

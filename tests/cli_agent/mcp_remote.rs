@@ -13,8 +13,7 @@ fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_prec
             config["mcpServers"]["remote"]["env_headers"] = json!({"x-test-key":"PP_MCP_TEST_KEY"});
             write_settings(
                 dir.path(),
-                json!({"tools":{"permissionMode":"yolo"},"mcpServers":config["mcpServers"]})
-                    .to_string(),
+                json!({"mcpServers":config["mcpServers"]}).to_string(),
             )
             .unwrap();
             std::fs::write(
@@ -25,7 +24,7 @@ fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_prec
             let cli = Cli::start_env(
                 dir.path(),
                 dir.path(),
-                &["--allowed-tools", "mcp__*", "-p", "调用远程工具"],
+                &["--yolo", "--allowed-tools", "mcp__*", "-p", "调用远程工具"],
                 &[("PP_MCP_TEST_KEY", "env-secret")],
             );
             let path = if protocol == "completion" {
@@ -143,8 +142,7 @@ fn mcp_remote_management_both_protocols_reload_refreshes_auth_without_persisting
             config["mcpServers"]["remote"]["env_headers"] = json!({"x-test-key":"PP_MCP_TEST_KEY"});
             write_settings(
                 dir.path(),
-                json!({"tools":{"permissionMode":"yolo"},"mcpServers":config["mcpServers"]})
-                    .to_string(),
+                json!({"mcpServers":config["mcpServers"]}).to_string(),
             )
             .unwrap();
             std::fs::write(
@@ -155,7 +153,7 @@ fn mcp_remote_management_both_protocols_reload_refreshes_auth_without_persisting
             let mut cli = Cli::start_env(
                 dir.path(),
                 dir.path(),
-                &[],
+                &["--yolo"],
                 &[
                     ("PP_MCP_TEST_KEY", "env-secret"),
                     ("PP_MCP_TEST_KEY_NEW", "refreshed-secret"),

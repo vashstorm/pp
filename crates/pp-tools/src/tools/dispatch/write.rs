@@ -6,7 +6,9 @@ impl Tools {
     pub(in crate::tools) fn run_write(
         &self,
         call: &mut ExecuteCall<'_, '_>,
+        permissions: pp_config::config::PermissionMode,
         sandbox: Option<pp_sandbox::SandboxView<'_>>,
+        hook_ask: Option<&str>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let policy = call.policy;
         let name = call.name;
@@ -29,19 +31,20 @@ impl Tools {
         );
         ensure!(!args.path.trim().is_empty(), "path must not be blank");
         self.check_mutation_instructions("write", arguments)?;
-        let normalized_path = self.workspace.key(Path::new(&args.path))?;
-        let target_path = self.cwd.join(&normalized_path);
-        ensure!(
-            !self.permission.protects_path(&target_path),
-            "permission rules must be managed with /permissions"
-        );
-        if let Some(sandbox) = sandbox
-            && let Some(policy) = sandbox.policy()?
-        {
-            policy.check_write(&target_path)?;
-        }
-        let target = self.workspace.target(Path::new(&args.path), true)?;
-        let registry = self.lsp_save_registry();
+        let MutationTarget {
+            record_key: normalized_path,
+            is_external,
+            target,
+        } = self.prepare_mutation_target(
+            "write",
+            &args.path,
+            true,
+            permissions,
+            sandbox,
+            hook_ask,
+            cancellation,
+        )?;
+        let registry = (!is_external).then(|| self.lsp_save_registry()).flatten();
         let absolute = registry
             .map(|registry| registry.cwd().join(&normalized_path))
             .unwrap_or_else(|| self.cwd.join(&normalized_path));

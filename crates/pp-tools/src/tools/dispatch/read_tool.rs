@@ -3,13 +3,16 @@
 use super::*;
 
 impl Tools {
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::tools) fn run_read(
         &self,
         arguments: &str,
         cancellation: &CancellationToken,
         web: &mut web_search::WebHandler<'_>,
         images: &mut Vec<read::ToolImage>,
+        permissions: pp_config::config::PermissionMode,
         sandbox: pp_sandbox::SandboxView<'_>,
+        hook_ask: Option<&str>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let args: ReadArgs = serde_json::from_str(arguments).context("invalid read arguments")?;
         if args.path.starts_with("agent://") {
@@ -51,11 +54,17 @@ impl Tools {
         }
         if let Some(local) = read::local_path(&args.path, &self.cwd)? {
             sandbox.check_read(&local)?;
-        } else if read::is_http_url(&args.path, &self.cwd)?
-            && let Some(policy) = sandbox.policy()?
-            && !policy.network()
-        {
-            anyhow::bail!("URL read is blocked by sandbox policy (outbound network is disabled).");
+        } else if read::is_http_url(&args.path, &self.cwd)? {
+            let network_enabled = sandbox.policy()?.is_none_or(|policy| policy.network());
+            self.permission.authorize_network(
+                permissions,
+                "read",
+                &self.cwd,
+                &args.path,
+                network_enabled,
+                hook_ask,
+                cancellation,
+            )?;
         }
         self.activate_read_instructions(&args.path)?;
         let mut fetch = |url: &str, token: &CancellationToken| match web(

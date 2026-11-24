@@ -117,6 +117,8 @@ enum OverviewEvent {
     },
     ProjectInstructionsLoaded(IgnoredAny),
     FileChanged(IgnoredAny),
+    AutoReviewStarted(IgnoredAny),
+    AutoReviewFinished(IgnoredAny),
     ToolOutput(IgnoredAny),
     ToolOutputSnapshot(IgnoredAny),
     SubagentResultsInjected(IgnoredAny),
@@ -427,7 +429,9 @@ impl Binding {
                         | OverviewEvent::ProjectInstructionsLoaded(_)
                         | OverviewEvent::HookDiagnostic(_)
                         | OverviewEvent::UserInputRejected(_)
-                        | OverviewEvent::FileChanged(_),
+                        | OverviewEvent::FileChanged(_)
+                        | OverviewEvent::AutoReviewStarted(_)
+                        | OverviewEvent::AutoReviewFinished(_),
                     ) => {}
                     Some(other) => {
                         let event = match other {

@@ -141,7 +141,7 @@ pp /stats --host 127.0.0.1 --port 0 --no-open
 
 2 期非交互参数：`-C`/`--cd <DIR>` 在启动前切换工作目录（`-o` 与 `--output-schema` 文件路径仍按调用方目录解析）；`--ephemeral`（别名 `--no-session-persistence`）内存运行不落盘、不加锁（配合 `-r`/`-c` 时只读恢复）；`--max-turns <N>` 限制最大模型轮次；`--timeout <DURATION>` 与 `SIGINT`/`SIGTERM` 触发优雅取消并回收子进程；`--output-schema` 校验最终输出 JSON（最多自动纠错重试 2 次）；`-o`/`--output-file` 在成功后原子写入最终助手正文；`--effort` 临时覆盖思考档位；`--no-hooks` 跳过生命周期 Hooks。退出码约定：`0` 成功、`1` 运行期错误、`2` CLI 用法错误、`3` 超出 `--max-turns`、`124` `--timeout` 超时、`130` `SIGINT`、`143` `SIGTERM`。
 
-> **权限与数据** · 默认使用 `accept-edits`，在工作区沙盒内运行，并按需询问 Bash 的额外权限。可以在 `settings.yml` 中通过 `tools.permissionMode` 选择其他预设（`always-ask`、`accept-edits` 或 `yolo`）。`always-ask` 还会在写入与执行工具运行前询问，`yolo` 关闭 pp 沙盒并跳过常规工具权限确认。TUI 底栏用颜色标明档位，按 Alt + Shift + A 或 F6 循环，也可通过 `/permissions` 查看生效状态。模型配置中的接口密钥以明文保存，会话与统计可能包含源码和对话。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
+> **权限与数据** · 启动默认使用 **Ask for approval**（`workspace-write`），且默认禁用出站网络（`network = false`）。权限预设不再写入 `settings.yml`，可通过 `--permission-mode <workspace-write|auto_review|danger-full-access|yolo|read-only>` 或 `pp --yolo` 在本次启动覆盖。`Ask for approval`（`workspace-write`）与 `Approve for me`（`auto_review`）均在工作区沙盒内运行，写入 `.git`/`.agents`/`.pp` 等受保护目录、编辑工作区外文件或联网均需审批；`Approve for me` 默认交由 `REVIEW` 角色独立模型判定 `pass`/`deny`，仅 `pass` 自动放行，否则回落到人工确认。`Full Access`（`danger-full-access`，别名 `yolo`）关闭沙盒与常规确认；`Read Only`（`read-only`）仅允许读取工作区，编辑与联网需审批。Bash 规则默认精确匹配到完整参数/文件（可用 `--prefix` 指定前缀），全局规则以 Codex 风格保存在 `~/.pp/agent/permission.toml`。TUI 底栏用颜色标明档位，按 Alt + Shift + A 或 F6 循环，也可通过 `/permissions` 查看状态。模型配置中的接口密钥以明文保存，会话与统计可能包含源码和对话。[查看完整权限说明 →](docs/guide.md#工具执行与权限)
 
 ## 日常使用
 
@@ -177,7 +177,7 @@ pp /stats --host 127.0.0.1 --port 0 --no-open
 | `/test-write` | 仅 dev/test：12.5 mock token/s 的打字机回复；24/28 行正文以 240 mock token/s 写入 `/tmp/pp-test-write/demo.txt`，写入卡片可见尾部滚动；随后越界失败，最后用 bash 工具删除 |
 | `/test-ui` | 仅 dev/test：以 12.5 mock token/s 输出原生 Responses SSE 思考与 Markdown／代码分片 |
 | `/mcp [list\|enable <name>\|disable <name>\|reconnect <name>\|reload\|help]` | 查看和管理 MCP 服务，无需重启 |
-| `/permissions [always-ask\|accept-edits\|yolo\|rules\|revoke <index\|tool>]` | 查看或切换本次进程的权限预设，或管理 `~/.pp/agent/permission.toml` 中保存的全局授权 |
+| `/permissions [workspace-write\|auto_review\|danger-full-access\|yolo\|read-only\|rules\|allow\|prompt\|deny\|revoke]` | 查看或切换本次进程的权限预设，或管理 Codex 风格 `~/.pp/agent/permission.toml` 中保存的全局授权 |
 | `/sandbox [auto\|workspace-write\|read-only\|off]` | 查看当前沙盒状态，或在本次会话内临时覆盖沙盒模式 |
 | `/compact`、`/new` | 压缩上下文，或开始新会话 |
 | `/context` | 在独立 TUI 面板中以 25×16 占比网格与 10 项分类（`System Prompt`、`Instruction Files`、`Skills`、`Built-in Tools`、`Custom Tools`、`User / Developer Messages`、`Assistant Messages`、`Assistant Thinking`、`Tool Calls`、`Tool Output`）加 `Auto-Compact Buffer`／`Free Space` 展示上下文占用，支持原地展开子项查看详情（别名 `/ctx`）；空会话及主任务运行中均可打开，按 `r` 刷新 |

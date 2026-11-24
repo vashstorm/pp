@@ -43,12 +43,6 @@ impl Default for RgSettings {
 pub struct ToolsSettings {
     #[serde(flatten)]
     pub output: crate::config::OutputSettings,
-    #[serde(
-        rename = "permissionMode",
-        deserialize_with = "deserialize_permission_mode",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub permission_mode: Option<crate::config::PermissionMode>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub permission: std::collections::BTreeMap<String, crate::config::PermissionPolicy>,
     #[serde(
@@ -56,15 +50,6 @@ pub struct ToolsSettings {
         skip_serializing_if = "crate::config::SandboxSettings::is_default"
     )]
     pub sandbox: crate::config::SandboxSettings,
-}
-
-fn deserialize_permission_mode<'de, D>(
-    deserializer: D,
-) -> Result<Option<crate::config::PermissionMode>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    crate::config::PermissionMode::deserialize(deserializer).map(Some)
 }
 
 impl ToolLimits {
