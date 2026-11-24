@@ -379,31 +379,24 @@ impl Panel {
                 }
             }
             View::Effort => {
+                let inset = if self.body.width >= 16 { 2 } else { 0 };
                 frame.render_widget(
-                    "Choose an effort for this role (only levels supported by the model)",
-                    Rect::new(self.body.x, subheader_y, self.body.width, 1),
+                    Line::styled(
+                        "Choose an effort for this role",
+                        Style::default().fg(text_fg()).add_modifier(Modifier::BOLD),
+                    ),
+                    Rect::new(self.body.x + inset, subheader_y, self.body.width - inset, 1),
                 );
-                let chips = self
-                    .efforts()
-                    .iter()
-                    .enumerate()
-                    .map(|(index, level)| {
-                        Span::styled(
-                            format!(" {} ", level.as_str()),
-                            if index == self.selected {
-                                Style::default()
-                                    .fg(bg())
-                                    .bg(gold())
-                                    .add_modifier(Modifier::BOLD)
-                            } else {
-                                Style::default().fg(text_fg())
-                            },
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                frame.render_widget(
-                    Paragraph::new(Line::from(chips)).wrap(ratatui::widgets::Wrap { trim: false }),
-                    content,
+                draw_efforts(
+                    frame,
+                    Rect::new(
+                        content.x + inset,
+                        content.y,
+                        content.width - 2 * inset,
+                        content.height,
+                    ),
+                    &self.efforts(),
+                    self.selected,
                 );
             }
         }
@@ -414,7 +407,11 @@ impl Panel {
         } else if self.view == View::Models {
             "↑/↓ rows · Enter pick · Ctrl + F favorite · type to search · Esc back"
         } else if self.view == View::Effort {
-            "←/→ or Tab to switch effort · Enter pick · Esc back"
+            if inner.width >= 51 {
+                "←/→ or Tab to switch effort · Enter pick · Esc back"
+            } else {
+                "←/→ Move · Enter Save · Esc Back"
+            }
         } else {
             "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · Space toggle · Delete remove · Backspace clear override · Esc back"
         };
@@ -423,6 +420,87 @@ impl Panel {
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
     }
+}
+
+fn draw_efforts(frame: &mut Frame, area: Rect, levels: &[ThinkLevel], selected: usize) {
+    if area.is_empty() {
+        return;
+    }
+    if levels.is_empty() {
+        frame.render_widget(
+            Line::styled("No effort levels available", Style::default().fg(muted())),
+            area,
+        );
+        return;
+    }
+
+    let theme = super::super::themes::palette();
+    let mut options = Vec::with_capacity(levels.len());
+    let (mut column, mut row) = (0, 0);
+    for (index, &level) in levels.iter().enumerate() {
+        let focused = index == selected;
+        let style = Style::default().fg(theme.text).bg(if focused {
+            theme.panel_alt_bg
+        } else {
+            theme.panel_bg
+        });
+        let accent = style.fg(effort_accent(level, theme.panel_bg));
+        let (opening, closing) = if focused { ("[ ", " ]") } else { ("  ", "  ") };
+        let line = Line::from(vec![
+            Span::styled(opening, accent),
+            Span::styled(palette::think_icon(level), accent),
+            Span::styled(" ", style),
+            Span::styled(level.as_str(), style),
+            Span::styled(closing, accent),
+        ]);
+        let line = if line.width() > usize::from(area.width) {
+            // 极窄时保留完整档位名称，选中态仍使用主题底色。
+            Line::styled(level.as_str(), style)
+        } else {
+            line
+        };
+        let width = (line.width() as u16).min(area.width);
+        if column > area.width - width {
+            column = 0;
+            row += 1;
+        }
+        options.push((column, row, width, line));
+        column += width + 1;
+    }
+
+    let top_gap = u16::from(area.height > row + 1);
+    let visible_rows = area.height - top_gap;
+    let focused_row = options.get(selected).map_or(0, |option| option.1);
+    let first_row = focused_row.saturating_sub(visible_rows - 1);
+    for (column, row, width, line) in options {
+        if !(first_row..first_row + visible_rows).contains(&row) {
+            continue;
+        }
+        frame.render_widget(
+            line,
+            Rect::new(
+                area.x + column,
+                area.y + top_gap + (row - first_row),
+                width,
+                1,
+            ),
+        );
+    }
+}
+
+fn effort_accent(level: ThinkLevel, background: Color) -> Color {
+    let (on_dark, on_light) = match level {
+        ThinkLevel::None => ((174, 184, 204), (71, 85, 105)),
+        ThinkLevel::Low => ((139, 211, 172), (37, 104, 73)),
+        ThinkLevel::Medium => ((135, 192, 250), (39, 90, 148)),
+        ThinkLevel::High => ((246, 191, 102), (128, 82, 11)),
+        ThinkLevel::Xhigh => ((201, 166, 247), (105, 63, 145)),
+        ThinkLevel::Max => ((246, 146, 153), (158, 55, 74)),
+    };
+    let light = matches!(background, Color::Rgb(r, g, b)
+        if 299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b) >= 128_000);
+    let (red, green, blue) = if light { on_light } else { on_dark };
+    Color::Rgb(red, green, blue)
 }
 
 fn model_spans(reference: &str, color: Color) -> Vec<Span<'static>> {

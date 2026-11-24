@@ -527,6 +527,65 @@ mod tests {
     }
 
     #[test]
+    fn effort_options_keep_distinct_icons_and_bracket_the_visible_focus() {
+        let mut panel = panel();
+        key(&mut panel, KeyCode::Tab);
+        key(&mut panel, KeyCode::Enter);
+        key(&mut panel, KeyCode::Enter);
+        let selected_bg = super::super::themes::palette().panel_alt_bg;
+
+        for (width, expected_rows) in [(110, 1), (42, 2)] {
+            let buffer = draw(&mut panel, width, 20);
+            let mut colors = Vec::new();
+            let mut rows = std::collections::BTreeSet::new();
+            for level in ThinkLevel::ALL {
+                let label = format!("{} {} ", palette::think_icon(level), level.as_str());
+                let (row, cells, start) = buffer
+                    .content
+                    .chunks(usize::from(width))
+                    .enumerate()
+                    .find_map(|(row, cells)| {
+                        let text = cells.iter().map(|cell| cell.symbol()).collect::<String>();
+                        let start = text.find(&label)?;
+                        Some((row, cells, text[..start].chars().count()))
+                    })
+                    .unwrap_or_else(|| panic!("{width} 列下应完整显示 {level:?}"));
+                let focused = level == ThinkLevel::High;
+                assert_eq!(cells[start - 2].symbol(), if focused { "[" } else { " " });
+                assert_eq!(
+                    cells[start + label.chars().count()].symbol(),
+                    if focused { "]" } else { " " }
+                );
+                assert_eq!(cells[start + 2].fg, text_fg());
+                assert_eq!(
+                    cells[start + 2].bg,
+                    if focused { selected_bg } else { bg() }
+                );
+                let color = cells[start].fg;
+                assert_ne!(color, text_fg());
+                assert!(!colors.contains(&color), "各档位图标颜色应可区分");
+                colors.push(color);
+                rows.insert(row);
+            }
+            assert_eq!(rows.len(), expected_rows);
+        }
+
+        key(&mut panel, KeyCode::Right);
+        key(&mut panel, KeyCode::Right);
+        let buffer = draw(&mut panel, 18, 7);
+        let focused = buffer
+            .content
+            .iter()
+            .filter(|cell| cell.bg == selected_bg)
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert_eq!(
+            focused,
+            format!("[ {} max ]", palette::think_icon(ThinkLevel::Max))
+        );
+    }
+
+    #[test]
     fn roles_cancel_and_clear_and_busy_never_leak_partial_configuration() {
         let mut panel = panel();
         key(&mut panel, KeyCode::Tab);

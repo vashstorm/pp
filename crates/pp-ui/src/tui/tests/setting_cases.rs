@@ -32,9 +32,9 @@ fn flush_settings(app: &mut App) {
     );
 }
 
-/// Roles 页 Effort 选择器当前高亮的档位名（选中 chip 使用强调色底色）。
+/// Roles 页 Effort 选择器当前高亮的档位名。
 fn highlighted_effort(app: &mut App) -> String {
-    let accent = crate::tui::themes::palette().accent;
+    let selected_bg = crate::tui::themes::palette().panel_alt_bg;
     let buffer = draw_buffer(app, 110, 30);
     let area = app
         .roles_panel
@@ -45,12 +45,19 @@ fn highlighted_effort(app: &mut App) -> String {
         let mut text = String::new();
         for x in area.left()..area.right() {
             let cell = &buffer[(x, y)];
-            if cell.bg == accent {
+            if cell.bg == selected_bg {
                 text.push_str(cell.symbol());
             }
         }
-        if !text.trim().is_empty() {
-            return text.trim().to_owned();
+        if let Some(option) = text
+            .strip_prefix('[')
+            .and_then(|text| text.strip_suffix(']'))
+        {
+            return option
+                .split_whitespace()
+                .last()
+                .unwrap_or_default()
+                .to_owned();
         }
     }
     String::new()
