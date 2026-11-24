@@ -126,7 +126,7 @@ portable-pty = { workspace = true }
 vt100 = { workspace = true }
 
 [profile.dev]
-opt-level = 0
+opt-level = 1
 incremental = false
 strip = true
 debug = 1
