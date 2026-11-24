@@ -155,24 +155,8 @@ impl LeafCommand {
         if matches!(program, "sudo" | "su" | "doas" | "runuser") {
             return true;
         }
-        let literals: Vec<&str> = self
-            .tokens
-            .iter()
-            .skip(1)
-            .filter_map(ArgToken::as_literal)
-            .collect();
         match program {
-            "git" => match extract_hazard_subcommand_for("git", &self.tokens[1..]).as_deref() {
-                Some("push") => true,
-                Some("reset") => literals.iter().any(|a| matches!(*a, "--hard" | "--merge")),
-                Some("clean") => literals.iter().any(|a| {
-                    *a == "--force"
-                        || (a.starts_with('-') && !a.starts_with("--") && a[1..].contains('f'))
-                }),
-                Some("branch") => literals.contains(&"-D"),
-                Some("worktree") => literals.contains(&"remove"),
-                _ => false,
-            },
+            "git" => !self.is_safe_read_only(),
             "cargo" | "npm" | "pnpm" | "yarn" | "bun" => {
                 extract_hazard_subcommand_for(program, &self.tokens[1..]).as_deref()
                     == Some("publish")
@@ -191,6 +175,9 @@ impl LeafCommand {
         };
         if SAFE_READ_ONLY_COMMANDS.contains(&program) {
             return true;
+        }
+        if program == "git" {
+            return git_is_read_only(&self.tokens[1..]);
         }
         let has_dynamic_arg = self
             .tokens
@@ -238,61 +225,6 @@ impl LeafCommand {
                         )
                     })
             }
-            "git" => match extract_subcommand_for("git", &self.tokens[1..]).as_deref() {
-                Some(sub) if GIT_READ_ONLY_SUBCOMMANDS.contains(&sub) => true,
-                Some("branch") if !has_dynamic_arg => {
-                    let has_mutating_flag = literals.iter().any(|a| {
-                        matches!(
-                            *a,
-                            "-d" | "-D"
-                                | "-m"
-                                | "-M"
-                                | "-c"
-                                | "-C"
-                                | "--delete"
-                                | "--move"
-                                | "--copy"
-                                | "--edit-description"
-                                | "--set-upstream-to"
-                                | "--unset-upstream"
-                        )
-                    });
-                    !has_mutating_flag
-                        && (literals.iter().any(|a| {
-                            matches!(
-                                *a,
-                                "--list"
-                                    | "-l"
-                                    | "-a"
-                                    | "--all"
-                                    | "-r"
-                                    | "--remotes"
-                                    | "--show-current"
-                            )
-                        }) || literals
-                            .iter()
-                            .filter(|a| **a != "branch")
-                            .all(|a| a.starts_with('-')))
-                }
-                Some("tag") if !has_dynamic_arg => {
-                    literals
-                        .iter()
-                        .any(|a| matches!(*a, "-l" | "--list" | "-v" | "--verify"))
-                        || literals
-                            .iter()
-                            .filter(|a| **a != "tag")
-                            .all(|a| a.starts_with('-'))
-                }
-                Some("remote") if !has_dynamic_arg => {
-                    literals.iter().filter(|a| **a != "remote").all(|a| {
-                        matches!(*a, "-v" | "--verbose" | "show" | "get-url") || a.starts_with('-')
-                    })
-                }
-                Some("config") if !has_dynamic_arg => literals
-                    .iter()
-                    .any(|a| matches!(*a, "--get" | "--get-all" | "--list" | "-l")),
-                _ => false,
-            },
             "cargo" => {
                 matches!(
                     extract_subcommand_for("cargo", &self.tokens[1..]).as_deref(),
@@ -309,6 +241,78 @@ impl LeafCommand {
             _ => false,
         }
     }
+}
+
+/// Git 只免审能明确识别的查询，配置覆盖、动态参数和未知子命令都需确认。
+fn git_is_read_only(args: &[ArgToken]) -> bool {
+    if args.is_empty()
+        || matches!(args, [ArgToken::Literal(flag)] if matches!(flag.as_str(), "--version" | "-v" | "--help" | "-h"))
+    {
+        return true;
+    }
+    let Some((subcommand, args_start)) = extract_safe_subcommand_index("git", args) else {
+        return false;
+    };
+    let Some(args) = args
+        .iter()
+        .map(ArgToken::as_literal)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    let args = &args[args_start..];
+    match subcommand.as_str() {
+        "branch" => {
+            let listing_flags = args
+                .iter()
+                .copied()
+                .take_while(|flag| {
+                    matches!(
+                        *flag,
+                        "-a" | "--all" | "-r" | "--remotes" | "-v" | "-vv" | "--verbose"
+                    )
+                })
+                .count();
+            let args = &args[listing_flags..];
+            // 旧版 Git 的 `branch -l <name>` 会创建分支及 reflog。
+            matches!(args, [] | ["--show-current"])
+                || matches!(args, ["--list", patterns @ ..] if git_positional_args(patterns))
+        }
+        "tag" => {
+            args.is_empty()
+                || matches!(args, ["-l" | "--list" | "-v" | "--verify", names @ ..] if git_positional_args(names))
+        }
+        "remote" => {
+            matches!(args, [] | ["-v" | "--verbose" | "show"])
+                || matches!(args, ["get-url", name] if !name.starts_with('-'))
+        }
+        "config" => {
+            let scope_flags = args
+                .iter()
+                .copied()
+                .take_while(|flag| {
+                    matches!(*flag, "--local" | "--global" | "--system" | "--worktree")
+                })
+                .count();
+            matches!(
+                &args[scope_flags..],
+                ["get" | "--get" | "--get-all" | "--get-regexp" | "list" | "-l" | "--list", operands @ ..]
+                    if git_positional_args(operands)
+            )
+        }
+        subcommand if GIT_READ_ONLY_SUBCOMMANDS.contains(&subcommand) => {
+            // diff 和部分历史查询支持把结果写入指定文件，包括可识别的选项缩写。
+            !args.iter().take_while(|arg| **arg != "--").any(|arg| {
+                let flag = arg.split('=').next().unwrap_or(arg);
+                flag.starts_with("--") && "--output".starts_with(flag)
+            })
+        }
+        _ => false,
+    }
+}
+
+fn git_positional_args(args: &[&str]) -> bool {
+    args.iter().all(|arg| !arg.starts_with('-'))
 }
 
 pub(super) fn leaf_critical_reason(leaf: &LeafCommand) -> Option<&'static str> {
