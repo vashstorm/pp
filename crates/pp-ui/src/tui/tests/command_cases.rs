@@ -767,17 +767,25 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
         "{screen}"
     );
     let mut options = screen.lines().skip_while(|row| !row.contains("Allow once"));
-    for label in [
-        "Allow once",
-        "Allow for this session",
-        "Always allow globally",
-        "Deny",
+    let mut description_columns = Vec::new();
+    for (label, description) in [
+        ("Allow once", "this request only"),
+        ("Allow for this session", "until this session ends"),
+        ("Always allow globally", "saved to permission.toml"),
+        ("Deny", "reject this request"),
     ] {
-        assert!(
-            options.next().is_some_and(|row| row.contains(label)),
-            "{screen}"
-        );
+        let row = options.next().unwrap_or_default();
+        assert!(row.contains(label), "{screen}");
+        let start = row.find(description).expect(&screen);
+        description_columns.push(row[..start].chars().count());
     }
+    // 各选项说明列按最长标签对齐。
+    assert!(
+        description_columns
+            .windows(2)
+            .all(|pair| pair[0] == pair[1]),
+        "{screen}"
+    );
     let (separator, hint) = screen
         .lines()
         .zip(screen.lines().skip(1))
@@ -792,6 +800,8 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
     let short = draw(&mut app, 48, 10);
     assert!(short.contains("mcp__remote__echo"), "{short}");
     assert!(!short.contains("workspace sandbox"), "{short}");
+    // 说明列整卡同显同隐，窄卡不出现参差。
+    assert!(!short.contains("this request only"), "{short}");
     app.handle(key(KeyCode::PageDown), &mut dirty);
     let scrolled = draw(&mut app, 48, 10);
     assert!(scrolled.contains("workspace sandbox"), "{scrolled}");

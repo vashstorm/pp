@@ -345,19 +345,20 @@ impl App {
 }
 
 fn permission_prompt(request: PermissionRequest) -> AskRequest {
-    let option = |label: &str| AskOption {
+    // 说明仅供审批卡片展示，回复仍只按标签匹配。
+    let option = |label: &str, description: &str| AskOption {
         label: label.into(),
-        description: None,
+        description: Some(description.into()),
         preview: None,
     };
-    let mut options = vec![option(ONCE)];
+    let mut options = vec![option(ONCE, "this request only")];
     if request.session_grant {
-        options.push(option(SESSION));
+        options.push(option(SESSION, "until this session ends"));
     }
     if request.persistent_grant {
-        options.push(option(PERSIST));
+        options.push(option(PERSIST, "saved to permission.toml"));
     }
-    options.push(option("Deny"));
+    options.push(option("Deny", "reject this request"));
     let args = AskArgs {
         questions: vec![AskQuestion {
             id: "permission".into(),

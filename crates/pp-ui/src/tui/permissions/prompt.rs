@@ -11,7 +11,7 @@ use ratatui::{
     Frame,
     layout::{Position, Rect},
     style::Style,
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Padding},
 };
 
@@ -22,6 +22,10 @@ const MIN_BORDER_WIDTH: u16 = 28;
 const CARD_PADDING: u16 = 1;
 // 两行外框、一行分隔线、一行快捷键。
 const CARD_CHROME: u16 = 4;
+// 选项标签与说明列之间的空白。
+const DESCRIPTION_GAP: usize = 3;
+// 原因文本左侧引用条的最小可读正文宽度，低于此宽度时省略引用条。
+const MIN_QUOTE_TEXT: u16 = 8;
 
 pub(in crate::tui) struct Prompt {
     args: Arc<AskArgs>,
@@ -121,20 +125,39 @@ impl Prompt {
         };
         let mut lines = Vec::new();
         if let Some(tool) = question.header.as_ref().filter(|tool| !tool.is_empty()) {
+            // 工具名以徽章形式突出；超宽时交给通用换行逻辑。
+            let chip = Style::new()
+                .fg(palette.panel_bg)
+                .bg(palette.plan_mode)
+                .bold();
             lines.extend(wrap_block(
-                Line::styled(tool.clone(), Style::new().fg(palette.text).bold()),
+                Line::from(Span::styled(format!(" {} ", display_text(tool)), chip)),
                 width,
                 "",
             ));
         }
+        let quote = if themes::is_ascii() { "| " } else { "▎ " };
+        let quote_width = Span::raw(quote).width() as u16;
+        let (quote, text_width) = if width >= quote_width + MIN_QUOTE_TEXT {
+            (quote, width - quote_width)
+        } else {
+            ("", width)
+        };
         let reason = Style::new().fg(palette.activity);
-        lines.extend(
-            question
-                .question
-                .lines()
-                .flat_map(|line| wrap_block(Line::styled(line.to_owned(), reason), width, "")),
-        );
+        let quote_style = Style::new().fg(palette.plan_mode);
+        for line in question.question.lines() {
+            for row in wrap_block(Line::styled(line.to_owned(), reason), text_width, "") {
+                let mut spans = vec![Span::styled(quote, quote_style)];
+                spans.extend(row.spans);
+                lines.push(Line::from(spans));
+            }
+        }
         lines
+    }
+
+    /// 详情与选项之间的留白只在详情能完整显示时保留，紧凑高度优先给内容。
+    fn gap(details: usize, budget: usize) -> usize {
+        usize::from(details > 0 && details < budget)
     }
 
     pub(in crate::tui) fn height(&self, available: Rect, screen_height: u16) -> u16 {
@@ -145,7 +168,8 @@ impl Prompt {
         let width = available.width - u16::from(bordered) * (2 + 2 * CARD_PADDING);
         let details = self.detail_lines(width).len();
         let chrome = if bordered { CARD_CHROME } else { 2 };
-        let needed = details + self.options().len().max(1) + usize::from(chrome);
+        let gap = usize::from(details > 0);
+        let needed = details + gap + self.options().len().max(1) + usize::from(chrome);
         let cap = (u32::from(screen_height) * 7 / 10).max(1) as u16;
         needed.min(usize::from(cap.min(available.height))) as u16
     }
@@ -158,6 +182,11 @@ impl Prompt {
         }
         let palette = themes::palette();
         let title = Style::new().fg(palette.plan_mode).bold();
+        let heading = if themes::is_ascii() {
+            format!("! {TITLE}")
+        } else {
+            format!("\u{ed25} {TITLE}")
+        };
         let background = Style::new().bg(palette.panel_bg);
         let count = self.options().len();
         let bordered = area.width >= MIN_BORDER_WIDTH
@@ -168,10 +197,10 @@ impl Prompt {
             let block = Block::new()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::new().fg(palette.panel_border))
+                .border_style(Style::new().fg(palette.plan_mode))
                 .padding(Padding::horizontal(CARD_PADDING))
                 .style(background)
-                .title(Line::styled(format!(" {TITLE} "), title));
+                .title(Line::styled(format!(" {heading} "), title));
             let inner = block.inner(area);
             frame.render_widget(block, area);
             (inner, 2)
@@ -179,7 +208,7 @@ impl Prompt {
             let header = u16::from(area.height > 1);
             frame.render_widget(Block::new().style(background), area);
             if header > 0 {
-                frame.render_widget(Line::styled(TITLE, title), Rect { height: 1, ..area });
+                frame.render_widget(Line::styled(heading, title), Rect { height: 1, ..area });
             }
             let inner = Rect::new(area.x, area.y + header, area.width, area.height - header);
             let footer = u16::from(usize::from(inner.height) >= count.max(1) + 2);
@@ -189,6 +218,7 @@ impl Prompt {
         let details = self.detail_lines(inner.width);
         let body = usize::from(inner.height - footer);
         let detail_budget = body.saturating_sub(count.max(1));
+        let gap = Self::gap(details.len(), detail_budget);
         let detail_rows = details.len().min(detail_budget);
         self.details_area = Rect {
             height: detail_rows as u16,
@@ -212,9 +242,26 @@ impl Prompt {
             );
         }
 
-        let visible = (body - detail_rows).min(count);
+        let visible = (body - detail_rows - gap).min(count);
         let first = (self.focused + 1).saturating_sub(visible);
-        for (y, (index, option)) in (self.details_area.bottom()..)
+        let label_width = self
+            .options()
+            .iter()
+            .map(|option| Span::raw(display_text(&option.label)).width())
+            .max()
+            .unwrap_or(0);
+        // 说明列整卡同显同隐：任一说明放不下就全部省略，避免参差和截成半句。
+        let description_width = self
+            .options()
+            .iter()
+            .filter_map(|option| option.description.as_deref())
+            .map(|text| Span::raw(display_text(text)).width())
+            .max()
+            .unwrap_or(0);
+        let label_width = (description_width > 0
+            && 2 + label_width + DESCRIPTION_GAP + description_width <= usize::from(inner.width))
+        .then_some(label_width);
+        for (y, (index, option)) in (self.details_area.bottom() + gap as u16..)
             .zip(self.options().iter().enumerate().skip(first).take(visible))
         {
             self.draw_option(
@@ -222,6 +269,7 @@ impl Prompt {
                 Rect::new(inner.x, y, inner.width, 1),
                 option,
                 index == self.focused,
+                label_width,
             );
         }
         if footer > 0 {
@@ -230,30 +278,67 @@ impl Prompt {
                 frame.render_widget(
                     Line::styled(
                         "─".repeat(usize::from(inner.width)),
-                        Style::new().fg(palette.panel_border),
+                        Style::new().fg(palette.dim),
                     ),
                     Rect::new(inner.x, y - 1, inner.width, 1),
                 );
             }
-            let hint = self.hint(inner.width);
             frame.render_widget(
-                Line::styled(hint, Style::new().fg(palette.muted)),
+                self.hint(inner.width),
                 Rect::new(inner.x, y, inner.width, 1),
             );
         }
     }
 
-    fn hint(&self, width: u16) -> &'static str {
-        match (width, self.details_limit > 0) {
-            (61.., true) => "↑/↓ choose   Enter confirm   Esc cancel   PgUp/PgDn details",
-            (36.., true) => "↑/↓   Enter   Esc   PgUp/PgDn",
-            (_, true) => "Enter · Esc · PgUp/PgDn",
-            (40.., false) => "↑/↓ choose   Enter confirm   Esc cancel",
-            _ => "↑/↓ · Enter · Esc",
+    fn hint(&self, width: u16) -> Line<'static> {
+        const WIDE: &str = "   ";
+        const NARROW: &str = " · ";
+        let (keys, separator): (&[(&str, &str)], &str) = match (width, self.details_limit > 0) {
+            (61.., true) => (
+                &[
+                    ("↑/↓", "choose"),
+                    ("Enter", "confirm"),
+                    ("Esc", "cancel"),
+                    ("PgUp/PgDn", "details"),
+                ],
+                WIDE,
+            ),
+            (36.., true) => (
+                &[("↑/↓", ""), ("Enter", ""), ("Esc", ""), ("PgUp/PgDn", "")],
+                WIDE,
+            ),
+            (_, true) => (&[("Enter", ""), ("Esc", ""), ("PgUp/PgDn", "")], NARROW),
+            (40.., false) => (
+                &[("↑/↓", "choose"), ("Enter", "confirm"), ("Esc", "cancel")],
+                WIDE,
+            ),
+            _ => (&[("↑/↓", ""), ("Enter", ""), ("Esc", "")], NARROW),
+        };
+        let palette = themes::palette();
+        let key_style = Style::new().fg(palette.accent).bold();
+        let label_style = Style::new().fg(palette.muted);
+        let separator_style = Style::new().fg(palette.dim);
+        let mut spans = Vec::new();
+        for (index, (key, label)) in keys.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(separator, separator_style));
+            }
+            spans.push(Span::styled(*key, key_style));
+            if !label.is_empty() {
+                spans.push(Span::styled(format!(" {label}"), label_style));
+            }
         }
+        Line::from(spans)
     }
 
-    fn draw_option(&self, frame: &mut Frame, row: Rect, option: &AskOption, focused: bool) {
+    fn draw_option(
+        &self,
+        frame: &mut Frame,
+        row: Rect,
+        option: &AskOption,
+        focused: bool,
+        label_width: Option<usize>,
+    ) {
         let palette = themes::palette();
         let color = if option.label == "Deny" {
             palette.removed
@@ -262,16 +347,42 @@ impl Prompt {
         } else {
             palette.text
         };
-        let style = Style::new().fg(color);
-        let (prefix, style) = if focused {
-            (if themes::is_ascii() { "> " } else { "❯ " }, style.bold())
-        } else {
-            ("  ", style)
+        let mut style = Style::new().fg(color);
+        if focused {
+            style = style.bold();
+            frame.render_widget(
+                Block::new().style(Style::new().bg(palette.panel_alt_bg)),
+                row,
+            );
+        }
+        let marker = match (focused, themes::is_ascii()) {
+            (true, true) => "> ",
+            (true, false) => "❯ ",
+            (false, _) => "  ",
         };
-        let prefix = if row.width > 2 { prefix } else { "" };
-        frame.render_widget(
-            Line::styled(format!("{prefix}{}", display_text(&option.label)), style),
-            row,
-        );
+        let marker = if row.width > 2 { marker } else { "" };
+        let label = display_text(&option.label);
+        let mut spans = vec![
+            Span::styled(marker, Style::new().fg(palette.accent).bold()),
+            Span::styled(label.to_string(), style),
+        ];
+        // 说明列按最长标签对齐；`None` 表示本卡宽度不足以显示说明。
+        if let (Some(label_width), Some(description)) = (
+            label_width,
+            option
+                .description
+                .as_deref()
+                .filter(|text| !text.is_empty()),
+        ) {
+            let label_used = Span::raw(label.as_ref()).width();
+            spans.push(Span::raw(
+                " ".repeat(label_width.saturating_sub(label_used) + DESCRIPTION_GAP),
+            ));
+            spans.push(Span::styled(
+                display_text(description).into_owned(),
+                Style::new().fg(palette.muted),
+            ));
+        }
+        frame.render_widget(Line::from(spans), row);
     }
 }
