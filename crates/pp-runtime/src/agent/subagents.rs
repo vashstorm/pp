@@ -101,6 +101,7 @@ impl Agent {
         let stats_db = self.journal.stats_database().to_owned();
         // 配置在进程内冻结：子 Agent 复用父级编译结果，不重读 settings。
         let hooks = self.hooks.clone();
+        let parent_allowed_tools = self.tools.allowed_tools.clone();
 
         let plan = self
             .workflow
@@ -180,16 +181,12 @@ impl Agent {
                 ));
             }
             // 恢复旧记录时也以父级当前权限为准，子 Agent 默认的 Execute 不扩大权限。
-            let readonly = plan_mode
+            let mut readonly = plan_mode
                 || record.spec.readonly
                 || record
                     .spec
                     .model_role
                     .is_some_and(|role| crate::subagent::catalog::builtin(role).readonly);
-            binding.readonly = readonly;
-            tools.set_lsp_readonly(readonly);
-            tools.mcp_readonly = readonly;
-            tools.mcp_shared = true;
             let mut allowed = record.spec.tools.clone();
             allowed.retain(|name| {
                 name != "task"
@@ -198,7 +195,29 @@ impl Agent {
                             mcp.is_read_only(name)
                         }))
             });
-            tools.allowed_tools = Some(pp_tools::AllowedTools::exact(allowed));
+            let allowed_tools = if let Some(parent) = &parent_allowed_tools {
+                let restricted = parent.restrict_for_child(allowed.iter().cloned());
+                if !readonly
+                    && allowed
+                        .iter()
+                        .filter(|name| restricted.allows(name))
+                        .all(|name| {
+                            crate::subagent::is_read_only_child_tool(name, |name| {
+                                mcp.is_read_only(name)
+                            })
+                        })
+                {
+                    readonly = true;
+                }
+                restricted
+            } else {
+                pp_tools::AllowedTools::exact(allowed)
+            };
+            binding.readonly = readonly;
+            tools.set_lsp_readonly(readonly);
+            tools.mcp_readonly = readonly;
+            tools.mcp_shared = true;
+            tools.allowed_tools = Some(allowed_tools);
             tools.yield_schema = record.spec.output_schema.clone();
             tools.subagent = Some(Arc::new(binding.clone()));
             let interaction_binding = binding.clone();
@@ -410,6 +429,12 @@ impl Agent {
 
     pub fn subagents(&self) -> Option<Binding> {
         self.subagent.clone()
+    }
+    pub fn shutdown_subagents(&self) -> Result<()> {
+        if let Some(binding) = self.subagent.as_ref().filter(|b| b.depth == 0) {
+            binding.shutdown()?;
+        }
+        Ok(())
     }
     pub(super) fn stop_subagents(&mut self) -> Result<()> {
         if let Some(binding) = self.subagent.as_ref().filter(|b| b.depth == 0) {

@@ -325,16 +325,18 @@ impl<'a> Planner<'a> {
     }
 
     fn plan_document_changes(&mut self, changes: &[Value]) -> Result<()> {
-        let mut pending: BTreeMap<String, Vec<TextEdit>> = BTreeMap::new();
+        let mut pending: BTreeMap<PathBuf, (Resolved, Vec<TextEdit>)> = BTreeMap::new();
         for change in changes {
             if change.get("textDocument").is_some() {
                 let document: TextDocumentEdit = serde_json::from_value(change.clone())
                     .context("invalid textDocument edit in workspace edit")?;
                 self.check_version(&document)?;
                 if !document.edits.is_empty() {
+                    let resolved = self.resolve(&document.text_document.uri)?;
                     pending
-                        .entry(document.text_document.uri.clone())
-                        .or_default()
+                        .entry(resolved.path.clone())
+                        .or_insert_with(|| (resolved, Vec::new()))
+                        .1
                         .extend(document.edits.iter().cloned());
                 }
                 continue;
@@ -366,21 +368,20 @@ impl<'a> Planner<'a> {
                 other => bail!("unsupported workspace edit documentChanges kind: {other}"),
             }
         }
-        for uri in pending.keys().cloned().collect::<Vec<_>>() {
-            self.flush_uri(&mut pending, &uri)?;
+        for path in pending.keys().cloned().collect::<Vec<_>>() {
+            self.flush_path(&mut pending, &path)?;
         }
         Ok(())
     }
 
-    fn flush_uri(
+    fn flush_path(
         &mut self,
-        pending: &mut BTreeMap<String, Vec<TextEdit>>,
-        uri: &str,
+        pending: &mut BTreeMap<PathBuf, (Resolved, Vec<TextEdit>)>,
+        path: &Path,
     ) -> Result<()> {
-        if let Some(edits) = pending.remove(uri)
+        if let Some((resolved, edits)) = pending.remove(path)
             && !edits.is_empty()
         {
-            let resolved = self.resolve(uri)?;
             self.plan_text(resolved, &edits)?;
         }
         Ok(())
@@ -388,17 +389,17 @@ impl<'a> Planner<'a> {
 
     fn flush_subtree(
         &mut self,
-        pending: &mut BTreeMap<String, Vec<TextEdit>>,
+        pending: &mut BTreeMap<PathBuf, (Resolved, Vec<TextEdit>)>,
         uri: &str,
     ) -> Result<()> {
-        let prefix = format!("{}/", uri.trim_end_matches('/'));
-        let targets: Vec<String> = pending
+        let root = self.resolve(uri)?.path;
+        let targets: Vec<PathBuf> = pending
             .keys()
-            .filter(|candidate| candidate.as_str() == uri || candidate.starts_with(&prefix))
+            .filter(|candidate| candidate.starts_with(&root))
             .cloned()
             .collect();
         for target in targets {
-            self.flush_uri(pending, &target)?;
+            self.flush_path(pending, &target)?;
         }
         Ok(())
     }

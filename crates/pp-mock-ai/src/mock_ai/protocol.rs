@@ -258,6 +258,14 @@ fn validate_instructions(instructions: &[Instruction]) -> std::result::Result<()
             .position(|instruction| !instruction.auto_continue)
             .map_or(instructions.len(), |offset| start + offset + 1);
         let group = &instructions[start..end];
+        if group[1..]
+            .iter()
+            .any(|instruction| instruction.status.is_some())
+        {
+            return Err(ScriptError::invalid(
+                "mock failure instruction cannot follow auto_continue",
+            ));
+        }
         if !group.iter().any(has_visible_output) {
             return Err(ScriptError::invalid(
                 "each mock response group needs text or a tool call",

@@ -116,9 +116,15 @@ impl App {
                         self.hub_attach(true);
                     }
                 }
-                None => self.set_hub_error(UNAVAILABLE),
+                None => {
+                    self.subagent_status = None;
+                    self.set_hub_error(UNAVAILABLE);
+                }
             },
-            Err(error) => self.set_hub_error(format!("Subagents are unavailable: {error:#}")),
+            Err(error) => {
+                self.subagent_status = None;
+                self.set_hub_error(format!("Subagents are unavailable: {error:#}"));
+            }
         }
     }
 

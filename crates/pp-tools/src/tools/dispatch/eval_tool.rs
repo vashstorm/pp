@@ -35,6 +35,10 @@ impl Tools {
         let cancellation = call.cancellation;
         let outer_call_id = call.call_id;
         let seq = Cell::new(0u64);
+        let mut active_workflow = match call.policy {
+            ToolPolicy::Execute { workflow } => Some(workflow.clone()),
+            _ => None,
+        };
         let mut todo_change: Option<todo::TodoChange> = None;
         let mut nested_hook_context: Vec<String> = Vec::new();
         let mut nested_hook_halt: Option<HookHalt> = None;
@@ -67,6 +71,7 @@ impl Tools {
                         tool_args,
                         &bridge_call_id,
                         policy,
+                        &mut active_workflow,
                         hook,
                         cancellation,
                         &mut bridge_emit,
@@ -106,6 +111,7 @@ impl Tools {
         args: &Value,
         call_id: &str,
         policy: ToolPolicy<'_>,
+        active_workflow: &mut Option<WorkflowState>,
         hook: Option<&dyn ToolHookCall>,
         cancellation: &CancellationToken,
         emit: &mut dyn FnMut(AgentEvent),
@@ -163,11 +169,15 @@ impl Tools {
                 emit(event);
             }
         };
+        let bridge_policy = match (policy, active_workflow.as_ref()) {
+            (ToolPolicy::Execute { .. }, Some(workflow)) => ToolPolicy::Execute { workflow },
+            _ => policy,
+        };
         let mut nested_call = ExecuteCall {
             name,
             arguments: &arguments,
             call_id,
-            policy,
+            policy: bridge_policy,
             cancellation,
             emit: &mut nested_emit,
             web,
@@ -187,8 +197,28 @@ impl Tools {
                     self.reserve_task_results(&value);
                 }
                 images.extend(nested_images);
-                if let Some(todo) = todo {
-                    *todo_change = Some(todo);
+                if let Some(mut change) = todo {
+                    if let Some(wf) = active_workflow.as_mut() {
+                        wf.todos = change.phases.clone();
+                        wf.todo_plan_id = change.plan.as_ref().map(|plan| plan.plan_id.clone());
+                        if let Some(plan_change) = &change.plan
+                            && let Some(content) = &plan_change.content
+                            && let Some(document) = wf.plan.as_mut()
+                            && document.id == plan_change.plan_id
+                        {
+                            document.content = content.clone();
+                            document.revision = plan_change.revision;
+                        }
+                    }
+                    if let Some(previous) = todo_change.as_ref()
+                        && let (Some(prev_plan), Some(next_plan)) =
+                            (previous.plan.as_ref(), change.plan.as_mut())
+                        && prev_plan.plan_id == next_plan.plan_id
+                        && next_plan.content.is_none()
+                    {
+                        next_plan.content = prev_plan.content.clone();
+                    }
+                    *todo_change = Some(change);
                 }
                 (value, false)
             }

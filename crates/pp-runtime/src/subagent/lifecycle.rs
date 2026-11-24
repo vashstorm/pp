@@ -98,10 +98,12 @@ impl Binding {
         }
         let start = Instant::now();
         while lock(&self.inner.state).workers > 0 {
-            ensure!(
-                start.elapsed() < Duration::from_secs(5),
-                "subagent cleanup timed out"
-            );
+            if start.elapsed() >= Duration::from_secs(5) {
+                return Err(pp_core::cancellation::CleanupError(anyhow::anyhow!(
+                    "subagent cleanup timed out"
+                ))
+                .into());
+            }
             self.sleep();
         }
         self.check_lsp_cleanup()?;

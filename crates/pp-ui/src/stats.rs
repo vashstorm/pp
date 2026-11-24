@@ -162,9 +162,14 @@ impl Server {
         if let Some(stderr) = server.child.stderr.take() {
             stderr.take(8192).read_to_string(&mut diagnostic)?;
         }
+        let detail = if diagnostic.trim().is_empty() {
+            line.trim()
+        } else {
+            diagnostic.trim()
+        };
         bail!(
             "could not start pp stats: {}",
-            pp_core::text::display_text(diagnostic.trim())
+            pp_core::text::display_text(detail)
         )
     }
 }

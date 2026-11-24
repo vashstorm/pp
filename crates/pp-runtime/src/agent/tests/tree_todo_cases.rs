@@ -147,8 +147,12 @@ fn plan_todo_committed_checkbox_survives_failed_journal_and_recovers_from_disk()
             true,
         )
         .unwrap();
-        let template = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
-        let recovered = Agent::restore(template.models(), template.tools, restored).unwrap();
+        let mut template = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
+        let tools = std::mem::replace(
+            &mut template.tools,
+            Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap(),
+        );
+        let recovered = Agent::restore(template.models(), tools, restored).unwrap();
         assert!(recovered.replay.iter().any(|record| matches!(
             record,
             persistence::ReplayRecord::Event(AgentEvent::TodoSnapshot { phases, .. })

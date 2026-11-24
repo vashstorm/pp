@@ -27,6 +27,7 @@ pub struct ContextUsage {
 impl ContextUsage {
     pub fn percent(&self) -> Option<u128> {
         self.context_window
+            .filter(|&window| window > 0)
             .map(|window| u128::from(self.estimated_tokens) * 100 / u128::from(window))
     }
 

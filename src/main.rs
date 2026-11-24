@@ -793,6 +793,10 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
             }
         });
         let mut agent = if let Some(error) = migration_error {
+            if restored.is_some() {
+                drop(restored);
+                return Err(error.context("loading configuration for saved session"));
+            }
             Err(error)
         } else {
             match restored {
@@ -940,6 +944,7 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
                     mode: output_mode,
                     resumed: is_resumed,
                     buffer_text: has_schema,
+                    output_file: output_file.as_deref(),
                     guard: Some(&guard),
                 },
                 &mut stdout,
@@ -947,7 +952,9 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
                 &mut error_ctx.result_written,
             );
             let output_write = match (&task, &output_file) {
-                (Ok(text), Some(path)) => cli::write_output_file(path, text),
+                (Ok(text), Some(path)) if !output_mode.is_structured() => {
+                    cli::write_output_file(path, text)
+                }
                 _ => Ok(()),
             };
             let hint = if output_mode.is_structured() {

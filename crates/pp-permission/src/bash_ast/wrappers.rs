@@ -44,7 +44,7 @@ pub(super) fn strip_privilege_prefix<'a>(
                     idx += 1;
                     break;
                 }
-                if !arg.starts_with('-') {
+                if !arg.starts_with('-') && !looks_like_env_assign(arg) {
                     break;
                 }
                 idx += 1;
@@ -55,13 +55,50 @@ pub(super) fn strip_privilege_prefix<'a>(
                     idx += 1;
                 }
             }
-        } else if matches!(base, "su" | "doas" | "runuser") {
+        } else if base == "doas" {
             idx += 1;
             while let Some(ArgToken::Literal(arg)) = tokens.get(idx) {
+                if arg == "--" {
+                    idx += 1;
+                    break;
+                }
                 if !arg.starts_with('-') {
                     break;
                 }
                 idx += 1;
+                if matches!(arg.as_str(), "-u" | "-C") {
+                    idx += 1;
+                }
+            }
+        } else if matches!(base, "su" | "runuser") {
+            let start_idx = idx;
+            idx += 1;
+            let mut saw_command_script = false;
+            while let Some(ArgToken::Literal(arg)) = tokens.get(idx) {
+                if arg == "--" {
+                    idx += 1;
+                    break;
+                }
+                if arg == "-c" || arg == "--command" || arg == "--session-command" {
+                    saw_command_script = true;
+                    break;
+                }
+                if arg.starts_with("--command=") || arg.starts_with("--session-command=") {
+                    saw_command_script = true;
+                    break;
+                }
+                if !arg.starts_with('-') {
+                    break;
+                }
+                idx += 1;
+                if matches!(arg.as_str(), "-u" | "-g" | "-G" | "-s") {
+                    idx += 1;
+                }
+            }
+            if saw_command_script {
+                // 保留 `su`/`runuser` 与 `-c` 供 nested 解析处理，不剥离为无前缀脚本。
+                idx = start_idx;
+                break;
             }
         } else {
             break;
@@ -122,28 +159,49 @@ pub(super) fn strip_transparent_wrappers(
                 j
             }
             "command" => {
-                // `command -v` / `command -V` 是查询，不剥离为外层执行命令。
-                if tokens.get(idx + 1..).is_some_and(|rest| {
-                    rest.iter()
-                        .any(|t| matches!(t, ArgToken::Literal(s) if s == "-v" || s == "-V"))
-                }) {
-                    break;
-                }
+                // 只检查紧跟在 `command` 之后、`--` 或首个操作数之前的选项（含合并短选项如 `-pv`），
+                // 避免被目标命令自身的 `-v` 参数（如 `command rm -rf / -v`）误判为查询。
                 let mut j = idx + 1;
-                while let Some(ArgToken::Literal(arg)) = tokens.get(j) {
-                    if arg == "--" {
-                        j += 1;
-                        break;
+                let mut is_query = false;
+                while j < tokens.len() {
+                    match &tokens[j] {
+                        ArgToken::Literal(arg) => {
+                            if arg == "--" {
+                                j += 1;
+                                break;
+                            }
+                            if !arg.starts_with('-') || arg == "-" {
+                                break;
+                            }
+                            if !arg.starts_with("--") && arg[1..].contains(['v', 'V']) {
+                                is_query = true;
+                                break;
+                            }
+                            if arg == "-p" {
+                                j += 1;
+                                continue;
+                            }
+                            dynamic_exec = true;
+                            break;
+                        }
+                        ArgToken::Dynamic => {
+                            dynamic_exec = true;
+                            break;
+                        }
                     }
-                    if arg == "-p" {
-                        j += 1;
-                        continue;
-                    }
+                }
+                if is_query {
                     break;
                 }
                 j
             }
-            "builtin" | "nohup" => idx + 1,
+            "builtin" | "nohup" => {
+                let mut j = idx + 1;
+                if matches!(tokens.get(j), Some(ArgToken::Literal(s)) if s == "--") {
+                    j += 1;
+                }
+                j
+            }
             "time" => {
                 let mut j = idx + 1;
                 if matches!(tokens.get(j), Some(ArgToken::Literal(s)) if s == "-p") {
@@ -172,7 +230,8 @@ pub(super) fn strip_transparent_wrappers(
                 let mut j = idx + 1;
                 while let Some(ArgToken::Literal(arg)) = tokens.get(j) {
                     if arg == "--" {
-                        j += 1;
+                        // `--` 结束选项后紧跟的第一个参数仍是 duration，一并跳过再取真实命令。
+                        j = (j + 2).min(tokens.len());
                         break;
                     }
                     if matches!(arg.as_str(), "-s" | "--signal" | "-k" | "--kill-after") {
@@ -225,13 +284,23 @@ fn looks_like_env_assign(arg: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-pub(super) fn xargs_command_start(args: &[ArgToken]) -> Option<usize> {
+pub(super) enum XargsTarget {
+    None,
+    Command(usize),
+    Dynamic,
+}
+
+pub(super) fn xargs_command_target(args: &[ArgToken]) -> XargsTarget {
     let mut idx = 0;
     while idx < args.len() {
         match &args[idx] {
             ArgToken::Literal(arg) => {
                 if arg == "--" {
-                    return (idx + 1 < args.len()).then_some(idx + 1);
+                    return match args.get(idx + 1) {
+                        Some(ArgToken::Literal(_)) => XargsTarget::Command(idx + 1),
+                        Some(ArgToken::Dynamic) => XargsTarget::Dynamic,
+                        None => XargsTarget::None,
+                    };
                 }
                 if matches!(
                     arg.as_str(),
@@ -255,13 +324,13 @@ pub(super) fn xargs_command_start(args: &[ArgToken]) -> Option<usize> {
                 } else if arg.starts_with('-') {
                     idx += 1;
                 } else {
-                    return Some(idx);
+                    return XargsTarget::Command(idx);
                 }
             }
-            ArgToken::Dynamic => return None,
+            ArgToken::Dynamic => return XargsTarget::Dynamic,
         }
     }
-    None
+    XargsTarget::None
 }
 
 pub(super) fn tokens_start_with(tokens: &[ArgToken], prefix: &[String]) -> bool {
@@ -343,8 +412,15 @@ fn valued_global_form(arg: &str, valued: &[&str]) -> bool {
 /// 真实子命令，防止 `git -c …=… push` 之类命令因前置配置参数被静默放行。
 /// 动态参数等无法静态证明的形态仍返回 `None`，由调用方按既有语义处理。
 pub(super) fn extract_hazard_subcommand_for(program: &str, args: &[ArgToken]) -> Option<String> {
+    extract_hazard_subcommand_index(program, args).map(|(sub, _)| sub)
+}
+
+pub(super) fn extract_hazard_subcommand_index(
+    program: &str,
+    args: &[ArgToken],
+) -> Option<(String, usize)> {
     let Some(valued) = valued_globals(program) else {
-        return extract_subcommand_index(args, &[]).map(|(sub, _)| sub);
+        return extract_subcommand_index(args, &[]);
     };
     let mut idx = 0;
     while idx < args.len() {
@@ -353,7 +429,9 @@ pub(super) fn extract_hazard_subcommand_for(program: &str, args: &[ArgToken]) ->
                 if arg == "--" {
                     idx += 1;
                     return match args.get(idx) {
-                        Some(ArgToken::Literal(sub)) if !sub.starts_with('-') => Some(sub.clone()),
+                        Some(ArgToken::Literal(sub)) if !sub.starts_with('-') => {
+                            Some((sub.clone(), idx + 1))
+                        }
                         _ => None,
                     };
                 }
@@ -372,7 +450,7 @@ pub(super) fn extract_hazard_subcommand_for(program: &str, args: &[ArgToken]) ->
                 } else if arg.starts_with('-') {
                     idx += 1;
                 } else {
-                    return Some(arg.clone());
+                    return Some((arg.clone(), idx + 1));
                 }
             }
             ArgToken::Dynamic => return None,
@@ -431,7 +509,11 @@ pub(super) fn extract_safe_subcommand_index(
             while idx < args.len() {
                 match &args[idx] {
                     ArgToken::Literal(arg) => {
-                        if arg == "--config" || arg.starts_with("--config=") || arg == "-Z" {
+                        if arg == "--config"
+                            || arg.starts_with("--config=")
+                            || arg == "-Z"
+                            || arg.starts_with("-Z")
+                        {
                             return None;
                         }
                         if arg.starts_with('+') {

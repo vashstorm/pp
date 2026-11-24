@@ -32,13 +32,14 @@ impl OutputMode {
 pub(crate) fn run_json_task(
     agent: &mut agent::Agent,
     prompt: Option<&str>,
-    mode: OutputMode,
-    resumed: bool,
-    guard: Option<&super::non_interactive::RunGuard>,
+    options: &super::execution::NonInteractiveOptions<'_>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
     result_written: &mut bool,
 ) -> Result<String> {
+    let mode = options.mode;
+    let resumed = options.resumed;
+    let guard = options.guard;
     let started = Instant::now();
     // 结构化模式等待启动期 MCP 建连完成但不打印人类进度横幅；配置告警仍输出到 stderr。
     let mut sink = io::sink();
@@ -86,7 +87,7 @@ pub(crate) fn run_json_task(
         Some(prompt) => agent.run(prompt, cancellation, None, &mut emit),
         None => agent.continue_session(cancellation, None, &mut emit),
     };
-    let task_result = match outcome {
+    let mut task_result = match outcome {
         Ok(cancellation::RunOutcome::Cancelled) => Err(match guard {
             Some(guard) => guard.cancellation_error(),
             None => cancellation::Cancelled.into(),
@@ -97,6 +98,12 @@ pub(crate) fn run_json_task(
             None => error,
         }),
     };
+    if task_result.is_ok()
+        && let Some(path) = options.output_file
+        && let Err(error) = super::non_interactive::write_output_file(path, &final_text)
+    {
+        task_result = Err(error);
+    }
 
     let _ = agent.take_session_notice();
     let error_text = task_result

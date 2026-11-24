@@ -651,7 +651,7 @@ export function traceWireCanvas(view, state, layout) {
         if (Math.abs(delta) > 2) drag.moved = true;
         drag.lastX = event.clientX;
         const span = traceViewport(state).u1 - traceViewport(state).u0;
-        tracePanBy(state, (-delta / (width || 1)) * span);
+        tracePanBy(state, (-delta / (state.width || 1)) * span);
       }
       state.hover = null;
       traceTooltipHide();
@@ -767,7 +767,7 @@ export function traceWireCanvas(view, state, layout) {
      */
     const toU = (x, mw) => {
       const [d0, d1] = state.scale?.domain ?? [0, 1];
-      return d0 + (x / Math.max(width, mw, 1)) * (d1 - d0);
+      return d0 + (x / Math.max(mw, 1)) * (d1 - d0);
     };
     minimap.onpointerdown = (event) => {
       const { x, width: mw } = point(event);

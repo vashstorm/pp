@@ -392,3 +392,45 @@ fn eval_bridge_task_reserves_sync_run_results_against_duplicate_wait() {
     tools.commit_wait_results().unwrap();
     assert_eq!(*host.acked.lock().unwrap(), vec!["run-1".to_owned()]);
 }
+
+#[test]
+fn eval_multiple_todo_calls_propagate_evolving_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
+    tools.configure_eval(&EvalSettings {
+        enabled: true,
+        ..Default::default()
+    });
+    if !tools.eval_available() {
+        return;
+    }
+    let workflow = WorkflowState::default();
+    let token = CancellationToken::new();
+    let execution = tools.execute(
+        "eval",
+        &json!({
+            "language": "py",
+            "code": "tool.todo(op='init', items=['alpha', 'beta'])\nd = tool.todo(op='done', task='alpha')\nprint(d['ok'])"
+        })
+        .to_string(),
+        "eval-todo",
+        ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        &token,
+        &mut |_| {},
+    );
+    assert!(execution.stop_error.is_none());
+    let output: Value = serde_json::from_str(&execution.output).unwrap();
+    assert_eq!(output["ok"], true, "{output}");
+    assert_eq!(output["output"], "True\n");
+    let change = execution.todo_change.expect("merged todo change");
+    assert_eq!(
+        change.phases[0].tasks[0].status,
+        pp_core::todo::TodoStatus::Completed
+    );
+    assert_eq!(
+        change.phases[0].tasks[1].status,
+        pp_core::todo::TodoStatus::InProgress
+    );
+}

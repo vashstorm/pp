@@ -1,7 +1,7 @@
 //! 行模式执行单元：正常 Agent 任务与 dev 构建的内嵌 mock 场景。
 
 use anyhow::{Context, Result};
-use std::io::Write;
+use std::{io::Write, path::Path};
 
 use super::banner::cli_lsp_report;
 use super::events::{cli_context_event, cli_output_result, cli_output_text, cli_write};
@@ -13,12 +13,13 @@ use pp_core::events;
 use pp_mock_ai as mock_ai;
 use pp_runtime::agent;
 
-/// 非交互任务运行选项（输出模式、恢复标记、Schema 缓冲与取消守卫）。
+/// 非交互任务运行选项（输出模式、恢复标记、Schema 缓冲、输出文件与取消守卫）。
 #[derive(Default)]
 pub struct NonInteractiveOptions<'a> {
     pub mode: super::json::OutputMode,
     pub resumed: bool,
     pub buffer_text: bool,
+    pub output_file: Option<&'a Path>,
     pub guard: Option<&'a RunGuard>,
 }
 
@@ -67,6 +68,7 @@ pub fn run_cli_task_with_mode(
             mode,
             resumed,
             buffer_text: false,
+            output_file: None,
             guard: None,
         },
         stdout,
@@ -93,16 +95,7 @@ pub fn run_cli_task_with_options(
             stderr,
         ),
         super::json::OutputMode::Json | super::json::OutputMode::StreamJson => {
-            super::json::run_json_task(
-                agent,
-                prompt,
-                options.mode,
-                options.resumed,
-                options.guard,
-                stdout,
-                stderr,
-                result_written,
-            )
+            super::json::run_json_task(agent, prompt, &options, stdout, stderr, result_written)
         }
     }
 }
@@ -628,9 +621,9 @@ fn run_cli_execution(
             }
         }
     }
+    result?;
     if let Some(error) = first_error {
         return Err(error).context("writing task output");
     }
-    result?;
     Ok(final_text)
 }

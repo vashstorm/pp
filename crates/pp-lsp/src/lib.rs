@@ -654,7 +654,10 @@ impl Registry {
                         transport::terminate_slot(&process, Duration::from_millis(500))
                     {
                         self.set_status(name, Some(format!("{cleanup:#}")));
-                        return Err(cleanup.context(error));
+                        return Err(pp_core::cancellation::CleanupError(error.context(format!(
+                            "stopping language server after startup failure: {cleanup:#}"
+                        )))
+                        .into());
                     }
                     self.remove_slot_if(&identity, &process);
                     let message = format!("{error:#}");
@@ -698,11 +701,7 @@ impl Registry {
             }
         }
         self.clear_statuses_for_identity(identity);
-        self.inner
-            .slots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(identity);
+        self.remove_slot_if(identity, &client.transport.process);
         Ok(())
     }
 

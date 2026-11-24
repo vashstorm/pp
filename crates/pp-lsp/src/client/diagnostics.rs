@@ -93,20 +93,19 @@ pub(crate) struct Diagnostics {
 
 impl Diagnostics {
     pub(crate) fn publish(&self, uri: &str, version: Option<u64>, diagnostics: Vec<Diagnostic>) {
+        // 在 `entries` 持锁状态下分配 `seq` 与读取 `epoch`，避免与 `invalidate()` 及并发 `pull()` 乱序覆盖。
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
         let epoch = self.epoch.load(Ordering::SeqCst);
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                uri.to_owned(),
-                Published {
-                    diagnostics,
-                    version,
-                    seq,
-                    epoch,
-                },
-            );
+        entries.insert(
+            uri.to_owned(),
+            Published {
+                diagnostics,
+                version,
+                seq,
+                epoch,
+            },
+        );
     }
 
     /// 标记某个 URI 的缓存过期（刚提交内容变更时调用）。
@@ -252,16 +251,18 @@ impl Signals {
     ///
     /// 在追加之前开始的进度 token 仍算活动：它稍后的 `end` 不会完成这次等待，
     /// 否则旧项目的结束会被误认为新根已加载。
-    pub(super) fn wait_project_load(
+    pub(super) fn wait_project_load_with(
         &self,
         deadline: Instant,
         cancellation: &CancellationToken,
+        is_closed: impl Fn() -> bool,
     ) -> bool {
         loop {
             if !self.busy() && self.pending_loads.load(Ordering::SeqCst) == 0 {
                 return true;
             }
             if self.closed.load(Ordering::SeqCst)
+                || is_closed()
                 || cancellation.is_cancelled()
                 || Instant::now() >= deadline
             {
@@ -546,6 +547,11 @@ impl Client {
                     }
                 }
             }
+            if self.is_closed() {
+                return Ok(DiagnosticOutcome::failed(
+                    "The language server connection closed before diagnostics arrived.".to_owned(),
+                ));
+            }
             if Instant::now() >= deadline {
                 return Ok(DiagnosticOutcome::unverified(
                     "No fresh diagnostics arrived before the deadline.".to_owned(),
@@ -716,12 +722,20 @@ mod tests {
         signals.begin_pending_load();
         progress(json!({"kind": "end"}));
         assert!(
-            !signals.wait_project_load(Instant::now() + Duration::from_millis(80), &token),
+            !signals.wait_project_load_with(
+                Instant::now() + Duration::from_millis(80),
+                &token,
+                || false,
+            ),
             "a progress end that began before the add completed the new root's load"
         );
         progress(json!({"kind": "begin"}));
         progress(json!({"kind": "end"}));
-        assert!(signals.wait_project_load(Instant::now() + Duration::from_secs(1), &token));
+        assert!(signals.wait_project_load_with(
+            Instant::now() + Duration::from_secs(1),
+            &token,
+            || false,
+        ));
     }
 
     #[test]

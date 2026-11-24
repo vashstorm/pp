@@ -189,13 +189,17 @@ describe("models & insights analytics calculations", () => {
 
   test("modelLabels qualifies duplicate model names with provider only when needed", () => {
     const labels = modelLabels([
-      makeModel({ model: "shared", provider: "p1" }),
-      makeModel({ model: "shared", provider: "p2" }),
-      makeModel({ model: "unique", provider: "p1" }),
+      makeModel({ key: "shared::p1", model: "shared", provider: "p1" }),
+      makeModel({ key: "shared::p2", model: "shared", provider: "p2" }),
+      makeModel({ key: "unique::p1", model: "unique", provider: "p1" }),
+      makeModel({ key: "custom-a/same", model: "same", provider: "p3" }),
+      makeModel({ key: "custom-b/same", model: "same", provider: "p3" }),
     ]);
     expect(labels.get("shared::p1")).toBe("shared · p1");
     expect(labels.get("shared::p2")).toBe("shared · p2");
     expect(labels.get("unique::p1")).toBe("unique");
+    expect(labels.get("custom-a/same")).toBe("same · p3 (custom-a/same)");
+    expect(labels.get("custom-b/same")).toBe("same · p3 (custom-b/same)");
   });
 
   test("modelPivot collapses series beyond limit into __other__", () => {

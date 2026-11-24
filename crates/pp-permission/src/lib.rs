@@ -624,7 +624,7 @@ impl Gate {
             if tool_granted {
                 return true;
             }
-            if self.matches_preapproved_bash_leaf(leaf) {
+            if !analysis.has_write_redirection && self.matches_preapproved_bash_leaf(leaf) {
                 return true;
             }
             if matching_bash_rule(leaf, saved_bash_rules)
@@ -811,7 +811,12 @@ fn matching_bash_rule<'a>(
 ) -> Option<&'a BashRule> {
     rules
         .iter()
-        .filter(|rule| leaf.matches_prefix(&rule.prefix))
+        .filter(|rule| match rule.policy {
+            PermissionPolicy::Allow => leaf.matches_prefix(&rule.prefix),
+            PermissionPolicy::Prompt | PermissionPolicy::Deny => {
+                leaf.matches_restrictive_prefix(&rule.prefix)
+            }
+        })
         .max_by_key(|rule| (rule.prefix.len(), policy_severity(rule.policy)))
 }
 

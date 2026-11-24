@@ -232,31 +232,46 @@ impl Drop for Owner {
 
 impl Coordinator {
     pub fn mutate(&self, path: &Path) -> Ticket {
-        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        let epoch = match state.paths.get(path) {
-            Some(previous) => {
-                previous.cancellation.cancel();
-                previous.epoch.wrapping_add(1)
+        let mut removed_handoffs = Vec::new();
+        let ticket = {
+            let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            let epoch = match state.paths.get(path) {
+                Some(previous) => {
+                    previous.cancellation.cancel();
+                    previous.epoch.wrapping_add(1)
+                }
+                None => 1,
+            };
+            let cancellation = CancellationToken::new();
+            if state.closed {
+                cancellation.cancel();
             }
-            None => 1,
-        };
-        let cancellation = CancellationToken::new();
-        if state.closed {
-            cancellation.cancel();
-        }
-        state.paths.insert(
-            path.to_path_buf(),
-            Mutation {
+            state.paths.insert(
+                path.to_path_buf(),
+                Mutation {
+                    epoch,
+                    cancellation: cancellation.clone(),
+                },
+            );
+            let mut remaining = VecDeque::with_capacity(state.jobs.len());
+            while let Some(job) = state.jobs.pop_front() {
+                if job.ticket.path == path {
+                    removed_handoffs.push(job.handoff);
+                } else {
+                    remaining.push_back(job);
+                }
+            }
+            state.jobs = remaining;
+            Ticket {
+                path: path.to_path_buf(),
                 epoch,
-                cancellation: cancellation.clone(),
-            },
-        );
-        state.jobs.retain(|job| job.ticket.path != path);
-        Ticket {
-            path: path.to_path_buf(),
-            epoch,
-            cancellation,
+                cancellation,
+            }
+        };
+        for handoff in removed_handoffs {
+            cancel_handoff(&handoff);
         }
+        ticket
     }
 
     pub(crate) fn current(&self, ticket: &Ticket) -> bool {
@@ -275,14 +290,19 @@ impl Coordinator {
     }
 
     fn shutdown(&self) -> Result<()> {
-        let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.closed = true;
-        for mutation in state.paths.values() {
-            mutation.cancellation.cancel();
+        let dropped = {
+            let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.closed = true;
+            for mutation in state.paths.values() {
+                mutation.cancellation.cancel();
+            }
+            let dropped: Vec<_> = state.jobs.drain(..).map(|job| job.handoff).collect();
+            self.shared.wake.notify_all();
+            dropped
+        };
+        for handoff in dropped {
+            cancel_handoff(&handoff);
         }
-        state.jobs.clear();
-        self.shared.wake.notify_all();
-        drop(state);
         let workers = std::mem::take(&mut *self.workers.lock().unwrap_or_else(|e| e.into_inner()));
         for worker in workers {
             // 最后一个 Registry 句柄也可能由本 worker 放下；不能 join 自己。
@@ -361,6 +381,7 @@ impl Coordinator {
             );
             (state.generation, state.run.clone())
         };
+        let ticket_cancellation = ticket.cancellation.clone();
         {
             let mut state = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed || ticket.cancellation.is_cancelled() {
@@ -396,6 +417,9 @@ impl Coordinator {
                 let mut report = result?;
                 owner.deduplicate(&mut report, registry.settings().diagnostics_deduplicate);
                 return Ok(Some(report));
+            }
+            if ticket_cancellation.is_cancelled() {
+                bail!(Cancelled);
             }
             let now = Instant::now();
             if now >= deadline {
@@ -434,9 +458,11 @@ fn worker(shared: Arc<Shared>) {
             }
         };
         let Some(owner) = job.owner.upgrade() else {
+            cancel_handoff(&job.handoff);
             continue;
         };
         if !job.registry.diagnostics().current(&job.ticket) {
+            cancel_handoff(&job.handoff);
             continue;
         }
         let wait = job.registry.settings().request_timeout.max(12);
@@ -491,10 +517,12 @@ fn worker(shared: Arc<Shared>) {
                     .errors
                     .push_back(error);
             }
+            let _handoff = job.handoff.state.lock().unwrap_or_else(|e| e.into_inner());
             job.handoff.ready.notify_one();
             continue;
         }
         if !job.registry.diagnostics().current(&job.ticket) {
+            cancel_handoff(&job.handoff);
             continue;
         }
         let mut handoff = job.handoff.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -649,6 +677,14 @@ pub fn sync_saved(
         }
     }
     warnings
+}
+
+fn cancel_handoff(handoff: &Handoff) {
+    let mut state = handoff.state.lock().unwrap_or_else(|e| e.into_inner());
+    if !state.background && state.result.is_none() {
+        state.result = Some(Err(Cancelled.into()));
+        handoff.ready.notify_one();
+    }
 }
 
 #[cfg(test)]

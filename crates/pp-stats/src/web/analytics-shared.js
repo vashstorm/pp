@@ -88,6 +88,7 @@ export function fillBuckets(
     } else {
       const d = new Date(t);
       d.setDate(d.getDate() + 1);
+      d.setHours(0, 0, 0, 0);
       t = d.getTime();
     }
   }

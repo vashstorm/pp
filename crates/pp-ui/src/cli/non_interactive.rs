@@ -166,7 +166,17 @@ impl SignalWatcher {
             bail!("signal watcher already active in process");
         }
 
-        let old_int = install_handler(libc::SIGINT, handle_termination_signal)?;
+        let old_int = match install_handler(libc::SIGINT, handle_termination_signal) {
+            Ok(old) => old,
+            Err(error) => {
+                SIGNAL_PIPE_WRITER.store(-1, Ordering::SeqCst);
+                unsafe {
+                    libc::close(read_fd);
+                    libc::close(write_fd);
+                }
+                return Err(error);
+            }
+        };
         let old_term = match install_handler(libc::SIGTERM, handle_termination_signal) {
             Ok(old) => old,
             Err(error) => {

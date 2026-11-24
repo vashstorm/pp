@@ -136,6 +136,9 @@ impl FixedWorkspace {
         let path = Path::new(declared);
         ensure!(
             path.is_absolute()
+                && !path
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
                 && (path.starts_with("/tmp") || path.starts_with("/private/tmp"))
                 && path != Path::new("/tmp")
                 && path != Path::new("/private/tmp"),
@@ -531,6 +534,7 @@ mod tests {
         for path in ["../escape.txt", "/absolute.txt", "", "./relative.txt"] {
             assert!(setup_file(&workspace, path, "not written").is_err());
         }
+        assert!(FixedWorkspace::prepare("/tmp/mock-safe/../escape").is_err());
         assert!(!root.path().join("escape.txt").exists());
         setup_file(&workspace, "nested/note.txt", "kept").unwrap();
         assert_eq!(

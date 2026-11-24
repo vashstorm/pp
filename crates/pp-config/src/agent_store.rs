@@ -85,7 +85,7 @@ impl AgentStore {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
-        ensure!(version <= SCHEMA_VERSION, UNSUPPORTED_VERSION);
+        ensure!((0..=SCHEMA_VERSION).contains(&version), UNSUPPORTED_VERSION);
         if version < SCHEMA_VERSION {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -94,7 +94,7 @@ impl AgentStore {
             let version: i64 = tx
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
-            ensure!(version <= SCHEMA_VERSION, UNSUPPORTED_VERSION);
+            ensure!((0..=SCHEMA_VERSION).contains(&version), UNSUPPORTED_VERSION);
             if version == 0 {
                 tx.execute_batch(SCHEMA)
                     .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
@@ -219,6 +219,10 @@ impl AgentStore {
         tx.execute("DELETE FROM auth_credentials", [])
             .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
         for (provider, credential) in &store.credentials {
+            let expires_at = credential
+                .expires_at
+                .map(|value| i64::try_from(value).map_err(|_| anyhow::anyhow!(UNAVAILABLE)))
+                .transpose()?;
             tx.execute(
                 "INSERT INTO auth_credentials(provider, generation, access_token, refresh_token,
                                               expires_at, account_id, api_endpoint, device_id)
@@ -228,7 +232,7 @@ impl AgentStore {
                     credential.generation,
                     credential.access_token,
                     credential.refresh_token,
-                    credential.expires_at.map(|value| value as i64),
+                    expires_at,
                     credential.account_id,
                     credential.api_endpoint,
                     credential.device_id,

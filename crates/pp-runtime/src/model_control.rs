@@ -277,12 +277,24 @@ impl Service {
                         let _ = reply.send(());
                         continue;
                     }
+                    let think_effort = match &change {
+                        Change::Think(level) => Some(*level),
+                        _ => None,
+                    };
                     let result = apply(&worker_models, &state, change);
                     if let Err(error) = result {
-                        state.report(Report::Failed {
-                            agent: None,
-                            revision: 0,
-                            message: format!("{error:#}"),
+                        let message = format!("{error:#}");
+                        state.report(match think_effort {
+                            Some(effort) => Report::ThinkFailed {
+                                revision: 0,
+                                effort,
+                                message,
+                            },
+                            None => Report::Failed {
+                                agent: None,
+                                revision: 0,
+                                message,
+                            },
                         });
                     }
                 }

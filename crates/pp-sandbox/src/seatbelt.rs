@@ -132,6 +132,18 @@ pub(crate) fn compile_profile(
         }
     }
 
+    if !spec.deny_read.is_empty() {
+        for (idx, path) in spec.deny_read.iter().enumerate() {
+            ensure_valid_param_path(path)?;
+            params.push((format!("R{idx}"), path.as_os_str().to_os_string()));
+        }
+        sb.push_str("(deny file-write*\n");
+        for idx in 0..spec.deny_read.len() {
+            let _ = writeln!(sb, "  (subpath (param \"R{idx}\"))");
+        }
+        sb.push_str(")\n");
+    }
+
     if !spec.protect.is_empty() {
         sb.push_str("(deny file-write*\n");
         for (idx, path) in spec.protect.iter().enumerate() {
@@ -145,11 +157,8 @@ pub(crate) fn compile_profile(
 
     if !spec.deny_read.is_empty() {
         sb.push_str("(deny file-read*\n");
-        for (idx, path) in spec.deny_read.iter().enumerate() {
-            ensure_valid_param_path(path)?;
-            let key = format!("R{idx}");
-            let _ = writeln!(sb, "  (subpath (param \"{key}\"))");
-            params.push((key, path.as_os_str().to_os_string()));
+        for idx in 0..spec.deny_read.len() {
+            let _ = writeln!(sb, "  (subpath (param \"R{idx}\"))");
         }
         sb.push_str(")\n");
     }

@@ -161,7 +161,7 @@ impl Prompt {
         let background = Style::new().bg(palette.panel_bg);
         let count = self.options().len();
         let bordered = area.width >= MIN_BORDER_WIDTH
-            && usize::from(area.height) >= count.max(1) + usize::from(CARD_CHROME) + 1;
+            && usize::from(area.height) > count.max(1) + usize::from(CARD_CHROME);
         frame.render_widget(Clear, area);
 
         let (inner, footer) = if bordered {
@@ -214,15 +214,15 @@ impl Prompt {
 
         let visible = (body - detail_rows).min(count);
         let first = (self.focused + 1).saturating_sub(visible);
-        let mut y = self.details_area.bottom();
-        for (index, option) in self.options().iter().enumerate().skip(first).take(visible) {
+        for (y, (index, option)) in (self.details_area.bottom()..)
+            .zip(self.options().iter().enumerate().skip(first).take(visible))
+        {
             self.draw_option(
                 frame,
                 Rect::new(inner.x, y, inner.width, 1),
                 option,
                 index == self.focused,
             );
-            y += 1;
         }
         if footer > 0 {
             let y = inner.bottom() - 1;

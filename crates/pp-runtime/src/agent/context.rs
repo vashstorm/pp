@@ -383,10 +383,8 @@ fn summarize_fallback(
         return Err(summary_error(error));
     };
     let mut session = make_session();
-    let mut alternate = OpenAiClient::new(&catalog.resolve(client.model_reference())?)?;
-    client.copy_stats_context(&mut alternate);
-    let window = super::fallback::switch_scratch_model(
-        &mut alternate,
+    let (mut alternate, window) = super::fallback::create_scratch_model(
+        client,
         &mut session,
         catalog,
         target,

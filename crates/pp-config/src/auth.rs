@@ -321,8 +321,15 @@ impl StoreLock {
         domain: LockDomain,
     ) -> Result<Self> {
         let parent = path.parent().context(domain.directory_error)?;
-        fs::create_dir_all(parent)
-            .map_err(|_| anyhow::anyhow!("failed to create {} directory", domain.label))?;
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        if parent != Path::new(".") {
+            fs::create_dir_all(parent)
+                .map_err(|_| anyhow::anyhow!("failed to create {} directory", domain.label))?;
+        }
         let file = OpenOptions::new()
             .read(true)
             .write(true)

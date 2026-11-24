@@ -93,14 +93,14 @@ pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
     })();
     // 大库迁移提交后立即回收空间；`VACUUM` 仍在放宽后的锁等待内执行。
     let outcome = match result {
-        Ok(true) => {
+        Ok(true) => (|| -> Result<()> {
             let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
             let page_size: i64 = conn.query_row("PRAGMA page_size", [], |row| row.get(0))?;
             if page_count.saturating_mul(page_size) > 64 * 1024 * 1024 {
                 conn.execute_batch("VACUUM;")?;
             }
             Ok(())
-        }
+        })(),
         Ok(false) => Ok(()),
         Err(error) => Err(error),
     };

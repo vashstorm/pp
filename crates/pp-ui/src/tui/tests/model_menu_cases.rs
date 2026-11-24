@@ -1540,6 +1540,7 @@ fn statusline_never_marks_the_model_source_but_fallback_switch_is_announced() {
     }
 
     // 切到备用模型时，内容栏出现醒目卡片，而不是只靠状态栏一个词。
+    app.show_welcome = false;
     app.receive_event_for_test(WorkerEvent::Progress(AgentEvent::ModelRouteChanged {
         model: "fixture/two".into(),
         effort: ThinkLevel::Low,

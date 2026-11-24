@@ -258,6 +258,9 @@ fn macos_guards_match_case_insensitively_across_protected_and_denied_paths() {
 
 #[test]
 fn command_sandbox_grant_only_extends_requested_paths_and_network() {
+    #[cfg(unix)]
+    let fixture = tempfile::tempdir_in("/tmp").unwrap();
+    #[cfg(not(unix))]
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().canonicalize().unwrap();
     let work = root.join("work");
@@ -289,6 +292,7 @@ fn command_sandbox_grant_only_extends_requested_paths_and_network() {
     let request = base
         .resolve_extra_writable(std::slice::from_ref(&approved))
         .unwrap();
+    assert!(!request.is_empty());
     let granted = base.with_command_grant(&request, true).unwrap();
     assert!(granted.check_write(&approved.join("output")).is_ok());
     assert!(granted.check_write(&unrelated.join("output")).is_err());

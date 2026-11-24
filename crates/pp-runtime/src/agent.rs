@@ -223,6 +223,12 @@ pub struct Agent {
     ephemeral_subagent_dir: Option<tempfile::TempDir>,
 }
 
+impl Drop for Agent {
+    fn drop(&mut self) {
+        let _ = self.stop_subagents();
+    }
+}
+
 /// Everything the UI must adopt after a mode transition: the worker publishes
 /// this snapshot set, installs nothing itself, and waits for the UI's
 /// `ExecutionPrepared` acknowledgement before any model request. `replay` is
@@ -356,18 +362,18 @@ impl Session {
     ) -> bool {
         match self {
             Self::Completion(request) => {
-                let next = Self::chat_tools(definitions);
-                let changed = request.tools.as_ref() != Some(&next);
+                let next = (!definitions.is_empty()).then(|| Self::chat_tools(definitions));
+                let changed = request.tools != next;
                 if changed {
-                    request.tools = Some(next);
+                    request.tools = next;
                 }
                 changed
             }
             Self::Response(request) => {
-                let next = Self::response_tools(definitions);
-                let changed = request.tools.as_ref() != Some(&next);
+                let next = (!definitions.is_empty()).then(|| Self::response_tools(definitions));
+                let changed = request.tools != next;
                 if changed {
-                    request.tools = Some(next);
+                    request.tools = next;
                 }
                 changed
             }

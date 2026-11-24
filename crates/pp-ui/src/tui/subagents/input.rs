@@ -209,6 +209,7 @@ impl Panel {
                     if let Some(index) = self.activity_index(&rows)
                         && let Some(row) = self.projection.rows().get(rows[index])
                     {
+                        self.activity.offset = index;
                         self.activity.selected = Some(row.id());
                         let agent = row.agent.clone();
                         let anchor = Anchor {
@@ -327,6 +328,13 @@ impl Panel {
                     .copied()
                     && let Some(row) = self.projection.rows().get(index)
                 {
+                    if let Some(slot) = self
+                        .activity_rows()
+                        .iter()
+                        .position(|visible| *visible == index)
+                    {
+                        self.activity.offset = slot;
+                    }
                     self.activity.selected = Some(row.id());
                     self.activity.follow = false;
                 }

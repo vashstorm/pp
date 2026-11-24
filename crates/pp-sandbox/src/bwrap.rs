@@ -201,15 +201,16 @@ pub(crate) fn compile_args(spec: &BwrapSpec<'_>) -> Result<(Vec<OsString>, Vec<S
         EffectiveMode::Off => {}
     }
 
-    for path in sort_by_depth_unique(spec.protect) {
-        match std::fs::symlink_metadata(&path) {
+    let protect_sorted = sort_by_depth_unique(spec.protect);
+    for path in &protect_sorted {
+        match std::fs::symlink_metadata(path) {
             Ok(meta) if meta.file_type().is_symlink() => {
                 notes.push(format!(
                     "skipped symlink in protect (cannot bind mount symlink): {}",
                     path.display()
                 ));
             }
-            Ok(_) => push_ro_bind(&mut args, &path),
+            Ok(_) => push_ro_bind(&mut args, path),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
                 notes.push(format!(
@@ -319,9 +320,18 @@ pub(crate) fn compile_args(spec: &BwrapSpec<'_>) -> Result<(Vec<OsString>, Vec<S
             MaskEvent::Allow { path } => {
                 let keep_writable = spec.mode == EffectiveMode::WorkspaceWrite
                     && writable_sorted.iter().any(|w| path.starts_with(w))
-                    && !spec.protect.iter().any(|p| path.starts_with(p));
+                    && !protect_sorted.iter().any(|p| path.starts_with(p));
                 if keep_writable {
                     push_bind_try(&mut args, &path);
+                    for p in &protect_sorted {
+                        if p.starts_with(&path)
+                            && p != &path
+                            && std::fs::symlink_metadata(p)
+                                .is_ok_and(|meta| !meta.file_type().is_symlink())
+                        {
+                            push_ro_bind(&mut args, p);
+                        }
+                    }
                 } else {
                     push_ro_bind_try(&mut args, &path);
                 }

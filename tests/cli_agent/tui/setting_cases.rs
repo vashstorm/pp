@@ -59,18 +59,26 @@ fn tui_setting_max_recursion_depth_toggles_between_zero_and_one() {
     pty.text("edit");
     pty.input("\t\x1b[B\x1b[B\x1b[B\r");
     pty.wait_for("默认非零递归深度在 TUI 中显示为 on", |screen| {
-        screen
-            .contents()
-            .lines()
-            .any(|line| line.contains("Max recursion depth") && line.trim_end().ends_with("on"))
+        screen.contents().lines().any(|line| {
+            line.contains("Max recursion depth")
+                && line
+                    .trim_end()
+                    .trim_end_matches('│')
+                    .trim_end()
+                    .ends_with("on")
+        })
     });
 
     pty.input("\x1b[B\r");
     pty.wait_for("关闭递归并只写入 0", |screen| {
-        let displayed_off = screen
-            .contents()
-            .lines()
-            .any(|line| line.contains("Max recursion depth") && line.trim_end().ends_with("off"));
+        let displayed_off = screen.contents().lines().any(|line| {
+            line.contains("Max recursion depth")
+                && line
+                    .trim_end()
+                    .trim_end_matches('│')
+                    .trim_end()
+                    .ends_with("off")
+        });
         displayed_off
             && read_settings(&settings_path)
                 .is_ok_and(|settings| settings.task.max_recursion_depth == 0)
@@ -78,10 +86,14 @@ fn tui_setting_max_recursion_depth_toggles_between_zero_and_one() {
 
     pty.input(" ");
     pty.wait_for("开启递归并只写入 1", |screen| {
-        let displayed_on = screen
-            .contents()
-            .lines()
-            .any(|line| line.contains("Max recursion depth") && line.trim_end().ends_with("on"));
+        let displayed_on = screen.contents().lines().any(|line| {
+            line.contains("Max recursion depth")
+                && line
+                    .trim_end()
+                    .trim_end_matches('│')
+                    .trim_end()
+                    .ends_with("on")
+        });
         displayed_on
             && read_settings(&settings_path)
                 .is_ok_and(|settings| settings.task.max_recursion_depth == 1)

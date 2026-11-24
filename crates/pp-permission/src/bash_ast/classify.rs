@@ -3,8 +3,9 @@
 use brush_core::parser::word::{self, TildeExpr, WordPiece};
 
 use super::wrappers::{
-    SUBCOMMAND_PROGRAMS, extract_hazard_subcommand_for, extract_safe_subcommand_index,
-    extract_subcommand_for, extract_subcommand_index, strip_privilege_prefix, tokens_start_with,
+    SUBCOMMAND_PROGRAMS, extract_hazard_subcommand_for, extract_hazard_subcommand_index,
+    extract_safe_subcommand_index, extract_subcommand_for, extract_subcommand_index,
+    strip_privilege_prefix, tokens_start_with,
 };
 use super::{ArgToken, LeafCommand};
 
@@ -40,19 +41,36 @@ const GIT_READ_ONLY_SUBCOMMANDS: &[&str] = &[
 
 impl LeafCommand {
     pub(crate) fn matches_prefix(&self, prefix: &[String]) -> bool {
+        self.matches_prefix_with(prefix, false)
+    }
+
+    /// 供 `Deny`/`Prompt` 与 `--disallowed-tools` 使用：跳过带值全局选项识别真实子命令。
+    pub(crate) fn matches_restrictive_prefix(&self, prefix: &[String]) -> bool {
+        self.matches_prefix_with(prefix, true)
+    }
+
+    fn matches_prefix_with(&self, prefix: &[String], restrictive: bool) -> bool {
         if self.dynamic_exec || self.is_function_call || prefix.is_empty() {
             return false;
         }
         if tokens_start_with(&self.tokens, prefix) {
             return true;
         }
-        if let Some(normalized) = self.normalized_subcommand_tokens() {
+        if let Some(normalized) = self.normalized_subcommand_tokens(restrictive) {
             return tokens_start_with(&normalized, prefix);
         }
         false
     }
 
     pub(crate) fn matches_exact(&self, expected: &[String]) -> bool {
+        self.matches_exact_with(expected, false)
+    }
+
+    pub(crate) fn matches_restrictive_exact(&self, expected: &[String]) -> bool {
+        self.matches_exact_with(expected, true)
+    }
+
+    fn matches_exact_with(&self, expected: &[String], restrictive: bool) -> bool {
         if self.dynamic_exec || self.is_function_call || expected.is_empty() {
             return false;
         }
@@ -66,16 +84,20 @@ impl LeafCommand {
         if matches(&self.tokens) {
             return true;
         }
-        self.normalized_subcommand_tokens()
+        self.normalized_subcommand_tokens(restrictive)
             .is_some_and(|normalized| matches(&normalized))
     }
 
-    fn normalized_subcommand_tokens(&self) -> Option<Vec<ArgToken>> {
+    fn normalized_subcommand_tokens(&self, restrictive: bool) -> Option<Vec<ArgToken>> {
         let program = self.program()?;
         if !SUBCOMMAND_PROGRAMS.contains(&program) {
             return None;
         }
-        let (sub, rest_idx) = extract_safe_subcommand_index(program, &self.tokens[1..])?;
+        let (sub, rest_idx) = if restrictive {
+            extract_hazard_subcommand_index(program, &self.tokens[1..])?
+        } else {
+            extract_safe_subcommand_index(program, &self.tokens[1..])?
+        };
         let mut out = Vec::with_capacity(self.tokens.len());
         out.push(ArgToken::Literal(program.to_owned()));
         out.push(ArgToken::Literal(sub));
@@ -170,60 +192,120 @@ impl LeafCommand {
         if SAFE_READ_ONLY_COMMANDS.contains(&program) {
             return true;
         }
+        let has_dynamic_arg = self
+            .tokens
+            .iter()
+            .skip(1)
+            .any(|tok| matches!(tok, ArgToken::Dynamic));
         let literals: Vec<&str> = self
             .tokens
             .iter()
             .skip(1)
             .filter_map(ArgToken::as_literal)
             .collect();
+        let has_short_flag =
+            |s: &str, ch: char| !s.starts_with("--") && s.starts_with('-') && s[1..].contains(ch);
         match program {
-            "sort" => !self.tokens.iter().skip(1).any(|tok| {
-                matches!(tok, ArgToken::Literal(s) if s == "-o" || s.starts_with("-o") || s == "--output" || s.starts_with("--output="))
-            }),
-            "sed" => !self.tokens.iter().skip(1).any(|tok| {
-                matches!(tok, ArgToken::Literal(s) if s == "-i" || s.starts_with("-i") || s == "--in-place" || s.starts_with("--in-place="))
-            }),
-            "yq" => !self.tokens.iter().skip(1).any(|tok| {
-                matches!(tok, ArgToken::Literal(s) if s == "-i" || s == "--inplace")
-            }),
-            "find" => !self.tokens.iter().skip(1).any(|tok| {
-                matches!(tok, ArgToken::Literal(s) if matches!(
-                    s.as_str(),
-                    "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete" | "-fprint" | "-fprint0" | "-fprintf" | "-fls"
-                ))
-            }),
+            "sort" => {
+                !has_dynamic_arg
+                    && !literals.iter().any(|s| {
+                        *s == "-o"
+                            || has_short_flag(s, 'o')
+                            || *s == "--output"
+                            || s.starts_with("--output=")
+                    })
+            }
+            "yq" => {
+                !has_dynamic_arg
+                    && !literals
+                        .iter()
+                        .any(|s| *s == "-i" || has_short_flag(s, 'i') || *s == "--inplace")
+            }
+            "find" => {
+                !has_dynamic_arg
+                    && !literals.iter().any(|s| {
+                        matches!(
+                            *s,
+                            "-exec"
+                                | "-execdir"
+                                | "-ok"
+                                | "-okdir"
+                                | "-delete"
+                                | "-fprint"
+                                | "-fprint0"
+                                | "-fprintf"
+                                | "-fls"
+                        )
+                    })
+            }
             "git" => match extract_subcommand_for("git", &self.tokens[1..]).as_deref() {
                 Some(sub) if GIT_READ_ONLY_SUBCOMMANDS.contains(&sub) => true,
-                Some("branch") => {
+                Some("branch") if !has_dynamic_arg => {
                     let has_mutating_flag = literals.iter().any(|a| {
                         matches!(
                             *a,
-                            "-d" | "-D" | "-m" | "-M" | "-c" | "-C" | "--delete" | "--move" | "--copy" | "--edit-description" | "--set-upstream-to" | "--unset-upstream"
+                            "-d" | "-D"
+                                | "-m"
+                                | "-M"
+                                | "-c"
+                                | "-C"
+                                | "--delete"
+                                | "--move"
+                                | "--copy"
+                                | "--edit-description"
+                                | "--set-upstream-to"
+                                | "--unset-upstream"
                         )
                     });
                     !has_mutating_flag
                         && (literals.iter().any(|a| {
-                            matches!(*a, "--list" | "-l" | "-a" | "--all" | "-r" | "--remotes" | "--show-current")
-                        }) || literals.iter().filter(|a| **a != "branch").all(|a| a.starts_with('-')))
+                            matches!(
+                                *a,
+                                "--list"
+                                    | "-l"
+                                    | "-a"
+                                    | "--all"
+                                    | "-r"
+                                    | "--remotes"
+                                    | "--show-current"
+                            )
+                        }) || literals
+                            .iter()
+                            .filter(|a| **a != "branch")
+                            .all(|a| a.starts_with('-')))
                 }
-                Some("tag") => {
-                    literals.iter().any(|a| matches!(*a, "-l" | "--list" | "-v" | "--verify"))
-                        || literals.iter().filter(|a| **a != "tag").all(|a| a.starts_with('-'))
+                Some("tag") if !has_dynamic_arg => {
+                    literals
+                        .iter()
+                        .any(|a| matches!(*a, "-l" | "--list" | "-v" | "--verify"))
+                        || literals
+                            .iter()
+                            .filter(|a| **a != "tag")
+                            .all(|a| a.starts_with('-'))
                 }
-                Some("remote") => literals
-                    .iter()
-                    .filter(|a| **a != "remote")
-                    .all(|a| matches!(*a, "-v" | "--verbose" | "show" | "get-url") || a.starts_with('-')),
-                Some("config") => literals
+                Some("remote") if !has_dynamic_arg => {
+                    literals.iter().filter(|a| **a != "remote").all(|a| {
+                        matches!(*a, "-v" | "--verbose" | "show" | "get-url") || a.starts_with('-')
+                    })
+                }
+                Some("config") if !has_dynamic_arg => literals
                     .iter()
                     .any(|a| matches!(*a, "--get" | "--get-all" | "--list" | "-l")),
                 _ => false,
             },
-            "cargo" => matches!(
-                extract_subcommand_for("cargo", &self.tokens[1..]).as_deref(),
-                Some("version" | "metadata" | "tree" | "pkgid" | "locate-project")
-            ) || literals.iter().any(|a| matches!(*a, "--version" | "-V")),
-            "rustc" => literals.iter().any(|a| matches!(*a, "--version" | "-V")),
+            "cargo" => {
+                matches!(
+                    extract_subcommand_for("cargo", &self.tokens[1..]).as_deref(),
+                    Some("version" | "metadata" | "tree" | "pkgid" | "locate-project")
+                ) || (!has_dynamic_arg
+                    && self.tokens.len() == 2
+                    && matches!(literals.as_slice(), ["--version" | "-V"]))
+            }
+            "rustc" => {
+                !has_dynamic_arg
+                    && self.tokens.len() == 2
+                    && matches!(literals.as_slice(), ["--version" | "-V"])
+            }
             _ => false,
         }
     }

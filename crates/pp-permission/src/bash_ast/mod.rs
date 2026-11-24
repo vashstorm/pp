@@ -6,14 +6,16 @@ mod wrappers;
 use brush_core::parser::{
     Parser,
     ast::{self, CommandPrefixOrSuffixItem as Item},
-    word::{self, WordPiece, WordPieceWithSource},
+    word::{self, Parameter, ParameterExpr, WordPiece, WordPieceWithSource},
 };
 use classify::{
     AUTH_FILES, fallback_critical, is_auth_path, is_fork_bomb, is_remote_fetch_leaf,
     is_shell_interpreter_leaf,
 };
 use std::{collections::HashSet, io::Cursor};
-use wrappers::{strip_privilege_prefix, strip_transparent_wrappers, xargs_command_start};
+use wrappers::{
+    XargsTarget, strip_privilege_prefix, strip_transparent_wrappers, xargs_command_target,
+};
 
 const MAX_NODES: usize = 4096;
 const MAX_DEPTH: usize = 64;
@@ -182,6 +184,9 @@ impl Analyzer {
             }
             ast::Command::Function(func) => {
                 self.functions.insert(func.fname.value.clone());
+                if let Some(redirects) = &func.body.1 {
+                    self.visit_redirects(&redirects.0, depth + 1);
+                }
                 self.visit_compound(&func.body.0, depth + 1);
             }
             ast::Command::ExtendedTest(test, redirects) => {
@@ -224,6 +229,12 @@ impl Analyzer {
                 self.visit_list(&clause.body.list, depth + 1);
             }
             ast::CompoundCommand::ArithmeticForClause(clause) => {
+                for expr in [&clause.initializer, &clause.condition, &clause.updater]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.scan_word_substitutions(&expr.value, depth + 1);
+                }
                 self.visit_list(&clause.body.list, depth + 1);
             }
             ast::CompoundCommand::CaseClause(clause) => {
@@ -280,7 +291,7 @@ impl Analyzer {
             for item in &prefix.0 {
                 match item {
                     Item::AssignmentWord(assign, _) => {
-                        self.visit_assignment(&assign.value, depth + 1);
+                        self.visit_assignment(assign, depth + 1);
                     }
                     Item::IoRedirect(redir) => redirects.push(redir),
                     Item::Word(word) => {
@@ -304,7 +315,7 @@ impl Analyzer {
                 match item {
                     Item::IoRedirect(redir) => redirects.push(redir),
                     Item::AssignmentWord(assign, word) => {
-                        self.visit_assignment(&assign.value, depth + 1);
+                        self.visit_assignment(assign, depth + 1);
                         raw_strings.push(word.value.clone());
                         raw_tokens.push(self.parse_word_token(&word.value, depth + 1));
                     }
@@ -373,13 +384,19 @@ impl Analyzer {
         self.analysis.leaves.push(leaf);
     }
 
-    fn visit_assignment(&mut self, value: &ast::AssignmentValue, depth: usize) {
-        match value {
+    fn visit_assignment(&mut self, assign: &ast::Assignment, depth: usize) {
+        if let ast::AssignmentName::ArrayElementName(_, index) = &assign.name {
+            self.scan_word_substitutions(index, depth + 1);
+        }
+        match &assign.value {
             ast::AssignmentValue::Scalar(word) => {
                 self.scan_word_substitutions(&word.value, depth + 1);
             }
             ast::AssignmentValue::Array(items) => {
-                for (_, word) in items {
+                for (key, word) in items {
+                    if let Some(key) = key {
+                        self.scan_word_substitutions(&key.value, depth + 1);
+                    }
                     self.scan_word_substitutions(&word.value, depth + 1);
                 }
             }
@@ -487,18 +504,138 @@ impl Analyzer {
                 | WordPiece::BackquotedCommandSubstitution(sub) => {
                     self.parse_and_visit(sub, depth + 1);
                 }
-                _ => {}
+                WordPiece::ArithmeticExpression(expr) => {
+                    self.scan_word_substitutions(&expr.value, depth + 1);
+                }
+                WordPiece::ParameterExpansion(param) => {
+                    self.scan_parameter_expr(param, depth + 1);
+                }
+                WordPiece::Text(_)
+                | WordPiece::SingleQuotedText(_)
+                | WordPiece::AnsiCQuotedText(_)
+                | WordPiece::TildeExpansion(_)
+                | WordPiece::EscapeSequence(_) => {}
             }
         }
     }
 
+    fn scan_parameter_target(&mut self, param: &Parameter, depth: usize) {
+        if let Parameter::NamedWithIndex { index, .. } = param {
+            self.scan_word_substitutions(index, depth);
+        }
+    }
+
+    fn scan_parameter_expr(&mut self, expr: &ParameterExpr, depth: usize) {
+        match expr {
+            ParameterExpr::Parameter { parameter, .. }
+            | ParameterExpr::ParameterLength { parameter, .. }
+            | ParameterExpr::Transform { parameter, .. } => {
+                self.scan_parameter_target(parameter, depth);
+            }
+            ParameterExpr::UseDefaultValues {
+                parameter,
+                default_value,
+                ..
+            }
+            | ParameterExpr::AssignDefaultValues {
+                parameter,
+                default_value,
+                ..
+            } => {
+                self.scan_parameter_target(parameter, depth);
+                if let Some(value) = default_value {
+                    self.scan_word_substitutions(value, depth);
+                }
+            }
+            ParameterExpr::IndicateErrorIfNullOrUnset {
+                parameter,
+                error_message,
+                ..
+            } => {
+                self.scan_parameter_target(parameter, depth);
+                if let Some(value) = error_message {
+                    self.scan_word_substitutions(value, depth);
+                }
+            }
+            ParameterExpr::UseAlternativeValue {
+                parameter,
+                alternative_value,
+                ..
+            } => {
+                self.scan_parameter_target(parameter, depth);
+                if let Some(value) = alternative_value {
+                    self.scan_word_substitutions(value, depth);
+                }
+            }
+            ParameterExpr::RemoveSmallestSuffixPattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::RemoveLargestSuffixPattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::RemoveSmallestPrefixPattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::RemoveLargestPrefixPattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::UppercaseFirstChar {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::UppercasePattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::LowercaseFirstChar {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::LowercasePattern {
+                parameter, pattern, ..
+            } => {
+                self.scan_parameter_target(parameter, depth);
+                if let Some(pattern) = pattern {
+                    self.scan_word_substitutions(pattern, depth);
+                }
+            }
+            ParameterExpr::Substring {
+                parameter,
+                offset,
+                length,
+                ..
+            } => {
+                self.scan_parameter_target(parameter, depth);
+                self.scan_word_substitutions(&offset.value, depth);
+                if let Some(length) = length {
+                    self.scan_word_substitutions(&length.value, depth);
+                }
+            }
+            ParameterExpr::ReplaceSubstring {
+                parameter,
+                pattern,
+                replacement,
+                ..
+            } => {
+                self.scan_parameter_target(parameter, depth);
+                self.scan_word_substitutions(pattern, depth);
+                if let Some(replacement) = replacement {
+                    self.scan_word_substitutions(replacement, depth);
+                }
+            }
+            ParameterExpr::VariableNames { .. } | ParameterExpr::MemberKeys { .. } => {}
+        }
+    }
+
     fn visit_nested_exec(&mut self, leaf: &LeafCommand, depth: usize) {
-        let (effective_tokens, _) = strip_privilege_prefix(&leaf.tokens, &leaf.raw_args);
+        if !self.tick(depth) {
+            return;
+        }
+        let (effective_tokens, effective_raws) =
+            strip_privilege_prefix(&leaf.tokens, &leaf.raw_args);
         let Some(ArgToken::Literal(raw_program)) = effective_tokens.first() else {
             return;
         };
         let program = raw_program.rsplit('/').next().unwrap_or(raw_program);
         let args = &effective_tokens[1..];
+        let raw_args_tail = effective_raws.get(1..).unwrap_or(&[]);
 
         if matches!(program, "bash" | "sh" | "zsh" | "dash" | "ksh") {
             let mut idx = 0;
@@ -524,6 +661,39 @@ impl Analyzer {
                     _ => idx += 1,
                 }
             }
+        } else if matches!(program, "su" | "runuser") {
+            let mut idx = 0;
+            while idx < args.len() {
+                match &args[idx] {
+                    ArgToken::Literal(flag)
+                        if flag == "-c" || flag == "--command" || flag == "--session-command" =>
+                    {
+                        match args.get(idx + 1) {
+                            Some(ArgToken::Literal(script)) => {
+                                self.parse_and_visit(script, depth + 1);
+                            }
+                            _ => {
+                                self.analysis.unanalyzable = true;
+                            }
+                        }
+                        break;
+                    }
+                    ArgToken::Literal(flag)
+                        if flag.starts_with("--command=")
+                            || flag.starts_with("--session-command=") =>
+                    {
+                        if let Some((_, script)) = flag.split_once('=') {
+                            self.parse_and_visit(script, depth + 1);
+                        }
+                        break;
+                    }
+                    ArgToken::Literal(s) if s == "--" => break,
+                    ArgToken::Literal(s) if matches!(s.as_str(), "-u" | "-g" | "-G" | "-s") => {
+                        idx += 2;
+                    }
+                    _ => idx += 1,
+                }
+            }
         } else if matches!(program, "eval" | "source" | ".") {
             if args.len() == 1
                 && let Some(ArgToken::Literal(script)) = args.first()
@@ -538,56 +708,66 @@ impl Analyzer {
             while idx < args.len() {
                 if matches!(&args[idx], ArgToken::Literal(s) if matches!(s.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
                 {
-                    let inner: Vec<&ArgToken> = args[idx + 1..]
+                    let start = idx + 1;
+                    let len = args[start..]
                         .iter()
                         .take_while(
                             |tok| !matches!(tok, ArgToken::Literal(s) if s == ";" || s == "+"),
                         )
-                        .collect();
-                    if let Some(ArgToken::Literal(cmd)) = inner.first() {
-                        let mut tokens: Vec<ArgToken> = inner.into_iter().cloned().collect();
-                        if let Some(ArgToken::Literal(first)) = tokens.first_mut() {
-                            *first = first.rsplit('/').next().unwrap_or(cmd).to_owned();
-                        }
-                        let sub_leaf = LeafCommand {
-                            tokens,
-                            raw_args: Vec::new(),
-                            has_write_redirect: false,
-                            is_function_call: false,
-                            dynamic_exec: false,
-                        };
-                        if let Some(reason) = classify::leaf_critical_reason(&sub_leaf) {
-                            self.set_critical(reason);
-                        }
-                        self.analysis.leaves.push(sub_leaf);
-                    } else {
-                        self.analysis.unanalyzable = true;
-                    }
+                        .count();
+                    let inner_tokens = &args[start..start + len];
+                    let inner_raws = raw_args_tail.get(start..start + len).unwrap_or(&[]);
+                    self.push_nested_leaf(inner_tokens, inner_raws, depth + 1);
+                    idx = start + len;
                 }
                 idx += 1;
             }
-        } else if program == "xargs"
-            && let Some(start) = xargs_command_start(args)
-        {
-            let tokens: Vec<ArgToken> = args[start..].to_vec();
-            if !tokens.is_empty() {
-                let mut normalized = tokens;
-                if let Some(ArgToken::Literal(first)) = normalized.first_mut() {
-                    *first = first.rsplit('/').next().unwrap_or(first).to_owned();
+        } else if program == "xargs" {
+            match xargs_command_target(args) {
+                XargsTarget::None => {}
+                XargsTarget::Dynamic => {
+                    self.analysis.unanalyzable = true;
                 }
-                let sub_leaf = LeafCommand {
-                    tokens: normalized,
-                    raw_args: Vec::new(),
-                    has_write_redirect: false,
-                    is_function_call: false,
-                    dynamic_exec: false,
-                };
-                if let Some(reason) = classify::leaf_critical_reason(&sub_leaf) {
-                    self.set_critical(reason);
+                XargsTarget::Command(start) => {
+                    let inner_tokens = &args[start..];
+                    let inner_raws = raw_args_tail.get(start..).unwrap_or(&[]);
+                    self.push_nested_leaf(inner_tokens, inner_raws, depth + 1);
                 }
-                self.analysis.leaves.push(sub_leaf);
             }
         }
+    }
+
+    fn push_nested_leaf(&mut self, inner_tokens: &[ArgToken], inner_raws: &[String], depth: usize) {
+        if inner_tokens.is_empty() {
+            self.analysis.unanalyzable = true;
+            return;
+        }
+        let (mut tokens, raw_args, dynamic_exec) =
+            strip_transparent_wrappers(inner_tokens, inner_raws);
+        if dynamic_exec {
+            self.analysis.unanalyzable = true;
+        }
+        let is_function_call = tokens
+            .first()
+            .and_then(ArgToken::as_literal)
+            .is_some_and(|name| self.functions.contains(name));
+        if let Some(ArgToken::Literal(first)) = tokens.first_mut() {
+            *first = first.rsplit('/').next().unwrap_or(first).to_owned();
+        } else {
+            self.analysis.unanalyzable = true;
+        }
+        let sub_leaf = LeafCommand {
+            tokens,
+            raw_args,
+            has_write_redirect: false,
+            is_function_call,
+            dynamic_exec,
+        };
+        if let Some(reason) = classify::leaf_critical_reason(&sub_leaf) {
+            self.set_critical(reason);
+        }
+        self.visit_nested_exec(&sub_leaf, depth);
+        self.analysis.leaves.push(sub_leaf);
     }
 }
 

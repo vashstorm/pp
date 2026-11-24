@@ -6,7 +6,7 @@ use super::{
     turn::{self, append_user_to, log_task_finished},
 };
 use anyhow::{Result, bail, ensure};
-use pp_core::cancellation::{CancellationToken, Cancelled, RunOutcome};
+use pp_core::cancellation::{self, CancellationToken, Cancelled, CleanupError, RunOutcome};
 use pp_core::events::AgentEvent;
 
 impl Agent {
@@ -254,7 +254,15 @@ impl Agent {
         let mut result = self.finish_run(result, cancellation);
         if let Err(error) = self.refresh_plan_progress(emit) {
             let error = match result {
-                Err(original) => error.context(format!("Task also failed: {original:#}")),
+                Err(original) => match original.downcast::<CleanupError>() {
+                    Ok(CleanupError(inner)) => CleanupError(
+                        inner.context(format!("Plan progress update also failed: {error:#}")),
+                    )
+                    .into(),
+                    Err(original) => {
+                        original.context(format!("Plan progress update also failed: {error:#}"))
+                    }
+                },
                 Ok(RunOutcome::Cancelled) => {
                     error.context("Task was cancelled; file changes were not rolled back.")
                 }
@@ -316,34 +324,20 @@ impl Agent {
             if let Some(binding) = &self.subagent
                 && let Err(cleanup) = binding.cancel_owned()
             {
-                result = Err(cleanup);
+                result = merge_outcome(result, Err(cleanup), "cancelling subagents");
             }
             self.client.cancel_pending_io();
         }
         let result = match self.tools.stop_background_tasks() {
             Ok(()) => result,
-            Err(cleanup) => Err(match result {
-                Err(original) if !original.is::<Cancelled>() => {
-                    cleanup.context(format!("Task also failed: {original:#}"))
-                }
-                _ => cleanup,
-            }),
+            Err(cleanup) => merge_outcome(result, Err(cleanup), "stopping background tasks"),
         };
         let result = if !matches!(
             &result,
             Ok(RunOutcome::Completed | RunOutcome::AwaitingPlanReview)
         ) {
             if let Some(binding) = &self.subagent {
-                match binding.reap_owned() {
-                    Ok(()) => result,
-                    Err(cleanup) => Err(cleanup.context(format!(
-                        "Parent run also stopped: {}",
-                        result
-                            .as_ref()
-                            .err()
-                            .map_or(String::new(), |e| format!("{e:#}"))
-                    ))),
-                }
+                merge_outcome(result, binding.reap_owned(), "reaping subagents")
             } else {
                 result
             }
@@ -388,5 +382,19 @@ impl Agent {
         )?;
         self.pending_instructions = None;
         Ok(())
+    }
+}
+
+fn merge_outcome(
+    result: Result<RunOutcome>,
+    cleanup: Result<()>,
+    label: &str,
+) -> Result<RunOutcome> {
+    match result {
+        Ok(outcome) => cancellation::merge_cleanup_result(Ok(()), cleanup, label).map(|()| outcome),
+        Err(error) => match cancellation::merge_cleanup_result(Err(error), cleanup, label) {
+            Ok(()) => unreachable!("merging an Err result always returns Err"),
+            Err(merged) => Err(merged),
+        },
     }
 }

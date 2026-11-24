@@ -46,8 +46,8 @@ let modelSelected = null;
 /** @type {Set<string>} */
 let modelDetailHidden = new Set();
 
-/** @param {Pick<ModelAggregate, "model" | "provider">} group */
-export const modelKeyOf = (group) => `${group.model}::${group.provider}`;
+/** @param {Pick<ModelAggregate, "model" | "provider"> & { key?: string }} group */
+export const modelKeyOf = (group) => group.key || `${group.model}::${group.provider}`;
 
 /** @param {Pick<ModelAggregate, "input_tokens" | "cached_tokens">} group */
 const modelCacheRate = (group) =>
@@ -120,16 +120,24 @@ export function modelColors(groups) {
 export function modelLabels(groups) {
   /** @type {Map<string, number>} */
   const providersPerModel = new Map();
+  /** @type {Map<string, number>} */
+  const keysPerModelProvider = new Map();
   for (const group of groups) {
     providersPerModel.set(group.model, (providersPerModel.get(group.model) ?? 0) + 1);
+    const pairKey = `${group.model}\0${group.provider}`;
+    keysPerModelProvider.set(pairKey, (keysPerModelProvider.get(pairKey) ?? 0) + 1);
   }
   return new Map(
-    groups.map((group) => [
-      modelKeyOf(group),
-      (providersPerModel.get(group.model) ?? 0) > 1
-        ? `${group.model} · ${group.provider}`
-        : group.model,
-    ]),
+    groups.map((group) => {
+      const pairKey = `${group.model}\0${group.provider}`;
+      let label = group.model;
+      if ((keysPerModelProvider.get(pairKey) ?? 0) > 1 && group.key) {
+        label = `${group.model} · ${group.provider} (${group.key})`;
+      } else if ((providersPerModel.get(group.model) ?? 0) > 1) {
+        label = `${group.model} · ${group.provider}`;
+      }
+      return [modelKeyOf(group), label];
+    }),
   );
 }
 

@@ -503,3 +503,15 @@ fn mock_ai_owner_drop_stops_a_streaming_response() {
     assert!(!completed, "owner drop must not emit response.completed");
     assert!(seen.contains("response.output_text.delta"));
 }
+
+#[test]
+fn mock_ai_rejects_status_after_auto_continue() {
+    let server = MockServer::start().unwrap();
+    let endpoint = server.endpoint();
+    let (status, _, body) = post(
+        &endpoint,
+        "/mock/bad-status/root/v1/responses",
+        r#"[{"content":"step","auto_continue":true},{"status":500}]"#,
+    );
+    assert_eq!(status, 400, "{body}");
+}

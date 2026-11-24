@@ -372,7 +372,9 @@ pub fn apply_operation(current: &[TodoPhase], operation: &Operation) -> Vec<Todo
         Operation::Start(target) => {
             let mut next = clone_phases(current);
             // Upstream allows explicitly re-opening closed/blocked tasks.
-            next[target.phase].tasks[target.task].status = TodoStatus::InProgress;
+            let task = &mut next[target.phase].tasks[target.task];
+            task.status = TodoStatus::InProgress;
+            task.blocker = None;
             next
         }
         Operation::Complete(targets) => {
@@ -432,7 +434,9 @@ pub fn apply_operation(current: &[TodoPhase], operation: &Operation) -> Vec<Todo
 
 fn set_status(phases: &mut [TodoPhase], targets: &[TaskOrdinal], status: TodoStatus) {
     for target in targets {
-        phases[target.phase].tasks[target.task].status = status;
+        let task = &mut phases[target.phase].tasks[target.task];
+        task.status = status;
+        task.blocker = None;
     }
 }
 

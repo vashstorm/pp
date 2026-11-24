@@ -31,7 +31,7 @@ pub(crate) struct Client {
     /// 客户端创建时的工作区代数；registry 用它丢弃过期客户端。
     pub(crate) _generation: u64,
     pub(crate) _started: Instant,
-    pub(super) transport: Transport,
+    pub(crate) transport: Transport,
     pub(super) documents: Mutex<HashMap<PathBuf, DocumentState>>,
     pub(super) op_lock: Mutex<()>,
     /// 最近一次操作开始/结束的时间；空闲回收按它计算而不是按创建时间。

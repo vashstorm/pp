@@ -664,7 +664,18 @@ fn group_members_live(pgid: i32, pinned: &BTreeSet<i32>) -> io::Result<bool> {
     use std::fs;
 
     for entry in fs::read_dir("/proc")? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) || error.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let name = entry.file_name();
         let Some(pid) = name.to_str().and_then(|name| name.parse::<i32>().ok()) else {
             continue;
@@ -674,7 +685,14 @@ fn group_members_live(pgid: i32, pinned: &BTreeSet<i32>) -> io::Result<bool> {
         }
         let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
             Ok(stat) => stat,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) || error.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                continue;
+            }
             Err(error) => return Err(error),
         };
         // Field 2 (comm) may contain spaces and parentheses; parse after the

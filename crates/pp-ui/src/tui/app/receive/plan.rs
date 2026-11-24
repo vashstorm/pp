@@ -82,6 +82,7 @@ impl App {
 
             WorkerEvent::ListedPlanOpened(result) => {
                 self.state = State::Ready;
+                self.secondary_status = None;
                 let execute_review = matches!(
                     self.plan_list_pending.take(),
                     Some(plan_list::PendingOp::Open(PlanOpenIntent::Execute))
@@ -108,6 +109,7 @@ impl App {
                         }
                         self.session_id = preparation.session_id;
                         self.usage = None;
+                        self.task_status = self.task_status_view.snapshot();
                         self.token_speed.clear();
                         if execute_review {
                             // 执行前审阅：重新安全读取并签发 token；
@@ -336,6 +338,7 @@ impl App {
                         self.plan_list_pending = None;
                     }
                     State::Resuming => {
+                        self.secondary_status = None;
                         self.resume_note = note;
                         self.state = State::Ready;
                     }
@@ -350,6 +353,7 @@ impl App {
                         self.state = State::Ready;
                     }
                     _ => {
+                        self.secondary_status = None;
                         self.state = State::Ready;
                     }
                 }

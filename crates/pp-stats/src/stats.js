@@ -584,7 +584,7 @@ export async function openDrawer(id, element = null) {
   if (!overlay || !drawer) return;
   overlay.hidden = false;
   document.body.style.overflow = "hidden";
-  for (const el of document.querySelectorAll("header,aside,main")) {
+  for (const el of document.querySelectorAll("header,#sidebar,main")) {
     if (el instanceof HTMLElement) el.inert = true;
   }
   drawer.innerHTML = `<div class="drawer-header"><h2>Request details</h2><button class="close" aria-label="Close">${icon("close", 18)}</button></div><div class="loading">Loading request…</div>`;
@@ -617,7 +617,7 @@ export function closeDrawer() {
   detailController?.abort();
   overlay.hidden = true;
   document.body.style.overflow = "";
-  for (const el of document.querySelectorAll("header,aside,main")) {
+  for (const el of document.querySelectorAll("header,#sidebar,main")) {
     if (el instanceof HTMLElement) el.inert = false;
   }
   const target = returnFocus?.isConnected

@@ -273,7 +273,7 @@ pub(super) fn worker(
             native.set_lsp_run_id(Some(work.run.clone()));
             let mut requests = 0usize;
             let mut tokens = 0u64;
-            let mut cost = record.spec.cost.map(|_| 0.0);
+            let mut cost = Some(0.0);
             let outcome = native.run(&work.task, &work.cancellation, Some(&input), &mut |event| {
                 run_sequence += 1;
                 match &event {

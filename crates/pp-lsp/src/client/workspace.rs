@@ -132,28 +132,46 @@ impl Client {
             .map(Duration::from_millis)
             .unwrap_or(DEFAULT_STATUS_TIMEOUT);
         let started = Instant::now();
-        let limit = deadline.min(started + total);
+        let limit = started
+            .checked_add(total)
+            .map_or(deadline, |at| deadline.min(at));
         let mut service = |request: ServerRequest| request.respond(unauthorized_edit());
         self.operation(limit, cancellation, &mut service, |op| {
             loop {
-                let poll_deadline = Instant::now() + status_timeout;
+                pp_core::cancellation::check(cancellation)?;
+                let now = Instant::now();
+                if now >= limit {
+                    return Ok(());
+                }
+                let poll_deadline = now
+                    .checked_add(status_timeout)
+                    .map_or(limit, |at| at.min(limit));
                 let probe = self.transport.request(
                     "rust-analyzer/analyzerStatus",
                     json!({}),
-                    poll_deadline.min(limit),
+                    poll_deadline,
                     cancellation,
                     op.service,
                 );
-                if let Ok(Value::String(status)) = probe
-                    && !status.starts_with("No workspaces")
-                    && started.elapsed() >= settle
-                {
+                match probe {
+                    Ok(Value::String(status))
+                        if !status.starts_with("No workspaces") && started.elapsed() >= settle =>
+                    {
+                        return Ok(());
+                    }
+                    Err(crate::transport::Failure::Cancelled) => {
+                        return Err(pp_core::cancellation::Cancelled.into());
+                    }
+                    Err(crate::transport::Failure::Closed) => {
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+                let remaining = limit.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
                     return Ok(());
                 }
-                if Instant::now() >= limit {
-                    return Ok(());
-                }
-                std::thread::sleep(poll);
+                std::thread::sleep(poll.min(remaining));
             }
         })
     }

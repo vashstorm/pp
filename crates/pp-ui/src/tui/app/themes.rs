@@ -118,8 +118,8 @@ impl App {
                 Ok(()) => {
                     self.theme = reply.theme;
                     self.icons = reply.icons;
+                    self.apply_appearance(reply.theme, reply.icons);
                     if self.themes_panel.is_some() {
-                        self.apply_appearance(reply.theme, reply.icons);
                         self.themes_panel = None;
                         self.menu_dismissed = true;
                     }

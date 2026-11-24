@@ -54,9 +54,14 @@ pub(crate) fn cli_input_lines() -> Result<mpsc::Receiver<CliInput>> {
     Ok(receiver)
 }
 
-/// CLI 各正常/错误退出边界显式回收 language server；合并走 core 的共享清理结果，
-/// `CleanupError` 保持类型并保留原语义退出码，不能只依赖 Tools 的 Drop 兜底。
+/// CLI 各正常/错误退出边界显式回收子 Agent 与 language server；合并走 core 的共享清理结果，
+/// `CleanupError` 保持类型并保留原语义退出码，不能只依赖 Drop 兜底。
 pub fn stop_cli_lsp(agent: Option<&agent::Agent>, result: Result<()>) -> Result<()> {
+    let subagents = match agent {
+        Some(agent) => agent.shutdown_subagents(),
+        None => Ok(()),
+    };
+    let result = cancellation::merge_cleanup_result(result, subagents, "stopping subagents");
     let stop = match agent {
         Some(agent) => agent.stop_lsp(),
         None => Ok(()),

@@ -303,7 +303,11 @@ pub(crate) fn prepare_batch(
             );
             let effect = match effect {
                 Ok(effect) => effect,
-                Err(error) if error.is::<Cancelled>() || error.is::<CleanupError>() => {
+                Err(error)
+                    if error
+                        .chain()
+                        .any(|cause| cause.is::<Cancelled>() || cause.is::<CleanupError>()) =>
+                {
                     return Err(error);
                 }
                 Err(error) => {

@@ -32,6 +32,8 @@ use super::{App, Level, State, WorkerEvent, dialog_guard, request_ask, todo};
 pub(in crate::tui) struct MockUiSnapshot {
     state: State,
     current_model: Option<ModelChoice>,
+    current_source: Option<pp_core::model::ModelSource>,
+    override_selection: Option<pp_config::model_state::Selection>,
     choices: Vec<ModelChoice>,
     think_level: ThinkLevel,
     default_think_level: ThinkLevel,
@@ -39,6 +41,15 @@ pub(in crate::tui) struct MockUiSnapshot {
     todo_panel: todo::Panel,
     subagent_control: Arc<Mutex<Option<Binding>>>,
     pipe_store: Option<PipeStore>,
+}
+
+impl MockUiSnapshot {
+    pub(in crate::tui) fn subagent_binding(&self) -> Option<Binding> {
+        self.subagent_control
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
 }
 
 /// 场景 worker 的唯一 owner：取消令牌、事件接收端与发送线程。
@@ -130,20 +141,7 @@ impl App {
             }
         };
         // 正常展示状态整体移出；Prepared 到达前界面处于空的中性状态。
-        let snapshot = MockUiSnapshot {
-            state: self.state,
-            current_model: self.current_model.take(),
-            choices: std::mem::take(&mut self.choices),
-            think_level: self.think_level,
-            default_think_level: self.default_think_level,
-            usage: self.usage.take(),
-            todo_panel: std::mem::take(&mut self.todo_panel),
-            subagent_control: std::mem::replace(
-                &mut self.subagent_control,
-                Arc::new(Mutex::new(None)),
-            ),
-            pipe_store: self.pipe_store.take(),
-        };
+        let snapshot = self.take_mock_snapshot();
         self.hub_bound = None;
         self.close_hub();
         self.close_pipes();
@@ -249,8 +247,29 @@ impl App {
         }
     }
 
+    pub(in crate::tui) fn take_mock_snapshot(&mut self) -> MockUiSnapshot {
+        MockUiSnapshot {
+            state: self.state,
+            current_model: self.current_model.take(),
+            current_source: self.current_source.take(),
+            override_selection: self.override_selection.take(),
+            choices: std::mem::take(&mut self.choices),
+            think_level: self.think_level,
+            default_think_level: self.default_think_level,
+            usage: self.usage.take(),
+            todo_panel: std::mem::take(&mut self.todo_panel),
+            subagent_control: std::mem::replace(
+                &mut self.subagent_control,
+                Arc::new(Mutex::new(None)),
+            ),
+            pipe_store: self.pipe_store.take(),
+        }
+    }
+
     fn restore_mock_snapshot(&mut self, snapshot: MockUiSnapshot) {
         self.current_model = snapshot.current_model;
+        self.current_source = snapshot.current_source;
+        self.override_selection = snapshot.override_selection;
         self.choices = snapshot.choices;
         self.think_level = snapshot.think_level;
         self.default_think_level = snapshot.default_think_level;

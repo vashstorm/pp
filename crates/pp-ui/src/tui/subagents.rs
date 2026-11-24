@@ -550,10 +550,15 @@ fn visible_start(heights: &[u16], selected: Option<usize>, height: u16) -> usize
     let Some(selected) = selected else {
         return 0;
     };
+    let limit = usize::from(height);
     let mut start = 0;
     while start < selected {
-        let total: u16 = heights[start..=selected].iter().copied().sum();
-        if total <= height {
+        let total: usize = heights[start..=selected]
+            .iter()
+            .copied()
+            .map(usize::from)
+            .sum();
+        if total <= limit {
             break;
         }
         start += 1;
@@ -562,11 +567,12 @@ fn visible_start(heights: &[u16], selected: Option<usize>, height: u16) -> usize
 }
 
 fn tail_start(heights: &[u16], height: u16) -> usize {
+    let limit = usize::from(height);
     let mut start = heights.len();
-    let mut total = 0u16;
+    let mut total = 0usize;
     while start > 0 {
-        let next = heights[start - 1];
-        if total + next > height {
+        let next = usize::from(heights[start - 1]);
+        if total + next > limit {
             break;
         }
         total += next;
@@ -797,6 +803,10 @@ mod tests {
         assert_eq!(visible_start(&[5], Some(0), 2), 0);
         assert_eq!(tail_start(&[2, 2, 2, 2], 5), 2);
         assert_eq!(tail_start(&[], 5), 0);
+        // 总高度超过 u16::MAX 时不得溢出 panic。
+        let tall = vec![20_000u16; 5];
+        assert_eq!(visible_start(&tall, Some(4), 25_000), 4);
+        assert_eq!(tail_start(&tall, 25_000), 4);
         // 0 尺寸不绘制、不越界。
         let mut drafts = Drafts::default();
         let mut panel = panel(vec![], vec![]);

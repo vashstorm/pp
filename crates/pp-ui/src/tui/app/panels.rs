@@ -868,6 +868,13 @@ impl App {
         {
             failure.get_or_insert(error);
         }
+        #[cfg(debug_assertions)]
+        if let Some(saved) = &self.mock_saved
+            && let Some(binding) = saved.subagent_binding()
+            && let Err(error) = binding.shutdown()
+        {
+            failure.get_or_insert(error);
+        }
         if let Some(cleanup) = &self.background_cleanup
             && let Err(error) = cleanup.shutdown()
         {

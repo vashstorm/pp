@@ -393,9 +393,23 @@ impl OpenAiClient {
             "read URL requires HTTP/HTTPS without embedded credentials"
         );
         if self.read_http.is_none() {
+            let policy = Policy::custom(|attempt| {
+                if attempt.previous().len() > 5 {
+                    return attempt.error("too many redirects");
+                }
+                let next = attempt.url();
+                if !matches!(next.scheme(), "http" | "https")
+                    || !next.username().is_empty()
+                    || next.password().is_some()
+                {
+                    return attempt
+                        .error("redirect URL requires HTTP/HTTPS without embedded credentials");
+                }
+                attempt.follow()
+            });
             self.read_http = Some(
                 reqwest::Client::builder()
-                    .redirect(Policy::limited(5))
+                    .redirect(policy)
                     .timeout(Duration::from_secs(30))
                     .build()
                     .map_err(|_| anyhow::anyhow!("initializing read HTTP client failed"))?,

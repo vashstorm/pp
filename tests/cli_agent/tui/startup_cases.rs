@@ -418,6 +418,7 @@ const TIPS_COMMANDS: &[&str] = &[
     "/agents",
     "/compact",
     "/context",
+    "/dump",
     "/effort",
     "/help",
     "/init",
@@ -444,6 +445,7 @@ const TIPS_COMMANDS: &[&str] = &[
     "/test-eval-py",
     "/test-fail",
     "/test-glob",
+    "/test-permission",
     "/test-read",
     "/test-rg",
     "/test-task",
@@ -689,8 +691,8 @@ fn tui_tips_keeps_all_entries_and_leaves_active_jsonl_unchanged() {
             TIPS_ACCENT,
             key_field,
         );
-        // 60 列：正文 58 列装不下两列，按字母顺序输出完整单列。
-        pty.resize(80, 60);
+        // 60 列：正文 58 列装不下两列，按字母顺序输出完整单列；高度同步留够完整清单。
+        pty.resize(90, 60);
         let single: Vec<String> = commands
             .iter()
             .chain(&shortcuts)

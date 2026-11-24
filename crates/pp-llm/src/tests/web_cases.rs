@@ -212,3 +212,43 @@ fn read_http_status_timeout_and_cancel_leave_no_background_fetch() {
         worker.join().unwrap();
     }
 }
+
+#[test]
+fn read_http_rejects_disallowed_or_credential_redirects() {
+    for location in [
+        "file:///etc/passwd",
+        "http://user:secret-pass@127.0.0.1/next",
+    ] {
+        let server = Arc::new(TestServer::start().unwrap());
+        let url = format!("http://{}/redirect", server.addr());
+        let responder = Arc::clone(&server);
+        let target = location.to_owned();
+        let worker = std::thread::spawn(move || {
+            let request = responder
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            request
+                .respond(
+                    Response::builder()
+                        .status(302)
+                        .header("Location", target)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .unwrap();
+            assert!(
+                responder
+                    .recv_timeout(Duration::from_millis(100))
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        let error = test_client("http://127.0.0.1:1/v1")
+            .fetch_read_url(&url, &CancellationToken::new())
+            .err()
+            .unwrap();
+        assert!(!error.to_string().contains("secret-pass"), "{error:#}");
+        worker.join().unwrap();
+    }
+}

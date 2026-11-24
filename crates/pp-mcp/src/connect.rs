@@ -395,8 +395,11 @@ impl McpManager {
         let process = state.client.connection.clone();
         let mut client = match Client::spawn(&state.config, &state.cwd, process) {
             Ok(client) => client,
-            Err(_) => {
+            Err(error) => {
                 state.restart_after_cancel = false;
+                if error.is::<CleanupError>() {
+                    return Err(error);
+                }
                 bail!("MCP restart failed; restart pp to reconnect.");
             }
         };
@@ -417,7 +420,9 @@ impl McpManager {
                     return Err(error);
                 }
                 state.restart_after_cancel = false;
-                let _ = client.stop();
+                if let Err(stop_error) = client.stop() {
+                    return Err(CleanupError(stop_error).into());
+                }
                 bail!("MCP restart failed; restart pp to reconnect.");
             }
         };
@@ -429,7 +434,9 @@ impl McpManager {
                 .all(|(name, tool)| discovered.get(name) == Some(tool));
         if !unchanged {
             state.restart_after_cancel = false;
-            let _ = client.stop();
+            if let Err(stop_error) = client.stop() {
+                return Err(CleanupError(stop_error).into());
+            }
             bail!("MCP tool definitions changed; restart pp to reconnect.");
         }
         // 旧连接在取消时已停止，Drop 不会触碰稳定 slot 中的新进程。
@@ -497,7 +504,8 @@ fn discover(
                     "invalid MCP tool input schema"
                 );
                 ensure!(
-                    tool.get("description").is_none_or(Value::is_string),
+                    tool.get("description")
+                        .is_none_or(|v| v.is_string() || v.is_null()),
                     "invalid MCP tool description"
                 );
                 tools.insert(
@@ -515,7 +523,7 @@ fn discover(
                 );
             }
             match result.get("nextCursor") {
-                None => break,
+                None | Some(Value::Null) => break,
                 Some(Value::String(value)) if !value.is_empty() => {
                     ensure!(
                         cursors.insert(value.clone()) && page + 1 < TOOL_LIMIT,

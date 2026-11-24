@@ -735,3 +735,29 @@ fn plan_todo_projection_preserves_ordinals_and_markdown_authority() {
         "Plan tasks changed; re-plan before completing."
     );
 }
+
+#[test]
+fn todo_clears_blocker_on_start_done_and_drop() {
+    let (_, change) = run(&[], r#"{"op":"init","items":["t1","t2","t3"]}"#);
+    let phases = change.unwrap().phases;
+    let (_, change) = run(&phases, r#"{"op":"block","task":"t1","reason":"wait"}"#);
+    let phases = change.unwrap().phases;
+    let (_, change) = run(&phases, r#"{"op":"start","task":"t1"}"#);
+    let phases = change.unwrap().phases;
+    assert_eq!(phases[0].tasks[0].status, TodoStatus::InProgress);
+    assert_eq!(phases[0].tasks[0].blocker, None);
+
+    let (_, change) = run(&phases, r#"{"op":"block","task":"t2","reason":"wait"}"#);
+    let phases = change.unwrap().phases;
+    let (_, change) = run(&phases, r#"{"op":"done","task":"t2"}"#);
+    let phases = change.unwrap().phases;
+    assert_eq!(phases[0].tasks[1].status, TodoStatus::Completed);
+    assert_eq!(phases[0].tasks[1].blocker, None);
+
+    let (_, change) = run(&phases, r#"{"op":"block","task":"t3","reason":"wait"}"#);
+    let phases = change.unwrap().phases;
+    let (_, change) = run(&phases, r#"{"op":"drop","task":"t3"}"#);
+    let phases = change.unwrap().phases;
+    assert_eq!(phases[0].tasks[2].status, TodoStatus::Abandoned);
+    assert_eq!(phases[0].tasks[2].blocker, None);
+}

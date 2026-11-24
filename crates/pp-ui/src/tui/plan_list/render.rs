@@ -46,12 +46,37 @@ impl Panel {
         let mut cursor = None;
         if y < bottom.saturating_sub(1) {
             if let Some(name) = &self.rename {
-                let line = format!("rename> {name}");
+                let row = Rect::new(area.x, y, area.width, 1);
+                let prefix = "rename> ";
+                let prefix_width = (prefix.len() as u16).min(row.width.saturating_sub(1));
                 frame.render_widget(
-                    Line::styled(line.clone(), Style::default().fg(accent())),
-                    Rect::new(area.x, y, area.width, 1),
+                    Line::styled(prefix, Style::default().fg(accent())),
+                    Rect::new(row.x, row.y, prefix_width, 1),
                 );
-                cursor = Some((area.x + 8 + Line::from(name.as_str()).width() as u16, y));
+                let input = Rect::new(
+                    row.x + prefix_width,
+                    row.y,
+                    row.width.saturating_sub(prefix_width),
+                    1,
+                );
+                let available = usize::from(input.width.saturating_sub(1));
+                let mut start = name.len();
+                let mut width = 0;
+                for (index, grapheme) in name.grapheme_indices(true).rev() {
+                    let next_width = width + Span::raw(grapheme).width();
+                    if next_width > available {
+                        break;
+                    }
+                    start = index;
+                    width = next_width;
+                }
+                frame.render_widget(
+                    Line::styled(&name[start..], Style::default().fg(accent())),
+                    input,
+                );
+                if input.width > 0 {
+                    cursor = Some((input.x + width as u16, input.y));
+                }
             } else {
                 cursor = self.draw_search(frame, Rect::new(area.x, y, area.width, 1));
             }

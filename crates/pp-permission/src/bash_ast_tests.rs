@@ -337,3 +337,64 @@ fn config_override_commands_prompt_once_without_persistent_prefix_grants() {
         "ordinary commands must not prompt as high-impact"
     );
 }
+
+#[test]
+fn ast_handles_command_wrappers_su_expansions_and_redirect_preapproval() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = process_gate(dir.path(), PermissionMode::AcceptEdits);
+    // `command -v` 只是查询命令位置，不属于可执行写操作。
+    sandboxed_bash(&gate, PermissionMode::AcceptEdits, "command -v rm").unwrap();
+    for cmd in [
+        "command rm -rf /",
+        "command -- rm -rf /",
+        "su -c 'rm -rf /'",
+        "echo $(( $(rm -rf /) ))",
+        "echo ${foo:-$(rm -rf /)}",
+    ] {
+        assert!(
+            destructive_reason(&bash_args(cmd)).is_some(),
+            "expected critical detection for {cmd}"
+        );
+    }
+
+    let preapproved = Gate::for_process(dir.path(), Some(PermissionMode::AlwaysAsk), true);
+    preapproved.set_config(ToolsSettings::default());
+    preapproved.grant_allowed_tools(
+        Vec::<String>::new(),
+        Vec::new(),
+        false,
+        vec![BashCommandPattern::Exact(vec![
+            "git".into(),
+            "status".into(),
+        ])],
+    );
+    preapproved
+        .enforce_for(
+            PermissionMode::AlwaysAsk,
+            "bash",
+            &bash_args("git status"),
+            ToolAccess {
+                tier: Tier::Exec,
+                sandboxed: false,
+            },
+            None,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert!(
+        preapproved
+            .enforce_for(
+                PermissionMode::AlwaysAsk,
+                "bash",
+                &bash_args("git status > out.txt"),
+                ToolAccess {
+                    tier: Tier::Exec,
+                    sandboxed: false,
+                },
+                None,
+                &CancellationToken::new(),
+            )
+            .is_err(),
+        "write redirection must block Bash(...) preapproval"
+    );
+}

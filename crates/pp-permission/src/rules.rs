@@ -208,10 +208,11 @@ impl Store {
     }
 
     pub(crate) fn protects_path(&self, path: &Path) -> bool {
-        let Some(dir) = self.path.parent() else {
-            return false;
-        };
-        let Ok(dir) = dir.canonicalize() else {
+        let Some(dir) = self
+            .path
+            .parent()
+            .and_then(normalize_against_existing_ancestor)
+        else {
             return false;
         };
         let is_rule = path
@@ -220,9 +221,8 @@ impl Store {
         is_rule
             && path
                 .parent()
-                .and_then(|parent| parent.canonicalize().ok())
-                .as_ref()
-                == Some(&dir)
+                .and_then(normalize_against_existing_ancestor)
+                .is_some_and(|parent| platform_path_eq(&parent, &dir))
     }
 
     /// 按文件指纹（dev/ino/size/mtime/ctime）按需重载持久规则；文件未变直接复用内存快照。
@@ -572,4 +572,90 @@ fn private_file(path: &Path, create: bool) -> Result<File> {
         .open(path)?;
     check_private_meta(&file.metadata()?)?;
     Ok(file)
+}
+
+fn normalize_against_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    if let Ok(canon) = path.canonicalize() {
+        return Some(canon);
+    }
+    let mut cur = path;
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    while !cur.as_os_str().is_empty() {
+        let Some(name) = cur.file_name() else {
+            break;
+        };
+        suffix.push(name.to_os_string());
+        cur = cur.parent()?;
+        if let Ok(mut base) = cur.canonicalize() {
+            for part in suffix.into_iter().rev() {
+                base.push(part);
+            }
+            return Some(lexically_clean(&base));
+        }
+    }
+    None
+}
+
+fn lexically_clean(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            _ => out.push(comp.as_os_str()),
+        }
+    }
+    out
+}
+
+fn platform_path_eq(left: &Path, right: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let mut l = left.components();
+        let mut r = right.components();
+        loop {
+            match (l.next(), r.next()) {
+                (None, None) => return true,
+                (Some(Component::Normal(a)), Some(Component::Normal(b))) => {
+                    if a == b {
+                        continue;
+                    }
+                    let (Some(sa), Some(sb)) = (a.to_str(), b.to_str()) else {
+                        return false;
+                    };
+                    if sa.is_ascii() && sb.is_ascii() {
+                        if !sa.eq_ignore_ascii_case(sb) {
+                            return false;
+                        }
+                    } else if sa.to_lowercase() != sb.to_lowercase() {
+                        return false;
+                    }
+                }
+                (Some(a), Some(b)) if a == b => {}
+                _ => return false,
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        left == right
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protects_path_handles_missing_agent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("missing-pp").join("agent");
+        let store = Store::new(&agent_dir);
+        assert!(store.protects_path(&agent_dir.join(PERMISSION_FILE)));
+        assert!(store.protects_path(&agent_dir.join(PERMISSION_LOCK)));
+        assert!(!store.protects_path(&agent_dir.join("other.txt")));
+        assert!(!store.protects_path(&dir.path().join("workspace.txt")));
+    }
 }

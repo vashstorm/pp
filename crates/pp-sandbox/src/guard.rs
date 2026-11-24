@@ -267,6 +267,8 @@ pub(crate) fn check_write_path(
     cwd: &Path,
     writable: &[PathBuf],
     protect: &[PathBuf],
+    deny_read: &[PathBuf],
+    allow_read: &[PathBuf],
 ) -> io::Result<()> {
     if is_safe_device_write(target) {
         return Ok(());
@@ -276,6 +278,15 @@ pub(crate) fn check_write_path(
             io::ErrorKind::PermissionDenied,
             format!(
                 "blocked by sandbox policy (protected path is read-only): {}",
+                target.display()
+            ),
+        ));
+    }
+    if is_read_denied_path(target, deny_read, allow_read) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "blocked by sandbox policy (credential or protected path write denied): {}",
                 target.display()
             ),
         ));
@@ -368,6 +379,8 @@ mod tests {
                 Path::new("/work/repo"),
                 &writable,
                 &protect,
+                &[],
+                &[],
             );
             assert_eq!(res.is_ok(), expect_ok, "path={path} -> {res:?}");
         }
@@ -427,5 +440,37 @@ mod tests {
         );
         assert!(lexical_aliases(Path::new("/Users/u/.ssh")).is_empty());
         assert!(lexical_aliases(Path::new("/private/tmpx/secret")).is_empty());
+    }
+
+    #[test]
+    fn write_guard_rejects_read_denied_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let secret = root.join("secret");
+        let allowed = secret.join("public");
+        assert!(
+            check_write_path(
+                &secret.join("key"),
+                crate::EffectiveMode::WorkspaceWrite,
+                &root,
+                std::slice::from_ref(&root),
+                &[],
+                std::slice::from_ref(&secret),
+                std::slice::from_ref(&allowed),
+            )
+            .is_err()
+        );
+        assert!(
+            check_write_path(
+                &allowed.join("note"),
+                crate::EffectiveMode::WorkspaceWrite,
+                &root,
+                std::slice::from_ref(&root),
+                &[],
+                std::slice::from_ref(&secret),
+                std::slice::from_ref(&allowed),
+            )
+            .is_ok()
+        );
     }
 }

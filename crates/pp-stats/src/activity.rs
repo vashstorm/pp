@@ -27,6 +27,14 @@ fn session_stem(file: &str) -> &str {
     }
 }
 
+fn trace_session_key(file: &str) -> (bool, &str) {
+    if file.ends_with(".jsonl") || file.contains(".subagents/sessions/") {
+        (true, session_stem(file))
+    } else {
+        (false, file)
+    }
+}
+
 fn summary(rows: &[&RequestRow]) -> Value {
     let mut aggregate = Aggregate::default();
     let mut models = BTreeMap::new();
@@ -102,21 +110,21 @@ impl Store {
         let rows = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC"))?
             .query_map(params![range.since(now), now], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         // 子 Agent 请求折叠进根会话；未记录会话的请求各自成组，不能合并成一个会话。
-        let mut tools = BTreeMap::<String, i64>::new();
+        let mut tools = BTreeMap::<(bool, String), i64>::new();
         {
             let mut statement = self.conn.prepare("SELECT session_file,COUNT(*) FROM tool_calls WHERE timestamp>=?1 AND timestamp<=?2 GROUP BY session_file")?;
             let mut query = statement.query(params![range.since(now), now])?;
             while let Some(row) = query.next()? {
                 let file: String = row.get(0)?;
-                *tools.entry(session_stem(&file).to_owned()).or_default() +=
-                    row.get::<_, i64>(1)?;
+                let (jsonl, stem) = trace_session_key(&file);
+                *tools.entry((jsonl, stem.to_owned())).or_default() += row.get::<_, i64>(1)?;
             }
         }
-        let mut sessions = BTreeMap::<(Option<&str>, i64), Vec<&RequestRow>>::new();
+        let mut sessions = BTreeMap::<(Option<(bool, &str)>, i64), Vec<&RequestRow>>::new();
         for r in &rows {
             sessions
                 .entry((
-                    r.session_file.as_deref().map(session_stem),
+                    r.session_file.as_deref().map(trace_session_key),
                     if r.session_file.is_none() { r.id } else { 0 },
                 ))
                 .or_default()
@@ -124,11 +132,18 @@ impl Store {
         }
         let mut groups = sessions
             .iter()
-            .map(|((stem, _), group)| {
-                let stem = *stem;
+            .map(|((key, _), group)| {
+                let key = *key;
+                let stem = key.map(|(_, s)| s);
                 let mut value = summary(group);
                 let r = group[0];
-                let root = stem.map(|stem| format!("{stem}.jsonl"));
+                let root = key.map(|(jsonl, s)| {
+                    if jsonl {
+                        format!("{s}.jsonl")
+                    } else {
+                        s.to_owned()
+                    }
+                });
                 let agents = group
                     .iter()
                     .filter_map(|r| r.session_file.as_deref())
@@ -142,8 +157,11 @@ impl Store {
                 value["session_file"] = json!(root);
                 value["project"] = json!(r.project);
                 value["cwd"] = json!(r.cwd);
-                value["tool_calls"] =
-                    json!(stem.and_then(|stem| tools.get(stem)).copied().unwrap_or(0));
+                value["tool_calls"] = json!(
+                    key.and_then(|(jsonl, s)| tools.get(&(jsonl, s.to_owned())))
+                        .copied()
+                        .unwrap_or(0)
+                );
                 value["agents"] = json!(agents);
                 value
             })
@@ -551,5 +569,15 @@ mod tests {
             .unwrap();
         assert_eq!(custom_trace["session_file"], "custom-session");
         assert_eq!(custom_trace["requests"].as_array().unwrap().len(), 1);
+        let custom_listed = store
+            .traces(Range::Hour, now, 500, &HashMap::new())
+            .unwrap()["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["session_file"] == "custom-session")
+            .cloned()
+            .expect("traces list must preserve non-.jsonl session_file verbatim");
+        assert_eq!(custom_listed["agents"], 0);
     }
 }

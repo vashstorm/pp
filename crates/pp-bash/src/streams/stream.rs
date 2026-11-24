@@ -121,8 +121,8 @@ impl StreamState {
     }
 
     pub(super) fn meta(&self, run_id: &str) -> StreamMeta {
-        let (start, end, total) = self.retained_snapshot();
         let close = self.close_reason();
+        let (start, end, total) = self.retained_snapshot();
         StreamMeta {
             id: self.id,
             pipeline: self.pipeline,

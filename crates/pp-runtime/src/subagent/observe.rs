@@ -495,7 +495,24 @@ impl Binding {
                 Err(_) => warnings.push(format!("unreadable record at byte {position}")),
             }
         }
-        let offset = start + consumed as u64;
+        let mut offset = start + consumed as u64;
+        // 单行超过 MAX_RECORD_BYTES 且含换行时跳过该行，避免游标永久卡死。
+        if consumed == 0 && buffer.len() >= MAX_RECORD_BYTES && !buffer.contains(&b'\n') {
+            let mut scanned = start + buffer.len() as u64;
+            let mut chunk = vec![0u8; 64 * 1024];
+            loop {
+                let read = file.read(&mut chunk)?;
+                if read == 0 {
+                    break;
+                }
+                if let Some(pos) = chunk[..read].iter().position(|byte| *byte == b'\n') {
+                    offset = scanned + pos as u64 + 1;
+                    warnings.push(format!("oversized record skipped at byte {start}"));
+                    break;
+                }
+                scanned += read as u64;
+            }
+        }
         // 末尾半行留到下次，不推进 offset，也不让 has_more 引起忙循环。
         let mut has_more = capped;
         if !has_more && offset < length {

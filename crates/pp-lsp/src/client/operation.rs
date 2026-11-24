@@ -49,10 +49,12 @@ impl<'a> Op<'a> {
         match self.request_raw(method, params.clone()) {
             Err(Failure::Rpc(-32801)) if self.client.roots_added() => {
                 let limit = self.deadline.min(Instant::now() + PROJECT_LOAD_TIMEOUT);
-                let _ = self
-                    .client
-                    .signals
-                    .wait_project_load(limit, self.cancellation);
+                let _ =
+                    self.client
+                        .signals
+                        .wait_project_load_with(limit, self.cancellation, || {
+                            self.client.is_closed()
+                        });
                 if self.cancellation.is_cancelled() {
                     return Err(pp_core::cancellation::Cancelled.into());
                 }

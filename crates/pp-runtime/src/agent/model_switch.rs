@@ -180,20 +180,21 @@ impl Agent {
 
     /// 把当前模型同步给子 Agent 监督绑定；失败上报并终止本次切换。
     fn persist_active_model(&mut self, target: &crate::model_control::Target) -> Result<()> {
-        let Some(supervisor) = &mut self.subagent else {
+        let Some(supervisor) = &self.subagent else {
             return Ok(());
         };
-        supervisor.model = self.current_model.reference.clone();
-        supervisor.thinking = self.think_level;
-        if supervisor.depth == 0 {
+        let mut updated = supervisor.clone();
+        updated.model = self.current_model.reference.clone();
+        updated.thinking = self.think_level;
+        if updated.depth == 0 {
+            self.subagent = Some(updated);
             return Ok(());
         }
-        let supervisor = supervisor.clone();
-        let snapshot = supervisor
+        let snapshot = updated
             .directory()
-            .join(format!("{}.session.json", supervisor.owner));
+            .join(format!("{}.session.json", updated.owner));
         if let Err(error) = self.save_child(&snapshot).and_then(|()| {
-            supervisor.update_model(
+            updated.update_model(
                 &self.current_model.reference,
                 self.think_level,
                 self.catalog.cost(&self.current_model.reference),
@@ -202,6 +203,7 @@ impl Agent {
             self.report_model_failure(target, format!("Could not persist active model: {error:#}"));
             return Err(error.context("persisting subagent model change"));
         }
+        self.subagent = Some(updated);
         Ok(())
     }
 
@@ -220,7 +222,7 @@ impl Agent {
             .map(|()| {
                 self.model_source = source;
             });
-        if result.is_err() {
+        if let Err(error) = result {
             self.model_source = previous_source;
             self.role_route = previous_route;
             self.catalog = previous_catalog;
@@ -228,9 +230,14 @@ impl Agent {
                 Some(selection) => self.models.set_override(selection).map(|_| ()),
                 None => self.models.clear_override().map(|_| ()),
             };
-            rollback?;
+            if let Err(rollback_error) = rollback {
+                return Err(error.context(format!(
+                    "rolling back model override failed: {rollback_error:#}"
+                )));
+            }
+            return Err(error);
         }
-        result
+        Ok(())
     }
 
     pub fn switch_model(&mut self, reference: &str) -> Result<()> {

@@ -166,7 +166,9 @@ pub fn run_line_mode(
         }
         if matches!(command, Some(commands::Command::Agents)) {
             if let Ok(agent) = agent.as_mut() {
-                agent.ensure_subagents()?;
+                if let Err(error) = agent.ensure_subagents() {
+                    return stop_cli_lsp(Some(&*agent), Err(error));
+                }
                 if let Some(binding) = agent.subagents() {
                     writeln!(
                         stderr,
@@ -533,13 +535,26 @@ pub fn run_line_mode(
             ) => unreachable!(),
             Some(commands::Command::Prompt(prompt)) => {
                 if let Err(error) = run_cli_task(agent, Some(&prompt), &mut stdout, &mut stderr) {
+                    if error
+                        .chain()
+                        .any(|cause| cause.is::<cancellation::CleanupError>())
+                    {
+                        return stop_cli_lsp(Some(&*agent), Err(error));
+                    }
                     writeln!(stderr, "error: {error:#}")?;
                 }
             }
-            None => match run_cli_task(agent, Some(prompt), &mut stdout, &mut stderr) {
-                Ok(()) => {}
-                Err(error) => writeln!(stderr, "error: {error:#}")?,
-            },
+            None => {
+                if let Err(error) = run_cli_task(agent, Some(prompt), &mut stdout, &mut stderr) {
+                    if error
+                        .chain()
+                        .any(|cause| cause.is::<cancellation::CleanupError>())
+                    {
+                        return stop_cli_lsp(Some(&*agent), Err(error));
+                    }
+                    writeln!(stderr, "error: {error:#}")?;
+                }
+            }
         }
     }
     let hint = match agent.as_ref().ok().and_then(|agent| agent.session_id()) {

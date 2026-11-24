@@ -221,7 +221,10 @@ impl Runner {
                 let output = match outcome {
                     Ok(output) => output,
                     Err(error) => {
-                        if error.is::<Cancelled>() || error.is::<CleanupError>() {
+                        if error
+                            .chain()
+                            .any(|cause| cause.is::<Cancelled>() || cause.is::<CleanupError>())
+                        {
                             return Err(error);
                         }
                         record_stat(

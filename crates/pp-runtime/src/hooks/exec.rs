@@ -135,11 +135,14 @@ pub(super) fn run(request: Request<'_>, cancellation: &CancellationToken) -> Res
             Ok(outcome)
         }
         Err(error) => {
-            // 失败路径：先回收再报告原错误；回收失败不能被原错误掩盖。
-            let cleanup = guard.cleanup();
-            match cleanup {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(cleanup.context(format!("{error:#}"))),
+            // 失败路径：先回收再报告原错误；清理失败保持外层 CleanupError，原错误留在同一条链上。
+            match pp_core::cancellation::merge_cleanup_result(
+                Err(error),
+                guard.cleanup(),
+                "stopping hook command",
+            ) {
+                Ok(()) => unreachable!("merging an Err result always returns Err"),
+                Err(merged) => Err(merged),
             }
         }
     }

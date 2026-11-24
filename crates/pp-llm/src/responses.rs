@@ -188,6 +188,7 @@ impl OpenAiClient {
         #[cfg(debug_assertions)]
         let mock_script = self.take_mock_script()?;
         let new_request = attempts.attempt == 1 || !attempts.pending_open;
+        let had_pending = attempts.pending_open;
         if new_request {
             attempts.started = Instant::now();
             attempts.accounting_id = pp_config::task_status::request_id();
@@ -289,7 +290,7 @@ impl OpenAiClient {
                             event.map_err(|error| provider_failure(error, "Responses"))?;
                         // 线上原文所有权直接移交失败现场，不再额外克隆。
                         failure_context.push(raw);
-                        if record {
+                        if record || self.task_accounting.is_some() {
                             use async_openai::types::responses::ResponseStreamEvent;
                             let response = match &event {
                                 ResponseStreamEvent::ResponseCompleted(done) => {
@@ -304,8 +305,6 @@ impl OpenAiClient {
                                 _ => None,
                             };
                             if let Some(response) = response {
-                                snapshot =
-                                    serde_json::to_value(&response.output).unwrap_or_default();
                                 reported_usage = response.usage.as_ref().map(|usage| TokenUsage {
                                     input_tokens: u64::from(usage.input_tokens),
                                     output_tokens: u64::from(usage.output_tokens),
@@ -314,23 +313,26 @@ impl OpenAiClient {
                                         usage.input_tokens_details.cached_tokens,
                                     )),
                                 });
-                                stop_reason = Some(
-                                    if response.status != Status::Completed {
-                                        response
-                                            .incomplete_details
-                                            .as_ref()
-                                            .map_or("failed", |d| d.reason.as_str())
-                                    } else if response
-                                        .output
-                                        .iter()
-                                        .any(|item| matches!(item, OutputItem::FunctionCall(_)))
-                                    {
-                                        "tool_calls"
-                                    } else {
-                                        "stop"
-                                    }
-                                    .to_owned(),
-                                );
+                                if record {
+                                    snapshot =
+                                        serde_json::to_value(&response.output).unwrap_or_default();
+                                    stop_reason =
+                                        Some(
+                                            if response.status != Status::Completed {
+                                                response
+                                                    .incomplete_details
+                                                    .as_ref()
+                                                    .map_or("failed", |d| d.reason.as_str())
+                                            } else if response.output.iter().any(|item| {
+                                                matches!(item, OutputItem::FunctionCall(_))
+                                            }) {
+                                                "tool_calls"
+                                            } else {
+                                                "stop"
+                                            }
+                                            .to_owned(),
+                                        );
+                                }
                             }
                         }
                         if let Some(mut turn) = output.push(event, &mut progress)? {
@@ -368,10 +370,20 @@ impl OpenAiClient {
         });
         attempts.partial = partial;
         attempts.finish(&result);
-        let save_attempt = stream_opened || attempts.delay.is_none();
-        attempts.pending_open = attempted && !save_attempt;
         let elapsed_ms = elapsed_millis(started_at);
         failure_context.log("Responses", &self.model_reference, &result, elapsed_ms);
+        if had_pending && !attempted && attempts.delay.is_none() {
+            self.finish_pending_open(
+                attempts,
+                request.model.as_deref().unwrap_or_default(),
+                "responses",
+                result.as_ref().err(),
+                emit,
+            );
+            return result;
+        }
+        let save_attempt = stream_opened || attempts.delay.is_none();
+        attempts.pending_open = (attempted || had_pending) && !save_attempt;
         // 与 complete 相同的逻辑请求级计数边界；必须在 stats 保存之前。
         if attempted && save_attempt {
             self.record_model_usage();

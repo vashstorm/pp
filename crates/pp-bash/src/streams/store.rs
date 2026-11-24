@@ -151,8 +151,8 @@ impl PipeStore {
     ) -> Result<StreamRead, PipeStoreError> {
         let state = self.run_state(run_id)?;
         let stream = state.stream(stream_id).ok_or(PipeStoreError::Unavailable)?;
-        let slice = stream.read_snapshot(from);
         let close = stream.close_reason();
+        let slice = stream.read_snapshot(from);
         Ok(StreamRead {
             start: slice.start,
             end: slice.end,

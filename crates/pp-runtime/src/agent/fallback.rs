@@ -124,6 +124,19 @@ pub(super) fn switch_scratch_model(
     target: &pp_config::config::RoleModel,
     edit_mode: EditMode,
 ) -> Result<Option<u64>> {
+    let (replacement, window) = create_scratch_model(client, session, catalog, target, edit_mode)?;
+    *client = replacement;
+    Ok(window)
+}
+
+/// 构造指向目标模型的新客户端并按需转换临时会话历史，不要求源模型仍在目录中。
+pub(super) fn create_scratch_model(
+    source: &OpenAiClient,
+    session: &mut Session,
+    catalog: &ModelCatalog,
+    target: &pp_config::config::RoleModel,
+    edit_mode: EditMode,
+) -> Result<(OpenAiClient, Option<u64>)> {
     let config = catalog.resolve(&target.model)?;
     ensure!(
         config.thinking.supports(target.effort),
@@ -133,8 +146,8 @@ pub(super) fn switch_scratch_model(
         Session::Completion(_) => config.protocol != Protocol::Completion,
         Session::Response(_) => {
             config.protocol != Protocol::Response
-                || !client.same_source(&config)
-                || client.model_reference().split_once('/').map(|r| r.0)
+                || !source.same_source(&config)
+                || source.model_reference().split_once('/').map(|r| r.0)
                     != target.model.split_once('/').map(|r| r.0)
         }
     };
@@ -149,7 +162,7 @@ pub(super) fn switch_scratch_model(
         None
     };
     let mut replacement = OpenAiClient::new(&config)?;
-    client.copy_stats_context(&mut replacement);
+    source.copy_stats_context(&mut replacement);
     if let Some(converted) = converted {
         *session = converted;
     }
@@ -158,6 +171,5 @@ pub(super) fn switch_scratch_model(
         Session::Response(request) => request.model = Some(config.model),
     }
     session.set_think_level(target.effort);
-    *client = replacement;
-    Ok(config.context_window)
+    Ok((replacement, config.context_window))
 }

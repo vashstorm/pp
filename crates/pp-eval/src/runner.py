@@ -623,6 +623,53 @@ def _fold_continuations(lines: list[str], start: int) -> tuple[str, int]:
     return "".join(parts), idx + 1
 
 
+def _scan_line_lexical_state(
+    line: str,
+    triple_quote: str | None,
+    paren_depth: int,
+) -> tuple[str | None, int]:
+    """Track triple-quoted strings and bracket depth across physical lines."""
+    i = 0
+    n = len(line)
+    in_single: str | None = None
+    while i < n:
+        ch = line[i]
+        if triple_quote is not None:
+            if line.startswith(triple_quote, i):
+                triple_quote = None
+                i += 3
+                continue
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_single is not None:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == in_single:
+                in_single = None
+            i += 1
+            continue
+        if ch == "#":
+            break
+        if ch in ("'", '"'):
+            if line.startswith(ch * 3, i):
+                triple_quote = ch * 3
+                i += 3
+            else:
+                in_single = ch
+                i += 1
+            continue
+        if ch in "([{":
+            paren_depth += 1
+        elif ch in ")]}" and paren_depth > 0:
+            paren_depth -= 1
+        i += 1
+    return triple_quote, paren_depth
+
+
 def _transform_cell(source: str) -> str:
     lines = source.splitlines(keepends=False)
     if not lines:
@@ -637,45 +684,62 @@ def _transform_cell(source: str) -> str:
         return f"__pp_magic_cell({name!r}, {args!r}, {body!r})"
 
     out: list[str] = []
+    triple_quote: str | None = None
+    paren_depth = 0
     i = 0
     while i < len(lines):
-        line, next_i = _fold_continuations(lines, i)
-        stripped = line.lstrip()
-        indent = line[: len(line) - len(stripped)]
+        raw_line = lines[i]
+        if triple_quote is None and paren_depth == 0:
+            stripped = raw_line.lstrip()
+            indent = raw_line[: len(raw_line) - len(stripped)]
+            is_magic_start = (
+                stripped.startswith("!")
+                or _MAGIC_ASSIGN_RE.match(raw_line) is not None
+                or _LINE_MAGIC_RE.match(raw_line) is not None
+            )
+            if is_magic_start:
+                line, next_i = _fold_continuations(lines, i)
+                f_stripped = line.lstrip()
+                assign = _MAGIC_ASSIGN_RE.match(line)
+                if assign:
+                    a_indent, target, op, rest = assign.groups()
+                    rest = rest.strip()
+                    if op == "!":
+                        out.append(f"{a_indent}{target} = __pp_shell({rest!r})")
+                    else:
+                        name = op[1:]
+                        fn = "__pp_magic_async" if name == "load" else "__pp_magic"
+                        prefix = "await " if name == "load" else ""
+                        out.append(
+                            f"{a_indent}{target} = {prefix}{fn}({name!r}, {rest!r})"
+                        )
+                    i = next_i
+                    continue
 
-        assign = _MAGIC_ASSIGN_RE.match(line)
-        if assign:
-            a_indent, target, op, rest = assign.groups()
-            rest = rest.strip()
-            if op == "!":
-                out.append(f"{a_indent}{target} = __pp_shell({rest!r})")
-            else:
-                name = op[1:]
-                fn = "__pp_magic_async" if name == "load" else "__pp_magic"
-                prefix = "await " if name == "load" else ""
-                out.append(f"{a_indent}{target} = {prefix}{fn}({name!r}, {rest!r})")
-            i = next_i
-            continue
+                if f_stripped.startswith("!"):
+                    cmd = f_stripped[1:].strip()
+                    out.append(f"{indent}__pp_shell({cmd!r})")
+                    i = next_i
+                    continue
 
-        if stripped.startswith("!"):
-            cmd = stripped[1:].strip()
-            out.append(f"{indent}__pp_shell({cmd!r})")
-            i = next_i
-            continue
+                m = _LINE_MAGIC_RE.match(line)
+                if m:
+                    m_indent, name, rest = m.groups()
+                    rest = rest.strip()
+                    if name == "load":
+                        out.append(
+                            f"{m_indent}await __pp_magic_async({name!r}, {rest!r})"
+                        )
+                    else:
+                        out.append(f"{m_indent}__pp_magic({name!r}, {rest!r})")
+                    i = next_i
+                    continue
 
-        m = _LINE_MAGIC_RE.match(line)
-        if m:
-            m_indent, name, rest = m.groups()
-            rest = rest.strip()
-            if name == "load":
-                out.append(f"{m_indent}await __pp_magic_async({name!r}, {rest!r})")
-            else:
-                out.append(f"{m_indent}__pp_magic({name!r}, {rest!r})")
-            i = next_i
-            continue
-
-        out.append(line)
-        i = next_i
+        triple_quote, paren_depth = _scan_line_lexical_state(
+            raw_line, triple_quote, paren_depth
+        )
+        out.append(raw_line)
+        i += 1
 
     return "\n".join(out)
 
@@ -694,6 +758,27 @@ def _has_pip() -> bool:
         return False
 
 
+def _terminate_child_group(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    for sig, grace in ((signal.SIGTERM, 0.3), (signal.SIGKILL, 0.0)):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            return
+        except OSError:
+            try:
+                proc.send_signal(sig)
+            except OSError:
+                return
+        if grace > 0:
+            deadline = time.monotonic() + grace
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    return
+                time.sleep(0.02)
+
+
 def _run_streamed(cmd: list[str]) -> int:
     proc = subprocess.Popen(
         cmd,
@@ -702,15 +787,22 @@ def _run_streamed(cmd: list[str]) -> int:
         stderr=subprocess.STDOUT,
         text=True,
         errors="replace",
+        start_new_session=True,
     )
     assert proc.stdout is not None
     try:
         for line in proc.stdout:
             sys.stdout.write(line)
             sys.stdout.flush()
+    except BaseException:
+        _terminate_child_group(proc)
+        raise
     finally:
-        proc.stdout.close()
-    return proc.wait()
+        try:
+            proc.stdout.close()
+        finally:
+            rc = proc.wait()
+    return rc
 
 
 def _magic_pip(args: str) -> None:
@@ -848,6 +940,7 @@ def __pp_shell(cmd: str) -> _ShellResult:
         stderr=subprocess.STDOUT,
         text=True,
         errors="replace",
+        start_new_session=True,
     )
     lines: list[str] = []
     assert proc.stdout is not None
@@ -855,9 +948,14 @@ def __pp_shell(cmd: str) -> _ShellResult:
         for line in proc.stdout:
             sys.stdout.write(line)
             lines.append(line.rstrip("\r\n"))
+    except BaseException:
+        _terminate_child_group(proc)
+        raise
     finally:
-        proc.stdout.close()
-    rc = proc.wait()
+        try:
+            proc.stdout.close()
+        finally:
+            rc = proc.wait()
     if rc != 0:
         raise ShellError(f"$ {cmd}: exited with code {rc}", "\n".join(lines), rc)
     return _ShellResult(lines)

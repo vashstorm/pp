@@ -202,3 +202,51 @@ fn slash_themes_completion_and_direct_arguments_update_and_persist() {
     assert_eq!(saved.tui.theme, Theme::Dracula);
     assert_eq!(saved.tui.icons, IconMode::Ascii);
 }
+
+#[cfg(debug_assertions)]
+#[test]
+fn mock_test_snapshot_restores_current_source_and_override_selection() {
+    use std::sync::{Arc, Mutex};
+
+    let mut app = app();
+    let selection = pp_config::model_state::Selection {
+        reference: "fixture/override".into(),
+        effort: pp_core::model::ThinkLevel::High,
+    };
+    app.current_source = Some(pp_core::model::ModelSource::Override);
+    app.override_selection = Some(selection.clone());
+    app.mock_saved = Some(app.take_mock_snapshot());
+    app.install_mock_snapshot(pp_mock_ai::MockTestSnapshot {
+        current_model: ModelChoice {
+            reference: "mock/model".into(),
+            model: "model".into(),
+            protocol: pp_config::models::Protocol::Completion,
+            thinking: pp_config::models::ModelThinking::default(),
+            context_window: Some(8192),
+        },
+        choices: vec![],
+        think_level: pp_core::model::ThinkLevel::Medium,
+        default_think_level: pp_core::model::ThinkLevel::Medium,
+        usage: pp_core::context::ContextUsage {
+            estimated_tokens: 100,
+            context_window: Some(8192),
+            last_request: None,
+            session_output_tokens: 0,
+            auto_compact: false,
+            threshold_percent: 80,
+        },
+        subagent_control: Arc::new(Mutex::new(None)),
+        pipe_store: pp_bash::PipeStore::default(),
+    });
+    assert_eq!(app.override_selection, None);
+    app.finish_mock_test(
+        Ok(pp_mock_ai::MockTestReport { calls: 0 }),
+        Duration::from_millis(1),
+        chrono::Local::now(),
+    );
+    assert_eq!(
+        app.current_source,
+        Some(pp_core::model::ModelSource::Override)
+    );
+    assert_eq!(app.override_selection, Some(selection));
+}

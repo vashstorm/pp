@@ -315,7 +315,15 @@ impl Policy {
 
     pub fn check_write(&self, path: &Path) -> io::Result<()> {
         let abs = self.absolutize(path);
-        guard::check_write_path(&abs, self.mode, &self.cwd, &self.writable, &self.protect)
+        guard::check_write_path(
+            &abs,
+            self.mode,
+            &self.cwd,
+            &self.writable,
+            &self.protect,
+            &self.deny_read,
+            &self.allow_read,
+        )
     }
 
     pub fn command_wrapper_prefix(&self) -> Result<(String, Vec<OsString>)> {

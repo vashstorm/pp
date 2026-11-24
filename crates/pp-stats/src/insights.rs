@@ -197,12 +197,23 @@ impl Store {
         let mut models = BTreeMap::<(String, String), (String, String, Tool)>::new();
         let mut requests = 0u64;
         let mut partial = 0u64;
-        let mut requests_by_key = BTreeMap::<String, String>::new();
+        let mut requests_by_key = BTreeMap::<String, (String, String, String)>::new();
+        let mut model_meta = BTreeMap::<String, (String, String)>::new();
         // 同一请求的每个工具调用各占一行，且按 id 相邻排列；攒成一批后再按调用数均分 Token 与费用。
         let mut push_request = |r: RequestRow, calls: &[(String, u64)]| -> Result<()> {
             let count = calls.len();
             requests += 1;
-            requests_by_key.insert(r.request_key.clone(), r.model_reference.clone());
+            requests_by_key.insert(
+                r.request_key.clone(),
+                (
+                    r.model_reference.clone(),
+                    r.model.clone(),
+                    r.provider.clone(),
+                ),
+            );
+            model_meta
+                .entry(r.model_reference.clone())
+                .or_insert_with(|| (r.model.clone(), r.provider.clone()));
             partial += u64::from(r.status != "ok");
             let timestamp = range.bucket(r.timestamp)?;
             let cost = r.cost().map(|c| c.total());
@@ -247,7 +258,10 @@ impl Store {
         let mut model_executions = BTreeMap::<(String, String), Execution>::new();
         let mut execution_summary = Execution::default();
         let mut tool_statement = self.conn.prepare(
-            "SELECT tool,request_key,status,duration_ms,timestamp,result_chars FROM tool_calls WHERE timestamp>=?1 AND timestamp<=?2",
+            "SELECT t.tool,t.request_key,t.status,t.duration_ms,t.timestamp,t.result_chars,r.model_reference,r.model,r.provider
+             FROM tool_calls t
+             LEFT JOIN requests r ON r.request_key=t.request_key
+             WHERE t.timestamp>=?1 AND t.timestamp<=?2",
         )?;
         let mut tool_rows = tool_statement.query(params![range.since(now), now])?;
         while let Some(tool_row) = tool_rows.next()? {
@@ -261,35 +275,74 @@ impl Store {
                 .map(u64::try_from)
                 .transpose()
                 .context("tool result length is negative")?;
+            let joined_reference: Option<String> = tool_row.get(6)?;
+            let joined_model: Option<String> = tool_row.get(7)?;
+            let joined_provider: Option<String> = tool_row.get(8)?;
             execution_summary.push(&status, duration, slot, result_chars);
             executions
                 .entry(tool.clone())
                 .or_default()
                 .push(&status, duration, slot, result_chars);
-            if let Some(reference) = key.as_ref().and_then(|key| requests_by_key.get(key)) {
-                model_executions
-                    .entry((tool, reference.clone()))
-                    .or_default()
-                    .push(&status, duration, slot, result_chars);
+            let meta = key
+                .as_ref()
+                .and_then(|key| requests_by_key.get(key).cloned())
+                .or_else(|| Some((joined_reference?, joined_model?, joined_provider?)));
+            if let Some((reference, model, provider)) = meta {
+                model_meta
+                    .entry(reference.clone())
+                    .or_insert((model, provider));
+                model_executions.entry((tool, reference)).or_default().push(
+                    &status,
+                    duration,
+                    slot,
+                    result_chars,
+                );
             }
         }
-        let tools: Vec<_> = tools
-            .iter()
-            .map(|(name, t)| {
+        let all_tools: BTreeSet<&str> = tools
+            .keys()
+            .chain(executions.keys())
+            .map(String::as_str)
+            .collect();
+        let empty_tool = Tool::default();
+        let tools: Vec<_> = all_tools
+            .into_iter()
+            .map(|name| {
+                let t = tools.get(name).unwrap_or(&empty_tool);
                 let mut v = t.value();
-                if let Some(execution) = executions.get(name.as_str()) {
+                if let Some(execution) = executions.get(name) {
                     execution.apply(&mut v);
                 }
                 v["key"] = json!(name);
                 v["tool"] = json!(name);
+                let model_keys: BTreeSet<&str> = models
+                    .range((name.to_owned(), String::new())..)
+                    .take_while(|((tool, _), _)| tool == name)
+                    .map(|((_, key), _)| key.as_str())
+                    .chain(
+                        model_executions
+                            .range((name.to_owned(), String::new())..)
+                            .take_while(|((tool, _), _)| tool == name)
+                            .map(|((_, key), _)| key.as_str()),
+                    )
+                    .collect();
                 v["models"] = json!(
-                    models
-                        .range((name.clone(), String::new())..)
-                        .take_while(|((tool, _), _)| tool == name)
-                        .map(|((_, key), (model, provider, t))| {
-                            let mut m = t.value();
+                    model_keys
+                        .into_iter()
+                        .map(|key| {
+                            let (model, provider, metric) =
+                                match models.get(&(name.to_owned(), key.to_owned())) {
+                                    Some((model, provider, t)) => {
+                                        (model.as_str(), provider.as_str(), t)
+                                    }
+                                    None => {
+                                        let (model, provider) = &model_meta[key];
+                                        (model.as_str(), provider.as_str(), &empty_tool)
+                                    }
+                                };
+                            let mut m = metric.value();
                             if let Some(execution) =
-                                model_executions.get(&(name.clone(), key.clone()))
+                                model_executions.get(&(name.to_owned(), key.to_owned()))
                             {
                                 execution.apply(&mut m);
                             }
@@ -481,5 +534,35 @@ mod tests {
         assert_eq!(empty["summary"]["cost"], 0.0);
         assert_eq!(empty["summary"]["tokens"], 0.0);
         assert!(empty["tools"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn stats_tools_keeps_execution_only_tools_when_request_tools_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = open_store(&dir.path().join("stats.db")).unwrap();
+        let now = chrono::Utc::now().timestamp_millis();
+        let req = fixture("exec-only-req", now - 1000);
+        store.insert(&req, &Value::Null).unwrap();
+        store
+            .tool(&crate::ToolCall {
+                request_key: Some("exec-only-req"),
+                session_file: Path::new("/tmp/session.jsonl"),
+                call_id: "call-exec",
+                tool: "eval",
+                status: crate::ToolStatus::Error,
+                error_message: Some("boom"),
+                timestamp: now - 500,
+                duration_ms: 42.0,
+                result_chars: Some(128),
+            })
+            .unwrap();
+        let report = store.tools(Range::Hour, now).unwrap();
+        let tools = report["tools"].as_array().unwrap();
+        let eval_row = tools.iter().find(|t| t["tool"] == "eval").unwrap();
+        assert_eq!(eval_row["executions"], 1);
+        assert_eq!(eval_row["errors"], 1);
+        assert_eq!(eval_row["calls"], 0);
+        assert_eq!(eval_row["models"].as_array().unwrap().len(), 1);
+        assert_eq!(eval_row["models"][0]["executions"], 1);
     }
 }

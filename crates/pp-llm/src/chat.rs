@@ -171,6 +171,7 @@ impl OpenAiClient {
         let (initiator, has_images) = auth::request_metadata(&wire);
         self.prepare_auth(cancellation, initiator, has_images)?;
         let new_request = attempts.attempt == 1 || !attempts.pending_open;
+        let had_pending = attempts.pending_open;
         if new_request {
             attempts.started = Instant::now();
             attempts.accounting_id = pp_config::task_status::request_id();
@@ -306,8 +307,6 @@ impl OpenAiClient {
         });
         attempts.partial = partial;
         attempts.finish(&result);
-        let save_attempt = stream_opened || attempts.delay.is_none();
-        attempts.pending_open = attempted && !save_attempt;
         let elapsed_ms = elapsed_millis(started_at);
         failure_context.log(
             "Chat Completions",
@@ -315,6 +314,18 @@ impl OpenAiClient {
             &result,
             elapsed_ms,
         );
+        if had_pending && !attempted && attempts.delay.is_none() {
+            self.finish_pending_open(
+                attempts,
+                &request.model,
+                "chat-completions",
+                result.as_ref().err(),
+                emit,
+            );
+            return result;
+        }
+        let save_attempt = stream_opened || attempts.delay.is_none();
+        attempts.pending_open = (attempted || had_pending) && !save_attempt;
         // 纯建连失败合并为一组；流已经打开的失败独立统计。发送前取消不计数。
         // 计数写入先于 stats，退避中取消由 finish_backoff 收尾。
         if attempted && save_attempt {

@@ -39,6 +39,31 @@ impl AllowedTools {
         }
     }
 
+    /// 将子 Agent 工具白名单与父级 `--allowed-tools` / `--disallowed-tools` 求交集，
+    /// 并继承父级的黑名单及 `Bash(...)` AST 规则。
+    pub fn restrict_for_child(&self, child_names: impl IntoIterator<Item = String>) -> Self {
+        let exact: BTreeSet<String> = child_names
+            .into_iter()
+            .filter(|name| name != "task" && self.allows(name))
+            .collect();
+        let bash_allowed = if exact.contains("bash") && !self.has_unbounded_bash() {
+            self.bash_allowed.clone()
+        } else {
+            Vec::new()
+        };
+        Self {
+            exact,
+            prefixes: Vec::new(),
+            all_standard: false,
+            bash_allowed,
+            disallowed_exact: self.disallowed_exact.clone(),
+            disallowed_prefixes: self.disallowed_prefixes.clone(),
+            disallowed_all: self.disallowed_all,
+            bash_disallowed: self.bash_disallowed.clone(),
+            preapprove: self.preapprove,
+        }
+    }
+
     /// 交互模式仅指定 `--disallowed-tools` 时使用的全量受限基线（不赋予 CLI 预批准）。
     fn all_with_task_no_preapprove() -> Self {
         Self {

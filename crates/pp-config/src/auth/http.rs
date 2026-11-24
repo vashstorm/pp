@@ -283,13 +283,16 @@ fn oauth_credential(
     } else {
         None
     };
+    let expires_at = crate::auth::now()
+        .saturating_add(expires)
+        .min(i64::MAX as u64);
     let credential = Credential {
         generation: previous
             .map(|old| old.generation.clone())
             .unwrap_or_default(),
         access_token,
         refresh_token,
-        expires_at: Some(crate::auth::now().saturating_add(expires)),
+        expires_at: Some(expires_at),
         account_id,
         api_endpoint: None,
         device_id: previous.and_then(|old| old.device_id.clone()),
@@ -368,9 +371,13 @@ async fn device_login(
     success(status)?;
     let code = string(&device, "device_code")?;
     let user_code = string(&device, "user_code")?;
-    let url = device["verification_uri_complete"]
+    let url = match device["verification_uri_complete"]
         .as_str()
-        .unwrap_or(string(&device, "verification_uri")?);
+        .filter(|value| !value.is_empty())
+    {
+        Some(complete) => complete,
+        None => string(&device, "verification_uri")?,
+    };
     validate_verification_url(url, provider)?;
     show(url, user_code);
     let duration = seconds(&device, "expires_in", 600).clamp(1, 1800);

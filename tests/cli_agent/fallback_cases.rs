@@ -221,10 +221,10 @@ fn fallback_requests_count_toward_max_turns_in_both_protocols() {
     for protocol in ["completion", "response"] {
         let server = server();
         let home = tempfile::tempdir().unwrap();
-        write_settings(home.path(), &settings(0)).unwrap();
+        write_settings(home.path(), settings(0)).unwrap();
         std::fs::write(
             config_path(home.path(), "models.yml"),
-            &models(&server, protocol, protocol),
+            models(&server, protocol, protocol),
         )
         .unwrap();
         let cli = Cli::spawn(

@@ -85,6 +85,7 @@ export function toolStartOfDay(timestamp) {
 export function toolNextDay(timestamp) {
   const date = new Date(timestamp);
   date.setDate(date.getDate() + 1);
+  date.setHours(0, 0, 0, 0);
   return date.getTime();
 }
 

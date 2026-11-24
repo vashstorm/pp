@@ -906,4 +906,23 @@ mod tests {
         assert!(beta_row < diag1_row);
         assert_eq!(diag2_row, diag1_row + 1);
     }
+
+    #[test]
+    fn rename_clamps_long_input_cursor_within_narrow_area() {
+        let mut panel = ready_panel(vec![entry(
+            "a",
+            "alpha.md",
+            PlanLocation::Drafts,
+            "Alpha",
+            0,
+            1,
+        )]);
+        panel.rename = Some("a".repeat(60));
+        let mut terminal = Terminal::new(TestBackend::new(20, 12)).unwrap();
+        terminal
+            .draw(|frame| panel.draw(frame, frame.area()))
+            .unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert!(cursor.x < 20 && cursor.y < 12, "{cursor:?}");
+    }
 }

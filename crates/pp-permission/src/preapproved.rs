@@ -20,6 +20,13 @@ impl BashCommandPattern {
             Self::Exact(exact) => leaf.matches_exact(exact),
         }
     }
+
+    pub(crate) fn matches_leaf_restrictive(&self, leaf: &LeafCommand) -> bool {
+        match self {
+            Self::Prefix(prefix) => leaf.matches_restrictive_prefix(prefix),
+            Self::Exact(exact) => leaf.matches_restrictive_exact(exact),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -63,13 +70,17 @@ pub fn check_bash_command_rules(
         if leaf.dynamic_exec || leaf.is_function_call {
             bail!("dynamic bash command cannot be verified against tool bash rules.");
         }
-        if disallowed.iter().any(|pattern| pattern.matches_leaf(leaf)) {
+        if disallowed
+            .iter()
+            .any(|pattern| pattern.matches_leaf_restrictive(leaf))
+        {
             bail!("bash command is blocked by --disallowed-tools rule.");
         }
         if let Some(allowed_patterns) = allowed
-            && !allowed_patterns
-                .iter()
-                .any(|pattern| pattern.matches_leaf(leaf))
+            && (analysis.has_write_redirection
+                || !allowed_patterns
+                    .iter()
+                    .any(|pattern| pattern.matches_leaf(leaf)))
         {
             bail!("bash command is outside --allowed-tools bash rules.");
         }

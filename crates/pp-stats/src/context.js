@@ -223,7 +223,7 @@ export function openContextReader(detail, trigger) {
   const items = contextItems(detail.request_context);
   const selected = items.find((item) => item.label === "System prompt") || items[0];
   const background = [
-    ...document.querySelectorAll("body > header,body > aside,body > main,#overlay"),
+    ...document.querySelectorAll("body > header,body > #sidebar,body > main,#overlay"),
   ].filter((el) => el instanceof HTMLElement);
   contextReaderState = {
     detail,

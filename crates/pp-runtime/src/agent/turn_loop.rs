@@ -312,11 +312,10 @@ impl Agent {
                     emit(event);
                     continue;
                 }
-                if !awaiting_user_answer
-                    && let Err(reason) = self
-                        .output_schema
-                        .as_ref()
-                        .map_or(Ok(()), |schema| schema.validate(&text))
+                if let Err(reason) = self
+                    .output_schema
+                    .as_ref()
+                    .map_or(Ok(()), |schema| schema.validate(&text))
                 {
                     if self
                         .output_schema

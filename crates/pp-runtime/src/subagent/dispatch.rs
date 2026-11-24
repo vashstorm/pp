@@ -245,7 +245,8 @@ impl Binding {
         }
         let mut results = Vec::new();
         for (record, run_id, task, blocking) in records {
-            if let Err(error) = self.launch(record.clone(), &run_id, task, token) {
+            let launch_error = self.launch(record.clone(), &run_id, task, token).err();
+            if let Some(error) = &launch_error {
                 self.settle(
                     &run_id,
                     json!({"ok":false,"error":format!("{error:#}")}),
@@ -254,7 +255,23 @@ impl Binding {
                 )?;
             }
             let agent_id = lock(&self.inner.state).disk.runs[&run_id].agent_id.clone();
-            let value = json!({"agent_id":agent_id,"run_id":run_id,"status":"queued","output_uri":format!("agent://{agent_id}"),"blocking":blocking});
+            let value = match launch_error {
+                Some(error) => json!({
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "status": "failed",
+                    "error": format!("{error:#}"),
+                    "output_uri": format!("agent://{agent_id}"),
+                    "blocking": blocking,
+                }),
+                None => json!({
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "status": "queued",
+                    "output_uri": format!("agent://{agent_id}"),
+                    "blocking": blocking,
+                }),
+            };
             results.push(value);
         }
         for value in &mut results {

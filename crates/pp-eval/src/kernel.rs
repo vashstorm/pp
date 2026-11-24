@@ -3,7 +3,7 @@
 use crate::runtime::{PythonRuntime, probe_python};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
-use pp_core::cancellation::{CancellationToken, CleanupError};
+use pp_core::cancellation::{CancellationToken, Cancelled, CleanupError};
 use pp_core::events::{AgentEvent, OutputStream};
 use pp_workspace::output::OutputSink;
 use serde::Deserialize;
@@ -17,6 +17,7 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
     },
     thread::{self, JoinHandle},
@@ -28,7 +29,9 @@ const PREVIEW_INTERVAL: Duration = Duration::from_millis(50);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(800);
+const READER_DRAIN_GRACE: Duration = Duration::from_millis(500);
 const STDERR_TAIL_CAP: usize = 8 * 1024;
+static NEXT_TMP_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 enum KernelFrame {
@@ -111,7 +114,9 @@ pub(crate) struct RunningKernel {
     frames: Option<Receiver<KernelFrame>>,
     stderr_tail: Arc<Mutex<Vec<u8>>>,
     reader_handle: Option<JoinHandle<()>>,
+    reader_done: Option<Receiver<()>>,
     stderr_handle: Option<JoinHandle<()>>,
+    stderr_done: Option<Receiver<()>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,8 +151,9 @@ fn ensure_runner_script(cache_dir: &Path) -> Result<PathBuf> {
         Err(_) => true,
     };
     if needs_write {
+        let seq = NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed);
         let tmp = cache_dir.join(format!(
-            "pp-eval-runner-{hash:08x}.{}.tmp",
+            "pp-eval-runner-{hash:08x}.{}.{seq}.tmp",
             std::process::id()
         ));
         fs::write(&tmp, RUNNER_PY.as_bytes())
@@ -253,6 +259,7 @@ impl RunningKernel {
             .context("missing Python kernel stderr")?;
 
         let (tx, rx) = mpsc::sync_channel::<KernelFrame>(512);
+        let (reader_done_tx, reader_done_rx) = mpsc::channel::<()>();
         let reader_handle = thread::Builder::new()
             .name("pp-eval-stdout".to_owned())
             .spawn(move || {
@@ -278,11 +285,13 @@ impl RunningKernel {
                         }
                     }
                 }
+                let _ = reader_done_tx.send(());
             })
             .context("spawning Python stdout reader")?;
 
         let stderr_tail = Arc::new(Mutex::new(Vec::new()));
         let stderr_buf = stderr_tail.clone();
+        let (stderr_done_tx, stderr_done_rx) = mpsc::channel::<()>();
         let stderr_handle = thread::Builder::new()
             .name("pp-eval-stderr".to_owned())
             .spawn(move || {
@@ -302,6 +311,7 @@ impl RunningKernel {
                         }
                     }
                 }
+                let _ = stderr_done_tx.send(());
             })
             .context("spawning Python stderr reader")?;
 
@@ -312,12 +322,42 @@ impl RunningKernel {
             frames: Some(rx),
             stderr_tail,
             reader_handle: Some(reader_handle),
+            reader_done: Some(reader_done_rx),
             stderr_handle: Some(stderr_handle),
+            stderr_done: Some(stderr_done_rx),
         })
     }
 
+    /// 非破坏性检测主进程是否已退出（不回收 zombie），保证 `shutdown()` 执行
+    /// `killpg` 之前 `pgid` 仍由当前子进程锚定，防止 PID 复用误杀。
+    fn leader_exited_nonreap(&self) -> bool {
+        let pid = self.child.id() as libc::id_t;
+        if pid == 0 {
+            return true;
+        }
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        loop {
+            let rc = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if rc != 0 {
+                let err = std::io::Error::last_os_error().raw_os_error();
+                if err == Some(libc::EINTR) {
+                    continue;
+                }
+                return err == Some(libc::ECHILD);
+            }
+            return info.si_signo != 0;
+        }
+    }
+
     fn is_alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        !self.leader_exited_nonreap()
     }
 
     fn send_line(&mut self, value: &Value) -> Result<()> {
@@ -332,8 +372,8 @@ impl RunningKernel {
     }
 
     fn send_signal_group(&mut self, sig: libc::c_int) {
-        if matches!(self.child.try_wait(), Ok(None)) && self.pgid > 0 {
-            // 仅在直接子进程尚未被 wait 回收前向其进程组发信号，避免 PID 复用误杀。
+        if self.pgid > 0 {
+            // 仅在尚未调用 `wait`/`try_wait` 回收 leader 前向进程组发信号，避免 PID 复用。
             unsafe {
                 libc::killpg(self.pgid, sig);
             }
@@ -341,7 +381,7 @@ impl RunningKernel {
     }
 
     fn send_sigint_leader(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
+        if !self.leader_exited_nonreap() {
             let pid = self.child.id() as libc::pid_t;
             if pid > 0 {
                 unsafe {
@@ -354,16 +394,13 @@ impl RunningKernel {
     fn wait_exit(&mut self, budget: Duration) -> bool {
         let deadline = Instant::now() + budget;
         loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) => return true,
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        return false;
-                    }
-                    thread::sleep(Duration::from_millis(15));
-                }
-                Err(_) => return false,
+            if self.leader_exited_nonreap() {
+                return true;
             }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(15));
         }
     }
 
@@ -392,13 +429,25 @@ impl RunningKernel {
                 }
             }
         }
-        if let Some(handle) = self.reader_handle.take() {
-            let _ = handle.join();
-        }
-        if let Some(handle) = self.stderr_handle.take() {
-            let _ = handle.join();
-        }
+        // Leader 已退出（或崩溃）但尚未回收前，清扫同进程组内可能残留的 fork/Popen 后代，
+        // 随后再回收 leader 释放 PID。
+        self.send_signal_group(libc::SIGKILL);
+        let _ = self.child.wait();
+        join_bounded(self.reader_handle.take(), self.reader_done.take());
+        join_bounded(self.stderr_handle.take(), self.stderr_done.take());
         Ok(())
+    }
+}
+
+fn join_bounded(handle: Option<JoinHandle<()>>, done: Option<Receiver<()>>) {
+    let (Some(handle), Some(done)) = (handle, done) else {
+        return;
+    };
+    if !matches!(
+        done.recv_timeout(READER_DRAIN_GRACE),
+        Err(RecvTimeoutError::Timeout)
+    ) {
+        let _ = handle.join();
     }
 }
 
@@ -636,6 +685,21 @@ pub(crate) fn run_cell(
                             "call_id": bridge_id,
                             "value": value,
                         }),
+                        Err(err)
+                            if err
+                                .chain()
+                                .any(|c| c.is::<CleanupError>() || c.is::<Cancelled>()) =>
+                        {
+                            // 嵌套工具或 post-hook 发生取消或清理失败：立即停止内核，
+                            // 保留原类型链向上冒泡，绝不吞成 Python 侧可捕获的 RuntimeError。
+                            let shutdown_res = state.shutdown_running();
+                            state.restarted_notice = true;
+                            return pp_core::cancellation::merge_cleanup_result(
+                                Err(err),
+                                shutdown_res,
+                                "stopping Python kernel",
+                            );
+                        }
                         Err(err) => json!({
                             "type": "tool_result",
                             "call_id": bridge_id,
