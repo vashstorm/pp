@@ -12,10 +12,9 @@ fn streaming_utf8_fragments_match_whole_lossy_decoding() {
     ];
     for bytes in cases {
         for chunk_size in 1..=9 {
-            let (text, live, truncated, received) = stream_capture(bytes, chunk_size);
+            let (text, truncated, received) = stream_capture(bytes, chunk_size);
             let expected = String::from_utf8_lossy(bytes);
             assert_eq!(text, expected, "chunk size {chunk_size}");
-            assert_eq!(live, expected, "chunk size {chunk_size}");
             assert!(!truncated);
             assert_eq!(received, bytes.len());
         }
@@ -26,10 +25,9 @@ fn streaming_utf8_fragments_match_whole_lossy_decoding() {
 fn streaming_pipe_draining_keeps_utf8_past_old_cap() {
     for count in [OUTPUT_LIMIT - 1, OUTPUT_LIMIT, OUTPUT_LIMIT + 1] {
         let bytes = vec![b'x'; count];
-        let (text, live, truncated, received) = stream_capture(&bytes, PIPE_CHUNK_SIZE);
+        let (text, truncated, received) = stream_capture(&bytes, PIPE_CHUNK_SIZE);
         assert_eq!(received, count);
         assert_eq!(text, "x".repeat(count));
-        assert_eq!(live, text);
         assert!(!truncated);
     }
     // 管道层不再截断；跨越旧限额的字符也必须保持完整。
@@ -38,9 +36,8 @@ fn streaming_pipe_draining_keeps_utf8_past_old_cap() {
         bytes.extend_from_slice("中😀".as_bytes());
         bytes.resize(bytes.len() + OUTPUT_LIMIT * 2, b'z');
         for chunk_size in [1, 7, PIPE_CHUNK_SIZE] {
-            let (text, live, truncated, received) = stream_capture(&bytes, chunk_size);
+            let (text, truncated, received) = stream_capture(&bytes, chunk_size);
             assert_eq!(text, String::from_utf8_lossy(&bytes));
-            assert_eq!(live, text);
             assert!(!truncated);
             assert_eq!(received, bytes.len());
         }

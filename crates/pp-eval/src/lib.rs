@@ -26,21 +26,9 @@ pub struct Session {
     state: Arc<Mutex<KernelState>>,
 }
 
-/// 独立清理句柄，供外层（如任务收尾或会话切换）在必要时触发回收。
-#[derive(Clone)]
-pub struct EvalCleanup {
-    state: Arc<Mutex<KernelState>>,
-}
-
 impl Session {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn cleanup(&self) -> EvalCleanup {
-        EvalCleanup {
-            state: Arc::clone(&self.state),
-        }
     }
 
     /// 停止并回收当前常驻内核，保留会话对象可供下次调用重新拉起。
@@ -73,20 +61,6 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.stop();
-    }
-}
-
-impl EvalCleanup {
-    pub fn shutdown(&self) -> Result<()> {
-        let running = {
-            let mut state = lock(&self.state);
-            state.closed = true;
-            state.running.take()
-        };
-        if let Some(kernel) = running {
-            kernel.shutdown()?;
-        }
-        Ok(())
     }
 }
 

@@ -78,10 +78,6 @@ impl Tools {
         self.web_search = settings;
     }
 
-    pub fn web_search_settings(&self) -> &pp_config::config::WebSearchSettings {
-        &self.web_search
-    }
-
     pub fn set_sandbox(&mut self, sandbox: std::sync::Arc<pp_sandbox::Sandbox>) {
         self.sandbox = sandbox;
     }
@@ -155,10 +151,6 @@ impl Tools {
 
     pub fn stop_eval(&self) -> Result<()> {
         self.eval.stop()
-    }
-
-    pub fn eval_cleanup(&self) -> pp_eval::EvalCleanup {
-        self.eval.cleanup()
     }
 
     pub fn cwd(&self) -> &Path {

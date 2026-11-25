@@ -456,7 +456,6 @@ pub(crate) struct KernelState {
     pub(crate) running: Option<RunningKernel>,
     pub(crate) next_req_id: u64,
     pub(crate) restarted_notice: bool,
-    pub(crate) closed: bool,
     pub(crate) sandbox_fingerprint: Option<(pp_sandbox::EffectiveMode, bool)>,
     /// 测试专用：下一次循环内内核回收返回固定 `CleanupError`，确定性覆盖清理失败收尾。
     #[cfg(test)]
@@ -500,7 +499,6 @@ pub(crate) fn run_cell(
     emit: &mut dyn FnMut(AgentEvent),
     bridge: &mut dyn FnMut(&str, &Value) -> Result<Value>,
 ) -> Result<CellOutcome> {
-    anyhow::ensure!(!state.closed, "Python eval session is closed.");
     pp_core::cancellation::check(cancellation)?;
 
     let started = Instant::now();

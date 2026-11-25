@@ -18,9 +18,7 @@ use events::{cli_write, run_cli_compaction, run_cli_shell};
 use events::{run_cli_web_search, run_cli_web_search_standalone};
 #[cfg(debug_assertions)]
 pub use execution::run_cli_mock_test;
-pub use execution::{
-    NonInteractiveOptions, run_cli_task, run_cli_task_with_mode, run_cli_task_with_options,
-};
+pub use execution::{NonInteractiveOptions, run_cli_task, run_cli_task_with_options};
 pub use json::{OutputMode, write_error_result};
 pub use non_interactive::{
     RunGuard, combine_prompt_and_stdin, load_output_schema, parse_duration, read_piped_stdin,

@@ -103,8 +103,6 @@ enum OverviewEvent {
     },
     AssistantDelta {
         text: String,
-        #[allow(dead_code)]
-        refusal: bool,
     },
     AssistantFinished {
         text: String,
@@ -349,7 +347,7 @@ impl Binding {
                         let meta = PendingMeta::from_line(&line, position);
                         runs.entry(run_key).or_default().push_reasoning(meta, text);
                     }
-                    Some(OverviewEvent::AssistantDelta { text, .. }) => {
+                    Some(OverviewEvent::AssistantDelta { text }) => {
                         let meta = PendingMeta::from_line(&line, position);
                         runs.entry(run_key)
                             .or_default()

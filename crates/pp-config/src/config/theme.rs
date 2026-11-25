@@ -41,16 +41,6 @@ impl IconMode {
             _ => None,
         }
     }
-
-    pub fn save(self, path: &Path) -> Result<()> {
-        super::update_settings(path, |mut settings| {
-            settings.tui.icons = self;
-            Ok((
-                "tui",
-                serde_yaml::to_value(settings.tui).context("Failed to serialize tui settings")?,
-            ))
-        })
-    }
 }
 
 impl Serialize for IconMode {
@@ -225,16 +215,6 @@ impl Theme {
             _ => None,
         }
     }
-
-    pub fn save(self, path: &Path) -> Result<()> {
-        super::update_settings(path, |mut settings| {
-            settings.tui.theme = self;
-            Ok((
-                "tui",
-                serde_yaml::to_value(settings.tui).context("Failed to serialize tui settings")?,
-            ))
-        })
-    }
 }
 
 impl Serialize for Theme {
@@ -319,7 +299,7 @@ mod tests {
         assert_eq!(loaded.theme, Theme::Catppuccin);
         assert_eq!(loaded.icons, IconMode::Nerd);
 
-        Theme::SolarizedLight.save(&path).unwrap();
+        TuiSettings::save_appearance(&path, Theme::SolarizedLight, IconMode::Nerd).unwrap();
         let updated = read_settings(&path).unwrap().tui;
         assert_eq!(updated.max_fps, 90);
         assert_eq!(updated.theme, Theme::SolarizedLight);

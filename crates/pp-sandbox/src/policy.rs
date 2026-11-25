@@ -79,14 +79,6 @@ impl Policy {
         &self.cwd
     }
 
-    pub fn writable_roots(&self) -> &[PathBuf] {
-        &self.writable
-    }
-
-    pub fn protected_roots(&self) -> &[PathBuf] {
-        &self.protect
-    }
-
     /// 为单次运行（如 `read-only` 下的本次 scratch 目录）附加额外可写路径。
     pub fn with_extra_writable(&self, path: &Path) -> Arc<Self> {
         let mut next = self.clone();

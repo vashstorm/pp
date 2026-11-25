@@ -131,14 +131,14 @@ impl Read for ChunkedReader<'_> {
     }
 }
 
-fn stream_capture(bytes: &[u8], chunk_size: usize) -> (String, String, bool, usize) {
+fn stream_capture(bytes: &[u8], chunk_size: usize) -> (String, bool, usize) {
     let mut reader = ChunkedReader {
         remaining: bytes,
         chunk_size,
     };
     let (sender, receiver) = sync_channel(16);
+    let mut text = String::new();
     let mut captured = StreamText::default();
-    let mut live = String::new();
     let mut received = 0;
     let truncated = thread::scope(|scope| {
         let reader = &mut reader;
@@ -154,16 +154,16 @@ fn stream_capture(bytes: &[u8], chunk_size: usize) -> (String, String, bool, usi
             assert!(matches!(stream, OutputStream::Stdout));
             assert!(bytes.len() <= PIPE_CHUNK_SIZE);
             received += bytes.len();
-            live.push_str(&captured.append(&bytes));
+            text.push_str(&captured.append_delta(&bytes));
         }
-        live.push_str(&captured.finish());
+        text.push_str(&captured.finish_delta());
         worker.join().unwrap().unwrap()
     });
     assert!(
         reader.remaining.is_empty(),
         "over-limit bytes must be drained"
     );
-    (captured.text, live, truncated, received)
+    (text, truncated, received)
 }
 
 // ---------------------------------------------------------------------

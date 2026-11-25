@@ -149,10 +149,6 @@ pub struct SharedSandbox {
 }
 
 impl SharedSandbox {
-    pub fn get_or_init(&self, settings: &SandboxSettings, cwd: &Path) -> Arc<Sandbox> {
-        self.get_or_init_with_override(settings, cwd, None)
-    }
-
     pub fn get_or_init_with_override(
         &self,
         settings: &SandboxSettings,

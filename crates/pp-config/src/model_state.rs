@@ -20,7 +20,7 @@ use std::{
 use anyhow::{Result, ensure};
 use pp_core::model::{ModelSource, ThinkLevel};
 
-use crate::config::{ModelCatalog, ModelChoice, ModelRole, ModelRoles, RoleAssignment};
+use crate::config::{ModelCatalog, ModelRole, ModelRoles, RoleAssignment};
 
 /// 一次模型选择的完整快照：完整配置引用 + 已解析档位。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,10 +79,6 @@ impl ModelState {
     /// 配置快照；调用方在请求边界自行刷新，不逐请求 clone。
     pub fn catalog_snapshot(&self) -> ModelCatalog {
         self.read().catalog.clone()
-    }
-
-    pub fn choices(&self) -> Vec<ModelChoice> {
-        self.read().catalog.choices()
     }
 
     pub fn model_roles(&self) -> ModelRoles {

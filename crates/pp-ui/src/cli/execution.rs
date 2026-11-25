@@ -52,32 +52,6 @@ pub fn run_cli_task(
     .map(|_| ())
 }
 
-pub fn run_cli_task_with_mode(
-    agent: &mut agent::Agent,
-    prompt: Option<&str>,
-    mode: super::json::OutputMode,
-    resumed: bool,
-    stdout: &mut impl Write,
-    stderr: &mut impl Write,
-    result_written: &mut bool,
-) -> Result<()> {
-    run_cli_task_with_options(
-        agent,
-        prompt,
-        NonInteractiveOptions {
-            mode,
-            resumed,
-            buffer_text: false,
-            output_file: None,
-            guard: None,
-        },
-        stdout,
-        stderr,
-        result_written,
-    )
-    .map(|_| ())
-}
-
 pub fn run_cli_task_with_options(
     agent: &mut agent::Agent,
     prompt: Option<&str>,
