@@ -1,0 +1,34 @@
+[profile.default]
+# 每个用例占两个调度名额，并发上限为逻辑 CPU 数的一半，向下取整且不低于 1。
+test-threads = "num-cpus"
+threads-required = 2
+retries = 0
+fail-fast = false
+default-filter = 'not test(/(^|::)slow_/)'
+
+[test-groups.slow_test]
+# 混跑时每个用例仍占两个名额，组内最多同时运行两个慢用例。
+max-threads = 4
+
+[[profile.default.overrides]]
+filter = 'test(/(^|::)slow_/)'
+test-group = "slow_test"
+
+[profile.slow_test]
+test-threads = 2
+threads-required = 1
+default-filter = 'test(/(^|::)slow_/)'
+
+# 保留少量真实 PTY 冒烟用例，其余普通单元测试和集成测试照常运行。
+[profile.quick]
+default-filter = '((not (binary_id(pp::cli_agent) and test(/^tui::/))) or test(/^(tui::streaming_cases::streaming_tui_both_protocols_live_colors_scroll_resize_and_bash|tui::transcript_cases::tui_exit_keeps_conversation_on_normal_screen|tui::plan_mode_cases::plan_tui_prompt_enters_before_request_and_reuses_plan_mode|tui::native_tui_streaming_keeps_input_cursor_visible_both_protocols|tui::ask_tui_single_space_selects_without_sending_until_enter|tui::context_tui_shows_current_and_window_on_input_top_right)$/)) and not test(/(^|::)slow_/)'
+
+# 禁用伪终端的环境仍可运行普通 CLI、进程内 TUI 和非 PTY 的慢用例。
+[profile.no_pty]
+default-filter = '''
+not (binary_id(pp::cli_agent) and (
+    test(/^tui::/)
+    or test(=lsp::lsp_roundtrip_plan_readonly_denies_mutations_and_server_apply_edit)
+    or test(=stats::server_cases::stats_server_opens_actual_url_and_survives_browser_failure)
+))
+'''

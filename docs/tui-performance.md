@@ -50,21 +50,22 @@ TUI 按帧合并同一目标、类型和轮次的文本分片；达到 64 KiB �
 本轮新增的确定性断言：
 
 ```sh
-cargo test --locked -p pp-ui --lib -- layout_worker_ bash_card metric_fields context_field
+cargo nextest run --locked -p pp-ui --lib -E 'test(layout_worker_) | test(bash_card) | test(metric_fields) | test(context_field)'
 ```
 
 ```sh
-cargo test --locked --workspace --tests -- frame_clock stream_buffer markdown_block_cache layout_worker_ tui_max_fps streaming_frame_batches --skip ::slow_
-cargo test --locked --workspace --tests -- tui::render_worker:: tui::transcript:: tui::surface:: streaming_frame_batches stream_buffer tui_runtime_responsiveness tui_scrolled_stream_ native_tui_ --skip ::slow_
-PP_TUI_PERF_ASSERT=1 cargo test --release --locked -p pp --test cli_agent tui_runtime_responsiveness -- --show-output
-cargo test --locked --workspace --no-fail-fast -- --skip ::slow_
-cargo test --locked --workspace --no-fail-fast --tests ::slow_ -- --test-threads=1
+cargo nextest run --locked --workspace -E 'test(frame_clock) | test(stream_buffer) | test(markdown_block_cache) | test(layout_worker_) | test(tui_max_fps) | test(streaming_frame_batches)'
+cargo nextest run --locked --workspace -E 'test(tui::render_worker::) | test(tui::transcript::) | test(tui::surface::) | test(streaming_frame_batches) | test(stream_buffer) | test(tui_runtime_responsiveness) | test(tui_scrolled_stream_) | test(native_tui_)'
+PP_TUI_PERF_ASSERT=1 cargo nextest run --release --locked -p pp --test cli_agent tui_runtime_responsiveness --success-output immediate
+cargo nextest run --locked --workspace
+cargo nextest run --locked --workspace --profile slow_test
+cargo test --locked --workspace --doc
 cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-上述命令全部使用默认（全量）档；`--profile quick` 跳过真实 PTY 用例，不覆盖 TUI 性能回归。
+完整回归需运行默认档、慢测试档和文档测试。`--profile quick` 只保留少量真实 PTY 冒烟用例，性能回归使用上面的定向命令。
 
 全量并行回归运行 1437 项，1436 项通过，`tui_menu_overlay_keeps_input_cursor_and_history_anchored` 失败；该用例随后单独串行通过，与持续输出用例组成的小集合并行运行也通过。尚未确定首次失败原因，不能将本轮验证表述为全量通过。全量之后新增的分块工作量对照用例已单独通过；最后的缓冲阈值调整也通过流式与 PTY 定向验证，未重复全量回归。
 

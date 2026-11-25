@@ -800,7 +800,7 @@ MCP 进程在 pp 进程内常驻：首次需要时连接，之后在 `/new`、`/
 MCP 按当前用户权限运行，没有文件系统沙箱。服务 stderr 丢弃；错误不输出响应体、命令参数、环境值、URL、会话 ID 或认证内容。成功工具结果会进入模型上下文和会话记录，服务应避免返回凭证。
 
 ```sh
-cargo test --locked --workspace mcp_
+cargo nextest run --locked --workspace mcp_
 ```
 
 ## LSP 语义导航与修改建议
@@ -876,7 +876,7 @@ lsp:
 语言服务器进程本身不是文件系统沙箱；上述规则约束 pp 的调用和提交行为。
 
 ```sh
-cargo test --locked --workspace lsp_
+cargo nextest run --locked --workspace lsp_
 ```
 
 ## 上下文用量与压缩
@@ -1247,7 +1247,7 @@ pp gc [天数]
 
 根集成测试仍只有 `cli_agent` target：`tests/cli_agent.rs` 保留注册和共享 CLI／SSE fixture，`tests/cli_agent/tui.rs` 保留唯一 PTY harness；session、context、streaming、sqlite 及 TUI 的测试按行为放入同名目录。通过 `#[path]` 注册的父模块，其子模块也使用显式相对路径，避免误解析到其他分组。已有 TUI `include!` 只共享原上下文，不重复注册测试。
 
-移动测试后，模块限定名前缀会变化，特别要同步自重启测试中的 `--exact` 字符串。迁移前后可用 `cargo test --locked --workspace --tests -- --list` 按测试目标比较用例名称，再加 `--ignored` 核对忽略状态。
+移动测试后，模块限定名前缀会变化，特别要同步自重启测试中的 `--exact` 字符串。迁移前后可用 `cargo nextest list --locked --workspace --ignore-default-filter --message-format json` 按测试目标比较用例名称与忽略状态。
 
 
 ### read 模块分层
@@ -1258,60 +1258,60 @@ pp gc [天数]
 
 ### 验证命令
 
-本地验证使用 Cargo 自带的测试运行器。完整验证包含普通测试、文档测试以及单独串行运行的 `slow_` 用例。
+本地验证使用 cargo-nextest，可用 `cargo install cargo-nextest --locked` 安装。完整验证包括默认档、`slow_test` 档和文档测试。默认档与慢测试档都会收集全部失败。
 
 ```sh
 cargo build --locked
 cargo check --locked --workspace --all-targets
-cargo test --locked --workspace --no-fail-fast -- --skip ::slow_
-cargo test --locked --workspace --no-fail-fast --tests ::slow_ -- --test-threads=1
+cargo nextest run --locked --workspace
+cargo nextest run --locked --workspace --profile slow_test
+cargo test --locked --workspace --doc
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-根包是默认成员。只运行 `cargo test --locked` 会选择根包的测试，跨库验证须显式加 `--workspace`。只验证文档示例时使用 `cargo test --locked --workspace --doc`。
+根包是默认成员。只运行 `cargo nextest run --locked` 会选择根包的测试，跨库验证须显式加 `--workspace`。
 
-测试进程的 `TMPDIR` 必须位于任何 Git 工作树之外。临时工作目录落在仓库内时，按需加载的 `AGENTS.md` 会把仓库自身规则带进被测项目，请求快照、写入门禁与系统提示断言随之改变。可在两条测试命令前都加上工作树外的 `TMPDIR`。
+测试进程的 `TMPDIR` 必须位于任何 Git 工作树之外。临时工作目录落在仓库内时，按需加载的 `AGENTS.md` 会把仓库自身规则带进被测项目，请求快照、写入门禁与系统提示断言随之改变。可在测试命令前加上工作树外的 `TMPDIR`。
 
 ```sh
-TMPDIR=$(getconf DARWIN_USER_TEMP_DIR) cargo test --locked --workspace --no-fail-fast -- --skip ::slow_  # macOS
-TMPDIR=/tmp cargo test --locked --workspace --no-fail-fast -- --skip ::slow_                              # Linux
+TMPDIR=$(getconf DARWIN_USER_TEMP_DIR) cargo nextest run --locked --workspace  # macOS
+TMPDIR=/tmp cargo nextest run --locked --workspace                             # Linux
 ```
 
-并行命令通过 `--skip ::slow_` 跳过慢用例，串行命令只选中这些用例。测试确认受满载并行影响时，将其放在测试模块中，并给函数名加上 `slow_` 前缀。日常可以用 `--lib` 只跑库单测，或用 `--test cli_agent` 按名称选跑终端用例。
+默认档按逻辑 CPU 数分配调度名额，每个测试占两个名额，实际并发为逻辑 CPU 数的一半，向下取整且至少为一。配置按函数名的 `slow_` 前缀将慢用例纳入 `slow_test` 档，该档最多同时运行两个用例。测试确认受满载并行影响时，给函数名加上 `slow_` 前缀即可。日常可以用 `--lib` 只跑库单测，或用 `--test cli_agent` 按名称选跑终端用例。
 
 ```sh
-cargo test --locked --workspace --lib -- --skip ::slow_
-cargo test --locked -p pp --test cli_agent lsp_tui_late_report_collapses_and_ctrl_o_expands
+cargo nextest run --locked --workspace --lib
+cargo nextest run --locked -p pp --test cli_agent lsp_tui_late_report_collapses_and_ctrl_o_expands
 ```
 
-沙盒禁止 `openpty` 时，单独运行库测试及文档测试，并在运行 `cli_agent` 时追加下面的排除参数。普通用例保留 `--skip ::slow_`，慢用例保留 `::slow_` 和 `--test-threads=1`。回环 HTTP fixture 仍需绑定本地端口，Seatbelt 集成测试仍需创建自己的沙盒。
+`--profile quick` 只保留少量真实 PTY 冒烟用例，并跳过全部慢用例。环境禁止 `openpty` 时使用 `--profile no_pty`，该档包含进程内 TUI 单测和非 PTY 的慢用例。回环 HTTP fixture 仍需绑定本地端口，Seatbelt 集成测试仍需创建自己的沙盒。
 
 ```sh
-cargo test --locked -p pp --test cli_agent -- --skip ::slow_ --skip tui:: \
-  --skip lsp_roundtrip_plan_readonly_denies_mutations_and_server_apply_edit \
-  --skip stats_server_opens_actual_url_and_survives_browser_failure
+cargo nextest run --locked --workspace --profile quick
+cargo nextest run --locked --workspace --profile no_pty
 ```
 
 日常修改优先按范围选择定向回归，默认并行；纯文档或注释修改无需运行 Rust 测试。以下命令按任务择一或合并筛选，不要求每次全部执行：
 
 ```sh
-cargo test --locked --workspace context_ -- --skip ::slow_
-cargo test --locked -p pp --test cli_agent streaming_ -- --skip ::slow_ --show-output
-cargo test --locked --workspace plan_ -- --skip ::slow_
-cargo test --locked --workspace mcp_
-cargo test --locked --workspace background_ -- --skip ::slow_
-cargo test --locked -p pp --test cli_agent tui:: -- --skip ::slow_
-cargo test --locked --workspace --tests -- llm:: streaming_ --skip ::slow_
-cargo test --locked --workspace --tests -- tui::markdown:: tui::transcript::
-cargo test --locked --workspace --tests -- tools::read:: read_pagination_ read_http_ read_files_images_web_ read_image_
+cargo nextest run --locked --workspace context_
+cargo nextest run --locked -p pp --test cli_agent streaming_ --success-output immediate
+cargo nextest run --locked --workspace plan_
+cargo nextest run --locked --workspace mcp_
+cargo nextest run --locked --workspace background_
+cargo nextest run --locked -p pp --test cli_agent tui::
+cargo nextest run --locked --workspace -E 'test(llm::) | test(streaming_)'
+cargo nextest run --locked --workspace -E 'test(tui::markdown::) | test(tui::transcript::)'
+cargo nextest run --locked --workspace -E 'test(tools::read::) | test(read_pagination_) | test(read_http_) | test(read_files_images_web_) | test(read_image_)'
 ```
 
 其他常用筛选包括 `slash_`、`file_command_`、`model_switch`、`model_thinking`、`replace_`、`hashline_`、`stats_`、`sqlite_` 和 `project_instructions`。
 
-筛选应覆盖受影响的单元测试和集成测试。`-p pp --test cli_agent` 只运行根集成测试。不确定匹配范围时加 `--list`，例如 `cargo test --locked --workspace --tests -- context_ --skip ::slow_ --list`。筛选结果为空不算验证通过。多个名称筛选可以一起传给 `--`。
+筛选应覆盖受影响的单元测试和集成测试。`-p pp --test cli_agent` 只运行根集成测试。不确定匹配范围时可先运行 `cargo nextest list --locked --workspace -E 'test(context_)'`。筛选结果为空不算验证通过。筛选结果与当前档位的默认范围取交集，需要跨出该范围时加 `--ignore-default-filter`。
 
-配置／持久化／协议边界等跨模块改动、依赖更新、公共测试设施改动或明确要求完整验证时，执行本节开头的两条工作区测试命令。`--no-fail-fast` 使 Cargo 在某个测试目标失败后继续验证其余目标。排查具体失败可追加 `--test-threads=1`，用 `--show-output` 查看通过用例的输出。不通过增加 sleep、重试或放宽断言掩盖问题。
+配置／持久化／协议边界等跨模块改动、依赖更新、公共测试设施改动或明确要求完整验证时，执行本节开头的两个 nextest 档位和文档测试。排查具体失败可追加 `--test-threads=1`，用 `--success-output immediate` 查看通过用例的输出。不通过增加 sleep、重试或放宽断言掩盖问题。
 
 单元测试覆盖配置、协议解析、原子保存和界面布局；`tests/cli_agent.rs` 及其子模块通过真实二进制、回环 HTTP SSE 服务、临时 HOME 与项目目录验证双协议工具循环、流式输出、会话恢复、Plan、MCP、后台进程与项目指令。Unix 下的 PTY 测试还检查输入、滚动、缩放、取消与终端恢复。测试不访问个人密钥或真实供应商；本地 fixture 通过不代表真实服务端兼容性。
 
