@@ -1,62 +1,59 @@
 use super::super::load::apply_native;
 use super::*;
+use pp_core::plan::PlanStatus;
 use pp_core::session_jsonl::Reader as SessionReader;
 use std::collections::HashMap;
 use std::io::BufReader;
 
-fn user_before_len(checkpoint: Option<&Checkpoint>, native_len: usize) -> Result<usize> {
-    if let Some(saved) = checkpoint {
-        match &saved.session {
-            Session::Completion(request) => {
-                let mut idx = request.messages.len();
+fn native_user_index(session: &Session) -> Option<usize> {
+    match session {
+        Session::Completion(request) => {
+            let mut idx = request.messages.len();
+            while idx > 0
+                && matches!(
+                    request.messages[idx - 1],
+                    async_openai::types::chat::ChatCompletionRequestMessage::Developer(_)
+                )
+            {
+                idx -= 1;
+            }
+            if idx > 0
+                && matches!(
+                    request.messages[idx - 1],
+                    async_openai::types::chat::ChatCompletionRequestMessage::User(_)
+                )
+            {
+                return Some(idx - 1);
+            }
+        }
+        Session::Response(request) => {
+            if let async_openai::types::responses::InputParam::Items(items) = &request.input {
+                let mut idx = items.len();
                 while idx > 0
                     && matches!(
-                        request.messages[idx - 1],
-                        async_openai::types::chat::ChatCompletionRequestMessage::Developer(_)
+                        &items[idx - 1],
+                        async_openai::types::responses::InputItem::EasyMessage(msg)
+                            if matches!(
+                                msg.role,
+                                async_openai::types::responses::Role::Developer
+                            )
                     )
                 {
                     idx -= 1;
                 }
                 if idx > 0
                     && matches!(
-                        request.messages[idx - 1],
-                        async_openai::types::chat::ChatCompletionRequestMessage::User(_)
+                        &items[idx - 1],
+                        async_openai::types::responses::InputItem::EasyMessage(msg)
+                            if matches!(msg.role, async_openai::types::responses::Role::User)
                     )
                 {
-                    return Ok(idx - 1);
-                }
-            }
-            Session::Response(request) => {
-                if let async_openai::types::responses::InputParam::Items(items) = &request.input {
-                    let mut idx = items.len();
-                    while idx > 0
-                        && matches!(
-                            &items[idx - 1],
-                            async_openai::types::responses::InputItem::EasyMessage(msg)
-                                if matches!(
-                                    msg.role,
-                                    async_openai::types::responses::Role::Developer
-                                )
-                        )
-                    {
-                        idx -= 1;
-                    }
-                    if idx > 0
-                        && matches!(
-                            &items[idx - 1],
-                            async_openai::types::responses::InputItem::EasyMessage(msg)
-                                if matches!(msg.role, async_openai::types::responses::Role::User)
-                        )
-                    {
-                        return Ok(idx - 1);
-                    }
+                    return Some(idx - 1);
                 }
             }
         }
     }
-    native_len
-        .checked_sub(1)
-        .context("missing native user message")
+    None
 }
 
 impl Tree {
@@ -103,6 +100,7 @@ impl Tree {
         let mut offset = 0;
         let mut start = 0;
         let mut native = Cursor { offset: 0, len: 0 };
+        let mut pending_user: Option<(usize, Option<usize>)> = None;
         let mut assistant: Option<String> = None;
         let mut protocol: Option<String> = None;
         let mut tools = Vec::new();
@@ -252,11 +250,39 @@ impl Tree {
             {
                 let saved: Entry = serde_json::from_slice(&line)
                     .map_err(|_| anyhow::anyhow!("invalid session tree record"))?;
+                // 计划交接把用户消息紧邻写在原生快照之前，普通输入的顺序相反。
+                // 同会话交接从 Plan 切到 Execute，打开计划或新上下文交接则尚无快照。
+                if let Some((index, before_len)) = &mut pending_user
+                    && let Payload::Custom {
+                        custom: Custom::State(state),
+                    } = &saved.payload
+                    && let Some(session) = &state.session
+                    && state.tree.is_none()
+                    && checkpoint.as_ref().is_none_or(|previous: &Checkpoint| {
+                        previous.workflow.mode == WorkMode::Plan
+                            && state.workflow.mode == WorkMode::Execute
+                            && state
+                                .workflow
+                                .plan
+                                .as_ref()
+                                .is_some_and(|plan| plan.status == PlanStatus::Executed)
+                    })
+                {
+                    tree.nodes[*index].native = native;
+                    *before_len = native_user_index(session);
+                }
                 apply_native(
                     &mut checkpoint,
                     header.as_ref().context("missing session tree header")?,
                     saved.payload,
                 )?;
+            }
+            if let Some((index, before_len)) = pending_user.take() {
+                let user = &mut tree.nodes[index];
+                user.before = Cursor {
+                    len: before_len.context("missing native user message")?,
+                    ..user.native
+                };
             }
             if let Some((kind, text)) = node {
                 let id = entry["id"]
@@ -264,14 +290,13 @@ impl Tree {
                     .context("missing session tree ID")?
                     .to_owned();
                 ensure!(!ids.contains_key(&id), "duplicate session tree ID");
-                let before = if kind == Kind::User {
-                    Cursor {
-                        len: user_before_len(checkpoint.as_ref(), native.len)?,
-                        ..native
-                    }
-                } else {
-                    native
-                };
+                if kind == Kind::User {
+                    let before_len = checkpoint
+                        .as_ref()
+                        .and_then(|saved| native_user_index(&saved.session))
+                        .or_else(|| native.len.checked_sub(1));
+                    pending_user = Some((tree.nodes.len(), before_len));
+                }
                 ids.insert(id.clone(), tree.nodes.len());
                 tree.nodes.push(Node {
                     id,
@@ -282,12 +307,15 @@ impl Tree {
                         && !text.trim().is_empty(),
                     text,
                     native,
-                    before,
+                    before: native,
                     replay: (start, offset),
                 });
                 tree.leaf = Some(tree.nodes.len() - 1);
                 start = offset;
             }
+        }
+        if let Some((index, before_len)) = pending_user {
+            tree.nodes[index].before.len = before_len.context("missing native user message")?;
         }
         tree.pending = (start, offset);
         tree.retain_active_path();

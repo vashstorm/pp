@@ -86,7 +86,84 @@ mod tests {
     use super::super::fixtures::*;
     use super::*;
     use pp_config::models::Protocol;
+    use pp_core::plan::{PlanDocument, PlanLocation, PlanStatus};
     use serde_json::json;
+
+    #[test]
+    fn tree_rewinds_to_before_plan_handoff_user() {
+        for protocol in [Protocol::Completion, Protocol::Response] {
+            for keep in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let metadata = metadata(dir.path());
+                let mut journal = SessionJournal::new(dir.path().into());
+                let mut session = Session::new(
+                    "model".into(),
+                    protocol,
+                    "plan system".into(),
+                    EditMode::Replace,
+                );
+                let mut workflow = WorkflowState {
+                    mode: WorkMode::Plan,
+                    plan: Some(PlanDocument {
+                        id: "0123456789abcdef0123456789abcdef".into(),
+                        revision: 1,
+                        title: "Plan".into(),
+                        content: "- [ ] step one\n".into(),
+                        status: PlanStatus::Ready,
+                        origin_prompt: "plan question".into(),
+                        file_name: None,
+                        location: PlanLocation::Plans,
+                        approved_tasks: None,
+                    }),
+                    ..Default::default()
+                };
+                if keep {
+                    turn(
+                        &mut journal,
+                        &mut session,
+                        &metadata,
+                        "plan question",
+                        "plan answer",
+                        false,
+                    );
+                    journal.write_workflow(&workflow).unwrap();
+                }
+                session.set_instructions("execute system".into());
+                let prompt = "execute approved plan";
+                crate::agent::turn::append_user_to(&mut session, prompt);
+                workflow.mode = WorkMode::Execute;
+                workflow.plan.as_mut().unwrap().status = PlanStatus::Executed;
+                journal
+                    .commit_plan_handoff(&metadata, (&session).into(), &workflow, prompt)
+                    .unwrap();
+
+                let id = journal.id().unwrap().to_owned();
+                drop(journal);
+                let mut restored =
+                    load_test(dir.path(), &dir.path().join(".locks"), Some(&id), true).unwrap();
+                let view = restored.journal.tree_view().unwrap();
+                let node = view.tree.nodes.last().unwrap();
+                assert_eq!(node.kind, Kind::User);
+                assert_eq!(users(view.records.last().unwrap()), [prompt]);
+                let Prepared {
+                    session: candidate,
+                    replay,
+                    draft,
+                    ..
+                } = restored.journal.prepare_tree(&node.id).unwrap();
+                assert_eq!(draft.as_deref(), Some(prompt));
+                assert!(!text(&candidate).contains(prompt));
+                assert!(text(&candidate).contains("execute system"));
+                if keep {
+                    assert!(text(&candidate).contains("plan answer"));
+                    assert_eq!(users(&replay), ["plan question"]);
+                    assert_eq!(answers(&replay), ["plan answer"]);
+                } else {
+                    assert!(replay.is_empty());
+                }
+            }
+        }
+    }
 
     #[test]
     fn tree_root_navigation_is_durable_without_a_followup_request() {
