@@ -67,13 +67,9 @@ fn yaml_model_maps_reject_invalid_keys_duplicates_and_legacy_entries() {
             "providers: {{fixture: {{api_key: secret-marker, models: {value}}}}}"
         ));
     }
-    for entry in [
-        "{id: fixture, api_key: secret-marker, models: {primary: {model: m}}}",
-        "{api_key: secret-marker, models: [{id: primary, model: m}]}",
-        "{api_key: secret-marker, models: {primary: {id: primary, model: m}}}",
-    ] {
-        cases.push(format!("providers: {{fixture: {entry}}}"));
-    }
+    cases.push(
+        "providers: {fixture: {api_key: secret-marker, models: [{id: primary, model: m}]}}".into(),
+    );
     for models in cases {
         let home = tempfile::tempdir().unwrap();
         let output = Cli::start_with(home.path(), Some("hello"), "{}", &models).finish();
@@ -94,13 +90,27 @@ fn yaml_block_configs_drive_both_protocols() {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         let models = format!(
-            "# 模型配置\nproviders:\n  fixture:\n    protocol: {protocol}\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: yaml-model\n        cost:\n          input: 2.0\n          cacheRead: 0.2\n          output: 8.0\n",
+            "# 模型配置\nextra: {{version: 1}}\nproviders:\n  fixture:\n    id: ignored-provider-id\n    protocol: {protocol}\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        id: ignored-model-id\n        api_key: ignored-model-key\n        base_url: http://127.0.0.1:0/ignored\n        protocol: ignored\n        model: yaml-model\n        cost:\n          input: 2.0\n          cacheRead: 0.2\n          output: 8.0\n",
             server.addr()
         );
         let cli = Cli::start_with(
             home.path(),
             Some("hello"),
-            "think_level: low # 启动档位\ndebug: false\n",
+            r#"
+think_level: low # 启动档位
+debug: false
+rate_limit_retry_budget_seconds: 0
+extra: [1, 2]
+hooks: {Stop: []}
+tui:
+  cost: {currency: EUR, exchange_rate: 1}
+tools:
+  permissionMode: danger-full-access
+  extra: !future {nested: [1, 2]}
+lsp:
+  formatOnWrite: true
+  shared: true
+"#,
             &models,
         );
         let (request, body) = receive_at(&server, path);

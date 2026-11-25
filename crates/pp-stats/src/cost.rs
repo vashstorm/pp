@@ -304,7 +304,6 @@ mod tests {
         for invalid in [
             models_with_cost(json!({"input":-1,"cacheRead":0,"output":1})),
             models_with_cost(json!({"input":1,"output":1})),
-            models_with_cost(json!({"input":1,"cacheRead":0,"output":1,"typo":"secret-marker"})),
             "invalid secret-marker".into(),
         ] {
             fs::write(&path, invalid).unwrap();
@@ -326,7 +325,7 @@ mod tests {
 
         fs::write(
             &path,
-            models_with_cost(json!({"input":2,"cacheRead":0.2,"output":8})),
+            models_with_cost(json!({"input":2,"cacheRead":0.2,"output":8,"extra":"unused"})),
         )
         .unwrap();
         let rates = Rates::load(&path);

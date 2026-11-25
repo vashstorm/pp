@@ -405,7 +405,7 @@ fn auto_review_passes_allows_and_denies_or_errors_fallback_to_prompt() {
 }
 
 #[test]
-fn codex_style_permission_toml_saves_exact_rules_filesystem_network_and_rejects_legacy() {
+fn codex_style_permission_toml_saves_filesystem_and_network_and_ignores_legacy() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let cwd = root.join("repo");
@@ -490,22 +490,48 @@ fn codex_style_permission_toml_saves_exact_rules_filesystem_network_and_rejects_
         .unwrap();
     assert_eq!(restarted.sandbox_overlay(&cwd).network, Some(true));
 
-    // 3. 拒绝旧版 permission.toml 键
+    // 3. 忽略旧授权与额外字段，仍加载有效的网络与命令策略。
     use std::os::unix::fs::PermissionsExt;
     let path = root.join("permission.toml");
-    for legacy in [
-        "tools = [\"write\"]\n",
-        "[[bash]]\nprefix = [\"cargo\", \"test\"]\n",
-        "[permissions.default.network]\nenabled = true\n",
-    ] {
-        std::fs::write(&path, legacy).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let err = restarted.store.as_ref().unwrap().load().unwrap_err();
-        assert!(
-            format!("{err:#}").contains("not supported"),
-            "{legacy}: {err:#}"
-        );
-    }
+    std::fs::write(
+        &path,
+        r#"
+version = 1
+tools = ["write"]
+future = true
+
+[[bash]]
+prefix = ["cargo", "test"]
+
+[permissions.default.network]
+enabled = true
+
+[default]
+extra = ["unused"]
+
+[default.network]
+enabled = false
+extra = true
+
+[[rules]]
+pattern = ["cargo", "check"]
+decision = "deny"
+extra = true
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let document = restarted.store.as_ref().unwrap().load().unwrap();
+    let active = document.resolve_active_profile().unwrap();
+    assert!(active.tools.is_empty());
+    assert_eq!(active.network.enabled, Some(false));
+    assert_eq!(
+        document.rules,
+        [BashRule::exact(
+            vec!["cargo".into(), "check".into()],
+            PermissionPolicy::Deny,
+        )],
+    );
 }
 
 #[test]

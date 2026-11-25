@@ -43,7 +43,7 @@ pub(super) struct Directory {
     pub diagnostics: Vec<String>,
 }
 #[derive(Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(rename_all = "camelCase")]
 struct Native {
     #[serde(rename = "$schema", skip_serializing_if = "Option::is_none")]
     schema: Option<String>,
@@ -53,9 +53,10 @@ struct Native {
     enabled_servers: Vec<String>,
     #[serde(default)]
     disabled_servers: Vec<String>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Definition {
     #[serde(default, rename = "type")]
     transport: Option<String>,
@@ -72,6 +73,8 @@ struct Definition {
     timeout: u64,
     #[serde(default)]
     read_only_tools: Vec<String>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 fn enabled() -> bool {
     true
@@ -81,7 +84,6 @@ fn timeout() -> u64 {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RemoteDefinition {
     #[serde(rename = "type")]
     transport: String,
@@ -322,7 +324,8 @@ impl Directory {
                     let def: Definition =
                         serde_json::from_value(value).map_err(|_| anyhow::anyhow!(INVALID))?;
                     ensure!(
-                        def.transport.as_deref().is_none_or(|t| t == "stdio"),
+                        def.transport.as_deref().is_none_or(|t| t == "stdio")
+                            && (source == "pp" || def.extra.is_empty()),
                         "unsupported"
                     );
                     let cwd = def.cwd.map(|cwd| {
@@ -580,13 +583,14 @@ mod tests {
     }
 
     #[test]
-    fn mcp_remote_config_only_native_strict_fields_and_preserved_save() {
+    fn mcp_remote_native_config_ignores_unknown_fields_and_preserves_save() {
         let home = tempfile::tempdir().unwrap();
         let pp = home.path().join("mcp.json");
-        let remote = json!({"type":"http","url":"http://127.0.0.1:1/mcp","headers":{"X-Key":"literal"},"env_headers":{"x-key":"PP_TEST_MCP_ENV_MISSING_536F"}});
+        let remote = json!({"type":"http","url":"http://127.0.0.1:1/mcp","headers":{"X-Key":"literal"},"env_headers":{"x-key":"PP_TEST_MCP_ENV_MISSING_536F"},"command":"unused","extra":[1]});
+        let extra = json!({"version":2});
         put(
             &pp,
-            json!({"mcpServers":{"remote":remote,"sse":{"type":"sse","url":"https://example.com/sse"}}}),
+            json!({"mcpServers":{"remote":remote,"sse":{"type":"sse","url":"https://example.com/sse"}},"extra":extra}),
         );
         put(
             &home.path().join(".claude.json"),
@@ -611,16 +615,10 @@ mod tests {
         assert!(dir.entries["codex"].config.is_none());
         dir.save_enabled("remote", false, &CancellationToken::new())
             .unwrap();
-        assert_eq!(read_native(&pp).unwrap().mcp_servers["remote"], remote);
-        for field in [
-            json!({"command":"x"}),
-            json!({"args":[]}),
-            json!({"env":{}}),
-            json!({"cwd":"."}),
-            json!({"timeout":0}),
-            json!({"timeout":null}),
-            json!({"unknown":true}),
-        ] {
+        let saved = read_native(&pp).unwrap();
+        assert_eq!(saved.mcp_servers["remote"], remote);
+        assert_eq!(saved.extra["extra"], extra);
+        for field in [json!({"timeout":0}), json!({"timeout":null})] {
             let mut bad = remote.clone();
             bad.as_object_mut()
                 .unwrap()
@@ -683,7 +681,6 @@ mod tests {
         let pp = home.path().join("mcp.json");
         for text in [
             "{mcpServers:{}}",
-            r#"{"mcpServers":{},"unknown":"secret-value"}"#,
             r#"{"mcpServers":{"a":{"command":"x","command":"secret-value"}}}"#,
             r#"{"enabledServers":null}"#,
         ] {
@@ -693,11 +690,11 @@ mod tests {
         }
         put(
             &pp,
-            json!({"mcpServers":{"good":{"command":"x","timeout":1},"bad":{"command":"x","timeout":0},"unknown":{"command":"secret-value","extra":"secret-value"},"remote":{"type":"http","url":"secret-value"}}}),
+            json!({"mcpServers":{"good":{"command":"x","timeout":1,"extra":{"unused":true}},"bad":{"command":"x","timeout":0},"remote":{"type":"http","url":"secret-value"}}}),
         );
         let dir = Directory::load_at(&pp, None).unwrap();
         assert!(dir.entries["good"].config.is_some());
-        for name in ["bad", "unknown", "remote"] {
+        for name in ["bad", "remote"] {
             assert!(dir.entries[name].config.is_none());
         }
         assert!(dir.diagnostics.is_empty());

@@ -161,7 +161,7 @@ tools:
     # allowRead: ["~/.pp/agent/skills"]
 ```
 
-`default_model`、`favorite_models`、`model_roles` 与 `think_level` 已不再是 `settings.yml` 字段：首次迁移会移除它们，之后重新写入会作为未知字段被拒绝，配置也不会被静默忽略。默认模型与收藏通过 `/model` 的 Ctrl + S、Ctrl + F 保存；全局默认 effort 在 `/effort ` 菜单中用 ⌥ + S / Ctrl + S 保存，单独执行 `/effort LEVEL` 只切换当前会话档位。七项 Role 通过 `/roles` 配置。这些偏好保存到 `agent.db`；模型 Role 的运行时应用遵循下述安全边界规则，菜单的默认值保存仍不切换当前会话；其余 YAML 字段仍按原规则严格校验。
+`settings.yml` 会静默忽略顶层和各小节中的未知字段。YAML 格式、重复键和已支持字段的值仍会校验。`default_model`、`favorite_models`、`model_roles` 与 `think_level` 在首次迁移时导入 `agent.db`，之后重新写入 YAML 时会被忽略。默认模型与收藏通过 `/model` 的 Ctrl + S、Ctrl + F 保存，全局默认 effort 在 `/effort ` 菜单中用 ⌥ + S / Ctrl + S 保存。单独执行 `/effort LEVEL` 只切换当前会话档位。七项 Role 通过 `/roles` 配置。模型 Role 的运行时应用遵循下述安全边界规则，菜单的默认值保存仍不切换当前会话。
 
 会话费用默认以 USD 显示。可在 `settings.yml` 的顶层 `cost` 段设置 `currency` 和 `exchange_rate`，重启后生效。配置该段时两个字段均必填。`currency` 支持 `USD`、`EUR`、`JPY`、`KRW`、`CNY`、`BRL`，自动选用 Nerd Font Material Design 系列图标，依次为 `f01c1`、`f01ad`、`f07bc`、`f07bd`、`f07ba`、`f0b85`。`exchange_rate` 必须为正有限数，表示 1 USD 对应的目标货币金额。下面的汇率仅作示例。
 
@@ -171,7 +171,7 @@ cost:
   exchange_rate: 7.2
 ```
 
-如果已有 `tui.cost`，请将其中的 `currency` 和 `exchange_rate` 移到顶层 `cost`，并删除旧段。
+旧的 `tui.cost` 会被忽略。要继续使用其中的费用设置，请将 `currency` 和 `exchange_rate` 移入顶层 `cost`。
 
 ### 模型 Roles
 
@@ -244,7 +244,7 @@ chmod 600 ~/.pp/agent/models.yml
 
 ### 校验与模型选择
 
-- 每模型 `thinking.efforts` 是严格白名单：非空时仅接受 `low`、`medium`、`high`、`xhigh`、`max`，不隐式附加 `none`，也不接受 `default`。重复值去重，菜单及循环始终按 `none → low → medium → high → xhigh → max` 的允许子集排序。省略 `thinking`、`thinking: {}`、省略 `efforts` 或 `efforts: []` 均不限制原有六档。`thinking.defaultLevel` 支持六档及 `default`→`none` 别名；有非空白名单时默认值必须在其中。拒绝显式 null、错误类型、大小写/空白变体及未知字段，包括未选中的模型。
+- 每模型 `thinking.efforts` 是严格白名单：非空时仅接受 `low`、`medium`、`high`、`xhigh`、`max`，不隐式附加 `none`，也不接受 `default`。重复值去重，菜单及循环始终按 `none → low → medium → high → xhigh → max` 的允许子集排序。省略 `thinking`、`thinking: {}`、省略 `efforts` 或 `efforts: []` 均不限制原有六档。`thinking.defaultLevel` 支持六档及 `default`→`none` 别名；有非空白名单时默认值必须在其中。显式 null、错误类型和档位的大小写或空白变体仍会报错。未选中的模型也会校验。
 - 普通新启动优先使用模型 `defaultLevel`，否则使用允许的全局默认 effort（保存在 `agent.db`），全局值不允许时使用规范顺序中最低允许档。实际切入其他模型时，显式模型默认值总是优先；没有显式默认则保留目标支持的当前档位，否则回退到目标有效默认。切到当前模型引用是无操作。`/new` 保留当前模型和档位。切换模型、原生请求参数与保存档位原子提交；持久化失败不部分改变状态。
 - 白名单贯穿 `/effort`（含 `/think` 和 `default` 别名）、TUI 菜单、Shift + Tab、会话恢复、`--model` 与 API 请求；不支持的输入在本地拒绝，不改变档位、请求或日志。运行中提交的切换同样在下一请求边界应用。Shift + Tab 仅循环允许档，单档时保持档位与草稿。恢复精确保留仍被允许的保存档位及原生请求，修改 `defaultLevel` 不覆盖它；收窄白名单排除保存档位时拒绝恢复，不改写日志或发送请求。⌥ + S / Ctrl + S 仍只保存全局默认 effort 到 `agent.db`，不写模型配置、不改变当前会话；显式模型默认值及菜单 `(default)` 标记仍优先于保存的全局值。
 
@@ -255,7 +255,7 @@ chmod 600 ~/.pp/agent/models.yml
 - `edit` 缺省为 `replace`，只接受严格小写的 `replace`／`hashline`，拒绝 null、其他类型、大小写或空白变体。启动时固定，`/model`（含跨协议切换）和 `/new` 均保留；使用锚点编辑须显式配置 `hashline`。
 - 保存在 `agent.db` 的默认模型引用必须是 `provider/model`，以第一个 `/` 分隔；两部分不能空白，匹配区分大小写且不裁剪空格。供应商 ID 不能含 `/`，模型 ID 可以：`gateway/team/model` 指 gateway 下 ID 为 `team/model` 的模型。不接受裸模型 ID，也无环境变量回退。目录刷新时重新校验；默认模型被移除时回退到已启用 Default Role 或首个可用模型，收藏引用与禁用 Role 可以保留。
 - `providers` 与各供应商的 `models` 均不能为空。供应商 ID 全局唯一，模型别名只需在供应商内唯一；两类 ID、`api_key` 和实际 `model` 均不得为空白。启动时校验所有条目，包括未选中的供应商和模型。
-- 配置顶层、供应商和模型条目均拒绝未知字段。模型条目仅接受 `model`、可选的 `cost`、`thinking`、`context_window`，不接受 `id`，也不能覆盖供应商的凭据、接口地址或协议；旧顶层平铺 `models` 格式不再支持。
+- 模型配置各层均静默忽略未知字段。供应商 ID 和模型 ID 取自映射键，凭据、接口地址和协议取自供应商条目。`providers` 和各供应商内的 `models` 均为必填映射。
 - 供应商级 `protocol` 只接受 `response`（默认，`POST /responses`）和 `completion`（`POST /chat/completions`）。后者不是旧 `/completions` API。null、类型错误、旧值 `openai` 和 `anthropic` 均使配置无效，包括未选中条目；迁移旧 Chat Completions 配置时须将 `openai` 改为 `completion`，省略字段会选择 Responses。
 - Responses 流优先直接解码为 SDK 类型；在报告缺少 `annotations`／`arguments` 或字符串字段为 `null` 时进入兼容处理，为缺少注释的 `output_text` 补 `annotations: []`，并仅将 `response.output_item.added` 中 `function_call` 缺失或为 `null` 的 `arguments` 归一化为 `""`，随后仍由 SDK 校验。起始参数尚未传输不提前报错；其他字段的 `null`、错误类型以及调用结束与最终响应中的非法参数仍拒绝，工具只在最终批次校验通过后执行。
 - 兼容 Command Code 的 `deepseek/deepseek-v4.1-flash` 内容索引别名：`response.content_part.added/done`、`response.output_text.delta/done` 和 `response.refusal.delta/done` 缺少 `content_index` 时，仅从合法的 `u32` 整数 `summary_index` 补齐。已有标准字段优先；无有效别名时仍报错，不默认补零，思考摘要索引语义不变。
@@ -708,7 +708,7 @@ TUI 输入 `/skills` 打开统一设置面板的 Skills 页，左侧依次显示
 
 ## MCP 工具
 
-MCP 的唯一可写配置为 `~/.pp/agent/mcp.json`。旧 `settings.yml.mcp_servers` 已移除，启动遇到该字段会提示手动迁移；pp 不自动改写旧文件。将旧服务放入 `mcpServers`，把 `timeout_seconds` 转为毫秒单位的 `timeout`，然后删除 YAML 旧字段。
+MCP 的唯一可写配置为 `~/.pp/agent/mcp.json`。旧 `settings.yml.mcp_servers` 会被静默忽略。要沿用旧服务，请将定义放入 `mcpServers`，并把 `timeout_seconds` 转为毫秒单位的 `timeout`。
 
 ```json
 {
@@ -772,7 +772,7 @@ stdio 服务的 `command` 必填，按 PATH 查找程序；`args`、`env` 默认
 2. Claude Code：`~/.claude.json`、`~/.claude/mcp.json`、`~/.claude/.mcp.json`，按此顺序。
 3. Codex：`~/.codex/config.toml` 的 `mcp_servers`。
 
-同名服务由最先出现的完整定义决定，不合并参数。默认沿用来源的 `enabled`；pp 的 `enabledServers` 可以覆盖来源禁用，`disabledServers` 优先级最高。外部文件始终只读，启停仅修改 pp 的覆盖列表。JSON 拒绝重复键和未知顶层字段；未知服务字段、非法定义和不支持的传输在列表中标为 `unsupported / invalid config`，不启动。外部文件格式错误会生成脱敏诊断，其他来源仍可用。最多 32 个服务、256 个工具，单条协议消息最多 1 MiB；服务名只接受 ASCII 字母、数字、下划线和连字符，最长 24 字节且不能含 `__`。
+同名服务由最先出现的完整定义决定，不合并参数。默认沿用来源的 `enabled`；pp 的 `enabledServers` 可以覆盖来源禁用，`disabledServers` 优先级最高。外部文件始终只读，启停仅修改 pp 的覆盖列表。pp 的 `mcp.json` 会忽略未知字段并拒绝重复键。非法定义和不支持的传输在列表中标为 `unsupported / invalid config`，不启动。外部文件格式错误会生成脱敏诊断，其他来源仍可用。最多 32 个服务、256 个工具，单条协议消息最多 1 MiB；服务名只接受 ASCII 字母、数字、下划线和连字符，最长 24 字节且不能含 `__`。
 
 外部来源仍只导入 stdio，Claude/Codex 的远程 HTTP／SSE 定义保持不支持；远程服务请写入 pp 的 `mcp.json`。Codex 支持导入 `command`、`args`、`env`、`env_vars`、`cwd`、`enabled` 和超时设置。`env_vars` 从当前进程读取；`tool_timeout_sec`／`startup_timeout_sec` 转为毫秒，两者同时提供时必须相同，因为 pp 当前统一使用请求超时。包含尚不支持的工具限制、认证或其他能力字段时标为不支持，避免静默忽略限制。
 
@@ -855,7 +855,7 @@ lsp:
   requestTimeout: 10         # 秒，5..=300
 ```
 
-`formatOnWrite:false` 仅为旧配置兼容保留；`true` 会提示迁移到 `format` 建议查询和普通文件工具。write/edit 始终原样提交 AI 提供的内容。
+旧字段 `lsp.formatOnWrite` 会被忽略。使用 `format` 查询格式化建议。write/edit 始终原样提交 AI 提供的内容。
 
 服务器定义按内置 → `~/.pp/agent/lsp.json` → `<启动目录>/.pp/lsp.json` 浅合并，数组／对象整项替换；也支持直接以服务器名称为键的顶层映射：
 
@@ -863,7 +863,7 @@ lsp:
 {"servers":{"rust-analyzer":{"command":"rust-analyzer","args":[],"fileTypes":[".rs"],"rootMarkers":["Cargo.toml"]}}}
 ```
 
-配置拒绝重复键和未知字段；LSP 配置错误在工具内报告，不阻止 Agent 启动。修复磁盘配置后使用 `reload`，它会重新读取配置并重建目标连接，不调用服务器私有命令。客户端身份包含 cwd、命令、参数和初始化选项；`idleTimeoutMs` 缺失或为 0 时不自动回收。
+配置忽略未知字段并拒绝重复键和无效的已知字段。LSP 配置错误在工具内报告，不阻止 Agent 启动。修复磁盘配置后使用 `reload`，它会重新读取配置并重建目标连接，不调用服务器私有命令。客户端身份包含 cwd、命令、参数和初始化选项；`idleTimeoutMs` 缺失或为 0 时不自动回收。
 
 - rename、rename_file、format 始终返回建议，不写盘、不移动文件。code_actions 默认列出动作；`query` 筛选类型，`selection` 按 0-based 序号或标题子串选择并 resolve。原始 `request` 入口已移除；旧 `apply=false` 兼容接受，`apply=true` 明确拒绝。
 - 建议带来源服务器、原始编辑与版本、基线／候选文本及 diff；原始 LSP 坐标为从 0 开始的 UTF-16 位置。版本、范围和重叠先校验；资源操作保持原有顺序，在虚拟状态中验证。目录 rename/delete 的普通文件总正文上限为 256 MiB，磁盘遍历与虚拟创建／覆盖／移动叠加都计入同一预算；超限只拒绝建议，不提交文件。多服务器建议独立呈现，失败和覆盖不完整明确标记，AI 须比较冲突并重新读取文件后操作。
@@ -957,7 +957,9 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 
 ## 工具执行与权限
 
-启动默认使用 **Ask for approval**（`workspace-write`），且权限预设不再持久化于 `settings.yml`（旧字段 `tools.permissionMode` 会在加载时拒绝并提示迁移）。如需覆盖本次运行预设，可使用 `pp --permission-mode <模式>` 或 `pp --yolo`。
+启动默认使用 **Ask for approval**（`workspace-write`）。`settings.yml` 中的旧字段 `tools.permissionMode` 会被静默忽略。如需覆盖本次运行预设，可使用 `pp --permission-mode <模式>` 或 `pp --yolo`。
+
+`permission.toml` 会忽略未知字段和旧顶层的 `tools`、`bash`、`version`、`permissions`。持久规则按有效的 profile、`[[rules]]` 和 `[[sandbox]]` 加载。
 
 | 底栏标签（底层标识） | 权限与沙盒 |
 |---|---|
@@ -1026,7 +1028,7 @@ JSONL 只使用一套持久化结构，不保存版本字段，也不兼容其�
 
 ### 生命周期 hooks
 
-`hooks` 从两个独立文件读取：用户级 `~/.pp/agent/hooks.yml` 与项目级 `<启动目录>/.pp/hooks.yml`。两者的文件形状相同，同一事件的组先执行用户级、再执行项目级，互不覆盖；两个文件都缺失时没有任何 hooks。`settings.yml` 不再承载 `hooks`，旧字段会在加载时被明确拒绝并提示迁移。配置在 Agent 构造时冻结，修改后需重启 pp。只支持 `type: command` 的外部命令，支持 `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop` 五个事件。
+`hooks` 从两个独立文件读取：用户级 `~/.pp/agent/hooks.yml` 与项目级 `<启动目录>/.pp/hooks.yml`。两者的文件形状相同，同一事件的组先执行用户级、再执行项目级，互不覆盖；两个文件都缺失时没有任何 hooks。`settings.yml` 中的旧 `hooks` 字段会被忽略。配置在 Agent 构造时冻结，修改后需重启 pp。只支持 `type: command` 的外部命令，支持 `UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop` 五个事件。
 
 ```yaml
 # ~/.pp/agent/hooks.yml 或 <项目>/.pp/hooks.yml，直接以事件名开头
@@ -1042,7 +1044,7 @@ Stop:
         command: '/absolute/path/check-completion.sh'
 ```
 
-- 项目级文件只认启动目录下的 `.pp/hooks.yml`，不向上层目录搜索；不读取 `.claude`、插件或 frontmatter。文件缺失、为空或只有注释都表示没有 hooks；其余情况必须是合法 YAML 映射，未知事件、未知字段、无效正则与无法读取的文件都会阻止 Agent 构造，错误带来源路径但不回显文件内容。
+- 项目级配置只从启动目录下的 `.pp/hooks.yml` 读取。文件缺失、为空或只有注释都表示没有 hooks。未知事件和未知字段会被忽略。无效 YAML、无效的已知字段、无效正则与无法读取的文件都会阻止 Agent 构造，错误带来源路径但不回显文件内容。
 
 - `command` 不得为空白；给出 `args` 时直接 exec（不经 shell，空格不被拆分），否则执行 `bash --noprofile --norc -c`。子进程工作目录是事件 `cwd`，继承环境但移除 `BASH_ENV`；宿主 cwd 与环境不变，不注入 `CLAUDE_*`。`timeout` 默认 30 秒，允许 1–3600；`onFailure` 只接受 `block`／`continue`。
 - `matcher` 只对三个工具事件生效，按 pp 原生工具名匹配：缺省、空串与 `*` 匹配全部；只含字母数字、`_`、`-`、空格、逗号、`|` 的写法是逗号／`|` 分割的精确名称列表；其余按 Rust `regex`（区分大小写、未锚定）编译。不要在 `UserPromptSubmit`／`Stop` 上写名称或正则。无效正则阻止 Agent 构造，错误只报事件名与下标。

@@ -64,7 +64,7 @@ fn default_timeout_seconds() -> u64 {
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct SearxngSettings {
     pub endpoint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,7 +186,7 @@ impl SearxngSettings {
 
 /// `settings.yml` 的 `webSearch:` 配置节；字段名沿用 camelCase。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct WebSearchSettings {
     #[serde(default = "default_enabled")]
     pub enabled: bool,

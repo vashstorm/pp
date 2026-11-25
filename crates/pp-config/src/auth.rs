@@ -112,7 +112,6 @@ pub struct Config {
 
 // 凭证类型不实现 Debug，避免令牌进入诊断日志。
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct Credential {
     #[serde(default)]
     pub generation: String,
@@ -197,7 +196,6 @@ pub fn copilot_endpoint(value: &str) -> bool {
 
 // 授权持久化在 agent.db 的 auth_credentials 表；load/save 的 path 即 agent.db。
 #[derive(Default, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct Store {
     #[serde(default)]
     pub credentials: BTreeMap<Provider, Credential>,

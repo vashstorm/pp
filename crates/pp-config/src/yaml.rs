@@ -4,7 +4,7 @@ use serde_yaml::{Mapping, Value};
 use std::fmt::Write;
 
 pub fn parse<T: serde::de::DeserializeOwned>(text: &str, kind: &str) -> Result<T> {
-    // 先检查 YAML 的重复键，再通过严格的数据模型反序列化，
+    // 先检查 YAML 的重复键，再按数据模型校验已知字段的结构和类型，
     // 避免数字转字符串或 null 被当成空列表、空映射。
     let value: Value = serde_yaml::from_str(text).map_err(|error| yaml_error(kind, &error))?;
     decode(value, text, kind)
@@ -15,32 +15,6 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(
     text: &str,
     kind: &str,
 ) -> Result<T> {
-    if std::any::type_name::<T>() == std::any::type_name::<crate::config::Settings>() {
-        if value.get("mcp_servers").is_some() {
-            anyhow::bail!(
-                "settings.yml.mcp_servers was removed; migrate it manually to mcpServers in ~/.pp/agent/mcp.json and delete the old field"
-            );
-        }
-        if value.get("tui").and_then(|tui| tui.get("cost")).is_some() {
-            anyhow::bail!(
-                "settings.yml.tui.cost was removed. Move currency and exchange_rate to the top-level cost section and remove the old block"
-            );
-        }
-        if value.get("hooks").is_some() {
-            anyhow::bail!(
-                "settings.yml.hooks was removed. Move the hooks block to ~/.pp/agent/hooks.yml (user level) or .pp/hooks.yml (project level) and delete the old field"
-            );
-        }
-        if value
-            .get("tools")
-            .and_then(|tools| tools.get("permissionMode"))
-            .is_some()
-        {
-            anyhow::bail!(
-                "settings.yml tools.permissionMode was removed because permission presets are no longer persisted; remove tools.permissionMode and use --permission-mode or --yolo on the CLI when needed"
-            );
-        }
-    }
     if !value.is_mapping() {
         return Err(anyhow!(
             "invalid YAML {kind} config: expected a top-level mapping"

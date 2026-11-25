@@ -368,7 +368,7 @@ fn stats_style_rejects_invalid_writes_and_preserves_broken_settings() {
     );
     assert!(!settings.exists());
     fs::create_dir_all(settings.parent().unwrap()).unwrap();
-    let broken = "unknown: secret-marker";
+    let broken = "stats: {style: secret-marker}";
     fs::write(&settings, broken).unwrap();
     let reply = raw_request_body(
         &address,

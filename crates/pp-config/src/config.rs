@@ -118,7 +118,6 @@ fn default_notification_timeout_seconds() -> u64 {
 
 /// 默认/收藏/Role/effort 的持久化权威，本批自 settings.yml 四字段迁入 agent.db。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ModelPreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) default_model: Option<String>,
@@ -163,7 +162,6 @@ impl ModelPreferences {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Settings {
     #[serde(default)]
     pub stats: StatsSettings,

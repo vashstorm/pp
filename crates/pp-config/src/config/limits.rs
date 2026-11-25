@@ -1,10 +1,11 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::BTreeMap;
 
 use super::sections::{default_eval_max_timeout_seconds, default_eval_timeout_seconds};
 use super::{
-    default_bash_max_timeout_seconds, default_bash_timeout_seconds, default_read_max_bytes,
-    default_read_max_lines,
+    OutputSettings, PermissionPolicy, SandboxSettings, default_bash_max_timeout_seconds,
+    default_bash_timeout_seconds, default_read_max_bytes, default_read_max_lines,
 };
 
 #[derive(Clone, Copy, Serialize)]
@@ -20,7 +21,7 @@ pub struct ToolLimits {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct RgSettings {
     #[serde(rename = "contextBefore")]
     pub context_before: usize,
@@ -39,17 +40,56 @@ impl Default for RgSettings {
 
 /// settings.yml 的 `tools:` 小节；字段语义由 `pp-permission` 与 `pp-sandbox` 解释。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(from = "ToolsSettingsFields")]
 pub struct ToolsSettings {
     #[serde(flatten)]
-    pub output: crate::config::OutputSettings,
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub permission: std::collections::BTreeMap<String, crate::config::PermissionPolicy>,
-    #[serde(
-        default,
-        skip_serializing_if = "crate::config::SandboxSettings::is_default"
-    )]
-    pub sandbox: crate::config::SandboxSettings,
+    pub output: OutputSettings,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub permission: BTreeMap<String, PermissionPolicy>,
+    #[serde(skip_serializing_if = "SandboxSettings::is_default")]
+    pub sandbox: SandboxSettings,
+}
+
+// 直接读取已知键，让带 YAML 标签的未知值也能跳过。
+// flatten 反序列化会先缓存未知值，缓存格式不支持 YAML 标签。
+#[derive(Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct ToolsSettingsFields {
+    artifact_spill_threshold: usize,
+    artifact_head_bytes: usize,
+    output_max_columns: usize,
+    artifact_max_bytes: usize,
+    permission: BTreeMap<String, PermissionPolicy>,
+    sandbox: SandboxSettings,
+}
+
+impl Default for ToolsSettingsFields {
+    fn default() -> Self {
+        let output = OutputSettings::default();
+        Self {
+            artifact_spill_threshold: output.artifact_spill_threshold,
+            artifact_head_bytes: output.artifact_head_bytes,
+            output_max_columns: output.output_max_columns,
+            artifact_max_bytes: output.artifact_max_bytes,
+            permission: BTreeMap::new(),
+            sandbox: SandboxSettings::default(),
+        }
+    }
+}
+
+impl From<ToolsSettingsFields> for ToolsSettings {
+    fn from(fields: ToolsSettingsFields) -> Self {
+        Self {
+            output: OutputSettings {
+                artifact_spill_threshold: fields.artifact_spill_threshold,
+                artifact_head_bytes: fields.artifact_head_bytes,
+                output_max_columns: fields.output_max_columns,
+                artifact_max_bytes: fields.artifact_max_bytes,
+            },
+            permission: fields.permission,
+            sandbox: fields.sandbox,
+        }
+    }
 }
 
 impl ToolLimits {

@@ -256,7 +256,7 @@ impl<'de> Deserialize<'de> for Theme {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct TuiSettings {
     pub max_fps: u16,
     pub theme: Theme,

@@ -9,7 +9,7 @@ fn sandbox_settings_defaults_to_auto_and_network_disabled() {
 }
 
 #[test]
-fn sandbox_settings_parse_and_reject_unknown_fields() {
+fn sandbox_settings_parse_known_fields_and_ignore_unknown_fields() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.yml");
     std::fs::write(
@@ -19,6 +19,7 @@ tools:
   sandbox:
     mode: workspace-write
     network: false
+    extraFlag: true
     writable:
       - ~/work/cache
       - /opt/tools
@@ -44,13 +45,6 @@ tools:
         vec!["~/.ssh/known_hosts"]
     );
     assert_eq!(settings.tools.sandbox.protect, vec![".envrc"]);
-
-    std::fs::write(
-        &path,
-        "tools:\n  sandbox:\n    mode: workspace-write\n    extraFlag: true\n",
-    )
-    .unwrap();
-    assert!(read_settings(&path).is_err());
 }
 
 #[test]
@@ -117,7 +111,7 @@ fn sandbox_mode_patch_persists_and_from_str_parses() {
 }
 
 #[test]
-fn permission_mode_parses_new_names_yolo_alias_and_rejects_persisted_setting() {
+fn permission_mode_parses_cli_names_and_yolo_alias() {
     assert_eq!(PermissionMode::default(), PermissionMode::WorkspaceWrite);
     for (raw, expected) in [
         ("workspace-write", PermissionMode::WorkspaceWrite),
@@ -136,10 +130,4 @@ fn permission_mode_parses_new_names_yolo_alias_and_rejects_persisted_setting() {
     for legacy in ["always-ask", "accept-edits", "unknown"] {
         assert!(legacy.parse::<PermissionMode>().is_err(), "legacy={legacy}");
     }
-
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("settings.yml");
-    std::fs::write(&path, "tools:\n  permissionMode: workspace-write\n").unwrap();
-    let err = format!("{:#}", read_settings(&path).unwrap_err());
-    assert!(err.contains("tools.permissionMode was removed"), "{err}");
 }

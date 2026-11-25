@@ -12,7 +12,6 @@ pub enum StatsStyle {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct StatsSettings {
     #[serde(default)]
     pub style: StatsStyle,
@@ -60,7 +59,7 @@ mod tests {
         );
         std::fs::write(
             &path,
-            "# 保留说明\ndebug: true # 调试\nstats:\n  style: modern\n",
+            "# 保留说明\ndebug: true # 调试\nextra: {value: 1}\nstats:\n  style: modern\n  extra: true\n",
         )
         .unwrap();
         StatsStyle::Default.save(&path).unwrap();
@@ -71,7 +70,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
-                .starts_with("# 保留说明\ndebug: true # 调试\n")
+                .starts_with("# 保留说明\ndebug: true # 调试\nextra: {value: 1}\n")
         );
     }
 
@@ -84,10 +83,8 @@ mod tests {
             "stats: {style: Modern}",
             "stats: {style: null}",
             "stats: {style: 1}",
-            "stats: {style: modern, extra: true}",
             "stats: null",
             "stats: []",
-            "unknown: secret-marker",
         ] {
             std::fs::write(&path, text).unwrap();
             assert!(read_settings(&path).is_err());

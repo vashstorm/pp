@@ -76,7 +76,6 @@ impl ModelThinking {
 }
 
 #[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ThinkingEntry {
     #[serde(default)]
     efforts: Vec<ThinkLevel>,
@@ -122,7 +121,6 @@ impl ThinkingEntry {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ModelsFile {
     #[serde(deserialize_with = "deserialize_named_entries")]
     providers: Vec<(String, ProviderEntry)>,
@@ -209,7 +207,6 @@ impl<'de> Deserialize<'de> for Protocol {
 
 // Deliberately not Debug: this owns the API credential.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ProviderEntry {
     #[serde(default, deserialize_with = "deserialize_present_option")]
     protocol: Option<Protocol>,
@@ -243,7 +240,6 @@ where
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ModelEntry {
     model: String,
     #[serde(default, deserialize_with = "deserialize_optional_cost")]
@@ -257,7 +253,6 @@ struct ModelEntry {
 }
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ModelCost {
     pub input: f64,
     #[serde(rename = "cacheRead")]

@@ -330,33 +330,20 @@ fn lsp_registry_idle_maintenance_reaps_without_new_call() {
 
 #[test]
 fn lsp_settings_timeout_boundaries_and_unknown_fields() {
-    let disabled: LspSettings = serde_json::from_value(json!({"formatOnWrite":false})).unwrap();
-    disabled.validate().unwrap();
-    let enabled: LspSettings = serde_json::from_value(json!({"formatOnWrite":true})).unwrap();
-    assert!(
-        enabled
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("action=format")
-    );
     for timeout in [4, 301] {
         let settings: LspSettings =
             serde_json::from_value(json!({"requestTimeout":timeout})).unwrap();
         assert!(settings.validate().is_err());
     }
     for timeout in [5, 300] {
-        let settings: LspSettings =
-            serde_json::from_value(json!({"requestTimeout":timeout})).unwrap();
+        let settings: LspSettings = serde_json::from_value(
+            json!({"requestTimeout":timeout,"formatOnWrite":true,"shared":true}),
+        )
+        .unwrap();
         settings.validate().unwrap();
+        assert_eq!(settings.request_timeout, timeout);
     }
-    for input in [
-        json!({"requestTimeout":5.5}),
-        json!({"shared":true}),
-        json!({"maxTimeout":10}),
-    ] {
-        assert!(serde_json::from_value::<LspSettings>(input).is_err());
-    }
+    assert!(serde_json::from_value::<LspSettings>(json!({"requestTimeout":5.5})).is_err());
 }
 
 #[test]

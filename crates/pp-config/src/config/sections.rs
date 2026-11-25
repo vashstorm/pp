@@ -2,7 +2,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct OutputSettings {
     pub artifact_spill_threshold: usize,
     pub artifact_head_bytes: usize,
@@ -130,7 +130,7 @@ pub enum PermissionPolicy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct TaskSettings {
     pub max_concurrency: usize,
     pub max_recursion_depth: usize,
@@ -156,13 +156,12 @@ impl Default for TaskSettings {
 
 /// `settings.yml` 的 `lsp:` 小节；字段名沿用 oh-my-pi 的 camelCase。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct LspSettings {
     /// 总开关：false 时不发现、不预热、不调用自动钩子、不投递迟到诊断、不暴露工具。
     pub enabled: bool,
     /// true 时首次实际动作才启动服务器；false 时 TUI 会话在后台预热。
     pub lazy: bool,
-    pub format_on_write: bool,
     pub diagnostics_on_write: bool,
     pub diagnostics_on_edit: bool,
     pub diagnostics_deduplicate: bool,
@@ -175,7 +174,6 @@ impl Default for LspSettings {
         Self {
             enabled: true,
             lazy: true,
-            format_on_write: false,
             diagnostics_on_write: true,
             diagnostics_on_edit: false,
             diagnostics_deduplicate: true,
@@ -186,10 +184,6 @@ impl Default for LspSettings {
 
 impl LspSettings {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            !self.format_on_write,
-            "lsp.formatOnWrite=true is no longer supported; use lsp action=format and edit/write/bash to apply suggestions"
-        );
         ensure!(
             (5..=300).contains(&self.request_timeout),
             "lsp.requestTimeout must be between 5 and 300"
@@ -222,7 +216,6 @@ impl EditMode {
 /// `settings.yml` 的 `cost` 定义显示币种与 1 USD 的兑换金额。
 /// 图标由 `currency` 派生，配置不再接受手写图标。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CostDisplay {
     pub currency: String,
     pub exchange_rate: f64,
@@ -269,7 +262,6 @@ impl Default for CostDisplay {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReadDisplaySettings {
     #[serde(default, rename = "toolResultPreview")]
     pub(crate) tool_result_preview: bool,
@@ -289,7 +281,7 @@ pub fn default_eval_max_timeout_seconds() -> u64 {
 
 /// `settings.yml` 的 `eval:` 小节，控制持久 Python 内核的可用性与超时窗口。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct EvalSettings {
     #[serde(default = "default_eval_enabled")]
     pub enabled: bool,

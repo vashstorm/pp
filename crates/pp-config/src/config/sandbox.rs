@@ -51,7 +51,7 @@ fn default_network() -> bool {
 
 /// settings.yml `tools.sandbox` 配置。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+#[serde(default, rename_all = "camelCase")]
 pub struct SandboxSettings {
     pub mode: SandboxMode,
     #[serde(default = "default_network")]

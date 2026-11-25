@@ -5,7 +5,6 @@ use serde_json::Value;
 use std::{collections::BTreeMap, fs, path::Path, sync::LazyLock};
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Definition {
     pub name: String,
     pub description: String,
@@ -144,7 +143,7 @@ mod tests {
 
     #[test]
     fn role_markdown_keeps_tools_optional_and_parses_only_the_frontmatter() {
-        let markdown = "---\r\nname: scout\r\ndescription: Investigate\r\nreadonly: true\r\n---\r\n\r\nReview.\r\n---\r\nKeep this in the prompt.";
+        let markdown = "---\r\nname: scout\r\ndescription: Investigate\r\nreadonly: true\r\nmode: execute\r\n---\r\n\r\nReview.\r\n---\r\nKeep this in the prompt.";
         let role = Definition::parse(markdown).unwrap();
         assert!(role.readonly);
         assert!(role.tools.is_none());
@@ -166,7 +165,6 @@ mod tests {
         for markdown in [
             "---\nname: scout\n---\nBody",
             "---\nname: scout\ndescription: Scout\nreadonly: \"true\"\n---\nBody",
-            "---\nname: scout\ndescription: Scout\nmode: execute\n---\nBody",
             "---\nname: scout\ndescription: Scout\nreadonly: true\nreadonly: false\n---\nBody",
             "---\nname: scout\ndescription: Scout\n---not-a-delimiter\nBody",
         ] {

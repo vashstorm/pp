@@ -22,27 +22,6 @@ use std::sync::OnceLock;
 
 const DEFAULT_DEFINITIONS: &str = include_str!("defaults.json");
 
-/// 每个服务器定义允许的字段；其余（包括 `resolvedCommand`、`createClient`
-/// 这类运行时字段与 `extensionToLanguage` 兼容别名）一律拒绝。
-const SERVER_FIELDS: &[&str] = &[
-    "command",
-    "args",
-    "fileTypes",
-    "languageId",
-    "rootMarkers",
-    "initOptions",
-    "settings",
-    "disabled",
-    "warmupTimeoutMs",
-    "isLinter",
-    "capabilities",
-    "workspaceReadyTimings",
-];
-
-const RUNTIME_ONLY_FIELDS: &[&str] = &["resolvedCommand", "createClient"];
-
-const WRAPPED_FIELDS: &[&str] = &["servers", "idleTimeoutMs"];
-
 const READY_FIELDS: &[&str] = &["timeoutMs", "pollMs", "settleMs", "statusRequestTimeoutMs"];
 
 const PYTHON_ROOT_MARKERS: &[&str] = &[
@@ -356,13 +335,6 @@ fn split_layer(raw: &Raw, source: &Source) -> Result<(RawFields, Option<u64>)> {
         ),
     };
     if let Some((_, servers)) = object.iter().find(|(key, _)| key == "servers") {
-        for (key, _) in object {
-            ensure!(
-                WRAPPED_FIELDS.contains(&key.as_str()),
-                "LSP config {}: unknown top-level field `{key}`",
-                source.label
-            );
-        }
         let Raw::Object(servers) = servers else {
             bail!(
                 "LSP config {}: field `servers` must be an object",
@@ -427,17 +399,6 @@ fn validate_server_shape(name: &str, value: &Raw, source: &Source) -> Result<()>
     };
     for (key, field) in fields {
         let path = format!("servers.{name}.{key}");
-        if RUNTIME_ONLY_FIELDS.contains(&key.as_str()) {
-            bail!(
-                "LSP config {}: `{path}` is a runtime-only field",
-                source.label
-            );
-        }
-        ensure!(
-            SERVER_FIELDS.contains(&key.as_str()),
-            "LSP config {}: unknown field `{path}`",
-            source.label
-        );
         match key.as_str() {
             "command" | "languageId" => {
                 let text = expect_string(field, &path, source.path())?;
@@ -471,12 +432,9 @@ fn validate_server_shape(name: &str, value: &Raw, source: &Source) -> Result<()>
                         unreachable!();
                     };
                     for (timing, value) in entries {
-                        ensure!(
-                            READY_FIELDS.contains(&timing.as_str()),
-                            "LSP config {}: unknown field `{path}.{timing}`",
-                            source.label
-                        );
-                        expect_u64(value, &format!("{path}.{timing}"), source.path())?;
+                        if READY_FIELDS.contains(&timing.as_str()) {
+                            expect_u64(value, &format!("{path}.{timing}"), source.path())?;
+                        }
                     }
                 }
             }
@@ -495,7 +453,7 @@ fn validate_server_shape(name: &str, value: &Raw, source: &Source) -> Result<()>
                     source.label
                 );
             }
-            _ => unreachable!("field list is exhaustive"),
+            _ => {}
         }
     }
     Ok(())
@@ -545,18 +503,14 @@ fn finish_definition(
     let mut ready = ReadyTimings::default();
     if let Some(Raw::Object(entries)) = field("workspaceReadyTimings") {
         for (key, value) in entries {
-            let parsed = expect_u64(
-                value,
-                &format!("{path_prefix}.workspaceReadyTimings.{key}"),
-                Path::new(source),
-            )?;
-            match key.as_str() {
-                "timeoutMs" => ready.timeout_ms = Some(parsed),
-                "pollMs" => ready.poll_ms = Some(parsed),
-                "settleMs" => ready.settle_ms = Some(parsed),
-                "statusRequestTimeoutMs" => ready.status_request_timeout_ms = Some(parsed),
-                _ => unreachable!("timing fields validated earlier"),
-            }
+            let slot = match key.as_str() {
+                "timeoutMs" => &mut ready.timeout_ms,
+                "pollMs" => &mut ready.poll_ms,
+                "settleMs" => &mut ready.settle_ms,
+                "statusRequestTimeoutMs" => &mut ready.status_request_timeout_ms,
+                _ => continue,
+            };
+            *slot = value.as_u64();
         }
     }
     Ok(ServerDefinition {

@@ -5,13 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
 #[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Catalog {
     pub providers: BTreeMap<String, Entry>,
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Entry {
     pub auth: Provider,
     pub generation: String,
@@ -20,7 +18,6 @@ pub struct Entry {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Model {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

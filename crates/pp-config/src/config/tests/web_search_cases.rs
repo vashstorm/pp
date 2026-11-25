@@ -15,11 +15,13 @@ fn web_search_settings_defaults_and_strict_validation() {
         r#"
 webSearch:
   enabled: true
+  extra: true
   provider: searxng
   keyless: false
   timeoutSeconds: 45
   searxng:
     endpoint: https://searx.example.org
+    extra: [1, 2]
     token: secret-token-marker
     engines: duckduckgo, startpage
     categories: general
@@ -56,7 +58,6 @@ webSearch:
     }
 
     for invalid in [
-        "webSearch: {unknown: true}",
         "webSearch: {provider: brave}",
         "webSearch: {timeoutSeconds: 0}",
         "webSearch: {timeoutSeconds: 301}",

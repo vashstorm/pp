@@ -73,7 +73,6 @@ pub enum HookFailurePolicy {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CommandHook {
     #[serde(rename = "type")]
     pub kind: HookHandlerType,
@@ -91,7 +90,6 @@ fn default_timeout() -> u64 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HookMatcherGroup {
     #[serde(default)]
     pub matcher: Option<String>,
@@ -100,7 +98,7 @@ pub struct HookMatcherGroup {
 
 /// `hooks:` 的五个事件数组；缺省全部为空。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct HooksSettings {
     #[serde(rename = "UserPromptSubmit")]
     pub user_prompt_submit: Vec<HookMatcherGroup>,
@@ -191,7 +189,7 @@ mod tests {
     #[test]
     fn hooks_parse_full_shape_with_defaults() {
         let settings = parse(
-            "PreToolUse:\n  - matcher: 'bash,edit'\n    hooks:\n      - type: command\n        command: /bin/true\nStop:\n  - hooks:\n      - type: command\n        command: /bin/true\n        args: ['--flag', 'a b']\n        timeout: 5\n        onFailure: block\n",
+            "SessionStart: {future: true}\nPreToolUse:\n  - matcher: 'bash,edit'\n    extra: true\n    hooks:\n      - type: command\n        command: /bin/true\n        extra: true\nStop:\n  - hooks:\n      - type: command\n        command: /bin/true\n        args: ['--flag', 'a b']\n        timeout: 5\n        onFailure: block\n",
         )
         .unwrap();
         settings.validate().unwrap();
@@ -211,13 +209,10 @@ mod tests {
     }
 
     #[test]
-    fn hooks_reject_unknown_events_and_handler_fields() {
+    fn hooks_reject_unsupported_handler_types_and_failure_policies() {
         for yaml in [
-            "SessionStart:\n  - hooks:\n      - type: command\n        command: /bin/true\n",
-            "PreToolUse:\n  - hooks:\n      - type: command\n        command: /bin/true\n        async: true\n",
             "PreToolUse:\n  - hooks:\n      - type: prompt\n        command: /bin/true\n",
             "PreToolUse:\n  - hooks:\n      - type: command\n        command: /bin/true\n        onFailure: retry\n",
-            "PreToolUse:\n  - match: bash\n    hooks:\n      - type: command\n        command: /bin/true\n",
         ] {
             assert!(parse(yaml).is_err(), "{yaml} must be rejected");
         }

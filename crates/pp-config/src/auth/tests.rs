@@ -390,13 +390,12 @@ fn auth_logout_preserves_other_providers_even_if_cached_models_are_corrupt() {
 }
 
 #[test]
-fn auth_yaml_rejects_duplicate_unknown_fields_and_unsafe_save_without_leaks() {
+fn auth_yaml_ignores_unknown_fields_and_rejects_duplicate_keys_and_unsafe_save() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("auth.yml");
     for text in [
         "credentials: {}\ncredentials: {}",
-        "credentials: {}\nunknown: secret-marker",
-        "credentials:\n  glm:\n    access_token: secret-marker\n    unknown: x",
+        "credentials:\n  glm:\n    access_token: [secret-marker]",
     ] {
         fs::write(&path, text).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
@@ -415,7 +414,7 @@ fn auth_yaml_rejects_duplicate_unknown_fields_and_unsafe_save_without_leaks() {
     // 旧格式正文字段必须原值保留给迁移；缺失文件视为空授权。
     fs::write(
         &path,
-        "credentials:\n  glm:\n    generation: gen-1\n    access_token: secret-marker\n    expires_at: 5\n",
+        "unknown: true\ncredentials:\n  glm:\n    generation: gen-1\n    access_token: secret-marker\n    expires_at: 5\n    extra: [1]\n",
     )
     .unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();

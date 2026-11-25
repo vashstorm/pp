@@ -124,7 +124,7 @@ impl<'de> Deserialize<'de> for FilesystemConfig {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub(crate) struct NetworkConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) enabled: Option<bool>,
@@ -151,7 +151,7 @@ impl NetworkConfig {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub(crate) struct Profile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
@@ -192,7 +192,6 @@ impl Profile {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SandboxGrant {
     pub command: String,
     #[serde(default)]
@@ -280,7 +279,6 @@ fn deserialize_decision<'de, D: serde::Deserializer<'de>>(
 
 /// Codex `[[rules]]` 细粒度命令规则：默认 `match = "exact"`。
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct BashRule {
     pub pattern: Vec<String>,
     #[serde(default, rename = "match")]

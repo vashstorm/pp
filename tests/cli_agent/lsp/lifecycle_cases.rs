@@ -454,14 +454,12 @@ fn lsp_roundtrip_isolated_subagent_uses_separate_client() {
 }
 
 #[test]
-fn lsp_settings_invalid_timeout_and_unknown_fields_reject_before_request() {
+fn lsp_settings_invalid_values_reject_before_request() {
     let provider = server();
     for setting in [
         "lsp: {requestTimeout: 4}",
-        "lsp: {formatOnWrite: true}",
         "lsp: {requestTimeout: 301}",
         "lsp: {requestTimeout: 5.5}",
-        "lsp: {shared: secret-marker}",
         "lsp: {enabled: secret-marker}",
     ] {
         let home = tempfile::tempdir().unwrap();

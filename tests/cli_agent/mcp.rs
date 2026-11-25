@@ -257,7 +257,6 @@ fn mcp_call_failures_reach_model_and_failed_connections_are_not_reused() {
 #[test]
 fn mcp_config_rejects_invalid_fields_types_and_values_without_leaking_secrets() {
     let cases = [
-        json!({"command":"secret-command","unknown":"secret-config"}),
         json!({"command":""}),
         json!({"command":"bash","args":"secret-config"}),
         json!({"command":"bash","env":{"A":null}}),
@@ -638,20 +637,22 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
 }
 
 #[test]
-fn mcp_legacy_settings_require_manual_migration_without_writing_mcp_json() {
+fn mcp_legacy_settings_are_ignored_without_writing_mcp_json() {
     let provider = server();
     let home = tempfile::tempdir().unwrap();
-    let output = Cli::start_with(
+    let cli = Cli::start_with(
         home.path(),
         Some("test"),
         r#"{"mcp_servers":{"secret-name":{"command":"secret-command"}}}"#,
         &fixture_models(&provider),
-    )
-    .finish();
-    assert!(!output.status.success());
+    );
+    let (request, body) = receive(&provider);
+    assert!(!body["tools"].to_string().contains("mcp__secret-name__"));
+    final_reply(request, "legacy MCP setting ignored");
+    let output = cli.finish();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("mcp.json"));
-    assert!(stderr.contains("migrate"));
+    assert!(output.status.success(), "{stderr}");
+    assert_eq!(output.stdout, b"legacy MCP setting ignored\n");
     assert!(!stderr.contains("secret-command"));
     assert!(!config_path(home.path(), "mcp.json").exists());
     no_more(&provider);

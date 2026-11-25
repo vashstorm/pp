@@ -38,7 +38,6 @@ impl ModelRole {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RoleAssignment {
     #[serde(default = "role_enabled_by_default")]
     pub enabled: bool,
@@ -52,7 +51,6 @@ pub struct RoleAssignment {
 
 /// 单个模型及其独立思考档位；空主模型在数据库中表示为 NULL。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RoleModel {
     pub model: String,
     pub effort: ThinkLevel,
@@ -371,12 +369,11 @@ mod tests {
             "model_roles: {smol: {model: fixture/one, effort: low}}",
             "model_roles: {fast: {model: one, effort: low}}",
             "model_roles: {fast: {model: fixture/one, effort: turbo}}",
-            "model_roles: {fast: {model: fixture/one, unknown: true}}",
             "model_roles: null",
         ] {
             assert!(
-                yaml::parse::<Settings>(input, "settings")
-                    .and_then(|settings| settings.validate())
+                yaml::parse::<ModelPreferences>(input, "settings")
+                    .and_then(|preferences| preferences.validate())
                     .is_err(),
                 "{input}"
             );

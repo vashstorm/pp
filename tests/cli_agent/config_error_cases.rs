@@ -26,7 +26,6 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
         ),
     ];
     for settings in [
-        json!({"default_model": "fixture/primary", "unknown": "secret-marker"}),
         json!({"default_model": "fixture/primary", "request_timeout_seconds": 0}),
         json!({"default_model": ["secret-marker"]}),
         json!({"default_model": "secret-marker"}),
@@ -46,9 +45,6 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
         json!({"models": {"fixture": { "api_key": "secret-marker", "model": "m"}}}),
     ];
     for (field, value) in [
-        ("id", json!(["secret-marker"])),
-        ("id", json!(" ")),
-        ("id", json!("secret-marker/provider")),
         ("api_key", json!(" ")),
         ("protocol", json!("secret-marker")),
         ("protocol", json!("openai")),
@@ -63,17 +59,9 @@ fn interactive_config_errors_keep_session_available_without_model_requests() {
         invalid["providers"]["fixture"][field] = value;
         invalid_models.push(invalid);
     }
-    for (field, value) in [
-        ("id", json!(" ")),
-        ("model", json!(" ")),
-        ("api_key", json!("secret-marker")),
-        ("base_url", json!("http://secret-marker.invalid")),
-        ("protocol", json!("completion")),
-    ] {
-        let mut invalid = valid.clone();
-        invalid["providers"]["fixture"]["models"]["primary"][field] = value;
-        invalid_models.push(invalid);
-    }
+    let mut blank_model = valid.clone();
+    blank_model["providers"]["fixture"]["models"]["primary"]["model"] = json!(" ");
+    invalid_models.push(blank_model);
     for invalid_provider in [
         json!({
                 "api_key": "secret-marker",

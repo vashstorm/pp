@@ -35,7 +35,6 @@ fn save_settings() -> LspSettings {
     LspSettings {
         enabled: true,
         lazy: true,
-        format_on_write: false,
         diagnostics_on_write: true,
         diagnostics_on_edit: false,
         diagnostics_deduplicate: true,
@@ -208,11 +207,7 @@ fn lsp_save_edit_syncs_exact_text_and_version_without_formatting() {
 #[test]
 fn lsp_save_failure_publishes_neither_diff_nor_diagnostics() {
     let dir = tempfile::tempdir().unwrap();
-    let settings = LspSettings {
-        format_on_write: false,
-        ..save_settings()
-    };
-    let tools = fixture_tools(&dir, &["--format", "edits"], settings);
+    let tools = fixture_tools(&dir, &["--format", "edits"], save_settings());
     fs::create_dir(dir.path().join("blocked")).unwrap();
     let (result, events) = execute_events(
         &tools,

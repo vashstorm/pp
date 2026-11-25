@@ -4,7 +4,7 @@ use super::{
     BashRule, DEFAULT_PROFILE, Document, MatchMode, NetworkDomainDecision, Profile, SandboxGrant,
     validate_profile_name,
 };
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use pp_config::config::PermissionPolicy;
 use std::{
     collections::BTreeMap,
@@ -16,18 +16,8 @@ use std::{
 
 impl Document {
     pub(super) fn from_toml_str(text: &str) -> Result<Self> {
-        let table: toml::map::Map<String, toml::Value> = toml::from_str(text).map_err(|_| {
-            anyhow!(
-                "invalid TOML permission rules config: check syntax, field types, required fields, and unknown fields"
-            )
-        })?;
-        for legacy in ["tools", "bash", "version", "permissions"] {
-            if table.contains_key(legacy) {
-                bail!(
-                    "legacy permission.toml key `{legacy}` is not supported; use Codex-style `[default.tools]`, `[default.filesystem]`, `[default.network]`, and `[[rules]]` without the `permissions.` prefix"
-                );
-            }
-        }
+        let table: toml::map::Map<String, toml::Value> = toml::from_str(text)
+            .map_err(|_| anyhow!("invalid TOML permission rules config: check syntax"))?;
         let mut doc = Document::default();
         for (key, value) in table {
             match key.as_str() {
@@ -46,13 +36,15 @@ impl Document {
                         .try_into::<Vec<SandboxGrant>>()
                         .map_err(|e| anyhow!("invalid [[sandbox]] entry: {e}"))?;
                 }
-                profile_name => {
+                "tools" | "bash" | "version" | "permissions" => {}
+                profile_name if profile_name == DEFAULT_PROFILE || value.is_table() => {
                     validate_profile_name(profile_name)?;
                     let profile: Profile = value
                         .try_into()
                         .map_err(|e| anyhow!("invalid [{profile_name}] profile: {e}"))?;
                     doc.profiles.insert(profile_name.to_owned(), profile);
                 }
+                _ => {}
             }
         }
         doc.validate()?;

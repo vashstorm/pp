@@ -82,13 +82,13 @@ fn lsp_invalid_config_reports_source_and_field_without_values() {
     let dir = tempfile::tempdir().unwrap();
     write(
         &dir.path().join(".pp").join("lsp.json"),
-        r#"{"servers":{"bad":{"command":"s3cr3t-command","unknownField":true}}}"#,
+        r#"{"servers":{"bad":{"command":"s3cr3t-command","disabled":"s3cr3t-value"}}}"#,
     );
     let error = Config::load_with(dir.path(), None).unwrap_err();
     let message = format!("{error:#}");
     assert!(message.contains("lsp.json"), "{message}");
-    assert!(message.contains("servers.bad.unknownField"), "{message}");
-    assert!(!message.contains("s3cr3t-command"), "{message}");
+    assert!(message.contains("servers.bad.disabled"), "{message}");
+    assert!(!message.contains("s3cr3t-"), "{message}");
 }
 
 #[test]
@@ -119,15 +119,20 @@ fn lsp_wrapped_and_flat_forms_are_both_accepted() {
 }
 
 #[test]
-fn lsp_wrapped_form_rejects_flat_server_siblings() {
+fn lsp_wrapped_form_ignores_fields_outside_servers() {
     let dir = tempfile::tempdir().unwrap();
     let user = dir.path().join("user.json");
     write(
         &user,
         r#"{"servers":{},"extra":{"command":"x","fileTypes":[".x"],"rootMarkers":["x"]}}"#,
     );
-    let error = Config::load_with(dir.path(), Some(&user)).unwrap_err();
-    assert!(format!("{error:#}").contains("unknown top-level field `extra`"));
+    let config = Config::load_with(dir.path(), Some(&user)).unwrap();
+    assert!(
+        config
+            .definitions
+            .iter()
+            .all(|server| server.name != "extra")
+    );
 }
 
 #[test]
@@ -145,15 +150,22 @@ fn lsp_duplicate_keys_are_rejected() {
 }
 
 #[test]
-fn lsp_runtime_only_fields_are_rejected() {
+fn lsp_server_ignores_runtime_fields_and_unknown_timings() {
     let dir = tempfile::tempdir().unwrap();
     let user = dir.path().join("user.json");
     write(
         &user,
-        r#"{"servers":{"rust-analyzer":{"resolvedCommand":"/bin/true"}}}"#,
+        r#"{"servers":{"rust-analyzer":{"command":"test-analyzer","resolvedCommand":"/bin/true","workspaceReadyTimings":{"pollMs":5,"extra":{"unused":true}}}}}"#,
     );
-    let error = Config::load_with(dir.path(), Some(&user)).unwrap_err();
-    assert!(format!("{error:#}").contains("runtime-only field"));
+    let config = Config::load_with(dir.path(), Some(&user)).unwrap();
+    let server = config
+        .definitions
+        .iter()
+        .find(|server| server.name == "rust-analyzer")
+        .unwrap();
+    assert_eq!(server.command, "test-analyzer");
+    assert_eq!(server.ready.poll_ms, Some(5));
+    assert!(server.resolved_command.is_none());
 }
 
 #[test]

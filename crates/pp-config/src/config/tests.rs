@@ -89,7 +89,6 @@ fn model_cost_accepts_existing_rates_and_rejects_invalid_unselected_models() {
         json!({"input":-1,"output":1,"cacheRead":0}),
         json!({"input":1,"output":1}),
         json!({"input":"secret-marker","output":1,"cacheRead":0}),
-        json!({"input":1,"output":1,"cacheRead":0,"typo":0}),
         json!({"input":1,"output":1,"cacheRead":0,"cacheWrite":-1}),
         json!({"input":1,"output":1,"cacheRead":0,"cacheWrite":null}),
         json!({"input":1,"output":1,"cacheRead":0,"cacheWrite":"secret-marker"}),
@@ -180,7 +179,10 @@ fn model_thinking_validates_sets_defaults_and_unselected_models() {
     }
     let config = load(
         None,
-        Some(&make(json!({"efforts":["high","low","high"],"defaultLevel":"high"})).to_string()),
+        Some(
+            &make(json!({"efforts":["high","low","high"],"defaultLevel":"high","extra":true}))
+                .to_string(),
+        ),
     )
     .unwrap();
     let policy = config.thinking;
@@ -213,7 +215,6 @@ fn model_thinking_validates_sets_defaults_and_unselected_models() {
         json!(true),
         json!([]),
         json!("secret-marker"),
-        json!({"unknown":"secret-marker"}),
         json!({"efforts":["low"],"defaultLevel":"high"}),
     ];
     for value in [
@@ -446,10 +447,7 @@ fn provider_and_model_scope_constraints_reject_whole_configuration() {
         "api_key": "secret-marker",
         "models": {"primary": { "model": "m"}}
     });
-    let mut cases = vec![
-        json!({"providers": {}}),
-        json!({"providers": {"fixture": provider.clone()}, "id": "secret-marker"}),
-    ];
+    let mut cases = vec![json!({"providers": {}})];
     for id in ["", " \t", "secret-marker/provider"] {
         cases.push(json!({"providers": {id: provider.clone()}}));
     }
@@ -504,11 +502,6 @@ fn yaml_diagnostics_identify_entries_without_echoing_values() {
             "expected u16",
         ),
         (
-            "# settings\ntui:\n  secret-marker: true",
-            "`tui` (line 3, column 3)",
-            "unknown field",
-        ),
-        (
             "disabled_skills: [valid, {bad: secret-marker}]",
             "disabled_skills[1]",
             "invalid field type",
@@ -530,11 +523,6 @@ fn yaml_diagnostics_identify_entries_without_echoing_values() {
             "invalid field type",
         ),
         (
-            "{secret-marker: true, model: some-model}",
-            "`providers.fixture.models.primary` (line 5, column 17)",
-            "unknown field",
-        ),
-        (
             "{context_window: 2048}",
             "providers.fixture.models.primary.model",
             "missing required field",
@@ -551,41 +539,10 @@ fn yaml_diagnostics_identify_entries_without_echoing_values() {
 }
 
 #[test]
-fn unknown_and_misplaced_fields_and_old_format_are_rejected() {
-    for settings in [
-        r#"{"secret-marker":true}"#,
-        r#"{"api_key":"secret-marker"}"#,
-        r#"{"models":["secret-marker"]}"#,
-    ] {
-        rejection(Some(settings), Some(VALID_MODELS));
-    }
-    let valid: serde_json::Value = serde_json::from_str(VALID_MODELS).unwrap();
-    let mut cases = vec![
-        // The removed flat format is intentionally accepted nowhere.
-        json!({"models": {"primary": { "api_key": "secret-marker", "model": "m"}}}),
-    ];
-    for level in 0..3 {
-        let mut invalid = valid.clone();
-        let object = match level {
-            0 => &mut invalid,
-            1 => &mut invalid["providers"]["fixture"],
-            _ => &mut invalid["providers"]["fixture"]["models"]["primary"],
-        };
-        object["secret-marker"] = json!(true);
-        cases.push(invalid);
-    }
-    for (field, value) in [
-        ("api_key", json!("secret-marker")),
-        ("base_url", json!("https://secret-marker.example/v1")),
-        ("protocol", json!("completion")),
-    ] {
-        let mut invalid = valid.clone();
-        invalid["providers"]["fixture"]["models"]["primary"][field] = value;
-        cases.push(invalid);
-    }
-    for models in cases {
-        rejection(Some(VALID_SETTINGS), Some(&models.to_string()));
-    }
+fn model_configs_reject_old_flat_format_without_required_providers() {
+    let models = r#"{"models":{"primary":{"api_key":"secret-marker","model":"m"}}}"#;
+    let error = rejection(Some(VALID_SETTINGS), Some(models));
+    assert!(error.contains("`providers`") && error.contains("missing required field"));
 }
 
 #[test]
@@ -660,7 +617,6 @@ fn unselected_providers_and_models_are_validated_before_selection() {
             "base_url",
             json!("https://secret-marker.example/v1?token=secret-marker"),
         ),
-        ("id", json!("")),
         ("models", json!([])),
         ("models", json!({"primary": {"model": " \t"}})),
         ("models", json!({"": {"model": "secret-marker"}})),
@@ -679,14 +635,9 @@ fn unselected_providers_and_models_are_validated_before_selection() {
             rejection(Some(settings), Some(&invalid.to_string()));
         }
     }
-    for model in [
-        json!({"model": " \t"}),
-        json!({"id": "other", "model": "secret-marker"}),
-    ] {
-        let mut invalid = valid.clone();
-        invalid["providers"]["fixture"]["models"]["other"] = model;
-        rejection(Some(VALID_SETTINGS), Some(&invalid.to_string()));
-    }
+    let mut invalid = valid.clone();
+    invalid["providers"]["fixture"]["models"]["other"] = json!({"model": " \t"});
+    rejection(Some(VALID_SETTINGS), Some(&invalid.to_string()));
 }
 
 #[test]

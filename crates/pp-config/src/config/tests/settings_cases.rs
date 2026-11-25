@@ -8,14 +8,14 @@ fn artifact_settings_defaults_validation_and_checkpoint_compatibility() {
     let restored: ToolLimits = serde_json::from_value(old).unwrap();
     assert_eq!(restored.output.artifact_spill_threshold, 51200);
     assert_eq!(restored.output.artifact_max_bytes, 16777216);
-    let settings = load(Some(r#"{"tools":{"artifactSpillThreshold":128,"artifactHeadBytes":100,"outputMaxColumns":0,"artifactMaxBytes":0}}"#),Some(VALID_MODELS)).unwrap().settings;
+    let settings = load(Some(r#"{"tools":{"artifactSpillThreshold":128,"artifactHeadBytes":100,"outputMaxColumns":0,"artifactMaxBytes":0,"artifactHeadByte":10}}"#),Some(VALID_MODELS)).unwrap().settings;
     assert_eq!(settings.tool_limits().output.artifact_spill_threshold, 128);
+    assert_eq!(settings.tool_limits().output.artifact_head_bytes, 100);
     assert_eq!(settings.tool_limits().output.output_max_columns, 0);
     for bad in [
         r#"{"tools":{"artifactSpillThreshold":0}}"#,
         r#"{"tools":{"artifactMaxBytes":-1}}"#,
         r#"{"tools":{"artifactMaxBytes":1.5}}"#,
-        r#"{"tools":{"artifactHeadByte":10}}"#,
         r#"{"tools":{"artifactHeadBytes":null}}"#,
     ] {
         assert!(load(Some(bad), Some(VALID_MODELS)).is_err(), "{bad}");
@@ -30,8 +30,11 @@ fn rg_context_settings_are_strict_and_default_when_absent() {
         (settings.rg.context_before, settings.rg.context_after),
         (1, 3)
     );
-    let settings: Settings =
-        yaml::parse("rg: {contextBefore: 0, contextAfter: 5}", "settings").unwrap();
+    let settings: Settings = yaml::parse(
+        "grep: {contextBefore: 99}\nrg: {contextBefore: 0, contextAfter: 5, extra: 1}",
+        "settings",
+    )
+    .unwrap();
     assert_eq!(
         (
             settings.tool_limits().rg.context_before,
@@ -43,9 +46,6 @@ fn rg_context_settings_are_strict_and_default_when_absent() {
         "rg: null",
         "rg: {contextBefore: -1}",
         "rg: {contextAfter: null}",
-        "rg: {extra: 1}",
-        // 旧 `grep:` 键不保留兼容，严格解析直接拒绝，迫使手动迁移。
-        "grep: {contextBefore: 0}",
     ] {
         assert!(
             yaml::parse::<Settings>(input, "settings").is_err(),
@@ -84,7 +84,8 @@ fn read_preview_defaults_and_strict_nested_settings() {
         let settings: Settings = yaml::parse(text, "settings").unwrap();
         assert!(!settings.read.tool_result_preview);
     }
-    let settings: Settings = yaml::parse("read: {toolResultPreview: true}", "settings").unwrap();
+    let settings: Settings =
+        yaml::parse("read: {toolResultPreview: true, extra: [1]}", "settings").unwrap();
     assert!(settings.read.tool_result_preview);
     for text in [
         "read: null",
@@ -92,7 +93,6 @@ fn read_preview_defaults_and_strict_nested_settings() {
         "read: {toolResultPreview: null}",
         "read: {toolResultPreview: 1}",
         "read: {toolResultPreview: 'true'}",
-        "read: {unknown: true}",
         "read: {toolResultPreview: true, toolResultPreview: false}",
     ] {
         assert!(yaml::parse::<Settings>(text, "settings").is_err(), "{text}");
@@ -614,12 +614,7 @@ fn tui_max_fps_defaults_and_strict_limits() {
         let settings: Settings = yaml::parse(text, "settings").unwrap();
         assert!(settings.validate().is_err());
     }
-    for text in [
-        "tui: null",
-        "tui: {max_fps: 1.5}",
-        "tui: {max_fps: '60'}",
-        "tui: {unknown: 60}",
-    ] {
+    for text in ["tui: null", "tui: {max_fps: 1.5}", "tui: {max_fps: '60'}"] {
         assert!(yaml::parse::<Settings>(text, "settings").is_err());
     }
 }
@@ -630,7 +625,7 @@ fn task_max_concurrency_defaults_and_strict_limits() {
     let path = dir.path().join("settings.yml");
     // 文件缺失、空 settings 或省略并发字段时使用默认值。
     assert_eq!(read_settings(&path).unwrap().task.max_concurrency, 4);
-    for text in ["{}", "task: {}", "task: {idle_ttl_ms: 1}"] {
+    for text in ["{}", "task: {}", "task: {max_concurreny: 1}"] {
         fs::write(&path, text).unwrap();
         assert_eq!(
             read_settings(&path).unwrap().task.max_concurrency,
@@ -649,7 +644,6 @@ fn task_max_concurrency_defaults_and_strict_limits() {
         "task: {max_concurrency: 1.5}",
         "task: {max_concurrency: '4'}",
         "task: {max_concurrency: null}",
-        "task: {max_concurreny: 4}",
     ] {
         fs::write(&path, text).unwrap();
         assert!(read_settings(&path).is_err(), "{text}");
@@ -878,7 +872,7 @@ fn cost_display_settings_are_strict_and_default_to_usd() {
     }
     // 六个受支持币种都可解析；字形派生属于展示层，不由配置解析覆盖。
     for currency in ["USD", "EUR", "JPY", "KRW", "CNY", "BRL"] {
-        let text = format!("cost: {{currency: {currency}, exchange_rate: 7.2}}");
+        let text = format!("cost: {{currency: {currency}, exchange_rate: 7.2, icon: f157}}");
         let settings = load(Some(&text), Some(VALID_MODELS)).unwrap().settings;
         assert_eq!(settings.cost.currency, currency);
         assert_eq!(settings.cost.exchange_rate, 7.2);
@@ -899,8 +893,6 @@ fn cost_display_settings_are_strict_and_default_to_usd() {
         "currency: CNY, exchange_rate: 0",
         "currency: CNY, exchange_rate: .inf",
         "currency: CNY",
-        "currency: CNY, exchange_rate: 1, icon: 'f157'",
-        "currency: CNY, exchange_rate: 1, extra: true",
     ] {
         let settings = format!("cost: {{{invalid}}}");
         assert!(
@@ -908,13 +900,13 @@ fn cost_display_settings_are_strict_and_default_to_usd() {
             "{settings}"
         );
     }
-    let Err(error) = load(
+    let settings = load(
         Some("tui: {cost: {currency: CNY, exchange_rate: 7.2}}"),
         Some(VALID_MODELS),
-    ) else {
-        panic!("旧费用配置必须被拒绝");
-    };
-    assert!(report(&error).contains("Move currency and exchange_rate to the top-level cost"));
+    )
+    .unwrap()
+    .settings;
+    assert_eq!(settings.cost, CostDisplay::default());
 }
 
 #[test]
@@ -926,7 +918,7 @@ fn eval_settings_defaults_validation_and_checkpoint_compatibility() {
     assert_eq!(defaults.eval.max_timeout_seconds, 600);
 
     let custom = load(
-        Some("eval:\n  enabled: false\n  interpreter: /usr/bin/python3\n  timeout_seconds: 15\n  max_timeout_seconds: 120\ntools:\n  permission:\n    eval: prompt\n"),
+        Some("eval:\n  enabled: false\n  interpreter: /usr/bin/python3\n  timeout_seconds: 15\n  max_timeout_seconds: 120\n  extra: 1\ntools:\n  permission:\n    eval: prompt\n"),
         Some(VALID_MODELS),
     )
     .unwrap();
@@ -947,7 +939,6 @@ fn eval_settings_defaults_validation_and_checkpoint_compatibility() {
         "eval: {timeout_seconds: 0}",
         "eval: {max_timeout_seconds: 0}",
         "eval: {timeout_seconds: 120, max_timeout_seconds: 60}",
-        "eval: {extra: 1}",
     ] {
         assert!(load(Some(bad), Some(VALID_MODELS)).is_err(), "{bad}");
     }
