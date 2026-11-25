@@ -127,13 +127,19 @@ fn cancel_called_ids(body: &Value, protocol: &str) -> Vec<String> {
 }
 
 fn cancel_assert_no_request(fixture: &TestServer) {
-    assert!(
-        fixture
-            .recv_timeout(Duration::from_millis(300))
-            .unwrap()
-            .is_none(),
-        "取消后出现了多余的模型请求"
-    );
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while let Some(request) = fixture
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .unwrap()
+    {
+        let body = request.json().unwrap();
+        assert!(
+            is_task_title(&body),
+            "取消后出现了多余的模型请求: {body}"
+        );
+        // 标题旁路可能晚于主任务终态到达；关闭响应通道，避免客户端等待到超时。
+        let _ = request.respond(Response::builder().status(204).body(Body::empty()).unwrap());
+    }
 }
 
 // 驱动 write→bash→write 批次并等到 bash 进入等待阶段。

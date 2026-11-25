@@ -90,6 +90,17 @@ fn tui_menu_overlay_keeps_input_cursor_and_history_anchored() {
     final_reply(request, &answer);
     pty.text("anchor-line-39");
     pty.completed();
+
+    // 首次进入备用屏幕会提交剩余原生历史。先完成一次开关，再在主屏幕
+    // 采集稳定基线，避免把不同屏幕的布局或提交中的帧当作 Esc 破坏历史。
+    pty.input("/");
+    pty.text("Show available commands");
+    pty.input("\x1b");
+    pty.wait_for("预热菜单关闭并回到主屏幕", |screen| {
+        input_is_ready(screen) && !screen.alternate_screen()
+    });
+    pty.input("\x01\x0b");
+    pty.draft("");
     let top = (0..8)
         .map(|row| tip_columns(pty.parser.screen(), row, 0..100))
         .collect::<Vec<_>>();

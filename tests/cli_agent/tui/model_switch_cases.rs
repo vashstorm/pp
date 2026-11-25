@@ -149,14 +149,23 @@ fn slow_tui_model_switch_survives_panels_and_tree_without_saving_default() {
             pty.ready_model(reference);
             tree_tui_open(&mut pty, "answer before");
             pty.input("\x1b");
+            pty.wait_for("树面板关闭并恢复主屏幕", |screen| {
+                input_is_ready(screen) && !screen.alternate_screen()
+            });
             pty.ready_model(reference);
             pty.input("/roles\r");
             pty.text("Model roles");
             pty.input("\x1b");
+            pty.wait_for("Roles 面板关闭并恢复主屏幕", |screen| {
+                input_is_ready(screen) && !screen.alternate_screen()
+            });
             pty.ready_model(reference);
             pty.function_key('p');
             pty.model_search("");
             pty.input("\x1b");
+            pty.wait_for("模型面板关闭并恢复主屏幕", |screen| {
+                input_is_ready(screen) && !screen.alternate_screen()
+            });
             pty.ready_model(reference);
             pty.input("after panels\r");
             let (request, body) = pty.request_at(&server, api_path(protocol));

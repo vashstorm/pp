@@ -358,10 +358,11 @@ fn pipeline_pipes_panel_switches_run_stream_freezes_and_restores_draft() {
     });
     pty.draft("pipes-draft");
 
-    // 第二次 Esc 才取消 shell，作为收尾。
+    // 第二次 Esc 才取消 shell，作为收尾。取消中的提示可能在两次轮询间消失，
+    // 以输入恢复和取消终态为栅栏，不依赖瞬时文案。
     pty.input("\x1b");
-    pty.text("Cancelling shell...");
     bang_shell_wait_done(&mut pty);
+    pty.text("Command cancelled; side effects were not rolled back.");
     cancel_assert_no_scratch(project.path());
     cancel_assert_no_request(&provider);
     assert!(
