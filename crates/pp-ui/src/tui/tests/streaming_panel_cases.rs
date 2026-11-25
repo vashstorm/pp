@@ -300,6 +300,7 @@ fn token_speed_completion_and_worker_fallback_preserve_success() {
         output_tokens: 300,
         cache_write_tokens: None,
         cached_tokens: Some(40),
+        reasoning_tokens: None,
     };
     for event in [
         AgentEvent::ModelRequestStarted,
@@ -333,6 +334,7 @@ fn token_speed_missing_usage_replaces_counts_but_failure_preserves_them() {
         output_tokens: 300,
         cache_write_tokens: None,
         cached_tokens: Some(40),
+        reasoning_tokens: None,
     };
     app.usage = Some(pp_core::context::ContextUsage {
         estimated_tokens: 100,

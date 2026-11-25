@@ -112,11 +112,19 @@ fn watched(events: &[Value], path: &Path, kind: u64) -> usize {
         .count()
 }
 
-fn fixture_server(result: &Value) -> &Value {
-    result["diagnostics"]["servers"]
+fn fixture_server_from_events(events: &[AgentEvent]) -> Value {
+    let finished = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::ToolFinished { result, .. } => Some(result),
+            _ => None,
+        })
+        .expect("ToolFinished event missing");
+    finished["diagnostics"]["servers"]
         .as_array()
         .and_then(|servers| servers.iter().find(|server| server["server"] == "fixture"))
-        .unwrap_or_else(|| panic!("fixture server report missing: {result}"))
+        .cloned()
+        .unwrap_or_else(|| panic!("fixture server report missing: {finished}"))
 }
 
 #[test]
@@ -133,9 +141,20 @@ fn lsp_save_write_preserves_ai_bytes_and_reports_diagnostics() {
     );
     assert_eq!(result["ok"], true, "{result}");
     assert_eq!(fs::read_to_string(&path).unwrap(), content);
+    // 模型视图只保留渲染后的 content，不重复发送结构化 diagnostics 对象；UI 事件保留完整报告。
+    assert!(result.get("diagnostics").is_none(), "{result}");
+    assert!(result["content"].as_str().unwrap().contains("wrong value"));
+    let finished = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::ToolFinished { result, .. } => Some(result),
+            _ => None,
+        })
+        .expect("ToolFinished event missing");
+    let server = fixture_server_from_events(&events);
     assert_eq!(result["bytes_written"], content.len());
-    assert_eq!(fixture_server(&result)["status"], "reported_issues");
-    assert!(result["diagnostics"]["formatter"].is_null());
+    assert_eq!(server["status"], "reported_issues");
+    assert!(finished["diagnostics"]["formatter"].is_null());
     let changed = events
         .iter()
         .position(|e| matches!(e, AgentEvent::FileChanged { .. }))

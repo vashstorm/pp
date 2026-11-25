@@ -88,6 +88,7 @@ fn context_chat_cached_breakdown_preserves_unknown_and_zero() {
                 output_tokens: 300,
                 cache_write_tokens: None,
                 cached_tokens: expected,
+                reasoning_tokens: None,
             })
         );
     }
@@ -156,6 +157,7 @@ fn context_chat_usage_only_chunk_after_finish_returns_usage() {
                 output_tokens: 300,
                 cache_write_tokens: None,
                 cached_tokens: None,
+                reasoning_tokens: None,
             })
         );
         assert_eq!(finished, Some((turn.usage, true)));
@@ -254,6 +256,7 @@ fn context_responses_usage_extracted_and_missing_usage_is_none() {
                 output_tokens: 300,
                 cache_write_tokens: None,
                 cached_tokens: Some(40),
+                reasoning_tokens: Some(50),
             })
         );
         assert_eq!(finished, Some((turn.usage, true)));
@@ -374,4 +377,37 @@ fn retry_precheck_failure_closes_pending_request_lifecycle() {
         assert_eq!(view.snapshot().unwrap().live, 0.0);
         assert_eq!(usage_of(&client, "fixture/primary"), 1);
     }
+}
+
+#[test]
+fn chat_completion_reasoning_tokens_extracted_from_details() {
+    let response = json!({
+        "id": "chatcmpl-reasoning",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "fixture-model",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 500,
+            "completion_tokens": 200,
+            "total_tokens": 700,
+            "prompt_tokens_details": {"cached_tokens": 300},
+            "completion_tokens_details": {"reasoning_tokens": 120}
+        }
+    });
+    let turn = into_completion_turn(serde_json::from_value(response).unwrap()).unwrap();
+    assert_eq!(
+        turn.usage,
+        Some(TokenUsage {
+            input_tokens: 500,
+            output_tokens: 200,
+            cached_tokens: Some(300),
+            cache_write_tokens: None,
+            reasoning_tokens: Some(120),
+        })
+    );
 }

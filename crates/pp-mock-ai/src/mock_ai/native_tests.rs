@@ -36,6 +36,8 @@ fn make_client(
         model: model.into(),
         model_reference: reference.into(),
         context_window: Some(128_000),
+        prompt_cache_key: true,
+        prompt_cache_retention: None,
         base_url: base_url.parse().unwrap(),
         agent_db_path: dir.path().join("agent.db"),
         settings,
@@ -308,6 +310,7 @@ fn native_client_observes_reasoning_body_arguments_and_exact_usage() {
         output_tokens: 30,
         cached_tokens: Some(40),
         cache_write_tokens: Some(5),
+        reasoning_tokens: Some(0),
     };
     assert_eq!(turn.usage, Some(usage));
     assert_eq!(finished(&events), vec![(true, Some(usage))]);

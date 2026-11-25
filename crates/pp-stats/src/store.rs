@@ -1,6 +1,6 @@
 use super::{
-    COLUMNS, CostSnapshot, Range, RequestRow, RequestSnapshot, SessionScope, ToolCall, call_tools,
-    ensure_schema, latest_sql, row, session_requests_sql,
+    COLUMN_COUNT, COLUMNS, CostSnapshot, Range, RequestRow, RequestSnapshot, SessionScope,
+    ToolCall, call_tools, ensure_schema, latest_sql, row, session_requests_sql,
 };
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -50,7 +50,7 @@ impl Store {
     pub(super) fn session_usage(&self, session: &Path) -> Result<super::SessionUsage> {
         let session_path = session.to_string_lossy();
         let mut statement = self.conn.prepare(
-            "SELECT input_tokens, output_tokens, cached_tokens, cache_write_tokens \
+            "SELECT input_tokens, output_tokens, cached_tokens, cache_write_tokens, reasoning_tokens \
              FROM requests \
              WHERE session_file=?1 AND purpose='task' AND status='ok' \
              ORDER BY id ASC",
@@ -62,6 +62,7 @@ impl Store {
             let output: Option<i64> = row.get(1)?;
             let cached: Option<i64> = row.get(2)?;
             let cache_write: Option<i64> = row.get(3)?;
+            let reasoning: Option<i64> = row.get(4)?;
             if let Some(out) = output.and_then(|v| u64::try_from(v).ok()) {
                 usage.session_output_tokens = usage.session_output_tokens.saturating_add(out);
             }
@@ -74,6 +75,7 @@ impl Store {
                     output_tokens,
                     cached_tokens: cached.and_then(|v| u64::try_from(v).ok()),
                     cache_write_tokens: cache_write.and_then(|v| u64::try_from(v).ok()),
+                    reasoning_tokens: reasoning.and_then(|v| u64::try_from(v).ok()),
                 });
             }
         }
@@ -137,7 +139,7 @@ impl Store {
             .map(serde_json::to_string)
             .transpose()?;
         let tx = self.conn.transaction()?;
-        let inserted = tx.execute("INSERT INTO requests (request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens,cost_json,rate_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) ON CONFLICT(request_key) DO NOTHING",params![record.request_key,record.timestamp,record.model,record.provider,record.model_reference,record.api,record.project,record.cwd,record.purpose,record.session_file,record.duration_ms,record.ttft_ms,record.input_tokens,record.output_tokens,record.cached_tokens,record.status,record.stop_reason,record.error_message,record.cache_write_tokens,cost_json,rate_json])?;
+        let inserted = tx.execute("INSERT INTO requests (request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens,cost_json,rate_json,reasoning_tokens) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22) ON CONFLICT(request_key) DO NOTHING",params![record.request_key,record.timestamp,record.model,record.provider,record.model_reference,record.api,record.project,record.cwd,record.purpose,record.session_file,record.duration_ms,record.ttft_ms,record.input_tokens,record.output_tokens,record.cached_tokens,record.status,record.stop_reason,record.error_message,record.cache_write_tokens,cost_json,rate_json,record.reasoning_tokens])?;
         if inserted != 0 {
             let request_id = tx.last_insert_rowid();
             for (tool, chars) in call_tools(output) {
@@ -211,7 +213,7 @@ impl Store {
             .conn
             .prepare(&latest_sql())?
             .query_map(params![since, until, limit as i64], |r| {
-                Ok((row(r)?, r.get(23)?))
+                Ok((row(r)?, r.get(COLUMN_COUNT)?))
             })?
             .collect::<rusqlite::Result<_>>()?)
     }

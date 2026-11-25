@@ -110,6 +110,11 @@ impl<'a> RenderContext<'a> {
         }
     }
 
+    pub fn with_date(mut self, date: impl Into<String>) -> Self {
+        self.date = date.into();
+        self
+    }
+
     pub fn with_sandbox(mut self, status: &pp_sandbox::SandboxStatus) -> Self {
         self.sandbox_active = status.effective != pp_sandbox::EffectiveMode::Off;
         self.sandbox_mode = status.effective.as_str();
@@ -326,8 +331,11 @@ impl Snapshot {
         runtime["has_mcp"] = context
             .tools
             .iter()
-            .any(|tool| tool.starts_with("mcp__"))
+            .any(|tool| {
+                tool.starts_with("mcp__") || matches!(tool.as_str(), "mcp_search" | "mcp_call")
+            })
             .into();
+        runtime["has_mcp_proxy"] = context.tools.iter().any(|tool| tool == "mcp_search").into();
         runtime["has_lsp"] = context.tools.iter().any(|tool| tool == "lsp").into();
         runtime["has_writes"] =
             (runtime["has_write"] == true || runtime["has_edit"] == true).into();

@@ -6,23 +6,11 @@ use serde::Deserialize;
 use serde_json::json;
 
 const RG_DESCRIPTION: &str = concat!(
-    "Search files or one artifact://<numeric-id> URI in process: Rust regex, PCRE2, literal ",
-    "fallback. path: files/dirs/globs/!exclusions separated by ';', file:20-40 ranges; default ",
-    "'.'. Case-sensitive, includes hidden files, respects ignore files. -i inverts case. ",
-    "context/-C set both sides; -A/-B override after/before; otherwise config. Conflicting ",
-    "aliases fail. -F matches literally; -w matches whole words; -t/-g/glob filter the directory ",
-    "walk only (repeatable, !name excludes; -g overrides ignore files, glob is its alias, ",
-    "explicit files always search); max_count caps matches per file (0 finds none). output_mode: ",
-    "content(default), files_with_matches(paths), count(per-file + all-file total; matching lines ",
-    "for single-line patterns, non-overlapping matches for multiline). countComplete=false means ",
-    "partial. Content always includes line numbers and supports context and Hashline snapshots: ",
-    "[path#TAG]; only complete returned lines editable. Other modes preserve snapshots. skip ",
-    "paginates files; bounded output. Optional positive integer max_output_tokens budgets ",
-    "content including notices (estimated from JSON at 3 bytes/token, metadata excluded); ",
-    "existing byte limits still apply. Tiny budgets may return empty content; ",
-    "details.tokenLimitReached marks truncation. Artifacts MUST use THIS tool, never bash ",
-    "grep/rg: URIs are not paths; per-call snapshot, no edit anchors; single-line covers saved ",
-    "logs, multiline capped at 4 MiB with warning.",
+    "In-process ripgrep search over files or one `artifact://<id>` URI (Rust regex, PCRE2, literal fallback). ",
+    "`path`: `;`-separated files/dirs/globs/`!exclusions` or `file:20-40` ranges (default `.`). ",
+    "Case-sensitive (`-i` inverts), includes hidden files, respects ignore files. `-F` literal, `-w` whole word, `-t`/`-g`/`glob` filter directory walk (`-g` overrides ignore), `max_count` per-file cap, `skip` paginates files, `max_output_tokens` budgets content. ",
+    "`output_mode`: `content` (with line numbers & Hashline `[path#TAG]`), `files_with_matches`, `count`. ",
+    "Use THIS tool for `artifact://` searches, never shell grep/rg.",
 );
 
 pub(in crate::tools) fn definition() -> FunctionObject {
@@ -36,10 +24,7 @@ pub(in crate::tools) fn definition() -> FunctionObject {
                 "path": {"type": "string"},
                 "case": {"type": "boolean"},
                 "-i": {"type": "boolean"},
-                "-n": {
-                    "type": "boolean",
-                    "description": "Optional compatibility flag. Content always includes line numbers."
-                },
+                "-n": {"type": "boolean"},
                 "context": {"type": "integer", "minimum": 0},
                 "-C": {"type": "integer", "minimum": 0},
                 "-A": {"type": "integer", "minimum": 0},
@@ -48,17 +33,9 @@ pub(in crate::tools) fn definition() -> FunctionObject {
                 "-w": {"type": "boolean"},
                 "-t": {"type": ["string", "array"], "items": {"type": "string"}},
                 "-g": {"type": ["string", "array"], "items": {"type": "string"}},
-                "glob": {
-                    "type": ["string", "array"],
-                    "items": {"type": "string"},
-                    "description": "Alias of -g: override glob or list for the directory walk."
-                },
+                "glob": {"type": ["string", "array"], "items": {"type": "string"}},
                 "max_count": {"type": ["number", "null"]},
-                "max_output_tokens": {
-                    "type": ["integer", "null"],
-                    "minimum": 1,
-                    "description": "Optional estimated token budget for content including notices, excluding metadata. JSON bytes / 3, rounded up; existing byte limits still apply."
-                },
+                "max_output_tokens": {"type": ["integer", "null"], "minimum": 1},
                 "output_mode": {
                     "type": "string",
                     "enum": ["content", "files_with_matches", "count"]

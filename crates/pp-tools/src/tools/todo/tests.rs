@@ -111,7 +111,7 @@ fn todo_init_activates_first_task_and_reports_change() {
         value["content"]
             .as_str()
             .unwrap()
-            .contains("Remaining items (3):")
+            .contains("Overall: 0/3 done, 3 open.")
     );
     let change = change.expect("init must return a change");
     assert_eq!(
@@ -619,10 +619,9 @@ fn todo_view_borrows_and_never_normalizes() {
     assert_eq!(next, current);
     assert_eq!(status_of(&next, "B"), TodoStatus::InProgress);
     let content = value["content"].as_str().unwrap();
-    assert!(content.contains("  - A [in_progress] (P)"));
-    assert!(content.contains("  - B [in_progress] (P)"));
-    // Blocked tasks are not "remaining"; they appear in the checklist only.
-    assert!(!content.contains("  - D [blocked] (Q)"));
+    assert!(content.contains("Overall: 1/4 done, 2 open, 1 blocked."));
+    assert!(content.contains("    - [ ] A (in progress)"));
+    assert!(content.contains("    - [ ] B (in progress)"));
     assert!(content.contains("    - [ ] D (blocked)"));
     // 空列表同样走 view：返回空清单提示，不产生变更。
     let (value, change) = run(&[], r#"{"op":"view"}"#);

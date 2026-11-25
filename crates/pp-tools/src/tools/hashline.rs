@@ -194,6 +194,9 @@ impl Store {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
     }
+    pub(super) fn is_active(&self, path: &Path) -> bool {
+        self.entries.get(path).is_some_and(|entry| entry.active)
+    }
     pub(super) fn invalidate(&mut self, path: &Path) {
         if let Some(entry) = self.entries.get_mut(path) {
             entry.active = false;

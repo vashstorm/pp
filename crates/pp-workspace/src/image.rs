@@ -8,8 +8,12 @@ use std::io::Cursor;
 pub const MAX_IMAGE_INPUT_BYTES: usize = 20 * 1024 * 1024;
 
 /// 供应商按单边像素拒绝图片：DeepSeek 超过 8192 直接返回 400，Anthropic 上限 8000。
-/// 超过上限时等比缩小后再发送，否则整条请求（含历史）都会被拒绝。
+/// 保留为硬安全红线常量，任何调用都不得放宽超过此值。
 pub const MAX_IMAGE_SIDE: u32 = 8000;
+
+/// 视觉模型最优输入边长上限：超过 1568 px 的 2K/4K/Retina 截图会显著膨胀 vision token
+/// 与 base64 体积却不提升可读性，默认等比缩小到该边长以内。
+pub const VISION_MAX_IMAGE_SIDE: u32 = 1568;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolImage {
@@ -49,9 +53,10 @@ pub fn decode_image(source: &str, bytes: &[u8]) -> Result<DecodedImage> {
     let decoded = reader
         .decode()
         .map_err(|_| anyhow::anyhow!("image decoding failed"))?;
+    let target_side = VISION_MAX_IMAGE_SIDE.min(MAX_IMAGE_SIDE);
     let mut converted = Cursor::new(Vec::new());
-    let (data, mime, sent) = if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
-        let scaled = decoded.resize(MAX_IMAGE_SIDE, MAX_IMAGE_SIDE, FilterType::Triangle);
+    let (data, mime, sent) = if width > target_side || height > target_side {
+        let scaled = decoded.resize(target_side, target_side, FilterType::Triangle);
         let (encoded, mime) = encode_image(&scaled)?;
         converted = Cursor::new(encoded);
         (
@@ -79,7 +84,7 @@ pub fn decode_image(source: &str, bytes: &[u8]) -> Result<DecodedImage> {
     let resized = if sent == (width, height) {
         String::new()
     } else {
-        format!("\nResized from: {width} x {height} (max {MAX_IMAGE_SIDE} px per side)")
+        format!("\nResized from: {width} x {height} (max {target_side} px per side)")
     };
     let content = format!(
         "Image: {source}\nFormat: {mime}\nDimensions: {} x {}\nBytes: {}{}{}",
@@ -103,22 +108,28 @@ pub fn decode_image(source: &str, bytes: &[u8]) -> Result<DecodedImage> {
     })
 }
 
-/// 缩放后优先无损 PNG（截图与文字保持清晰）；超过输入上限时退回 JPEG，避免重新触发体积拒绝。
+/// 缩放后含透明通道保留无损 PNG；无透明通道时对比 PNG 与 JPEG 体积择小者，
+/// 既保持纯色截图清晰又大幅压缩照片类大图体积，同时确保不超过输入体积上限。
 fn encode_image(image: &DynamicImage) -> Result<(Vec<u8>, &'static str)> {
-    let mut encoded = Cursor::new(Vec::new());
+    let mut png_buf = Cursor::new(Vec::new());
     image
-        .write_to(&mut encoded, ImageFormat::Png)
+        .write_to(&mut png_buf, ImageFormat::Png)
         .map_err(|_| anyhow::anyhow!("image conversion failed"))?;
-    let png = encoded.into_inner();
-    if png.len() <= MAX_IMAGE_INPUT_BYTES {
+    let png = png_buf.into_inner();
+    if image.color().has_alpha() && png.len() <= MAX_IMAGE_INPUT_BYTES {
         return Ok((png, "image/png"));
     }
-    let mut encoded = Cursor::new(Vec::new());
+    let mut jpg_buf = Cursor::new(Vec::new());
     image
         .to_rgb8()
-        .write_to(&mut encoded, ImageFormat::Jpeg)
+        .write_to(&mut jpg_buf, ImageFormat::Jpeg)
         .map_err(|_| anyhow::anyhow!("image conversion failed"))?;
-    Ok((encoded.into_inner(), "image/jpeg"))
+    let jpg = jpg_buf.into_inner();
+    if png.len() <= MAX_IMAGE_INPUT_BYTES && png.len() <= jpg.len() {
+        Ok((png, "image/png"))
+    } else {
+        Ok((jpg, "image/jpeg"))
+    }
 }
 
 pub fn is_image(bytes: &[u8]) -> bool {

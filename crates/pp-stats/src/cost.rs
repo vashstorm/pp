@@ -93,6 +93,7 @@ fn calculate(
         cached_tokens: Some(cached?.try_into().ok()?),
         // 写入量未知时保留 None，由费率决定能否计价。
         cache_write_tokens: written.map(u64::try_from).transpose().ok()?,
+        reasoning_tokens: None,
     };
     price.calculate(usage).map(|cost| CostSnapshot {
         input: cost.input,

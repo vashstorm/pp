@@ -50,6 +50,8 @@ impl HistoryBucket {
 
 #[derive(Clone, Debug)]
 pub(super) struct HistoryBreakdown {
+    pub instruction_messages: HistoryBucket,
+    pub instruction_paths: std::collections::BTreeSet<String>,
     pub user_messages: HistoryBucket,
     pub assistant_messages: HistoryBucket,
     pub tool_calls: HistoryBucket,
@@ -298,6 +300,8 @@ pub(super) struct HistoryState {
     ids: Vec<MessageId>,
     seq: usize,
     call_map: HashMap<String, (String, String)>,
+    instruction_messages: HistoryBucket,
+    instruction_paths: std::collections::BTreeSet<String>,
     user_messages: HistoryBucket,
     assistant_messages: HistoryBucket,
     tool_calls: HistoryBucket,
@@ -340,11 +344,60 @@ impl HistoryState {
 
     fn breakdown(&self) -> HistoryBreakdown {
         HistoryBreakdown {
+            instruction_messages: self.instruction_messages.clone(),
+            instruction_paths: self.instruction_paths.clone(),
             user_messages: self.user_messages.clone(),
             assistant_messages: self.assistant_messages.clone(),
             tool_calls: self.tool_calls.clone(),
             tool_outputs: self.tool_outputs.clone(),
         }
+    }
+
+    fn push_developer(&mut self, seq: usize, parts: &[Cow<'_, str>], tokens: u64, bytes: u64) {
+        let first = parts.first().map(|part| part.as_ref()).unwrap_or("");
+        if first.starts_with(crate::agent::PROJECT_INSTRUCTIONS_PREFIX) {
+            let preview = parts_preview(parts, false);
+            for part in parts {
+                let mut pos = 0usize;
+                let prefix = "[Project instructions: ";
+                while let Some(rel) = part[pos..].find(prefix) {
+                    let start = pos + rel + prefix.len();
+                    if let Some(end) = part[start..].find(']') {
+                        let path = part[start..start + end].trim();
+                        if !path.is_empty() {
+                            self.instruction_paths.insert(path.to_owned());
+                        }
+                        pos = start + end + 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            self.instruction_messages.push(DiagnosticItem {
+                kind_label: "AGENTS.md".into(),
+                title: format!("#{seq} Project Instructions (dynamic)"),
+                subtitle: first_line_preview(&preview),
+                tokens,
+                bytes,
+                preview,
+            });
+            return;
+        }
+        let is_subagent = first.starts_with("[pp-subagent-result:");
+        let (kind, title) = if is_subagent {
+            ("Subagent", format!("#{seq} Subagent Result"))
+        } else {
+            ("Developer", format!("#{seq} Developer"))
+        };
+        let preview = parts_preview(parts, false);
+        self.user_messages.push(DiagnosticItem {
+            kind_label: kind.into(),
+            title,
+            subtitle: first_line_preview(&preview),
+            tokens,
+            bytes,
+            preview,
+        });
     }
 
     fn classify_chat(&mut self, seq: usize, message: &ChatCompletionRequestMessage) -> Result<()> {
@@ -402,23 +455,7 @@ impl HistoryState {
             }
             ChatCompletionRequestMessage::Developer(msg) => {
                 let parts = chat_developer_parts(&msg.content);
-                let is_subagent = parts
-                    .first()
-                    .is_some_and(|part| part.starts_with("[pp-subagent-result:"));
-                let (kind, title) = if is_subagent {
-                    ("Subagent", format!("#{seq} Subagent Result"))
-                } else {
-                    ("Developer", format!("#{seq} Developer"))
-                };
-                let preview = parts_preview(&parts, false);
-                self.user_messages.push(DiagnosticItem {
-                    kind_label: kind.into(),
-                    title,
-                    subtitle: first_line_preview(&preview),
-                    tokens,
-                    bytes,
-                    preview,
-                });
+                self.push_developer(seq, &parts, tokens, bytes);
             }
             ChatCompletionRequestMessage::Assistant(msg) => {
                 let parts = chat_assistant_parts(msg.content.as_ref());
@@ -552,23 +589,7 @@ impl HistoryState {
                         });
                     }
                     Role::Developer | Role::System => {
-                        let is_subagent = parts
-                            .first()
-                            .is_some_and(|part| part.starts_with("[pp-subagent-result:"));
-                        let (kind, title) = if is_subagent {
-                            ("Subagent", format!("#{seq} Subagent Result"))
-                        } else {
-                            ("Developer", format!("#{seq} Developer"))
-                        };
-                        let preview = parts_preview(&parts, false);
-                        self.user_messages.push(DiagnosticItem {
-                            kind_label: kind.into(),
-                            title,
-                            subtitle: first_line_preview(&preview),
-                            tokens,
-                            bytes,
-                            preview,
-                        });
+                        self.push_developer(seq, &parts, tokens, bytes);
                     }
                     Role::Assistant => {
                         let preview = parts_preview(&parts, false);
@@ -606,15 +627,7 @@ impl HistoryState {
                         });
                     }
                     InputRole::Developer | InputRole::System => {
-                        let preview = parts_preview(&parts, false);
-                        self.user_messages.push(DiagnosticItem {
-                            kind_label: "Developer".into(),
-                            title: format!("#{seq} Developer"),
-                            subtitle: first_line_preview(&preview),
-                            tokens,
-                            bytes,
-                            preview,
-                        });
+                        self.push_developer(seq, &parts, tokens, bytes);
                     }
                 }
             }

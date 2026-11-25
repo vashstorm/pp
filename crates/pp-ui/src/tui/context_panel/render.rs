@@ -150,7 +150,7 @@ impl Panel {
             Rect::new(area.x, area.y + 1, area.width, 1),
         );
 
-        let line3_text = match report.context_window {
+        let mut line3_text = match report.context_window {
             Some(window) if window > 0 && report.auto_compact => {
                 let threshold_tokens = window * u64::from(report.threshold_percent) / 100;
                 if report.active_tokens <= threshold_tokens {
@@ -176,6 +176,19 @@ impl Panel {
             }
             _ => "Auto-compaction inactive (context_window unconfigured)".to_owned(),
         };
+        if let Some(usage) = report.last_request {
+            if let Some(cached) = usage.cached_tokens
+                && usage.input_tokens > 0
+            {
+                let rate = (cached as f64 * 100.0 / usage.input_tokens as f64).clamp(0.0, 100.0);
+                line3_text.push_str(&format!(" · Cache {rate:.0}%"));
+            }
+            if let Some(reasoning) = usage.reasoning_tokens
+                && reasoning > 0
+            {
+                line3_text.push_str(&format!(" · Reasoning {}", abbreviate_tokens(reasoning)));
+            }
+        }
         frame.render_widget(
             Line::styled(
                 truncate_chars(&line3_text, width),

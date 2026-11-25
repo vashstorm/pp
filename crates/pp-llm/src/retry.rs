@@ -15,6 +15,7 @@ pub(super) struct ModelFailure {
     pub(super) message: String,
     pub(super) reason: pp_core::events::RequestRetryReason,
     pub(super) retry_after: Option<u64>,
+    pub(super) context_overflow: bool,
 }
 impl std::fmt::Display for ModelFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -27,16 +28,25 @@ pub fn model_request_failed(error: &anyhow::Error) -> bool {
     error.is::<ModelFailure>()
 }
 
+/// 请求因超出上下文窗口被供应商拒绝；属于确定性输入超限，不应做指数退避重试。
+pub fn is_context_overflow(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ModelFailure>()
+        .is_some_and(|failure| failure.context_overflow)
+}
+
 pub(super) fn provider_failure(error: OpenAIError, api: &str) -> anyhow::Error {
     let reason =
         request_retry_reason(&error).unwrap_or(pp_core::events::RequestRetryReason::ModelError);
     let retry_after = retry_after_seconds(&error);
+    let context_overflow = is_context_overflow_error(&error);
     let error = redacted_error(error, api);
     let message = error.to_string();
     ModelFailure {
         message,
         reason,
         retry_after,
+        context_overflow,
     }
     .into()
 }
@@ -80,7 +90,10 @@ impl RequestAttempts {
             .err()
             .and_then(|e| e.downcast_ref::<ModelFailure>())
             .and_then(|error| {
-                if self.attempt >= REQUEST_MAX_ATTEMPTS || self.waited >= self.budget {
+                if error.context_overflow
+                    || self.attempt >= REQUEST_MAX_ATTEMPTS
+                    || self.waited >= self.budget
+                {
                     return None;
                 }
                 let delay = error
@@ -274,10 +287,50 @@ fn response_decode_error(error: &serde_json::Error, raw: &str, api: &str) -> any
 /// middleware 通过自构造 code 标记传递 Retry-After 整数秒；错误正文仅写诊断日志。
 /// 脱敏错误只展示状态码，不输出该内部标记。
 const RETRY_AFTER_CODE_PREFIX: &str = "pp-retry-after:";
+/// middleware 通过自构造 code 标记传递上下文超窗分类；不向终端泄露原始响应正文。
+pub(super) const CONTEXT_OVERFLOW_CODE: &str = "pp-context-overflow";
 
 /// Safety valve so a provider answering `Retry-After: 0` cannot turn the
 /// retry budget into a tight request loop.
 const REQUEST_MAX_ATTEMPTS: u32 = 10;
+
+/// 基于 HTTP 状态码与有界错误体识别上下文窗口超限（供 middleware 在脱敏丢弃正文前判定）。
+pub(super) fn body_indicates_context_overflow(status: reqwest::StatusCode, body: &[u8]) -> bool {
+    if !matches!(status.as_u16(), 400 | 413 | 422) {
+        return false;
+    }
+    if status.as_u16() == 413 {
+        return true;
+    }
+    let text = String::from_utf8_lossy(body);
+    text_indicates_context_overflow(&text)
+}
+
+pub(super) fn text_indicates_context_overflow(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("context_length_exceeded")
+        || lower.contains("maximum context length")
+        || lower.contains("context window")
+        || lower.contains("prompt is too long")
+        || lower.contains("input is too long")
+        || lower.contains("too many tokens")
+        || lower.contains("string_above_max_length")
+}
+
+fn is_context_overflow_error(error: &OpenAIError) -> bool {
+    match error {
+        OpenAIError::ApiError(response) => {
+            response.api_error.code.as_deref() == Some(CONTEXT_OVERFLOW_CODE)
+                || response
+                    .api_error
+                    .code
+                    .as_deref()
+                    .is_some_and(text_indicates_context_overflow)
+                || text_indicates_context_overflow(&response.api_error.message)
+        }
+        _ => false,
+    }
+}
 
 pub(super) fn retry_after_code(response: &reqwest::Response) -> Option<String> {
     let seconds = response

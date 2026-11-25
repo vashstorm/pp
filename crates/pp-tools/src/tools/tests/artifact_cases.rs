@@ -40,7 +40,8 @@ fn artifact_bash_failure_read_rg_and_next_page_keep_uri() {
             "rg",
             json!({"path":uri,"pattern":"LINE-05000","-i":true,"output_mode":mode}),
         );
-        assert_eq!(found["details"]["fileMatches"][0]["path"], uri);
+        // 模型视图在 files_with_matches/count 模式下省略与 content 重复的 fileMatches。
+        assert!(found["details"].get("fileMatches").is_none());
         assert_eq!(found["details"]["scopePath"], uri);
         assert_eq!(found["artifact"]["uri"], uri);
         assert!(!found["content"].as_str().unwrap().contains(".bash.log"));

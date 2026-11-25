@@ -65,8 +65,7 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
         )
         .unwrap();
         assert_eq!(suggested_rg["path"], uri);
-        assert!(notice.contains("Only the built-in rg tool supports searching them"));
-        assert!(notice.contains("NEVER pass them to bash or shell commands"));
+        assert!(notice.contains("artifact:// is a tool URI, not a shell path"));
         suggested_rg["pattern"] = json!("record-05000");
         protocol.calls_reply(
             request,

@@ -57,6 +57,7 @@ fn detail_speed_replays_event_timing_and_settles_with_server_usage() {
                         output_tokens: 200,
                         cached_tokens: None,
                         cache_write_tokens: None,
+                        reasoning_tokens: None,
                     }),
                     success: true,
                 },

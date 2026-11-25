@@ -66,7 +66,10 @@ pub(super) fn diagnostics_action(
             .servers
             .iter()
             .any(|server| server.status != ReportStatus::Failed);
-        sections.push(diagnostics::render(&report, None));
+        sections.push(diagnostics::render(
+            &report,
+            Some(diagnostics::EXPLICIT_MESSAGE_LIMIT),
+        ));
         reports.push(report);
     }
     let content = sections.join("\n\n");

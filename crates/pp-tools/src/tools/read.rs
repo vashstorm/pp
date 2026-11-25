@@ -6,6 +6,8 @@ use pp_llm::http::HttpResponse;
 use serde_json::Value;
 use std::{borrow::Cow, io::Cursor, path::Path};
 
+mod dedup;
+pub(crate) use dedup::{ReadDedupCache, ReadProbe};
 mod file;
 mod image;
 pub use image::decode_image;
@@ -21,6 +23,17 @@ use selector::Target;
 use text::{count_lines, page_text, read_from};
 pub(crate) use url::WebCache;
 use url::{UrlInput, UrlReader};
+
+pub(super) fn dedup_probe(
+    path: &str,
+    cwd: &Path,
+    workspace: &pp_workspace::save::Workspace,
+    mode: EditMode,
+    limits: ToolLimits,
+) -> Option<ReadProbe> {
+    let target = Target::parse(path, cwd).ok()?;
+    dedup::build_probe(&target, cwd, workspace, mode, limits)
+}
 
 /// 与实际读取共享选择器解析，资源 URI 不参与本地项目规则发现。
 pub(super) fn local_path(path: &str, cwd: &Path) -> Result<Option<std::path::PathBuf>> {

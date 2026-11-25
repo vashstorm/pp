@@ -937,6 +937,7 @@ fn streaming_chat_refusal_is_provisional_and_usage_only_chunk_keeps_usage() {
             output_tokens: 300,
             cache_write_tokens: None,
             cached_tokens: Some(40),
+            reasoning_tokens: None,
         })
     );
     assert_eq!(visible, [("no".into(), true), ("yes".into(), false)]);
@@ -965,6 +966,7 @@ fn context_responses_usage_and_refusal_flags_from_completed_response() {
             output_tokens: 300,
             cache_write_tokens: None,
             cached_tokens: Some(40),
+            reasoning_tokens: Some(50),
         })
     );
     assert!(!turn.refusal);

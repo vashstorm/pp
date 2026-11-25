@@ -414,6 +414,7 @@ mod tests {
                 output_tokens: 0,
                 cached_tokens: read,
                 cache_write_tokens: write,
+                reasoning_tokens: None,
             });
             let text = line_text(&metric_fields(
                 metrics(&usage),
@@ -729,6 +730,7 @@ mod tests {
                 output_tokens: 0,
                 cached_tokens: None,
                 cache_write_tokens: None,
+                reasoning_tokens: None,
             }),
             ..baseline
         };

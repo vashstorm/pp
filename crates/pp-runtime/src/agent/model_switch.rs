@@ -281,6 +281,8 @@ impl Agent {
             && config.protocol == self.current_model.protocol
             && config.thinking == self.current_model.thinking
             && config.context_window == self.current_model.context_window
+            && config.prompt_cache_key == self.prompt_cache_key_enabled
+            && config.prompt_cache_retention == self.prompt_cache_retention
             && effort.is_none_or(|level| level == self.think_level)
         {
             return Ok(false);
@@ -343,11 +345,18 @@ impl Agent {
             session.set_instructions(system);
             session.set_tools(definitions);
             session.set_think_level(target_level);
+            session.apply_cache_policy(
+                config.prompt_cache_key,
+                config.prompt_cache_retention,
+                || super::generate_prompt_cache_key(self.journal.id()),
+            );
             self.journal
                 .checkpoint(&metadata, (&session).into(), &self.workflow)?;
             self.session = session;
         } else {
             let old_system = plan_workflow::SavedInstructions::take(&mut self.session);
+            let old_cache_key = self.session.prompt_cache_key().map(str::to_owned);
+            let old_cache_retention = self.session.prompt_cache_retention();
             self.session.set_instructions(system);
             // Move only the fields being changed; retain the full native reasoning
             // object so a failed checkpoint restores even provider-specific state.
@@ -364,6 +373,11 @@ impl Agent {
                 ),
             };
             self.session.set_think_level(target_level);
+            self.session.apply_cache_policy(
+                config.prompt_cache_key,
+                config.prompt_cache_retention,
+                || super::generate_prompt_cache_key(self.journal.id()),
+            );
             if let Err(error) =
                 self.journal
                     .checkpoint(&metadata, (&self.session).into(), &self.workflow)
@@ -378,6 +392,12 @@ impl Agent {
                         request.reasoning = old_reasoning;
                     }
                 }
+                match old_cache_key {
+                    Some(key) => self.session.set_prompt_cache_key(key),
+                    None => self.session.clear_prompt_cache_key(),
+                }
+                self.session
+                    .set_prompt_cache_retention_raw(old_cache_retention);
                 old_system.restore(&mut self.session);
                 return Err(error);
             }
@@ -387,9 +407,14 @@ impl Agent {
         self.client = client;
         self.current_model = choice;
         self.think_level = target_level;
+        self.prompt_cache_key_enabled = config.prompt_cache_key;
+        self.prompt_cache_retention = config.prompt_cache_retention;
         // 切模型只丢弃最近请求指标，会话累计输出跨模型保留。
         self.last_request = None;
+        self.last_request_raw_tokens = None;
         self.pending_instructions = None;
+        self.static_project_prompt = None;
+        self.delivered_project_docs.clear();
         Ok(true)
     }
 }

@@ -123,6 +123,7 @@ impl Agent {
         tools.limits = config.settings.tool_limits();
         tools.configure_eval(catalog.eval_settings());
         tools.configure_web_search(catalog.web_search_settings().clone());
+        tools.configure_mcp(catalog.mcp_settings());
         tools.permission.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
         // 进程级单例：启动期后台建连，不再阻塞首个界面；首个任务入口等它结束。
@@ -144,6 +145,7 @@ impl Agent {
         };
         let edit_mode = tools.edit_mode();
         let definitions = tools.all_definitions(pp_core::plan::WorkMode::Execute);
+        let session_date = super::current_session_date();
         // 项目文件在任务开始时加载，读取失败不会让整个交互会话永久不可用。
         let context = crate::system_prompt::RenderContext::new(
             tools.cwd(),
@@ -152,6 +154,7 @@ impl Agent {
             "execute",
             definitions.iter().map(|tool| tool.name.clone()).collect(),
         )
+        .with_date(session_date.clone())
         .with_sandbox(&tools.sandbox_status());
         let system = prompt_source
             .compose(
@@ -180,6 +183,11 @@ impl Agent {
             Some(definitions),
         );
         session.set_think_level(think_level);
+        session.apply_cache_policy(
+            config.prompt_cache_key,
+            config.prompt_cache_retention,
+            || super::generate_prompt_cache_key(None),
+        );
         let journal = if ephemeral {
             SessionJournal::ephemeral(sessions_dir, lock_dir, stats)
         } else {
@@ -198,11 +206,16 @@ impl Agent {
             tools,
             auto_compact: config.settings.auto_compact,
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
+            auto_prune: config.settings.auto_prune,
+            auto_prune_threshold_percent: config.settings.auto_prune_threshold_percent,
             last_request: None,
+            last_request_raw_tokens: None,
             session_output_tokens: 0,
             thinking_history: Vec::new(),
             current_model,
             think_level,
+            prompt_cache_key_enabled: config.prompt_cache_key,
+            prompt_cache_retention: config.prompt_cache_retention,
             models,
             model_source,
             catalog,
@@ -211,6 +224,9 @@ impl Agent {
             pending_instructions: None,
             pending_project_load: Vec::new(),
             reported_project_load: Default::default(),
+            session_date,
+            static_project_prompt: None,
+            delivered_project_docs: Default::default(),
             request_skills: Vec::new(),
             journal,
             replay: Vec::new(),
@@ -384,11 +400,30 @@ impl Agent {
     pub(in crate::agent) fn refresh_instructions_changed(&mut self) -> Result<bool> {
         let definitions = self.tools.all_definitions(self.workflow.mode);
         let names = definitions.iter().map(|d| d.name.clone()).collect();
-        let (system, skills, project) = self.compose_prompt_snapshot(
+        let documents = self.tools.project_documents()?;
+        let scope_summary = self.tools.project_scope_summary();
+        let rendered_all = scope_summary + &pp_tools::project_instructions::render(&documents);
+
+        // 已有对话历史且已冻结静态项目前缀时，保持 system/instructions 逐字节不变，
+        // 仅把新增或变更的 `AGENTS.md` 以 developer 消息增量追加到尾部，保护 Prompt Cache。
+        let use_dynamic_delta = self.session.has_history() && self.static_project_prompt.is_some();
+        let system_project = if use_dynamic_delta {
+            self.static_project_prompt.clone().unwrap_or_default()
+        } else {
+            self.static_project_prompt = Some(rendered_all.clone());
+            self.delivered_project_docs = documents
+                .iter()
+                .map(|doc| (doc.path.clone(), doc.content.clone()))
+                .collect();
+            rendered_all
+        };
+
+        let (system, skills) = self.compose_prompt_with_project(
             &crate::subagent::catalog::workflow_instructions(&self.workflow),
             self.workflow.mode_name(),
             &self.current_model.model,
             names,
+            &system_project,
         )?;
         let mut session_changed = false;
         if self.session.update_tools(definitions) {
@@ -397,12 +432,12 @@ impl Agent {
         }
         self.request_skills = skills;
         self.reported_project_load.retain(|path, _| {
-            project
+            documents
                 .iter()
                 .any(|document| document.path.to_string_lossy() == path.as_str())
         });
         // 快照按引用计数共享；只为本轮新增或变化的规则建立待发布副本。
-        self.pending_project_load = project
+        self.pending_project_load = documents
             .iter()
             .filter(|document| {
                 self.reported_project_load
@@ -411,6 +446,47 @@ impl Agent {
             })
             .cloned()
             .collect();
+
+        if use_dynamic_delta {
+            let delta_docs: Vec<pp_tools::project_instructions::Document> = documents
+                .iter()
+                .filter(|doc| self.delivered_project_docs.get(&doc.path) != Some(&doc.content))
+                .cloned()
+                .collect();
+            let removed_paths: Vec<std::path::PathBuf> = self
+                .delivered_project_docs
+                .keys()
+                .filter(|path| !documents.iter().any(|doc| &doc.path == *path))
+                .cloned()
+                .collect();
+            if !delta_docs.is_empty() || !removed_paths.is_empty() {
+                let mut text = String::from(super::PROJECT_INSTRUCTIONS_PREFIX);
+                if !delta_docs.is_empty() {
+                    text.push_str(&pp_tools::project_instructions::render(&delta_docs));
+                }
+                for path in &removed_paths {
+                    if !text.ends_with('\n') {
+                        text.push('\n');
+                    }
+                    text.push_str(&format!(
+                        "[Project instructions removed: {}]\n",
+                        path.display()
+                    ));
+                }
+                super::append_developer_to(&mut self.session, text);
+                if self.journal.id().is_some() {
+                    self.journal.commit((&self.session).into())?;
+                }
+                for doc in delta_docs {
+                    self.delivered_project_docs.insert(doc.path, doc.content);
+                }
+                for path in removed_paths {
+                    self.delivered_project_docs.remove(&path);
+                }
+                session_changed = true;
+            }
+        }
+
         let unchanged = match &self.session {
             Session::Completion(request) => {
                 matches!(request.messages.first(), Some(ChatCompletionRequestMessage::System(message)) if matches!(&message.content, async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(text) if text == &system))

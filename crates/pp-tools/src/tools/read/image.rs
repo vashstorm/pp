@@ -6,7 +6,9 @@ use anyhow::Result;
 pub use pp_workspace::image::decode_image;
 pub(crate) use pp_workspace::image::is_image;
 #[cfg(test)]
-use pp_workspace::image::{MAX_IMAGE_INPUT_BYTES as MAX_INPUT_BYTES, MAX_IMAGE_SIDE};
+use pp_workspace::image::{
+    MAX_IMAGE_INPUT_BYTES as MAX_INPUT_BYTES, MAX_IMAGE_SIDE, VISION_MAX_IMAGE_SIDE,
+};
 
 pub(super) struct ImageReader;
 pub(super) struct ImageInput {
@@ -109,7 +111,11 @@ mod tests {
     #[test]
     fn oversized_side_is_scaled_into_the_provider_limit() {
         use base64::Engine;
-        for (width, height) in [(120, MAX_IMAGE_SIDE + 1000), (MAX_IMAGE_SIDE + 1000, 120)] {
+        for (width, height) in [
+            (120, MAX_IMAGE_SIDE + 1000),
+            (MAX_IMAGE_SIDE + 1000, 120),
+            (VISION_MAX_IMAGE_SIDE + 600, 900),
+        ] {
             let mut bytes = Cursor::new(Vec::new());
             image::DynamicImage::new_rgb8(width, height)
                 .write_to(&mut bytes, image::ImageFormat::Png)
@@ -117,9 +123,12 @@ mod tests {
             let result = read_image(bytes.into_inner()).unwrap();
             let sent_width = u32::try_from(result.value["width"].as_u64().unwrap()).unwrap();
             let sent_height = u32::try_from(result.value["height"].as_u64().unwrap()).unwrap();
-            assert_eq!(sent_width.max(sent_height), MAX_IMAGE_SIDE);
-            assert_eq!(result.value["mime_type"], "image/png");
-            let scale = f64::from(MAX_IMAGE_SIDE) / f64::from(width.max(height));
+            assert_eq!(sent_width.max(sent_height), VISION_MAX_IMAGE_SIDE);
+            assert!(matches!(
+                result.value["mime_type"].as_str(),
+                Some("image/png" | "image/jpeg")
+            ));
+            let scale = f64::from(VISION_MAX_IMAGE_SIDE) / f64::from(width.max(height));
             assert!((f64::from(sent_width) - f64::from(width) * scale).abs() <= 1.0);
             assert!((f64::from(sent_height) - f64::from(height) * scale).abs() <= 1.0);
             let content = result.value["content"].as_str().unwrap();
@@ -137,9 +146,9 @@ mod tests {
                 (sent_width, sent_height)
             );
         }
-        // 未超过上限时保持原始字节，不重新编码。
+        // 未超过视觉上限时保持原始字节，不重新编码。
         let mut bytes = Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(3, MAX_IMAGE_SIDE)
+        image::DynamicImage::new_rgb8(3, VISION_MAX_IMAGE_SIDE)
             .write_to(&mut bytes, image::ImageFormat::Png)
             .unwrap();
         let source = bytes.into_inner();

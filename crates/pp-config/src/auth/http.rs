@@ -664,6 +664,7 @@ pub fn wire_request<T: serde::Serialize>(
             "max_tool_calls",
             "metadata",
             "previous_response_id",
+            "prompt_cache_retention",
             "temperature",
             "top_p",
             "truncation",
@@ -690,6 +691,9 @@ pub fn wire_request<T: serde::Serialize>(
         let object = body
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("invalid model request format"))?;
+        // 非 OpenAI 订阅源不接受 OpenAI 专有的 prompt_cache_key / prompt_cache_retention。
+        object.remove("prompt_cache_key");
+        object.remove("prompt_cache_retention");
         // SDK 原生历史不保存供应商专有 reasoning_content；明确使用非思考模式。
         ensure!(
             object

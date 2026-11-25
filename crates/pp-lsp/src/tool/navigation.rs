@@ -21,6 +21,8 @@ const SYMBOL_REQUIRED_ACTIONS: &[&str] = &["definition", "references", "rename"]
 
 /// `references` 带上下文展示的条数上限。
 const REFERENCE_CONTEXT_LIMIT: usize = 50;
+/// `references` 最多展示的总条数（超出部分仅回报总数，避免高频符号撑爆上下文）。
+const MAX_REFERENCES: usize = 200;
 /// project-aware 服务器只返回声明时额外查询次数与间隔。
 const REFERENCES_RETRY_COUNT: u32 = 2;
 const REFERENCES_RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -153,13 +155,29 @@ pub(super) fn navigation(
                         .map(|location| format_location_with_context(registry.cwd(), location))
                         .collect();
                     if locations.len() > REFERENCE_CONTEXT_LIMIT {
+                        let shown_extra = locations
+                            .len()
+                            .min(MAX_REFERENCES)
+                            .saturating_sub(REFERENCE_CONTEXT_LIMIT);
                         lines.push(format!(
-                            "  ... {} additional reference(s) shown without context",
-                            locations.len() - REFERENCE_CONTEXT_LIMIT
+                            "  ... {shown_extra} additional reference(s) shown without context"
                         ));
-                        lines.extend(locations.iter().skip(REFERENCE_CONTEXT_LIMIT).map(
-                            |location| format!("  {}", format_location(registry.cwd(), location)),
-                        ));
+                        lines.extend(
+                            locations
+                                .iter()
+                                .skip(REFERENCE_CONTEXT_LIMIT)
+                                .take(shown_extra)
+                                .map(|location| {
+                                    format!("  {}", format_location(registry.cwd(), location))
+                                }),
+                        );
+                        if locations.len() > MAX_REFERENCES {
+                            lines.push(format!(
+                                "  ... {} more reference(s) omitted (showing first {MAX_REFERENCES} of {})",
+                                locations.len() - MAX_REFERENCES,
+                                locations.len()
+                            ));
+                        }
                     }
                     Ok((
                         format!(

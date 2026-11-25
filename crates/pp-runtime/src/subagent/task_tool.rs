@@ -51,17 +51,7 @@ impl Binding {
             .collect::<Vec<_>>();
         let help = available
             .iter()
-            .map(|(def, role)| {
-                let label = format!("{}: {}", def.name, def.description);
-                match role.and_then(|role| roles.get(&role)) {
-                    Some(assignment) => format!(
-                        "{label} ({}:{})",
-                        assignment.model,
-                        assignment.effort.as_str()
-                    ),
-                    None => label,
-                }
-            })
+            .map(|(def, _)| format!("{}: {}", def.name, def.description))
             .collect::<Vec<_>>()
             .join("; ");
         let review_help = if names.contains(&"review") {

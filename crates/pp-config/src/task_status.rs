@@ -155,6 +155,7 @@ impl Ledger {
                 output_tokens,
                 cached_tokens: Some(0),
                 cache_write_tokens: Some(0),
+                reasoning_tokens: None,
             })
         });
         match estimate.map(|cost| cost.total()) {
@@ -228,6 +229,7 @@ mod tests {
             output_tokens: 100,
             cached_tokens: Some(200),
             cache_write_tokens: Some(100),
+            reasoning_tokens: None,
         }
     }
     #[test]

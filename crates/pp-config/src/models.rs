@@ -205,6 +205,14 @@ impl<'de> Deserialize<'de> for Protocol {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PromptCacheRetention {
+    #[serde(rename = "in_memory")]
+    InMemory,
+    #[serde(rename = "24h")]
+    Hours24,
+}
+
 // Deliberately not Debug: this owns the API credential.
 #[derive(Deserialize)]
 struct ProviderEntry {
@@ -216,6 +224,10 @@ struct ProviderEntry {
     api_key: String,
     #[serde(default, deserialize_with = "deserialize_optional_base_url")]
     base_url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    prompt_cache_key: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    prompt_cache_retention: Option<PromptCacheRetention>,
     #[serde(deserialize_with = "deserialize_named_entries")]
     models: Vec<(String, ModelEntry)>,
 }
@@ -250,6 +262,10 @@ struct ModelEntry {
     // deserialize_with makes an explicit null a type error instead of None.
     #[serde(default, deserialize_with = "deserialize_optional_context_window")]
     context_window: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    prompt_cache_key: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
+    prompt_cache_retention: Option<PromptCacheRetention>,
 }
 
 #[derive(Clone, Copy, PartialEq, serde::Serialize, Deserialize)]
@@ -395,6 +411,22 @@ impl ModelPricing {
     }
 }
 
+/// 主流 OpenAI 模型官方上下文窗口回退表：仅在 `models.yml` / 订阅发现均未显式声明
+/// `context_window` 时按精确模型名（忽略前缀路径与 ASCII 大小写）回退，绝不为未知模型猜测容量。
+pub fn builtin_context_window(model: &str) -> Option<u64> {
+    let name = model.rsplit('/').next()?.to_ascii_lowercase();
+    match name.as_str() {
+        "gpt-6-astra" | "gpt-6.1-sol" | "gpt-6.1-terra" | "gpt-6-luna" | "gpt-6-sol"
+        | "gpt-6-cyber" | "gpt-6-rosalind" | "gpt-5.5" | "gpt-5.5-2026-04-23" | "gpt-5.4"
+        | "gpt-5.4-2026-03-05" | "gpt-5.4-mini" | "gpt-5.3-codex" | "gpt-5" | "gpt-5-mini"
+        | "gpt-5-codex" => Some(400_000),
+        "gpt-4.1" | "gpt-4.1-mini" | "gpt-4.1-nano" => Some(1_047_576),
+        "o3" | "o4-mini" => Some(200_000),
+        "gpt-4o" | "gpt-4o-mini" => Some(128_000),
+        _ => None,
+    }
+}
+
 fn deserialize_optional_context_window<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<u64>, D::Error>
@@ -422,6 +454,8 @@ pub struct ValidatedModel {
     pub cost: Option<ModelCost>,
     pub(crate) thinking: ModelThinking,
     pub(crate) context_window: Option<u64>,
+    pub(crate) prompt_cache_key: bool,
+    pub(crate) prompt_cache_retention: Option<PromptCacheRetention>,
 }
 
 // Validate every provider and model before selecting anything.
@@ -488,6 +522,8 @@ fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<Val
                     );
                 }
             }
+            let provider_cache_key = provider.prompt_cache_key.unwrap_or(true);
+            let provider_cache_retention = provider.prompt_cache_retention;
             Ok(ValidatedProvider {
                 id,
                 protocol,
@@ -523,6 +559,10 @@ fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<Val
                                 model.thinking.validate()?
                             },
                             context_window: model.context_window,
+                            prompt_cache_key: model.prompt_cache_key.unwrap_or(provider_cache_key),
+                            prompt_cache_retention: model
+                                .prompt_cache_retention
+                                .or(provider_cache_retention),
                         })
                     })
                     .collect::<Result<_>>()?,
@@ -614,6 +654,7 @@ mod tests {
             output_tokens: 100,
             cached_tokens: Some(200),
             cache_write_tokens: None,
+            reasoning_tokens: None,
         };
         let free_write = ModelCost {
             input: 2.0,
@@ -647,5 +688,73 @@ mod tests {
                 })
                 .is_none()
         );
+    }
+
+    #[test]
+    fn builtin_context_window_matches_known_openai_models_and_never_guesses_unknown() {
+        assert_eq!(builtin_context_window("gpt-5.4"), Some(400_000));
+        assert_eq!(
+            builtin_context_window("openai/GPT-5.3-CODEX"),
+            Some(400_000)
+        );
+        assert_eq!(builtin_context_window("gateway/gpt-4.1"), Some(1_047_576));
+        assert_eq!(builtin_context_window("o3"), Some(200_000));
+        assert_eq!(builtin_context_window("gpt-4o"), Some(128_000));
+        assert_eq!(builtin_context_window("fixture-model"), None);
+        assert_eq!(builtin_context_window("custom-private-llm"), None);
+    }
+
+    #[test]
+    fn prompt_cache_settings_inherit_from_provider_and_allow_model_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.yml");
+        fs::write(
+            &path,
+            r#"providers:
+  default_provider:
+    api_key: secret-a
+    models:
+      plain:
+        model: gpt-5.4
+  custom_provider:
+    api_key: secret-b
+    prompt_cache_key: false
+    prompt_cache_retention: "24h"
+    models:
+      inherited:
+        model: gpt-5.4
+      overridden:
+        model: gpt-5.4-mini
+        prompt_cache_key: true
+        prompt_cache_retention: in_memory
+"#,
+        )
+        .unwrap();
+        let providers = load_models(&path).unwrap();
+        let plain = &providers[0].models[0];
+        assert!(plain.prompt_cache_key);
+        assert_eq!(plain.prompt_cache_retention, None);
+
+        let inherited = &providers[1].models[0];
+        assert!(!inherited.prompt_cache_key);
+        assert_eq!(
+            inherited.prompt_cache_retention,
+            Some(PromptCacheRetention::Hours24)
+        );
+
+        let overridden = &providers[1].models[1];
+        assert!(overridden.prompt_cache_key);
+        assert_eq!(
+            overridden.prompt_cache_retention,
+            Some(PromptCacheRetention::InMemory)
+        );
+
+        for invalid in [
+            "providers:\n  p:\n    api_key: k\n    prompt_cache_retention: 1h\n    models:\n      m:\n        model: gpt-5.4\n",
+            "providers:\n  p:\n    api_key: k\n    prompt_cache_key: null\n    models:\n      m:\n        model: gpt-5.4\n",
+        ] {
+            fs::write(&path, invalid).unwrap();
+            assert!(load_models(&path).is_err(), "{invalid}");
+        }
     }
 }

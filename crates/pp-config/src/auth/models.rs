@@ -102,6 +102,8 @@ impl Catalog {
                         model: model.model,
                         cost: None,
                         context_window: model.context_window,
+                        prompt_cache_key: true,
+                        prompt_cache_retention: None,
                         thinking: if matches!(
                             entry.auth,
                             Provider::KimiCode | Provider::Glm | Provider::Zai

@@ -239,14 +239,12 @@ fn context_seed_history(protocol: Protocol, server: &TestServer, cli: &mut LiveC
 }
 
 fn context_assert_summary_request(protocol: Protocol, body: &Value) {
+    let no_tools = body
+        .get("tools")
+        .is_none_or(|tools| tools.as_array().is_none_or(Vec::is_empty));
     assert!(
-        body.get("tools")
-            .is_none_or(|tools| { tools.as_array().is_none_or(|tools| tools.is_empty()) }),
-        "summary request must not offer tools: {body}"
-    );
-    assert!(
-        body.get("tool_choice").is_none_or(Value::is_null),
-        "summary request must not select a tool: {body}"
+        no_tools || body["tool_choice"] == "none",
+        "summary request must disable tool calls (either omit tools in tight windows or set tool_choice=none): {body}"
     );
     match protocol {
         Protocol::Chat => {
@@ -739,12 +737,8 @@ fn context_assert_auto_summary_request(
     excluded: &[&str],
 ) {
     assert!(
-        !context_has_tools(body),
-        "summary request must not offer tools: {body}"
-    );
-    assert!(
-        body.get("tool_choice").is_none_or(Value::is_null),
-        "summary request must not select a tool: {body}"
+        !context_has_tools(body) || body["tool_choice"] == "none",
+        "summary request must disable tool calls (either omit tools in tight windows or set tool_choice=none): {body}"
     );
     let wire = body.to_string();
     for value in present {
@@ -1022,7 +1016,8 @@ fn context_auto_grow_batches(
             protocol,
             request,
             &format!("bulk-{index}"),
-            "auto-old.txt",
+            // 显式 `:raw` 绕过同会话 `read` 去重，以刻意累积超过容量阈值的原始历史。
+            "auto-old.txt:raw",
             None,
         );
     }

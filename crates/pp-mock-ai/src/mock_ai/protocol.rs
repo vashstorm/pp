@@ -121,6 +121,8 @@ struct UsageFields {
     cached_tokens: Option<u64>,
     #[serde(default)]
     cache_write_tokens: Option<u64>,
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
 }
 
 impl From<UsageFields> for TokenUsage {
@@ -130,6 +132,7 @@ impl From<UsageFields> for TokenUsage {
             output_tokens: usage.output_tokens,
             cached_tokens: usage.cached_tokens,
             cache_write_tokens: usage.cache_write_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
         }
     }
 }
@@ -188,6 +191,7 @@ pub(super) fn group_usage(instructions: &[Instruction]) -> anyhow::Result<Option
     let mut output_tokens = 0_u64;
     let mut cached_tokens = 0_u64;
     let mut cache_write_tokens: Option<u64> = None;
+    let mut reasoning_tokens = 0_u64;
     for instruction in instructions {
         let Some(usage) = instruction.usage else {
             continue;
@@ -201,6 +205,9 @@ pub(super) fn group_usage(instructions: &[Instruction]) -> anyhow::Result<Option
             .ok_or_else(usage_error)?;
         cached_tokens = cached_tokens
             .checked_add(usage.cached_tokens.unwrap_or(0))
+            .ok_or_else(usage_error)?;
+        reasoning_tokens = reasoning_tokens
+            .checked_add(usage.reasoning_tokens.unwrap_or(0))
             .ok_or_else(usage_error)?;
         if let Some(write) = usage.cache_write_tokens {
             cache_write_tokens = Some(
@@ -220,6 +227,7 @@ pub(super) fn group_usage(instructions: &[Instruction]) -> anyhow::Result<Option
     let input_tokens = u32::try_from(input_tokens).map_err(|_| usage_error())?;
     let output_tokens = u32::try_from(output_tokens).map_err(|_| usage_error())?;
     let cached_tokens = u32::try_from(cached_tokens).map_err(|_| usage_error())?;
+    let reasoning_tokens = u32::try_from(reasoning_tokens).map_err(|_| usage_error())?;
     let total_tokens = u32::try_from(total_tokens).map_err(|_| usage_error())?;
     let cache_write_tokens = cache_write_tokens
         .map(|value| i64::try_from(value).map_err(|_| usage_error()))
@@ -233,7 +241,7 @@ pub(super) fn group_usage(instructions: &[Instruction]) -> anyhow::Result<Option
         "input_tokens": input_tokens,
         "input_tokens_details": Value::Object(input_details),
         "output_tokens": output_tokens,
-        "output_tokens_details": { "reasoning_tokens": 0 },
+        "output_tokens_details": { "reasoning_tokens": reasoning_tokens },
         "total_tokens": total_tokens,
     })))
 }
@@ -656,12 +664,14 @@ mod tests {
             output_tokens: 0,
             cached_tokens: None,
             cache_write_tokens: None,
+            reasoning_tokens: None,
         };
         let one = TokenUsage {
             input_tokens: 1,
             output_tokens: 0,
             cached_tokens: None,
             cache_write_tokens: None,
+            reasoning_tokens: None,
         };
         let instructions = [
             with_usage(Text::String("a".into()), max),
@@ -674,6 +684,7 @@ mod tests {
             output_tokens: 0,
             cached_tokens: None,
             cache_write_tokens: Some(u64::MAX),
+            reasoning_tokens: None,
         };
         let instructions = [
             with_usage(Text::String("a".into()), cache_max),

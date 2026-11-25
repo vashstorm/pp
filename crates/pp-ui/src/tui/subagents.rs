@@ -774,6 +774,7 @@ mod fixtures {
                                 output_tokens: 45_678,
                                 cached_tokens: Some(8_000),
                                 cache_write_tokens: Some(0),
+                                reasoning_tokens: None,
                             }),
                             session_output_tokens: 45_678,
                             auto_compact: false,

@@ -557,6 +557,9 @@ fn response_error_description(code: &str) -> &'static str {
         "server_error" => "server_error: provider could not complete the response",
         "rate_limit_exceeded" => "rate_limit_exceeded: provider rate limit reached",
         "invalid_prompt" => "invalid_prompt: provider rejected the prompt",
+        "context_length_exceeded" => {
+            "context_length_exceeded: request exceeds the model context window"
+        }
         _ => "unrecognized error code",
     }
 }

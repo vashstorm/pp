@@ -142,6 +142,11 @@ impl Agent {
             );
             session.set_think_level(selection.effort);
             session.set_tools(definitions);
+            session.apply_cache_policy(
+                config.prompt_cache_key,
+                config.prompt_cache_retention,
+                || super::generate_prompt_cache_key(None),
+            );
             super::turn::append_user_to(&mut session, &prompt);
             let metadata = Metadata {
                 role_route: role_route.as_ref(),
@@ -181,6 +186,8 @@ impl Agent {
             context_window: config.context_window,
         };
         self.think_level = selection.effort;
+        self.prompt_cache_key_enabled = config.prompt_cache_key;
+        self.prompt_cache_retention = config.prompt_cache_retention;
         self.tools.permission.clear_session();
         self.journal = journal;
         self.tools.artifacts = Default::default();

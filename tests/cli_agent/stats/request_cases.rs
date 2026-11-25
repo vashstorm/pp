@@ -57,8 +57,14 @@ fn stats_context_first_request_freezes_full_body_skills_and_session_identity() {
         fs::remove_dir_all(config_path(dir.path(), "skills")).unwrap();
         cli.input("second user\n");
         let (request, second) = receive_at(&server, endpoint);
+        // 已有历史后 AGENTS.md 更新以尾部 developer 消息增量送达，不破坏首条 system 前缀缓存。
         assert!(second.to_string().contains("changed-project-rule"));
-        assert!(!second.to_string().contains("original-project-rule"));
+        let second_system = if protocol == "completion" {
+            &second["messages"][0]["content"]
+        } else {
+            &second["instructions"]
+        };
+        assert_eq!(second_system, system);
         finish(request, "second done");
         cli.input("/new\nthird user\n");
         let (request, third) = receive_at(&server, endpoint);

@@ -1,6 +1,67 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
+/// MCP 工具代理模式：
+/// - `auto`（默认）：可用 MCP 工具数超过 `proxyThreshold`（默认 12）时切换为固定双工具代理 `mcp_search` + `mcp_call`，避免大量 MCP schema 膨胀上下文与破坏缓存；
+/// - `always`：只要存在可用 MCP 工具即始终使用固定双工具代理；
+/// - `never`：始终直接暴露全部 `mcp__*` 工具 schema。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpProxyMode {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct McpSettings {
+    pub proxy: McpProxyMode,
+    pub proxy_threshold: usize,
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            proxy: McpProxyMode::Auto,
+            proxy_threshold: 12,
+        }
+    }
+}
+
+impl McpSettings {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.proxy_threshold > 0,
+            "mcp.proxyThreshold must be positive"
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod mcp_settings_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_settings_defaults_modes_and_validation() {
+        let defaults = McpSettings::default();
+        assert_eq!(defaults.proxy, McpProxyMode::Auto);
+        assert_eq!(defaults.proxy_threshold, 12);
+        defaults.validate().unwrap();
+
+        let parsed: McpSettings =
+            serde_yaml::from_str("proxy: always\nproxyThreshold: 5\n").unwrap();
+        assert_eq!(parsed.proxy, McpProxyMode::Always);
+        assert_eq!(parsed.proxy_threshold, 5);
+        parsed.validate().unwrap();
+
+        let zero: McpSettings = serde_yaml::from_str("proxyThreshold: 0\n").unwrap();
+        assert!(zero.validate().is_err());
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct OutputSettings {
@@ -129,13 +190,17 @@ pub enum PermissionPolicy {
     Deny,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TaskSettings {
     pub max_concurrency: usize,
     pub max_recursion_depth: usize,
     pub idle_ttl_ms: u64,
     pub request_budget: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_budget_usd: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub disabled_agents: Vec<String>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -148,6 +213,8 @@ impl Default for TaskSettings {
             max_recursion_depth: 2,
             idle_ttl_ms: 420_000,
             request_budget: 200,
+            token_budget: None,
+            cost_budget_usd: None,
             disabled_agents: vec![],
             agent_models: std::collections::BTreeMap::new(),
         }

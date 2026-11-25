@@ -150,7 +150,9 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
         pty.input("/compact\r");
         let (request, body) = pty.request_at(&fixture, api_path(other));
         assert!(
-            body["tools"].is_null() || body["tools"].as_array().is_some_and(Vec::is_empty),
+            body["tools"].is_null()
+                || body["tools"].as_array().is_some_and(Vec::is_empty)
+                || body["tool_choice"] == "none",
             "{body}"
         );
         plan_final(

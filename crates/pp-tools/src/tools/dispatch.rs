@@ -235,6 +235,33 @@ impl Tools {
                     .run_todo(&call.policy, call.arguments)
                     .map(|(value, change)| (value, None, change));
             }
+            "mcp_search" => super::mcp_proxy::run_search(
+                &self.mcp,
+                access.mcp_access,
+                self.allowed_tools.as_ref(),
+                call.arguments,
+            ),
+            "mcp_call" => {
+                let resolved = access
+                    .resolved_mcp_call
+                    .as_ref()
+                    .context("unresolved mcp_call target")?;
+                if self.mcp_shared {
+                    self.mcp.proxy_call(
+                        &resolved.exposed_name,
+                        &resolved.inner_arguments,
+                        access.mcp_access,
+                        call.cancellation,
+                    )
+                } else {
+                    self.mcp.call(
+                        &resolved.exposed_name,
+                        &resolved.inner_arguments,
+                        access.mcp_access,
+                        call.cancellation,
+                    )
+                }
+            }
             _ => {
                 if self.mcp_shared {
                     self.mcp.proxy_call(

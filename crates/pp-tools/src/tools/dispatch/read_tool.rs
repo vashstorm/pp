@@ -67,6 +67,22 @@ impl Tools {
             )?;
         }
         self.activate_read_instructions(&args.path)?;
+        let dedup_probe = read::dedup_probe(
+            &args.path,
+            &self.cwd,
+            &self.workspace,
+            self.edit_mode,
+            self.limits,
+        );
+        if let Some(probe) = dedup_probe.as_ref() {
+            let hit = self
+                .read_dedup
+                .borrow_mut()
+                .check(probe, |ws_key| self.snapshots.borrow().is_active(ws_key));
+            if let Some(value) = hit {
+                return Ok((value, None, None));
+            }
+        }
         let mut fetch = |url: &str, token: &CancellationToken| match web(
             web_search::WebAction::Read(url),
             token,
@@ -87,6 +103,11 @@ impl Tools {
             &mut fetch,
             cancellation,
         )?;
+        if result.images.is_empty()
+            && let Some(probe) = dedup_probe
+        {
+            self.read_dedup.borrow_mut().record(probe, &result.value);
+        }
         images.extend(result.images);
         Ok((result.value, None, None))
     }

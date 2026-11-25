@@ -26,6 +26,10 @@ pub(super) fn into_completion_turn(
             .prompt_tokens_details
             .and_then(|details| details.cached_tokens)
             .map(u64::from),
+        reasoning_tokens: usage
+            .completion_tokens_details
+            .and_then(|details| details.reasoning_tokens)
+            .map(u64::from),
     });
     let choice = response
         .choices
@@ -147,6 +151,7 @@ pub(super) fn into_response_turn(response: Response) -> Result<ResponseTurn> {
         output_tokens: u64::from(usage.output_tokens),
         cache_write_tokens: None,
         cached_tokens: Some(u64::from(usage.input_tokens_details.cached_tokens)),
+        reasoning_tokens: Some(u64::from(usage.output_tokens_details.reasoning_tokens)),
     });
     let has_text = |output: &[OutputItem]| {
         output.iter().any(|item| match item {

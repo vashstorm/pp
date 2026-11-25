@@ -29,12 +29,7 @@ fn plan_tui_compact_then_execute_case(outcome: &str) {
                 .contains("Summarize the preceding conversation"),
             "{summary}"
         );
-        assert!(
-            summary
-                .get("tools")
-                .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
-            "{summary}"
-        );
+        assert_eq!(summary["tool_choice"], "none", "{summary}");
         plan_wait_mode(&mut pty, "Plan");
         match outcome {
             "failure" => request

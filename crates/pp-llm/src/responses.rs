@@ -312,6 +312,9 @@ impl OpenAiClient {
                                     cached_tokens: Some(u64::from(
                                         usage.input_tokens_details.cached_tokens,
                                     )),
+                                    reasoning_tokens: Some(u64::from(
+                                        usage.output_tokens_details.reasoning_tokens,
+                                    )),
                                 });
                                 if record {
                                     snapshot =
@@ -364,8 +367,9 @@ impl OpenAiClient {
                 error
             } else {
                 let message = error.to_string();
+                let context_overflow = crate::retry::text_indicates_context_overflow(&message);
                 tracing::error!(event = "model_response_error", pid = std::process::id(), detail = %pp_core::logging::diagnostic_text(&format!("{error:#}")));
-                ModelFailure { message, reason: pp_core::events::RequestRetryReason::ModelError, retry_after: None }.into()
+                ModelFailure { message, reason: pp_core::events::RequestRetryReason::ModelError, retry_after: None, context_overflow }.into()
             }
         });
         attempts.partial = partial;

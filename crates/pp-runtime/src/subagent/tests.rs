@@ -833,6 +833,7 @@ fn run_cost_follows_the_authoritative_unknown_cache_rules() {
         output_tokens: 100,
         cached_tokens: Some(200),
         cache_write_tokens: Some(100),
+        reasoning_tokens: None,
     };
     // 700 未缓存 + 200 缓存读 + 100 缓存写 + 100 输出。
     let total = accumulate_cost(Some(0.001), Some(priced), usage).unwrap();

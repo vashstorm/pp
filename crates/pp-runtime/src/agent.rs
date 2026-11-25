@@ -16,6 +16,7 @@ mod plan_open;
 mod plan_review;
 mod plan_sync;
 mod plan_workflow;
+mod prune;
 mod subagents;
 mod task_status;
 mod todo;
@@ -185,7 +186,11 @@ pub struct Agent {
     session: Session,
     auto_compact: bool,
     auto_compact_threshold_percent: u8,
+    auto_prune: bool,
+    auto_prune_threshold_percent: u8,
     last_request: Option<TokenUsage>,
+    /// 最近一次收到真实 `last_request` 时的原始估算 token（用于校准水位阈值，随 `last_request` 一并清理）。
+    last_request_raw_tokens: Option<u64>,
     /// 本次会话普通请求的 output tokens 累计；会话根变化才清空。
     session_output_tokens: u64,
     /// 当前会话已提交轮次的思考/推理记录（用于 `/context` 真实统计，覆盖双协议及恢复）。
@@ -197,11 +202,20 @@ pub struct Agent {
     catalog: ModelCatalog,
     current_model: ModelChoice,
     think_level: ThinkLevel,
+    prompt_cache_key_enabled: bool,
+    prompt_cache_retention: Option<pp_config::models::PromptCacheRetention>,
     base_system: String,
     prompt_source: Option<crate::system_prompt::Snapshot>,
     pending_instructions: Option<String>,
     pending_project_load: Vec<pp_tools::project_instructions::Document>,
     reported_project_load: turn::ReportedProjectLoads,
+    /// 会话创建/重置时冻结的日期字符串，避免跨午夜改写系统提示词前缀破坏缓存。
+    session_date: String,
+    /// 首轮固化在 system/instructions 中的静态项目规则块；会话已产生历史后保持不变，
+    /// 后续新激活或变更的 `AGENTS.md` 改为以 developer 消息增量追加。
+    static_project_prompt: Option<String>,
+    /// 已通过 system 前缀或 developer 消息送达模型的 `(路径 -> 正文)` 快照。
+    delivered_project_docs: std::collections::BTreeMap<PathBuf, String>,
     request_skills: Vec<pp_config::skills::SkillHeader>,
     journal: persistence::SessionJournal,
     replay: Vec<persistence::ReplayRecord>,
@@ -249,7 +263,175 @@ pub struct TreeNavigation {
     pub draft: Option<String>,
 }
 
+pub(in crate::agent) const PROJECT_INSTRUCTIONS_PREFIX: &str = "[pp-project-instructions]\n";
+
+pub(in crate::agent) fn current_session_date() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+pub(in crate::agent) fn generate_prompt_cache_key(session_id: Option<&str>) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    if let Some(id) = session_id {
+        let clean: String = id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+            .take(48)
+            .collect();
+        if !clean.is_empty() {
+            return format!("pp-{clean}");
+        }
+    }
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let mut hasher = DefaultHasher::new();
+    std::process::id().hash(&mut hasher);
+    seq.hash(&mut hasher);
+    nanos.hash(&mut hasher);
+    let h1 = hasher.finish();
+    (h1 ^ 0x9e37_79b9_7f4a_7c15).hash(&mut hasher);
+    let h2 = hasher.finish();
+    format!("pp-{h1:016x}{h2:016x}")
+}
+
+/// 为同一角色、共享上下文与计划下的并发/后续子 Agent 生成稳定共享的 `prompt_cache_key`，
+/// 令相同前缀批次命中 OpenAI Responses 服务端前缀缓存。
+pub(in crate::agent) fn generate_subagent_prompt_cache_key(
+    definition: &str,
+    shared_context: &str,
+    plan: &str,
+    model: &str,
+) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    "pp-subagent-v1".hash(&mut hasher);
+    definition.hash(&mut hasher);
+    shared_context.hash(&mut hasher);
+    plan.hash(&mut hasher);
+    model.hash(&mut hasher);
+    let h1 = hasher.finish();
+    (h1 ^ 0x9e37_79b9_7f4a_7c15).hash(&mut hasher);
+    let h2 = hasher.finish();
+    format!("pp-sub-{h1:016x}{h2:016x}")
+}
+
+/// 为摘要、标题、自动审查等内部辅助请求选择目标模型允许的最低推理档位。
+pub(in crate::agent) fn lowest_think_level(
+    thinking: &pp_config::models::ModelThinking,
+    fallback: ThinkLevel,
+) -> ThinkLevel {
+    for candidate in [
+        ThinkLevel::None,
+        ThinkLevel::Low,
+        ThinkLevel::Medium,
+        ThinkLevel::High,
+        ThinkLevel::Xhigh,
+        ThinkLevel::Max,
+    ] {
+        if thinking.supports(candidate) {
+            return candidate;
+        }
+    }
+    fallback
+}
+
 impl Session {
+    fn has_history(&self) -> bool {
+        match self {
+            Self::Completion(request) => request.messages.len() > 1,
+            Self::Response(request) => match &request.input {
+                InputParam::Items(items) => !items.is_empty(),
+                InputParam::Text(text) => !text.is_empty(),
+            },
+        }
+    }
+
+    pub(in crate::agent) fn prompt_cache_key(&self) -> Option<&str> {
+        match self {
+            Self::Completion(request) => request.prompt_cache_key.as_deref(),
+            Self::Response(request) => request.prompt_cache_key.as_deref(),
+        }
+    }
+
+    pub(in crate::agent) fn set_prompt_cache_key(&mut self, key: String) {
+        match self {
+            Self::Completion(request) => request.prompt_cache_key = Some(key),
+            Self::Response(request) => request.prompt_cache_key = Some(key),
+        }
+    }
+
+    pub(in crate::agent) fn clear_prompt_cache_key(&mut self) {
+        match self {
+            Self::Completion(request) => request.prompt_cache_key = None,
+            Self::Response(request) => request.prompt_cache_key = None,
+        }
+    }
+
+    #[allow(deprecated)]
+    pub(in crate::agent) fn prompt_cache_retention(
+        &self,
+    ) -> Option<async_openai::types::responses::PromptCacheRetention> {
+        match self {
+            Self::Completion(_) => None,
+            Self::Response(request) => request.prompt_cache_retention,
+        }
+    }
+
+    #[allow(deprecated)]
+    pub(in crate::agent) fn set_prompt_cache_retention_raw(
+        &mut self,
+        retention: Option<async_openai::types::responses::PromptCacheRetention>,
+    ) {
+        if let Self::Response(request) = self {
+            request.prompt_cache_retention = retention;
+        }
+    }
+
+    pub(in crate::agent) fn set_prompt_cache_retention(
+        &mut self,
+        retention: Option<pp_config::models::PromptCacheRetention>,
+    ) {
+        let mapped = retention.map(|value| match value {
+            pp_config::models::PromptCacheRetention::InMemory => {
+                async_openai::types::responses::PromptCacheRetention::InMemory
+            }
+            pp_config::models::PromptCacheRetention::Hours24 => {
+                async_openai::types::responses::PromptCacheRetention::Hours24
+            }
+        });
+        self.set_prompt_cache_retention_raw(mapped);
+    }
+
+    pub(in crate::agent) fn apply_cache_policy(
+        &mut self,
+        enabled: bool,
+        retention: Option<pp_config::models::PromptCacheRetention>,
+        fallback_key: impl FnOnce() -> String,
+    ) {
+        self.set_prompt_cache_retention(retention);
+        if enabled {
+            if self.prompt_cache_key().is_none() {
+                self.set_prompt_cache_key(fallback_key());
+            }
+        } else {
+            self.clear_prompt_cache_key();
+        }
+    }
+
+    pub(in crate::agent) fn set_max_output_tokens(&mut self, limit: u32) {
+        match self {
+            Self::Completion(request) => request.max_completion_tokens = Some(limit),
+            Self::Response(request) => request.max_output_tokens = Some(limit),
+        }
+    }
+
     fn tool_names(&self) -> Vec<String> {
         match self {
             Self::Completion(request) => request

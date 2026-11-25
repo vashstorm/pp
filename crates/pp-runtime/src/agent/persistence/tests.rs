@@ -607,7 +607,8 @@ fn context_failed_history_replacement_restores_native_memory_and_disk() {
                 .unwrap()
                 .expect("summary request");
             let body: serde_json::Value = request.json().unwrap();
-            assert!(body.get("tools").is_none_or(serde_json::Value::is_null));
+            // 缓存友好压缩保留主会话 tools 定义，通过 tool_choice="none" 禁止工具调用。
+            assert_eq!(body["tool_choice"], "none");
             assert!(
                 !body.to_string().contains("old-2"),
                 "latest exchange must not enter summary request"

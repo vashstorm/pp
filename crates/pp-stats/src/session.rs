@@ -193,6 +193,7 @@ mod tests {
                 output_tokens: 230,
                 cached_tokens: Some(900),
                 cache_write_tokens: None,
+                reasoning_tokens: None,
             })
         );
 

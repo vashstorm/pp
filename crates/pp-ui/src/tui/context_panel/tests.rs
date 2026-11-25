@@ -48,6 +48,7 @@ fn sample_report() -> ContextReport {
         output_tokens: 450,
         cached_tokens: Some(12_000),
         cache_write_tokens: Some(1_200),
+        reasoning_tokens: Some(1_200),
     });
     report.session_output_tokens = 2_300;
     report.thinking_tokens = 1_200;
@@ -486,4 +487,17 @@ fn settings_save_syncs_compaction_policy_to_worker_usage_and_open_context_panel(
         .collect();
     assert!(rendered.contains("Auto-Compact Buffer  50K  10.0%"));
     assert!(rendered.contains("Free Space  450K  90.0%"));
+}
+
+#[test]
+fn header_displays_last_request_cache_hit_rate_and_reasoning_tokens() {
+    let mut panel = Panel::new();
+    panel.set_report(sample_report());
+    let screen = draw_panel(&mut panel, 120, 26);
+    assert!(
+        screen.contains("400K left before auto-compaction at 85%"),
+        "{screen}"
+    );
+    assert!(screen.contains("Cache 50%"), "{screen}");
+    assert!(screen.contains("Reasoning 1.2K"), "{screen}");
 }

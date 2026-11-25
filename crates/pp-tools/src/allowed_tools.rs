@@ -335,6 +335,9 @@ impl AllowedTools {
 
     /// 判断内部工具名是否被当前能力配置允许（黑名单优先于白名单）。
     pub fn allows(&self, name: &str) -> bool {
+        if matches!(name, "mcp_search" | "mcp_call") {
+            return self.allows_any_mcp();
+        }
         if self.is_disallowed(name) {
             return false;
         }

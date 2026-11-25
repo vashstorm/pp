@@ -23,7 +23,7 @@ pub(super) fn convert(
     protocol: Protocol,
     edit_mode: EditMode,
 ) -> Result<Session> {
-    match (session, protocol) {
+    let mut converted = match (session, protocol) {
         (Session::Completion(source), Protocol::Response) => {
             to_response::from_completion(source, model, edit_mode)
         }
@@ -34,7 +34,11 @@ pub(super) fn convert(
         (Session::Response(source), Protocol::Completion) => {
             to_completion::from_response(source, model, edit_mode)
         }
+    }?;
+    if let Some(key) = session.prompt_cache_key() {
+        converted.set_prompt_cache_key(key.to_owned());
     }
+    Ok(converted)
 }
 
 #[cfg(test)]

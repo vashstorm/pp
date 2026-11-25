@@ -10,6 +10,8 @@ pub struct TokenUsage {
     pub cached_tokens: Option<u64>,
     #[serde(default)]
     pub cache_write_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

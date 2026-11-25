@@ -40,6 +40,8 @@ const TASKS_CHANGED: &str = "Plan tasks changed; re-plan before completing.";
 struct ExecutionModel {
     choice: ModelChoice,
     effort: ThinkLevel,
+    prompt_cache_key_enabled: bool,
+    prompt_cache_retention: Option<pp_config::models::PromptCacheRetention>,
     route: Option<RoleRoute>,
     client: OpenAiClient,
     same_response_source: bool,
@@ -149,6 +151,8 @@ impl Agent {
                 context_window: config.context_window,
             },
             effort: selection.effort,
+            prompt_cache_key_enabled: config.prompt_cache_key,
+            prompt_cache_retention: config.prompt_cache_retention,
             route: None,
             client,
             same_response_source,
@@ -192,6 +196,11 @@ impl Agent {
         session.set_instructions(system);
         session.set_tools(definitions);
         session.set_think_level(model.effort);
+        session.apply_cache_policy(
+            model.prompt_cache_key_enabled,
+            model.prompt_cache_retention,
+            || super::generate_prompt_cache_key(self.journal.id()),
+        );
         Ok(session)
     }
 
@@ -199,9 +208,12 @@ impl Agent {
         self.client = model.client;
         self.current_model = model.choice;
         self.think_level = model.effort;
+        self.prompt_cache_key_enabled = model.prompt_cache_key_enabled;
+        self.prompt_cache_retention = model.prompt_cache_retention;
         self.role_route = model.route;
         self.model_source = self.models.source();
         self.last_request = None;
+        self.last_request_raw_tokens = None;
         self.pending_instructions = None;
     }
 
@@ -215,6 +227,43 @@ impl Agent {
     ) -> Result<String> {
         self.compose_prompt_snapshot(instructions, mode, model, tool_names)
             .map(|(system, _, _)| system)
+    }
+
+    pub(super) fn compose_prompt_with_project(
+        &self,
+        instructions: &str,
+        mode: &str,
+        model: &str,
+        tool_names: Vec<String>,
+        project: &str,
+    ) -> Result<(String, Vec<pp_config::skills::SkillHeader>)> {
+        let skills = self
+            .tools
+            .skills
+            .lock()
+            .map_err(|_| anyhow!("skill registry unavailable"))?
+            .headers();
+        let summary = pp_config::skills::Skills::format_summary(&skills);
+        let system = if let Some(source) = &self.prompt_source {
+            let context = crate::system_prompt::RenderContext::new(
+                self.tools.cwd(),
+                model,
+                self.tools.edit_mode(),
+                mode,
+                tool_names,
+            )
+            .with_date(self.session_date.clone())
+            .with_sandbox(&self.tools.sandbox_status());
+            source.compose(&context, self.tools.limits, project, &summary, instructions)
+        } else {
+            let mut system = project_instructions::compose(&self.base_system, project, &summary);
+            if !instructions.is_empty() {
+                system.push_str("\n\n");
+                system.push_str(instructions);
+            }
+            Ok(system)
+        }?;
+        Ok((system, skills))
     }
 
     pub(super) fn compose_prompt_snapshot(
@@ -231,37 +280,8 @@ impl Agent {
         let documents = self.tools.project_documents()?;
         let project =
             self.tools.project_scope_summary() + &project_instructions::render(&documents);
-        let skills = self
-            .tools
-            .skills
-            .lock()
-            .map_err(|_| anyhow!("skill registry unavailable"))?
-            .headers();
-        let summary = pp_config::skills::Skills::format_summary(&skills);
-        let system = if let Some(source) = &self.prompt_source {
-            let context = crate::system_prompt::RenderContext::new(
-                self.tools.cwd(),
-                model,
-                self.tools.edit_mode(),
-                mode,
-                tool_names,
-            )
-            .with_sandbox(&self.tools.sandbox_status());
-            source.compose(
-                &context,
-                self.tools.limits,
-                &project,
-                &summary,
-                instructions,
-            )
-        } else {
-            let mut system = project_instructions::compose(&self.base_system, &project, &summary);
-            if !instructions.is_empty() {
-                system.push_str("\n\n");
-                system.push_str(instructions);
-            }
-            Ok(system)
-        }?;
+        let (system, skills) =
+            self.compose_prompt_with_project(instructions, mode, model, tool_names, &project)?;
         Ok((system, skills, documents))
     }
 
@@ -500,6 +520,7 @@ impl Agent {
             system,
             self.tools.edit_mode(),
         );
+        let cache_key = source.prompt_cache_key().map(str::to_owned);
         match (&mut session, source) {
             (Session::Completion(target), Session::Completion(source)) => {
                 let skip_system = usize::from(matches!(
@@ -515,6 +536,9 @@ impl Agent {
         }
         session.set_tools(definitions);
         session.set_think_level(effort);
+        if let Some(key) = cache_key {
+            session.set_prompt_cache_key(key);
+        }
         Ok((session, checkpoint.workflow))
     }
 
@@ -566,7 +590,7 @@ impl Agent {
                 (&model.choice, model.effort)
             });
         let reported_loads = super::turn::reported_project_load(&replay);
-        let (session, workflow) = self.resumed_session_with_loads(
+        let (mut session, workflow) = self.resumed_session_with_loads(
             checkpoint,
             choice,
             effort,
@@ -574,6 +598,13 @@ impl Agent {
             &reported_loads,
             model.is_none(),
         )?;
+        let (cache_key_enabled, cache_retention) = model.as_ref().map_or(
+            (self.prompt_cache_key_enabled, self.prompt_cache_retention),
+            |m| (m.prompt_cache_key_enabled, m.prompt_cache_retention),
+        );
+        session.apply_cache_policy(cache_key_enabled, cache_retention, || {
+            super::generate_prompt_cache_key(journal.id())
+        });
         cancellation::check(cancellation)?;
         if let Some(model) = &model {
             let metadata =
@@ -598,6 +629,12 @@ impl Agent {
         }
         self.pending_project_load.clear();
         self.reported_project_load = reported_loads;
+        self.static_project_prompt = None;
+        self.delivered_project_docs = self
+            .reported_project_load
+            .iter()
+            .map(|(path, content)| (std::path::PathBuf::from(path), content.clone()))
+            .collect();
         self.tools.reset_project_instructions(
             self.reported_project_load
                 .keys()

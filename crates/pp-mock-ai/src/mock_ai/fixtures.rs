@@ -465,6 +465,7 @@ mod tests {
             output_tokens: 30,
             cached_tokens: Some(40),
             cache_write_tokens: Some(5),
+            reasoning_tokens: Some(0),
         };
         let scenario = serde_json::from_value(json!({
             "prompt":"Report the scripted usage.", "edit_mode":"replace", "files":{},

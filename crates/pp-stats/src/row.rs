@@ -23,6 +23,7 @@ pub(crate) struct RequestRow {
     pub output_tokens: Option<i64>,
     pub cached_tokens: Option<i64>,
     pub cache_write_tokens: Option<i64>,
+    pub reasoning_tokens: Option<i64>,
     pub status: String,
     pub stop_reason: Option<String>,
     pub error_message: Option<String>,
@@ -34,7 +35,8 @@ pub(crate) struct RequestRow {
     pub rates: Option<RateSnapshot>,
 }
 
-pub(super) const COLUMNS: &str = "id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,entry_id,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens,cost_json,rate_json";
+pub(super) const COLUMNS: &str = "id,request_key,timestamp,model,provider,model_reference,api,project,cwd,purpose,session_file,entry_id,duration_ms,ttft_ms,input_tokens,output_tokens,cached_tokens,status,stop_reason,error_message,cache_write_tokens,cost_json,rate_json,reasoning_tokens";
+pub(super) const COLUMN_COUNT: usize = 24;
 pub(super) fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
     Ok(RequestRow {
         id: r.get(0)?,
@@ -65,6 +67,7 @@ pub(super) fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
         rates: r
             .get::<_, Option<String>>(22)?
             .and_then(|json| serde_json::from_str(&json).ok()),
+        reasoning_tokens: r.get(23)?,
     })
 }
 

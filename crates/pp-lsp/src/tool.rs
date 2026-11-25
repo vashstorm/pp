@@ -247,20 +247,10 @@ pub fn definition(read_only: bool) -> FunctionObject {
         ]
     };
     let mut description = String::from(
-        r#"Query language servers for semantic code navigation, diagnostics and modification suggestions.
-Use symbols with file="*" and query to find a symbol when its file is unknown; use symbols with a concrete file for its outline. At a known file/line/symbol, use definition to locate the declaration, references to inspect usages before changing an API, type_definition or hover to understand types, and implementation to find implementations.
-Use diagnostics for errors in a file or bounded glob; file="*" is unsupported for diagnostics. Use bash for project checks. Use rename for symbol rename suggestions, rename_file for file/directory move suggestions, code_actions for fixes/refactorings, and format for formatting suggestions. code_actions first lists candidates; repeat with the same file/line/query and selection to resolve one.
-Examples (replace paths, lines and names with observed code):
-{"action":"symbols","file":"*","query":"ModelCatalog"}
-{"action":"references","file":"src/main.rs","line":42,"symbol":"run"}
-{"action":"code_actions","file":"src/main.rs","line":42,"query":"quickfix"}
-LSP never applies edits or executes server commands. Read target files again and use edit/write/bash to implement suggestions, then verify. Input lines are 1-based; original LSP ranges in suggestions are zero-based UTF-16. Servers are not a filesystem sandbox. Use status to investigate availability without starting servers, capabilities to inspect supported operations, and reload after fixing configuration or server failures."#,
+        "Query language servers for semantic navigation, diagnostics, and read-only modification suggestions (never applies edits or runs server commands; re-read and use edit/write/bash). Input lines are 1-based; returned suggestion ranges are 0-based UTF-16. Examples: {\"action\":\"symbols\",\"file\":\"*\",\"query\":\"Foo\"}, {\"action\":\"references\",\"file\":\"src/main.rs\",\"line\":42,\"symbol\":\"run\"}, {\"action\":\"code_actions\",\"file\":\"src/main.rs\",\"line\":42,\"query\":\"quickfix\"}.",
     );
     if read_only {
-        description.push_str(
-            " This is a read-only session: only the read-only actions are exposed and every other \
-             action is refused before any server starts.",
-        );
+        description.push_str(" Read-only session: mutating actions are refused.");
     }
     FunctionObject {
         name: "lsp".into(),
@@ -270,35 +260,35 @@ LSP never applies edits or executes server commands. Read target files again and
             "properties": {
                 "action": {
                     "type": "string", "enum": actions,
-                    "description": "Operation to perform. symbols discovers names/structure; definition, references, type_definition, implementation and hover navigate a known position; diagnostics checks files; rename, rename_file, code_actions and format return suggestions only; status, capabilities and reload inspect/manage servers."
+                    "description": "symbols (file outline or file='*' + query); definition/type_definition/implementation/references/hover (position); diagnostics (file or <=20-file glob, never '*'); rename/rename_file/code_actions/format (suggestions only); status/capabilities/reload (server lifecycle)."
                 },
                 "file": {
                     "type": "string",
-                    "description": "Path relative to startup cwd, or an absolute path. Required for navigation, symbols, diagnostics and suggestions. symbols: use a concrete file for its outline, or '*' with query for workspace symbol search. diagnostics: a concrete file or bounded glob such as 'src/**/*.rs' (at most 20 files), never '*'. rename_file: existing source file/directory. capabilities/reload: optional concrete file to select covering servers; omit or use '*' for all discovered servers. status needs no file."
+                    "description": "Relative/absolute path (or '*' for workspace symbols; bounded glob for diagnostics; optional for capabilities/reload; omitted for status)."
                 },
                 "line": {
                     "type": "integer", "minimum": 1,
-                    "description": "1-based source line for definition, type_definition, implementation, references, hover, rename or code_actions. Read the file or use returned symbol locations to obtain it. Defaults to 1; supply the actual line for position-based queries."
+                    "description": "1-based line number for position-based actions (defaults to 1)."
                 },
                 "symbol": {
                     "type": "string",
-                    "description": "Text identifying the target on the specified line; not a workspace search. Use name#N for its Nth occurrence on that line (1-based), e.g. 'run#2'. Supply with line for navigation and symbol rename; required when line is supplied for project-aware Rust definition/references/rename. If omitted, the position is the first non-whitespace character."
+                    "description": "Symbol text on `line` (use `name#N` for Nth occurrence); omit for first non-whitespace."
                 },
                 "query": {
                     "type": "string",
-                    "description": "Required non-empty symbol search text for symbols with file='*'. For code_actions, an optional action-kind filter such as 'quickfix', 'refactor' or 'source.organizeImports'; use selection for a candidate title. Does not filter a concrete file's symbol outline."
+                    "description": "Required search text for symbols with file='*'; optional kind filter for code_actions (e.g. quickfix/refactor)."
                 },
                 "new_name": {
                     "type": "string",
-                    "description": "Required for rename (new symbol identifier) and rename_file (destination file/directory path, relative to startup cwd or absolute). Returns suggestions without renaming or moving anything."
+                    "description": "Target identifier (rename) or destination path (rename_file)."
                 },
                 "timeout": {
                     "type": "number", "minimum": 5, "maximum": 300,
-                    "description": "Override the total call wait budget in seconds (5..300), including server startup/indexing. If omitted, ordinary actions use at least 20 seconds and diagnostics uses the configured requestTimeout."
+                    "description": "Wait budget in seconds (5..300)."
                 },
                 "selection": {
                     "type": "string",
-                    "description": "code_actions only: select from a previous candidate list by 0-based index encoded as a string (e.g. '0') or a title substring. Repeat the original file/line/symbol/query so the candidate list is comparable. Omit to list candidates; selecting returns a resolved suggestion without applying it."
+                    "description": "code_actions: 0-based string index (e.g. '0') or title substring from prior candidate list."
                 }
             },
             "required": ["action"],

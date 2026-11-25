@@ -303,8 +303,8 @@ fn context_tui_assert_summary_body(
     assert!(text.contains(old_marker), "旧前缀必须参与摘要");
     assert!(!text.contains(recent_marker), "近期后缀不得发给摘要模型");
     assert!(
-        body["tools"].as_array().is_none(),
-        "摘要请求必须取消工具配置"
+        body["tools"].as_array().is_none() || body["tool_choice"] == "none",
+        "摘要请求必须禁止工具调用（无 tools 或 tool_choice=none）"
     );
     if protocol == "completion" {
         assert_eq!(body["max_completion_tokens"], json!(4096));

@@ -55,19 +55,6 @@ pub fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) 
     if !errors.is_empty() {
         lines.push(format!("Errors: {}", errors.join("; ")));
     }
-    if remaining.is_empty() {
-        lines.push("Remaining items: none.".into());
-    } else {
-        lines.push(format!("Remaining items ({}):", remaining.len()));
-        for (task, phase) in &remaining {
-            lines.push(format!(
-                "  - {} [{}] ({})",
-                task.content,
-                task.status.as_str(),
-                phase
-            ));
-        }
-    }
     let blocked_suffix = if blocked_all > 0 {
         format!(", {blocked_all} blocked")
     } else {

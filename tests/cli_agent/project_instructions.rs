@@ -15,12 +15,40 @@ pub(super) fn receive_for(server: &TestServer, protocol: &str) -> (CapturedReque
     )
 }
 
-pub(super) fn system<'a>(body: &'a Value, protocol: &str) -> &'a str {
+pub(super) fn system_prefix<'a>(body: &'a Value, protocol: &str) -> &'a str {
     if protocol == "completion" {
         body["messages"][0]["content"].as_str().unwrap()
     } else {
         body["instructions"].as_str().unwrap()
     }
+}
+
+/// 返回最新送达模型的项目规则块（有动态 `[pp-project-instructions]` developer 增量时取最新一条，否则取静态 system）。
+pub(super) fn latest_instructions<'a>(body: &'a Value, protocol: &str) -> &'a str {
+    history(body, protocol)
+        .iter()
+        .rev()
+        .find_map(|item| {
+            (item["role"].as_str() == Some("developer"))
+                .then(|| item["content"].as_str())
+                .flatten()
+                .filter(|text| text.starts_with("[pp-project-instructions]\n"))
+        })
+        .unwrap_or_else(|| system_prefix(body, protocol))
+}
+
+pub(super) fn system(body: &Value, protocol: &str) -> String {
+    let mut combined = system_prefix(body, protocol).to_owned();
+    for item in history(body, protocol) {
+        if item["role"].as_str() == Some("developer")
+            && let Some(text) = item["content"].as_str()
+            && text.starts_with("[pp-project-instructions]\n")
+        {
+            combined.push('\n');
+            combined.push_str(text);
+        }
+    }
+    combined
 }
 
 fn history<'a>(body: &'a Value, protocol: &str) -> &'a [Value] {
@@ -230,8 +258,8 @@ fn agents_layered_resume_refreshes_previously_loaded_child_rules_both_protocols(
             &[("HOME", cwd.path().to_str().unwrap())],
         );
         let (request, body) = receive_for(&server, protocol);
-        assert!(system(&body, protocol).contains("child-rule-after-resume"));
-        assert!(!system(&body, protocol).contains("child-rule-before-resume"));
+        assert!(system_prefix(&body, protocol).contains("child-rule-after-resume"));
+        assert!(!system_prefix(&body, protocol).contains("child-rule-before-resume"));
         tool_call(
             request,
             protocol,
@@ -286,8 +314,8 @@ fn agents_layered_compaction_retains_rules_and_new_resets_scope_both_protocols()
         .unwrap();
         cli.input("/compact\n");
         let (request, body) = receive_for(&server, protocol);
-        assert!(system(&body, protocol).contains("child-rule-after-compact"));
-        assert!(body.get("tools").is_none_or(Value::is_null));
+        assert!(body.to_string().contains("child-rule-after-compact"));
+        assert_eq!(body["tool_choice"], "none");
         finish_request(request, protocol, "compact-summary");
         cli.wait_for(Pipe::Stderr, "Context compacted:");
         cli.input("after-compact\n");
@@ -502,8 +530,8 @@ fn agents_layered_rule_update_stops_batch_suffix_both_protocols() {
         assert_tool_ok(&body, protocol, "rules-update");
         assert_rules_blocked(&body, protocol, "stale-edit");
         assert_rules_blocked(&body, protocol, "suffix");
-        assert!(system(&body, protocol).contains("rule-version-two"));
-        assert!(!system(&body, protocol).contains("rule-version-one"));
+        assert!(latest_instructions(&body, protocol).contains("rule-version-two"));
+        assert!(!latest_instructions(&body, protocol).contains("rule-version-one"));
         assert_eq!(
             fs::read_to_string(cwd.path().join("code.txt")).unwrap(),
             "before"
@@ -680,13 +708,9 @@ fn agents_refreshes_after_tool_create_edit_and_delete_both_protocols() {
         );
         let (request, body) = receive_for(&server, protocol);
         assert_tool_ok(&body, protocol, "update");
-        assert!(!system(&body, protocol).contains("agents-created-marker"));
-        assert_eq!(
-            system(&body, protocol)
-                .matches("agents-updated-marker")
-                .count(),
-            1
-        );
+        let latest = latest_instructions(&body, protocol);
+        assert!(!latest.contains("agents-created-marker"));
+        assert_eq!(latest.matches("agents-updated-marker").count(), 1);
         tool_call(
             request,
             protocol,
@@ -696,8 +720,8 @@ fn agents_refreshes_after_tool_create_edit_and_delete_both_protocols() {
         );
         let (request, body) = receive_for(&server, protocol);
         assert_tool_ok(&body, protocol, "delete");
-        assert!(!system(&body, protocol).contains("[Project instructions:"));
-        let final_system = system(&body, protocol).to_owned();
+        assert!(latest_instructions(&body, protocol).contains("[Project instructions removed:"));
+        let final_system = latest_instructions(&body, protocol).to_owned();
         finish_request(request, protocol, "rules maintained");
         cli.input("/quit\n");
         assert!(cli.finish().status.success());
@@ -706,8 +730,27 @@ fn agents_refreshes_after_tool_create_edit_and_delete_both_protocols() {
             .iter()
             .filter(|record| record["customType"] == "pp.instructions")
             .collect();
-        assert_eq!(changes.len(), 3);
-        assert_eq!(changes.last().unwrap()["data"]["system"], final_system);
+        // 已有历史后的创建/更新/删除均走尾部 developer 消息增量送达，不改写首条 system 前缀。
+        assert!(changes.is_empty(), "{changes:?}");
+        let append_key = if protocol == "completion" {
+            "messages"
+        } else {
+            "items"
+        };
+        let dynamic_updates: Vec<_> = records
+            .iter()
+            .filter(|record| record["customType"] == "pp.native_append")
+            .filter_map(|record| record["data"][append_key].as_array())
+            .flatten()
+            .filter_map(|item| {
+                (item["role"].as_str() == Some("developer"))
+                    .then(|| item["content"].as_str())
+                    .flatten()
+                    .filter(|text| text.starts_with("[pp-project-instructions]\n"))
+            })
+            .collect();
+        assert_eq!(dynamic_updates.len(), 3, "{dynamic_updates:?}");
+        assert_eq!(*dynamic_updates.last().unwrap(), final_system);
         let state = records
             .iter()
             .find(|record| record["customType"] == "pp.session_state")
@@ -781,9 +824,10 @@ fn agents_init_creates_then_updates_using_real_tools_both_protocols() {
         );
         let (request, body) = receive_for(&server, protocol);
         assert_tool_ok(&body, protocol, "init-update");
-        assert!(system(&body, protocol).contains("Keep valid constraint."));
-        assert!(system(&body, protocol).contains("Test command: cargo test"));
-        assert!(!system(&body, protocol).contains("Old command:"));
+        let latest = latest_instructions(&body, protocol);
+        assert!(latest.contains("Keep valid constraint."));
+        assert!(latest.contains("Test command: cargo test"));
+        assert!(!latest.contains("Old command:"));
         finish_request(request, protocol, "agents-updated");
         cli.input("/quit\n");
         let output = cli.finish();
@@ -895,8 +939,9 @@ fn agents_load_errors_recover_in_same_process_and_block_after_tools_both_protoco
         fs::write(&path, "latest-rule-after-second-repair").unwrap();
         cli.input("retry-with-completed-tools\n");
         let (request, body) = receive_for(&server, protocol);
-        assert!(system(&body, protocol).contains("latest-rule-after-second-repair"));
-        assert!(!system(&body, protocol).contains("recovered-rule"));
+        let latest = latest_instructions(&body, protocol);
+        assert!(latest.contains("latest-rule-after-second-repair"));
+        assert!(!latest.contains("recovered-rule"));
         assert_tool_ok(&body, protocol, "invalidate");
         finish_request(request, protocol, "recovered");
         cli.input("/quit\n");
@@ -1057,8 +1102,8 @@ fn agents_manual_and_auto_compaction_refresh_before_summary_and_followup_both_pr
                 "/compact\n"
             });
             let (request, body) = receive_for(&server, protocol);
-            assert!(system(&body, protocol).contains("summary-project-rule"));
-            assert!(body.get("tools").is_none_or(Value::is_null));
+            assert!(body.to_string().contains("summary-project-rule"));
+            assert_eq!(body["tool_choice"], "none");
             fs::write(cwd.path().join("AGENTS.md"), "followup-project-rule").unwrap();
             finish_request(request, protocol, "compact-summary");
             if !automatic {
@@ -1123,7 +1168,7 @@ fn agents_growing_during_auto_summary_rechecks_capacity_before_followup_both_pro
         fs::write(cwd.path().join("AGENTS.md"), "project-fact ".repeat(5000)).unwrap();
         cli.input("must-recheck-after-summary\n");
         let (request, body) = receive_for(&server, protocol);
-        assert!(body.get("tools").is_none_or(Value::is_null));
+        assert_eq!(body["tool_choice"], "none");
         fs::write(
             cwd.path().join("AGENTS.md"),
             "oversized-project-rule ".repeat(20000),

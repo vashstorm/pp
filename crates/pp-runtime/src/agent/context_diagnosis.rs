@@ -307,6 +307,20 @@ impl Agent {
         let sections = &classified.sections;
         let history = &classified.history;
         let thinking = &classified.thinking;
+        let mut instruction_tokens = sections.instructions.tokens;
+        let mut instruction_bytes = sections.instructions.bytes;
+        let mut instruction_items = sections.instructions.items.clone();
+        for (path, item) in &sections.instructions.fallback_items {
+            if !history.instruction_paths.contains(path) {
+                instruction_tokens = instruction_tokens.saturating_add(item.tokens);
+                instruction_bytes = instruction_bytes.saturating_add(item.bytes);
+                instruction_items.push(item.clone());
+            }
+        }
+        instruction_tokens = instruction_tokens.saturating_add(history.instruction_messages.tokens);
+        instruction_bytes = instruction_bytes.saturating_add(history.instruction_messages.bytes);
+        instruction_items.extend(history.instruction_messages.items.iter().cloned());
+
         let mut categories = vec![
             category(
                 CategoryKey::System,
@@ -317,9 +331,9 @@ impl Agent {
             ),
             category(
                 CategoryKey::InstructionFiles,
-                sections.instructions.tokens,
-                sections.instructions.bytes,
-                sections.instructions.items.clone(),
+                instruction_tokens,
+                instruction_bytes,
+                instruction_items,
                 true,
             ),
             category(
@@ -538,6 +552,7 @@ impl Agent {
                 tokens: system_tokens,
                 bytes: system_bytes,
                 ranges: Vec::new(),
+                fallback_items: Vec::new(),
             },
             instructions: agent_md,
             skills: skill_section,

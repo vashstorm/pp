@@ -174,7 +174,8 @@ fn system_prompt_sources_stay_fixed_across_tools_new_and_model_switch_both_proto
         let (request, body) = receive_for(&server, protocol);
         assert_live(&body, protocol, "execute");
         let text = system(&body, protocol);
-        assert!(text.contains("fresh project rule"));
+        // 已有历史后新写入的 AGENTS.md 以尾部 developer 消息增量送达，保持 system 前缀不变。
+        assert!(body.to_string().contains("fresh project rule"));
         assert_eq!(text.matches("fixed append {{model}}").count(), 1);
         assert!(!text.contains("changed append"));
         finish_request(request, protocol, "first done");

@@ -614,13 +614,18 @@ fn build_client(
                     body_complete = complete,
                     body_read_failed = !matches!(read, Ok(Ok(()))),
                 );
+                let code = if retry::body_indicates_context_overflow(status_code, &body) {
+                    Some(retry::CONTEXT_OVERFLOW_CODE.to_owned())
+                } else {
+                    retry_after
+                };
                 Err(OpenAIError::ApiError(ApiErrorResponse {
                     status_code,
                     api_error: ApiError {
                         message: String::new(),
                         r#type: None,
                         param: None,
-                        code: retry_after,
+                        code,
                         misalignment: None,
                     },
                 }))

@@ -72,6 +72,11 @@ pub fn save(
                 .and_then(|u| u.cache_write_tokens)
                 .map(i64::try_from)
                 .transpose()?,
+            reasoning_tokens: observation
+                .usage
+                .and_then(|u| u.reasoning_tokens)
+                .map(i64::try_from)
+                .transpose()?,
             status: status.into(),
             stop_reason: observation.stop_reason,
             error_message: outcome.as_ref().err().map(|e| format!("{e:#}")),

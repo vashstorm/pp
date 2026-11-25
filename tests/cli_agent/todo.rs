@@ -80,15 +80,17 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
         );
         let (request, body) = todo_receive(&fixture, protocol);
         let started = todo_result(&body, protocol, "start-c");
-        for phase in started["phases"].as_array().unwrap() {
-            for task in phase["tasks"].as_array().unwrap() {
-                assert_eq!(task["status"], "in_progress");
-            }
-        }
+        assert!(started.get("phases").is_none());
+        let started_content = started["content"].as_str().unwrap();
+        assert!(started_content.contains("- [ ] A (in progress)"));
+        assert!(started_content.contains("- [ ] B (in progress)"));
+        assert!(started_content.contains("- [ ] C (in progress)"));
         let viewed = todo_result(&body, protocol, "view");
-        assert_eq!(viewed["phases"][0]["tasks"][0]["status"], "in_progress");
-        assert_eq!(viewed["phases"][0]["tasks"][1]["status"], "completed");
-        assert_eq!(viewed["phases"][1]["tasks"][0]["status"], "in_progress");
+        assert!(viewed.get("phases").is_none());
+        let viewed_content = viewed["content"].as_str().unwrap();
+        assert!(viewed_content.contains("- [ ] A (in progress)"));
+        assert!(viewed_content.contains("- [X] B"));
+        assert!(viewed_content.contains("- [ ] C (in progress)"));
         todo_calls(
             request,
             protocol,
@@ -109,12 +111,12 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
         );
         let (request, body) = todo_receive(&fixture, protocol);
         let viewed = todo_result(&body, protocol, "view-again");
-        assert_eq!(viewed["phases"][0]["tasks"][0]["status"], "completed");
-        assert_eq!(viewed["phases"][0]["tasks"][1]["status"], "completed");
-        assert_eq!(
-            viewed["phases"][1]["tasks"],
-            json!([{"content":"C","status":"completed"}])
-        );
+        assert!(viewed.get("phases").is_none());
+        let viewed_content = viewed["content"].as_str().unwrap();
+        assert!(viewed_content.contains("- [X] A"));
+        assert!(viewed_content.contains("- [X] B"));
+        assert!(viewed_content.contains("- [X] C"));
+        assert!(!viewed_content.contains("- [ ] D"));
         assert_eq!(todo_result(&body, protocol, "reject")["ok"], false);
         assert_eq!(todo_result(&body, protocol, "occurrence")["ok"], true);
         todo_calls(
@@ -127,9 +129,11 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
             )]),
         );
         let (request, body) = todo_receive(&fixture, protocol);
-        assert_eq!(
-            todo_result(&body, protocol, "done-c")["phases"][1]["tasks"][0]["status"],
-            "completed"
+        assert!(
+            todo_result(&body, protocol, "done-c")["content"]
+                .as_str()
+                .unwrap()
+                .contains("- [X] C")
         );
         if protocol == "completion" {
             final_reply(request, "Standalone tasks finished.");
@@ -185,7 +189,10 @@ fn todo_native_batches_commit_each_transition_and_resume_standalone_state() {
         );
         let (request, body) = todo_receive(&fixture, protocol);
         let restored = todo_result(&body, protocol, "restored-view");
-        assert_eq!(restored["phases"], workflow["data"]["workflow"]["todos"]);
+        assert!(restored.get("phases").is_none());
+        let restored_content = restored["content"].as_str().unwrap();
+        assert!(restored_content.contains("Overall: 3/3 done, 0 open."));
+        assert!(restored_content.contains("- [X] C"));
         if protocol == "completion" {
             final_reply(request, "Saved standalone todos restored.");
         } else {
@@ -265,10 +272,9 @@ fn todo_completion_reminder_is_developer_and_only_lists_open_work() {
             )]),
         );
         let (request, body) = todo_receive(&fixture, protocol);
-        assert_eq!(
-            todo_result(&body, protocol, "done-b")["phases"][0]["tasks"][1]["status"],
-            "completed"
-        );
+        let done_b = todo_result(&body, protocol, "done-b");
+        assert!(done_b.get("phases").is_none());
+        assert!(done_b["content"].as_str().unwrap().contains("- [X] Open B"));
         todo_final(request, protocol, "All tasks complete.");
         let output = cli.finish();
         assert!(

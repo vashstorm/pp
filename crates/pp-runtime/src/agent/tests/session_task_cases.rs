@@ -16,7 +16,8 @@ fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
             .canonicalize()
             .unwrap()
             .join("AGENTS.md")]);
-        for (expected, next, expected_loads) in [
+        let mut initial_system: Option<String> = None;
+        for (round, (expected, next, expected_loads)) in [
             (
                 "loaded-before-network-result",
                 "changed-after-request-open",
@@ -32,11 +33,19 @@ fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
                 "changed-after-request-open",
                 0,
             ),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let mut events = Vec::new();
+            let mut captured_system = None;
+            let server_ref = &server;
+            let path_ref = &path;
             std::thread::scope(|scope| {
-                scope.spawn(|| {
-                    let request = server
+                let captured = &mut captured_system;
+                let prev_system = initial_system.as_deref();
+                scope.spawn(move || {
+                    let request = server_ref
                         .recv_timeout(std::time::Duration::from_secs(5))
                         .unwrap()
                         .expect("actual provider request");
@@ -46,9 +55,16 @@ fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
                     } else {
                         body["messages"][0]["content"].as_str().unwrap()
                     };
-                    assert!(system.contains(expected));
+                    if round == 0 {
+                        assert!(system.contains(expected));
+                        *captured = Some(system.to_owned());
+                    } else {
+                        // 已有对话历史后改写 AGENTS.md 不破坏 system 前缀缓存，改为尾部 developer 追加。
+                        assert_eq!(Some(system), prev_system);
+                        assert!(body.to_string().contains(expected));
+                    }
                     // 首次建连结果返回前改写磁盘；卡片必须仍使用已发送的快照。
-                    std::fs::write(&path, next).unwrap();
+                    std::fs::write(path_ref, next).unwrap();
                     request
                         .respond(Response::builder().status(500).body(Body::empty()).unwrap())
                         .unwrap();
@@ -64,6 +80,9 @@ fn instruction_loading_cards_failed_requests_record_frozen_body_once() {
                         .is_err()
                 );
             });
+            if initial_system.is_none() {
+                initial_system = captured_system;
+            }
             let loads: Vec<_> = events
                 .iter()
                 .filter_map(|event| match event {
@@ -678,6 +697,185 @@ fn compact_after_cancelled_todo_reminder_succeeds_both_protocols() {
             compact_outcome,
             super::context::CompactionOutcome::Compacted { .. }
         ));
+        handle.join().unwrap();
+    }
+}
+
+#[test]
+fn prompt_cache_policy_applies_retention_disables_key_and_shares_subagent_batch_key() {
+    let mut session = Session::new(
+        "gpt-5.4".into(),
+        Protocol::Response,
+        "system".into(),
+        EditMode::Replace,
+    );
+    session.apply_cache_policy(
+        true,
+        Some(pp_config::models::PromptCacheRetention::Hours24),
+        || "pp-session-1".into(),
+    );
+    assert_eq!(session.prompt_cache_key(), Some("pp-session-1"));
+    assert_eq!(
+        session.prompt_cache_retention(),
+        Some(async_openai::types::responses::PromptCacheRetention::Hours24)
+    );
+
+    // 禁用 prompt_cache_key 时清除 key；retention 仍按策略更新。
+    session.apply_cache_policy(
+        false,
+        Some(pp_config::models::PromptCacheRetention::InMemory),
+        || "pp-ignored".into(),
+    );
+    assert_eq!(session.prompt_cache_key(), None);
+    assert_eq!(
+        session.prompt_cache_retention(),
+        Some(async_openai::types::responses::PromptCacheRetention::InMemory)
+    );
+
+    // 同一角色、共享上下文、计划与模型派生相同的子 Agent 批次缓存键；任一维度变化即分离。
+    let k1 = super::generate_subagent_prompt_cache_key("explorer", "ctx-a", "plan-1", "gpt-5.4");
+    let k2 = super::generate_subagent_prompt_cache_key("explorer", "ctx-a", "plan-1", "gpt-5.4");
+    let k_other_role =
+        super::generate_subagent_prompt_cache_key("review", "ctx-a", "plan-1", "gpt-5.4");
+    let k_other_ctx =
+        super::generate_subagent_prompt_cache_key("explorer", "ctx-b", "plan-1", "gpt-5.4");
+    assert_eq!(k1, k2);
+    assert!(k1.starts_with("pp-sub-"));
+    assert_ne!(k1, k_other_role);
+    assert_ne!(k1, k_other_ctx);
+}
+
+#[test]
+fn subagent_token_and_cost_budgets_warn_at_limit_and_halt_at_150_percent() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    let sessions = dir.path().join("sessions");
+    let config_dir = dir.path().join("config");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(work.join("note.txt"), "hello").unwrap();
+
+    for (case, token_budget, cost_budget_usd, expected_err) in [
+        ("token", Some(1000), None, "subagent token budget exhausted"),
+        ("cost", None, Some(0.015), "subagent cost budget exhausted"),
+    ] {
+        let server = Arc::new(TestServer::start().unwrap());
+        let models_path = config_dir.join(format!("models-{case}.yml"));
+        let settings_path = config_dir.join(format!("settings-{case}.yml"));
+        std::fs::write(
+            &models_path,
+            format!(
+                "providers:\n  fixture:\n    protocol: response\n    api_key: secret\n    base_url: http://{}\n    models:\n      primary:\n        model: fixture-model\n        cost: {{ input: 10.0, cacheRead: 1.0, output: 20.0 }}\n",
+                server.addr()
+            ),
+        )
+        .unwrap();
+        std::fs::write(&settings_path, "rate_limit_retry_budget_seconds: 0\n").unwrap();
+        let catalog = ModelCatalog::from_files(&settings_path, &models_path).unwrap();
+        let mut agent = Agent::new(
+            catalog,
+            Tools::new(work.clone(), EditMode::Replace).unwrap(),
+            sessions.join(case),
+        )
+        .unwrap();
+        let mut binding = crate::subagent::Binding::root(
+            crate::subagent::RootOptions {
+                dir: dir.path().join(format!("sub-{case}")),
+                user: dir.path().to_path_buf(),
+                cwd: work.clone(),
+                model: "fixture/primary".into(),
+                thinking: ThinkLevel::None,
+                settings: pp_config::config::TaskSettings {
+                    token_budget,
+                    cost_budget_usd,
+                    ..Default::default()
+                },
+                plan_mode: false,
+            },
+            std::sync::Arc::new(|_, _| anyhow::bail!("unused")),
+            std::sync::Arc::new(|_| Ok(())),
+        )
+        .unwrap();
+        binding.depth = 1;
+        agent.subagent = Some(binding);
+
+        let worker = Arc::clone(&server);
+        let handle = std::thread::spawn(move || {
+            // 两次工具调用：每次 600 input (0 cached) + 500 output = 1100 tokens，
+            // 费用 = 600*10/1e6 + 500*20/1e6 = $0.016/轮：
+            // - 第 1 轮后累计 1100 tokens ($0.016) >= 1.0x 但 < 1.5x -> 第 2 轮注入收尾提示；
+            // - 第 2 轮后累计 2200 tokens ($0.032) >= 1.5x -> 第 3 轮前硬熔断。
+            let sse_call = |call_id: &str| {
+                let response = json!({
+                    "id": format!("resp_{call_id}"),
+                    "object": "response",
+                    "created_at": 0,
+                    "model": "fixture-model",
+                    "status": "completed",
+                    "output": [{
+                        "type": "function_call",
+                        "id": format!("fc_{call_id}"),
+                        "call_id": call_id,
+                        "name": "read",
+                        "arguments": "{\"path\":\"note.txt\"}",
+                        "status": "completed"
+                    }],
+                    "usage": {
+                        "input_tokens": 600,
+                        "output_tokens": 500,
+                        "total_tokens": 1100,
+                        "input_tokens_details": {"cached_tokens": 0},
+                        "output_tokens_details": {"reasoning_tokens": 0}
+                    }
+                });
+                format!(
+                    "data: {}\n\n",
+                    json!({"type": "response.completed", "sequence_number": 1, "response": response})
+                )
+            };
+
+            let req1 = worker
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let body1: Value = req1.json().unwrap();
+            assert!(!body1.to_string().contains("Token or cost budget reached."));
+            req1.respond(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse_call("call_1")))
+                    .unwrap(),
+            )
+            .unwrap();
+
+            let req2 = worker
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let body2: Value = req2.json().unwrap();
+            assert!(
+                body2.to_string().contains("Token or cost budget reached."),
+                "case={case} expected soft wrap-up developer notice: {body2}"
+            );
+            req2.respond(
+                Response::builder()
+                    .status(200)
+                    .header("content-type", "text/event-stream")
+                    .body(Body::from(sse_call("call_2")))
+                    .unwrap(),
+            )
+            .unwrap();
+        });
+
+        let err = agent
+            .run("inspect", &CancellationToken::new(), None, &mut |_| {})
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains(expected_err),
+            "case={case} unexpected error: {err:#}"
+        );
         handle.join().unwrap();
     }
 }

@@ -138,15 +138,18 @@ fn convert_web(response: HttpResponse, raw: bool) -> Result<WebText> {
                 .ok()
                 .and_then(|mut reader| reader.parse().ok())
                 .map(|article| article.content.to_string());
+        let stripped_fallback;
         let content = match extracted {
             Some(ref text) => text.as_str(),
             None => {
                 note = Some("content extraction failed; fell back to full-page HTML as text");
-                body.as_ref()
+                stripped_fallback = strip_html_noise(body.as_ref());
+                stripped_fallback.as_str()
             }
         };
-        html2text::from_read(content.as_bytes(), 120)
-            .map_err(|_| anyhow::anyhow!("HTML conversion failed"))?
+        let rendered = html2text::from_read(content.as_bytes(), 120)
+            .map_err(|_| anyhow::anyhow!("HTML conversion failed"))?;
+        compact_web_text(&rendered)
     } else {
         body.into_owned()
     };
@@ -156,6 +159,71 @@ fn convert_web(response: HttpResponse, raw: bool) -> Result<WebText> {
         content_type: response.content_type,
         note,
     })
+}
+
+/// Readability 失败回退整页 HTML 时，先剥离常见非正文噪声标签块，降低无效 token。
+fn strip_html_noise(html: &str) -> String {
+    const NOISE_TAGS: &[&str] = &[
+        "script", "style", "noscript", "svg", "nav", "footer", "aside", "header",
+    ];
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0usize;
+    let bytes = lower.as_bytes();
+    while cursor < html.len() {
+        let Some(rel_lt) = lower[cursor..].find('<') else {
+            out.push_str(&html[cursor..]);
+            break;
+        };
+        let tag_start = cursor + rel_lt;
+        out.push_str(&html[cursor..tag_start]);
+        let rest = &lower[tag_start + 1..];
+        let matched = NOISE_TAGS.iter().copied().find(|tag| {
+            rest.starts_with(tag)
+                && rest
+                    .as_bytes()
+                    .get(tag.len())
+                    .is_some_and(|b| b.is_ascii_whitespace() || matches!(b, b'>' | b'/'))
+        });
+        if let Some(tag) = matched {
+            let close_needle = format!("</{tag}");
+            if let Some(rel_close) = lower[tag_start + 1..].find(&close_needle) {
+                let close_pos = tag_start + 1 + rel_close + close_needle.len();
+                if let Some(rel_gt) = lower[close_pos..].find('>') {
+                    cursor = close_pos + rel_gt + 1;
+                    continue;
+                }
+            }
+        }
+        // 非噪声标签：仅推进 `<`，保留原字符（保证 UTF-8 字符边界）。
+        let next = tag_start + 1;
+        out.push('<');
+        cursor = if next < bytes.len() { next } else { html.len() };
+    }
+    out
+}
+
+/// 折叠行尾空白与连续 3 个以上空行，保留正文段落与代码块结构。
+fn compact_web_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut blank_run = 0usize;
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            blank_run += 1;
+            if blank_run <= 1 && !out.is_empty() {
+                out.push('\n');
+            }
+        } else {
+            blank_run = 0;
+            out.push_str(trimmed);
+            out.push('\n');
+        }
+    }
+    while out.ends_with("\n\n") {
+        out.pop();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -252,5 +320,31 @@ mod tests {
         assert!(cache.0.iter().map(|(_, v)| v.text.len()).sum::<usize>() <= MAX_CACHE_BYTES);
         cache.clear();
         assert!(cache.0.is_empty());
+    }
+
+    #[test]
+    fn strip_html_noise_and_compact_web_text_remove_boilerplate_and_extra_blank_lines() {
+        let html = "<html><head><style>.a{color:red}</style></head><body>\
+            <header>Top Banner</header><nav>Menu Item</nav>\
+            <div class='main'>Keep Chinese 正文 &amp; code</div>\
+            <aside>Sidebar Ad</aside><svg><path d='M0 0'/></svg>\
+            <script>alert(1)</script><footer>Copyright 2099</footer></body></html>";
+        let stripped = strip_html_noise(html);
+        assert!(stripped.contains("Keep Chinese 正文"), "{stripped}");
+        for noise in [
+            "Top Banner",
+            "Menu Item",
+            "Sidebar Ad",
+            "alert(1)",
+            "Copyright 2099",
+            "color:red",
+        ] {
+            assert!(
+                !stripped.contains(noise),
+                "noise `{noise}` leaked: {stripped}"
+            );
+        }
+        let compacted = compact_web_text("\n\nLine 1   \n\n\n\nLine 2\t \n\n\n");
+        assert_eq!(compacted, "Line 1\n\nLine 2\n");
     }
 }

@@ -38,6 +38,15 @@ impl Binding {
             settings.max_recursion_depth <= 8,
             "task.max_recursion_depth must not exceed 8"
         );
+        if let Some(tokens) = settings.token_budget {
+            ensure!(tokens > 0, "task.token_budget must be greater than zero");
+        }
+        if let Some(usd) = settings.cost_budget_usd {
+            ensure!(
+                usd.is_finite() && usd > 0.0,
+                "task.cost_budget_usd must be positive and finite"
+            );
+        }
         let mut disk: Disk = if dir
             .file_name()
             .is_some_and(|name| name.to_string_lossy().starts_with("pending-"))

@@ -405,9 +405,11 @@ fn rg_hashline_edit_and_pagination_roundtrip_both_protocols() {
         let page = protocol.tool_result(&body, "page");
         assert_eq!(page["details"]["fileCount"], 1, "{page}");
         assert!(page["content"].as_str().unwrap().contains("*2:needle"));
-        assert_eq!(
-            protocol.tool_result(&body, "paths")["details"]["fileMatches"][0]["path"],
-            "20.txt"
+        assert_eq!(protocol.tool_result(&body, "paths")["content"], "20.txt\n");
+        assert!(
+            protocol.tool_result(&body, "paths")["details"]
+                .get("fileMatches")
+                .is_none()
         );
         let counts = protocol.tool_result(&body, "counts");
         assert_eq!(counts["details"]["matchCount"], 1, "{counts}");

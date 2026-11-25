@@ -9,7 +9,7 @@ pub use pp_permission::{
 /// 未知名按 exec 处理（安全默认）。
 pub fn tier_of(name: &str) -> Tier {
     match name {
-        "read" | "rg" | "glob" | "web_search" | "todo" | "ask" => Tier::Read,
+        "read" | "rg" | "glob" | "web_search" | "todo" | "ask" | "mcp_search" => Tier::Read,
         "edit" | "write" => Tier::Write,
         "bash" | "bash_task" | "eval" | "task" => Tier::Exec,
         "wait" => Tier::Read,

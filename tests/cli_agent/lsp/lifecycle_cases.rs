@@ -103,7 +103,13 @@ fn lsp_roundtrip_readonly_subagents_share_server_and_deny_mutations() {
                 assert_eq!(definition["ok"], true, "{definition}");
                 let advice = lsp_tool_result("completion", &body, "child-advice");
                 assert_eq!(advice["ok"], true, "{advice}");
-                assert_eq!(advice["details"]["applied"], false);
+                assert!(advice.get("details").is_none(), "{advice}");
+                assert!(
+                    advice["content"]
+                        .as_str()
+                        .unwrap()
+                        .contains("no files were changed")
+                );
                 assert_eq!(
                     fs::read_to_string(dir.path().join("src/helper.lspfixture")).unwrap(),
                     LSP_HELPER
@@ -259,7 +265,9 @@ fn lsp_roundtrip_parent_child_owner_reports_share_fixture() {
     );
     let (request, body) = lsp_receive(&provider, "completion");
     let first = lsp_tool_result("completion", &body, "parent-diag-1");
-    let parent_owner = first["diagnostics"]["owner"].as_str().unwrap().to_owned();
+    assert_eq!(first["ok"], true, "{first}");
+    assert!(first.get("diagnostics").is_none(), "{first}");
+    assert!(first["content"].as_str().unwrap().contains("wrong value"));
     lsp_calls_reply(
         request,
         "completion",
@@ -269,7 +277,7 @@ fn lsp_roundtrip_parent_child_owner_reports_share_fixture() {
             json!({"context":"owner check","tasks":[{"role":"fast","readonly":true,"task":"diagnostics only"}]})
         )]),
     );
-    let mut child_owner = None;
+    let mut child_done = false;
     for _ in 0..20 {
         let (request, body) = lsp_receive(&provider, "completion");
         if lsp_is_child(&body) {
@@ -286,22 +294,21 @@ fn lsp_roundtrip_parent_child_owner_reports_share_fixture() {
                 );
             } else {
                 let result = lsp_tool_result("completion", &body, "child-diag");
-                let owner = result["diagnostics"]["owner"].as_str().unwrap().to_owned();
-                assert_ne!(owner, parent_owner, "child reused the parent owner");
-                child_owner = Some(owner.clone());
-                lsp_final(request, "completion", &format!("child owner {owner}"));
+                assert_eq!(result["ok"], true, "{result}");
+                assert!(result["content"].as_str().unwrap().contains("wrong value"));
+                child_done = true;
+                lsp_final(request, "completion", "child diag done");
             }
         } else {
             let outputs = lsp_output_ids("completion", &body);
             if outputs.contains("parent-diag-2") {
                 let result = lsp_tool_result("completion", &body, "parent-diag-2");
-                let owner = result["diagnostics"]["owner"].as_str().unwrap();
-                assert_eq!(owner, parent_owner);
-                assert_ne!(owner, child_owner.as_deref().unwrap());
+                assert_eq!(result["ok"], true, "{result}");
+                assert!(result["content"].as_str().unwrap().contains("wrong value"));
                 lsp_final(request, "completion", "owner reports done");
                 break;
             }
-            if child_owner.is_some() {
+            if child_done {
                 lsp_calls_reply(
                     request,
                     "completion",

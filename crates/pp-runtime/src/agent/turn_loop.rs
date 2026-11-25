@@ -29,6 +29,9 @@ impl Agent {
         self.tools.yielded.borrow_mut().take();
         self.tools.start_wait_batch();
         let mut request_count = 0usize;
+        let mut subagent_tokens = 0u64;
+        let mut subagent_cost_usd = 0.0f64;
+        let mut resource_budget_warned = false;
         let mut claim_boundary = true;
         let mut reminder = todo::TodoReminderState::default();
         // 只借用 `hooks` 字段；identity 与资格在进入循环时固定。
@@ -41,6 +44,8 @@ impl Agent {
         );
         let mut stop_hook_active = false;
         let mut stop_continues = 0u8;
+        let mut pruned_since_progress = false;
+        let mut overflow_stage = 0u8;
         let mut cached_usage: Option<pp_core::context::ContextUsage> = None;
         // 本次任务运行的增量用量记账：只有新增消息会被序列化，整段替换历史时显式失效。
         let mut estimate = SessionEstimate::default();
@@ -96,11 +101,28 @@ impl Agent {
                 None => self.context_usage_cached(&mut estimate)?,
             };
             emit(AgentEvent::ContextUpdated { usage });
+            let effective_tokens = self.calibrated_context_tokens(usage.estimated_tokens);
             let should_compact = usage.auto_compact
                 && usage.context_window.is_some_and(|window| {
-                    u128::from(usage.estimated_tokens) * 100
+                    u128::from(effective_tokens) * 100
                         >= u128::from(window) * u128::from(usage.threshold_percent)
                 });
+            let should_prune = !should_compact
+                && !pruned_since_progress
+                && self.auto_prune
+                && usage.context_window.is_some_and(|window| {
+                    u128::from(effective_tokens) * 100
+                        >= u128::from(window) * u128::from(self.auto_prune_threshold_percent)
+                });
+            if should_prune {
+                self.persist_pending_input(user.take())?;
+                pruned_since_progress = true;
+                if self.prune_history(false)?.is_some() {
+                    estimate.invalidate();
+                    cancellation::check(cancellation)?;
+                    continue;
+                }
+            }
             if should_compact {
                 // Save accepted input exactly once before cutoff, capacity, or
                 // quota checks can fail. Never journal the temporary summary.
@@ -141,9 +163,38 @@ impl Agent {
                         "subagent request budget exhausted; partial results are saved in history."
                     );
                 }
+                if let Some(token_limit) = binding.token_budget()
+                    && u128::from(subagent_tokens) * 2 >= u128::from(token_limit) * 3
+                {
+                    bail!(
+                        "subagent token budget exhausted ({subagent_tokens} tokens); partial results are saved in history."
+                    );
+                }
+                if let Some(cost_limit) = binding.cost_budget_usd()
+                    && subagent_cost_usd >= cost_limit * 1.5
+                {
+                    bail!(
+                        "subagent cost budget exhausted (${subagent_cost_usd:.4}); partial results are saved in history."
+                    );
+                }
                 if budget > 0 && request_count == budget {
                     append_developer_to(&mut self.session,"Request budget reached. Finish your current work and return the partial findings now.".into());
                     // 历史在用量估算之后变化，发布路径必须重新估算。
+                    published_usage = None;
+                }
+                if !resource_budget_warned
+                    && (binding
+                        .token_budget()
+                        .is_some_and(|limit| subagent_tokens >= limit)
+                        || binding
+                            .cost_budget_usd()
+                            .is_some_and(|limit| subagent_cost_usd >= limit))
+                {
+                    resource_budget_warned = true;
+                    append_developer_to(
+                        &mut self.session,
+                        "Token or cost budget reached. Finish your current work and return the partial findings now.".into(),
+                    );
                     published_usage = None;
                 }
             }
@@ -177,6 +228,7 @@ impl Agent {
                 reminder: &mut reminder,
                 hooks: hooks.clone(),
             };
+            let pre_request_raw_tokens = usage.estimated_tokens;
             let finished = match &mut self.session {
                 Session::Completion(request) => {
                     completion_turn(resources, request, &metadata, update, cancellation, emit)
@@ -186,7 +238,83 @@ impl Agent {
                 }
             };
             let finished = match finished {
-                Ok(finished) => finished,
+                Ok(finished) => {
+                    self.last_request_raw_tokens =
+                        self.last_request.map(|_| pre_request_raw_tokens);
+                    if self
+                        .subagent
+                        .as_ref()
+                        .is_some_and(|binding| binding.depth > 0)
+                    {
+                        if let Some(turn_usage) = self.last_request {
+                            let turn_tokens = turn_usage
+                                .input_tokens
+                                .saturating_add(turn_usage.output_tokens);
+                            subagent_tokens = subagent_tokens.saturating_add(turn_tokens);
+                            if let Some(price) = self.catalog.cost(&self.current_model.reference) {
+                                let cost = price.calculate(turn_usage).or_else(|| {
+                                    price.calculate(pp_core::context::TokenUsage {
+                                        cached_tokens: Some(0),
+                                        cache_write_tokens: Some(0),
+                                        ..turn_usage
+                                    })
+                                });
+                                if let Some(total) = cost.map(|c| c.total())
+                                    && total.is_finite()
+                                    && total >= 0.0
+                                {
+                                    subagent_cost_usd += total;
+                                }
+                            }
+                        } else {
+                            subagent_tokens =
+                                subagent_tokens.saturating_add(pre_request_raw_tokens);
+                        }
+                    }
+                    pruned_since_progress = false;
+                    overflow_stage = 0;
+                    finished
+                }
+                Err(error) if pp_llm::retry::is_context_overflow(&error) && overflow_stage < 2 => {
+                    cancellation::check(cancellation)?;
+                    self.persist_pending_input(user.take())?;
+                    let mut recovered = false;
+                    if overflow_stage == 0 {
+                        overflow_stage = 1;
+                        if self.prune_history(true)?.is_some() {
+                            recovered = true;
+                        }
+                    }
+                    if !recovered && overflow_stage == 1 {
+                        overflow_stage = 2;
+                        if matches!(
+                            self.compact_impl(true, cancellation, emit),
+                            Ok(super::context::CompactionOutcome::Compacted { .. })
+                        ) {
+                            recovered = true;
+                        }
+                    }
+                    if recovered {
+                        estimate.invalidate();
+                        cached_usage = None;
+                        claim_boundary = false;
+                        continue;
+                    }
+                    // 应急裁剪与压缩均未释放足够空间，走原有模型失败/fallback 路径。
+                    if !self.model_source.is_fallback()
+                        && let Some(limit) = self.max_turns
+                        && request_count >= limit
+                    {
+                        return Err(pp_core::cancellation::MaxTurnsExceeded { limit }.into());
+                    }
+                    self.pending_instructions = None;
+                    if self.activate_fallback(emit)? {
+                        claim_boundary = false;
+                        estimate.invalidate();
+                        continue;
+                    }
+                    return Err(error);
+                }
                 Err(error) if pp_llm::retry::model_request_failed(&error) => {
                     cancellation::check(cancellation)?;
                     // 主模型失败的请求同样占用 --max-turns 额度：轮次已满时直接以上限

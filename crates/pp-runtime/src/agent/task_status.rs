@@ -84,7 +84,7 @@ impl Agent {
         let model = self.current_model.reference.clone();
         let effort = self.think_level;
         let edit = self.tools.edit_mode();
-        let prompt = prompt.to_owned();
+        let prompt: String = prompt.chars().take(1000).collect();
         let token = cancellation.child_token();
         let worker_token = token.clone();
         let context = pp_stats::RequestContext {
@@ -123,7 +123,13 @@ impl Agent {
                         config.protocol,
                         TITLE_INSTRUCTIONS.into(),
                     );
-                    session.set_think_level(selection.effort);
+                    let title_effort = if selection.enabled {
+                        selection.effort
+                    } else {
+                        super::lowest_think_level(&config.thinking, selection.effort)
+                    };
+                    session.set_think_level(title_effort);
+                    session.set_max_output_tokens(64);
                     append_user_to(&mut session, &prompt);
                     let mut fallback = selection.fallback.filter(|_| selection.enabled);
                     loop {

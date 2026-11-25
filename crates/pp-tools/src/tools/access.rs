@@ -43,6 +43,7 @@ impl Tools {
             mcp: std::sync::Arc::new(pp_mcp::McpManager::empty()),
             mcp_shared: false,
             mcp_readonly: false,
+            mcp_settings: pp_config::config::McpSettings::default(),
             lsp: None,
             lsp_cleanup: None,
             lsp_readonly: false,
@@ -58,6 +59,7 @@ impl Tools {
             workspace,
             write_lock: Default::default(),
             web_cache: RefCell::default(),
+            read_dedup: RefCell::default(),
             snapshots: RefCell::default(),
             project_instructions: RefCell::default(),
             background_tasks: Default::default(),
@@ -76,6 +78,26 @@ impl Tools {
 
     pub fn configure_web_search(&mut self, settings: pp_config::config::WebSearchSettings) {
         self.web_search = settings;
+    }
+
+    pub fn configure_mcp(&mut self, settings: pp_config::config::McpSettings) {
+        self.mcp_settings = settings;
+    }
+
+    pub(super) fn uses_mcp_proxy(&self, access: pp_mcp::Access) -> bool {
+        let count = self.mcp.available_tool_count(access, |name| {
+            self.allowed_tools
+                .as_ref()
+                .is_none_or(|allowed| allowed.allows(name))
+        });
+        if count == 0 {
+            return false;
+        }
+        match self.mcp_settings.proxy {
+            pp_config::config::McpProxyMode::Never => false,
+            pp_config::config::McpProxyMode::Always => true,
+            pp_config::config::McpProxyMode::Auto => count > self.mcp_settings.proxy_threshold,
+        }
     }
 
     pub fn set_sandbox(&mut self, sandbox: std::sync::Arc<pp_sandbox::Sandbox>) {
@@ -190,6 +212,13 @@ impl Tools {
     ) {
         let diff = diff::committed(&before, Some(after));
         self.snapshots.borrow_mut().invalidate(&path);
+        {
+            let mut dedup = self.read_dedup.borrow_mut();
+            dedup.invalidate_path(&path);
+            if !path.is_absolute() {
+                dedup.invalidate_path(&self.cwd.join(&path));
+            }
+        }
         emit(pp_core::events::AgentEvent::FileChanged {
             id: call_id.to_owned(),
             path: path.display().to_string(),
@@ -197,8 +226,13 @@ impl Tools {
         });
     }
 
+    pub fn invalidate_read_dedup(&self) {
+        self.read_dedup.borrow_mut().clear();
+    }
+
     pub fn clear_caches(&self) {
         self.web_cache.borrow_mut().clear();
+        self.read_dedup.borrow_mut().clear();
         self.snapshots.borrow_mut().clear();
     }
 
@@ -250,8 +284,23 @@ impl Tools {
         // access, process creation and MCP dispatch, so denied tools have no
         // side effects even with malformed arguments, and unknown names
         // (including unseen MCP tools) cannot bypass it via the fallback.
-        let is_mcp = name.starts_with("mcp__");
-        let mcp_readonly_tool = is_mcp && self.mcp.is_read_only(name);
+        let is_mcp_search = name == super::mcp_proxy::MCP_SEARCH_TOOL;
+        let is_mcp_call = name == super::mcp_proxy::MCP_CALL_TOOL;
+        let resolved_mcp_call = if is_mcp_call {
+            Some(super::mcp_proxy::resolve_call(&self.mcp, arguments)?)
+        } else {
+            None
+        };
+        if let Some(resolved) = &resolved_mcp_call
+            && let Some(allowed) = &self.allowed_tools
+        {
+            allowed.authorize_call(&resolved.exposed_name, &resolved.inner_arguments)?;
+        }
+        let mcp_target_name = resolved_mcp_call
+            .as_ref()
+            .map_or(name, |resolved| resolved.exposed_name.as_str());
+        let is_mcp = is_mcp_call || name.starts_with("mcp__");
+        let mcp_readonly_tool = is_mcp && self.mcp.is_read_only(mcp_target_name);
         let mcp_access = match call.policy {
             ToolPolicy::Review => pp_mcp::Access::ReadOnly,
             _ => self.mcp_access(),
@@ -259,21 +308,26 @@ impl Tools {
         let allowed = match &call.policy {
             ToolPolicy::Execute { .. } => {
                 !is_plan_tool(name)
-                    && (mcp_access == pp_mcp::Access::Full || !is_mcp || mcp_readonly_tool)
+                    && (is_mcp_search
+                        || mcp_access == pp_mcp::Access::Full
+                        || !is_mcp
+                        || mcp_readonly_tool)
             }
             ToolPolicy::Review => {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || name == "lsp" && self.lsp.is_some()
+                    || is_mcp_search
                     || mcp_readonly_tool
             }
             ToolPolicy::Plan { .. } => {
                 PLAN_BASE_TOOLS.contains(&name)
                     || PLAN_SEARCH_TOOLS.contains(&name)
                     || name == "lsp" && self.lsp.is_some()
+                    || is_mcp_search
                     || is_mcp
                         && (mcp_access == pp_mcp::Access::Full || mcp_readonly_tool)
-                        && self.mcp.has_available_tool(name)
+                        && self.mcp.has_available_tool(mcp_target_name)
                     || self.subagent.is_some() && matches!(name, "task" | "wait")
                     || name == "write"
                     || is_plan_tool(name)
@@ -325,10 +379,14 @@ impl Tools {
             ToolPolicy::Review => false,
         };
         if needs_permission {
+            let perm_name = mcp_target_name;
+            let perm_args = resolved_mcp_call
+                .as_ref()
+                .map_or(arguments, |resolved| resolved.inner_arguments.as_str());
             let tier = if mcp_readonly_tool {
                 permission::Tier::Read
             } else {
-                permission::tier_of_arguments(name, arguments)
+                permission::tier_of_arguments(perm_name, perm_args)
             };
             // 审批必须反映当次冻结的真实沙盒策略：仅 Execute 下受沙盒约束的
             // 工具在策略真实存在时才算 sandboxed。off / auto 降级（policy 为
@@ -356,8 +414,8 @@ impl Tools {
             if !deferred_to_dispatch {
                 self.permission.enforce_for(
                     permissions,
-                    name,
-                    arguments,
+                    perm_name,
+                    perm_args,
                     ToolAccess {
                         tier,
                         sandboxed,
@@ -374,6 +432,7 @@ impl Tools {
             permissions,
             sandbox,
             hook_ask,
+            resolved_mcp_call,
         })
     }
 }
@@ -384,6 +443,7 @@ pub(super) struct AuthorizedAccess<'a> {
     pub(super) permissions: PermissionMode,
     pub(super) sandbox: pp_sandbox::SandboxView<'a>,
     pub(super) hook_ask: Option<&'a str>,
+    pub(super) resolved_mcp_call: Option<super::mcp_proxy::ResolvedMcpCall>,
 }
 
 impl Drop for Tools {

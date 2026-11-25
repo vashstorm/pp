@@ -412,6 +412,12 @@ fn accumulate_usage(total: &mut Option<TokenUsage>, turn: TokenUsage) {
                 (None, Some(b)) => Some(b),
                 (None, None) => None,
             };
+            acc.reasoning_tokens = match (acc.reasoning_tokens, turn.reasoning_tokens) {
+                (Some(a), Some(b)) => Some(a.saturating_add(b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
         }
         None => *total = Some(turn),
     }
@@ -528,6 +534,7 @@ mod tests {
                     output_tokens: 20,
                     cached_tokens: Some(40),
                     cache_write_tokens: None,
+                    reasoning_tokens: Some(12),
                 }),
                 success: true,
             },
@@ -547,6 +554,7 @@ mod tests {
                     output_tokens: 30,
                     cached_tokens: Some(10),
                     cache_write_tokens: Some(5),
+                    reasoning_tokens: Some(8),
                 }),
                 success: true,
             },
@@ -564,6 +572,7 @@ mod tests {
                 output_tokens: 50,
                 cached_tokens: Some(50),
                 cache_write_tokens: Some(5),
+                reasoning_tokens: Some(20),
             })
         );
     }

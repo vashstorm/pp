@@ -88,6 +88,7 @@ impl Agent {
         tools.limits = checkpoint.tool_limits;
         tools.configure_eval(catalog.eval_settings());
         tools.configure_web_search(catalog.web_search_settings().clone());
+        tools.configure_mcp(catalog.mcp_settings());
         // 恢复不承诺旧进程的临时管道正文：显式换一个空 registry。
         tools.reset_pipe_store();
         if let Some(id) = journal.id() {
@@ -113,6 +114,17 @@ impl Agent {
                 include_obfuscation: None,
             });
         }
+        checkpoint.session.apply_cache_policy(
+            config.prompt_cache_key,
+            config.prompt_cache_retention,
+            || super::generate_prompt_cache_key(journal.id()),
+        );
+        let session_date = super::current_session_date();
+        let restored_reported = reported_project_load(&replay);
+        let delivered_project_docs = restored_reported
+            .iter()
+            .map(|(path, content)| (PathBuf::from(path), content.clone()))
+            .collect();
         let thinking_history = super::context_diagnosis::extract_thinking_from_replay(&replay);
         let mut agent = Self {
             role_route: None,
@@ -127,7 +139,10 @@ impl Agent {
             session: checkpoint.session,
             auto_compact: config.settings.auto_compact,
             auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
+            auto_prune: config.settings.auto_prune,
+            auto_prune_threshold_percent: config.settings.auto_prune_threshold_percent,
             last_request: None,
+            last_request_raw_tokens: None,
             session_output_tokens: 0,
             thinking_history,
             models,
@@ -141,11 +156,16 @@ impl Agent {
             },
             catalog,
             think_level,
+            prompt_cache_key_enabled: config.prompt_cache_key,
+            prompt_cache_retention: config.prompt_cache_retention,
             base_system: checkpoint.base_system,
             prompt_source: checkpoint.prompt_source,
             pending_instructions: None,
             pending_project_load: Vec::new(),
-            reported_project_load: reported_project_load(&replay),
+            reported_project_load: restored_reported,
+            session_date,
+            static_project_prompt: None,
+            delivered_project_docs,
             request_skills: Vec::new(),
             journal,
             replay,
@@ -278,6 +298,11 @@ impl Agent {
         }
         session.set_tools(self.tools.all_definitions(self.workflow.mode));
         session.set_think_level(self.think_level);
+        session.apply_cache_policy(
+            self.prompt_cache_key_enabled,
+            self.prompt_cache_retention,
+            || super::generate_prompt_cache_key(self.journal.id()),
+        );
         let metadata = Metadata {
             role_route: self.role_route.as_ref(),
             cwd: self.tools.cwd(),
@@ -344,6 +369,12 @@ impl Agent {
         self.pending_instructions = None;
         self.pending_project_load.clear();
         self.reported_project_load = reported_project_load(&replay);
+        self.static_project_prompt = None;
+        self.delivered_project_docs = self
+            .reported_project_load
+            .iter()
+            .map(|(path, content)| (PathBuf::from(path), content.clone()))
+            .collect();
         self.tools
             .reset_project_instructions(self.reported_project_load.keys().map(PathBuf::from));
         if let Some(state) = &self.auto_review {
@@ -392,7 +423,16 @@ impl Agent {
         self.clear_session_cost();
         self.pending_project_load.clear();
         self.reported_project_load.clear();
+        self.static_project_prompt = None;
+        self.delivered_project_docs.clear();
+        self.session_date = super::current_session_date();
         self.tools.reset_project_instructions([]);
+        self.session.clear_prompt_cache_key();
+        self.session.apply_cache_policy(
+            self.prompt_cache_key_enabled,
+            self.prompt_cache_retention,
+            || super::generate_prompt_cache_key(None),
+        );
         match &mut self.session {
             Session::Completion(request) => request.messages.truncate(1),
             Session::Response(request) => response_input(request).clear(),

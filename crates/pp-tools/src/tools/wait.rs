@@ -37,24 +37,9 @@ impl State {
 }
 
 const WAIT_DESCRIPTION: &str = concat!(
-    "Wait until every selected owned background Bash task and subagent run has settled, then ",
-    "report their status. Subagent results are injected into the conversation after the tool batch; ",
-    "undelivered background Bash results are returned by wait. Optional run_ids/task_ids select targets; omit both to ",
-    "watch all undelivered owned work. The fixed timeout is 120 minutes; on timeout, unfinished ",
-    "selected jobs and their descendants are stopped and reaped before returning. Steering stays ",
-    "queued until the batch finishes. Esc cancels the parent task and its owned work. Results are ",
-    "delivered once after context commit; use read for non-consuming output inspection and ",
-    "bash_task status only for persistent services. Continue useful work before waiting. Before ",
-    "calling wait in Execute mode, reconcile any existing TODO list: mark every actually running ",
-    "item in progress with todo start, mark verified completed work done, and record real ",
-    "blockers. Put required todo calls before wait in the tool-call order, never after it in the ",
-    "same batch; the model cannot update TODOs while wait is running. Multiple TODO items may ",
-    "stay in progress concurrently; starting one preserves the others. Do not mark queued work ",
-    "as started or block running children merely because the parent awaits results. Skip TODO ",
-    "updates when no list exists or its state is already current; Plan mode must not call todo. ",
-    "Finite commands (tests, builds, installs, checks) must use foreground bash even when slow; ",
-    "do not background them to use wait. Running services may never exit: verify readiness with ",
-    "actual requests, then stop them explicitly.",
+    "Wait until selected owned subagent runs (`run_ids`) and background Bash tasks (`task_ids`) settle (omit both to wait for all undelivered owned work; 120m fixed timeout reaps unfinished targets). ",
+    "Reconcile existing TODOs BEFORE calling `wait` in Execute mode (never after `wait` in the same batch; skip in Plan mode). ",
+    "Never background finite builds/tests to wait on them; verify persistent services with real requests and stop them explicitly.",
 );
 
 pub(super) fn definition() -> FunctionObject {
@@ -66,12 +51,12 @@ pub(super) fn definition() -> FunctionObject {
             "properties": {
                 "run_ids": {
                     "type": "array",
-                    "description": "Subagent run_id values returned by task, e.g. [\"r1\",\"r2\"]. Do not pass agent_id values such as a1. You can copy task's wait_args object as the complete wait arguments.",
+                    "description": "Subagent run_id values (e.g. [\"r1\"], not agent_id); or copy task's wait_args.",
                     "items": {"type": "string", "minLength": 1}
                 },
                 "task_ids": {
                     "type": "array",
-                    "description": "Background Bash task_id values returned by bash(mode=background), e.g. [\"bg-1\"]. For subagents created by task, use run_ids instead.",
+                    "description": "Background Bash task_id values (e.g. [\"bg-1\"]).",
                     "items": {"type": "string", "minLength": 1}
                 }
             },

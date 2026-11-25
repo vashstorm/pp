@@ -508,10 +508,7 @@ fn lsp_roundtrip_chat_and_responses_query_modify_diagnostic() {
         lsp_assert_pairs(protocol, &body);
         let diagnostics = lsp_tool_result(protocol, &body, "lsp-diag");
         assert_eq!(diagnostics["ok"], true, "{diagnostics}");
-        assert_eq!(
-            diagnostics["diagnostics"]["servers"][0]["status"],
-            "reported_issues"
-        );
+        assert!(diagnostics.get("diagnostics").is_none(), "{diagnostics}");
         let content = diagnostics["content"].as_str().unwrap();
         assert!(
             content.contains("[error] [fixture] fixture: wrong value"),
@@ -539,8 +536,12 @@ fn lsp_roundtrip_chat_and_responses_query_modify_diagnostic() {
         let write = lsp_tool_result(protocol, &body, "lsp-write");
         assert_eq!(write["ok"], true, "{write}");
         assert_eq!(write["bytes_written"], json!(LSP_HELPER_FIXED.len()));
-        assert_eq!(
-            write["diagnostics"]["servers"][0]["status"], "reported_clean",
+        assert!(write.get("diagnostics").is_none(), "{write}");
+        assert!(
+            write["content"]
+                .as_str()
+                .unwrap()
+                .contains("fixture: clean"),
             "{write}"
         );
         assert_eq!(
@@ -605,7 +606,13 @@ fn lsp_roundtrip_chat_and_responses_query_modify_diagnostic() {
         lsp_assert_pairs(protocol, &body);
         let rename = lsp_tool_result(protocol, &body, "lsp-rename");
         assert_eq!(rename["ok"], true, "{rename}");
-        assert_eq!(rename["details"]["applied"], false);
+        assert!(rename.get("details").is_none(), "{rename}");
+        assert!(
+            rename["content"]
+                .as_str()
+                .unwrap()
+                .contains("no files were changed")
+        );
         assert_eq!(
             fs::read_to_string(dir.path().join("src/helper.lspfixture")).unwrap(),
             LSP_HELPER_FIXED
@@ -678,8 +685,12 @@ fn lsp_roundtrip_chat_and_responses_query_modify_diagnostic() {
         lsp_assert_pairs(protocol, &body);
         let clean = lsp_tool_result(protocol, &body, "lsp-clean");
         assert_eq!(clean["ok"], true, "{clean}");
-        assert_eq!(
-            clean["diagnostics"]["servers"][0]["status"], "reported_clean",
+        assert!(clean.get("diagnostics").is_none(), "{clean}");
+        assert!(
+            clean["content"]
+                .as_str()
+                .unwrap()
+                .contains("fixture: clean"),
             "{clean}"
         );
         lsp_final(request, protocol, "lsp roundtrip complete");
@@ -743,7 +754,7 @@ fn lsp_roundtrip_code_action_command_is_not_executed() {
         lsp_assert_pairs(protocol, &body);
         let result = lsp_tool_result(protocol, &body, "lsp-code");
         assert_eq!(result["ok"], false, "{result}");
-        assert_eq!(result["details"]["applied"], false);
+        assert!(result.get("details").is_none(), "{result}");
         assert!(
             result["content"]
                 .as_str()

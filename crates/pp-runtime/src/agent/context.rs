@@ -14,15 +14,19 @@ use async_openai::types::{
     chat::{
         ChatCompletionMessageToolCalls, ChatCompletionRequestAssistantMessageContent,
         ChatCompletionRequestMessage, ChatCompletionRequestUserMessage,
-        CreateChatCompletionRequest,
+        ChatCompletionToolChoiceOption, CreateChatCompletionRequest, ToolChoiceOptions,
     },
-    responses::{CreateResponse, EasyInputMessage, InputItem, InputParam, Item, MessageItem, Role},
+    responses::{
+        CreateResponse, EasyInputMessage, InputItem, InputParam, Item, MessageItem, Reasoning,
+        ReasoningSummary, Role, ToolChoiceOptions as ResponseToolChoiceOptions, ToolChoiceParam,
+    },
 };
 use pp_core::cancellation;
 use pp_core::cancellation::CancellationToken;
 use pp_core::cancellation::Cancelled;
 use pp_core::context::estimate_tokens;
 use pp_core::events::AgentEvent;
+use pp_core::model::ThinkLevel;
 use pp_core::plan::WorkflowState;
 use pp_llm::CompletionTurn;
 use pp_llm::OpenAiClient;
@@ -272,6 +276,40 @@ fn summary_instruction(summary_budget: u64) -> String {
         .replace("{summary_budget}", &summary_budget.to_string())
 }
 
+/// 收集位于保留后缀（`cutoff..`）中的动态 `[pp-project-instructions]` developer 文本。
+fn suffix_project_instructions(session: &Session, cutoff: usize) -> Option<String> {
+    let mut blocks = Vec::new();
+    match session {
+        Session::Completion(request) => {
+            for message in request.messages.get(cutoff..).unwrap_or_default() {
+                if let ChatCompletionRequestMessage::Developer(dev) = message
+                    && let async_openai::types::chat::ChatCompletionRequestDeveloperMessageContent::Text(
+                        text,
+                    ) = &dev.content
+                    && text.starts_with(super::PROJECT_INSTRUCTIONS_PREFIX)
+                {
+                    blocks.push(text.as_str());
+                }
+            }
+        }
+        Session::Response(request) => {
+            if let InputParam::Items(items) = &request.input {
+                for item in items.get(cutoff..).unwrap_or_default() {
+                    if let InputItem::EasyMessage(msg) = item
+                        && msg.role == Role::Developer
+                        && let async_openai::types::responses::EasyInputContent::Text(text) =
+                            &msg.content
+                        && text.starts_with(super::PROJECT_INSTRUCTIONS_PREFIX)
+                    {
+                        blocks.push(text.as_str());
+                    }
+                }
+            }
+        }
+    }
+    (!blocks.is_empty()).then(|| blocks.join("\n\n"))
+}
+
 fn wrap_summary(summary: &str) -> String {
     format!("[Context summary]\n{summary}\n[/Context summary]")
 }
@@ -359,7 +397,9 @@ struct SummarySpec<'a> {
     threshold_percent: u8,
     automatic: bool,
     before_tokens: u64,
-    system: Option<&'a str>,
+    summary_think_level: ThinkLevel,
+    /// 仅在极窄上下文窗口下携带完整 `system + tools` 会超窗时使用的无工具精简系统提示词。
+    fallback_system_without_tools: Option<&'a str>,
 }
 
 /// 只在主摘要请求失败后复制已裁出的摘要前缀；保留后缀从不复制或转换。
@@ -537,20 +577,22 @@ fn compact_completion(
     cancellation: &CancellationToken,
 ) -> Result<CompactionOutcome> {
     let mut suffix = request.messages.split_off(spec.cutoff);
-    let tools = request.tools.take();
-    let tool_choice = request.tool_choice.take();
+    // 保留主会话原样的 system 与 tools 定义以复用前缀缓存，仅通过 tool_choice=none 禁止工具调用，
+    // 并将推理档位临时降到允许的最低档以节省摘要思考输出 token。
+    let tool_choice = if request.tools.is_some() {
+        request
+            .tool_choice
+            .replace(ChatCompletionToolChoiceOption::Mode(
+                ToolChoiceOptions::None,
+            ))
+    } else {
+        request.tool_choice.take()
+    };
+    let reasoning_effort = request
+        .reasoning_effort
+        .replace(spec.summary_think_level.effort());
     let max_completion_tokens = request.max_completion_tokens.take();
     let max_tokens = request.max_tokens.take();
-    // 摘要请求不提供工具，模板也必须看到空工具清单；结束后还原主会话指令。
-    let original_system = if let Some(system) = spec.system {
-        let Some(ChatCompletionRequestMessage::System(message)) = request.messages.first_mut()
-        else {
-            unreachable!("validated system message")
-        };
-        Some(std::mem::replace(&mut message.content, system.into()))
-    } else {
-        None
-    };
     request.max_completion_tokens = Some(spec.output_limit);
     request.messages.push(ChatCompletionRequestMessage::User(
         ChatCompletionRequestUserMessage {
@@ -558,19 +600,36 @@ fn compact_completion(
             ..Default::default()
         },
     ));
+    let mut dropped_tools = None;
+    let mut original_system = None;
+    if let Some(window) = spec.context_window
+        && request.tools.is_some()
+        && let Ok(estimated) = estimate_tokens(&*request)
+        && u128::from(estimated) + u128::from(spec.output_limit) > u128::from(window)
+    {
+        dropped_tools = request.tools.take();
+        request.tool_choice = None;
+        if let Some(system) = spec.fallback_system_without_tools
+            && let Some(ChatCompletionRequestMessage::System(message)) =
+                request.messages.first_mut()
+        {
+            original_system = Some(std::mem::replace(&mut message.content, system.into()));
+        }
+    }
     let result = summarize_completion_request(client, &*request, journal, spec, cancellation);
     // Restore the stashed controls before judging the outcome.
-    request.tools = tools;
-    request.tool_choice = tool_choice;
-    request.max_completion_tokens = max_completion_tokens;
-    request.max_tokens = max_tokens;
-    if let Some(content) = original_system {
-        let Some(ChatCompletionRequestMessage::System(message)) = request.messages.first_mut()
-        else {
-            unreachable!("validated system message")
-        };
+    if let Some(tools) = dropped_tools {
+        request.tools = Some(tools);
+    }
+    if let Some(content) = original_system
+        && let Some(ChatCompletionRequestMessage::System(message)) = request.messages.first_mut()
+    {
         message.content = content;
     }
+    request.tool_choice = tool_choice;
+    request.reasoning_effort = reasoning_effort;
+    request.max_completion_tokens = max_completion_tokens;
+    request.max_tokens = max_tokens;
     let summary = match result {
         Ok(summary) => summary,
         Err(error) => {
@@ -584,9 +643,32 @@ fn compact_completion(
         }
     };
     // Candidate: original system, one wrapped summary user message, then the
-    // untouched native suffix. The old prefix is held only for rollback.
+    // untouched native suffix (dropping superseded dynamic AGENTS.md notices,
+    // which will be consolidated into the fresh static prefix on next turn).
     request.messages.pop();
     let prefix = request.messages.split_off(1);
+    let dropped_suffix_instructions: Vec<(usize, ChatCompletionRequestMessage)> = {
+        let mut kept = Vec::with_capacity(suffix.len());
+        let mut removed = Vec::new();
+        for (idx, msg) in suffix.into_iter().enumerate() {
+            let is_dynamic_rules = matches!(
+                &msg,
+                ChatCompletionRequestMessage::Developer(dev)
+                    if matches!(
+                        &dev.content,
+                        async_openai::types::chat::ChatCompletionRequestDeveloperMessageContent::Text(t)
+                            if t.starts_with(super::PROJECT_INSTRUCTIONS_PREFIX)
+                    )
+            );
+            if is_dynamic_rules {
+                removed.push((idx, msg));
+            } else {
+                kept.push(msg);
+            }
+        }
+        suffix = kept;
+        removed
+    };
     request.messages.push(ChatCompletionRequestMessage::User(
         ChatCompletionRequestUserMessage {
             content: wrap_summary(&summary).into(),
@@ -594,15 +676,29 @@ fn compact_completion(
         },
     ));
     request.messages.append(&mut suffix);
+    let restore_removed =
+        |req: &mut CreateChatCompletionRequest,
+         prefix: Vec<ChatCompletionRequestMessage>,
+         removed: Vec<(usize, ChatCompletionRequestMessage)>| {
+            rollback_completion(req, prefix);
+            if !removed.is_empty() {
+                let base = req.messages.len() - (req.messages.len() - spec.cutoff);
+                let mut tail = req.messages.split_off(base);
+                for (idx, msg) in removed {
+                    tail.insert(idx.min(tail.len()), msg);
+                }
+                req.messages.append(&mut tail);
+            }
+        };
     let after_tokens = match estimate_tokens(&*request) {
         Ok(tokens) => tokens,
         Err(error) => {
-            rollback_completion(request, prefix);
+            restore_removed(request, prefix, dropped_suffix_instructions);
             return Err(error);
         }
     };
     if !candidate_accepted(spec, after_tokens) {
-        rollback_completion(request, prefix);
+        restore_removed(request, prefix, dropped_suffix_instructions);
         if spec.automatic {
             bail!("cannot compact: retained context exceeds automatic threshold");
         }
@@ -611,7 +707,7 @@ fn compact_completion(
     if let Err(error) =
         journal.replace_history(metadata, SessionRef::Completion(&*request), workflow)
     {
-        rollback_completion(request, prefix);
+        restore_removed(request, prefix, dropped_suffix_instructions);
         return Err(error);
     }
     Ok(CompactionOutcome::Compacted {
@@ -633,26 +729,54 @@ fn compact_response(
     cancellation: &CancellationToken,
 ) -> Result<CompactionOutcome> {
     let mut suffix = response_input(request).split_off(spec.cutoff);
-    let tools = request.tools.take();
-    let tool_choice = request.tool_choice.take();
+    // 保留主会话原样的 instructions 与 tools 以复用前缀缓存，仅通过 tool_choice=none 禁止工具调用，
+    // 并将推理档位临时降至目标模型允许的最低档；若极窄窗口下携带 tools 会超窗，自动回退移除 tools。
+    let tool_choice = if request.tools.is_some() {
+        request
+            .tool_choice
+            .replace(ToolChoiceParam::Option(ResponseToolChoiceOptions::None))
+    } else {
+        request.tool_choice.take()
+    };
+    let reasoning = request.reasoning.replace(Reasoning {
+        effort: Some(spec.summary_think_level.effort()),
+        summary: (spec.summary_think_level != ThinkLevel::None)
+            .then_some(ReasoningSummary::Concise),
+        ..Default::default()
+    });
     let max_output_tokens = request.max_output_tokens.take();
-    let original_system = spec
-        .system
-        .map(|system| request.instructions.replace(system.to_owned()));
     request.max_output_tokens = Some(spec.output_limit);
     response_input(request).push(InputItem::EasyMessage(EasyInputMessage {
         role: Role::User,
         content: spec.instruction.into(),
         ..Default::default()
     }));
+    let mut dropped_tools = None;
+    let mut dropped_choice = None;
+    let mut original_system = None;
+    if let Some(window) = spec.context_window
+        && request.tools.is_some()
+        && let Ok(estimated) = estimate_tokens(&*request)
+        && u128::from(estimated) + u128::from(spec.output_limit) > u128::from(window)
+    {
+        dropped_tools = request.tools.take();
+        dropped_choice = request.tool_choice.take();
+        if let Some(system) = spec.fallback_system_without_tools {
+            original_system = Some(request.instructions.replace(system.to_owned()));
+        }
+    }
     let result = summarize_response_request(client, &*request, journal, spec, cancellation);
     // Restore the stashed controls before judging the outcome.
-    request.tools = tools;
-    request.tool_choice = tool_choice;
-    request.max_output_tokens = max_output_tokens;
+    if let Some(tools) = dropped_tools {
+        request.tools = Some(tools);
+    }
     if let Some(instructions) = original_system {
         request.instructions = instructions;
     }
+    let _ = dropped_choice;
+    request.tool_choice = tool_choice;
+    request.reasoning = reasoning;
+    request.max_output_tokens = max_output_tokens;
     let summary = match result {
         Ok(summary) => summary,
         Err(error) => {
@@ -667,26 +791,60 @@ fn compact_response(
         }
     };
     // Candidate: one wrapped summary user item, then the untouched native
-    // suffix (including any encrypted reasoning). The old prefix is held
-    // only for rollback.
+    // suffix (dropping superseded dynamic AGENTS.md notices).
     let input = response_input(request);
     input.pop();
     let prefix = input.split_off(0);
+    let dropped_suffix_instructions: Vec<(usize, InputItem)> = {
+        let mut kept = Vec::with_capacity(suffix.len());
+        let mut removed = Vec::new();
+        for (idx, item) in suffix.into_iter().enumerate() {
+            let is_dynamic_rules = matches!(
+                &item,
+                InputItem::EasyMessage(msg)
+                    if msg.role == Role::Developer
+                        && matches!(
+                            &msg.content,
+                            async_openai::types::responses::EasyInputContent::Text(t)
+                                if t.starts_with(super::PROJECT_INSTRUCTIONS_PREFIX)
+                        )
+            );
+            if is_dynamic_rules {
+                removed.push((idx, item));
+            } else {
+                kept.push(item);
+            }
+        }
+        suffix = kept;
+        removed
+    };
     input.push(InputItem::EasyMessage(EasyInputMessage {
         role: Role::User,
         content: wrap_summary(&summary).into(),
         ..Default::default()
     }));
     input.append(&mut suffix);
+    let restore_removed =
+        |req: &mut CreateResponse, prefix: Vec<InputItem>, removed: Vec<(usize, InputItem)>| {
+            rollback_response(req, prefix);
+            if !removed.is_empty() {
+                let items = response_input(req);
+                let mut tail = items.split_off(spec.cutoff.min(items.len()));
+                for (idx, item) in removed {
+                    tail.insert(idx.min(tail.len()), item);
+                }
+                items.append(&mut tail);
+            }
+        };
     let after_tokens = match estimate_tokens(&*request) {
         Ok(tokens) => tokens,
         Err(error) => {
-            rollback_response(request, prefix);
+            restore_removed(request, prefix, dropped_suffix_instructions);
             return Err(error);
         }
     };
     if !candidate_accepted(spec, after_tokens) {
-        rollback_response(request, prefix);
+        restore_removed(request, prefix, dropped_suffix_instructions);
         if spec.automatic {
             bail!("cannot compact: retained context exceeds automatic threshold");
         }
@@ -694,7 +852,7 @@ fn compact_response(
     }
     if let Err(error) = journal.replace_history(metadata, SessionRef::Response(&*request), workflow)
     {
-        rollback_response(request, prefix);
+        restore_removed(request, prefix, dropped_suffix_instructions);
         return Err(error);
     }
     Ok(CompactionOutcome::Compacted {
@@ -768,17 +926,27 @@ impl Agent {
         )?;
         let before_tokens = self.context_usage()?.estimated_tokens;
         let budget = summary_budget(self.current_model.context_window);
-        let instruction = summary_instruction(budget);
-        let summary_system = if self.prompt_source.is_some() {
-            Some(self.compose_prompt(
-                &crate::subagent::catalog::workflow_instructions(&self.workflow),
-                self.workflow.mode_name(),
-                &self.current_model.model,
-                Vec::new(),
-            )?)
-        } else {
-            None
-        };
+        let mut instruction = summary_instruction(budget);
+        // 若压缩前刚刷新到新变更的 AGENTS.md（已追加在保留后缀末尾），同时附在摘要指令末尾，
+        // 既保持 system+old_prefix 缓存命中，又确保摘要模型遵循最新项目规则。
+        if let Some(extra_rules) = suffix_project_instructions(&self.session, cutoff) {
+            instruction.push_str("\n\n");
+            instruction.push_str(&extra_rules);
+        }
+        let summary_think_level =
+            super::lowest_think_level(&self.current_model.thinking, self.think_level);
+        // 仅在窄窗口下需要退回无工具精简 system 时才用到，大窗口直接复用原 system+tools 前缀缓存。
+        let fallback_system_without_tools =
+            if self.prompt_source.is_some() && self.current_model.context_window.is_some() {
+                Some(self.compose_prompt(
+                    &crate::subagent::catalog::workflow_instructions(&self.workflow),
+                    self.workflow.mode_name(),
+                    &self.current_model.model,
+                    Vec::new(),
+                )?)
+            } else {
+                None
+            };
         let fallback_used = std::cell::Cell::new(false);
         // 备用摘要模型取当前角色的备用模型：主会话不再武装 DEFAULT 路由，不能只看 `role_route`。
         let fallback_target = self
@@ -799,7 +967,8 @@ impl Agent {
             threshold_percent: self.auto_compact_threshold_percent,
             automatic,
             before_tokens,
-            system: summary_system.as_deref(),
+            summary_think_level,
+            fallback_system_without_tools: fallback_system_without_tools.as_deref(),
         };
         emit(AgentEvent::CompactionStarted { automatic });
         let metadata = Metadata {
@@ -846,6 +1015,12 @@ impl Agent {
         };
         // 压缩只是重写历史，不改变会话身份：会话累计输出保留。
         self.last_request = None;
+        self.last_request_raw_tokens = None;
+        // 历史前缀已重建：清空会话 read 去重缓存，避免模型请求重读已被压缩的内容时命中旧桩。
+        self.tools.invalidate_read_dedup();
+        // 下轮刷新将把当前全部活跃 AGENTS.md 合并回新的静态前缀。
+        self.static_project_prompt = None;
+        self.delivered_project_docs.clear();
         let retained_turns = match &self.session {
             Session::Completion(request) => request
                 .messages

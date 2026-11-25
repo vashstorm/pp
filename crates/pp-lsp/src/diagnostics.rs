@@ -24,8 +24,14 @@ use pp_core::lsp_report::ServerReport;
 /// 一次 glob diagnostics 最多解析的普通文件数。
 pub(crate) const MAX_TARGETS: usize = 20;
 
-/// 自动钩子（保存/编辑后）最多展示的诊断消息数；显式 diagnostics 不受此限。
+/// 自动钩子（保存/编辑后）最多展示的诊断消息数。
 pub const AUTO_MESSAGE_LIMIT: usize = 50;
+
+/// 显式 `lsp diagnostics` 单文件最多展示的诊断消息数。
+pub const EXPLICIT_MESSAGE_LIMIT: usize = 100;
+
+/// 单条诊断正文渲染上限（字符数），避免巨型类型报错淹没上下文。
+const MAX_DIAGNOSTIC_MESSAGE_CHARS: usize = 500;
 
 /// glob 解析结果；`truncated` 为 true 时调用方必须提示只检查了前 20 个文件。
 #[derive(Clone, Debug, Default)]
@@ -423,7 +429,7 @@ fn diagnostic_line(path: &str, diagnostic: &ReportDiagnostic) -> String {
         .as_deref()
         .map(|code| format!(" ({})", clean_text(code)))
         .unwrap_or_default();
-    let message = one_line(&diagnostic.message);
+    let message = truncate_chars(&one_line(&diagnostic.message), MAX_DIAGNOSTIC_MESSAGE_CHARS);
     if diagnostic.line_only {
         format!(
             "{path}:{} [{severity}] {source}{message}{code}",
@@ -515,11 +521,15 @@ fn clean_text(text: &str) -> String {
 }
 
 fn note_text(note: &str) -> String {
-    let mut text = one_line(&pp_core::logging::diagnostic_text(note));
-    if text.chars().count() > 400 {
-        text = text.chars().take(400).collect::<String>() + "…";
+    truncate_chars(&one_line(&pp_core::logging::diagnostic_text(note)), 400)
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() > max_chars {
+        text.chars().take(max_chars).collect::<String>() + "…"
+    } else {
+        text.to_owned()
     }
-    text
 }
 
 fn one_line(text: &str) -> String {

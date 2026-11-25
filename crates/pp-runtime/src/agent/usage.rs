@@ -145,6 +145,29 @@ impl SessionEstimate {
     }
 }
 
+fn calibrate_tokens(
+    raw_tokens: u64,
+    last_request: Option<pp_core::context::TokenUsage>,
+    last_request_raw_tokens: Option<u64>,
+) -> u64 {
+    let (Some(usage), Some(last_raw)) = (last_request, last_request_raw_tokens) else {
+        return raw_tokens;
+    };
+    if last_raw == 0 || usage.input_tokens == 0 {
+        return raw_tokens;
+    }
+    let within_bounds = u128::from(usage.input_tokens) * 10 >= u128::from(last_raw) * 4
+        && u128::from(usage.input_tokens) <= u128::from(last_raw) * 3;
+    if !within_bounds {
+        return raw_tokens;
+    }
+    if raw_tokens >= last_raw {
+        usage.input_tokens.saturating_add(raw_tokens - last_raw)
+    } else {
+        usage.input_tokens.saturating_sub(last_raw - raw_tokens)
+    }
+}
+
 impl Agent {
     pub fn context_usage(&self) -> Result<ContextUsage> {
         // 空会话尚未发送上下文；有对话后才计入系统提示和工具等完整请求开销。
@@ -196,6 +219,15 @@ impl Agent {
         }
     }
 
+    /// 利用最近一次服务端真实上报的 `input_tokens` 与当时本地原始估算的差值，
+    /// 对当前增量估算做有界校准，用于触发自动裁剪与自动压缩阈值判定。
+    ///
+    /// 若服务端上报值与原始估算比例落在物理合理区间 `[0.4, 3.0]` 之外（例如异常上报或
+    /// 测试桩固定值），则直接回退到 `raw_tokens`，避免误触发或漏触发。
+    pub(in crate::agent) fn calibrated_context_tokens(&self, raw_tokens: u64) -> u64 {
+        calibrate_tokens(raw_tokens, self.last_request, self.last_request_raw_tokens)
+    }
+
     /// 实时同步 `/setting` 修改的自动压缩策略与阈值（下一次请求与 `/context` 立即生效）。
     pub fn set_compaction_policy(&mut self, auto_compact: bool, threshold_percent: u8) {
         self.auto_compact = auto_compact;
@@ -206,6 +238,7 @@ impl Agent {
     /// 会话累计输出；切模型、effort 和压缩只清最近请求指标。
     pub(in crate::agent) fn clear_session_usage(&mut self) {
         self.last_request = None;
+        self.last_request_raw_tokens = None;
         self.session_output_tokens = 0;
     }
 
@@ -440,5 +473,33 @@ mod tests {
         };
         request.input = InputParam::Text("plain shared input".into());
         assert_matches_full(&mut estimate, &mut session, "text input");
+    }
+
+    #[test]
+    fn calibrated_tokens_adjusts_within_sane_bounds_and_ignores_outliers() {
+        let usage = |input_tokens| {
+            Some(pp_core::context::TokenUsage {
+                input_tokens,
+                output_tokens: 50,
+                cached_tokens: None,
+                cache_write_tokens: None,
+                reasoning_tokens: None,
+            })
+        };
+        // 正常英文（真实 token 约为 bytes/3 的 0.75x）：增量校准保留真实基线 + 新增差值。
+        assert_eq!(calibrate_tokens(12_000, usage(7_500), Some(10_000)), 9_500);
+        // 密集 CJK/符号（真实 token 高于 bytes/3 的 1.5x）：校准向上修正避免漏触阈值。
+        assert_eq!(
+            calibrate_tokens(11_000, usage(15_000), Some(10_000)),
+            16_000
+        );
+        // 测试桩或异常极小/极大上报值超出 [0.4, 3.0] 合理区间，回退原始估算。
+        assert_eq!(calibrate_tokens(12_000, usage(200), Some(10_000)), 12_000);
+        assert_eq!(
+            calibrate_tokens(12_000, usage(50_000), Some(10_000)),
+            12_000
+        );
+        // 未收到服务端用量时直接返回原始估算。
+        assert_eq!(calibrate_tokens(12_000, None, Some(10_000)), 12_000);
     }
 }

@@ -186,6 +186,14 @@ impl Target {
         Ok(merged)
     }
 
+    pub(super) fn dedup_selector(&self) -> String {
+        if self.ranges.is_empty() {
+            String::new()
+        } else {
+            format!("{:?}", self.ranges)
+        }
+    }
+
     pub(super) fn next_path(&self, ranges: &[(usize, usize)]) -> String {
         let selection = ranges
             .iter()

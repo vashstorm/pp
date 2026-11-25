@@ -127,9 +127,16 @@ fn todo_executed_plan_done_writes_checkbox_and_reports_change() {
     assert_eq!(result["plan"]["revision"], 2);
     assert_eq!(result["plan"]["status"], "executed");
     assert_eq!(result["plan"]["readonly"], false);
-    assert_eq!(result["phases"][0]["tasks"][0]["status"], "completed");
-    assert_eq!(result["phases"][0]["tasks"][1]["status"], "in_progress");
+    assert!(result.get("phases").is_none());
     let change = execution.todo_change.expect("done must report a change");
+    assert_eq!(
+        change.phases[0].tasks[0].status,
+        pp_core::todo::TodoStatus::Completed
+    );
+    assert_eq!(
+        change.phases[0].tasks[1].status,
+        pp_core::todo::TodoStatus::InProgress
+    );
     assert_eq!(
         change.plan.as_ref().expect("plan projection").plan_id,
         document.id
@@ -168,7 +175,13 @@ fn todo_executed_plan_duplicate_needs_phase_or_occurrence() {
         ambiguous["error"],
         json!("Ambiguous plan task; specify phase or occurrence.")
     );
-    assert_eq!(ambiguous["phases"][0]["tasks"][0]["status"], "in_progress");
+    assert!(ambiguous.get("phases").is_none());
+    assert!(
+        ambiguous["content"]
+            .as_str()
+            .unwrap()
+            .contains("Write canary bytes. (in progress)")
+    );
     assert_eq!(
         std::fs::read(dir.path().join(".pp/plans/todo-duplicate.md")).unwrap(),
         content.as_bytes()
@@ -226,8 +239,12 @@ fn todo_executed_plan_block_is_runtime_only_without_revision() {
     );
     let result: Value = serde_json::from_str(&execution.output).unwrap();
     assert_eq!(result["ok"], true, "{result}");
-    assert_eq!(result["phases"][0]["tasks"][0]["status"], "blocked");
+    assert!(result.get("phases").is_none());
     let change = execution.todo_change.expect("block reports a change");
+    assert_eq!(
+        change.phases[0].tasks[0].status,
+        pp_core::todo::TodoStatus::Blocked
+    );
     let plan = change.plan.expect("plan projection");
     assert_eq!(plan.revision, document.revision);
     assert!(plan.content.is_none(), "runtime-only state has no content");
@@ -301,13 +318,25 @@ fn todo_finished_plan_is_read_only_until_init_detaches() {
         json!("Plan todos are read-only; initialize a new standalone list.")
     );
     assert_eq!(done["plan"]["readonly"], true);
-    assert_eq!(done["phases"][0]["tasks"][0]["status"], "completed");
+    assert!(done.get("phases").is_none());
+    assert!(
+        done["content"]
+            .as_str()
+            .unwrap()
+            .contains("[X] Write canary bytes.")
+    );
     // View stays available against the document projection.
     let view = todo_call(&tools, &workflow, json!({"op":"view"}));
     let view: Value = serde_json::from_str(&view.output).unwrap();
     assert_eq!(view["ok"], true);
     assert_eq!(view["plan"]["readonly"], true);
-    assert!(view["phases"][0]["tasks"][0]["status"] == "completed");
+    assert!(view.get("phases").is_none());
+    assert!(
+        view["content"]
+            .as_str()
+            .unwrap()
+            .contains("[X] Write canary bytes.")
+    );
     // Explicit init starts a standalone list: plan-less change, document
     // untouched.
     let init = todo_call(

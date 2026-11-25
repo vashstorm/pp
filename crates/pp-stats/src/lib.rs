@@ -21,7 +21,7 @@ pub use hook::{HookRun, HookStatus, hook};
 pub use maintenance::gc;
 pub(crate) use maintenance::maintain;
 pub(crate) use range::Range;
-pub(crate) use row::{COLUMNS, RequestRow, latest_sql, row};
+pub(crate) use row::{COLUMN_COUNT, COLUMNS, RequestRow, latest_sql, row};
 pub use save::{link, save};
 pub(crate) use schema::{ensure_column, ensure_schema, table_columns};
 pub(crate) use session::{SessionScope, session_requests_sql};
@@ -172,6 +172,7 @@ mod fixtures {
             output_tokens: Some(20),
             cached_tokens: Some(80),
             cache_write_tokens: Some(0),
+            reasoning_tokens: None,
             status: "ok".into(),
             stop_reason: Some("stop".into()),
             error_message: None,

@@ -16,6 +16,8 @@ pub(super) struct Aggregate {
     cached: Option<i64>,
     cache_write: Option<i64>,
     cache_write_known: u64,
+    reasoning: Option<i64>,
+    reasoning_known: u64,
     uncached: Option<i64>,
     tokens: Option<i64>,
     usage_known: u64,
@@ -46,6 +48,8 @@ impl Aggregate {
         add(&mut self.cached, r.cached_tokens);
         add(&mut self.cache_write, r.cache_write_tokens);
         self.cache_write_known += u64::from(r.cache_write_tokens.is_some());
+        add(&mut self.reasoning, r.reasoning_tokens);
+        self.reasoning_known += u64::from(r.reasoning_tokens.is_some());
         add(
             &mut self.tokens,
             r.input_tokens.zip(r.output_tokens).map(|(i, o)| i + o),
@@ -88,10 +92,17 @@ impl Aggregate {
             }
         };
         let tokens = |v: Option<i64>| if self.requests == 0 { Some(0) } else { v };
+        let cache_hit_rate = match (self.cached, self.input) {
+            (Some(cached), Some(input)) if input > 0 && cached >= 0 => {
+                Some((cached as f64 / input as f64).clamp(0.0, 1.0))
+            }
+            _ => None,
+        };
         json!({
             "requests":self.requests,"ok":self.ok,"failed":self.failed,"aborted":self.aborted,
             "input_tokens":tokens(self.input),"output_tokens":tokens(self.output),"cached_tokens":tokens(self.cached),"uncached_tokens":tokens(self.uncached),"tokens":tokens(self.tokens),
             "usage_known":self.usage_known,"cache_known":self.cache_known,"cache_write_known":self.cache_write_known,"cache_write_tokens":tokens(self.cache_write),
+            "reasoning_tokens":tokens(self.reasoning),"reasoning_known":self.reasoning_known,"cache_hit_rate":cache_hit_rate,
             "avg_duration_ms":avg(self.duration,self.requests),"avg_ttft_ms":avg(self.ttft,self.ttft_count),"tokens_per_second":avg(self.speed,self.speed_count),
             "first_seen":self.first,"last_seen":self.last,
             "priced":self.priced,"unpriced":self.requests-self.priced,
@@ -285,6 +296,7 @@ mod tests {
             output_tokens: Some(5),
             cached_tokens: Some(0),
             cache_write_tokens: Some(0),
+            reasoning_tokens: None,
             status: "ok".to_owned(),
             stop_reason: None,
             error_message: None,
@@ -475,5 +487,40 @@ providers:
                 }
             }
         }
+    }
+
+    #[test]
+    fn stats_analytics_aggregates_reasoning_tokens_and_cache_hit_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        let mut store = open_store(&path).unwrap();
+        let now = 1_800_000_000_000;
+        let session = dir.path().join("session.jsonl");
+
+        let mut with_reasoning = fixture("with-reasoning", now - 2000);
+        with_reasoning.session_file = Some(session.to_string_lossy().into_owned());
+        with_reasoning.input_tokens = Some(1000);
+        with_reasoning.output_tokens = Some(300);
+        with_reasoning.cached_tokens = Some(750);
+        with_reasoning.reasoning_tokens = Some(180);
+        store.insert(&with_reasoning, &Value::Null).unwrap();
+
+        let mut legacy = fixture("without-reasoning", now - 1000);
+        legacy.input_tokens = Some(1000);
+        legacy.output_tokens = Some(100);
+        legacy.cached_tokens = Some(250);
+        legacy.reasoning_tokens = None;
+        store.insert(&legacy, &Value::Null).unwrap();
+
+        let analytics = store.analytics(Range::All, now).unwrap();
+        assert_eq!(analytics["summary"]["reasoning_tokens"], 180);
+        assert_eq!(analytics["summary"]["reasoning_known"], 1);
+        assert!((analytics["summary"]["cache_hit_rate"].as_f64().unwrap() - 0.5).abs() < 1e-12);
+        assert_eq!(analytics["models"][0]["reasoning_tokens"], 180);
+        assert_eq!(analytics["providers"][0]["reasoning_tokens"], 180);
+
+        // 会话恢复路径同时还原 reasoning_tokens。
+        let restored = store.session_usage(&session).unwrap();
+        assert_eq!(restored.last_request.unwrap().reasoning_tokens, Some(180));
     }
 }

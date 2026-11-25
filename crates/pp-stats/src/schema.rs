@@ -21,7 +21,12 @@ const INDEXES: [&str; 7] = [
 const COLUMNS: [(&str, &[&str]); 2] = [
     (
         "requests",
-        &["cache_write_tokens", "cost_json", "rate_json"],
+        &[
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "cost_json",
+            "rate_json",
+        ],
     ),
     ("tool_calls", &["result_chars"]),
 ];
@@ -46,7 +51,7 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
             session_file TEXT, entry_id TEXT, duration_ms REAL NOT NULL, ttft_ms REAL,
             input_tokens INTEGER, output_tokens INTEGER, cached_tokens INTEGER,
             status TEXT NOT NULL CHECK(status IN ('ok','failed','aborted')), stop_reason TEXT, error_message TEXT,
-            cache_write_tokens INTEGER, cost_json TEXT, rate_json TEXT
+            cache_write_tokens INTEGER, reasoning_tokens INTEGER, cost_json TEXT, rate_json TEXT
         );
         CREATE TABLE IF NOT EXISTS request_contexts (
             request_id INTEGER PRIMARY KEY REFERENCES requests(id),
@@ -121,6 +126,13 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
         "requests",
         &mut requests,
         "cache_write_tokens",
+        "INTEGER",
+    )?;
+    changed |= ensure_column(
+        &tx,
+        "requests",
+        &mut requests,
+        "reasoning_tokens",
         "INTEGER",
     )?;
     changed |= ensure_column(&tx, "requests", &mut requests, "cost_json", "TEXT")?;
@@ -495,6 +507,7 @@ mod tests {
             "DROP INDEX hook_runs_event;",
             "ALTER TABLE requests DROP COLUMN rate_json;",
             "ALTER TABLE requests DROP COLUMN cache_write_tokens;",
+            "ALTER TABLE requests DROP COLUMN reasoning_tokens;",
             "ALTER TABLE tool_calls DROP COLUMN result_chars;",
             "CREATE INDEX tool_calls_error_time ON tool_calls(timestamp DESC,id DESC) WHERE status='error';",
         ] {

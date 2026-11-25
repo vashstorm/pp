@@ -161,7 +161,13 @@ impl AutoReviewState {
             config.protocol,
             AUTO_REVIEW_PROMPT.to_owned(),
         );
-        session.set_think_level(selection.effort);
+        let review_effort = if selection.enabled {
+            selection.effort
+        } else {
+            super::lowest_think_level(&config.thinking, selection.effort)
+        };
+        session.set_think_level(review_effort);
+        session.set_max_output_tokens(512);
         let intent = self
             .user_intent
             .read()

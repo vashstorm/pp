@@ -90,9 +90,28 @@ impl Tools {
             call.nested_hook_halt = nested_hook_halt;
         }
 
+        /// 单次 eval cell 最多附带给模型的图片张数，防止循环绘图撑爆请求与视觉 token。
+        const MAX_EVAL_IMAGES: usize = 4;
+
+        let mut value = outcome.value;
+        let mut omitted_images = 0usize;
+        if images.len() > MAX_EVAL_IMAGES {
+            omitted_images += images.len() - MAX_EVAL_IMAGES;
+            images.truncate(MAX_EVAL_IMAGES);
+        }
         for captured in outcome.images {
+            if images.len() >= MAX_EVAL_IMAGES {
+                omitted_images += 1;
+                continue;
+            }
             match decode_image(&format!("eval:{}", captured.mime_type), &captured.bytes) {
-                Ok(decoded) => images.extend(decoded.images),
+                Ok(decoded) => {
+                    let remaining = MAX_EVAL_IMAGES.saturating_sub(images.len());
+                    if decoded.images.len() > remaining {
+                        omitted_images += decoded.images.len() - remaining;
+                    }
+                    images.extend(decoded.images.into_iter().take(remaining));
+                }
                 Err(error) => tracing::warn!(
                     event = "eval_image_decode_failed",
                     error = %error,
@@ -100,8 +119,14 @@ impl Tools {
                 ),
             }
         }
+        if omitted_images > 0 {
+            value["images_omitted"] = json!(omitted_images);
+            value["images_notice"] = json!(format!(
+                "At most {MAX_EVAL_IMAGES} images are attached per eval call; {omitted_images} additional image(s) omitted."
+            ));
+        }
 
-        Ok((outcome.value, None, todo_change))
+        Ok((value, None, todo_change))
     }
 
     #[allow(clippy::too_many_arguments)]

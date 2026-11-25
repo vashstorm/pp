@@ -56,6 +56,12 @@ impl Binding {
     pub(crate) fn request_budget(&self) -> usize {
         self.inner.settings.request_budget
     }
+    pub(crate) fn token_budget(&self) -> Option<u64> {
+        self.inner.settings.token_budget
+    }
+    pub(crate) fn cost_budget_usd(&self) -> Option<f64> {
+        self.inner.settings.cost_budget_usd
+    }
 }
 struct PermitWake(thread::Thread);
 impl std::task::Wake for PermitWake {

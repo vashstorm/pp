@@ -1,4 +1,6 @@
-use super::{COLUMNS, CostSnapshot, Range, RequestRow, Store, analytics::Aggregate, row};
+use super::{
+    COLUMN_COUNT, COLUMNS, CostSnapshot, Range, RequestRow, Store, analytics::Aggregate, row,
+};
 use anyhow::{Context, Result};
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -237,8 +239,8 @@ impl Store {
         let mut pending: Option<(RequestRow, Vec<(String, u64)>)> = None;
         while let Some(r) = rows.next()? {
             let id: i64 = r.get(0)?;
-            let name: String = r.get(23)?;
-            let args_chars: i64 = r.get(24)?;
+            let name: String = r.get(COLUMN_COUNT)?;
+            let args_chars: i64 = r.get(COLUMN_COUNT + 1)?;
             let args_chars =
                 u64::try_from(args_chars).context("tool argument length is negative")?;
             match pending.as_mut() {

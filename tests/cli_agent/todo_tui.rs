@@ -68,7 +68,8 @@ fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             let result = plan_todo_result(&body, protocol, "view-after-switch");
             assert_eq!(result["ok"], true);
-            assert_eq!(result["phases"], json!([]));
+            assert!(result.get("phases").is_none());
+            assert!(result["content"].as_str().unwrap().contains("empty"));
             plan_final(request, protocol, "No previous tasks remain.");
             pty.completed();
             assert!(!pty.parser.screen().contents().contains("TODO ·"));
@@ -181,10 +182,18 @@ fn plan_todo_approval_case(context: usize) {
             );
             let (request, body) = pty.request_at(&fixture, api_path(protocol));
             let initial = plan_todo_result(&body, protocol, "initial-todo");
-            assert_eq!(initial["phases"][0]["tasks"][0]["status"], "in_progress");
+            assert!(initial.get("phases").is_none());
+            assert!(
+                initial["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("- [ ] Write canary bytes. (in progress)")
+            );
             let after = plan_todo_result(&body, protocol, "after-done");
-            assert_eq!(after["phases"][0]["tasks"][0]["status"], "completed");
-            assert_eq!(after["phases"][1]["tasks"][0]["status"], "in_progress");
+            assert!(after.get("phases").is_none());
+            let after_content = after["content"].as_str().unwrap();
+            assert!(after_content.contains("- [X] Write canary bytes."));
+            assert!(after_content.contains("- [ ] Read back canary bytes. (in progress)"));
             pty.text("TODO · 1/2");
             assert!(!pty.parser.screen().contents().contains("Todo · done"));
             assert!(!pty.parser.screen().contents().contains("Todo · view"));
@@ -308,14 +317,12 @@ fn plan_todo_same_batch_external_checkbox_sync_preserves_runtime_and_duplicate_l
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert_eq!(plan_todo_result(&body, protocol, "ambiguous")["ok"], false);
         let view = plan_todo_result(&body, protocol, "synced-view");
-        assert_eq!(view["phases"][0]["name"], "Renamed");
-        assert_eq!(view["phases"][0]["tasks"][0]["status"], "completed");
-        assert_eq!(view["phases"][0]["tasks"][1]["status"], "blocked");
-        assert_eq!(
-            view["phases"][0]["tasks"][1]["blocker"],
-            "external dependency"
-        );
-        assert_eq!(view["phases"][0]["tasks"][2]["status"], "in_progress");
+        assert!(view.get("phases").is_none());
+        let view_content = view["content"].as_str().unwrap();
+        assert!(view_content.contains("Renamed:"));
+        assert!(view_content.contains("- [X] duplicate"));
+        assert!(view_content.contains("- [ ] duplicate (blocked: external dependency)"));
+        assert!(view_content.contains("(in progress)"));
         plan_calls(
             request,
             protocol,

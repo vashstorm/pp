@@ -148,6 +148,7 @@ fn reset_clears_context_diagnosis_and_snapshot_to_zero() {
             output_tokens: 120,
             cached_tokens: Some(100),
             cache_write_tokens: None,
+            reasoning_tokens: None,
         });
         agent.session_output_tokens = 120;
         agent
@@ -232,6 +233,7 @@ fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
         output_tokens: 420,
         cached_tokens: Some(7200),
         cache_write_tokens: Some(800),
+        reasoning_tokens: None,
     });
     agent.session_output_tokens = 1234;
 
@@ -528,6 +530,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
         output_tokens: 340,
         cached_tokens: Some(600),
         cache_write_tokens: None,
+        reasoning_tokens: Some(90),
     });
     pp_stats::save(
         &ctx,
@@ -593,6 +596,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
             output_tokens: 340,
             cached_tokens: Some(600),
             cache_write_tokens: None,
+            reasoning_tokens: Some(90),
         })
     );
     assert_eq!(report.session_output_tokens, 340);

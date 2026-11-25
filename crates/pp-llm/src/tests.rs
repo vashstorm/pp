@@ -121,6 +121,8 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
         thinking: pp_config::models::ModelThinking::default(),
         base_url: base_url.parse().unwrap(),
         context_window: None,
+        prompt_cache_key: true,
+        prompt_cache_retention: None,
         agent_db_path: dir.path().join("agent.db"),
         settings: pp_config::config::Settings {
             stats: Default::default(),
@@ -132,6 +134,7 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
             tools: Default::default(),
             eval: Default::default(),
             lsp: Default::default(),
+            mcp: Default::default(),
             web_search: Default::default(),
             debug: false,
             notification_show_countdown: true,
@@ -148,6 +151,8 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
             bash_max_timeout_seconds: 600,
             auto_compact: true,
             auto_compact_threshold_percent: 80,
+            auto_prune: true,
+            auto_prune_threshold_percent: 60,
         },
     })
     .unwrap();
@@ -925,4 +930,47 @@ fn cancelled_stream_is_dropped_and_next_request_rebuilds_runtime() {
         assert_eq!(turn.usage, None);
         assert!(!turn.refusal);
     });
+}
+
+#[test]
+fn context_length_exceeded_fails_fast_without_retry_and_redacts_body() {
+    let server = TestServer::start().unwrap();
+    let mut client = test_client_with_rate_limit_budget(&format!("http://{}", server.addr()), 60);
+    let token = CancellationToken::new();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let first = server
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .expect("first request");
+            first
+                .respond(
+                    Response::builder()
+                        .status(400)
+                        .body(Body::from(
+                            r#"{"error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of secret-model-xyz"}}"#,
+                        ))
+                        .unwrap(),
+                )
+                .unwrap();
+        });
+        let err = client
+            .respond(
+                &CreateResponse::default(),
+                &token,
+                &mut || Ok(()),
+                &mut |_| {},
+            )
+            .err()
+            .unwrap();
+        assert!(crate::retry::is_context_overflow(&err), "{err:#}");
+        assert!(!err.to_string().contains("secret-model-xyz"), "{err:#}");
+    });
+    assert!(
+        server
+            .recv_timeout(Duration::from_millis(50))
+            .unwrap()
+            .is_none(),
+        "context overflow must not retry"
+    );
 }

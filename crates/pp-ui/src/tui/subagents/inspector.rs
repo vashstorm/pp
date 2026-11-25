@@ -491,6 +491,7 @@ mod tests {
                                 output_tokens: 123,
                                 cached_tokens: None,
                                 cache_write_tokens: None,
+                                reasoning_tokens: None,
                             }),
                             success: true,
                         },

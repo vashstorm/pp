@@ -13,6 +13,7 @@ mod view;
 pub use command::{Action, SUBCOMMANDS, help};
 pub use config::{EntryView, View};
 pub use connect_status::{ConnectPhase, ConnectSnapshot, ServerConnect};
+pub use view::ToolSummary;
 
 use anyhow::{Result, ensure};
 use async_openai::types::chat::FunctionObject;

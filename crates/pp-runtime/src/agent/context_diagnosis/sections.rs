@@ -20,6 +20,9 @@ pub(super) struct SectionWithRanges {
     pub tokens: u64,
     pub bytes: u64,
     pub ranges: Vec<(usize, usize)>,
+    /// 仅由 `reported_loads` 兜底补入的条目（不在 `actual_system` 中）；若该路径已由动态
+    /// developer 消息送达，则合并阶段按真实历史消息计入，避免重复统计。
+    pub fallback_items: Vec<(String, DiagnosticItem)>,
 }
 
 /// 从 `actual_system` 中剥离并构建已真实注入的 `AGENTS.md` 指令文件条目，
@@ -31,6 +34,7 @@ pub(super) fn build_agent_md_items(
     inspected_docs: &[InspectedDocument],
 ) -> Result<SectionWithRanges> {
     let mut items = Vec::new();
+    let mut fallback_items = Vec::new();
     let mut tokens = 0u64;
     let mut bytes = 0u64;
     let mut consumed_ranges: Vec<(usize, usize)> = Vec::new();
@@ -129,28 +133,29 @@ pub(super) fn build_agent_md_items(
         let rendered = project_instructions::render(std::slice::from_ref(&doc_opt));
         let b = estimate_bytes(&rendered)?;
         let t = b.div_ceil(3);
-        tokens = tokens.saturating_add(t);
-        bytes = bytes.saturating_add(b);
         seen_paths.insert(path_str.clone());
         let display_path = doc_opt
             .path
             .strip_prefix(cwd)
             .map(|rel| rel.display().to_string())
             .unwrap_or_else(|_| path_str.clone());
-        items.push(DiagnosticItem {
-            kind_label: "AGENTS.md".into(),
-            title: display_path,
-            subtitle: format!("root {}", doc_opt.root.display()),
-            tokens: t,
-            bytes: b,
-            preview: format!(
-                "Path: {}\nRoot: {}\nStatus: sent\nRaw bytes: {} · Injected bytes: {b} (~{t} tokens)\n\n{}",
-                doc_opt.path.display(),
-                doc_opt.root.display(),
-                doc_opt.content.len(),
-                truncate_preview(&doc_opt.content)
-            ),
-        });
+        fallback_items.push((
+            path_str.clone(),
+            DiagnosticItem {
+                kind_label: "AGENTS.md".into(),
+                title: display_path,
+                subtitle: format!("root {}", doc_opt.root.display()),
+                tokens: t,
+                bytes: b,
+                preview: format!(
+                    "Path: {}\nRoot: {}\nStatus: sent\nRaw bytes: {} · Injected bytes: {b} (~{t} tokens)\n\n{}",
+                    doc_opt.path.display(),
+                    doc_opt.root.display(),
+                    doc_opt.content.len(),
+                    truncate_preview(&doc_opt.content)
+                ),
+            },
+        ));
     }
 
     for doc in inspected_docs {
@@ -161,29 +166,30 @@ pub(super) fn build_agent_md_items(
         let rendered = project_instructions::render(std::slice::from_ref(&doc.document));
         let b = estimate_bytes(&rendered)?;
         let t = b.div_ceil(3);
-        tokens = tokens.saturating_add(t);
-        bytes = bytes.saturating_add(b);
-        seen_paths.insert(path_str);
+        seen_paths.insert(path_str.clone());
         let display_path = doc
             .document
             .path
             .strip_prefix(cwd)
             .map(|rel| rel.display().to_string())
             .unwrap_or_else(|_| doc.document.path.display().to_string());
-        items.push(DiagnosticItem {
-            kind_label: "AGENTS.md".into(),
-            title: display_path,
-            subtitle: format!("root {}", doc.document.root.display()),
-            tokens: t,
-            bytes: b,
-            preview: format!(
-                "Path: {}\nRoot: {}\nStatus: sent\nRaw bytes: {} · Injected bytes: {b} (~{t} tokens)\n\n{}",
-                doc.document.path.display(),
-                doc.document.root.display(),
-                doc.document.content.len(),
-                truncate_preview(&doc.document.content)
-            ),
-        });
+        fallback_items.push((
+            path_str,
+            DiagnosticItem {
+                kind_label: "AGENTS.md".into(),
+                title: display_path,
+                subtitle: format!("root {}", doc.document.root.display()),
+                tokens: t,
+                bytes: b,
+                preview: format!(
+                    "Path: {}\nRoot: {}\nStatus: sent\nRaw bytes: {} · Injected bytes: {b} (~{t} tokens)\n\n{}",
+                    doc.document.path.display(),
+                    doc.document.root.display(),
+                    doc.document.content.len(),
+                    truncate_preview(&doc.document.content)
+                ),
+            },
+        ));
     }
 
     Ok(SectionWithRanges {
@@ -191,6 +197,7 @@ pub(super) fn build_agent_md_items(
         tokens,
         bytes,
         ranges: consumed_ranges,
+        fallback_items,
     })
 }
 
@@ -260,6 +267,7 @@ pub(super) fn build_skill_items(
         tokens: summary_tokens,
         bytes: summary_bytes,
         ranges,
+        fallback_items: Vec::new(),
     })
 }
 

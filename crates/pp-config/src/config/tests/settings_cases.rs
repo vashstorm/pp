@@ -953,3 +953,28 @@ fn eval_settings_defaults_validation_and_checkpoint_compatibility() {
     assert_eq!(legacy.eval_timeout_seconds, 30);
     assert_eq!(legacy.eval_max_timeout_seconds, 600);
 }
+
+#[test]
+fn task_token_and_cost_budgets_validate_positive_finite_values() {
+    let default = load(None, Some(VALID_MODELS)).unwrap();
+    assert_eq!(default.settings.task.token_budget, None);
+    assert_eq!(default.settings.task.cost_budget_usd, None);
+
+    let configured = load(
+        Some("task:\n  token_budget: 50000\n  cost_budget_usd: 1.25\n"),
+        Some(VALID_MODELS),
+    )
+    .unwrap();
+    assert_eq!(configured.settings.task.token_budget, Some(50_000));
+    assert_eq!(configured.settings.task.cost_budget_usd, Some(1.25));
+
+    for bad in [
+        "task:\n  token_budget: 0\n",
+        "task:\n  cost_budget_usd: 0\n",
+        "task:\n  cost_budget_usd: -0.5\n",
+        "task:\n  cost_budget_usd: .nan\n",
+        "task:\n  cost_budget_usd: .inf\n",
+    ] {
+        assert!(load(Some(bad), Some(VALID_MODELS)).is_err(), "{bad}");
+    }
+}

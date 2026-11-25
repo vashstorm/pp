@@ -160,6 +160,7 @@ impl Agent {
             tools.limits = config.settings.tool_limits();
             tools.configure_eval(catalog.eval_settings());
             tools.configure_web_search(catalog.web_search_settings().clone());
+            tools.configure_mcp(catalog.mcp_settings());
             tools.skills = skills.clone();
             if !record.spec.isolated {
                 tools.write_lock = write_lock.clone();
@@ -259,7 +260,10 @@ impl Agent {
                 ),
                 auto_compact: config.settings.auto_compact,
                 auto_compact_threshold_percent: config.settings.auto_compact_threshold_percent,
+                auto_prune: config.settings.auto_prune,
+                auto_prune_threshold_percent: config.settings.auto_prune_threshold_percent,
                 last_request: None,
+                last_request_raw_tokens: None,
                 session_output_tokens: 0,
                 thinking_history: Vec::new(),
                 // 子 Agent 只吃角色配置：自己的 ModelState 没有手动覆盖。
@@ -278,6 +282,8 @@ impl Agent {
                     context_window: config.context_window,
                 },
                 think_level: actual_thinking,
+                prompt_cache_key_enabled: config.prompt_cache_key,
+                prompt_cache_retention: config.prompt_cache_retention,
                 base_system: format!(
                     "{}\n\nShared context:\n{}\n\nYou are subagent {}. Stay within your assignment. Return your final result to the parent. Do not modify the parent's TODO or plan.{}",
                     record.spec.prompt,
@@ -296,6 +302,9 @@ impl Agent {
                 pending_instructions: None,
                 pending_project_load: Vec::new(),
                 reported_project_load: Default::default(),
+                session_date: super::current_session_date(),
+                static_project_prompt: None,
+                delivered_project_docs: Default::default(),
                 request_skills: Vec::new(),
                 journal: SessionJournal::with_locks(
                     sessions.clone(),
@@ -363,6 +372,18 @@ impl Agent {
                 child.base_system.push_str("\nRead-only planning investigation: use only available read-only tools, including authorized MCP tools. Do not edit, run shell, or delegate further.");
             }
             child.session.set_think_level(child.think_level);
+            child.session.apply_cache_policy(
+                config.prompt_cache_key,
+                config.prompt_cache_retention,
+                || {
+                    super::generate_subagent_prompt_cache_key(
+                        &record.spec.definition,
+                        &record.spec.context,
+                        &plan,
+                        &child.current_model.model,
+                    )
+                },
+            );
             Ok(child)
         });
         let validator_catalog = self.catalog.clone();

@@ -253,6 +253,15 @@ impl Agent {
             self.clear_session_cost();
             self.pending_project_load.clear();
             self.reported_project_load.clear();
+            self.static_project_prompt = None;
+            self.delivered_project_docs.clear();
+            self.session_date = super::super::current_session_date();
+            self.session.clear_prompt_cache_key();
+            self.session.apply_cache_policy(
+                self.prompt_cache_key_enabled,
+                self.prompt_cache_retention,
+                || super::super::generate_prompt_cache_key(self.journal.id()),
+            );
             self.tools.reset_project_instructions([]);
         }
         self.finish_approved_move(pending_move, &token);
