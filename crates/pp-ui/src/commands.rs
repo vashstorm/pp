@@ -248,8 +248,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         display_label: None,
         aliases: &["/theme"],
         category: CommandCategory::Config,
-        usage: "/themes [nerd|ascii] [THEME]",
-        description: "Configure TUI icon style and color theme",
+        usage: "/themes [nerd|ascii] [THEME] [TOOL_STYLE]",
+        description: "Configure TUI icon style, color theme, and tool card style",
     },
     #[cfg(debug_assertions)]
     CommandSpec {
@@ -441,6 +441,7 @@ pub(crate) enum SkillCommand<'a> {
 pub(crate) struct ThemeCommand {
     pub(crate) theme: Option<pp_config::config::Theme>,
     pub(crate) icons: Option<pp_config::config::IconMode>,
+    pub(crate) tools: Option<pp_config::config::ToolStyle>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -673,25 +674,36 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         "/themes" | "/theme" => {
             let mut icons = None;
             let mut theme = None;
+            let mut tools = None;
             for word in argument.split_whitespace() {
                 if let Some(parsed) = pp_config::config::IconMode::parse(word) {
                     ensure!(
                         icons.replace(parsed).is_none(),
-                        "usage: /themes [nerd|ascii] [THEME]"
+                        "usage: /themes [nerd|ascii] [THEME] [TOOL_STYLE]"
                     );
                 } else if let Some(parsed) = pp_config::config::Theme::parse(word) {
                     ensure!(
                         theme.replace(parsed).is_none(),
-                        "usage: /themes [nerd|ascii] [THEME]"
+                        "usage: /themes [nerd|ascii] [THEME] [TOOL_STYLE]"
+                    );
+                } else if let Some(parsed) = pp_config::config::ToolStyle::parse(word) {
+                    ensure!(
+                        tools.replace(parsed).is_none(),
+                        "usage: /themes [nerd|ascii] [THEME] [TOOL_STYLE]"
                     );
                 } else {
                     bail!(
-                        "usage: /themes [nerd|ascii] [THEME] (icons: nerd, ascii; themes: {})",
-                        pp_config::config::Theme::ALL_NAMES
+                        "usage: /themes [nerd|ascii] [THEME] [TOOL_STYLE] (icons: nerd, ascii; themes: {}; tools: {})",
+                        pp_config::config::Theme::ALL_NAMES,
+                        pp_config::config::ToolStyle::ALL_NAMES
                     );
                 }
             }
-            return Ok(Some(Command::Themes(ThemeCommand { theme, icons })));
+            return Ok(Some(Command::Themes(ThemeCommand {
+                theme,
+                icons,
+                tools,
+            })));
         }
         _ => {
             let file: Option<&FileCommand> = files.entries.iter().find(|file| file.name == name);

@@ -246,9 +246,7 @@ impl TranscriptEntry {
     /// 参数预览与已提交 `edit` 卡片共用的文件卡片标题。
     pub(super) fn file_header(&self) -> Line<'static> {
         let tool = self.tool.as_deref().unwrap_or_default();
-        let style = Style::default()
-            .fg(palette::tool_accent(tool))
-            .bg(palette::edit_bg());
+        let style = card::surface_style(card::CardSurface::Edit, palette::tool_accent(tool));
         let meta = style.fg(palette::edit_meta());
         let label = if tool == "write" { "Write" } else { "Edit" };
         let preview_path;
@@ -294,7 +292,7 @@ impl TranscriptEntry {
         Line::from(spans)
     }
 
-    fn read_path_spans(&self) -> Vec<Span<'static>> {
+    pub(super) fn read_path_parts(&self) -> (String, String) {
         let path = self
             .result
             .as_ref()
@@ -355,15 +353,17 @@ impl TranscriptEntry {
         } else {
             ""
         };
+        (
+            pp_core::text::display_text(path).into_owned(),
+            format!("{range}{image}{status}{truncated}"),
+        )
+    }
+
+    fn read_path_spans(&self) -> Vec<Span<'static>> {
+        let (path, meta) = self.read_path_parts();
         vec![
-            Span::styled(
-                pp_core::text::display_text(path).into_owned(),
-                Style::default().fg(palette::read_summary_path()),
-            ),
-            Span::styled(
-                format!("{range}{image}{status}{truncated}"),
-                Style::default().fg(palette::activity()),
-            ),
+            Span::styled(path, Style::default().fg(palette::read_summary_path())),
+            Span::styled(meta, Style::default().fg(palette::activity())),
         ]
     }
 

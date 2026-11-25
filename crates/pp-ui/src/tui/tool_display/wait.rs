@@ -1,7 +1,11 @@
 //! 等待消息框只绘制 worker 发布的任务概况，不展示结果正文、不查询任务或读取日志。
 use super::*;
 
-pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
+pub(in crate::tui) fn render_inner(
+    view: View<'_>,
+    width: u16,
+    include_header: bool,
+) -> (ratatui::style::Color, Vec<Line<'static>>) {
     let result = view.result;
     let jobs = result.and_then(|r| r["jobs"].as_array());
     let jobs = jobs.map(Vec::as_slice).unwrap_or_default();
@@ -29,23 +33,26 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
     };
     let style = Style::default().fg(palette::read_text());
     let border = Style::default().fg(color);
-    let framed = width >= 8;
-    let inner = if framed { width - 4 } else { width };
     let mut body = Vec::new();
-    let suffix = if result.is_some_and(|r| r["cancelled"] == true) {
-        " · cancelled"
-    } else if result.is_some_and(|r| r["interrupted"] == true) {
-        " · interrupted by steering"
-    } else if result.is_some_and(|r| r["timed_out"] == true) {
-        " · timed out"
-    } else if view.running {
-        " · waiting"
-    } else {
-        " · snapshot"
-    };
-    body.push(Line::styled(format!("Wait · {running} running · {done} done · {failed} failed · {cancelled} cancelled{suffix}"), border.add_modifier(Modifier::BOLD)));
+    if include_header {
+        let suffix = if result.is_some_and(|r| r["cancelled"] == true) {
+            " · cancelled"
+        } else if result.is_some_and(|r| r["interrupted"] == true) {
+            " · interrupted by steering"
+        } else if result.is_some_and(|r| r["timed_out"] == true) {
+            " · timed out"
+        } else if view.running {
+            " · waiting"
+        } else {
+            " · snapshot"
+        };
+        body.push(Line::styled(
+            format!("Wait · {running} running · {done} done · {failed} failed · {cancelled} cancelled{suffix}"),
+            border.add_modifier(Modifier::BOLD),
+        ));
+    }
     if !jobs.is_empty() {
-        let cells = usize::from(inner).saturating_sub(14).clamp(1, 24);
+        let cells = usize::from(width).saturating_sub(14).clamp(1, 24);
         let filled = cells * settled / jobs.len();
         body.push(Line::styled(
             format!(
@@ -120,7 +127,7 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
                 format!("{summary} · {label}")
             };
             body.push(Line::styled(
-                clip(&summary, usize::from(inner), true),
+                clip(&summary, usize::from(width), true),
                 style.fg(tone),
             ));
         } else {
@@ -134,6 +141,14 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
             style.fg(palette::muted()),
         ));
     }
+    (color, body)
+}
+
+pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
+    let framed = width >= 8;
+    let inner = if framed { width - 4 } else { width };
+    let (color, body) = render_inner(view, inner, true);
+    let border = Style::default().fg(color);
     let mut rows = Vec::new();
     if framed {
         rows.push(Line::styled(

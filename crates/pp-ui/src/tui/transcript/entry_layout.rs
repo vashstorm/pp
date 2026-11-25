@@ -33,6 +33,8 @@ impl TranscriptEntry {
         }
         if !self.hidden && self.tool.as_deref() == Some("read") && self.display_title.is_none() {
             self.display_title = Some(Self::read_summary(std::slice::from_ref(self)));
+            let (path, meta) = self.read_path_parts();
+            self.read_group = vec![card::ReadItem { path, meta }];
         }
         if self.markdown_dirty {
             self.body = EntryBody::Markdown(crate::tui::markdown::parse_streaming(
@@ -120,6 +122,10 @@ impl TranscriptEntry {
             self.layout = Some(std::sync::Arc::new(EntryLayout::owned(width, lines)));
             return;
         }
+        if let Some(lines) = card::build_non_classic_layout(self, width) {
+            self.layout = Some(std::sync::Arc::new(EntryLayout::owned(width, lines)));
+            return;
+        }
         if self.is_wait_card() {
             let lines = tool_display::wait_body(
                 tool_display::View {
@@ -204,76 +210,9 @@ impl TranscriptEntry {
                     }),
             );
         } else if bash {
-            if let Some(snapshot) = &self.shell {
-                lines.extend(
-                    tool_display::shell_command(snapshot, self.expanded, self.display, width)
-                        .into_iter()
-                        .map(|line| LayoutLine {
-                            content: LayoutContent::Styled(line),
-                            height: 1,
-                        }),
-                );
-            } else {
-                let style = Style::default()
-                    .fg(palette::tool_command())
-                    .bg(bash_background());
-                let mut command = tool_display::command(&self.title, self.expanded, self.display);
-                if self.tool.as_deref() != Some("bash")
-                    && !self.expanded
-                    && !self.display.full
-                    && self.title.lines().count() > self.display.window()
-                    && let Some(marker) = command.first_mut()
-                {
-                    *marker = format!(
-                        "{} {marker}",
-                        palette::tool_icon(self.tool.as_deref().unwrap_or("bash"))
-                    );
-                }
-                lines.extend(
-                    command
-                        .into_iter()
-                        .flat_map(|command| {
-                            let line = if let Some(text) = command.strip_prefix("$ ") {
-                                Line::from(vec![
-                                    Span::styled("$ ", style.fg(self.tool_accent())),
-                                    Span::styled(text.to_owned(), style),
-                                ])
-                                .style(style)
-                            } else {
-                                let color = if command.starts_with('…') {
-                                    palette::muted()
-                                } else {
-                                    palette::tool_command()
-                                };
-                                Line::styled(command, style.fg(color))
-                            };
-                            wrap_block(line, width, "")
-                        })
-                        .map(|line| LayoutLine {
-                            content: LayoutContent::Styled(line),
-                            height: 1,
-                        }),
-                );
-            }
+            self.push_bash_command_lines(width, &mut lines);
         } else if eval {
-            let lang = tool_display::EvalLang::from_entry(&self.arguments, self.result.as_ref());
-            let title_arg = self.arguments["title"].as_str();
-            let code = self.arguments["code"].as_str().unwrap_or("");
-            lines.extend(
-                tool_display::eval_code_lines(
-                    &lang,
-                    title_arg,
-                    code,
-                    self.expanded,
-                    self.display,
-                    width,
-                )
-                .into_iter()
-                .map(|line| LayoutLine {
-                    content: LayoutContent::Styled(line),
-                    height: 1,
-                }),
-            );
+            self.push_eval_code_lines(width, &mut lines);
         } else if search {
             let view = tool_display::View {
                 name: self.tool.as_deref().unwrap_or_default(),
@@ -342,62 +281,7 @@ impl TranscriptEntry {
             && !matches!(self.body, EntryBody::Lsp(_))
             && eval_has_output;
         if tool_body {
-            // 正文只由 stdout 组成时直接借用，避免每帧复制整段工具输出。
-            let joined;
-            let text: &str = if self.visible_text().is_empty()
-                && self.stderr.is_empty()
-                && self.pipeline_preview.is_none()
-            {
-                self.stdout.strip_suffix('\n').unwrap_or(&self.stdout)
-            } else {
-                let mut text = self.visible_text().to_owned();
-                if !self.stdout.is_empty() {
-                    if !text.is_empty() {
-                        text.push('\n');
-                    }
-                    text.push_str(self.stdout.strip_suffix('\n').unwrap_or(&self.stdout));
-                }
-                if !self.stderr.is_empty() {
-                    if !text.is_empty() {
-                        text.push('\n');
-                    }
-                    text.push_str("[stderr]\n");
-                    text.push_str(self.stderr.strip_suffix('\n').unwrap_or(&self.stderr));
-                }
-                if let Some(preview) = &self.pipeline_preview {
-                    text.clone_from(preview);
-                }
-                joined = text;
-                &joined
-            };
-            let style = if bash {
-                Style::default().fg(muted_text()).bg(bash_background())
-            } else if eval {
-                Style::default().fg(palette::muted()).bg(eval_background())
-            } else {
-                Style::default().add_modifier(Modifier::DIM)
-            };
-            lines.extend(
-                tool_display::body(
-                    tool_display::View {
-                        name: self.tool.as_deref().unwrap_or_default(),
-                        text,
-                        arguments: &self.arguments,
-                        result: self.result.as_ref(),
-                        running: self.status == EntryStatus::Running,
-                        failed: self.status == EntryStatus::Failed,
-                        expanded: self.expanded,
-                        context: self.display,
-                    },
-                    width,
-                    style,
-                )
-                .into_iter()
-                .map(|line| LayoutLine {
-                    content: LayoutContent::Styled(line),
-                    height: 1,
-                }),
-            );
+            self.push_tool_body_lines(width, &mut lines);
         } else if let EntryBody::ArgumentsPreview { truncated } = self.body {
             lines.extend(
                 super::preview::layout(
@@ -646,6 +530,368 @@ impl TranscriptEntry {
                 height: 0,
             });
             start += logical.len() + 1;
+        }
+    }
+
+    fn push_bash_command_lines(&self, width: u16, lines: &mut Vec<LayoutLine>) {
+        if let Some(snapshot) = &self.shell {
+            lines.extend(
+                tool_display::shell_command(snapshot, self.expanded, self.display, width)
+                    .into_iter()
+                    .map(|line| LayoutLine {
+                        content: LayoutContent::Styled(line),
+                        height: 1,
+                    }),
+            );
+            return;
+        }
+        let style = card::surface_style(card::CardSurface::Bash, palette::tool_command());
+        let mut command = tool_display::command(&self.title, self.expanded, self.display);
+        if self.tool.as_deref() != Some("bash")
+            && !self.expanded
+            && !self.display.full
+            && self.title.lines().count() > self.display.window()
+            && let Some(marker) = command.first_mut()
+        {
+            *marker = format!(
+                "{} {marker}",
+                palette::tool_icon(self.tool.as_deref().unwrap_or("bash"))
+            );
+        }
+        lines.extend(
+            command
+                .into_iter()
+                .flat_map(|command| {
+                    let line = if let Some(text) = command.strip_prefix("$ ") {
+                        Line::from(vec![
+                            Span::styled("$ ", style.fg(self.tool_accent())),
+                            Span::styled(text.to_owned(), style),
+                        ])
+                        .style(style)
+                    } else {
+                        let color = if command.starts_with('…') {
+                            palette::muted()
+                        } else {
+                            palette::tool_command()
+                        };
+                        Line::styled(command, style.fg(color))
+                    };
+                    wrap_block(line, width, "")
+                })
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
+        );
+    }
+
+    fn push_eval_code_lines(&self, width: u16, lines: &mut Vec<LayoutLine>) {
+        let lang = tool_display::EvalLang::from_entry(&self.arguments, self.result.as_ref());
+        let title_arg = self.arguments["title"].as_str();
+        let code = self.arguments["code"].as_str().unwrap_or("");
+        lines.extend(
+            tool_display::eval_code_lines(
+                &lang,
+                title_arg,
+                code,
+                self.expanded,
+                self.display,
+                width,
+            )
+            .into_iter()
+            .map(|line| LayoutLine {
+                content: LayoutContent::Styled(line),
+                height: 1,
+            }),
+        );
+    }
+
+    fn push_tool_body_lines(&self, width: u16, lines: &mut Vec<LayoutLine>) {
+        let bash = self.kind == EntryKind::Bash;
+        let eval = self.kind == EntryKind::Eval;
+        // 正文只由 stdout 组成时直接借用，避免每帧复制整段工具输出。
+        let joined;
+        let text: &str = if self.visible_text().is_empty()
+            && self.stderr.is_empty()
+            && self.pipeline_preview.is_none()
+        {
+            self.stdout.strip_suffix('\n').unwrap_or(&self.stdout)
+        } else {
+            let mut text = self.visible_text().to_owned();
+            if !self.stdout.is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(self.stdout.strip_suffix('\n').unwrap_or(&self.stdout));
+            }
+            if !self.stderr.is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str("[stderr]\n");
+                text.push_str(self.stderr.strip_suffix('\n').unwrap_or(&self.stderr));
+            }
+            if let Some(preview) = &self.pipeline_preview {
+                text.clone_from(preview);
+            }
+            joined = text;
+            &joined
+        };
+        let style = if bash {
+            card::surface_style(card::CardSurface::Bash, muted_text())
+        } else if eval {
+            card::surface_style(card::CardSurface::Eval, palette::muted())
+        } else {
+            Style::default().add_modifier(Modifier::DIM)
+        };
+        lines.extend(
+            tool_display::body(
+                tool_display::View {
+                    name: self.tool.as_deref().unwrap_or_default(),
+                    text,
+                    arguments: &self.arguments,
+                    result: self.result.as_ref(),
+                    running: self.status == EntryStatus::Running,
+                    failed: self.status == EntryStatus::Failed,
+                    expanded: self.expanded,
+                    context: self.display,
+                },
+                width,
+                style,
+            )
+            .into_iter()
+            .map(|line| LayoutLine {
+                content: LayoutContent::Styled(line),
+                height: 1,
+            }),
+        );
+    }
+
+    pub(super) fn collect_non_classic_sections(
+        &self,
+        width: u16,
+        allow_inline_bash: bool,
+    ) -> (Vec<LayoutLine>, Vec<LayoutLine>) {
+        let mut input_lines = Vec::new();
+        let mut output_lines = Vec::new();
+
+        if self.is_wait_card() {
+            let (_, body) = tool_display::wait_inner_body(
+                tool_display::View {
+                    name: "wait",
+                    text: &self.text,
+                    arguments: &self.arguments,
+                    result: self.result.as_ref(),
+                    running: self.status == EntryStatus::Running,
+                    failed: self.status == EntryStatus::Failed,
+                    expanded: self.expanded,
+                    context: self.display,
+                },
+                width,
+                false,
+            );
+            for line in body {
+                let safe = pp_core::text::display_text(&line.to_string()).into_owned();
+                for row in wrap_block(Line::styled(safe, line.style), width.max(1), "") {
+                    output_lines.push(LayoutLine {
+                        content: LayoutContent::Styled(row),
+                        height: 1,
+                    });
+                }
+            }
+            return (input_lines, output_lines);
+        }
+
+        let bash = self.kind == EntryKind::Bash;
+        let eval = self.kind == EntryKind::Eval;
+        let edit = self.is_edit();
+
+        if bash {
+            if !(allow_inline_bash && card::anatomy::inline_bash_command(self, width).is_some()) {
+                self.push_bash_command_lines(width, &mut input_lines);
+            }
+        } else if eval {
+            self.push_eval_code_lines(width, &mut input_lines);
+        }
+
+        if self.is_file_read() && self.read_group.len() > 1 {
+            for idx in 0..self.read_group.len() {
+                output_lines.push(LayoutLine {
+                    content: LayoutContent::Source {
+                        source: Source::ReadItem(idx),
+                        range: 0..0,
+                        title_end: false,
+                    },
+                    height: 1,
+                });
+            }
+        }
+
+        let eval_has_output = !eval
+            || self.status != EntryStatus::Complete
+            || !self.visible_text().is_empty()
+            || !self.stdout.is_empty()
+            || !self.stderr.is_empty();
+        let tool_body = (self.is_collapsible_tool() || self.is_file_read())
+            && !self.is_argument_preview()
+            && !(self.tool.as_deref() == Some("edit") && matches!(self.body, EntryBody::Diff(_)))
+            && !matches!(self.body, EntryBody::Lsp(_))
+            && eval_has_output;
+
+        if tool_body {
+            // `write` 成功时的 "Wrote N bytes" 已呈现在头部 meta，仅保留正文内容（如有）。
+            if !(self.tool.as_deref() == Some("write")
+                && self.status == EntryStatus::Complete
+                && self.visible_text().starts_with("Wrote ")
+                && self.arguments["content"].as_str().unwrap_or("").is_empty())
+            {
+                self.push_tool_body_lines(width, &mut output_lines);
+            }
+        } else if let EntryBody::ArgumentsPreview { truncated } = self.body {
+            output_lines.extend(
+                super::preview::layout(
+                    &self.text,
+                    self.tool.as_deref().unwrap_or_default(),
+                    width,
+                    self.expanded || self.display.full,
+                    truncated,
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
+            );
+        } else if let EntryBody::Diff(diff) = &self.body {
+            output_lines.extend(
+                diff_layout_styled(
+                    diff,
+                    width,
+                    self.expanded || self.display.full,
+                    edit.then(|| self.edit_path()),
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
+            );
+            if let Some(warning) = self.text.strip_prefix("Warning: ") {
+                output_lines.extend(
+                    wrap_block(
+                        block_line(
+                            format!("Warning: {warning}"),
+                            Style::default().fg(palette::muted()),
+                        ),
+                        width,
+                        "",
+                    )
+                    .into_iter()
+                    .map(|line| LayoutLine {
+                        content: LayoutContent::Styled(line),
+                        height: 1,
+                    }),
+                );
+            }
+        } else if let EntryBody::Ask(block) = &self.body {
+            output_lines.extend(block.layout(width).into_iter().map(|line| LayoutLine {
+                content: LayoutContent::Styled(line),
+                height: 1,
+            }));
+            if !self.text.is_empty() {
+                output_lines.extend(
+                    wrap_block(
+                        block_line(self.text.clone(), Style::default().fg(palette::muted())),
+                        width,
+                        "",
+                    )
+                    .into_iter()
+                    .map(|line| LayoutLine {
+                        content: LayoutContent::Styled(line),
+                        height: 1,
+                    }),
+                );
+            }
+        } else if let EntryBody::Lsp(block) = &self.body {
+            output_lines.extend(
+                crate::tui::lsp::body(
+                    block,
+                    self.arguments["action"].as_str().unwrap_or_default(),
+                    width,
+                    self.expanded || self.display.full,
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
+            );
+        } else if !self.visible_text().is_empty() && !self.is_file_read() {
+            self.push_wrapped_source(Source::Text, width, &mut output_lines);
+        }
+
+        if !tool_body && !self.stdout.is_empty() {
+            if !bash {
+                self.push_wrapped_source(Source::StdoutLabel, width, &mut output_lines);
+            }
+            self.push_wrapped_source(Source::Stdout, width, &mut output_lines);
+        }
+        if !tool_body && !self.stderr.is_empty() {
+            self.push_wrapped_source(Source::StderrLabel, width, &mut output_lines);
+            self.push_wrapped_source(Source::Stderr, width, &mut output_lines);
+        }
+        if !self.diagnostics.is_empty() {
+            output_lines.extend(
+                crate::tui::lsp::diagnostics_lines(
+                    &self.diagnostics,
+                    width,
+                    self.expanded || self.display.full,
+                )
+                .into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                }),
+            );
+        }
+        if self.tool.as_deref() == Some("write")
+            && self.status == EntryStatus::Complete
+            && self.text.starts_with("Warning: ")
+        {
+            for row in wrap_block(
+                block_line(self.text.clone(), Style::default().fg(palette::accent())),
+                width,
+                "",
+            ) {
+                output_lines.push(LayoutLine {
+                    content: LayoutContent::Styled(row),
+                    height: 1,
+                });
+            }
+        }
+
+        (input_lines, output_lines)
+    }
+
+    fn push_wrapped_source(&self, source: Source, width: u16, out: &mut Vec<LayoutLine>) {
+        let mut raw = Vec::new();
+        self.add_lines(source, &mut raw);
+        for line in &raw {
+            let borrowed = self.line(line);
+            let owned = Line::from(
+                borrowed
+                    .spans
+                    .into_iter()
+                    .map(|s| Span::styled(s.content.into_owned(), s.style))
+                    .collect::<Vec<_>>(),
+            )
+            .style(borrowed.style);
+            for row in wrap_block(owned, width, "") {
+                out.push(LayoutLine {
+                    content: LayoutContent::Styled(row),
+                    height: 1,
+                });
+            }
         }
     }
 }

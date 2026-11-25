@@ -18,7 +18,7 @@ pub(super) use eval::{EvalLang, eval_body, eval_code_lines};
 pub(super) use shell::command as shell_command;
 mod todo;
 mod wait;
-pub(super) use wait::render as wait_body;
+pub(super) use wait::{render as wait_body, render_inner as wait_inner_body};
 mod write;
 
 use self::search::{glob_body, plan_search, rg_body, web_search_body};

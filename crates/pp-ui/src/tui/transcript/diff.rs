@@ -162,13 +162,14 @@ pub(in crate::tui) fn diff_layout_styled(
             let mut spans = if let Some(path) = edit_path {
                 let mut spans = vec![Span::styled(
                     format!("{mark}{number:>gutter$}│"),
-                    Style::default()
-                        .fg(if line.kind == DiffLineKind::Context {
+                    card::surface_style(
+                        card::CardSurface::Edit,
+                        if line.kind == DiffLineKind::Context {
                             palette::edit_meta()
                         } else {
                             color
-                        })
-                        .bg(palette::edit_bg()),
+                        },
+                    ),
                 )];
                 spans.extend(crate::tui::edit_diff::spans(
                     text,

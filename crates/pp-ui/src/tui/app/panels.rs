@@ -838,6 +838,9 @@ impl App {
             MenuAction::ThemeColor(theme) => {
                 return self.complete_theme_argument(theme.as_str(), confirm);
             }
+            MenuAction::ThemeTool(style) => {
+                return self.complete_theme_argument(style.as_str(), confirm);
+            }
         }
         false
     }

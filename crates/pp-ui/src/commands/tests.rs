@@ -427,7 +427,7 @@ fn slash_help_lists_debug_only_commands_in_debug_builds() {
 
 #[test]
 fn slash_themes_parses_icons_and_theme_arguments() {
-    use pp_config::config::{IconMode, Theme};
+    use pp_config::config::{IconMode, Theme, ToolStyle};
 
     let files = FileCommands::default();
     assert_eq!(
@@ -435,6 +435,7 @@ fn slash_themes_parses_icons_and_theme_arguments() {
         Some(Command::Themes(ThemeCommand {
             theme: None,
             icons: None,
+            tools: None,
         }))
     );
     assert_eq!(
@@ -442,6 +443,7 @@ fn slash_themes_parses_icons_and_theme_arguments() {
         Some(Command::Themes(ThemeCommand {
             theme: Some(Theme::TokyoNight),
             icons: Some(IconMode::Ascii),
+            tools: None,
         }))
     );
     assert_eq!(
@@ -449,13 +451,31 @@ fn slash_themes_parses_icons_and_theme_arguments() {
         Some(Command::Themes(ThemeCommand {
             theme: Some(Theme::Dracula),
             icons: Some(IconMode::Nerd),
+            tools: None,
+        }))
+    );
+    assert_eq!(
+        parse("/themes rail", &files).unwrap(),
+        Some(Command::Themes(ThemeCommand {
+            theme: None,
+            icons: None,
+            tools: Some(ToolStyle::Rail),
+        }))
+    );
+    assert_eq!(
+        parse("/themes ascii dracula ledger", &files).unwrap(),
+        Some(Command::Themes(ThemeCommand {
+            theme: Some(Theme::Dracula),
+            icons: Some(IconMode::Ascii),
+            tools: Some(ToolStyle::Ledger),
         }))
     );
     for invalid in [
         "/themes unknown",
         "/themes ascii nerd",
         "/themes nord dracula",
-        "/themes ascii tokyonight extra",
+        "/themes rail slab",
+        "/themes ascii tokyonight rail extra",
     ] {
         assert!(parse(invalid, &files).is_err(), "{invalid}");
     }

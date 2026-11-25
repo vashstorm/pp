@@ -146,4 +146,10 @@ impl super::Transcript {
         self.geometry.sync(slots);
         self.total = self.geometry.total();
     }
+
+    pub(in crate::tui) fn measure_height(&mut self, width: u16) -> usize {
+        self.prepare_layout(width);
+        self.sync_geometry();
+        self.total
+    }
 }

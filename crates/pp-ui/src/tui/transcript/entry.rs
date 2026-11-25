@@ -36,6 +36,7 @@ impl TranscriptEntry {
             diagnostics: Vec::new(),
             display: DisplayContext::default(),
             display_title: None,
+            read_group: Vec::new(),
             hidden: false,
         }
     }

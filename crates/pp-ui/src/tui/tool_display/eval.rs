@@ -1,6 +1,7 @@
 //! `eval` 工具独立展示模块：语言识别（Python / JavaScript / 回退）、代码语法高亮与输出尾窗。
 
 use super::{Context, View, palette, tail_output, wrap_block};
+use crate::tui::transcript::card::{self, CardSurface};
 use pp_config::config::IconMode;
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -121,17 +122,22 @@ pub(in crate::tui) fn eval_code_lines(
     context: Context,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let bg = palette::eval_bg();
+    let bg = card::surface_bg(CardSurface::Eval);
+    let with_bg = |s: Style| match bg {
+        Some(bg) => s.bg(bg),
+        None => s,
+    };
     let mut rows = Vec::new();
     if let Some(title) = title.map(str::trim).filter(|s| !s.is_empty()) {
         let header = Line::from(vec![
-            Span::styled("▸ ", Style::default().fg(lang.accent()).bg(bg)),
+            Span::styled("▸ ", with_bg(Style::default().fg(lang.accent()))),
             Span::styled(
                 pp_core::text::display_text(title).into_owned(),
-                Style::default()
-                    .fg(palette::eval_title())
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD),
+                with_bg(
+                    Style::default()
+                        .fg(palette::eval_title())
+                        .add_modifier(Modifier::BOLD),
+                ),
             ),
         ]);
         rows.extend(wrap_block(header, width, ""));
@@ -147,8 +153,8 @@ pub(in crate::tui) fn eval_code_lines(
         .highlight_token()
         .and_then(|token| crate::tui::markdown::highlight_code_document(token, &sanitized));
 
-    let base_style = Style::default().fg(palette::tool_command()).bg(bg);
-    let bg_only = Style::default().bg(bg);
+    let base_style = with_bg(Style::default().fg(palette::tool_command()));
+    let bg_only = with_bg(Style::default());
     let mut code_lines: Vec<Line<'static>> = if let Some(lines) = highlighted {
         lines
             .iter()
@@ -175,7 +181,7 @@ pub(in crate::tui) fn eval_code_lines(
             0,
             Line::styled(
                 format!("… {hidden} earlier lines (Ctrl + O to expand)"),
-                Style::default().fg(palette::muted()).bg(bg),
+                with_bg(Style::default().fg(palette::muted())),
             ),
         );
     }

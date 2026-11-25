@@ -79,8 +79,7 @@ impl App {
             && let Some(panel) = self.themes_panel.take()
         {
             // 未保存离开 Themes 时恢复进入前持久化外观，避免悬停预览泄漏。
-            let (saved_theme, saved_icons) = panel.saved_appearance();
-            self.apply_appearance(saved_theme, saved_icons);
+            self.apply_appearance(panel.saved_appearance());
         }
         if keep != Some(settings::Tab::Skills) {
             self.skill_panel = None;

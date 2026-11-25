@@ -17,9 +17,9 @@ impl Panel {
         if area.is_empty() {
             return;
         }
-        let (selected_theme, selected_icons) = self.preview_appearance();
-        let p = palette_for(selected_theme);
-        let ascii = selected_icons == IconMode::Ascii;
+        let appearance = self.preview_appearance();
+        let p = palette_for(appearance.theme);
+        let ascii = appearance.icons == IconMode::Ascii;
 
         frame.render_widget(Clear, area);
         frame.render_widget(
@@ -60,8 +60,9 @@ impl Panel {
                 "Themes — {} · saved: {}",
                 self.category_label(),
                 match self.category {
-                    Category::IconMode => self.saved_icons.label(),
-                    Category::Theme => self.saved_theme.label(),
+                    Category::IconMode => self.saved.icons.label(),
+                    Category::Theme => self.saved.theme.label(),
+                    Category::Tools => self.saved.tools.label(),
                 }
             );
             frame.render_widget(
@@ -98,7 +99,7 @@ impl Panel {
                 ])
                 .split(body);
             self.sidebar_area = cols[0];
-            self.draw_sidebar(frame, cols[0], p, selected_icons, ascii);
+            self.draw_sidebar(frame, cols[0], p, appearance.icons, ascii);
             frame.render_widget(
                 Paragraph::new(vec![Line::from("│"); usize::from(cols[1].height)])
                     .style(Style::default().fg(p.panel_border)),
@@ -120,7 +121,7 @@ impl Panel {
             narrow[1]
         };
 
-        self.draw_right(frame, right_area, p, selected_theme, selected_icons, ascii);
+        self.draw_right(frame, right_area, p, appearance, ascii);
         self.draw_footer(frame, footer_area, p);
     }
 
@@ -147,6 +148,12 @@ impl Panel {
                 if ascii { "T" } else { "\u{f09a9}" },
                 "Color Theme",
                 Theme::ALL.len().to_string(),
+            ),
+            (
+                self.category == Category::Tools,
+                if ascii { "C" } else { "\u{f0ad}" },
+                "Tools",
+                ToolStyle::ALL.len().to_string(),
             ),
         ];
         let mut lines = Vec::with_capacity(items.len());
@@ -185,15 +192,18 @@ impl Panel {
         frame: &mut Frame,
         area: Rect,
         p: &Palette,
-        selected_theme: Theme,
-        selected_icons: IconMode,
+        appearance: Appearance,
         ascii: bool,
     ) {
         if area.is_empty() {
             return;
         }
-        // 按两个分类的最大列表行数固定上方列表槽位（上限 MAX_LIST_ROWS），既防止切换分类时预览区跳动，又保证下方预览区有充裕高度。
-        let max_list_rows = (IconMode::ALL.len().max(Theme::ALL.len()) as u16).min(MAX_LIST_ROWS);
+        // 按全部分类的最大列表行数固定上方列表槽位（上限 MAX_LIST_ROWS），既防止切换分类时预览区跳动，又保证下方预览区有充裕高度。
+        let max_list_rows = (IconMode::ALL
+            .len()
+            .max(Theme::ALL.len())
+            .max(ToolStyle::ALL.len()) as u16)
+            .min(MAX_LIST_ROWS);
         if area.height >= 12 {
             let list_height = max_list_rows.min(area.height.saturating_sub(6).max(2));
             let spacer = if area.height >= list_height + 19 {
@@ -214,14 +224,11 @@ impl Panel {
                 area.bottom().saturating_sub(preview_y),
             );
             self.draw_list(frame, list_area, p, ascii);
-            super::preview::draw(
-                frame,
-                preview_area,
-                p,
-                selected_theme,
-                selected_icons,
-                ascii,
-            );
+            if self.category == Category::Tools {
+                super::tools_preview::draw(frame, preview_area, p, appearance, ascii);
+            } else {
+                super::preview::draw(frame, preview_area, p, appearance, ascii);
+            }
         } else {
             self.draw_list(frame, area, p, ascii);
         }
@@ -264,7 +271,7 @@ impl Panel {
                     .enumerate()
                 {
                     let selected = idx == self.icon_index && !self.sidebar_focus;
-                    let is_saved = mode == self.saved_icons;
+                    let is_saved = mode == self.saved.icons;
                     let mode_ascii = mode == IconMode::Ascii;
                     let row_bg = if selected { p.panel_alt_bg } else { p.panel_bg };
                     let marker = if selected { "❯ " } else { "  " };
@@ -327,7 +334,7 @@ impl Panel {
                     .enumerate()
                 {
                     let selected = idx == self.theme_index && !self.sidebar_focus;
-                    let is_saved = theme == self.saved_theme;
+                    let is_saved = theme == self.saved.theme;
                     let row_bg = if selected { p.panel_alt_bg } else { p.panel_bg };
                     let marker = if selected { "❯ " } else { "  " };
                     let dot = if is_saved { saved_dot } else { other_dot };
@@ -370,6 +377,60 @@ impl Panel {
                     frame.render_widget(Line::from(spans), row_rect);
                 }
             }
+            Category::Tools => {
+                for (row, (idx, style)) in ToolStyle::ALL
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .skip(self.list_scroll)
+                    .take(visible)
+                    .enumerate()
+                {
+                    let selected = idx == self.tools_index && !self.sidebar_focus;
+                    let is_saved = style == self.saved.tools;
+                    let row_bg = if selected { p.panel_alt_bg } else { p.panel_bg };
+                    let marker = if selected { "❯ " } else { "  " };
+                    let dot = if is_saved { saved_dot } else { other_dot };
+                    let dot_color = if is_saved { p.added } else { p.muted };
+                    let motif = tool_style_motif(style, ascii);
+                    let row_rect =
+                        Rect::new(rows_area.x, rows_area.y + row as u16, rows_area.width, 1);
+                    frame.render_widget(
+                        Block::default().style(Style::default().bg(row_bg)),
+                        row_rect,
+                    );
+                    let line = Line::from(vec![
+                        Span::styled(
+                            marker,
+                            Style::default()
+                                .fg(p.accent)
+                                .bg(row_bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("{dot} "), Style::default().fg(dot_color).bg(row_bg)),
+                        Span::styled(
+                            format!("{:<10}", style.label()),
+                            Style::default()
+                                .fg(if selected { p.accent } else { p.text })
+                                .bg(row_bg)
+                                .add_modifier(if selected {
+                                    Modifier::BOLD
+                                } else {
+                                    Modifier::empty()
+                                }),
+                        ),
+                        Span::styled(
+                            format!(" {motif:<5}"),
+                            Style::default().fg(p.status_model).bg(row_bg),
+                        ),
+                        Span::styled(
+                            format!(" {}", style.description()),
+                            Style::default().fg(p.muted).bg(row_bg),
+                        ),
+                    ]);
+                    frame.render_widget(line, row_rect);
+                }
+            }
         }
 
         if let Some(sb_area) = scrollbar_area {
@@ -404,6 +465,7 @@ impl Panel {
                     match self.category {
                         Category::IconMode => "Saving icon style...",
                         Category::Theme => "Saving color theme...",
+                        Category::Tools => "Saving tool card style...",
                     },
                     Style::default().fg(p.accent),
                 ),
@@ -419,5 +481,27 @@ impl Panel {
             "←/→ tabs · Tab / Shift+Tab category · ↑↓ preview · Enter save · Esc cancel"
         };
         frame.render_widget(Line::styled(hint, Style::default().fg(p.muted)), area);
+    }
+}
+
+fn tool_style_motif(style: ToolStyle, ascii: bool) -> &'static str {
+    if ascii {
+        match style {
+            ToolStyle::Classic => "+-+",
+            ToolStyle::Rail => "*|`",
+            ToolStyle::Slab => "|=-",
+            ToolStyle::Badge => "[#]",
+            ToolStyle::Hanging => "*\\-",
+            ToolStyle::Ledger => "---",
+        }
+    } else {
+        match style {
+            ToolStyle::Classic => "╭─╮",
+            ToolStyle::Rail => "●│╰",
+            ToolStyle::Slab => "▌▀▄",
+            ToolStyle::Badge => "[■]",
+            ToolStyle::Hanging => "●⎿ ",
+            ToolStyle::Ledger => "───",
+        }
     }
 }

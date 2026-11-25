@@ -223,7 +223,10 @@ pub(super) fn layout(
     expanded: bool,
     truncated: bool,
 ) -> Vec<Line<'static>> {
-    let base = Style::default().bg(palette::edit_bg());
+    let base = match super::card::surface_bg(super::card::CardSurface::Edit) {
+        Some(bg) => Style::default().bg(bg),
+        None => Style::default(),
+    };
     if tool == "write" {
         let content = scan_fields(
             raw,

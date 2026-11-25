@@ -3,6 +3,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::ToolStyle;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum IconMode {
     #[default]
@@ -242,6 +244,8 @@ pub struct TuiSettings {
     pub theme: Theme,
     #[serde(alias = "icon_mode", alias = "iconMode")]
     pub icons: IconMode,
+    #[serde(alias = "toolStyle", alias = "tools")]
+    pub tool_style: ToolStyle,
 }
 
 impl Default for TuiSettings {
@@ -250,16 +254,23 @@ impl Default for TuiSettings {
             max_fps: 60,
             theme: Theme::Default,
             icons: IconMode::Nerd,
+            tool_style: ToolStyle::Classic,
         }
     }
 }
 
 impl TuiSettings {
-    /// 复用配置的严格校验与原子更新，同时保存 TUI 主题与图标模式偏好。
-    pub fn save_appearance(path: &Path, theme: Theme, icons: IconMode) -> Result<()> {
+    /// 复用配置的严格校验与原子更新，同时保存 TUI 主题、图标模式与工具卡片风格偏好。
+    pub fn save_appearance(
+        path: &Path,
+        theme: Theme,
+        icons: IconMode,
+        tool_style: ToolStyle,
+    ) -> Result<()> {
         super::update_settings(path, |mut settings| {
             settings.tui.theme = theme;
             settings.tui.icons = icons;
+            settings.tui.tool_style = tool_style;
             Ok((
                 "tui",
                 serde_yaml::to_value(settings.tui).context("Failed to serialize tui settings")?,
@@ -280,33 +291,83 @@ mod tests {
         let initial = read_settings(&path).unwrap().tui;
         assert_eq!(initial.theme, Theme::Default);
         assert_eq!(initial.icons, IconMode::Nerd);
+        assert_eq!(initial.tool_style, ToolStyle::Classic);
         assert_eq!(initial.max_fps, 60);
         assert!(!path.exists());
 
-        TuiSettings::save_appearance(&path, Theme::TokyoNight, IconMode::Ascii).unwrap();
+        TuiSettings::save_appearance(&path, Theme::TokyoNight, IconMode::Ascii, ToolStyle::Rail)
+            .unwrap();
         let saved = read_settings(&path).unwrap().tui;
         assert_eq!(saved.theme, Theme::TokyoNight);
         assert_eq!(saved.icons, IconMode::Ascii);
+        assert_eq!(saved.tool_style, ToolStyle::Rail);
         assert_eq!(saved.max_fps, 60);
 
         std::fs::write(
             &path,
-            "# 保留说明\ndebug: true # 调试\ntui:\n  max_fps: 90\n  theme: catppuccin-mocha\n  icons: nerd-font\n",
+            "# 保留说明\ndebug: true # 调试\ntui:\n  max_fps: 90\n  theme: catppuccin-mocha\n  icons: nerd-font\n  tool_style: badge\n",
         )
         .unwrap();
         let loaded = read_settings(&path).unwrap().tui;
         assert_eq!(loaded.max_fps, 90);
         assert_eq!(loaded.theme, Theme::Catppuccin);
         assert_eq!(loaded.icons, IconMode::Nerd);
+        assert_eq!(loaded.tool_style, ToolStyle::Badge);
 
-        TuiSettings::save_appearance(&path, Theme::SolarizedLight, IconMode::Nerd).unwrap();
+        TuiSettings::save_appearance(
+            &path,
+            Theme::SolarizedLight,
+            IconMode::Nerd,
+            ToolStyle::Ledger,
+        )
+        .unwrap();
         let updated = read_settings(&path).unwrap().tui;
         assert_eq!(updated.max_fps, 90);
         assert_eq!(updated.theme, Theme::SolarizedLight);
         assert_eq!(updated.icons, IconMode::Nerd);
+        assert_eq!(updated.tool_style, ToolStyle::Ledger);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# 保留说明"));
         assert!(text.contains("debug: true # 调试"));
+    }
+
+    #[test]
+    fn tool_style_aliases_persistence_and_rejections() {
+        assert_eq!(ToolStyle::ALL.len(), 6);
+        let listed: Vec<_> = ToolStyle::ALL.iter().map(|s| s.as_str()).collect();
+        assert_eq!(listed.join(", "), ToolStyle::ALL_NAMES);
+        let unique_slugs: std::collections::HashSet<_> = listed.iter().copied().collect();
+        assert_eq!(unique_slugs.len(), ToolStyle::ALL.len());
+        let unique_labels: std::collections::HashSet<_> =
+            ToolStyle::ALL.iter().map(|s| s.label()).collect();
+        assert_eq!(unique_labels.len(), ToolStyle::ALL.len());
+        for style in ToolStyle::ALL {
+            assert_eq!(ToolStyle::parse(style.as_str()), Some(style));
+            assert!(!style.label().is_empty());
+            assert!(!style.description().is_empty());
+        }
+        for (input, expected) in [
+            ("classic", Some(ToolStyle::Classic)),
+            ("RAIL", Some(ToolStyle::Rail)),
+            ("timeline", Some(ToolStyle::Rail)),
+            ("slab", Some(ToolStyle::Slab)),
+            ("badge", Some(ToolStyle::Badge)),
+            ("pill", Some(ToolStyle::Badge)),
+            ("hanging", Some(ToolStyle::Hanging)),
+            ("ledger", Some(ToolStyle::Ledger)),
+            ("unknown", None),
+        ] {
+            assert_eq!(ToolStyle::parse(input), expected, "input: {input}");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.yml");
+        std::fs::write(&path, "tui:\n  tool_style: bogus\n").unwrap();
+        let err = read_settings(&path).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("invalid") || format!("{err:#}").contains("settings"),
+            "{err:#}"
+        );
     }
 
     #[test]

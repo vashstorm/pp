@@ -187,6 +187,7 @@ pub fn run_line_mode(
                 Some(commands::Command::Themes(commands::ThemeCommand {
                     theme: None,
                     icons: None,
+                    tools: None,
                 }))
             }
             Some(commands::Command::Setting(commands::SettingTab::Skills)) => {
@@ -572,14 +573,16 @@ fn handle_cli_themes(cmd: commands::ThemeCommand, stderr: &mut io::Stderr) -> Re
     } else {
         pp_config::config::TuiSettings::default()
     };
-    if cmd.theme.is_none() && cmd.icons.is_none() {
+    if cmd.theme.is_none() && cmd.icons.is_none() && cmd.tools.is_none() {
         writeln!(
             stderr,
-            "Theme: {} ({}), Icons: {} ({})",
+            "Theme: {} ({}), Icons: {} ({}), Tools: {} ({})",
             current.theme.label(),
             current.theme.as_str(),
             current.icons.label(),
-            current.icons.as_str()
+            current.icons.as_str(),
+            current.tool_style.label(),
+            current.tool_style.as_str()
         )?;
         writeln!(stderr, "Available icons: nerd, ascii")?;
         writeln!(
@@ -587,18 +590,26 @@ fn handle_cli_themes(cmd: commands::ThemeCommand, stderr: &mut io::Stderr) -> Re
             "Available themes: {}",
             pp_config::config::Theme::ALL_NAMES
         )?;
+        writeln!(
+            stderr,
+            "Available tool styles: {}",
+            pp_config::config::ToolStyle::ALL_NAMES
+        )?;
         return Ok(());
     }
     let theme = cmd.theme.unwrap_or(current.theme);
     let icons = cmd.icons.unwrap_or(current.icons);
-    pp_config::config::TuiSettings::save_appearance(&path, theme, icons)?;
+    let tools = cmd.tools.unwrap_or(current.tool_style);
+    pp_config::config::TuiSettings::save_appearance(&path, theme, icons, tools)?;
     writeln!(
         stderr,
-        "Saved theme: {} ({}), icons: {} ({})",
+        "Saved theme: {} ({}), icons: {} ({}), tools: {} ({})",
         theme.label(),
         theme.as_str(),
         icons.label(),
-        icons.as_str()
+        icons.as_str(),
+        tools.label(),
+        tools.as_str()
     )?;
     Ok(())
 }

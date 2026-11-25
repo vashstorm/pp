@@ -12,19 +12,18 @@ pub(super) fn draw(
     frame: &mut Frame,
     area: Rect,
     p: &Palette,
-    selected_theme: Theme,
-    selected_icons: IconMode,
+    appearance: Appearance,
     ascii: bool,
 ) {
     if area.width < 12 || area.height < 4 {
         return;
     }
-    draw_header(
+    draw_header_bar(
         frame,
         Rect::new(area.x, area.y, area.width, 1),
         p,
-        selected_theme,
-        selected_icons,
+        appearance.theme.label(),
+        appearance.icons.label(),
         ascii,
     );
 
@@ -56,25 +55,25 @@ pub(super) fn draw(
             frame,
             Rect::new(viewport.x, viewport.bottom() - 2, viewport.width, 1),
             p,
-            selected_icons,
+            appearance.icons,
         );
         draw_status_bar(
             frame,
             Rect::new(viewport.x, viewport.bottom() - 1, viewport.width, 1),
             p,
-            selected_icons,
+            appearance.icons,
         );
     } else if bottom_h == 1 {
         draw_status_bar(
             frame,
             Rect::new(viewport.x, viewport.bottom() - 1, viewport.width, 1),
             p,
-            selected_icons,
+            appearance.icons,
         );
     }
 
     let body = Rect::new(viewport.x, viewport.y, viewport.width, body_h);
-    draw_body(frame, body, p, selected_theme, selected_icons);
+    draw_body(frame, body, p, appearance);
 }
 
 fn clip_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
@@ -122,12 +121,12 @@ fn push_row(frame: &mut Frame, area: Rect, y: &mut u16, bg: Color, spans: Vec<Sp
     }
 }
 
-fn draw_header(
+pub(super) fn draw_header_bar(
     frame: &mut Frame,
     area: Rect,
     p: &Palette,
-    selected_theme: Theme,
-    selected_icons: IconMode,
+    primary_label: &str,
+    secondary_label: &str,
     ascii: bool,
 ) {
     let width = usize::from(area.width);
@@ -143,11 +142,11 @@ fn draw_header(
         ),
         Span::styled(" · ", Style::default().fg(p.muted)),
         Span::styled(
-            selected_theme.label(),
+            primary_label.to_owned(),
             Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" ({}) ", selected_icons.label()),
+            format!(" ({secondary_label}) "),
             Style::default().fg(p.muted),
         ),
     ];
@@ -196,13 +195,9 @@ fn draw_header(
     paint_row(frame, area, p.panel_bg, spans);
 }
 
-fn draw_body(
-    frame: &mut Frame,
-    area: Rect,
-    p: &Palette,
-    selected_theme: Theme,
-    selected_icons: IconMode,
-) {
+fn draw_body(frame: &mut Frame, area: Rect, p: &Palette, appearance: Appearance) {
+    let selected_theme = appearance.theme;
+    let selected_icons = appearance.icons;
     if area.is_empty() {
         return;
     }
@@ -394,7 +389,13 @@ fn draw_body(
             area.width.saturating_sub(inset * 2),
             card_rows,
         );
-        draw_edit_card(frame, card_rect, p, selected_theme, selected_icons);
+        super::tools_preview::draw_edit_sample(
+            frame,
+            card_rect,
+            selected_theme,
+            selected_icons,
+            appearance.tools,
+        );
         y += card_rows;
     } else if remaining >= 3 {
         let inset = u16::from(area.width >= 20) * 2;
@@ -404,7 +405,13 @@ fn draw_body(
             area.width.saturating_sub(inset * 2),
             remaining,
         );
-        draw_edit_card(frame, card_rect, p, selected_theme, selected_icons);
+        super::tools_preview::draw_edit_sample(
+            frame,
+            card_rect,
+            selected_theme,
+            selected_icons,
+            appearance.tools,
+        );
         return;
     }
 
@@ -466,99 +473,6 @@ fn draw_body(
             effort_spans.push(Span::styled(level.as_str(), text_style));
         }
         push_row(frame, area, &mut y, p.md_bg, effort_spans);
-    }
-}
-
-fn draw_edit_card(
-    frame: &mut Frame,
-    area: Rect,
-    p: &Palette,
-    selected_theme: Theme,
-    selected_icons: IconMode,
-) {
-    if area.height < 3 || area.width < 10 {
-        return;
-    }
-    let w = usize::from(area.width);
-    let bg = p.tool_bg;
-    let border = Style::default().fg(p.tool_border).bg(bg);
-    let edit_icon = transcript_style::tool_icon_for("edit", selected_icons);
-    let file_icon = transcript_style::file_icon("src/tui/themes.rs", selected_icons);
-
-    let mut top = vec![
-        Span::styled("╭─ ", border),
-        Span::styled(
-            format!("{edit_icon} Edit: "),
-            Style::default()
-                .fg(p.edit_title)
-                .bg(bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(file_icon, Style::default().fg(p.edit_meta).bg(bg)),
-        Span::styled(
-            "src/tui/themes.rs",
-            Style::default().fg(p.edit_title).bg(bg),
-        ),
-        Span::styled(" ⟨", Style::default().fg(p.edit_meta).bg(bg)),
-        Span::styled("+1", Style::default().fg(p.edit_added).bg(bg)),
-        Span::styled("/", Style::default().fg(p.edit_meta).bg(bg)),
-        Span::styled("-1", Style::default().fg(p.edit_removed).bg(bg)),
-        Span::styled("⟩ ", Style::default().fg(p.edit_meta).bg(bg)),
-    ];
-    top = clip_spans(top, w.saturating_sub(1));
-    let top_used: usize = top.iter().map(Span::width).sum();
-    if w > top_used + 1 {
-        top.push(Span::styled("─".repeat(w - top_used - 1), border));
-    }
-    top.push(Span::styled("╮", border));
-    paint_row(frame, Rect::new(area.x, area.y, area.width, 1), bg, top);
-
-    let code_lines: [(&str, String, Color); 2] = [
-        (
-            "-",
-            "const THEME: &str = \"old\";".to_owned(),
-            p.edit_removed,
-        ),
-        (
-            "+",
-            format!("let theme = \"{}\";", selected_theme.as_str()),
-            p.edit_added,
-        ),
-    ];
-    let body_rows = usize::from(area.height.saturating_sub(2)).min(code_lines.len());
-    for (idx, (sign, code, color)) in code_lines.into_iter().take(body_rows).enumerate() {
-        let row_rect = Rect::new(area.x, area.y + 1 + idx as u16, area.width, 1);
-        let spans = vec![
-            Span::styled("│ ", border),
-            Span::styled(" 12 ", Style::default().fg(p.edit_meta).bg(bg)),
-            Span::styled(format!("{sign} "), Style::default().fg(color).bg(bg)),
-            Span::styled(code, Style::default().fg(color).bg(bg)),
-        ];
-        paint_row(
-            frame,
-            Rect::new(row_rect.x, row_rect.y, row_rect.width.saturating_sub(1), 1),
-            bg,
-            spans,
-        );
-        frame.render_widget(
-            Span::styled("│", border),
-            Rect::new(row_rect.right() - 1, row_rect.y, 1, 1),
-        );
-    }
-
-    let bottom_y = area.y + 1 + body_rows as u16;
-    if bottom_y < area.bottom() {
-        let bottom = vec![
-            Span::styled("╰", border),
-            Span::styled("─".repeat(w.saturating_sub(2)), border),
-            Span::styled("╯", border),
-        ];
-        paint_row(
-            frame,
-            Rect::new(area.x, bottom_y, area.width, 1),
-            bg,
-            bottom,
-        );
     }
 }
 

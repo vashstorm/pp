@@ -1,7 +1,8 @@
+use super::transcript::card::{self, CardSurface};
 use super::transcript_style as palette;
 use pp_core::events::DiffLine;
 use pp_core::events::DiffLineKind;
-use ratatui::{style::Style, text::Span};
+use ratatui::text::Span;
 use std::{collections::HashMap, ops::Range};
 
 /// 只比较连续替换段中对应行的公共前后缀，不在绘制时重新读取文件。
@@ -56,7 +57,7 @@ pub(super) fn spans(
         DiffLineKind::Removed => palette::edit_removed(),
         DiffLineKind::Context => palette::edit_text(),
     };
-    let base = Style::default().fg(color).bg(palette::edit_bg());
+    let base = card::surface_style(CardSurface::Edit, color);
     if kind != DiffLineKind::Context {
         let indent = text.len() - text.trim_start_matches([' ', '\t']).len();
         let mut spans = vec![Span::styled(
@@ -70,7 +71,7 @@ pub(super) fn spans(
             let start = indent + index;
             let highlighted = changed.is_some_and(|range| range.contains(&start));
             let style = if highlighted {
-                base.fg(palette::edit_bg()).bg(color)
+                base.fg(card::contrast_bg_fg(color)).bg(color)
             } else {
                 base
             };

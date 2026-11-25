@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
-use pp_config::config::{IconMode, Theme, TuiSettings};
+use pp_config::config::{IconMode, Theme, ToolStyle, TuiSettings};
 use ratatui::layout::Rect;
 
 pub(in crate::tui) use palette::{Palette, palette_for};
@@ -16,21 +16,54 @@ pub(in crate::tui) use palette::{Palette, palette_for};
 mod palette;
 mod preview;
 mod render;
+#[cfg(test)]
+mod tests;
+mod tools_preview;
 
-thread_local! {
-    static ACTIVE: Cell<(Theme, IconMode)> = const { Cell::new((Theme::Default, IconMode::Nerd)) };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::tui) struct Appearance {
+    pub theme: Theme,
+    pub icons: IconMode,
+    pub tools: ToolStyle,
 }
 
-pub(in crate::tui) fn current() -> (Theme, IconMode) {
+impl Default for Appearance {
+    fn default() -> Self {
+        Self {
+            theme: Theme::Default,
+            icons: IconMode::Nerd,
+            tools: ToolStyle::Classic,
+        }
+    }
+}
+
+thread_local! {
+    static ACTIVE: Cell<Appearance> = const { Cell::new(Appearance {
+        theme: Theme::Default,
+        icons: IconMode::Nerd,
+        tools: ToolStyle::Classic,
+    }) };
+}
+
+pub(in crate::tui) fn current_appearance() -> Appearance {
     ACTIVE.with(Cell::get)
 }
 
+pub(in crate::tui) fn current() -> (Theme, IconMode) {
+    let a = ACTIVE.with(Cell::get);
+    (a.theme, a.icons)
+}
+
 pub(in crate::tui) fn current_theme() -> Theme {
-    current().0
+    current_appearance().theme
 }
 
 pub(in crate::tui) fn current_icons() -> IconMode {
-    current().1
+    current_appearance().icons
+}
+
+pub(in crate::tui) fn current_tool_style() -> ToolStyle {
+    current_appearance().tools
 }
 
 pub(in crate::tui) fn is_ascii() -> bool {
@@ -38,7 +71,22 @@ pub(in crate::tui) fn is_ascii() -> bool {
 }
 
 pub(in crate::tui) fn set_active(theme: Theme, icons: IconMode) {
-    ACTIVE.with(|cell| cell.set((theme, icons)));
+    ACTIVE.with(|cell| {
+        let mut a = cell.get();
+        a.theme = theme;
+        a.icons = icons;
+        cell.set(a);
+    });
+}
+
+pub(in crate::tui) fn set_active_appearance(theme: Theme, icons: IconMode, tools: ToolStyle) {
+    ACTIVE.with(|cell| {
+        cell.set(Appearance {
+            theme,
+            icons,
+            tools,
+        })
+    });
 }
 
 pub(in crate::tui) fn palette() -> &'static Palette {
@@ -47,13 +95,11 @@ pub(in crate::tui) fn palette() -> &'static Palette {
 
 pub(super) struct SaveRequest {
     pub(super) path: PathBuf,
-    pub(super) theme: Theme,
-    pub(super) icons: IconMode,
+    pub(super) appearance: Appearance,
 }
 
 pub(super) struct SaveReply {
-    pub(super) theme: Theme,
-    pub(super) icons: IconMode,
+    pub(super) appearance: Appearance,
     pub(super) result: Result<()>,
 }
 
@@ -71,12 +117,12 @@ impl Worker {
             .name("pp-themes".into())
             .spawn(move || {
                 while let Ok(request) = receiver.recv() {
+                    let a = request.appearance;
                     let result =
-                        TuiSettings::save_appearance(&request.path, request.theme, request.icons);
+                        TuiSettings::save_appearance(&request.path, a.theme, a.icons, a.tools);
                     if sender
                         .send(SaveReply {
-                            theme: request.theme,
-                            icons: request.icons,
+                            appearance: a,
                             result,
                         })
                         .is_err()
@@ -93,11 +139,11 @@ impl Worker {
         })
     }
 
-    pub(super) fn save(&self, path: PathBuf, theme: Theme, icons: IconMode) -> Result<()> {
+    pub(super) fn save(&self, path: PathBuf, appearance: Appearance) -> Result<()> {
         self.requests
             .as_ref()
             .context("theme settings worker stopped")?
-            .send(SaveRequest { path, theme, icons })
+            .send(SaveRequest { path, appearance })
             .map_err(|_| anyhow::anyhow!("theme settings worker stopped"))
     }
 }
@@ -115,23 +161,47 @@ impl Drop for Worker {
 pub(super) enum Category {
     IconMode,
     Theme,
+    Tools,
+}
+
+impl Category {
+    const ALL: [Self; 3] = [Self::IconMode, Self::Theme, Self::Tools];
+
+    fn next(self) -> Self {
+        match self {
+            Self::IconMode => Self::Theme,
+            Self::Theme => Self::Tools,
+            Self::Tools => Self::IconMode,
+        }
+    }
+
+    fn step(self, delta: isize) -> Self {
+        let idx = Self::ALL.iter().position(|&c| c == self).unwrap_or(0);
+        let len = Self::ALL.len();
+        let next = if delta < 0 {
+            (idx + len - 1) % len
+        } else {
+            (idx + 1) % len
+        };
+        Self::ALL[next]
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Action {
     None,
-    Preview(Theme, IconMode),
-    Save(Theme, IconMode),
-    Cancel(Theme, IconMode),
+    Preview(Appearance),
+    Save(Appearance),
+    Cancel(Appearance),
 }
 
 pub(super) struct Panel {
-    saved_theme: Theme,
-    saved_icons: IconMode,
+    saved: Appearance,
     category: Category,
     sidebar_focus: bool,
     icon_index: usize,
     theme_index: usize,
+    tools_index: usize,
     pub(super) area: Rect,
     sidebar_area: Rect,
     list_area: Rect,
@@ -145,29 +215,34 @@ impl Panel {
         match self.category {
             Category::IconMode => "Icon Style",
             Category::Theme => "Color Theme",
+            Category::Tools => "Tools",
         }
     }
 
-    pub(super) fn saved_appearance(&self) -> (Theme, IconMode) {
-        (self.saved_theme, self.saved_icons)
+    pub(super) fn saved_appearance(&self) -> Appearance {
+        self.saved
     }
 
-    pub(super) fn new(saved_theme: Theme, saved_icons: IconMode) -> Self {
+    pub(super) fn new(saved: Appearance) -> Self {
         let icon_index = IconMode::ALL
             .iter()
-            .position(|&mode| mode == saved_icons)
+            .position(|&mode| mode == saved.icons)
             .unwrap_or(0);
         let theme_index = Theme::ALL
             .iter()
-            .position(|&theme| theme == saved_theme)
+            .position(|&theme| theme == saved.theme)
+            .unwrap_or(0);
+        let tools_index = ToolStyle::ALL
+            .iter()
+            .position(|&style| style == saved.tools)
             .unwrap_or(0);
         Self {
-            saved_theme,
-            saved_icons,
+            saved,
             category: Category::IconMode,
             sidebar_focus: false,
             icon_index,
             theme_index,
+            tools_index,
             area: Rect::default(),
             sidebar_area: Rect::default(),
             list_area: Rect::default(),
@@ -181,6 +256,7 @@ impl Panel {
         match self.category {
             Category::IconMode => self.icon_index,
             Category::Theme => self.theme_index,
+            Category::Tools => self.tools_index,
         }
     }
 
@@ -192,10 +268,24 @@ impl Panel {
         Theme::ALL[self.theme_index]
     }
 
-    fn preview_appearance(&self) -> (Theme, IconMode) {
+    pub(super) fn selected_tools(&self) -> ToolStyle {
+        ToolStyle::ALL[self.tools_index]
+    }
+
+    fn preview_appearance(&self) -> Appearance {
         match self.category {
-            Category::IconMode => (self.saved_theme, self.selected_icons()),
-            Category::Theme => (self.selected_theme(), self.saved_icons),
+            Category::IconMode => Appearance {
+                icons: self.selected_icons(),
+                ..self.saved
+            },
+            Category::Theme => Appearance {
+                theme: self.selected_theme(),
+                ..self.saved
+            },
+            Category::Tools => Appearance {
+                tools: self.selected_tools(),
+                ..self.saved
+            },
         }
     }
 
@@ -210,7 +300,7 @@ impl Panel {
                 && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
                 && key.code == KeyCode::Esc
             {
-                return Action::Cancel(self.saved_theme, self.saved_icons);
+                return Action::Cancel(self.saved);
             }
             return Action::None;
         }
@@ -222,7 +312,7 @@ impl Panel {
                     return Action::None;
                 }
                 match key.code {
-                    KeyCode::Esc => Action::Cancel(self.saved_theme, self.saved_icons),
+                    KeyCode::Esc => Action::Cancel(self.saved),
                     KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
                     KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
                     KeyCode::PageUp if !self.sidebar_focus => {
@@ -234,7 +324,14 @@ impl Panel {
                         self.jump_selection(self.selected_index().saturating_add(step))
                     }
                     KeyCode::Home => self.jump_selection(0),
-                    KeyCode::End => self.jump_selection(self.list_len().saturating_sub(1)),
+                    KeyCode::End => {
+                        let len = if self.sidebar_focus {
+                            Category::ALL.len()
+                        } else {
+                            self.list_len()
+                        };
+                        self.jump_selection(len.saturating_sub(1))
+                    }
                     KeyCode::Enter if self.sidebar_focus => {
                         self.sidebar_focus = false;
                         Action::None
@@ -242,20 +339,20 @@ impl Panel {
                     KeyCode::Enter => {
                         self.busy = true;
                         self.error = None;
-                        let (theme, icons) = self.preview_appearance();
-                        Action::Save(theme, icons)
+                        Action::Save(self.preview_appearance())
                     }
                     KeyCode::Tab | KeyCode::BackTab if key.kind == KeyEventKind::Press => {
                         if self.sidebar_area.width > 0 {
                             self.sidebar_focus = !self.sidebar_focus;
+                            Action::None
                         } else {
-                            let next = match self.category {
-                                Category::IconMode => Category::Theme,
-                                Category::Theme => Category::IconMode,
+                            let next = if key.code == KeyCode::BackTab {
+                                self.category.step(-1)
+                            } else {
+                                self.category.next()
                             };
-                            return self.set_category(next);
+                            self.set_category(next)
                         }
-                        Action::None
                     }
                     _ => Action::None,
                 }
@@ -269,10 +366,9 @@ impl Panel {
                         if self.sidebar_area.contains(pos) {
                             self.sidebar_focus = true;
                             let row = usize::from(mouse.row - self.sidebar_area.y);
-                            return match row {
-                                0 => self.set_category(Category::IconMode),
-                                1 => self.set_category(Category::Theme),
-                                _ => Action::None,
+                            return match Category::ALL.get(row).copied() {
+                                Some(cat) => self.set_category(cat),
+                                None => Action::None,
                             };
                         }
                         if self.list_area.contains(pos) {
@@ -296,9 +392,9 @@ impl Panel {
         self.category = category;
         self.list_scroll = 0;
         self.error = None;
-        let (theme, icons) = self.preview_appearance();
-        if previous != (theme, icons) {
-            Action::Preview(theme, icons)
+        let next = self.preview_appearance();
+        if previous != next {
+            Action::Preview(next)
         } else {
             Action::None
         }
@@ -308,22 +404,16 @@ impl Panel {
         match self.category {
             Category::IconMode => IconMode::ALL.len(),
             Category::Theme => Theme::ALL.len(),
+            Category::Tools => ToolStyle::ALL.len(),
         }
     }
 
     fn move_selection(&mut self, delta: isize) -> Action {
         if self.sidebar_focus {
-            return self.set_category(if delta < 0 {
-                Category::IconMode
-            } else {
-                Category::Theme
-            });
+            return self.set_category(self.category.step(delta));
         }
         let len = self.list_len();
-        let current = match self.category {
-            Category::IconMode => self.icon_index,
-            Category::Theme => self.theme_index,
-        };
+        let current = self.selected_index();
         let next = if delta < 0 {
             if current == 0 { len - 1 } else { current - 1 }
         } else {
@@ -334,11 +424,8 @@ impl Panel {
 
     fn jump_selection(&mut self, index: usize) -> Action {
         if self.sidebar_focus {
-            return self.set_category(if index == 0 {
-                Category::IconMode
-            } else {
-                Category::Theme
-            });
+            let clamped = index.min(Category::ALL.len() - 1);
+            return self.set_category(Category::ALL[clamped]);
         }
         let clamped = index.min(self.list_len().saturating_sub(1));
         self.error = None;
@@ -353,291 +440,16 @@ impl Panel {
                 self.theme_index = clamped;
                 changed
             }
+            Category::Tools => {
+                let changed = self.tools_index != clamped;
+                self.tools_index = clamped;
+                changed
+            }
         };
         if changed {
-            let (theme, icons) = self.preview_appearance();
-            Action::Preview(theme, icons)
+            Action::Preview(self.preview_appearance())
         } else {
             Action::None
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crossterm::event::KeyEvent;
-    use ratatui::{Terminal, backend::TestBackend};
-
-    fn key(panel: &mut Panel, code: KeyCode) -> Action {
-        panel.handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
-    }
-
-    fn render_screen(panel: &mut Panel, width: u16, height: u16) -> String {
-        let (theme, icons) = panel.preview_appearance();
-        set_active(theme, icons);
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal
-            .draw(|frame| panel.draw(frame, frame.area()))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let result = (0..height)
-            .map(|y| {
-                (0..width)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        set_active(Theme::Default, IconMode::Nerd);
-        result
-    }
-
-    #[test]
-    fn categories_preview_and_save_independently() {
-        for (category, expected) in [
-            (Category::IconMode, (Theme::Default, IconMode::Ascii)),
-            (Category::Theme, (Theme::TokyoNight, IconMode::Nerd)),
-        ] {
-            let mut panel = Panel::new(Theme::Default, IconMode::Nerd);
-            assert_eq!(
-                key(&mut panel, KeyCode::Down),
-                Action::Preview(Theme::Default, IconMode::Ascii)
-            );
-            let icons = render_screen(&mut panel, 110, 32);
-            assert!(icons.contains("Themes — Icon Style"), "{icons}");
-            assert!(icons.contains("Nerd Font") && icons.contains("ASCII"));
-
-            // 切换分类仅预览该分类，另一分类使用已保存值。
-            assert_eq!(
-                panel.set_category(Category::Theme),
-                Action::Preview(Theme::Default, IconMode::Nerd)
-            );
-            assert_eq!(
-                key(&mut panel, KeyCode::Down),
-                Action::Preview(Theme::TokyoNight, IconMode::Nerd)
-            );
-            let colors = render_screen(&mut panel, 110, 32);
-            assert!(colors.contains("Themes — Color Theme"), "{colors}");
-            assert!(colors.contains("Tokyo Night") && colors.contains("Solarized Light"));
-            for code in [KeyCode::Backspace, KeyCode::Char('h'), KeyCode::Char('l')] {
-                assert_eq!(key(&mut panel, code), Action::None);
-                assert_eq!(panel.category, Category::Theme);
-            }
-
-            if category == Category::IconMode {
-                assert_eq!(
-                    panel.set_category(category),
-                    Action::Preview(Theme::Default, IconMode::Ascii)
-                );
-            }
-            assert_eq!(
-                key(&mut panel, KeyCode::Enter),
-                Action::Save(expected.0, expected.1)
-            );
-            assert!(panel.busy);
-            assert_eq!(panel.category, category);
-            assert_eq!(
-                key(&mut panel, KeyCode::Esc),
-                Action::Cancel(Theme::Default, IconMode::Nerd)
-            );
-        }
-    }
-
-    #[test]
-    fn preview_renders_aligned_cards_full_width_backgrounds_and_status_across_sizes() {
-        let light = palette_for(Theme::SolarizedLight);
-        for (w, h) in [(80, 24), (100, 30), (120, 36)] {
-            let mut preview_ys = Vec::new();
-            for (category, icons) in [
-                (Category::IconMode, IconMode::Ascii),
-                (Category::Theme, IconMode::Nerd),
-            ] {
-                let mut panel = Panel::new(Theme::SolarizedLight, icons);
-                let _ = panel.set_category(category);
-                let (theme, active_icons) = panel.preview_appearance();
-                set_active(theme, active_icons);
-                let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-                terminal
-                    .draw(|frame| panel.draw(frame, frame.area()))
-                    .unwrap();
-                let buffer = terminal.backend().buffer();
-
-                let mut screen_rows = Vec::with_capacity(usize::from(h));
-                for y in 0..h {
-                    let row: String = (0..w).map(|x| buffer[(x, y)].symbol()).collect();
-                    screen_rows.push(row);
-                    // 浅色主题下任何单元格不得回落到终端默认 Reset 背景。
-                    for x in 0..w {
-                        assert_ne!(
-                            buffer[(x, y)].bg,
-                            ratatui::style::Color::Reset,
-                            "cell ({x},{y}) fell back to Reset bg on {w}x{h} {category:?}"
-                        );
-                    }
-                }
-                set_active(Theme::Default, IconMode::Nerd);
-
-                let screen = screen_rows.join("\n");
-                assert!(screen.contains("Live Preview"), "{w}x{h}:\n{screen}");
-                assert!(screen.contains("Solarized Light"), "{w}x{h}:\n{screen}");
-                assert!(screen.contains("gpt-5"), "{w}x{h}:\n{screen}");
-
-                // 用户消息条、Edit 卡片与底栏均按视口全宽铺满对应背景色，且 Edit 四角列对齐。
-                let preview_y = screen_rows
-                    .iter()
-                    .position(|r| r.contains("Live Preview"))
-                    .unwrap();
-                let user_y = screen_rows
-                    .iter()
-                    .position(|r| r.contains("Apply solarized-light"))
-                    .unwrap() as u16;
-                let edit_top_y = screen_rows
-                    .iter()
-                    .position(|r| r.contains("╭─") && r.contains("Edit:"))
-                    .unwrap() as u16;
-                let edit_bot_y = screen_rows
-                    .iter()
-                    .position(|r| r.contains("╰─") && r.contains('╯'))
-                    .unwrap() as u16;
-                let status_y = screen_rows
-                    .iter()
-                    .position(|r| r.contains("gpt-5") && r.contains("~/pp"))
-                    .unwrap() as u16;
-                preview_ys.push((preview_y, user_y, edit_top_y, status_y));
-
-                let col = |row: &str, ch: char| {
-                    row.find(ch)
-                        .map(|byte| ratatui::text::Line::raw(&row[..byte]).width())
-                };
-                let left_col = col(&screen_rows[usize::from(edit_top_y)], '╭').unwrap();
-                let right_col = col(&screen_rows[usize::from(edit_top_y)], '╮').unwrap();
-                assert_eq!(
-                    col(&screen_rows[usize::from(edit_bot_y)], '╰'),
-                    Some(left_col)
-                );
-                assert_eq!(
-                    col(&screen_rows[usize::from(edit_bot_y)], '╯'),
-                    Some(right_col)
-                );
-
-                let user_bg_cols = (0..w)
-                    .filter(|&x| buffer[(x, user_y)].bg == light.user_bg)
-                    .count();
-                let status_bg_cols = (0..w)
-                    .filter(|&x| buffer[(x, status_y)].bg == light.input_status_bg)
-                    .count();
-                assert!(user_bg_cols >= usize::from(w) / 2, "{user_bg_cols}");
-                assert_eq!(status_bg_cols, user_bg_cols);
-
-                if icons == IconMode::Ascii {
-                    let preview_start = screen_rows
-                        .iter()
-                        .position(|r| r.contains("Live Preview"))
-                        .unwrap();
-                    let preview_text =
-                        screen_rows[preview_start..=usize::from(status_y)].join("\n");
-                    assert!(
-                        !preview_text
-                            .chars()
-                            .any(|ch| ('\u{e000}'..='\u{f8ff}').contains(&ch)
-                                || ('\u{f0000}'..='\u{ffffd}').contains(&ch)),
-                        "ASCII preview contained Nerd Font PUA glyph:\n{preview_text}"
-                    );
-                }
-            }
-            assert_eq!(preview_ys[0], preview_ys[1], "preview jumped on {w}x{h}");
-        }
-    }
-
-    #[test]
-    fn color_theme_list_caps_height_scrolls_and_renders_all_palettes() {
-        let mut panel = Panel::new(Theme::Default, IconMode::Nerd);
-        let _ = panel.set_category(Category::Theme);
-
-        // 常规终端高度下列表框受 MAX_LIST_ROWS 限制，超出时开启滚动。
-        let initial = render_screen(&mut panel, 110, 32);
-        assert!(panel.list_area.height <= render::MAX_LIST_ROWS);
-        assert_eq!(panel.list_area.height, render::MAX_LIST_ROWS);
-        assert_eq!(panel.list_scroll, 0);
-        assert!(initial.contains("Default"));
-        assert!(!initial.contains("Night Owl"));
-        assert!(initial.contains("Live Preview"));
-
-        // PageDown 翻页并更新选中与滚动窗口。
-        assert_eq!(
-            key(&mut panel, KeyCode::PageDown),
-            Action::Preview(
-                Theme::ALL[usize::from(render::MAX_LIST_ROWS)],
-                IconMode::Nerd
-            )
-        );
-        let paged = render_screen(&mut panel, 110, 32);
-        assert!(panel.list_scroll > 0);
-        assert!(paged.contains(Theme::ALL[usize::from(render::MAX_LIST_ROWS)].label()));
-
-        // End 滚动到最末主题，鼠标点击可视行能正确命中滚动偏移后的主题。
-        assert_eq!(
-            key(&mut panel, KeyCode::End),
-            Action::Preview(Theme::NightOwl, IconMode::Nerd)
-        );
-        let at_end = render_screen(&mut panel, 110, 32);
-        assert!(at_end.contains("Night Owl"), "{at_end}");
-        assert!(!at_end.contains("Tokyo Night"), "{at_end}");
-        assert_eq!(
-            panel.list_scroll,
-            Theme::ALL.len() - usize::from(render::MAX_LIST_ROWS)
-        );
-
-        let first_visible_row = panel.list_area.y;
-        let first_visible_theme = Theme::ALL[panel.list_scroll];
-        assert_eq!(
-            panel.handle(Event::Mouse(crossterm::event::MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: panel.list_area.x + 4,
-                row: first_visible_row,
-                modifiers: KeyModifiers::NONE,
-            })),
-            Action::Preview(first_visible_theme, IconMode::Nerd)
-        );
-
-        assert_eq!(
-            key(&mut panel, KeyCode::PageUp),
-            Action::Preview(
-                Theme::ALL[panel
-                    .list_scroll
-                    .saturating_sub(usize::from(render::MAX_LIST_ROWS))],
-                IconMode::Nerd
-            )
-        );
-        assert_eq!(
-            key(&mut panel, KeyCode::Home),
-            Action::Preview(Theme::Default, IconMode::Nerd)
-        );
-        let back_top = render_screen(&mut panel, 110, 32);
-        assert_eq!(panel.list_scroll, 0);
-        assert!(back_top.contains("Default"));
-
-        // 全部 20 套主题均能完整渲染，且任何单元格不回退到 Reset 背景。
-        for theme in Theme::ALL {
-            let mut themed = Panel::new(theme, IconMode::Nerd);
-            let _ = themed.set_category(Category::Theme);
-            set_active(theme, IconMode::Nerd);
-            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-            terminal
-                .draw(|frame| themed.draw(frame, frame.area()))
-                .unwrap();
-            let buffer = terminal.backend().buffer();
-            for y in 0..30 {
-                for x in 0..100 {
-                    assert_ne!(
-                        buffer[(x, y)].bg,
-                        ratatui::style::Color::Reset,
-                        "cell ({x},{y}) fell back to Reset bg for theme {theme:?}"
-                    );
-                }
-            }
-        }
-        set_active(Theme::Default, IconMode::Nerd);
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use pp_config::config::{EditMode, IconMode, Theme, read_settings};
+use pp_config::config::{EditMode, IconMode, Theme, ToolStyle, read_settings};
 
 #[test]
 fn tui_themes_save_icon_style_without_entering_color_theme() {
@@ -40,6 +40,37 @@ fn tui_themes_save_color_theme_without_changing_icon_style() {
             (settings.tui.theme, settings.tui.icons) == (Theme::TokyoNight, IconMode::Nerd)
         })
     });
+    pty.ready();
+    pty.input("\x03");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
+fn tui_themes_save_tool_style_without_changing_theme_or_icons() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let mut pty = Pty::start(&server, home.path());
+    pty.ready();
+    pty.input("/setting themes\r");
+    pty.text("Themes — Icon Style");
+    // 聚焦侧边栏、End 切到 Tools，聚焦右侧列表并下移选中 Rail 后保存。
+    pty.input("\t\x1b[F\r");
+    pty.text("Themes — Tools");
+    pty.input("\x1b[B\r");
+    let path = config_path(home.path(), "settings.yml");
+    pty.wait_for(
+        "工具卡片风格独立保存，颜色与图标保持原值",
+        |_| {
+            read_settings(&path).is_ok_and(|settings| {
+                (
+                    settings.tui.theme,
+                    settings.tui.icons,
+                    settings.tui.tool_style,
+                ) == (Theme::Default, IconMode::Nerd, ToolStyle::Rail)
+            })
+        },
+    );
     pty.ready();
     pty.input("\x03");
     pty.finish();

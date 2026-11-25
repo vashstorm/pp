@@ -38,6 +38,9 @@ pub use stats::{StatsSettings, StatsStyle};
 mod theme;
 pub use theme::{IconMode, Theme, TuiSettings};
 
+mod tool_style;
+pub use tool_style::ToolStyle;
+
 mod general;
 pub use general::{SettingPatch, update_general_setting};
 

@@ -89,7 +89,11 @@ impl TranscriptEntry {
 
     pub(super) fn source(&self, source: Source) -> &str {
         match source {
-            Source::Top | Source::Divider | Source::Bottom | Source::Padding => "",
+            Source::Top
+            | Source::Divider
+            | Source::Bottom
+            | Source::Padding
+            | Source::ReadItem(_) => "",
             Source::Footer => &self.footer,
             Source::Title => &self.title,
             Source::Text => self.visible_text(),
@@ -148,12 +152,12 @@ impl TranscriptEntry {
             } else {
                 muted_text()
             };
-            let bg = if self.kind == EntryKind::Eval {
-                eval_background()
+            let surface = if self.kind == EntryKind::Eval {
+                card::CardSurface::Eval
             } else {
-                bash_background()
+                card::CardSurface::Bash
             };
-            return Line::styled(text, Style::default().fg(color).bg(bg));
+            return Line::styled(text, card::surface_style(surface, color));
         }
         if matches!(source, Source::Title) {
             let mut spans = if self.tool.is_some() {

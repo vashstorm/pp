@@ -1,20 +1,24 @@
 use super::*;
-use pp_config::config::{IconMode, Theme, read_settings};
+use pp_config::config::{IconMode, Theme, ToolStyle, read_settings};
 use std::time::{Duration, Instant};
 
-struct ThemeGuard((Theme, IconMode));
+struct ThemeGuard(crate::tui::themes::Appearance);
 
 impl ThemeGuard {
     fn reset_default() -> Self {
-        let prev = crate::tui::themes::current();
-        crate::tui::themes::set_active(Theme::Default, IconMode::Nerd);
+        let prev = crate::tui::themes::current_appearance();
+        crate::tui::themes::set_active_appearance(
+            Theme::Default,
+            IconMode::Nerd,
+            ToolStyle::Classic,
+        );
         Self(prev)
     }
 }
 
 impl Drop for ThemeGuard {
     fn drop(&mut self) {
-        crate::tui::themes::set_active(self.0.0, self.0.1);
+        crate::tui::themes::set_active_appearance(self.0.theme, self.0.icons, self.0.tools);
     }
 }
 
@@ -201,6 +205,23 @@ fn slash_themes_completion_and_direct_arguments_update_and_persist() {
     let saved = read_settings(&settings_path).unwrap();
     assert_eq!(saved.tui.theme, Theme::Dracula);
     assert_eq!(saved.tui.icons, IconMode::Ascii);
+
+    // 直接传入工具卡片风格并持久化，保留已保存的颜色与图标。
+    type_command(&mut app, "/themes rail");
+    assert!(app.themes_panel.is_none());
+    assert_eq!(crate::tui::themes::current_tool_style(), ToolStyle::Rail);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        app.receive();
+        if read_settings(&settings_path).is_ok_and(|s| s.tui.tool_style == ToolStyle::Rail) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let saved = read_settings(&settings_path).unwrap();
+    assert_eq!(saved.tui.theme, Theme::Dracula);
+    assert_eq!(saved.tui.icons, IconMode::Ascii);
+    assert_eq!(saved.tui.tool_style, ToolStyle::Rail);
 }
 
 #[cfg(debug_assertions)]

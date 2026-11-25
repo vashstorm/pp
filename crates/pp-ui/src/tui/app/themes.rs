@@ -1,5 +1,4 @@
 use crate::tui::{App, Level, PendingKind, Style, commands, editor, themes, transcript_style};
-use pp_config::config::{IconMode, Theme};
 
 impl App {
     pub(in crate::tui) fn complete_theme_argument(&mut self, value: &str, confirm: bool) -> bool {
@@ -28,38 +27,48 @@ impl App {
 
     pub(in crate::tui) fn open_themes(&mut self) {
         self.clear_other_settings_tabs(Some(super::super::settings::Tab::Themes));
-        self.themes_panel = Some(themes::Panel::new(self.theme, self.icons));
+        self.themes_panel = Some(themes::Panel::new(themes::Appearance {
+            theme: self.theme,
+            icons: self.icons,
+            tools: self.tool_style,
+        }));
         self.menu = None;
         self.file_query = None;
         self.menu_dismissed = true;
     }
 
     pub(in crate::tui) fn submit_themes_command(&mut self, command: commands::ThemeCommand) {
-        if command.theme.is_none() && command.icons.is_none() {
+        if command.theme.is_none() && command.icons.is_none() && command.tools.is_none() {
             self.remember_input();
             self.clear_input();
             self.open_themes();
             return;
         }
-        let theme = command.theme.unwrap_or(self.theme);
-        let icons = command.icons.unwrap_or(self.icons);
-        self.theme = theme;
-        self.icons = icons;
-        self.apply_appearance(theme, icons);
+        let appearance = themes::Appearance {
+            theme: command.theme.unwrap_or(self.theme),
+            icons: command.icons.unwrap_or(self.icons),
+            tools: command.tools.unwrap_or(self.tool_style),
+        };
+        self.theme = appearance.theme;
+        self.icons = appearance.icons;
+        self.tool_style = appearance.tools;
+        self.apply_appearance(appearance);
         self.remember_input();
         self.clear_input();
         self.append(
             "Themes",
             &format!(
-                "Theme: {} ({}) · Icons: {} ({})",
-                theme.label(),
-                theme.as_str(),
-                icons.label(),
-                icons.as_str()
+                "Theme: {} ({}) · Icons: {} ({}) · Tools: {} ({})",
+                appearance.theme.label(),
+                appearance.theme.as_str(),
+                appearance.icons.label(),
+                appearance.icons.as_str(),
+                appearance.tools.label(),
+                appearance.tools.as_str(),
             ),
         );
         if let Some(path) = self.settings_path.clone()
-            && let Err(error) = self.themes_worker.save(path, theme, icons)
+            && let Err(error) = self.themes_worker.save(path, appearance)
         {
             self.notify(Level::Error, format!("{error:#}"));
         }
@@ -68,17 +77,17 @@ impl App {
     pub(in crate::tui) fn apply_themes_action(&mut self, action: themes::Action) {
         match action {
             themes::Action::None => {}
-            themes::Action::Preview(theme, icons) => {
-                self.apply_appearance(theme, icons);
+            themes::Action::Preview(appearance) => {
+                self.apply_appearance(appearance);
             }
-            themes::Action::Cancel(theme, icons) => {
-                self.apply_appearance(theme, icons);
+            themes::Action::Cancel(appearance) => {
+                self.apply_appearance(appearance);
                 self.themes_panel = None;
                 self.menu_dismissed = true;
             }
-            themes::Action::Save(theme, icons) => {
+            themes::Action::Save(appearance) => {
                 if let Some(path) = self.settings_path.clone() {
-                    if let Err(error) = self.themes_worker.save(path, theme, icons) {
+                    if let Err(error) = self.themes_worker.save(path, appearance) {
                         if let Some(panel) = &mut self.themes_panel {
                             panel.set_error(format!("{error:#}"));
                         } else {
@@ -86,9 +95,10 @@ impl App {
                         }
                     }
                 } else {
-                    self.theme = theme;
-                    self.icons = icons;
-                    self.apply_appearance(theme, icons);
+                    self.theme = appearance.theme;
+                    self.icons = appearance.icons;
+                    self.tool_style = appearance.tools;
+                    self.apply_appearance(appearance);
                     self.themes_panel = None;
                     self.menu_dismissed = true;
                 }
@@ -96,8 +106,8 @@ impl App {
         }
     }
 
-    pub(in crate::tui) fn apply_appearance(&mut self, theme: Theme, icons: IconMode) {
-        themes::set_active(theme, icons);
+    pub(in crate::tui) fn apply_appearance(&mut self, appearance: themes::Appearance) {
+        themes::set_active_appearance(appearance.theme, appearance.icons, appearance.tools);
         self.input
             .set_style(Style::default().fg(transcript_style::text()));
         if let Some(draft) = &mut self.model_picker_draft {
@@ -116,9 +126,10 @@ impl App {
         while let Ok(reply) = self.themes_worker.replies.try_recv() {
             match reply.result {
                 Ok(()) => {
-                    self.theme = reply.theme;
-                    self.icons = reply.icons;
-                    self.apply_appearance(reply.theme, reply.icons);
+                    self.theme = reply.appearance.theme;
+                    self.icons = reply.appearance.icons;
+                    self.tool_style = reply.appearance.tools;
+                    self.apply_appearance(reply.appearance);
                     if self.themes_panel.is_some() {
                         self.themes_panel = None;
                         self.menu_dismissed = true;

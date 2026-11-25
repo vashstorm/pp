@@ -137,7 +137,7 @@ pub fn run(
     // tmux 默认以 xterm modifyOtherKeys 编码回报扩展按键，这里接管 fd 0 把它
     // 翻译成 crossterm 支持的 CSI-u；探测结束后安装，避免争抢原始终端。
     input_shim::install(pending_reply).context("installing input translator")?;
-    themes::set_active(options.theme, options.icons);
+    themes::set_active_appearance(options.theme, options.icons, options.tool_style);
     let mut surface = surface::Surface::new(io::stdout());
     let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
     // 持久输入历史与 agent 配置目录同级；无可定位目录时明确只保留进程内回忆。
@@ -149,9 +149,14 @@ pub fn run(
         .map(|bootstrap| bootstrap.dir.join("settings.yml"));
     let mut app = App::new_with_skills(agent, skills, file_commands, cwd, history_path)?;
     pp_core::logging::perf::mark("app_ready");
-    app.apply_appearance(options.theme, options.icons);
+    app.apply_appearance(themes::Appearance {
+        theme: options.theme,
+        icons: options.icons,
+        tools: options.tool_style,
+    });
     app.theme = options.theme;
     app.icons = options.icons;
+    app.tool_style = options.tool_style;
     app.settings_path = settings_path;
     app.image_view.configure(picker);
     app.cost_display = cost_display;
@@ -454,6 +459,7 @@ enum MenuAction {
     SettingTab(settings::Tab),
     ThemeIcon(pp_config::config::IconMode),
     ThemeColor(pp_config::config::Theme),
+    ThemeTool(pp_config::config::ToolStyle),
     File(usize),
     FileDirectory(usize),
     FileParent,
@@ -593,6 +599,7 @@ struct App {
     cached_skills: Option<pp_config::skills::Skills>,
     theme: pp_config::config::Theme,
     icons: pp_config::config::IconMode,
+    tool_style: pp_config::config::ToolStyle,
     settings_path: Option<std::path::PathBuf>,
     settings_worker: settings::Worker,
     settings_panel: Option<settings::Panel>,

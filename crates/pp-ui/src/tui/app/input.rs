@@ -237,15 +237,17 @@ impl App {
                 }
             }
             Some(("/themes" | "/theme", argument)) => {
-                use pp_config::config::{IconMode, Theme};
+                use pp_config::config::{IconMode, Theme, ToolStyle};
 
                 let words: Vec<_> = argument.split_whitespace().collect();
                 let trailing_space = argument.chars().last().is_some_and(char::is_whitespace);
-                let (prefix, has_icon, has_theme) = if trailing_space || words.is_empty() {
+                let (prefix, has_icon, has_theme, has_tools) = if trailing_space || words.is_empty()
+                {
                     (
                         "",
                         words.iter().any(|word| IconMode::parse(word).is_some()),
                         words.iter().any(|word| Theme::parse(word).is_some()),
+                        words.iter().any(|word| ToolStyle::parse(word).is_some()),
                     )
                 } else {
                     let prefix = words.last().copied().unwrap_or("");
@@ -254,6 +256,7 @@ impl App {
                         prefix,
                         prior.iter().any(|word| IconMode::parse(word).is_some()),
                         prior.iter().any(|word| Theme::parse(word).is_some()),
+                        prior.iter().any(|word| ToolStyle::parse(word).is_some()),
                     )
                 };
                 let prefix_lower = prefix.to_ascii_lowercase();
@@ -283,6 +286,20 @@ impl App {
                                 description: format!("{} · {}", theme.label(), theme.description()),
                                 icon: None,
                                 current: theme == self.theme,
+                            }),
+                    );
+                }
+                if !has_tools && (!prefix_lower.is_empty() || !has_icon || has_theme) {
+                    items.extend(
+                        ToolStyle::ALL
+                            .into_iter()
+                            .filter(|style| style.as_str().starts_with(&prefix_lower))
+                            .map(|style| MenuItem {
+                                value: MenuAction::ThemeTool(style),
+                                label: style.as_str().into(),
+                                description: format!("{} · {}", style.label(), style.description()),
+                                icon: None,
+                                current: style == self.tool_style,
                             }),
                     );
                 }
@@ -949,6 +966,7 @@ fn completion_text(item: &MenuItem<MenuAction>) -> &str {
         MenuAction::SettingTab(tab) => tab.slug(),
         MenuAction::ThemeIcon(mode) => mode.as_str(),
         MenuAction::ThemeColor(theme) => theme.as_str(),
+        MenuAction::ThemeTool(style) => style.as_str(),
         _ => &item.label,
     }
 }

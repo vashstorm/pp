@@ -1,21 +1,25 @@
 use super::*;
 use crate::tui::settings;
-use pp_config::config::{EditMode, IconMode, Theme, read_settings};
+use pp_config::config::{EditMode, IconMode, Theme, ToolStyle, read_settings};
 use std::time::{Duration, Instant};
 
-struct ThemeGuard((Theme, IconMode));
+struct ThemeGuard(crate::tui::themes::Appearance);
 
 impl ThemeGuard {
     fn reset_default() -> Self {
-        let prev = crate::tui::themes::current();
-        crate::tui::themes::set_active(Theme::Default, IconMode::Nerd);
+        let prev = crate::tui::themes::current_appearance();
+        crate::tui::themes::set_active_appearance(
+            Theme::Default,
+            IconMode::Nerd,
+            ToolStyle::Classic,
+        );
         Self(prev)
     }
 }
 
 impl Drop for ThemeGuard {
     fn drop(&mut self) {
-        crate::tui::themes::set_active(self.0.0, self.0.1);
+        crate::tui::themes::set_active_appearance(self.0.theme, self.0.icons, self.0.tools);
     }
 }
 
@@ -575,15 +579,17 @@ fn themes_and_skills_sidebars_switch_categories_and_toggle_by_mouse() {
 fn themes_and_skills_focus_handles_tab_encodings_and_narrow_resize() {
     let _guard = ThemeGuard::reset_default();
     let (mut app, _requests, _events) = plan_app();
-    for (tab, first, second) in [
+    for (tab, first, second, last) in [
         (
             settings::Tab::Themes,
             "Themes — Icon Style",
             "Themes — Color Theme",
+            "Themes — Tools",
         ),
         (
             settings::Tab::Skills,
             "Skills — Sources",
+            "Skills — Global management",
             "Skills — Global management",
         ),
     ] {
@@ -608,8 +614,8 @@ fn themes_and_skills_focus_handles_tab_encodings_and_narrow_resize() {
             }
             // 重复与松键不切焦点；End / Home 操作侧边栏，即使右侧技能列表为空。
             for (code, marker) in [
-                (KeyCode::End, second),
-                (KeyCode::End, second),
+                (KeyCode::End, last),
+                (KeyCode::End, last),
                 (KeyCode::Home, first),
             ] {
                 app.handle(key(code), &mut false);

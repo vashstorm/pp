@@ -124,6 +124,7 @@ impl App {
             cached_skills: None,
             theme: super::super::themes::current_theme(),
             icons: super::super::themes::current_icons(),
+            tool_style: super::super::themes::current_tool_style(),
             settings_path: None,
             settings_worker: super::super::settings::Worker::new()?,
             settings_panel: None,

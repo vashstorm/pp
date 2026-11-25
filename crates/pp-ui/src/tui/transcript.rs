@@ -27,6 +27,7 @@ use std::{
 };
 
 mod bash_tasks;
+pub(super) mod card;
 mod diff;
 mod entry;
 mod entry_ask;
@@ -131,6 +132,7 @@ pub(super) enum Source {
     Stdout,
     StderrLabel,
     Stderr,
+    ReadItem(usize),
 }
 
 pub(super) enum LayoutContent {
@@ -284,6 +286,7 @@ struct TranscriptEntry {
     diagnostics: Vec<pp_core::lsp_report::DiagnosticReport>,
     display: DisplayContext,
     display_title: Option<Vec<Line<'static>>>,
+    read_group: Vec<card::ReadItem>,
     hidden: bool,
 }
 
@@ -912,6 +915,7 @@ impl Transcript {
         for entry in &mut self.entries {
             entry.layout = None;
             entry.display_title = None;
+            entry.read_group.clear();
             entry.markdown_dirty = matches!(entry.kind, EntryKind::Assistant | EntryKind::Think);
             entry.render.invalidate(true);
             entry.read_clock = palette::waiting_clock(0);

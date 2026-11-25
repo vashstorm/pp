@@ -94,8 +94,9 @@ edit: replace
 auto_compact: true
 auto_compact_threshold_percent: 80
 tui:
-  theme: default # default | tokyonight | catppuccin | dracula | nord | gruvbox | solarized-light | onedark | solarized-dark | monokai | rose-pine | rose-pine-dawn | kanagawa | everforest | gruvbox-light | catppuccin-latte | github-dark | github-light | ayu-dark | night-owl
-  icons: nerd    # nerd | ascii
+  theme: default      # default | tokyonight | catppuccin | dracula | nord | gruvbox | solarized-light | onedark | solarized-dark | monokai | rose-pine | rose-pine-dawn | kanagawa | everforest | gruvbox-light | catppuccin-latte | github-dark | github-light | ayu-dark | night-owl
+  icons: nerd         # nerd | ascii
+  tool_style: classic # classic | rail | slab | badge | hanging | ledger
 ```
 
 Model requests have no total time limit. `request_timeout_seconds` defaults to 300 seconds and limits connection setup and idle reads; incoming text, reasoning, and SSE heartbeats reset the idle timer. Explicitly configured values still apply.
@@ -170,7 +171,7 @@ All 13 `/test-*` commands use an embedded loopback-only Mock AI Server in dev/te
 | `/setting [general\|roles\|themes\|skills]` | Open the unified Settings TUI (shown as `/setting (config)` in completion; `General · Roles · Themes · Skills` with icons and the active tab highlighted, switch tabs via `←/→` or click; `/config` and `/settings` aliases) |
 | `/roles`, `/agents` | Open the Roles tab in the Setting TUI, or open Agent Hub (`⌥ + A / Alt + A`) |
 | `/stats [--host IP] [--port PORT] [--no-open]` | Open the local statistics page, using the same server as `pp stats` |
-| `/themes [nerd\|ascii] [THEME]` | Open the Themes tab (independently select, preview, and save icon style `nerd` / `ascii` or one of 7 built-in color themes), or apply directly and save to `settings.yml` (`/theme` alias) |
+| `/themes [nerd\|ascii] [THEME] [TOOL_STYLE]` | Open the Themes tab (independently select, preview, and save icon style `nerd` / `ascii`, one of 20 built-in color themes, or one of 6 tool card styles `classic` / `rail` / `slab` / `badge` / `hanging` / `ledger`), or apply directly and save to `settings.yml` (`/theme` alias) |
 | `/model` (`/models`), `/effort` | Switch models and reasoning levels while keeping history |
 | `/init` | Create or update the current project's `AGENTS.md` |
 | `/plan [prompt]` | Toggle Plan mode standby; view the plan or send a planning task immediately; execute after approval (TUI only) |
