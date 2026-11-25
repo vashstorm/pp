@@ -800,7 +800,7 @@ MCP 进程在 pp 进程内常驻：首次需要时连接，之后在 `/new`、`/
 MCP 按当前用户权限运行，没有文件系统沙箱。服务 stderr 丢弃；错误不输出响应体、命令参数、环境值、URL、会话 ID 或认证内容。成功工具结果会进入模型上下文和会话记录，服务应避免返回凭证。
 
 ```sh
-cargo nextest run --locked --workspace -E 'test(mcp_) | test(slash_mcp)'
+cargo test --locked --workspace mcp_
 ```
 
 ## LSP 语义导航与修改建议
@@ -876,7 +876,7 @@ lsp:
 语言服务器进程本身不是文件系统沙箱；上述规则约束 pp 的调用和提交行为。
 
 ```sh
-cargo nextest run --locked --workspace -E 'test(lsp_)'
+cargo test --locked --workspace lsp_
 ```
 
 ## 上下文用量与压缩
@@ -1247,7 +1247,7 @@ pp gc [天数]
 
 根集成测试仍只有 `cli_agent` target：`tests/cli_agent.rs` 保留注册和共享 CLI／SSE fixture，`tests/cli_agent/tui.rs` 保留唯一 PTY harness；session、context、streaming、sqlite 及 TUI 的测试按行为放入同名目录。通过 `#[path]` 注册的父模块，其子模块也使用显式相对路径，避免误解析到其他分组。已有 TUI `include!` 只共享原上下文，不重复注册测试。
 
-移动测试后，模块限定名前缀会变化，特别要同步自重启测试中的 `--exact` 字符串。迁移前后可用 `cargo nextest list --locked --workspace --message-format json` 比较 binary-id／kind、测试总数，以及每个 binary 内 `(测试末级名称, ignored)` 的计数多重集，避免仅凭总数漏掉遗漏或重复注册。
+移动测试后，模块限定名前缀会变化，特别要同步自重启测试中的 `--exact` 字符串。迁移前后可用 `cargo test --locked --workspace --tests -- --list` 按测试目标比较用例名称，再加 `--ignored` 核对忽略状态。
 
 
 ### read 模块分层
@@ -1258,63 +1258,62 @@ pp gc [天数]
 
 ### 验证命令
 
-本地开发默认使用 [cargo-nextest](https://nexte.st/docs/running/)。未安装时先执行 `cargo install cargo-nextest --locked`；普通测试不回退到 `cargo test`，doctest 见下文单独命令。
+本地验证使用 Cargo 自带的测试运行器。完整验证包含普通测试、文档测试以及单独串行运行的 `slow_` 用例。
 
 ```sh
 cargo build --locked
 cargo check --locked --workspace --all-targets
-cargo nextest run --locked --workspace
-cargo nextest run --locked --workspace --profile slow_test
-cargo nextest run --locked --workspace --profile quick
+cargo test --locked --workspace --no-fail-fast -- --skip ::slow_
+cargo test --locked --workspace --no-fail-fast --tests ::slow_ -- --test-threads=1
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo fmt --all --check
-cargo test --locked --workspace --doc
 ```
 
-根包是默认成员；裸 `cargo nextest run --locked` 只覆盖根 `cli_agent`，跨库验证必须显式加 `--workspace`。
+根包是默认成员。只运行 `cargo test --locked` 会选择根包的测试，跨库验证须显式加 `--workspace`。只验证文档示例时使用 `cargo test --locked --workspace --doc`。
 
-测试进程的 `TMPDIR` 必须位于任何 Git 工作树之外。临时工作目录落在仓库内时，按需加载的 `AGENTS.md` 会把仓库自身规则带进被测项目，请求快照、写入门禁与系统提示断言随之改变。沙箱内运行请显式指定工作树外的临时目录：
+测试进程的 `TMPDIR` 必须位于任何 Git 工作树之外。临时工作目录落在仓库内时，按需加载的 `AGENTS.md` 会把仓库自身规则带进被测项目，请求快照、写入门禁与系统提示断言随之改变。可在两条测试命令前都加上工作树外的 `TMPDIR`。
 
 ```sh
-TMPDIR=$(getconf DARWIN_USER_TEMP_DIR) cargo nextest run --locked --workspace   # macOS
-TMPDIR=/tmp cargo nextest run --locked --workspace                              # Linux
+TMPDIR=$(getconf DARWIN_USER_TEMP_DIR) cargo test --locked --workspace --no-fail-fast -- --skip ::slow_  # macOS
+TMPDIR=/tmp cargo test --locked --workspace --no-fail-fast -- --skip ::slow_                              # Linux
 ```
 
-`slow_test` 是串行集合：满载并行下会被饿过用例内 5s／10s 栅栏的重型用例（真实 PTY、真实二进制、真实子进程）已集中在此，成员判据是测试名末级以 `slow_` 开头，由 `.config/nextest.toml` 的 `[test-groups.slow_test]`（`max-threads = 1`）与 `[profile.slow_test]`（`test-threads = 1`）保证逐个串行。默认档的 `default-filter` 排除它们，所以完整验证＝默认档＋ `--profile slow_test`。要在默认档用 `-E` 定向匹配慢用例，需加 `--ignore-default-filter`。新增不稳定重型用例时给测试函数加 `slow_` 前缀，不在配置里维护名字清单。
-
-`quick` 是日常快档，在 `cli_agent` 的 `tui::` 模块中保留少量冒烟，跳过全部 `slow_test` 成员。单元测试和其余集成用例照常执行。此档仍会创建真实 PTY。`default-filter` 与 `-E` 取交集，定向跑被 `quick` 排除的 PTY 用例时，可以像下面这样加 `--ignore-default-filter`。
+并行命令通过 `--skip ::slow_` 跳过慢用例，串行命令只选中这些用例。测试确认受满载并行影响时，将其放在测试模块中，并给函数名加上 `slow_` 前缀。日常可以用 `--lib` 只跑库单测，或用 `--test cli_agent` 按名称选跑终端用例。
 
 ```sh
-cargo nextest run --locked -p pp --test cli_agent --profile quick --ignore-default-filter -E 'test(lsp_tui_late_report_collapses_and_ctrl_o_expands)'
+cargo test --locked --workspace --lib -- --skip ::slow_
+cargo test --locked -p pp --test cli_agent lsp_tui_late_report_collapses_and_ctrl_o_expands
 ```
 
-沙盒禁止 `openpty` 时，运行 `cargo nextest run --locked --workspace --profile no_pty`。此档排除 `cli_agent` 的 `tui::` 用例，以及使用真实终端验证 Plan 下的 LSP 只读行为和 `pp stats` 打开浏览器的两个用例。进程内 TUI 单测照常执行，其余 `slow_` 用例逐个独占执行。回环 HTTP fixture 仍需绑定本地端口，Seatbelt 集成测试仍需创建自己的沙盒。需要验证真实终端行为时，在允许创建 PTY 的环境运行默认档和 `slow_test` 档。
+沙盒禁止 `openpty` 时，单独运行库测试及文档测试，并在运行 `cli_agent` 时追加下面的排除参数。普通用例保留 `--skip ::slow_`，慢用例保留 `::slow_` 和 `--test-threads=1`。回环 HTTP fixture 仍需绑定本地端口，Seatbelt 集成测试仍需创建自己的沙盒。
+
+```sh
+cargo test --locked -p pp --test cli_agent -- --skip ::slow_ --skip tui:: \
+  --skip lsp_roundtrip_plan_readonly_denies_mutations_and_server_apply_edit \
+  --skip stats_server_opens_actual_url_and_survives_browser_failure
+```
 
 日常修改优先按范围选择定向回归，默认并行；纯文档或注释修改无需运行 Rust 测试。以下命令按任务择一或合并筛选，不要求每次全部执行：
 
 ```sh
-cargo nextest run --locked --workspace context_
-cargo nextest run --locked -p pp --test cli_agent streaming_ --success-output immediate
-cargo nextest run --locked --workspace plan_
-cargo nextest run --locked --workspace mcp_
-cargo nextest run --locked --workspace background_
-cargo nextest run --locked -p pp --test cli_agent tui::
-cargo nextest run --locked --workspace -E 'test(llm::) | test(streaming_)'
-cargo nextest run --locked --workspace -E 'test(tui::markdown::) | test(tui::transcript::)'
-cargo nextest run --locked --workspace -E 'test(tools::read::) | test(read_pagination_) | test(read_http_) | test(read_files_images_web_) | test(read_image_)'
+cargo test --locked --workspace context_ -- --skip ::slow_
+cargo test --locked -p pp --test cli_agent streaming_ -- --skip ::slow_ --show-output
+cargo test --locked --workspace plan_ -- --skip ::slow_
+cargo test --locked --workspace mcp_
+cargo test --locked --workspace background_ -- --skip ::slow_
+cargo test --locked -p pp --test cli_agent tui:: -- --skip ::slow_
+cargo test --locked --workspace --tests -- llm:: streaming_ --skip ::slow_
+cargo test --locked --workspace --tests -- tui::markdown:: tui::transcript::
+cargo test --locked --workspace --tests -- tools::read:: read_pagination_ read_http_ read_files_images_web_ read_image_
 ```
 
 其他常用筛选包括 `slash_`、`file_command_`、`model_switch`、`model_thinking`、`replace_`、`hashline_`、`stats_`、`sqlite_` 和 `project_instructions`。
 
-筛选应覆盖受影响的单元测试和集成测试；`-p pp --test cli_agent` 只运行根集成测试，适合验证 CLI 行为，不能替代相关单元测试。不确定匹配范围时先运行 `cargo nextest list --locked --workspace -E '…'`；筛选结果为空不算验证通过。多个相关范围可用 `-E 'test(pattern_a) | test(pattern_b)'` 一次运行。
+筛选应覆盖受影响的单元测试和集成测试。`-p pp --test cli_agent` 只运行根集成测试。不确定匹配范围时加 `--list`，例如 `cargo test --locked --workspace --tests -- context_ --skip ::slow_ --list`。筛选结果为空不算验证通过。多个名称筛选可以一起传给 `--`。
 
-配置／持久化／协议边界等跨模块改动、依赖更新、公共测试设施改动或明确要求完整验证时，运行一次 `cargo nextest run --locked --workspace` 加 `cargo nextest run --locked --workspace --profile slow_test`（默认档已排除串行集合，只跑其一只算部分验证）。局部验证通过且没有新改动或新疑点后，无需重复全量测试、build 或 clippy；报告实际验证范围即可。
-
-`.config/nextest.toml` 的默认 profile 显式使用 `test-threads = "num-cpus"`、`retries = 0` 和 `fail-fast = false`，并用 `default-filter` 排除 `slow_test` 串行集合；`slow_test` profile 只收串行集合并固定 `test-threads = 1`；`quick` profile 不写 `inherits`，沿用同样的并行、重试与失败收集设置，只额外带 `default-filter`。不要把全量串行测试作为任务默认收尾。PTY／进程组／超时用例实际失败时，先看它是否因满载并行撞上 5s／10s 栅栏，需要时把测试函数改名加 `slow_` 前缀移入串行集合；单独排查可对失败用例或对应小集合加 `--test-threads=1`，参数直接传给 nextest，不放在 `--` 后。`--success-output immediate` 显示成功输出而不强制串行。不通过增加 sleep、重试或放宽断言掩盖问题。
+配置／持久化／协议边界等跨模块改动、依赖更新、公共测试设施改动或明确要求完整验证时，执行本节开头的两条工作区测试命令。`--no-fail-fast` 使 Cargo 在某个测试目标失败后继续验证其余目标。排查具体失败可追加 `--test-threads=1`，用 `--show-output` 查看通过用例的输出。不通过增加 sleep、重试或放宽断言掩盖问题。
 
 单元测试覆盖配置、协议解析、原子保存和界面布局；`tests/cli_agent.rs` 及其子模块通过真实二进制、回环 HTTP SSE 服务、临时 HOME 与项目目录验证双协议工具循环、流式输出、会话恢复、Plan、MCP、后台进程与项目指令。Unix 下的 PTY 测试还检查输入、滚动、缩放、取消与终端恢复。测试不访问个人密钥或真实供应商；本地 fixture 通过不代表真实服务端兼容性。
-
-nextest 不运行 doctest；六个内部库都是 library target，须另行运行 `cargo test --locked --workspace --doc`。
 
 ## 参考
 

@@ -5,8 +5,7 @@ use std::{
 
 const MAX_SYMLINK_DEPTH: usize = 16;
 
-// 测试用 `canonicalize` 计数：nextest 每个用例独立进程，线程局部计数让
-// “常规 entry 不触发规范化”的断言不受同进程并行用例干扰。
+// 测试用 `canonicalize` 计数按线程隔离，避免同进程的并行用例干扰断言。
 #[cfg(test)]
 thread_local! {
     static CANONICALIZE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

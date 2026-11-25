@@ -340,7 +340,7 @@ mod tests {
             json!({
                 "providers": {
                     "fixture": {
-                        "api_key": "secret",
+                        "api_key": "fixture-key",
                         "protocol": protocol_name,
                         "base_url": "http://127.0.0.1:1/v1",
                         "models": {

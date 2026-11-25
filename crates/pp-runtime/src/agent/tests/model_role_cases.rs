@@ -255,7 +255,7 @@ fn apply_pending_truncates_user_and_hook_developer_when_persist_fails() {
     std::fs::write(
         &models,
         json!({"providers":{"fixture":{
-            "api_key":"k","protocol":"completion","base_url":"http://127.0.0.1:1/v1",
+            "api_key":"fixture-key","protocol":"completion","base_url":"http://127.0.0.1:1/v1",
             "models":{"one":{"model":"one","thinking":{"efforts":["low","high"],"defaultLevel":"low"}}}
         }}})
         .to_string(),
@@ -313,7 +313,7 @@ fn think_override_matching_default_clears_override_and_updates_source() {
     std::fs::write(
         &models,
         json!({"providers":{"fixture":{
-            "api_key":"k","protocol":"completion","base_url":"http://127.0.0.1:1/v1",
+            "api_key":"fixture-key","protocol":"completion","base_url":"http://127.0.0.1:1/v1",
             "models":{"one":{"model":"one","thinking":{"efforts":["low","high"],"defaultLevel":"low"}}}
         }}})
         .to_string(),

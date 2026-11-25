@@ -192,7 +192,6 @@ fn auth_panel_mouse_selects_and_opens_wrapped_urls_during_wait() {
 #[test]
 fn auth_first_login_bootstraps_agent_without_restarting_ui_or_losing_draft() {
     use super::{App, State};
-    pp_workspace::host_defaults::install(pp_workspace::host_defaults::capture());
     let dir = tempfile::tempdir().unwrap();
     let global = dir.path().join("agent");
     std::fs::create_dir(&global).unwrap();

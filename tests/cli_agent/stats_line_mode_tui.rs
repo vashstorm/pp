@@ -1,8 +1,7 @@
 // 行模式 `/stats` 的真实终端场景：stdin 是 FIFO（非 TTY），stdout/stderr 共用 PTY，
 // 因此进程选择行模式，但 `stdout` 仍是终端，`/stats` 会真的尝试启动浏览器。
 //
-// 请求节奏与浏览器失败时机都由用例控制：`/stats` 通过 FIFO 逐条发送，
-// 浏览器 opener 由夹具替身实现——它先登记被调用的 URL，再等用例释放后才以非零码退出。
+// `/stats` 通过 FIFO 逐条发送，浏览器替身登记被调用的 URL 后以非零码退出。
 
 /// 行模式 `/stats` 的 URL 前缀；浏览器失败的 warning 不含它。
 const URL_MARKER: &str = "pp stats: http://";
@@ -208,6 +207,15 @@ fn stats_line_mode_prints_one_url_per_request_when_the_browser_opener_fails() {
 
     pty.send("/stats --port 0\n");
     pty.wait_for("the first stats URL", URL_MARKER);
+    // 浏览器线程独立于 URL 回复，等替身确实被调用后再继续发命令。
+    let opened_url = home.path().join("opened-url");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !std::fs::read_to_string(&opened_url)
+        .is_ok_and(|opened| opened.contains("http://127.0.0.1:"))
+    {
+        assert!(Instant::now() < deadline, "browser opener never ran");
+        thread::sleep(Duration::from_millis(10));
+    }
     // 第二条命令用不同参数强制换一个服务进程：两次回复属于不同的地址，
     // 因此“各打印一次”无法由任何一次重复输出冒充。
     pty.send("/stats --host 127.0.0.1 --port 0\n");
@@ -230,11 +238,5 @@ fn stats_line_mode_prints_one_url_per_request_when_the_browser_opener_fails() {
             .iter()
             .all(|address| address.starts_with("127.0.0.1:")),
         "every printed address must come from a served launcher reply: {text}"
-    );
-    // opener 替身确实被调用过：本场景真的走了浏览器失败分支。
-    let opened = std::fs::read_to_string(home.path().join("opened-url")).unwrap();
-    assert!(
-        opened.contains("http://127.0.0.1:"),
-        "browser opener never ran: {opened}"
     );
 }

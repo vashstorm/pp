@@ -290,16 +290,14 @@ pp stats
 
 `cargo run`、`cargo build` 和不带包选择的测试只作用于根默认成员；跨全部 crate 验证须使用 `--workspace`，只验证单个库时使用 `-p <包名>`。
 
-测试使用 [cargo-nextest](https://nexte.st/docs/running/)；未安装时先执行 `cargo install cargo-nextest --locked`。
-日常修改先运行相关定向测试，全量测试默认并行；测试名末级带 `slow_` 前缀的重型用例（真实 PTY、真实二进制、真实子进程）属于串行 `slow_test` 集合，默认档已排除，完整验证需再跑 `--profile slow_test`。`--test-threads=1` 仅用于排查具体失败用例。
+测试使用 Cargo 自带的运行器。日常修改先按名称筛选相关用例。完整验证分两次执行，普通测试并行运行（含文档测试），以 `slow_` 开头的用例单独串行运行。
 
 ```sh
-cargo nextest run --locked --workspace context_
-cargo nextest run --locked --workspace
-cargo nextest run --locked --workspace --profile slow_test
+cargo test --locked --workspace context_ -- --skip ::slow_
+cargo test --locked --workspace --no-fail-fast -- --skip ::slow_
+cargo test --locked --workspace --no-fail-fast --tests ::slow_ -- --test-threads=1
 cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace --doc
 cargo fmt --all --check
 ```
 

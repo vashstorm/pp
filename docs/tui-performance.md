@@ -50,17 +50,17 @@ TUI 按帧合并同一目标、类型和轮次的文本分片；达到 64 KiB �
 本轮新增的确定性断言：
 
 ```sh
-cargo nextest run --locked -p pp-ui -E 'test(layout_worker_) | test(bash_card) | test(metric_fields) | test(context_field)'
+cargo test --locked -p pp-ui --lib -- layout_worker_ bash_card metric_fields context_field
 ```
 
 ```sh
-cargo nextest run --locked --workspace -E 'test(frame_clock) | test(stream_buffer) | test(markdown_block_cache) | test(layout_worker_) | test(tui_max_fps) | test(streaming_frame_batches)'
-cargo nextest run --locked --workspace -E 'test(tui::render_worker::) | test(tui::transcript::) | test(tui::surface::) | test(streaming_frame_batches) | test(stream_buffer) | test(tui_runtime_responsiveness) | test(tui_scrolled_stream_) | test(native_tui_)'
-PP_TUI_PERF_ASSERT=1 cargo nextest run --release --locked -p pp --test cli_agent -E 'test(tui_runtime_responsiveness)' --success-output immediate
-cargo nextest run --locked --workspace
+cargo test --locked --workspace --tests -- frame_clock stream_buffer markdown_block_cache layout_worker_ tui_max_fps streaming_frame_batches --skip ::slow_
+cargo test --locked --workspace --tests -- tui::render_worker:: tui::transcript:: tui::surface:: streaming_frame_batches stream_buffer tui_runtime_responsiveness tui_scrolled_stream_ native_tui_ --skip ::slow_
+PP_TUI_PERF_ASSERT=1 cargo test --release --locked -p pp --test cli_agent tui_runtime_responsiveness -- --show-output
+cargo test --locked --workspace --no-fail-fast -- --skip ::slow_
+cargo test --locked --workspace --no-fail-fast --tests ::slow_ -- --test-threads=1
 cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test --locked --workspace --doc
 cargo fmt --all --check
 ```
 
