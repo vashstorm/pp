@@ -15,6 +15,8 @@ use std::fs;
 
 mod io;
 pub use io::{load_hooks, read_hooks, read_settings};
+mod initialize;
+pub use initialize::initialize_defaults;
 pub(crate) use io::{update_settings, update_settings_fields, update_settings_fields_returning};
 
 mod roles;

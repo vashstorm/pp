@@ -215,6 +215,8 @@ enum Command {
         #[arg(long)]
         no_open: bool,
     },
+    /// Create missing settings and model configuration files
+    InitConfig,
 }
 
 #[derive(Default)]
@@ -254,8 +256,11 @@ fn main() -> ExitCode {
     host_defaults::install(host_defaults::capture());
     let args = parse_args();
     let output_mode: cli::OutputMode = args.mode.into();
-    // gc reports the existing inventory without creating its own diagnostic log.
-    let logging = if matches!(args.subcommand, Some(Command::Gc { .. })) {
+    // 清理和配置初始化无需额外创建诊断日志。
+    let logging = if matches!(
+        args.subcommand,
+        Some(Command::Gc { .. } | Command::InitConfig)
+    ) {
         None
     } else {
         match logging::init() {
@@ -430,6 +435,7 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
         );
         return match subcommand {
             Command::Gc { days } => run_gc(days),
+            Command::InitConfig => config::initialize_defaults(&config::global_dir()?),
             Command::Stats {
                 host,
                 port,
@@ -640,9 +646,12 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
     // 一次性迁移已在上一步完成（旧字段已从文件剥离），所以这里读到的是迁移后的配置；
     // 读取失败仍按既有方式呈现：外观回落默认值，错误进入技能 diagnostics 与配置错误路径。
     let settings = match &global_dir {
-        Ok(dir) => {
+        Ok(dir) => (|| {
+            if migration_error.is_none() {
+                config::initialize_defaults(dir)?;
+            }
             config::read_settings(&dir.join("settings.yml")).map(|settings| (dir.clone(), settings))
-        }
+        })(),
         Err(error) => Err(anyhow::anyhow!("{error:#}")),
     };
     let (tui_settings, cost_display) = settings

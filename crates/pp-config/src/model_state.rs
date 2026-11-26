@@ -444,7 +444,7 @@ mod tests {
                 .set_override(selection("fixture/two", ThinkLevel::Low))
                 .unwrap()
         );
-        fs::write(dir.path().join("models.yml"), "providers: {}\n").unwrap();
+        fs::write(dir.path().join("models.yml"), "providers: []\n").unwrap();
         assert!(state.reload_models().is_err());
         // 失败不改内存快照：覆盖继续生效，不会被静默替换。
         assert_eq!(

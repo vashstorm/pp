@@ -1,6 +1,67 @@
 use super::*;
 
 #[test]
+fn init_config_creates_missing_templates_without_overwriting_user_config() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let home = tempfile::tempdir().unwrap();
+    let concurrent = (0..4)
+        .map(|_| Cli::spawn(home.path(), &["init-config"], &[]))
+        .collect::<Vec<_>>();
+    for cli in concurrent {
+        let output = cli.finish();
+        assert!(output.status.success(), "{:?}", output.stderr);
+    }
+
+    let dir = home.path().join(".pp/agent");
+    let settings = dir.join("settings.yml");
+    let models = dir.join("models.yml");
+    assert_eq!(
+        fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    for path in [&settings, &models] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    assert_eq!(
+        pp_config::config::read_settings(&settings)
+            .unwrap()
+            .tui
+            .max_fps,
+        60
+    );
+    assert!(pp_config::models::load_models(&models).unwrap().is_empty());
+    assert!(!dir.join("agent.db").exists());
+
+    fs::write(&settings, "# custom\ntui: {max_fps: 30}\n").unwrap();
+    let before = fs::read(&settings).unwrap();
+    fs::remove_file(&models).unwrap();
+    assert!(
+        Cli::spawn(home.path(), &["init-config"], &[])
+            .finish()
+            .status
+            .success()
+    );
+    assert_eq!(fs::read(&settings).unwrap(), before);
+    assert!(pp_config::models::load_models(&models).unwrap().is_empty());
+
+    fs::write(&models, "# custom model configuration\nproviders: {}\n").unwrap();
+    let before = fs::read(&models).unwrap();
+    fs::remove_file(&settings).unwrap();
+    assert!(
+        Cli::spawn(home.path(), &["init-config"], &[])
+            .finish()
+            .status
+            .success()
+    );
+    assert_eq!(fs::read(&models).unwrap(), before);
+    assert!(settings.is_file());
+}
+
+#[test]
 fn auth_model_list_and_switch_support_mixed_protocols_and_legacy_cache() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -74,11 +135,18 @@ fn auth_slash_line_mode_stays_local_without_model_configuration() {
         .write_all(b"/login\n/logout\n/login extra\n/logout extra\n/quit\n")
         .unwrap();
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
     assert!(stderr.contains("/login and /logout require the TUI"));
     assert!(stderr.contains("usage: /login"));
     assert!(stderr.contains("usage: /logout"));
+    let config = dir.path().join(".pp/agent");
+    assert!(config.join("settings.yml").is_file());
+    assert!(
+        pp_config::models::load_models(&config.join("models.yml"))
+            .unwrap()
+            .is_empty()
+    );
     assert!(!config_path(dir.path(), "auth.yml").exists());
     assert!(!config_path(dir.path(), "models-sub.yml").exists());
 }

@@ -469,7 +469,6 @@ pub fn load_models(path: &Path) -> Result<Vec<ValidatedProvider>> {
 }
 
 fn validate_providers(providers: Vec<(String, ProviderEntry)>) -> Result<Vec<ValidatedProvider>> {
-    ensure!(!providers.is_empty(), "providers must not be empty");
     for (id, _) in &providers {
         ensure!(!id.trim().is_empty(), "provider id must not be blank");
         ensure!(!id.contains('/'), "provider id must not contain '/'");

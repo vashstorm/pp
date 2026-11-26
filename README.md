@@ -6,6 +6,7 @@
 <p align="center">Rust · macOS / Linux · OpenAI-compatible Responses / Chat Completions</p>
 
 <p align="center">
+  <a href="#install">Install</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#everyday-use">Everyday use</a> ·
   <a href="#extensions">Extensions</a> ·
@@ -15,6 +16,29 @@
 ---
 
 pp is a Pi-style terminal coding agent written in Rust. It lets models read projects, edit files, search code, and run commands across multiple turns, directly in your terminal.
+
+## Install
+
+Choose the package for your operating system and CPU architecture.
+
+| Platform | Install the downloaded package |
+| --- | --- |
+| macOS | Open the `.dmg` and run `Install pp.command`. It installs `pp` to `~/.local/bin` as your current user, without `sudo`. |
+| Fedora | Run `sudo dnf install ./PACKAGE.rpm` with the downloaded file name. |
+| Ubuntu | Run `sudo apt install ./PACKAGE.deb` with the downloaded file name. |
+
+To install from a source checkout, run one of these commands in the repository root. Make selects the package format for the current operating system and builds it with the native Rust toolchain for the current CPU architecture.
+
+```sh
+make install            # Release build, also available as make install-release
+make install-dev        # Development build
+```
+
+Source installation needs GNU Make, a stable Rust toolchain, `bash`, and a C toolchain. On macOS, install the Xcode Command Line Tools. On Fedora, install `rpm-build`. On Ubuntu, install `build-essential` and `dpkg-dev`. On Linux, install `bubblewrap` to use the command sandbox when the system allows unprivileged user namespaces.
+
+Run `pp --version` to verify the installation. Both builds use the `pp` command and share `~/.pp/agent/`. If `command -v pp` points to an older copy, adjust your `PATH` so the installed copy takes precedence. At first launch, `pp` creates any missing `settings.yml` and `models.yml` in that directory. Run `pp` in a terminal and use `/login` to configure a model.
+
+On macOS, put `export PATH="$HOME/.local/bin:$PATH"` in `~/.zshrc` and open a new terminal if your shell cannot find the installed `pp`.
 
 TUI rendering defaults to a maximum of 60 FPS. Set `tui.max_fps` in `~/.pp/agent/settings.yml` to an integer from 1 to 120 and restart to change it. Input and cancellation are processed independently of rendering; streamed text is batched for display.
 
@@ -40,25 +64,14 @@ Model-facing Bash results also include a recovery notice with a concrete `read` 
 
 ## Quick start
 
-### 1. Build
-
-You need a stable Rust toolchain that supports **Edition 2024**, and `bash` on your PATH. All profiles use the default LLVM backend; no Cranelift component or nightly features are required.
-
-The checked-in `.cargo/config.toml` selects `ld64.lld` from your PATH on macOS ARM64 (`aarch64-apple-darwin`); install an LLD version compatible with your macOS SDK. Rust's bundled LLD may lag behind newer SDK formats. Linux x86_64 with glibc (`x86_64-unknown-linux-gnu`) uses the bundled LLD by default with Rust 1.90 or newer. This applies to development, release, and test builds. macOS also requires the Xcode Command Line Tools, and Linux requires a C toolchain. This does not provide a cross-compilation toolchain or SDK. Setting `RUSTFLAGS` overrides the configured target flags.
-
-```sh
-cargo build --release --locked
-mkdir -p ~/.pp/agent
-```
-
 `rg` and `glob` run in process without external search programs. TUI icons require a Nerd Font. On macOS, enable Alt/Meta in your terminal to use Option shortcuts.
 
-### 2. Configure a model
+### Configure a model
 
 Start the terminal UI even without model configuration, then use `/login` to choose ChatGPT, GitHub Copilot, Kimi Code, GLM, Z.AI, Command Code, OpenCode Zen, or OpenCode Go:
 
 ```sh
-./target/release/pp
+pp
 ```
 
 `/login` opens the authorization page in your browser. ChatGPT, Copilot, and Kimi use device authorization; GLM, Z.AI, Command Code, OpenCode Zen, and OpenCode Go use masked API key input. Credentials are stored in plain text in `~/.pp/agent/agent.db`, with directory mode `0700` and database file mode `0600`; no system keychain or encryption is provided. Discovered subscription models remain in `~/.pp/agent/models-sub.yml`, which keeps its existing format. Discovery failures keep the authorization and offer a retry without adding a guessed default model. Quit every running pp process before upgrading: on first start pp imports the old preference fields in `settings.yml` and `auth.yml` into `agent.db` exactly once, then removes the authorization and those fields from YAML.
@@ -111,7 +124,7 @@ See the [configuration guide (Chinese)](docs/guide.md#配置) for full examples 
 
 ```sh
 chmod 600 ~/.pp/agent/models.yml
-./target/release/pp
+pp
 ```
 
 pp enters the TUI when both stdin and stdout are terminals; otherwise, it uses line mode. Add the binary to your PATH to use `pp` as shown below.

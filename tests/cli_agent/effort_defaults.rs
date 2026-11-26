@@ -258,7 +258,7 @@ fn slow_sqlite_default_model_picker_keeps_draft_and_persists_across_restart() {
     }
 }
 
-// 缺少 settings.yml 时偏好只落 agent.db；忙碌库的保存失败不改变目录快照与草稿。
+// 启动后移除 settings.yml，验证偏好只落 agent.db，忙碌库的保存失败不改变目录快照与草稿。
 #[test]
 fn sqlite_default_model_saves_without_settings_file_and_recovers_from_busy_database() {
     let server = server();
@@ -267,6 +267,7 @@ fn sqlite_default_model_saves_without_settings_file_and_recovers_from_busy_datab
     let path = config_path(home.path(), "settings.yml");
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_model("fixture/primary");
+    std::fs::remove_file(&path).unwrap();
     pty.input("/model\r");
     pty.text("fixture/primary ");
     pty.input("\x13");
@@ -423,7 +424,7 @@ fn sqlite_effort_selection_persists_across_restart() {
     }
 }
 
-// 缺少 settings.yml 时 effort 只落 agent.db；忙碌库保存失败后目录快照与菜单不变。
+// 启动后移除 settings.yml，验证 effort 只落 agent.db，忙碌库保存失败后目录快照与菜单不变。
 #[test]
 fn sqlite_effort_save_reports_busy_database_and_recovers() {
     let server = server();
@@ -436,6 +437,7 @@ fn sqlite_effort_save_reports_busy_database_and_recovers() {
     let path = config_path(home.path(), "settings.yml");
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready_effort("no think");
+    std::fs::remove_file(&path).unwrap();
     pty.input("/effort ");
     pty.text("no think (default)");
     pty.input("\x01\x0b");
