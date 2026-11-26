@@ -43,21 +43,29 @@ struct WebSearchArgs {
     provider: Option<WebSearchProvider>,
 }
 
-const WEB_SEARCH_DESC: &str = concat!(
-    "Search the web without external MCP servers (use `read` for known URLs). ",
-    "Supports `site:`/`-site:`, `after:`/`before: YYYY-MM-DD`, `inurl:`, `intitle:`, `filetype:`, `\"phrase\"`, `-term`, `OR`. ",
-    "No filesystem sandbox; outbound network obeys sandbox network policy. Cite source URLs."
-);
-
-pub(super) fn definition() -> FunctionObject {
+pub(super) fn definition(sandbox: &pp_sandbox::SandboxStatus) -> FunctionObject {
+    let network_note = if sandbox.effective == pp_sandbox::EffectiveMode::Off {
+        String::new()
+    } else {
+        let net = super::sandbox_net_note(sandbox);
+        format!(" Sandboxed ({}; {net}).", sandbox.effective.as_str())
+    };
+    let description = format!(
+        concat!(
+            "Search the public web without external MCP servers (use `read` for known URLs). ",
+            "Supports `site:`/`-site:`, `after:`/`before: YYYY-MM-DD`, `inurl:`, `intitle:`, `filetype:`, `\"phrase\"`, `-term`, `OR`. ",
+            "Cite source URLs.{}"
+        ),
+        network_note
+    );
     super::tool_def(
         "web_search",
-        WEB_SEARCH_DESC,
+        description,
         super::object_schema(
             json!({
                 "query": {"type": "string"},
                 "recency": {"type": "string", "enum": ["day", "week", "month", "year"]},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 30},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 30, "description": "Max results (1-30)."},
                 "provider": {"type": "string", "enum": ["auto", "public", "duckduckgo", "startpage", "hackernews", "searxng"]}
             }),
             &["query"],

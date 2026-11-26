@@ -315,16 +315,63 @@ fn sandbox_bash_tool_reports_sandbox_metadata_and_unavailable_fails_closed() {
 
     // 工具定义随状态更新，不再保留 "No filesystem sandbox"
     let defs = tools.all_definitions(WorkMode::Execute);
-    let bash_desc = defs
-        .iter()
-        .find(|d| d.name == "bash")
-        .and_then(|d| d.description.as_deref())
-        .unwrap();
+    let bash_def = defs.iter().find(|d| d.name == "bash").unwrap();
+    let bash_desc = bash_def.description.as_deref().unwrap();
     assert!(!bash_desc.contains("No filesystem sandbox"), "{bash_desc}");
     assert!(
         bash_desc.contains("Sandboxed (workspace-write"),
         "{bash_desc}"
     );
+    // DangerFullAccess（默认）下不暴露 sandbox_permissions
+    assert!(
+        bash_def.parameters.as_ref().unwrap()["properties"]
+            .get("sandbox_permissions")
+            .is_none(),
+        "YOLO mode must not expose sandbox_permissions"
+    );
+    // 非 YOLO 且沙盒启用时暴露 sandbox_permissions
+    tools
+        .permission
+        .select(Some(pp_config::config::PermissionMode::WorkspaceWrite));
+    let non_yolo_defs = tools.all_definitions(WorkMode::Execute);
+    let non_yolo_bash = non_yolo_defs.iter().find(|d| d.name == "bash").unwrap();
+    assert!(
+        non_yolo_bash.parameters.as_ref().unwrap()["properties"]
+            .get("sandbox_permissions")
+            .is_some(),
+        "active sandbox in non-YOLO mode must expose sandbox_permissions"
+    );
+
+    // 沙盒关闭时即使在非 YOLO 模式也不暴露 sandbox_permissions（避免模型传参后直接报错）
+    let mut off_tools = tools_with_sandbox(&root, &home, SandboxMode::Off, ProbeResult::Available);
+    off_tools.permission = pp_permission::Gate::for_process(&home, None, false);
+    let off_defs = off_tools.all_definitions(WorkMode::Execute);
+    let off_bash = off_defs.iter().find(|d| d.name == "bash").unwrap();
+    assert!(
+        off_bash.parameters.as_ref().unwrap()["properties"]
+            .get("sandbox_permissions")
+            .is_none(),
+        "disabled sandbox must not expose sandbox_permissions"
+    );
+
+    // read-only 沙盒准确标明 workspace 只读，且同步反映在 eval 上
+    let mut ro_tools =
+        tools_with_sandbox(&root, &home, SandboxMode::ReadOnly, ProbeResult::Available);
+    ro_tools.eval_available = true;
+    let ro_defs = ro_tools.all_definitions(WorkMode::Execute);
+    for name in ["bash", "eval"] {
+        let desc = ro_defs
+            .iter()
+            .find(|d| d.name == name)
+            .and_then(|d| d.description.as_deref())
+            .unwrap();
+        assert!(desc.contains("Sandboxed (read-only"), "{name}: {desc}");
+        assert!(desc.contains("workspace is read-only"), "{name}: {desc}");
+        assert!(
+            !desc.contains("writes restricted to workspace/tmp"),
+            "{name}: {desc}"
+        );
+    }
 
     // 显式开启但平台不可用时 fail-closed
     let fail_closed = tools_with_sandbox(

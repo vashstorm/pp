@@ -36,30 +36,46 @@ impl State {
     }
 }
 
-const WAIT_DESCRIPTION: &str = concat!(
-    "Wait until selected owned subagent runs (`run_ids`) and background Bash tasks (`task_ids`) settle (omit both to wait for all undelivered owned work; 120m fixed timeout reaps unfinished targets). ",
-    "Reconcile existing TODOs BEFORE calling `wait` in Execute mode (never after `wait` in the same batch; skip in Plan mode). ",
-    "Never background finite builds/tests to wait on them; verify persistent services with real requests and stop them explicitly.",
+const WAIT_EXECUTE_DESCRIPTION: &str = concat!(
+    "Wait until selected subagent runs (`run_ids`) and/or background Bash tasks (`task_ids`) settle (omit both to wait for all undelivered owned work; 120m fixed timeout reaps unfinished targets). ",
+    "Reconcile active TODOs before calling `wait`, never after it in the same batch.",
 );
+const WAIT_PLAN_DESCRIPTION: &str = "Wait until selected read-only subagent runs (`run_ids`) settle (omit `run_ids` to wait for all undelivered owned runs; 120m fixed timeout reaps unfinished runs).";
 
-pub(super) fn definition() -> FunctionObject {
-    FunctionObject {
-        name: "wait".into(),
-        description: Some(WAIT_DESCRIPTION.into()),
-        parameters: Some(json!({
-            "type": "object",
-            "properties": {
+pub(super) fn definition(mode: WorkMode) -> FunctionObject {
+    let (description, properties) = match mode {
+        WorkMode::Execute => (
+            WAIT_EXECUTE_DESCRIPTION,
+            json!({
                 "run_ids": {
                     "type": "array",
-                    "description": "Subagent run_id values (e.g. [\"r1\"], not agent_id); or copy task's wait_args.",
+                    "description": "Subagent `run_id` values (e.g. [\"r1\"], not `agent_id`), or copy `task`'s `wait_args`.",
                     "items": {"type": "string", "minLength": 1}
                 },
                 "task_ids": {
                     "type": "array",
-                    "description": "Background Bash task_id values (e.g. [\"bg-1\"]).",
+                    "description": "Background Bash `task_id` values (e.g. [\"bg-1\"]).",
                     "items": {"type": "string", "minLength": 1}
                 }
-            },
+            }),
+        ),
+        WorkMode::Plan => (
+            WAIT_PLAN_DESCRIPTION,
+            json!({
+                "run_ids": {
+                    "type": "array",
+                    "description": "Subagent `run_id` values (e.g. [\"r1\"], not `agent_id`), or copy `task`'s `wait_args`.",
+                    "items": {"type": "string", "minLength": 1}
+                }
+            }),
+        ),
+    };
+    FunctionObject {
+        name: "wait".into(),
+        description: Some(description.into()),
+        parameters: Some(json!({
+            "type": "object",
+            "properties": properties,
             "additionalProperties": false
         })),
         ..Default::default()
@@ -270,8 +286,13 @@ mod tests {
     fn wait_fixed_timeout_is_hidden_from_schema_and_legacy_values_are_ignored() {
         assert_eq!(TIMEOUT, Duration::from_secs(7200));
         assert!(
-            definition().parameters.unwrap()["properties"]
+            definition(WorkMode::Execute).parameters.unwrap()["properties"]
                 .get("timeout_ms")
+                .is_none()
+        );
+        assert!(
+            definition(WorkMode::Plan).parameters.unwrap()["properties"]
+                .get("task_ids")
                 .is_none()
         );
         for value in [0, 1, 1_800_001, u64::MAX] {

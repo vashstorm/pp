@@ -53,7 +53,7 @@ pub fn definition() -> FunctionObject {
     FunctionObject {
         name: "ask".into(),
         description: Some(
-            "Ask the user one or more questions and wait for their answers. Call this only when a decision genuinely requires the user's input; batch related questions into a single call instead of asking repeatedly. Each question needs a unique id, the question text, and options; empty options allows only a free-form answer. Set multi to true to let the user pick several options. Prefer recommended as a zero-based option index on the question object, alongside id, question and options. Alternatively, set recommended:true on one option. Do not provide conflicting recommendations. recommended is advisory only; it never auto-selects and never grants authorization. This tool does not approve file writes or any other tool execution, and it does not block other tools in the same batch. Answers are returned in question order using the original option labels exactly."
+            "Ask the user one or more questions and wait for their answers. Call only when a decision genuinely requires user input; batch related questions into one call. Each question needs a unique id, question text, and options (empty options = free-form answer only). `recommended` is an optional advisory zero-based option index—it never auto-selects or grants authorization. Does not approve writes/tool execution or block sibling tools in the same batch. Answers return in question order with exact option labels."
                 .into(),
         ),
         parameters: Some(json!({
@@ -67,11 +67,11 @@ pub fn definition() -> FunctionObject {
                         "properties": {
                             "id": {"type": "string"},
                             "question": {"type": "string"},
-                            "header": {"type": "string"},
-                            "multi": {"type": "boolean", "default": false},
+                            "header": {"type": "string", "description": "Optional short tab/section header."},
+                            "multi": {"type": "boolean", "default": false, "description": "Allow selecting multiple options."},
                             "recommended": {
                                 "type": "integer", "minimum": 0,
-                                "description": "Optional zero-based index into this question's options. Omit when there is no recommendation."
+                                "description": "Optional advisory zero-based index into options; omit if none."
                             },
                             "options": {
                                 "type": "array",
@@ -80,11 +80,7 @@ pub fn definition() -> FunctionObject {
                                     "properties": {
                                         "label": {"type": "string"},
                                         "description": {"type": "string"},
-                                        "preview": {"type": "string"},
-                                        "recommended": {
-                                            "type": "boolean",
-                                            "description": "Optional advisory hint: true recommends this option. Mark at most one option; it must agree with any question-level recommended index."
-                                        }
+                                        "preview": {"type": "string"}
                                     },
                                     "required": ["label"],
                                     "additionalProperties": false
@@ -269,6 +265,19 @@ mod tests {
             let message = AskArgs::parse(input).expect_err("must fail").to_string();
             assert_eq!(message, "invalid ask arguments", "input: {input}");
         }
+        let schema = definition().parameters.unwrap();
+        assert!(
+            schema
+                .pointer("/properties/questions/items/properties/recommended")
+                .is_some()
+        );
+        assert!(
+            schema
+                .pointer(
+                    "/properties/questions/items/properties/options/items/properties/recommended"
+                )
+                .is_none()
+        );
     }
 
     #[test]

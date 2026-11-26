@@ -325,6 +325,9 @@ impl Snapshot {
             "rg",
             "glob",
             "web_search",
+            "task",
+            "todo",
+            "wait",
         ] {
             runtime[format!("has_{name}")] = context.tools.iter().any(|tool| tool == name).into();
         }
@@ -339,6 +342,9 @@ impl Snapshot {
         runtime["has_lsp"] = context.tools.iter().any(|tool| tool == "lsp").into();
         runtime["has_writes"] =
             (runtime["has_write"] == true || runtime["has_edit"] == true).into();
+        runtime["has_task_todo"] =
+            (runtime["has_task"] == true && runtime["has_todo"] == true).into();
+        runtime["sandbox_read_only"] = (context.sandbox_mode == "read-only").into();
         runtime["hashline"] = (context.edit_mode == "hashline").into();
         runtime["read_max_bytes"] = limits.read_max_bytes.into();
         runtime["read_max_lines"] = limits.read_max_lines.into();
@@ -727,5 +733,33 @@ mod tests {
             linux_on.contains("network access is isolated"),
             "{linux_on}"
         );
+
+        let ro_status = pp_sandbox::SandboxStatus {
+            configured: pp_config::config::SandboxMode::ReadOnly,
+            effective: pp_sandbox::EffectiveMode::ReadOnly,
+            degraded_reason: None,
+            backend: "seatbelt",
+            network: false,
+            writable_summary: vec![],
+            notes: vec![],
+        };
+        let ro_ctx = RenderContext::new(
+            cwd.path(),
+            "model",
+            EditMode::Replace,
+            "execute",
+            vec!["bash".into(), "eval".into()],
+        )
+        .with_sandbox(&ro_status);
+        let ro_on = Snapshot::bundled()
+            .compose(&ro_ctx, ToolLimits::default(), "", "", "")
+            .unwrap();
+        assert!(
+            ro_on.contains(
+                "macOS Seatbelt read-only sandbox (same for eval): workspace is read-only"
+            ),
+            "{ro_on}"
+        );
+        assert!(!ro_on.contains("writes restricted to cwd/tmp"), "{ro_on}");
     }
 }

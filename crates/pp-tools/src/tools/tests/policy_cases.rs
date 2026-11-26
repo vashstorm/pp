@@ -394,6 +394,35 @@ fn plan_write_uses_common_write_schema_and_rejects_removed_tool_and_old_argument
             .unwrap();
         assert_eq!(write.parameters, ordinary.parameters);
     }
+    let replace_rg = tools
+        .all_definitions(WorkMode::Execute)
+        .into_iter()
+        .find(|tool| tool.name == "rg")
+        .unwrap();
+    assert!(
+        !replace_rg
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("Hashline")
+    );
+    let rg_props = &replace_rg.parameters.as_ref().unwrap()["properties"];
+    for alias in ["-n", "case", "context", "-g"] {
+        assert!(rg_props.get(alias).is_none(), "unexpected rg alias {alias}");
+    }
+    let hashline_tools = Tools::new(dir.path().into(), EditMode::Hashline).unwrap();
+    let hashline_rg = hashline_tools
+        .all_definitions(WorkMode::Execute)
+        .into_iter()
+        .find(|tool| tool.name == "rg")
+        .unwrap();
+    assert!(
+        hashline_rg
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("Hashline")
+    );
     assert!(
         !tools
             .review_definitions()

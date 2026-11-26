@@ -91,7 +91,7 @@ fn system_prompt_cli_and_discovery_keep_literal_and_required_blocks_both_protoco
             let text = system(&body, protocol);
             assert!(text.starts_with(base), "{text}");
             assert!(text.contains("project rule {{unknown}}"));
-            assert!(text.contains("Each edit entry replaces a unique oldText"));
+            assert!(text.contains("MUST use edit for surgical edits"));
             assert!(text.contains("write/edit are atomic per call"));
             assert_eq!(
                 text.matches("update AGENTS.md as part of the same task")

@@ -385,7 +385,7 @@ fn rg_hashline_edit_and_pagination_roundtrip_both_protocols() {
             .find(|tool| tool["name"] == "rg")
             .unwrap();
         assert!(tool["parameters"]["properties"]["pattern"].is_object());
-        for name in ["context", "-C", "-A", "-B", "-i", "output_mode"] {
+        for name in ["-C", "-A", "-B", "-i", "output_mode"] {
             assert!(tool["parameters"]["properties"][name].is_object(), "{tool}");
         }
         protocol.calls_reply(
@@ -417,7 +417,6 @@ fn rg_hashline_edit_and_pagination_roundtrip_both_protocols() {
         assert_eq!(counts["details"]["countComplete"], true, "{counts}");
         let result = protocol.tool_result(&body, "file");
         assert_eq!(result["ok"], true, "{result}");
-        assert_eq!(tool["parameters"]["properties"]["-n"]["type"], "boolean");
         let content = result["content"].as_str().unwrap();
         let header = hashline_header(content);
         assert!(content.contains("*2:needle"), "{content}");

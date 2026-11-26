@@ -16,18 +16,25 @@ const MAX_RESULTS: usize = 200;
 const MAX_BYTES: usize = 50 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(super) fn definition() -> FunctionObject {
+pub(super) fn definition(sandbox_active: bool) -> FunctionObject {
+    let sandbox_note = if sandbox_active {
+        "Protected credential paths are excluded by sandbox policy."
+    } else {
+        "No filesystem sandbox."
+    };
     FunctionObject {
         name: "glob".into(),
-        description: Some("Find local paths by glob: required pattern (e.g. '**/*.rs'), optional directory path (default cwd). Bare *.rs recurses; src/*.rs matches direct children. Includes hidden paths and directories; respects ignore rules. Ranked by mtime; at most 200 paths and 50 KiB. Narrow the search if incomplete. No filesystem sandbox.".into()),
+        description: Some(format!(
+            "Find local paths by glob (e.g. '**/*.rs'). Bare `*.rs` recurses; `src/*.rs` matches direct children. Ranked by mtime (newest first); capped at 200 paths and 50 KiB—narrow if truncated. {sandbox_note}"
+        )),
         parameters: Some(json!({
             "type":"object",
             "properties":{
                 "pattern":{"type":"string","description":"Glob pattern, e.g. **/*.rs."},
-                "path":{"type":"string","description":"Literal search directory, not a glob; defaults to cwd."},
-                "hidden":{"type":"boolean"},
-                "gitignore":{"type":"boolean"},
-                "limit":{"type":"number"}
+                "path":{"type":"string","description":"Literal search directory, not a glob (default cwd)."},
+                "hidden":{"type":"boolean","description":"Include dotfiles/directories (default true)."},
+                "gitignore":{"type":"boolean","description":"Respect ignore files (default true)."},
+                "limit":{"type":"integer","minimum":1,"maximum":200,"description":"Max results (1-200, default 200)."}
             },
             "required":["pattern"],
             "additionalProperties":false

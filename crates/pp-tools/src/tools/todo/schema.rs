@@ -17,9 +17,8 @@ pub(super) const ALLOWED_FIELDS: &[&str] = &[
 ];
 
 const TODO_DESCRIPTION: &str = "\
-Batch `todo` in parallel with real tool calls (never waste a solo turn). Identify tasks by verbatim content (`view` if forgotten, never generated IDs).
-`init` for 3+ steps or explicit task lists (list every user item separately). Mutations preserve other active items (auto-start earliest pending if none remain); `start` parallel items explicitly; `blocked` never auto-starts; mark `done` only after verification.
-Before `wait`, reconcile todos (`start` running items, mark verified `done`, `block` only external prerequisites—not running subagents).";
+Manage the session task checklist (batch with real tool calls; never spend a solo turn). Identify tasks by verbatim text (`view` if forgotten, never invented IDs).
+Use `init` for 3+ steps or explicit task lists (`list` for phased, `items` for flat). Ops: `init`, `append` (`phase` + `items`), `start` (single `task`), `done` (after verification), `drop` (abandon), `rm` (delete), `block` (with `reason`, external blockers only), `unblock`, `view`. `done`/`drop`/`rm`/`block`/`unblock` accept `task` or `phase` (all items in phase). Mutations preserve other active items and auto-start the next pending item when none remain; `blocked` never auto-starts.";
 
 pub(in crate::tools) fn definition() -> FunctionObject {
     FunctionObject {
@@ -37,11 +36,11 @@ fn schema_with_ops(ops: &[&str]) -> Value {
             "op": {
                 "type": "string",
                 "enum": ops,
-                "description": "todo operation",
+                "description": "Operation to perform.",
             },
             "list": {
                 "type": "array",
-                "description": "phases for init",
+                "description": "Phased task list for `init`.",
                 "items": {
                     "type": "object",
                     "properties": {
@@ -52,18 +51,18 @@ fn schema_with_ops(ops: &[&str]) -> Value {
                     "additionalProperties": false,
                 },
             },
-            "task": {"type": "string", "description": "verbatim task content"},
-            "phase": {"type": "string"},
+            "task": {"type": "string", "description": "Verbatim task text."},
+            "phase": {"type": "string", "description": "Phase name (target for `append`, optional disambiguator or batch target)."},
             "items": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "tasks for flat init or append",
+                "description": "Task list for flat `init` or `append`.",
             },
-            "reason": {"type": "string", "description": "blocker note for block"},
+            "reason": {"type": "string", "description": "Blocker note for `block`."},
             "occurrence": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "one-based pick among identical task texts after optional phase filtering; supported for standalone and plan tasks",
+                "description": "1-based index among identical task texts (after optional `phase` filter).",
             },
         },
         "required": ["op"],

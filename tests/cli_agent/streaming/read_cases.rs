@@ -41,16 +41,9 @@ fn read_files_images_web_and_resume_send_real_content_both_protocols() {
                 .collect::<Vec<_>>(),
             vec!["path"]
         );
-        assert!(
-            tool["description"]
-                .as_str()
-                .unwrap()
-                .contains("Ranges are exact")
-        );
-        assert!(
-            body.to_string()
-                .contains("NEVER separate offset/limit parameters")
-        );
+        let desc = tool["description"].as_str().unwrap();
+        assert!(desc.contains("never offset/limit"), "{desc}");
+        assert!(desc.contains("next_path"), "{desc}");
         protocol.calls_reply(
             request,
             json!([

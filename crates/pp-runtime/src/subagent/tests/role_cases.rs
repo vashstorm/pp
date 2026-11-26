@@ -160,6 +160,17 @@ fn model_roles_default_and_plan_are_never_offered_or_dispatched_to_subagents() {
                             .unwrap(),
                         &json!(["fast"])
                     );
+                    let item_props = parameters
+                        .pointer("/properties/tasks/items/properties")
+                        .unwrap();
+                    assert_eq!(
+                        item_props.get("isolated").is_some(),
+                        mode == WorkMode::Execute
+                    );
+                    assert_eq!(
+                        item_props.get("readonly").is_some(),
+                        mode == WorkMode::Execute
+                    );
                     assert!(!task.description.unwrap().contains("planner-only-marker"));
                 }
                 for role in ["default", "plan"] {

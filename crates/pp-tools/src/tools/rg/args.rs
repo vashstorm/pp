@@ -1,47 +1,48 @@
 //! `rg` 的工具 schema、参数结构与筛选参数构造。
 use anyhow::{Result, ensure};
 use async_openai::types::chat::FunctionObject;
-use pp_config::config::RgSettings;
+use pp_config::config::{EditMode, RgSettings};
 use serde::Deserialize;
 use serde_json::json;
 
-const RG_DESCRIPTION: &str = concat!(
-    "In-process ripgrep search over files or one `artifact://<id>` URI (Rust regex, PCRE2, literal fallback). ",
-    "`path`: `;`-separated files/dirs/globs/`!exclusions` or `file:20-40` ranges (default `.`). ",
-    "Case-sensitive (`-i` inverts), includes hidden files, respects ignore files. `-F` literal, `-w` whole word, `-t`/`-g`/`glob` filter directory walk (`-g` overrides ignore), `max_count` per-file cap, `skip` paginates files, `max_output_tokens` budgets content. ",
-    "`output_mode`: `content` (with line numbers & Hashline `[path#TAG]`), `files_with_matches`, `count`. ",
-    "Use THIS tool for `artifact://` searches, never shell grep/rg.",
-);
-
-pub(in crate::tools) fn definition() -> FunctionObject {
+pub(in crate::tools) fn definition(edit_mode: EditMode, sandbox_active: bool) -> FunctionObject {
+    let content_mode = match edit_mode {
+        EditMode::Hashline => "`content` (line numbers & Hashline `[path#TAG]`)",
+        EditMode::Replace => "`content` (line numbers)",
+    };
+    let sandbox_note = if sandbox_active {
+        " Protected credential paths are excluded by sandbox policy."
+    } else {
+        ""
+    };
+    let description = format!(
+        "In-process ripgrep search over local files or one `artifact://<id>` URI (Rust regex, PCRE2, literal fallback). Case-sensitive by default; includes hidden files and respects ignore files. `output_mode`: {content_mode}, `files_with_matches`, `count`.{sandbox_note}"
+    );
     FunctionObject {
         name: "rg".into(),
-        description: Some(RG_DESCRIPTION.into()),
+        description: Some(description),
         parameters: Some(json!({
             "type": "object",
             "properties": {
-                "pattern": {"type": "string"},
-                "path": {"type": "string"},
-                "case": {"type": "boolean"},
-                "-i": {"type": "boolean"},
-                "-n": {"type": "boolean"},
-                "context": {"type": "integer", "minimum": 0},
-                "-C": {"type": "integer", "minimum": 0},
-                "-A": {"type": "integer", "minimum": 0},
-                "-B": {"type": "integer", "minimum": 0},
-                "-F": {"type": "boolean"},
-                "-w": {"type": "boolean"},
-                "-t": {"type": ["string", "array"], "items": {"type": "string"}},
-                "-g": {"type": ["string", "array"], "items": {"type": "string"}},
-                "glob": {"type": ["string", "array"], "items": {"type": "string"}},
-                "max_count": {"type": ["number", "null"]},
-                "max_output_tokens": {"type": ["integer", "null"], "minimum": 1},
+                "pattern": {"type": "string", "description": "Regex (or literal with `-F`)."},
+                "path": {"type": "string", "description": "`;`-separated files/dirs/globs/`!exclusions`, `file:20-40`, or `artifact://<id>` (default `.`)."},
+                "-i": {"type": "boolean", "description": "Case-insensitive search."},
+                "-C": {"type": "integer", "minimum": 0, "description": "Context lines before and after each match."},
+                "-A": {"type": "integer", "minimum": 0, "description": "Context lines after each match."},
+                "-B": {"type": "integer", "minimum": 0, "description": "Context lines before each match."},
+                "-F": {"type": "boolean", "description": "Treat pattern as a literal string."},
+                "-w": {"type": "boolean", "description": "Match whole words only."},
+                "-t": {"type": ["string", "array"], "items": {"type": "string"}, "description": "Filter by ripgrep file type(s), e.g. `rust`."},
+                "glob": {"type": ["string", "array"], "items": {"type": "string"}, "description": "Glob override(s) relative to cwd (overrides ignore files)."},
+                "max_count": {"type": "integer", "minimum": 0, "description": "Max matches per file (0 = unlimited)."},
+                "max_output_tokens": {"type": "integer", "minimum": 1, "description": "Soft token budget for content output."},
                 "output_mode": {
                     "type": "string",
-                    "enum": ["content", "files_with_matches", "count"]
+                    "enum": ["content", "files_with_matches", "count"],
+                    "description": "Result format (default `content`)."
                 },
-                "gitignore": {"type": "boolean"},
-                "skip": {"type": ["number", "null"]}
+                "gitignore": {"type": "boolean", "description": "Respect ignore files (default true)."},
+                "skip": {"type": "integer", "minimum": 0, "description": "Skip first N matching files for pagination."}
             },
             "required": ["pattern"],
             "additionalProperties": false

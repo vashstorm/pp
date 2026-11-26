@@ -31,7 +31,7 @@ pub(super) struct Task {
 }
 
 impl Binding {
-    pub(crate) fn definitions(&self, _mode: WorkMode) -> Vec<FunctionObject> {
+    pub(crate) fn definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
         if self.depth != 0
             || self.depth >= self.inner.settings.max_recursion_depth
             || self.spawns.is_empty()
@@ -54,35 +54,41 @@ impl Binding {
             .map(|(def, _)| format!("{}: {}", def.name, def.description))
             .collect::<Vec<_>>()
             .join("; ");
-        let review_help = if names.contains(&"review") {
-            " Select tasks[].role=review for read-only code review."
-        } else {
-            ""
-        };
         let example = json!({
-            "context": "Current workspace, relevant files, constraints and required evidence.",
+            "context": "Workspace, relevant files, constraints, and required evidence.",
             "tasks": [{"role": names[0], "task": "Investigate the assigned question and report file references."}]
         });
+        let plan_mode = mode == WorkMode::Plan;
+        let mode_note = if plan_mode {
+            "Plan-mode children are always read-only."
+        } else {
+            "Pass the returned `wait_args` to `wait` when blocked; `agent://<id>` works with `read` (latest result) and `write` (follow-up)."
+        };
+        let mut item_properties = json!({
+            "name": {"type":"string", "description":"Optional unique name within this batch."},
+            "role": {"type":"string", "enum":names, "description":"Required role from the available enum."},
+            "task": {"type":"string", "description":"Required assignment: scope, expected output, and verification."},
+            "output_schema": {"description":"Optional JSON Schema for structured final output."}
+        });
+        if !plan_mode {
+            item_properties["isolated"] =
+                json!({"type":"boolean", "description":"Run in an isolated git worktree."});
+            item_properties["readonly"] =
+                json!({"type":"boolean", "description":"Restrict this child to read-only tools."});
+        }
         vec![function(
             "task",
             &format!(
-                "Delegate independent work to subagents. {TASK_ARGUMENTS_GUIDANCE}\nExample arguments: {example}\nAvailable roles: {help}.{review_help}\nTo wait for this batch, pass the returned wait_args object as the complete arguments to wait. Subagent run_id values go in wait.run_ids; agent_id and output_uri are for read/write. wait.task_ids is only for background Bash, not this tool.\n\nChildren receive the shared context and their own task, not the parent conversation. Include all information needed to work independently. Tasks are asynchronous unless the custom role sets blocking=true. Final results automatically return to you; continue independent work and use wait when blocked. Plan-mode children are always read-only.\n\nFor an existing TODO list, identify the items each child covers; the parent owns checklist updates. After dispatch and before wait, use todo start for every actually running item and reconcile verified completions and real blockers. Multiple items may be in progress concurrently. Do not start queued or dependency-blocked items, mark delegation as completion, or block a running child merely because the parent awaits its result. Plan mode must not call todo."
+                "Delegate independent work to subagents (always wrap even a single item in `tasks[]`). Children see only `context` + their `task`, not the parent conversation. Runs are asynchronous unless a custom role sets `blocking: true`; final results return automatically. {mode_note}\nRoles: {help}.\nExample: {example}"
             ),
             json!({
-                "context": {"type":"string", "description":"Shared background for every child; include relevant files, constraints and prior findings. Children do not inherit the parent conversation."},
+                "context": {"type":"string", "description":"Shared background for every child (files, constraints, prior findings)."},
                 "tasks": {
                     "type":"array", "minItems":1, "maxItems":32,
-                    "description":"Task objects. Even one task must be wrapped in this array; role and task belong inside each item.",
+                    "description":"1-32 task objects (`role` and `task` inside each item).",
                     "items": {
                         "type":"object",
-                        "properties": {
-                            "name": {"type":"string", "description":"Optional non-empty name, unique within this batch."},
-                            "role": {"type":"string", "enum":names, "description":"Required role for this task item. Select a value from this enum."},
-                            "task": {"type":"string", "description":"Required non-empty assignment: scope, expected result and verification."},
-                            "isolated": {"type":"boolean", "description":"Use an isolated worktree. Not allowed in Plan mode."},
-                            "readonly": {"type":"boolean", "description":"Limit this task to read-only investigation without delegation."},
-                            "output_schema": {"description":"Optional JSON Schema for the child's final structured result."}
-                        },
+                        "properties": item_properties,
                         "required":["task","role"], "additionalProperties":false
                     }
                 }
