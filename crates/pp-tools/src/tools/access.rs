@@ -63,10 +63,12 @@ impl Tools {
             snapshots: RefCell::default(),
             project_instructions: RefCell::default(),
             background_tasks: Default::default(),
-            eval_available: false,
+            eval_py_available: false,
+            eval_js_available: None,
             eval: pp_eval::Session::new(),
             eval_enabled: true,
             eval_interpreter: None,
+            eval_js_runtime: None,
             wait_state: RefCell::default(),
             limits: ToolLimits::default(),
             host_defaults: pp_workspace::host_defaults::current(),
@@ -159,16 +161,33 @@ impl Tools {
         self.background_tasks.cleanup()
     }
 
-    /// `eval` 可用性的唯一赋值点：按 `settings.yml` 的 `eval` 节探测一次解释器。
+    /// `eval` 可用性的唯一赋值点：按 `settings.yml` 的 `eval` 节探测 Python 与 JS 运行时。
     pub fn configure_eval(&mut self, settings: &pp_config::config::EvalSettings) {
         self.eval_enabled = settings.enabled;
         self.eval_interpreter.clone_from(&settings.interpreter);
-        self.eval_available = settings.enabled
-            && pp_eval::probe_python(&self.cwd, self.eval_interpreter.as_deref()).is_ok();
+        self.eval_js_runtime.clone_from(&settings.js_runtime);
+        if settings.enabled {
+            self.eval_py_available =
+                pp_eval::probe_python(&self.cwd, self.eval_interpreter.as_deref()).is_ok();
+            self.eval_js_available = pp_eval::probe_js(&self.cwd, self.eval_js_runtime.as_deref())
+                .ok()
+                .map(|rt| rt.kind);
+        } else {
+            self.eval_py_available = false;
+            self.eval_js_available = None;
+        }
     }
 
     pub fn eval_available(&self) -> bool {
-        self.eval_available
+        self.eval_py_available || self.eval_js_available.is_some()
+    }
+
+    pub fn eval_py_available(&self) -> bool {
+        self.eval_py_available
+    }
+
+    pub fn eval_js_available(&self) -> bool {
+        self.eval_js_available.is_some()
     }
 
     pub fn stop_eval(&self) -> Result<()> {

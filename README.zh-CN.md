@@ -38,7 +38,7 @@ Bash 合并 stdout/stderr，默认返回最多 50 KiB 的头尾预览。超限�
 
 Bash 的模型结果还会在资源可用时附带含具体 `read` 示例的补读提示，或说明保存失败；提示区分完整日志、运行中快照和不完整头尾样本。
 
-`eval` 工具在执行模式下提供持久、有状态的 Python 3.9+ 内核（`language: "py"`，在多次调用及多轮对话间保留变量与导入状态；当 `eval.enabled: false` 或未探测到可用解释器时自动隐藏）。支持顶层 `await`、末尾表达式回显、`%load`/`%pip`/`!cmd`/`%%bash` 等魔术命令、`matplotlib`/`PIL` 图片自动捕获，以及零网络监听的双工 NDJSON 工具回调桥（`tool.<name>(...)` 与 `read`/`write`/`rg`/`glob`/`sh`/`env`，同时兼容同步与 `await` 调用），所有嵌套工具调用经过与顶层一致的审批门、`AGENTS.md` 门禁及生命周期 Hooks。可在 `~/.pp/agent/settings.yml` 的 `eval` 小节配置 `enabled`、`interpreter`、`timeout_seconds`（默认 30 秒）与 `max_timeout_seconds`（默认 600 秒）。
+`eval` 工具在执行模式下提供持久、有状态的 Python 3.9+（`language: "py"`）与 JavaScript（`language: "js"`，优先 Bun、不可用时回退 Node.js >= 18）内核，按语言分别在多次调用及多轮对话间保留状态（schema 动态暴露实际探测到的语言；当 `eval.enabled: false` 或未探测到可用运行时自动隐藏）。两者均支持顶层 `await`、末尾表达式回显、图片自动捕获（Python `matplotlib`/`PIL`，JS `{type: "image", mimeType, data}`）、Python 魔术命令（`%load`/`%pip`/`!cmd`/`%%bash` 等），以及零网络监听的双工 NDJSON 工具回调桥（`tool.<name>(...)` 与 `read`/`write`/`rg`/`glob`/`sh`/`env`，兼容同步与 `await` 调用），所有嵌套工具调用经过与顶层一致的审批门、`AGENTS.md` 门禁及生命周期 Hooks。可在 `~/.pp/agent/settings.yml` 的 `eval` 小节配置 `enabled`、`interpreter`、`js_runtime`、`timeout_seconds`（默认 30 秒）与 `max_timeout_seconds`（默认 600 秒）。
 
 ## 快速开始
 
@@ -174,7 +174,7 @@ pp /stats --host 127.0.0.1 --port 0 --no-open
 | `/plan-list` | 管理已保存计划：预览、继续规划、执行、重命名、删除（仅终端界面） |
 | `/test-task` | 仅 dev/test：三个真实 FAST／SLOW／REVIEW 子 Agent 使用独立本地 mock lane，不需要用户 Role 或真实 provider |
 | `/test-tools`、`/test-read`、`/test-edit`、`/test-rg`、`/test-glob`、`/test-bash`、`/test-bash-task`、`/test-wait`、`/test-todo`、`/test-ask` | 仅 dev/test：运行全部或单个隔离真实工具场景；edit 覆盖 replace/hashline，ask 在 TUI 中答题 |
-| `/test-eval-py` | 仅 dev/test：隔离 Python `eval` 场景，演练流式 stdout/stderr、持久状态、嵌套工具桥、预期异常与 `reset: true` 恢复 |
+| `/test-eval-py`、`/test-eval-js` | 仅 dev/test：隔离 Python / JavaScript `eval` 场景，演练流式 stdout/stderr、持久状态、嵌套工具桥、预期异常与 `reset: true` 恢复 |
 | `/test-web-search [--provider PROVIDER] [QUERY]` | 按 `webSearch` 配置或指定引擎发起真实搜索，无需调用大模型。无参数时依次运行两条示例查询：限定到 `news.ycombinator.com`（`auto` 优先尝试 Hacker News）与 `github.com`。仅 dev/test 构建可用。 |
 | `/test-permission` | 在空闲 TUI 中预览权限审批卡片，无需模型配置。按 Enter 或 Esc 关闭预览。仅 dev/test 构建可用。 |
 | `/test-write` | 仅 dev/test：12.5 mock token/s 的打字机回复；24/28 行正文以 240 mock token/s 写入 `/tmp/pp-test-write/demo.txt`，写入卡片可见尾部滚动；随后越界失败，最后用 bash 工具删除 |

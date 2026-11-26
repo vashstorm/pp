@@ -22,7 +22,7 @@ NEVER mask exit status of tests/builds/lints/checks with `| head`, `| tail`, `| 
 {{#if sandbox_active}}bash runs inside a {{sandbox_platform}} {{sandbox_mode}} sandbox{{#if has_eval}} (same for eval){{/if}}: {{#if sandbox_read_only}}workspace is read-only{{else}}writes restricted to cwd/tmp, `.git`/`.agents`/`.pp` protected{{/if}}, credentials unreadable{{#unless sandbox_network}}; {{#if sandbox_network_isolated}}network access is isolated (no outbound or host network access){{else}}outbound network is blocked (loopback allowed){{/if}}{{/unless}}. Explain sandbox denials rather than bypassing them.{{else}}bash has no filesystem sandbox and may access files outside cwd.{{/if}}
 {{/if}}
 {{#if has_eval}}
-Prefer eval over `bash` (`python -c`) for Python computation, data processing, or multi-step scripted inspection.
+Prefer eval over `bash` (`python -c` / `bun -e` / `node -e`) for scripted computation, data processing, or multi-step inspection using an available language in the eval tool schema.
 {{/if}}
 {{#if has_task_todo}}
 Subagent + TODO discipline: parent owns checklist updates. After dispatching `task` and before calling `wait`, mark every actually running item with `todo start` and reconcile verified `done` items and real external `block`ers. Multiple items may be in progress concurrently; NEVER mark delegation as `done` or mark a running child as `blocked`.

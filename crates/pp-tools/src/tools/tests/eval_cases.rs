@@ -434,3 +434,191 @@ fn eval_multiple_todo_calls_propagate_evolving_snapshot() {
         pp_core::todo::TodoStatus::InProgress
     );
 }
+
+#[test]
+fn eval_schema_exposes_available_languages_and_js_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    tools.configure_eval(&EvalSettings::default());
+    if !tools.eval_available() {
+        return;
+    }
+
+    let defs = tools.all_definitions(WorkMode::Execute);
+    let eval_def = defs.iter().find(|d| d.name == "eval").unwrap();
+    let langs = eval_def.parameters.as_ref().unwrap()["properties"]["language"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(!langs.is_empty());
+
+    // 若本机同时安装 node，验证 js_runtime: Some("node") 精确反映在 schema 描述与返回字段上。
+    if pp_eval::probe_js(dir.path(), Some("node")).is_ok() {
+        tools.configure_eval(&EvalSettings {
+            enabled: true,
+            js_runtime: Some("node".to_owned()),
+            ..Default::default()
+        });
+        let defs = tools.all_definitions(WorkMode::Execute);
+        let eval_def = defs.iter().find(|d| d.name == "eval").unwrap();
+        let desc = eval_def.description.as_deref().unwrap();
+        assert!(desc.contains("Node.js"), "{desc}");
+        let res = execute(&tools, "eval", json!({"language": "js", "code": "1 + 2"}));
+        assert_eq!(res["ok"], true, "{res}");
+        assert_eq!(res["language"], "js");
+        assert_eq!(res["runtime"], "node");
+        assert_eq!(res["output"], "3\n");
+    }
+}
+
+#[test]
+fn eval_js_nested_tools_keep_permission_instructions_and_hooks() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("AGENTS.md"), "# root rules\n").unwrap();
+    fs::create_dir_all(dir.path().join("sub")).unwrap();
+    fs::write(dir.path().join("sub/AGENTS.md"), "# sub rules\n").unwrap();
+    fs::write(dir.path().join("sub/note.txt"), "initial\n").unwrap();
+
+    let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    tools.configure_eval(&EvalSettings::default());
+    if tools.eval_js_available.is_none() {
+        return;
+    }
+    tools.reset_project_instructions([]);
+    let _ = tools.project_documents().unwrap();
+    tools.project_request_sent();
+
+    let workflow = WorkflowState::default();
+    let token = CancellationToken::new();
+
+    // 1) 未读 sub/AGENTS.md 前，经 JS eval 内部 write('sub/out.txt', ...) 必须被门禁拒绝。
+    let blocked = execute(
+        &tools,
+        "eval",
+        json!({
+            "language": "js",
+            "code": "let msg = 'unexpected'; try { write('sub/out.txt', 'hello'); } catch (e) { msg = e.message; } console.log(msg);"
+        }),
+    );
+    assert_eq!(blocked["ok"], true, "{blocked}");
+    assert!(
+        blocked["output"].as_str().unwrap().contains("AGENTS.md"),
+        "{blocked}"
+    );
+    assert!(!dir.path().join("sub/out.txt").exists());
+    let _ = tools.project_documents().unwrap();
+    tools.project_request_sent();
+
+    // 2) read('sub/note.txt') 激活规则后再写成功并触发 FileChanged。
+    let mut events = Vec::new();
+    let allowed = tools.execute(
+        "eval",
+        &json!({
+            "language": "js",
+            "code": "const txt = read('sub/note.txt'); write('sub/out.txt', txt + 'updated\\n'); console.log('wrote');"
+        })
+        .to_string(),
+        "eval-js-write-call",
+        ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        &token,
+        &mut |event| events.push(event),
+    );
+    let allowed_val: Value = serde_json::from_str(&allowed.output).unwrap();
+    assert_eq!(allowed_val["ok"], true, "{allowed_val}");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
+        "initial\nupdated\n"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|ev| matches!(ev, AgentEvent::FileChanged { path, .. } if path == "sub/out.txt"))
+    );
+
+    // 3) 嵌套 sh(...) 独立走 bash 权限门与 hook。
+    let mut policy_map = std::collections::BTreeMap::new();
+    policy_map.insert(
+        "eval".to_owned(),
+        pp_config::config::PermissionPolicy::Allow,
+    );
+    tools
+        .permission
+        .set_config(pp_config::config::ToolsSettings {
+            permission: policy_map,
+            ..Default::default()
+        });
+    tools.permission.select(Some(PermissionMode::ReadOnly));
+    let prompts: Arc<Mutex<Vec<PermissionRequest>>> = Arc::new(Mutex::new(Vec::new()));
+    let prompts_ref = prompts.clone();
+    tools.permission.set_handler(Box::new(move |req, _| {
+        prompts_ref.lock().unwrap().push(req);
+        Ok(PermissionDecision::Deny)
+    }));
+    let denied = execute(
+        &tools,
+        "eval",
+        json!({
+            "language": "js",
+            "code": "let out = 'ran'; try { sh('echo hi'); } catch (e) { out = e.message; } console.log(out);"
+        }),
+    );
+    assert_eq!(denied["ok"], true, "{denied}");
+    assert!(
+        denied["output"]
+            .as_str()
+            .unwrap()
+            .contains("bash was denied"),
+        "{denied}"
+    );
+    assert_eq!(prompts.lock().unwrap()[0].tool, "bash");
+
+    tools
+        .permission
+        .set_config(pp_config::config::ToolsSettings::default());
+    tools
+        .permission
+        .select(Some(PermissionMode::DangerFullAccess));
+    let mut hook = StubHook::new();
+    hook.deny_tool = Some("rg".to_owned());
+    hook.rewrite_write_content = Some("hook-js-rewritten\n".to_owned());
+    hook.post_context = Some("nested-js-hook-ctx".to_owned());
+
+    let execution = tools.execute_with_fetch(
+        "eval",
+        &json!({
+            "language": "js",
+            "code": "let r = 'ok'; try { rg('initial', 'sub'); } catch (e) { r = e.message; } write('sub/out.txt', 'original'); console.log(r);"
+        })
+        .to_string(),
+        "eval-js-hook-call",
+        ToolPolicy::Execute {
+            workflow: &workflow,
+        },
+        Some(&hook),
+        &token,
+        &mut |_| {},
+        &mut |_, _| unreachable!(),
+    );
+    let hook_val: Value = serde_json::from_str(&execution.output).unwrap();
+    assert_eq!(hook_val["ok"], true, "{hook_val}");
+    assert!(
+        hook_val["output"]
+            .as_str()
+            .unwrap()
+            .contains("hook blocked rg"),
+        "{hook_val}"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("sub/out.txt")).unwrap(),
+        "hook-js-rewritten\n"
+    );
+    assert!(
+        execution
+            .hook_context
+            .iter()
+            .any(|c| c == "nested-js-hook-ctx"),
+        "{:?}",
+        execution.hook_context
+    );
+}

@@ -13,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const COMMANDS: [&str; 15] = [
+const COMMANDS: [&str; 16] = [
     "/test-task",
     "/test-ui",
     "/test-tools",
@@ -25,6 +25,7 @@ const COMMANDS: [&str; 15] = [
     "/test-bash",
     "/test-bash-task",
     "/test-eval-py",
+    "/test-eval-js",
     "/test-wait",
     "/test-todo",
     "/test-ask",
@@ -74,6 +75,7 @@ fn own_markers(command: &str) -> Vec<&'static str> {
         "/test-bash" => vec!["Bash fixture complete."],
         "/test-bash-task" => vec!["Background Bash fixture complete."],
         "/test-eval-py" => vec!["Eval Python fixture complete."],
+        "/test-eval-js" => vec!["Eval JavaScript fixture complete."],
         "/test-wait" => vec!["Wait fixture complete."],
         "/test-todo" => vec![
             "Todo fixture complete.",
@@ -282,6 +284,7 @@ fn slow_mock_test_each_command_runs_only_its_own_scenarios() {
         ("/test-bash", &[("bash", 4)]),
         ("/test-bash-task", &[("bash", 1), ("bash_task", 3)]),
         ("/test-eval-py", &[("eval", 4)]),
+        ("/test-eval-js", &[("eval", 4)]),
         ("/test-wait", &[("bash", 2), ("wait", 2)]),
         ("/test-todo", &[("todo", 9)]),
         ("/test-ask", &[("ask", 1)]),

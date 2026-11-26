@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 const ENV_ALLOWLIST: &[&str] = &[
     "PATH",
@@ -33,6 +33,8 @@ const ENV_ALLOWLIST: &[&str] = &[
     "CONDA_DEFAULT_ENV",
     "VIRTUAL_ENV",
     "PYTHONPATH",
+    "BUN_INSTALL",
+    "NODE_PATH",
     "LD_LIBRARY_PATH",
     "DYLD_LIBRARY_PATH",
     "DYLD_FALLBACK_LIBRARY_PATH",
@@ -105,7 +107,7 @@ where
     out
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     let Ok(meta) = fs::metadata(path) else {
         return false;
     };
@@ -141,7 +143,7 @@ fn detect_venv_for_python(python_path: &Path) -> Option<(PathBuf, PathBuf)> {
     }
 }
 
-fn expand_tilde(raw: &str, home: Option<&str>) -> PathBuf {
+pub(crate) fn expand_tilde(raw: &str, home: Option<&str>) -> PathBuf {
     if raw == "~"
         && let Some(home) = home
     {

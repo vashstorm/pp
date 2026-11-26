@@ -357,7 +357,7 @@ fn sandbox_bash_tool_reports_sandbox_metadata_and_unavailable_fails_closed() {
     // read-only 沙盒准确标明 workspace 只读，且同步反映在 eval 上
     let mut ro_tools =
         tools_with_sandbox(&root, &home, SandboxMode::ReadOnly, ProbeResult::Available);
-    ro_tools.eval_available = true;
+    ro_tools.eval_py_available = true;
     let ro_defs = ro_tools.all_definitions(WorkMode::Execute);
     for name in ["bash", "eval"] {
         let desc = ro_defs

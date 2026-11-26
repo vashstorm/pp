@@ -184,6 +184,8 @@ fn slash_valid_commands_and_model_reference_boundaries() {
         #[cfg(debug_assertions)]
         ("/test-eval-py", Command::MockTest(MockTest::EvalPy)),
         #[cfg(debug_assertions)]
+        ("/test-eval-js", Command::MockTest(MockTest::EvalJs)),
+        #[cfg(debug_assertions)]
         ("/test-wait", Command::MockTest(MockTest::Wait)),
         #[cfg(debug_assertions)]
         ("/test-todo", Command::MockTest(MockTest::Todo)),
@@ -253,6 +255,8 @@ fn slash_extra_arguments_are_local_errors() {
         #[cfg(debug_assertions)]
         "/test-eval-py",
         #[cfg(debug_assertions)]
+        "/test-eval-js",
+        #[cfg(debug_assertions)]
         "/test-wait",
         #[cfg(debug_assertions)]
         "/test-todo",
@@ -270,8 +274,8 @@ fn slash_extra_arguments_are_local_errors() {
     }
 }
 
-/// 15 个内嵌 mock 场景命令名：仅含 debug assertions 的构建注册并解析。
-const TEST_COMMAND_NAMES: [&str; 15] = [
+/// 16 个内嵌 mock 场景命令名：仅含 debug assertions 的构建注册并解析。
+const TEST_COMMAND_NAMES: [&str; 16] = [
     "/test-task",
     "/test-ui",
     "/test-tools",
@@ -283,6 +287,7 @@ const TEST_COMMAND_NAMES: [&str; 15] = [
     "/test-bash",
     "/test-bash-task",
     "/test-eval-py",
+    "/test-eval-js",
     "/test-wait",
     "/test-todo",
     "/test-ask",

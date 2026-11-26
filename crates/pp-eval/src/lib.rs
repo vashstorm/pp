@@ -1,14 +1,16 @@
-//! 持久化、有状态 Python REPL 内核宿主与运行期探针。
+//! 持久化、有状态 Python 与 JavaScript REPL 内核宿主与运行期探针。
 
+mod js_runtime;
 mod kernel;
 mod runtime;
 
-pub use kernel::{CapturedImage, CellOutcome, CellRequest};
+pub use js_runtime::{JsRuntime, JsRuntimeKind, probe_js};
+pub use kernel::{CapturedImage, CellOutcome, CellRequest, Language};
 pub use runtime::{PythonRuntime, filter_env, probe_python};
 
 use anyhow::Result;
 use kernel::KernelState;
-use pp_core::cancellation::CancellationToken;
+use pp_core::cancellation::{CancellationToken, merge_cleanup_result};
 use pp_core::events::AgentEvent;
 use pp_workspace::output::OutputSink;
 use serde_json::Value;
@@ -20,10 +22,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// 单个 Agent 会话独占的持久 Python 内核控制器；Drop 时自动回收子进程组。
+/// 单个 Agent 会话独占的持久 Python / JavaScript 内核控制器；Drop 时自动回收子进程组。
 #[derive(Default)]
 pub struct Session {
-    state: Arc<Mutex<KernelState>>,
+    python: Arc<Mutex<KernelState>>,
+    javascript: Arc<Mutex<KernelState>>,
 }
 
 impl Session {
@@ -31,20 +34,31 @@ impl Session {
         Self::default()
     }
 
-    /// 停止并回收当前常驻内核，保留会话对象可供下次调用重新拉起。
-    pub fn stop(&self) -> Result<()> {
-        let running = {
-            let mut state = lock(&self.state);
-            state.restarted_notice = false;
-            state.running.take()
-        };
-        if let Some(kernel) = running {
-            kernel.shutdown()?;
+    fn slot(&self, language: Language) -> &Arc<Mutex<KernelState>> {
+        match language {
+            Language::Python => &self.python,
+            Language::JavaScript => &self.javascript,
         }
-        Ok(())
     }
 
-    /// 执行单个 Python 单元格；需要时惰性启动或按 `reset` 重建内核。
+    /// 停止并回收当前常驻内核，保留会话对象可供下次调用重新拉起。
+    pub fn stop(&self) -> Result<()> {
+        let mut first_err: Result<()> = Ok(());
+        for slot in [&self.python, &self.javascript] {
+            let running = {
+                let mut state = lock(slot);
+                state.restarted_notice = false;
+                state.running.take()
+            };
+            if let Some(kernel) = running {
+                let res = kernel.shutdown();
+                first_err = merge_cleanup_result(first_err, res, "stopping eval kernel");
+            }
+        }
+        first_err
+    }
+
+    /// 执行单个 Python / JavaScript 单元格；需要时惰性启动或按 `reset` 重建对应内核。
     pub fn execute(
         &self,
         req: CellRequest<'_>,
@@ -53,7 +67,7 @@ impl Session {
         emit: &mut dyn FnMut(AgentEvent),
         bridge: &mut dyn FnMut(&str, &Value) -> Result<Value>,
     ) -> Result<CellOutcome> {
-        let mut state = lock(&self.state);
+        let mut state = lock(self.slot(req.language));
         kernel::run_cell(&mut state, req, cancellation, sink, emit, bridge)
     }
 }
@@ -63,6 +77,9 @@ impl Drop for Session {
         let _ = self.stop();
     }
 }
+
+#[cfg(test)]
+mod js_cases;
 
 #[cfg(test)]
 mod tests {
@@ -76,16 +93,16 @@ mod tests {
     use std::fs;
     use std::time::{Duration, Instant};
 
-    struct Harness {
-        work: tempfile::TempDir,
-        cache: tempfile::TempDir,
-        store: Store,
-        settings: OutputSettings,
-        session: Session,
+    pub(super) struct Harness {
+        pub(super) work: tempfile::TempDir,
+        pub(super) cache: tempfile::TempDir,
+        pub(super) store: Store,
+        pub(super) settings: OutputSettings,
+        pub(super) session: Session,
     }
 
     impl Harness {
-        fn new(spill_threshold: usize) -> Self {
+        pub(super) fn new(spill_threshold: usize) -> Self {
             let work = tempfile::tempdir().unwrap();
             let cache = tempfile::tempdir().unwrap();
             let store = Store::default();
@@ -105,7 +122,39 @@ mod tests {
             }
         }
 
-        fn run(&self, code: &str, reset: bool, timeout_seconds: u64) -> CellOutcome {
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn run_with_lang(
+            &self,
+            language: Language,
+            interpreter: Option<&str>,
+            code: &str,
+            reset: bool,
+            timeout_seconds: u64,
+            cancellation: &CancellationToken,
+            bridge: &mut dyn FnMut(&str, &Value) -> Result<Value>,
+        ) -> CellOutcome {
+            self.session
+                .execute(
+                    CellRequest {
+                        language,
+                        cwd: self.work.path(),
+                        cache_dir: self.cache.path(),
+                        interpreter,
+                        code,
+                        call_id: "call-1",
+                        timeout_seconds,
+                        reset,
+                        sandbox: None,
+                    },
+                    cancellation,
+                    OutputSink::new(self.settings, self.store.clone()),
+                    &mut |_| {},
+                    bridge,
+                )
+                .unwrap()
+        }
+
+        pub(super) fn run(&self, code: &str, reset: bool, timeout_seconds: u64) -> CellOutcome {
             self.run_with(
                 code,
                 reset,
@@ -123,24 +172,15 @@ mod tests {
             cancellation: &CancellationToken,
             bridge: &mut dyn FnMut(&str, &Value) -> Result<Value>,
         ) -> CellOutcome {
-            self.session
-                .execute(
-                    CellRequest {
-                        cwd: self.work.path(),
-                        cache_dir: self.cache.path(),
-                        interpreter: None,
-                        code,
-                        call_id: "call-1",
-                        timeout_seconds,
-                        reset,
-                        sandbox: None,
-                    },
-                    cancellation,
-                    OutputSink::new(self.settings, self.store.clone()),
-                    &mut |_| {},
-                    bridge,
-                )
-                .unwrap()
+            self.run_with_lang(
+                Language::Python,
+                None,
+                code,
+                reset,
+                timeout_seconds,
+                cancellation,
+                bridge,
+            )
         }
     }
 
@@ -378,6 +418,7 @@ print(a["content"], b["matches"], caught)
             h.session
                 .execute(
                     CellRequest {
+                        language: Language::Python,
                         cwd: &work_canon,
                         cache_dir: h.cache.path(),
                         interpreter: None,
@@ -527,10 +568,11 @@ print('never')
 
         // 注入一次循环内内核回收故障：artifact 已产生后清理失败，
         // 资源仍必须在错误上浮前封存（finish 幂等收尾），不伪造 cell 成功。
-        lock(&h.session.state).fail_next_shutdown_for_test();
+        lock(&h.session.python).fail_next_shutdown_for_test();
 
         let result = h.session.execute(
             CellRequest {
+                language: Language::Python,
                 cwd: h.work.path(),
                 cache_dir: h.cache.path(),
                 interpreter: None,

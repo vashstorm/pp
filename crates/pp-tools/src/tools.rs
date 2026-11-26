@@ -103,7 +103,9 @@ pub struct Tools {
     eval: pp_eval::Session,
     eval_enabled: bool,
     eval_interpreter: Option<String>,
-    eval_available: bool,
+    eval_js_runtime: Option<String>,
+    eval_py_available: bool,
+    eval_js_available: Option<pp_eval::JsRuntimeKind>,
     wait_state: RefCell<wait::State>,
     pub limits: ToolLimits,
     host_defaults: pp_workspace::host_defaults::HostDefaults,
@@ -244,10 +246,13 @@ struct EvalArgs {
     #[serde(default)]
     reset: bool,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum EvalLanguage {
+    #[serde(alias = "python")]
     Py,
+    #[serde(alias = "javascript")]
+    Js,
 }
 
 const PLAN_WRITE_DESC: &str = concat!(
@@ -474,17 +479,48 @@ fn bash_task_definition() -> FunctionObject {
     )
 }
 
-fn eval_definition(limits: ToolLimits, sandbox: &pp_sandbox::SandboxStatus) -> FunctionObject {
+fn eval_definition(
+    limits: ToolLimits,
+    sandbox: &pp_sandbox::SandboxStatus,
+    py_available: bool,
+    js_runtime: Option<pp_eval::JsRuntimeKind>,
+) -> FunctionObject {
     let default_timeout = limits.eval_timeout_seconds;
     let max_timeout = limits.eval_max_timeout_seconds;
     let sandbox_note = sandbox_exec_note(sandbox);
+    let mut languages = Vec::with_capacity(2);
+    let mut kernel_parts = Vec::with_capacity(2);
+    let mut feature_parts = Vec::with_capacity(2);
+    if py_available {
+        languages.push("py");
+        kernel_parts.push("Python 3.9+ (`py`)".to_owned());
+        feature_parts.push(
+            "`py`: magics (`%load`/`%pip`/`%cd`/`%pwd`/`%ls`/`%env`/`%time`/`%who`), `!cmd`, `%%bash`, matplotlib/PIL images",
+        );
+    }
+    if let Some(js_kind) = js_runtime {
+        languages.push("js");
+        kernel_parts.push(format!("JavaScript (`js`, {})", js_kind.display_name()));
+        feature_parts.push(match js_kind {
+            pp_eval::JsRuntimeKind::Bun => {
+                "`js`: ES2024+ with `Bun`, `node:*`, `require`, dynamic `import()`, `{type:\"image\", mimeType, data}`"
+            }
+            pp_eval::JsRuntimeKind::Node => {
+                "`js`: ES2024+ with `node:*`, `require`, dynamic `import()`, `{type:\"image\", mimeType, data}`"
+            }
+        });
+    }
+    let kernels = kernel_parts.join(" and ");
+    let features = feature_parts.join("; ");
     let description = format!(
         concat!(
-            "Run one Python cell in a persistent Python 3.9+ kernel (state persists until `reset: true` or `/new`). ",
-            "Supports top-level `await`, trailing expression echo, `%load`/`%pip`/`%cd`/`%pwd`/`%ls`/`%env`/`%time`/`%who`, `!cmd`, `%%bash`, matplotlib/PIL images (max 4/cell), ",
+            "Run one cell in a persistent stateful kernel for {kernels} (per-language state persists until `reset: true` or `/new`). ",
+            "Supports top-level `await`, trailing expression echo, {features} (max 4 images/cell), ",
             "and helpers `tool.<name>(...)`, `read`, `write`, `rg`, `glob`, `sh`, `env` (nested `tool.*` pauses compute timeout, follows normal permissions, and cannot call `eval`/`yield`/`plan_*`). ",
             "{sandbox_note} Default timeout {default_timeout}s (1-{max_timeout}s)."
         ),
+        kernels = kernels,
+        features = features,
         default_timeout = default_timeout,
         max_timeout = max_timeout,
         sandbox_note = sandbox_note,
@@ -496,7 +532,7 @@ fn eval_definition(limits: ToolLimits, sandbox: &pp_sandbox::SandboxStatus) -> F
         description,
         object_schema(
             json!({
-                "language": {"type": "string", "enum": ["py"]},
+                "language": {"type": "string", "enum": languages},
                 "code": {"type": "string"},
                 "title": {"type": "string", "description": "Optional short label for this cell."},
                 "timeout_seconds": {
@@ -505,7 +541,7 @@ fn eval_definition(limits: ToolLimits, sandbox: &pp_sandbox::SandboxStatus) -> F
                     "maximum": max_timeout,
                     "description": timeout_desc
                 },
-                "reset": {"type": "boolean", "description": "Reset the kernel state before running this cell."}
+                "reset": {"type": "boolean", "description": "Reset the kernel state for the selected language before running this cell."}
             }),
             &["language", "code"],
         ),
@@ -566,8 +602,13 @@ impl Tools {
             &sandbox_status,
             include_sandbox_permissions,
         );
-        if self.eval_available && mode == WorkMode::Execute {
-            base.push(eval_definition(self.limits, &sandbox_status));
+        if self.eval_available() && mode == WorkMode::Execute {
+            base.push(eval_definition(
+                self.limits,
+                &sandbox_status,
+                self.eval_py_available,
+                self.eval_js_available,
+            ));
         }
         let mut definitions = match mode {
             WorkMode::Execute => base,

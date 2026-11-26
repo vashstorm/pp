@@ -406,3 +406,13 @@ fn git_and_agents_protection_supports_scoped_override_while_keeping_immutable_pa
             .is_err()
     );
 }
+
+#[test]
+fn is_denied_output_matches_case_insensitively() {
+    assert!(Policy::is_denied_output(
+        "EPERM: operation not permitted, open '/tmp/secret'"
+    ));
+    assert!(Policy::is_denied_output("Operation not permitted"));
+    assert!(Policy::is_denied_output("blocked by sandbox policy"));
+    assert!(!Policy::is_denied_output("ENOENT: no such file"));
+}

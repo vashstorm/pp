@@ -914,11 +914,12 @@ fn eval_settings_defaults_validation_and_checkpoint_compatibility() {
     let defaults: Settings = yaml::parse("{}", "settings").unwrap();
     assert!(defaults.eval.enabled);
     assert_eq!(defaults.eval.interpreter, None);
+    assert_eq!(defaults.eval.js_runtime, None);
     assert_eq!(defaults.eval.timeout_seconds, 30);
     assert_eq!(defaults.eval.max_timeout_seconds, 600);
 
     let custom = load(
-        Some("eval:\n  enabled: false\n  interpreter: /usr/bin/python3\n  timeout_seconds: 15\n  max_timeout_seconds: 120\n  extra: 1\ntools:\n  permission:\n    eval: prompt\n"),
+        Some("eval:\n  enabled: false\n  interpreter: /usr/bin/python3\n  js_runtime: node\n  timeout_seconds: 15\n  max_timeout_seconds: 120\n  extra: 1\ntools:\n  permission:\n    eval: prompt\n"),
         Some(VALID_MODELS),
     )
     .unwrap();
@@ -927,6 +928,7 @@ fn eval_settings_defaults_validation_and_checkpoint_compatibility() {
         custom.settings.eval.interpreter.as_deref(),
         Some("/usr/bin/python3")
     );
+    assert_eq!(custom.settings.eval.js_runtime.as_deref(), Some("node"));
     assert_eq!(custom.settings.tool_limits().eval_timeout_seconds, 15);
     assert_eq!(custom.settings.tool_limits().eval_max_timeout_seconds, 120);
     assert_eq!(
@@ -936,6 +938,7 @@ fn eval_settings_defaults_validation_and_checkpoint_compatibility() {
 
     for bad in [
         "eval: {interpreter: '   '}",
+        "eval: {js_runtime: '   '}",
         "eval: {timeout_seconds: 0}",
         "eval: {max_timeout_seconds: 0}",
         "eval: {timeout_seconds: 120, max_timeout_seconds: 60}",

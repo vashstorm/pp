@@ -358,10 +358,11 @@ impl Policy {
     }
 
     pub fn is_denied_output(output: &str) -> bool {
-        output.contains("blocked by sandbox policy")
-            || output.contains("Operation not permitted")
+        let lower = output.to_ascii_lowercase();
+        lower.contains("blocked by sandbox policy")
+            || lower.contains("operation not permitted")
             || if cfg!(target_os = "linux") {
-                output.contains("Permission denied") || output.contains("Read-only file system")
+                lower.contains("permission denied") || lower.contains("read-only file system")
             } else {
                 false
             }

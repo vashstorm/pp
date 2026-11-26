@@ -343,6 +343,15 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
     },
     #[cfg(debug_assertions)]
     CommandSpec {
+        name: "/test-eval-js",
+        display_label: None,
+        aliases: &[],
+        category: CommandCategory::Debug,
+        usage: "/test-eval-js",
+        description: "Debug build: local JavaScript eval streaming, state & bridge scenarios",
+    },
+    #[cfg(debug_assertions)]
+    CommandSpec {
         name: "/test-wait",
         display_label: None,
         aliases: &[],

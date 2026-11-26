@@ -346,7 +346,7 @@ pub fn default_eval_max_timeout_seconds() -> u64 {
     600
 }
 
-/// `settings.yml` 的 `eval:` 小节，控制持久 Python 内核的可用性与超时窗口。
+/// `settings.yml` 的 `eval:` 小节，控制持久 Python / JavaScript 内核的可用性与超时窗口。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EvalSettings {
@@ -354,6 +354,8 @@ pub struct EvalSettings {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interpreter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub js_runtime: Option<String>,
     #[serde(default = "default_eval_timeout_seconds")]
     pub timeout_seconds: u64,
     #[serde(default = "default_eval_max_timeout_seconds")]
@@ -365,6 +367,7 @@ impl Default for EvalSettings {
         Self {
             enabled: default_eval_enabled(),
             interpreter: None,
+            js_runtime: None,
             timeout_seconds: default_eval_timeout_seconds(),
             max_timeout_seconds: default_eval_max_timeout_seconds(),
         }
@@ -377,6 +380,12 @@ impl EvalSettings {
             ensure!(
                 !interpreter.trim().is_empty(),
                 "eval.interpreter must not be blank"
+            );
+        }
+        if let Some(js_runtime) = &self.js_runtime {
+            ensure!(
+                !js_runtime.trim().is_empty(),
+                "eval.js_runtime must not be blank"
             );
         }
         ensure!(

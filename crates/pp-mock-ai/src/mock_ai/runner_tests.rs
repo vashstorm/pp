@@ -707,3 +707,97 @@ fn mock_runner_eval_py_streams_output_preserves_state_and_resets() {
         "{assistant}"
     );
 }
+
+#[test]
+fn mock_runner_eval_js_streams_output_preserves_state_and_resets() {
+    let server = MockServer::start().expect("mock AI server");
+    let mut recorder = Recorder::default();
+    let mut snapshots = Vec::new();
+    let mut assistant = String::new();
+    let report = run_test(
+        MockTest::EvalJs,
+        server.endpoint(),
+        None,
+        &CancellationToken::new(),
+        &mut |event| match event {
+            MockTestEvent::Progress(AgentEvent::ToolOutputSnapshot { output, .. }) => {
+                snapshots.push(output);
+            }
+            MockTestEvent::Progress(AgentEvent::AssistantFinished { text }) => {
+                assistant = text;
+            }
+            MockTestEvent::Progress(event) => recorder.record(event),
+            MockTestEvent::Prepared(_) => {}
+        },
+    )
+    .expect("eval js mock scenario");
+    recorder.finish();
+    assert_eq!(report.calls, 4);
+    assert!(
+        snapshots.len() > 2,
+        "streaming cell should emit incremental ToolOutputSnapshot updates, got {}",
+        snapshots.len()
+    );
+    let evals = recorder.calls("eval");
+    assert_eq!(evals.len(), 4);
+    assert_eq!(evals[0]["ok"], true, "{}", evals[0]);
+    assert_eq!(evals[0]["language"], "js");
+    assert!(
+        matches!(evals[0]["runtime"].as_str(), Some("bun" | "node")),
+        "{}",
+        evals[0]
+    );
+    assert_eq!(evals[0]["execution_count"], 1);
+    assert_eq!(evals[0]["timeout_seconds"], 15);
+    let first_out = evals[0]["output"].as_str().expect("cell 1 output");
+    assert!(
+        first_out.contains("[01/14] streaming step=1"),
+        "{first_out}"
+    );
+    assert!(first_out.contains("stderr sample line"), "{first_out}");
+    assert!(
+        first_out.contains("cell-1-done:eval-js-state-42"),
+        "{first_out}"
+    );
+
+    assert_eq!(evals[1]["ok"], true, "{}", evals[1]);
+    assert_eq!(evals[1]["execution_count"], 2);
+    assert!(
+        evals[1]["output"]
+            .as_str()
+            .is_some_and(|out| out.contains("state=eval-js-state-42 sum=42")),
+        "{}",
+        evals[1]
+    );
+
+    assert_eq!(evals[2]["ok"], false, "{}", evals[2]);
+    assert_eq!(evals[2]["execution_count"], 3);
+    assert!(
+        evals[2]["error"]
+            .as_str()
+            .is_some_and(|err| err.contains("RangeError") && err.contains("boom-js")),
+        "{}",
+        evals[2]
+    );
+    assert!(
+        evals[2]["output"]
+            .as_str()
+            .is_some_and(|out| out.contains("before-error")),
+        "{}",
+        evals[2]
+    );
+
+    assert_eq!(evals[3]["ok"], true, "{}", evals[3]);
+    assert_eq!(evals[3]["execution_count"], 1);
+    let fourth_out = evals[3]["output"].as_str().expect("cell 4 output");
+    assert!(
+        fourth_out.contains("after_reset_has_state=false"),
+        "{fourth_out}"
+    );
+    assert!(fourth_out.contains("tag=eval-js-state-42"), "{fourth_out}");
+    assert!(fourth_out.contains("reset-verified"), "{fourth_out}");
+    assert!(
+        assistant.contains("Eval JavaScript fixture complete."),
+        "{assistant}"
+    );
+}

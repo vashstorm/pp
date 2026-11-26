@@ -1,0 +1,60 @@
+{
+	"prompt": "Run the embedded local JavaScript eval fixture.",
+	"edit_mode": "replace",
+	"files": {
+		"eval/input.txt": "alpha=10\nbeta=32\n"
+	},
+	"lanes": {
+		"root": [
+			{
+				"tool": {
+					"name": "eval",
+					"arguments": {
+						"language": "js",
+						"title": "streaming stdout/stderr",
+						"timeout_seconds": 15,
+						"code": "const sleep = (ms) => new Promise((r) => setTimeout(r, ms));\nconst sessionTag = 'eval-js-state-42';\nconst total = 14;\nfor (let step = 1; step <= total; step++) {\n  const pad = String(step).padStart(2, '0');\n  console.log(`[${pad}/${total}] streaming step=${step} · 中文输出状态`);\n  if (step === 4 || step === 10) {\n    console.error(`[${pad}/${total}] stderr sample line`);\n  }\n  await sleep(160);\n}\n`cell-1-done:${sessionTag}`"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "eval",
+					"arguments": {
+						"language": "js",
+						"title": "state & tool bridge",
+						"code": "const raw = read('eval/input.txt');\nconst pairs = Object.fromEntries(raw.trim().split(/\\r?\\n/).map((line) => line.split('=')));\nconst computed = Number(pairs.alpha) + Number(pairs.beta);\nwrite('eval/summary.txt', `tag=${sessionTag}\\nsum=${computed}\\n`);\nconsole.log(`state=${sessionTag} sum=${computed}`);"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "eval",
+					"arguments": {
+						"language": "js",
+						"title": "expected exception",
+						"code": "console.log('before-error');\nthrow new RangeError('boom-js');"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"tool": {
+					"name": "eval",
+					"arguments": {
+						"language": "js",
+						"reset": true,
+						"code": "const survived = 'sessionTag' in globalThis;\nconsole.log(`after_reset_has_state=${survived}`);\nconst saved = read('eval/summary.txt').trim();\nconsole.log(saved);\n'reset-verified'"
+					}
+				},
+				"auto_continue": false
+			},
+			{
+				"content": "Eval JavaScript fixture complete.\n",
+				"auto_continue": false
+			}
+		]
+	}
+}

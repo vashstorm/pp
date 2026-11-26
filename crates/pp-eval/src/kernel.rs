@@ -1,5 +1,6 @@
-//! 持久 Python 内核子进程、进程组监督与 NDJSON 双工帧循环。
+//! 持久 Python / JavaScript 内核子进程、进程组监督与 NDJSON 双工帧循环。
 
+use crate::js_runtime::probe_js;
 use crate::runtime::{PythonRuntime, probe_python};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -10,21 +11,23 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
-    fs,
+    fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError},
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 const RUNNER_PY: &str = include_str!("runner.py");
+const RUNNER_JS: &str = include_str!("runner.js");
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(50);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
@@ -32,6 +35,28 @@ const SHUTDOWN_GRACE: Duration = Duration::from_millis(800);
 const READER_DRAIN_GRACE: Duration = Duration::from_millis(500);
 const STDERR_TAIL_CAP: usize = 8 * 1024;
 static NEXT_TMP_ID: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Language {
+    Python,
+    JavaScript,
+}
+
+impl Language {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Python => "py",
+            Self::JavaScript => "js",
+        }
+    }
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Python => "Python",
+            Self::JavaScript => "JavaScript",
+        }
+    }
+}
 
 #[derive(Debug)]
 enum KernelFrame {
@@ -44,6 +69,8 @@ enum KernelFrame {
         id: String,
         data: String,
     },
+    RawStdout(Vec<u8>),
+    RawStderr(Vec<u8>),
     Image {
         id: String,
         mime_type: String,
@@ -108,10 +135,13 @@ struct RawImage {
 }
 
 pub(crate) struct RunningKernel {
+    language: Language,
+    runtime_name: Option<&'static str>,
     child: Child,
     pgid: libc::pid_t,
-    stdin: Option<ChildStdin>,
+    ctrl_in: Option<File>,
     frames: Option<Receiver<KernelFrame>>,
+    cell_active: Arc<AtomicBool>,
     stderr_tail: Arc<Mutex<Vec<u8>>>,
     reader_handle: Option<JoinHandle<()>>,
     reader_done: Option<Receiver<()>>,
@@ -126,6 +156,7 @@ pub struct CapturedImage {
 }
 
 pub struct CellRequest<'a> {
+    pub language: Language,
     pub cwd: &'a Path,
     pub cache_dir: &'a Path,
     pub interpreter: Option<&'a str>,
@@ -141,22 +172,28 @@ pub struct CellOutcome {
     pub images: Vec<CapturedImage>,
 }
 
-fn ensure_runner_script(cache_dir: &Path) -> Result<PathBuf> {
+fn ensure_cached_script(
+    cache_dir: &Path,
+    prefix: &str,
+    ext: &str,
+    content: &str,
+) -> Result<PathBuf> {
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("creating eval cache dir {}", cache_dir.display()))?;
-    let hash = xxhash_rust::xxh32::xxh32(RUNNER_PY.as_bytes(), 0);
-    let target = cache_dir.join(format!("pp-eval-runner-{hash:08x}.py"));
+    let bytes = content.as_bytes();
+    let hash = xxhash_rust::xxh32::xxh32(bytes, 0);
+    let target = cache_dir.join(format!("{prefix}-{hash:08x}.{ext}"));
     let needs_write = match fs::read(&target) {
-        Ok(existing) => existing != RUNNER_PY.as_bytes(),
+        Ok(existing) => existing != bytes,
         Err(_) => true,
     };
     if needs_write {
         let seq = NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed);
         let tmp = cache_dir.join(format!(
-            "pp-eval-runner-{hash:08x}.{}.{seq}.tmp",
+            "{prefix}-{hash:08x}.{}.{seq}.tmp",
             std::process::id()
         ));
-        fs::write(&tmp, RUNNER_PY.as_bytes())
+        fs::write(&tmp, bytes)
             .with_context(|| format!("writing runner script {}", tmp.display()))?;
         fs::rename(&tmp, &target)
             .with_context(|| format!("installing runner script {}", target.display()))?;
@@ -206,14 +243,96 @@ fn parse_frame(line: &str) -> Option<KernelFrame> {
     })
 }
 
+fn create_cloexec_pipe() -> Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("creating eval control pipe");
+    }
+    let r = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let w = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    for fd in [r.as_raw_fd(), w.as_raw_fd()] {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
+    Ok((r, w))
+}
+
+fn set_nonblocking(fd: libc::c_int) -> std::io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn append_stderr_tail(stderr_tail: &Arc<Mutex<Vec<u8>>>, chunk: &[u8]) {
+    if chunk.is_empty() {
+        return;
+    }
+    if let Ok(mut tail) = stderr_tail.lock() {
+        tail.extend_from_slice(chunk);
+        if tail.len() > STDERR_TAIL_CAP {
+            let drop_len = tail.len() - STDERR_TAIL_CAP;
+            tail.drain(..drop_len);
+        }
+    }
+}
+
+/// 从非阻塞 raw fd 排空所有立即可读字节，在活跃 cell 期间发送对应帧。
+/// 返回 `false` 表示通道接收端已断开或写入失败；`eof` 为 true 时该 fd 已达 EOF。
+fn drain_raw_fd(
+    file: &mut File,
+    is_stderr: bool,
+    cell_active: &AtomicBool,
+    stderr_tail: &Arc<Mutex<Vec<u8>>>,
+    tx: &SyncSender<KernelFrame>,
+    eof: &mut bool,
+) -> bool {
+    let mut buf = [0u8; 8192];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => {
+                *eof = true;
+                return true;
+            }
+            Ok(n) => {
+                let slice = &buf[..n];
+                if is_stderr {
+                    append_stderr_tail(stderr_tail, slice);
+                }
+                if cell_active.load(Ordering::Acquire) {
+                    let frame = if is_stderr {
+                        KernelFrame::RawStderr(slice.to_vec())
+                    } else {
+                        KernelFrame::RawStdout(slice.to_vec())
+                    };
+                    if tx.send(frame).is_err() {
+                        return false;
+                    }
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return true,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                *eof = true;
+                return true;
+            }
+        }
+    }
+}
+
 impl RunningKernel {
-    fn spawn(
+    fn spawn_python(
         runtime: &PythonRuntime,
         cwd: &Path,
         cache_dir: &Path,
         sandbox: Option<&pp_sandbox::Policy>,
     ) -> Result<Self> {
-        let script = ensure_runner_script(cache_dir)?;
+        let script = ensure_cached_script(cache_dir, "pp-eval-runner", "py", RUNNER_PY)?;
         let mut cmd = if let Some(policy) = sandbox {
             let (wrapper_bin, wrapper_args) = policy
                 .wrap_command(
@@ -249,6 +368,7 @@ impl RunningKernel {
             .with_context(|| format!("spawning Python kernel {}", runtime.python_path.display()))?;
         let pgid = child.id() as libc::pid_t;
         let stdin = child.stdin.take().context("missing Python kernel stdin")?;
+        let ctrl_in = File::from(OwnedFd::from(stdin));
         let stdout = child
             .stdout
             .take()
@@ -300,15 +420,7 @@ impl RunningKernel {
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if let Ok(mut tail) = stderr_buf.lock() {
-                                tail.extend_from_slice(&buf[..n]);
-                                if tail.len() > STDERR_TAIL_CAP {
-                                    let drop_len = tail.len() - STDERR_TAIL_CAP;
-                                    tail.drain(..drop_len);
-                                }
-                            }
-                        }
+                        Ok(n) => append_stderr_tail(&stderr_buf, &buf[..n]),
                     }
                 }
                 let _ = stderr_done_tx.send(());
@@ -316,15 +428,317 @@ impl RunningKernel {
             .context("spawning Python stderr reader")?;
 
         Ok(Self {
+            language: Language::Python,
+            runtime_name: None,
             child,
             pgid,
-            stdin: Some(stdin),
+            ctrl_in: Some(ctrl_in),
             frames: Some(rx),
+            cell_active: Arc::new(AtomicBool::new(false)),
             stderr_tail,
             reader_handle: Some(reader_handle),
             reader_done: Some(reader_done_rx),
             stderr_handle: Some(stderr_handle),
             stderr_done: Some(stderr_done_rx),
+        })
+    }
+
+    fn spawn_js(
+        runtime: &crate::js_runtime::JsRuntime,
+        cwd: &Path,
+        cache_dir: &Path,
+        sandbox: Option<&pp_sandbox::Policy>,
+    ) -> Result<Self> {
+        let script = ensure_cached_script(cache_dir, "pp-eval-runner", "cjs", RUNNER_JS)?;
+        let (ctrl_in_r, ctrl_in_w) = create_cloexec_pipe()?;
+        let (ctrl_out_r, ctrl_out_w) = create_cloexec_pipe()?;
+        let in_r_fd = ctrl_in_r.as_raw_fd();
+        let out_w_fd = ctrl_out_w.as_raw_fd();
+
+        let mut cmd = if let Some(policy) = sandbox {
+            let (wrapper_bin, wrapper_args) = policy
+                .wrap_command(
+                    &runtime.executable.to_string_lossy(),
+                    &[script.as_os_str().to_os_string()],
+                )
+                .context("building sandbox wrapper for JavaScript kernel")?;
+            let mut c = Command::new(wrapper_bin);
+            c.args(wrapper_args);
+            c
+        } else {
+            let mut c = Command::new(&runtime.executable);
+            c.arg(&script);
+            c
+        };
+
+        cmd.current_dir(cwd)
+            .env_clear()
+            .envs(&runtime.env)
+            .env("PP_EVAL_CTRL_IN_FD", "3")
+            .env("PP_EVAL_CTRL_OUT_FD", "4")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        if let Some(policy) = sandbox {
+            cmd.env("PP_SANDBOX", policy.backend());
+        }
+
+        // 将控制管道子端安全映射到 fd 3 (CTRL_IN) 与 fd 4 (CTRL_OUT) 且清除 FD_CLOEXEC，
+        // 避免与标准 stdio 混用，使 fs.writeSync(1/2) 与子进程输出永不污染 NDJSON 控制帧。
+        unsafe {
+            cmd.pre_exec(move || {
+                let mut src_in = in_r_fd;
+                let mut src_out = out_w_fd;
+                if src_in == 4 {
+                    src_in = libc::fcntl(src_in, libc::F_DUPFD_CLOEXEC, 5);
+                    if src_in < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                if src_out == 3 {
+                    src_out = libc::fcntl(src_out, libc::F_DUPFD_CLOEXEC, 5);
+                    if src_out < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                if src_in == 3 {
+                    if libc::fcntl(3, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                } else {
+                    if libc::dup2(src_in, 3) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    libc::close(src_in);
+                }
+                if src_out == 4 {
+                    if libc::fcntl(4, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                } else {
+                    if libc::dup2(src_out, 4) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    libc::close(src_out);
+                }
+                Ok(())
+            });
+        }
+
+        let mut child = cmd.spawn().with_context(|| {
+            format!(
+                "spawning {} kernel {}",
+                runtime.kind.display_name(),
+                runtime.executable.display()
+            )
+        })?;
+        drop(ctrl_in_r);
+        drop(ctrl_out_w);
+
+        let pgid = child.id() as libc::pid_t;
+        let ctrl_in = File::from(ctrl_in_w);
+        let mut ctrl_out = File::from(ctrl_out_r);
+        let mut raw_stdout = File::from(OwnedFd::from(
+            child
+                .stdout
+                .take()
+                .context("missing JavaScript kernel stdout")?,
+        ));
+        let mut raw_stderr = File::from(OwnedFd::from(
+            child
+                .stderr
+                .take()
+                .context("missing JavaScript kernel stderr")?,
+        ));
+
+        let _ = set_nonblocking(ctrl_out.as_raw_fd());
+        let _ = set_nonblocking(raw_stdout.as_raw_fd());
+        let _ = set_nonblocking(raw_stderr.as_raw_fd());
+
+        let (tx, rx) = mpsc::sync_channel::<KernelFrame>(512);
+        let cell_active = Arc::new(AtomicBool::new(false));
+        let active_flag = Arc::clone(&cell_active);
+        let stderr_tail = Arc::new(Mutex::new(Vec::new()));
+        let stderr_buf = Arc::clone(&stderr_tail);
+        let (reader_done_tx, reader_done_rx) = mpsc::channel::<()>();
+
+        // 单一 poll 线程复用控制通道与 raw fd 1/2：每次读取/发送控制帧前先排空 raw 管道，
+        // 保证 `fs.writeSync(1, ...)` 等底层写入与 `done` 帧之间严格保序、零竞态。
+        let reader_handle = thread::Builder::new()
+            .name("pp-eval-js-io".to_owned())
+            .spawn(move || {
+                let mut ctrl_buf = Vec::<u8>::new();
+                let mut read_buf = [0u8; 8192];
+                let mut ctrl_eof = false;
+                let mut stdout_eof = false;
+                let mut stderr_eof = false;
+
+                'io: loop {
+                    if !stdout_eof
+                        && !drain_raw_fd(
+                            &mut raw_stdout,
+                            false,
+                            &active_flag,
+                            &stderr_buf,
+                            &tx,
+                            &mut stdout_eof,
+                        )
+                    {
+                        break 'io;
+                    }
+                    if !stderr_eof
+                        && !drain_raw_fd(
+                            &mut raw_stderr,
+                            true,
+                            &active_flag,
+                            &stderr_buf,
+                            &tx,
+                            &mut stderr_eof,
+                        )
+                    {
+                        break 'io;
+                    }
+
+                    if !ctrl_eof {
+                        loop {
+                            match ctrl_out.read(&mut read_buf) {
+                                Ok(0) => {
+                                    ctrl_eof = true;
+                                    break;
+                                }
+                                Ok(n) => {
+                                    ctrl_buf.extend_from_slice(&read_buf[..n]);
+                                }
+                                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => break,
+                                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
+                                    continue;
+                                }
+                                Err(_) => {
+                                    ctrl_eof = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        while let Some(nl) = ctrl_buf.iter().position(|&b| b == b'\n') {
+                            let line_bytes: Vec<u8> = ctrl_buf.drain(..=nl).collect();
+                            let line = String::from_utf8_lossy(&line_bytes);
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                continue;
+                            }
+                            if let Some(frame) = parse_frame(trimmed) {
+                                // 控制帧即将进入 channel 前，再排空一次内核缓冲区中的 raw fd 输出。
+                                if matches!(
+                                    frame,
+                                    KernelFrame::ToolCall { .. }
+                                        | KernelFrame::Error { .. }
+                                        | KernelFrame::Done { .. }
+                                ) {
+                                    if !stdout_eof
+                                        && !drain_raw_fd(
+                                            &mut raw_stdout,
+                                            false,
+                                            &active_flag,
+                                            &stderr_buf,
+                                            &tx,
+                                            &mut stdout_eof,
+                                        )
+                                    {
+                                        break 'io;
+                                    }
+                                    if !stderr_eof
+                                        && !drain_raw_fd(
+                                            &mut raw_stderr,
+                                            true,
+                                            &active_flag,
+                                            &stderr_buf,
+                                            &tx,
+                                            &mut stderr_eof,
+                                        )
+                                    {
+                                        break 'io;
+                                    }
+                                }
+                                if tx.send(frame).is_err() {
+                                    break 'io;
+                                }
+                            }
+                        }
+                    }
+
+                    if ctrl_eof {
+                        if !stdout_eof {
+                            let _ = drain_raw_fd(
+                                &mut raw_stdout,
+                                false,
+                                &active_flag,
+                                &stderr_buf,
+                                &tx,
+                                &mut stdout_eof,
+                            );
+                        }
+                        if !stderr_eof {
+                            let _ = drain_raw_fd(
+                                &mut raw_stderr,
+                                true,
+                                &active_flag,
+                                &stderr_buf,
+                                &tx,
+                                &mut stderr_eof,
+                            );
+                        }
+                        let _ = tx.send(KernelFrame::Eof);
+                        break 'io;
+                    }
+
+                    let mut pollfds = Vec::with_capacity(3);
+                    pollfds.push(libc::pollfd {
+                        fd: ctrl_out.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    });
+                    if !stdout_eof {
+                        pollfds.push(libc::pollfd {
+                            fd: raw_stdout.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        });
+                    }
+                    if !stderr_eof {
+                        pollfds.push(libc::pollfd {
+                            fd: raw_stderr.as_raw_fd(),
+                            events: libc::POLLIN,
+                            revents: 0,
+                        });
+                    }
+                    let rc = unsafe {
+                        libc::poll(pollfds.as_mut_ptr(), pollfds.len() as libc::nfds_t, 200)
+                    };
+                    if rc < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR)
+                    {
+                        let _ = tx.send(KernelFrame::Eof);
+                        break 'io;
+                    }
+                }
+                let _ = reader_done_tx.send(());
+            })
+            .context("spawning JavaScript I/O reader")?;
+
+        Ok(Self {
+            language: Language::JavaScript,
+            runtime_name: Some(runtime.kind.as_str()),
+            child,
+            pgid,
+            ctrl_in: Some(ctrl_in),
+            frames: Some(rx),
+            cell_active,
+            stderr_tail,
+            reader_handle: Some(reader_handle),
+            reader_done: Some(reader_done_rx),
+            stderr_handle: None,
+            stderr_done: None,
         })
     }
 
@@ -361,13 +775,16 @@ impl RunningKernel {
     }
 
     fn send_line(&mut self, value: &Value) -> Result<()> {
-        let Some(stdin) = self.stdin.as_mut() else {
-            bail!("Python kernel control stdin is closed");
+        let Some(ctrl_in) = self.ctrl_in.as_mut() else {
+            bail!(
+                "{} kernel control channel is closed",
+                self.language.display_name()
+            );
         };
         let mut line = serde_json::to_string(value)?;
         line.push('\n');
-        stdin.write_all(line.as_bytes())?;
-        stdin.flush()?;
+        ctrl_in.write_all(line.as_bytes())?;
+        ctrl_in.flush()?;
         Ok(())
     }
 
@@ -412,8 +829,9 @@ impl RunningKernel {
     }
 
     pub(crate) fn shutdown(mut self) -> Result<()> {
+        self.cell_active.store(false, Ordering::Release);
         let _ = self.send_line(&json!({ "type": "exit" }));
-        self.stdin.take();
+        self.ctrl_in.take();
         // 先丢弃接收端，避免通道已满时 reader 线程永久阻塞在 sync_channel::send 上造成自死锁。
         self.frames.take();
         if !self.wait_exit(SHUTDOWN_GRACE) {
@@ -422,7 +840,8 @@ impl RunningKernel {
                 self.send_signal_group(libc::SIGKILL);
                 if !self.wait_exit(SHUTDOWN_GRACE) {
                     return Err(CleanupError(anyhow::anyhow!(
-                        "Python kernel process {} did not exit after SIGKILL",
+                        "{} kernel process {} did not exit after SIGKILL",
+                        self.language.display_name(),
                         self.child.id()
                     ))
                     .into());
@@ -475,7 +894,7 @@ impl KernelState {
                 drop(kernel);
             }
             return Err(CleanupError(anyhow::anyhow!(
-                "Python kernel shutdown failed (injected for test)"
+                "eval kernel shutdown failed (injected for test)"
             ))
             .into());
         }
@@ -501,6 +920,7 @@ pub(crate) fn run_cell(
 ) -> Result<CellOutcome> {
     pp_core::cancellation::check(cancellation)?;
 
+    let lang_label = req.language.display_name();
     let started = Instant::now();
     let desired_fp = req.sandbox.as_deref().map(|p| (p.mode(), p.network()));
     let mut notice: Option<String> = None;
@@ -523,23 +943,43 @@ pub(crate) fn run_cell(
     }
 
     if state.running.is_none() {
-        let runtime = probe_python(req.cwd, req.interpreter)?;
-        let kernel =
-            RunningKernel::spawn(&runtime, req.cwd, req.cache_dir, req.sandbox.as_deref())?;
+        let kernel = match req.language {
+            Language::Python => {
+                let runtime = probe_python(req.cwd, req.interpreter)?;
+                RunningKernel::spawn_python(
+                    &runtime,
+                    req.cwd,
+                    req.cache_dir,
+                    req.sandbox.as_deref(),
+                )?
+            }
+            Language::JavaScript => {
+                let runtime = probe_js(req.cwd, req.interpreter)?;
+                RunningKernel::spawn_js(&runtime, req.cwd, req.cache_dir, req.sandbox.as_deref())?
+            }
+        };
         state.running = Some(kernel);
         state.sandbox_fingerprint = desired_fp;
         if state.restarted_notice {
-            notice = Some(
-                "Kernel restarted: the previous Python kernel died; earlier state is unavailable."
-                    .to_owned(),
-            );
+            notice = Some(format!(
+                "Kernel restarted: the previous {lang_label} kernel died; earlier state is unavailable."
+            ));
             state.restarted_notice = false;
         }
     }
 
+    let runtime_name = state
+        .running
+        .as_ref()
+        .and_then(|kernel| kernel.runtime_name);
+
     state.next_req_id = state.next_req_id.saturating_add(1);
     let rid = format!("eval-{}", state.next_req_id);
     let cwd_str = req.cwd.to_string_lossy().into_owned();
+
+    if let Some(kernel) = state.running.as_ref() {
+        kernel.cell_active.store(true, Ordering::Release);
+    }
 
     let send_result = state
         .running
@@ -556,7 +996,7 @@ pub(crate) fn run_cell(
             let _ = dead.shutdown();
         }
         state.restarted_notice = true;
-        return Err(err.context("sending cell to Python kernel"));
+        return Err(err.context(format!("sending cell to {lang_label} kernel")));
     }
 
     let mut images = Vec::new();
@@ -601,7 +1041,7 @@ pub(crate) fn run_cell(
             } else if let Some(sent_at) = interrupt_sent
                 && now.saturating_duration_since(sent_at) >= INTERRUPT_GRACE
             {
-                // Python 主线程卡在 C 扩展或阻塞子进程无法响应 SIGINT：升级销毁整个进程组。
+                // 内核主线程卡在扩展/阻塞子进程无法响应 SIGINT：升级销毁整个进程组。
                 state.shutdown_running()?;
                 state.restarted_notice = true;
                 kernel_died = true;
@@ -609,12 +1049,13 @@ pub(crate) fn run_cell(
                 if error_summary.is_none() {
                     error_summary = Some(if timed_out {
                         format!(
-                            "Python cell timed out after {}s and did not respond to SIGINT; kernel was terminated.",
+                            "{lang_label} cell timed out after {}s and did not respond to SIGINT; kernel was terminated.",
                             req.timeout_seconds
                         )
                     } else {
-                        "Python cell cancelled and did not respond to SIGINT; kernel was terminated."
-                        .to_owned()
+                        format!(
+                            "{lang_label} cell cancelled and did not respond to SIGINT; kernel was terminated."
+                        )
                     });
                 }
                 break;
@@ -649,6 +1090,14 @@ pub(crate) fn run_cell(
                 }
                 Ok(KernelFrame::Stderr { id, data }) if id == rid => {
                     sink.append(OutputStream::Stderr, data.as_bytes());
+                    dirty = true;
+                }
+                Ok(KernelFrame::RawStdout(bytes)) => {
+                    sink.append(OutputStream::Stdout, &bytes);
+                    dirty = true;
+                }
+                Ok(KernelFrame::RawStderr(bytes)) => {
+                    sink.append(OutputStream::Stderr, &bytes);
                     dirty = true;
                 }
                 Ok(KernelFrame::Stdout { .. } | KernelFrame::Stderr { .. }) => {}
@@ -689,13 +1138,13 @@ pub(crate) fn run_cell(
                                 .any(|c| c.is::<CleanupError>() || c.is::<Cancelled>()) =>
                         {
                             // 嵌套工具或 post-hook 发生取消或清理失败：立即停止内核，
-                            // 保留原类型链向上冒泡，绝不吞成 Python 侧可捕获的 RuntimeError。
+                            // 保留原类型链向上冒泡，绝不吞成脚本侧可捕获的异常。
                             let shutdown_res = state.shutdown_running();
                             state.restarted_notice = true;
                             return pp_core::cancellation::merge_cleanup_result(
                                 Err(err),
                                 shutdown_res,
-                                "stopping Python kernel",
+                                &format!("stopping {lang_label} kernel"),
                             );
                         }
                         Err(err) => json!({
@@ -704,7 +1153,7 @@ pub(crate) fn run_cell(
                             "error": format!("{err:#}"),
                         }),
                     };
-                    // 嵌套宿主工具调用期间的墙钟时间不计入 Python 计算预算，
+                    // 嵌套宿主工具调用期间的墙钟时间不计入计算预算，
                     // 返回后只重置计时起点，避免宿主慢工具变相延长计算额度。
                     last_tick = Instant::now();
                     if let Some(kernel) = state.running.as_mut()
@@ -718,8 +1167,9 @@ pub(crate) fn run_cell(
                         state.restarted_notice = true;
                         kernel_died = true;
                         exec_status = "error".to_owned();
-                        error_summary =
-                            Some(format!("Python kernel exited during tool bridge: {err:#}"));
+                        error_summary = Some(format!(
+                            "{lang_label} kernel exited during tool bridge: {err:#}"
+                        ));
                         break;
                     }
                 }
@@ -755,11 +1205,11 @@ pub(crate) fn run_cell(
                     id,
                     status,
                     execution_count: count,
-                    cancelled: py_cancelled,
+                    cancelled: kernel_cancelled,
                 }) if id == rid => {
                     exec_status = status;
                     execution_count = count;
-                    if py_cancelled && !timed_out {
+                    if kernel_cancelled && !timed_out {
                         cancelled = true;
                     }
                     break;
@@ -775,9 +1225,9 @@ pub(crate) fn run_cell(
                     kernel_died = true;
                     exec_status = "error".to_owned();
                     error_summary = Some(if stderr_note.is_empty() {
-                        "Python kernel exited unexpectedly.".to_owned()
+                        format!("{lang_label} kernel exited unexpectedly.")
                     } else {
-                        format!("Python kernel exited unexpectedly: {stderr_note}")
+                        format!("{lang_label} kernel exited unexpectedly: {stderr_note}")
                     });
                     break;
                 }
@@ -786,6 +1236,10 @@ pub(crate) fn run_cell(
         }
         Ok(())
     })();
+
+    if let Some(kernel) = state.running.as_ref() {
+        kernel.cell_active.store(false, Ordering::Release);
+    }
 
     // 无论循环内 shutdown 成败，都先做一次幂等收尾：封存捕获并发布元数据，
     // 错误（含 CleanupError）在收尾完成后才上浮，不伪造 cell 成功。
@@ -801,7 +1255,10 @@ pub(crate) fn run_cell(
     let mut result = sink.value();
     let ok = exec_status == "ok" && !timed_out && !cancelled && !kernel_died;
     result["ok"] = json!(ok);
-    result["language"] = json!("py");
+    result["language"] = json!(req.language.as_str());
+    if let Some(runtime_name) = runtime_name {
+        result["runtime"] = json!(runtime_name);
+    }
     result["execution_count"] = json!(execution_count);
     result["timed_out"] = json!(timed_out);
     result["cancelled"] = json!(cancelled);
@@ -819,17 +1276,17 @@ pub(crate) fn run_cell(
     }
     if timed_out {
         result["error"] = json!(error_summary.unwrap_or_else(|| format!(
-            "Python cell timed out after {}s; kernel was interrupted. Pass reset: true if state appears corrupted.",
+            "{lang_label} cell timed out after {}s; kernel was interrupted. Pass reset: true if state appears corrupted.",
             req.timeout_seconds
         )));
     } else if cancelled {
         result["error"] = json!(
             error_summary
-                .unwrap_or_else(|| "Python cell cancelled; kernel was interrupted.".to_owned())
+                .unwrap_or_else(|| format!("{lang_label} cell cancelled; kernel was interrupted."))
         );
     } else if !ok {
         result["error"] =
-            json!(error_summary.unwrap_or_else(|| "Python execution failed.".to_owned()));
+            json!(error_summary.unwrap_or_else(|| format!("{lang_label} execution failed.")));
     }
     if !ok
         && let Some(policy) = req.sandbox.as_deref()

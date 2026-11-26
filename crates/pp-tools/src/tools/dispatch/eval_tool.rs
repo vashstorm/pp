@@ -15,7 +15,30 @@ impl Tools {
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let args: EvalArgs =
             serde_json::from_str(call.arguments).context("invalid eval arguments")?;
-        let EvalLanguage::Py = args.language;
+        let (language, interpreter, call_tag) = match args.language {
+            EvalLanguage::Py => {
+                ensure!(
+                    self.eval_py_available,
+                    "Python eval is unavailable (Python 3.9+ interpreter not found; configure eval.interpreter if needed)."
+                );
+                (
+                    pp_eval::Language::Python,
+                    self.eval_interpreter.as_deref(),
+                    "py",
+                )
+            }
+            EvalLanguage::Js => {
+                ensure!(
+                    self.eval_js_available.is_some(),
+                    "JavaScript eval is unavailable (Bun or Node.js >= 18 runtime not found; configure eval.js_runtime if needed)."
+                );
+                (
+                    pp_eval::Language::JavaScript,
+                    self.eval_js_runtime.as_deref(),
+                    "js",
+                )
+            }
+        };
         let _ = args.title.as_deref();
         ensure!(!args.code.trim().is_empty(), "code must not be blank");
         let timeout_seconds = args
@@ -49,9 +72,10 @@ impl Tools {
             let mut forward_emit = |event: AgentEvent| (emit.borrow_mut())(event);
             self.eval.execute(
                 pp_eval::CellRequest {
+                    language,
                     cwd: &self.cwd,
                     cache_dir: &cache_dir,
-                    interpreter: self.eval_interpreter.as_deref(),
+                    interpreter,
                     code: &args.code,
                     call_id: outer_call_id,
                     timeout_seconds,
@@ -64,7 +88,7 @@ impl Tools {
                 &mut |tool_name, tool_args| {
                     let next = seq.get().saturating_add(1);
                     seq.set(next);
-                    let bridge_call_id = format!("{outer_call_id}:py:{next}");
+                    let bridge_call_id = format!("{outer_call_id}:{call_tag}:{next}");
                     let mut bridge_emit = |event: AgentEvent| (emit.borrow_mut())(event);
                     self.run_eval_bridge_call(
                         tool_name,
@@ -115,7 +139,7 @@ impl Tools {
                 Err(error) => tracing::warn!(
                     event = "eval_image_decode_failed",
                     error = %error,
-                    "dropping invalid image emitted by Python eval"
+                    "dropping invalid image emitted by eval"
                 ),
             }
         }
