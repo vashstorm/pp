@@ -53,7 +53,7 @@ cargo build --release --locked
 mkdir -p ~/.pp/agent
 ```
 
-在 macOS 和 Linux 上，也可以在仓库根目录运行 `make install` 或 `make install-dev`，编译发布版或开发版并直接安装到 `~/.local/bin/pp`，无需 `sudo`。
+在 macOS 和 Linux 上，也可以在仓库根目录运行 `make install` 或 `make install-dev`，编译发布版或开发版并直接安装到 `~/.local/bin/pp`，无需 `sudo`。`make install-dev` 需要 `jq`，会复用相同 Cargo 配置下 `cargo b` 生成且仍然有效的产物。
 
 `rg` 和 `glob` 在进程内搜索，不依赖外部搜索程序。终端界面图标需要 Nerd Font 字体；macOS 使用 Option 快捷键时，终端需启用 Alt/Meta。
 

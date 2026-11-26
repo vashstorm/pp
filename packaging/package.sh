@@ -162,11 +162,22 @@ rust_host=$("$compiler" --print host-tuple)
 [ "$rust_host" = "$expected_host" ] || fail "Native Rust toolchain required for $expected_host (found $rust_host)."
 
 target_dir="$repo/target"
-# 显式使用已校验的本机目标，避免 Cargo 配置选中其他平台。
-set -- --locked -p pp --bin pp --target "$rust_host" --target-dir "$target_dir"
-if [ "$profile" = release ]; then set -- "$@" --release; fi
-RUSTC="$compiler" PCRE2_SYS_STATIC=1 cargo build "$@"
-binary="$target_dir/$rust_host/$cargo_dir/pp"
+if [ "$action:$profile" = install:dev ]; then
+    require jq
+    # 沿用 cargo build 的构建配置，并从 Cargo 的产物消息获取实际路径。
+    messages=$(cargo build --locked -p pp --bin pp --message-format=json-render-diagnostics)
+    binary=$(printf '%s\n' "$messages" | jq -ers '
+        [.[] | select(.reason == "compiler-artifact" and .target.name == "pp"
+                       and .target.kind == ["bin"]) | .executable // empty]
+        | if length == 1 then .[0] else empty end
+    ') || fail 'Expected exactly one pp executable from Cargo.'
+else
+    # 发行构建显式使用已校验的本机目标，并静态链接 PCRE2。
+    set -- --locked -p pp --bin pp --target "$rust_host" --target-dir "$target_dir"
+    if [ "$profile" = release ]; then set -- "$@" --release; fi
+    RUSTC="$compiler" PCRE2_SYS_STATIC=1 cargo build "$@"
+    binary="$target_dir/$rust_host/$cargo_dir/pp"
+fi
 
 if [ "$action" = install ]; then
     "$binary" init-config

@@ -34,7 +34,7 @@ make install            # Release build, also available as make install-release
 make install-dev        # Development build
 ```
 
-Source installation needs GNU Make, a stable Rust toolchain, `bash`, and a C toolchain. On macOS, install the Xcode Command Line Tools. On Linux, install `bubblewrap` to use the command sandbox when the system allows unprivileged user namespaces. To build distribution packages with `make release` or `make dev`, install `rpm-build` on Fedora or `dpkg-dev` on Ubuntu.
+Source installation needs GNU Make, a stable Rust toolchain, `bash`, and a C toolchain. `make install-dev` also needs `jq` and reuses an up-to-date build from `cargo b` with the same Cargo configuration. On macOS, install the Xcode Command Line Tools. On Linux, install `bubblewrap` to use the command sandbox when the system allows unprivileged user namespaces. To build distribution packages with `make release` or `make dev`, install `rpm-build` on Fedora or `dpkg-dev` on Ubuntu.
 
 Run `pp --version` to verify the installation. Both builds use the `pp` command and share `~/.pp/agent/`. If `command -v pp` points to an older copy, adjust your `PATH` so the installed copy takes precedence. At first launch, `pp` creates any missing `settings.yml` and `models.yml` in that directory. Run `pp` in a terminal and use `/login` to configure a model.
 
