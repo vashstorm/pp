@@ -9,7 +9,7 @@ const TABLES: [&str; 5] = [
     "tool_calls",
     "hook_runs",
 ];
-const INDEXES: [&str; 7] = [
+const INDEXES: [&str; 8] = [
     "requests_time",
     "requests_failed_time",
     "requests_session",
@@ -17,6 +17,7 @@ const INDEXES: [&str; 7] = [
     "request_tools_request",
     "hook_runs_time",
     "hook_runs_event",
+    "hook_runs_session",
 ];
 const COLUMNS: [(&str, &[&str]); 2] = [
     (
@@ -109,6 +110,10 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
         (
             "hook_runs_event",
             "CREATE INDEX IF NOT EXISTS hook_runs_event ON hook_runs(event,timestamp DESC)",
+        ),
+        (
+            "hook_runs_session",
+            "CREATE INDEX IF NOT EXISTS hook_runs_session ON hook_runs(session_file)",
         ),
     ] {
         changed |= !index_exists(&tx, name)?;
@@ -359,6 +364,7 @@ mod tests {
             .execute_batch(
                 "DROP INDEX requests_session;
                  DROP INDEX hook_runs_time;
+                 DROP INDEX hook_runs_session;
                  CREATE INDEX tool_calls_error_time ON tool_calls(timestamp DESC,id DESC) WHERE status='error';
                  ALTER TABLE requests DROP COLUMN cost_json; ALTER TABLE requests DROP COLUMN rate_json;
                  ALTER TABLE tool_calls DROP COLUMN result_chars;",
@@ -404,6 +410,7 @@ mod tests {
         assert!(indexes("tool_calls").contains(&"tool_calls_time".to_owned()));
         assert!(indexes("hook_runs").contains(&"hook_runs_time".to_owned()));
         assert!(indexes("hook_runs").contains(&"hook_runs_event".to_owned()));
+        assert!(indexes("hook_runs").contains(&"hook_runs_session".to_owned()));
         let columns = table_columns(&store.conn, "requests").unwrap();
         assert!(columns.iter().any(|name| name == "cost_json"));
         assert!(columns.iter().any(|name| name == "rate_json"));

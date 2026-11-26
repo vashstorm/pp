@@ -21,16 +21,7 @@ impl Store {
         &self,
         session: &Path,
     ) -> Result<pp_config::task_status::HistoricalCost> {
-        let scope = SessionScope::new(
-            session.to_string_lossy().into_owned(),
-            format!(
-                "{}/",
-                session
-                    .with_extension("subagents")
-                    .join("sessions")
-                    .display()
-            ),
-        )?;
+        let scope = SessionScope::for_root(session)?;
         let mut statement = self.conn.prepare(&session_requests_sql("cost_json"))?;
         let mut rows = statement.query(params![scope.root, scope.prefix, scope.upper])?;
         let mut result = pp_config::task_status::HistoricalCost::default();

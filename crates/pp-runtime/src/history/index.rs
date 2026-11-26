@@ -1,13 +1,23 @@
 use super::schema::Store;
-#[cfg(test)]
 use super::schema::unavailable;
 use anyhow::Result;
 use pp_core::cancellation::CancellationToken;
-#[cfg(test)]
 use rusqlite::TransactionBehavior;
 use std::path::Path;
 
 impl Store {
+    pub(crate) fn remove_session(&mut self, id: &str) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(unavailable)?;
+        tx.execute("DELETE FROM sessions WHERE session_id=?1", [id])
+            .map_err(unavailable)?;
+        tx.execute("DELETE FROM session_pins WHERE session_id=?1", [id])
+            .map_err(unavailable)?;
+        tx.commit().map_err(unavailable)
+    }
+
     /// 同步会话目录投影：委托 persistence 索引模块在同一连接上执行逐文件事务，
     /// 返回逐文件脱敏诊断。取消时由索引模块回滚当前文件事务并返回 Cancelled。
     pub fn sync_sessions(

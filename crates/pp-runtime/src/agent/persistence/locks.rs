@@ -2,6 +2,7 @@ use super::validate_id;
 use anyhow::{Context, Result, ensure};
 use rustix::fs::{FlockOperation, OFlags, flock};
 use std::{
+    collections::HashSet,
     fs::{self, DirBuilder, File, OpenOptions},
     io,
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
@@ -26,6 +27,16 @@ impl SessionLock {
     }
 
     pub(super) fn try_acquire(dir: &Path, id: &str) -> Result<Option<Self>> {
+        let lock = Self::try_open(dir, id)?;
+        if let Some(lock) = &lock {
+            lock._file
+                .set_modified(SystemTime::now())
+                .context("refreshing session lock timestamp")?;
+        }
+        Ok(lock)
+    }
+
+    pub(super) fn try_open(dir: &Path, id: &str) -> Result<Option<Self>> {
         validate_id(id)?;
         DirBuilder::new()
             .recursive(true)
@@ -36,25 +47,34 @@ impl SessionLock {
             fs::symlink_metadata(dir)?.is_dir(),
             "session lock directory must be a directory, not a symlink"
         );
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)
-            .open(dir.join(format!("{id}.lock")))
-            .context("opening session lock file")?;
-        ensure!(
-            file.metadata()?.is_file(),
-            "session lock is not a regular file"
-        );
-        if !try_lock(&file)? {
-            return Ok(None);
+        let path = dir.join(format!("{id}.lock"));
+        loop {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags((OFlags::NOFOLLOW | OFlags::NONBLOCK).bits() as i32)
+                .open(&path)
+                .context("opening session lock file")?;
+            let metadata = file.metadata()?;
+            ensure!(metadata.is_file(), "session lock is not a regular file");
+            if !try_lock(&file)? {
+                return Ok(None);
+            }
+            // GC 可能在 open 与 flock 之间删除旧 inode，必须重开才能与路径上的锁互斥。
+            match fs::symlink_metadata(&path) {
+                Ok(current)
+                    if current.dev() == metadata.dev() && current.ino() == metadata.ino() =>
+                {
+                    return Ok(Some(Self { _file: file }));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("checking session lock file"),
+            }
         }
-        file.set_modified(SystemTime::now())
-            .context("refreshing session lock timestamp")?;
-        Ok(Some(Self { _file: file }))
     }
 }
 
@@ -66,12 +86,12 @@ fn try_lock(file: &File) -> Result<bool> {
     }
 }
 
-pub fn gc(cutoff: SystemTime) -> Result<(u64, u64)> {
-    gc_in(&directory()?, cutoff)
-}
-
 /// 只统计合法 session ID 对应的普通锁文件，不创建缺失的存储。
-fn gc_in(dir: &Path, cutoff: SystemTime) -> Result<(u64, u64)> {
+pub(super) fn gc(
+    dir: &Path,
+    cutoff: SystemTime,
+    deleted_sessions: &HashSet<String>,
+) -> Result<(u64, u64)> {
     let metadata = match fs::symlink_metadata(dir) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok((0, 0)),
@@ -102,7 +122,7 @@ fn gc_in(dir: &Path, cutoff: SystemTime) -> Result<(u64, u64)> {
             continue;
         }
         total += 1;
-        if metadata.modified()? >= cutoff {
+        if !deleted_sessions.contains(id) && metadata.modified()? >= cutoff {
             continue;
         }
         let file = match OpenOptions::new()
@@ -118,7 +138,8 @@ fn gc_in(dir: &Path, cutoff: SystemTime) -> Result<(u64, u64)> {
             continue;
         }
         let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.modified()? >= cutoff {
+        if !metadata.is_file() || (!deleted_sessions.contains(id) && metadata.modified()? >= cutoff)
+        {
             continue;
         }
         let current = match fs::symlink_metadata(&path) {
@@ -127,7 +148,6 @@ fn gc_in(dir: &Path, cutoff: SystemTime) -> Result<(u64, u64)> {
             Err(error) => return Err(error).context("checking expired session lock"),
         };
         if current.is_file() && current.dev() == metadata.dev() && current.ino() == metadata.ino() {
-            // 按约定不引入协调锁；持锁删除仍存在并发打开旧 inode 的极小窗口。
             match fs::remove_file(path) {
                 Ok(()) => removed += 1,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -152,6 +172,10 @@ mod tests {
 
     fn modified(path: &Path, time: SystemTime) {
         File::open(path).unwrap().set_modified(time).unwrap();
+    }
+
+    fn gc_in(dir: &Path, cutoff: SystemTime) -> Result<(u64, u64)> {
+        gc(dir, cutoff, &HashSet::new())
     }
 
     #[test]

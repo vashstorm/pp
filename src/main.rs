@@ -195,7 +195,7 @@ impl From<SandboxModeCli> for pp_config::config::SandboxMode {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Remove logs, SQLite request data, and unused session lock files older than the given days (default 90, max 36500)
+    /// Remove expired sessions and related data, old logs, statistics, and unused locks (default 90 days, max 36500)
     Gc {
         // 100 年上限：远低于 chrono DateTime 可表示的年代下限，避免 cutoff 运算溢出。
         #[arg(
@@ -390,29 +390,29 @@ fn session_titles() -> impl FnMut() -> Vec<(String, String)> {
 
 fn run_gc(days: u32) -> Result<()> {
     let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
-    let (requests_total, requests_removed) =
-        stats::gc(cutoff.timestamp_millis()).context("cleaning statistics database")?;
-    // Logs encode local calendar dates, not precise creation timestamps.
+    let mut statistics =
+        stats::GarbageCollection::open().context("opening statistics database for cleanup")?;
+    let sessions = agent::persistence::gc(cutoff.into(), &mut statistics)
+        .context("cleaning saved sessions")?;
+    let requests = statistics
+        .finish(cutoff.timestamp_millis())
+        .context("cleaning statistics database")?;
     let (logs_total, logs_removed) = logging::gc(cutoff.with_timezone(&chrono::Local).date_naive())
         .context("cleaning log files")?;
-    let (locks_total, locks_removed) =
-        agent::persistence::locks::gc(cutoff.into()).context("cleaning session lock files")?;
+    let prompts = sessions.prompts_removed;
     let mut stdout = io::stdout().lock();
-    writeln!(
-        stdout,
-        "Logs: total={logs_total}, removed={logs_removed}, remaining={}",
-        logs_total - logs_removed
-    )?;
-    writeln!(
-        stdout,
-        "SQLite requests: total={requests_total}, removed={requests_removed}, remaining={}",
-        requests_total - requests_removed
-    )?;
-    writeln!(
-        stdout,
-        "Session locks: total={locks_total}, removed={locks_removed}, remaining={}",
-        locks_total - locks_removed
-    )?;
+    for (label, (total, removed)) in [
+        ("Logs", (logs_total + prompts, logs_removed + prompts)),
+        ("SQLite requests", requests),
+        ("Session locks", sessions.locks),
+        ("Sessions", sessions.sessions),
+    ] {
+        writeln!(
+            stdout,
+            "{label}: total={total}, removed={removed}, remaining={}",
+            total - removed
+        )?;
+    }
     Ok(())
 }
 

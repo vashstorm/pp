@@ -1,15 +1,18 @@
-use super::{Store, call_tools, database_path, ensure_column, saved_tool_calls, table_columns};
+use super::{
+    SessionScope, Store, call_tools, database_path, ensure_column, saved_tool_calls, table_columns,
+};
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Params, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 /// 一次性退役旧 `request_payloads`：复制首请求快照、回填工具调用、删表并回收空间。
 ///
 /// 幂等：旧表不存在时只提交一个空事务后返回，不建表、不 `VACUUM`。迁移只写
 /// `request_contexts`／`request_tools`，不改动 `requests` 的任一字段。仅在
-/// `server::run` 启动与 [`gc`] 中调用，运行期写路径与 `Store::open` 不执行。
+/// `server::run` 启动与 `pp gc` 中调用，运行期写路径与 `Store::open` 不执行。
 pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
     // 迁移与其它连接的写事务竞争，临时放宽锁等待；无论成败都恢复 `Store::open`
     // 的 250ms，避免把一次性迁移的等待时间留在常驻连接上。
@@ -111,44 +114,101 @@ pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-/// Returns (total requests before cleanup, removed), counted in the same transaction.
-/// Delete request snapshots before their parents, then reclaim the freed pages.
-pub fn gc(cutoff: i64) -> Result<(u64, u64)> {
-    let path = database_path()?;
-    gc_at(&path, cutoff)
+pub struct GarbageCollection {
+    store: Option<Store>,
+    requests_removed: u64,
+    changed: bool,
 }
 
-fn gc_at(path: &std::path::Path, cutoff: i64) -> Result<(u64, u64)> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => ensure!(metadata.is_file(), "statistics database must be a file"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
-        Err(error) => return Err(error.into()),
+impl GarbageCollection {
+    pub fn open() -> Result<Self> {
+        Self::open_at(&database_path()?)
     }
-    let mut store = Store::open(path)?;
-    // 旧库迁移失败时保留旧表并让本次 `gc` 失败（非零退出），下次重试。
-    maintain(&mut store.conn)?;
-    let tx = store
-        .conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let total = tx.query_row("SELECT COUNT(*) FROM requests", [], |row| {
-        row.get::<_, i64>(0)
-    })? as u64;
-    tx.execute(
-        "DELETE FROM request_tools WHERE request_id IN (SELECT id FROM requests WHERE timestamp < ?1)",
-        [cutoff],
-    )?;
-    tx.execute(
-        "DELETE FROM request_contexts WHERE request_id IN (SELECT id FROM requests WHERE timestamp < ?1)",
-        [cutoff],
-    )?;
-    let removed = tx.execute("DELETE FROM requests WHERE timestamp < ?1", [cutoff])? as u64;
-    let tools_removed = tx.execute("DELETE FROM tool_calls WHERE timestamp < ?1", [cutoff])? as u64;
-    let hooks_removed = tx.execute("DELETE FROM hook_runs WHERE timestamp < ?1", [cutoff])? as u64;
-    tx.commit()?;
-    if removed > 0 || hooks_removed > 0 || tools_removed > 0 {
-        store.conn.execute_batch("VACUUM;")?;
+
+    fn open_at(path: &Path) -> Result<Self> {
+        let store = match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                ensure!(metadata.is_file(), "statistics database must be a file");
+                let mut store = Store::open(path)?;
+                maintain(&mut store.conn)?;
+                Some(store)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Self {
+            store,
+            requests_removed: 0,
+            changed: false,
+        })
     }
-    Ok((total, removed))
+
+    /// 在会话锁保护下清理根会话及其子 Agent 的统计。
+    pub fn remove_session(&mut self, root: &Path) -> Result<()> {
+        let Some(store) = &mut self.store else {
+            return Ok(());
+        };
+        let scope = SessionScope::for_root(root)?;
+        let tx = store
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (removed, changed) = delete_records(
+            &tx,
+            "session_file = ?1 OR (session_file >= ?2 AND session_file < ?3)",
+            params![scope.root, scope.prefix, scope.upper],
+        )?;
+        tx.commit()?;
+        self.requests_removed += removed;
+        self.changed |= changed;
+        Ok(())
+    }
+
+    /// 清理按时间过期的统计，并在本次 GC 结束时统一回收空间。
+    pub fn finish(self, cutoff: i64) -> Result<(u64, u64)> {
+        let Some(mut store) = self.store else {
+            return Ok((0, 0));
+        };
+        let tx = store
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let total = tx.query_row("SELECT COUNT(*) FROM requests", [], |row| {
+            row.get::<_, i64>(0)
+        })? as u64;
+        let (removed, changed) = delete_records(&tx, "timestamp < ?1", [cutoff])?;
+        tx.commit()?;
+        if self.changed || changed {
+            store.conn.execute_batch("VACUUM;")?;
+        }
+        Ok((
+            total + self.requests_removed,
+            removed + self.requests_removed,
+        ))
+    }
+}
+
+fn delete_records(
+    tx: &Transaction<'_>,
+    filter: &str,
+    parameters: impl Params + Copy,
+) -> Result<(u64, bool)> {
+    for table in ["request_tools", "request_contexts"] {
+        tx.execute(
+            &format!(
+                "DELETE FROM {table} WHERE request_id IN (SELECT id FROM requests WHERE {filter})"
+            ),
+            parameters,
+        )?;
+    }
+    let removed = tx.execute(&format!("DELETE FROM requests WHERE {filter}"), parameters)?;
+    let tools_removed = tx.execute(
+        &format!("DELETE FROM tool_calls WHERE {filter}"),
+        parameters,
+    )?;
+    let hooks_removed = tx.execute(&format!("DELETE FROM hook_runs WHERE {filter}"), parameters)?;
+    Ok((
+        removed as u64,
+        removed > 0 || tools_removed > 0 || hooks_removed > 0,
+    ))
 }
 
 #[cfg(test)]
@@ -197,7 +257,10 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let (total, removed) = gc_at(&db_path, 1000).unwrap();
+        let (total, removed) = GarbageCollection::open_at(&db_path)
+            .unwrap()
+            .finish(1000)
+            .unwrap();
         assert_eq!((total, removed), (2, 1));
         let store = open_store(&db_path).unwrap();
         let remaining_tools: i64 = store

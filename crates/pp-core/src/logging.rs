@@ -117,6 +117,39 @@ pub fn gc(cutoff: NaiveDate) -> anyhow::Result<(u64, u64)> {
     Ok((total, removed))
 }
 
+/// 清理已删除会话的首轮提示词日志，沿用日志写入的跨进程锁。
+pub fn remove_session_prompt(id: &str) -> anyhow::Result<bool> {
+    let name = format!("prompt-debug.{id}");
+    ensure!(
+        parse_prompt_name(&name).is_some(),
+        "invalid session prompt log name"
+    );
+    let dir = logs_dir()?;
+    let path = dir.join(name);
+    if !regular_file_exists(&path)? {
+        return Ok(false);
+    }
+    ensure!(
+        fs::symlink_metadata(&dir)?.is_dir(),
+        "invalid log directory"
+    );
+    let lock = Arc::new(open_regular(&dir.join(".lock"), false, true)?);
+    let _lock = FileLock::acquire(&lock)?;
+    if !regular_file_exists(&path)? {
+        return Ok(false);
+    }
+    fs::remove_file(path)?;
+    Ok(true)
+}
+
+fn regular_file_exists(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// Opt-in human-readable debug text log. It shares `~/.pp/logs` and its `.lock` with the
 /// ordinary pp log but owns an independent `debug.DATE.NNNN` namespace with
 /// the same size limit. Initial prompts instead use one immutable

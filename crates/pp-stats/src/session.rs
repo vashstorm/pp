@@ -49,6 +49,19 @@ pub(crate) struct SessionScope {
 }
 
 impl SessionScope {
+    pub(crate) fn for_root(session: &Path) -> Result<Self> {
+        Self::new(
+            session.to_string_lossy().into_owned(),
+            format!(
+                "{}/",
+                session
+                    .with_extension("subagents")
+                    .join("sessions")
+                    .display()
+            ),
+        )
+    }
+
     pub(crate) fn new(root: String, prefix: String) -> Result<Self> {
         let last = prefix
             .chars()

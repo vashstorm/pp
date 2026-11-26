@@ -1,4 +1,5 @@
 mod format;
+mod gc;
 pub(crate) mod index;
 mod listing;
 mod load;
@@ -38,6 +39,7 @@ use std::{
 };
 
 pub(in crate::agent::persistence) use anyhow::ensure;
+pub use gc::{GarbageCollection, gc};
 pub use listing::{SessionListing, SessionSummary, delete, validate_id};
 pub(in crate::agent::persistence) use listing::{
     compact_summary, create, latest, now_ms, parse_timestamp, timestamp,

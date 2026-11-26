@@ -18,7 +18,7 @@ mod tool;
 pub(crate) use cost::{CostSnapshot, RateSnapshot, Rates};
 pub use database::Database;
 pub use hook::{HookRun, HookStatus, hook};
-pub use maintenance::gc;
+pub use maintenance::GarbageCollection;
 pub(crate) use maintenance::maintain;
 pub(crate) use range::Range;
 pub(crate) use row::{COLUMN_COUNT, COLUMNS, RequestRow, latest_sql, row};

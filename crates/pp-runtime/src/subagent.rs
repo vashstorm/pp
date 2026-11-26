@@ -3,6 +3,7 @@ mod binding;
 pub(crate) mod catalog;
 mod dispatch;
 mod followup;
+mod gc;
 mod lifecycle;
 #[cfg(test)]
 mod lifecycle_cases;
@@ -15,6 +16,7 @@ mod uri;
 mod worker;
 mod workspace;
 
+pub(crate) use gc::remove_session_data;
 pub use observe::HubAgent;
 pub use observe::ObservedRecord;
 pub use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry, OverviewPage};
