@@ -5,6 +5,7 @@ use super::*;
 use crate::tui::{
     statusline::abbreviate_tokens,
     themes::{self, Palette, palette},
+    transcript_style::tool_label,
 };
 use pp_runtime::agent::context_diagnosis::{CategoryKey, CategorySummary};
 use ratatui::{
@@ -346,7 +347,11 @@ impl Panel {
                     let child_prefix = if selected { ">   " } else { "    " };
                     let name_budget = width.saturating_sub(4 + metrics.chars().count()).max(4);
 
-                    let clean_title = display_text(&item.title);
+                    let clean_title = if cat.key == CategoryKey::BuiltInTools {
+                        tool_label(&item.title)
+                    } else {
+                        display_text(&item.title)
+                    };
                     let label = if !item.subtitle.is_empty()
                         && name_budget > clean_title.chars().count() + 8
                     {

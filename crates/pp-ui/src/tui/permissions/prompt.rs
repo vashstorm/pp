@@ -15,7 +15,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Padding},
 };
 
-use crate::tui::{dialog::Action, themes, transcript::wrap_block};
+use crate::tui::{dialog::Action, themes, transcript::wrap_block, transcript_style::tool_label};
 
 const TITLE: &str = "Permission required";
 const MIN_BORDER_WIDTH: u16 = 28;
@@ -131,7 +131,7 @@ impl Prompt {
                 .bg(palette.plan_mode)
                 .bold();
             lines.extend(wrap_block(
-                Line::from(Span::styled(format!(" {} ", display_text(tool)), chip)),
+                Line::from(Span::styled(format!(" {} ", tool_label(tool)), chip)),
                 width,
                 "",
             ));

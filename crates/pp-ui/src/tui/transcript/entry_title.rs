@@ -63,24 +63,22 @@ impl TranscriptEntry {
         ])
     }
 
-    /// MCP 卡片标题：图标与 `mcp` 前缀、服务名、工具名各用独立配色。
+    /// MCP 卡片标题：图标与 `MCP` 前缀、服务名、工具名各用独立配色。
     /// 标题被外部改写（例如按结果修正）时返回 `None`，退回通用的两段着色。
     fn mcp_title(&self, text: &str) -> Option<Line<'static>> {
         let name = self.tool.as_deref()?;
-        let (server, tool) = palette::mcp_parts(name)?;
+        let (server, tool) = palette::mcp_display_parts(name)?;
         let icon = palette::tool_icon(name);
         let (label, detail) = text
             .find(" · ")
             .map_or((text, ""), |end| text.split_at(end));
         let head = label.strip_prefix(icon)?.strip_prefix(' ')?;
-        let server = pp_core::text::display_text(server);
-        let tool = pp_core::text::display_text(tool);
-        if head != format!("mcp {server} {tool}") {
+        if head != format!("MCP {server} {tool}") {
             return None;
         }
         let title = Style::default().add_modifier(Modifier::BOLD);
         Some(Line::from(vec![
-            Span::styled(format!("{icon} mcp"), title.fg(palette::mcp_title())),
+            Span::styled(format!("{icon} MCP"), title.fg(palette::mcp_title())),
             Span::styled(format!(" {server}"), title.fg(palette::mcp_server())),
             Span::styled(format!(" {tool}"), title.fg(palette::mcp_tool())),
             Span::styled(detail.to_owned(), Style::default().fg(palette::activity())),

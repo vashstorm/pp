@@ -428,7 +428,7 @@ pub(super) const ITEMS: &[SettingItem] = &[
         id: SettingId::RgContextBefore,
         category: Category::EditingTools,
         key: "rg.contextBefore",
-        label: "rg context before",
+        label: "Grep context before",
         description: "Default lines shown before rg matches (>= 0); next launch",
         kind: ValueKind::Int {
             step: 1,
@@ -440,7 +440,7 @@ pub(super) const ITEMS: &[SettingItem] = &[
         id: SettingId::RgContextAfter,
         category: Category::EditingTools,
         key: "rg.contextAfter",
-        label: "rg context after",
+        label: "Grep context after",
         description: "Default lines shown after rg matches (>= 0); next launch",
         kind: ValueKind::Int {
             step: 1,

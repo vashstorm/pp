@@ -156,7 +156,7 @@ fn tool_icons_use_nerd_font_private_use_glyphs_across_card_styles() {
                         if name == "read" {
                             "R".into()
                         } else if name == "rg" {
-                            "r".into()
+                            "G".into()
                         } else if name == "edit" {
                             "E".into()
                         } else {

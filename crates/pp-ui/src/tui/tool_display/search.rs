@@ -17,7 +17,11 @@ pub(in crate::tui) fn rg_header(view: &View<'_>, width: u16) -> Vec<Line<'static
         });
     let mut spans = vec![
         Span::styled(
-            format!("{} rg: ", palette::tool_icon("rg")),
+            format!(
+                "{} {}: ",
+                palette::tool_icon("rg"),
+                palette::tool_label("rg")
+            ),
             text.fg(palette::tool_accent("rg")),
         ),
         Span::styled(pattern, text),
@@ -115,7 +119,11 @@ pub(in crate::tui) fn web_search_header(view: &View<'_>, width: u16) -> Vec<Line
         .or_else(|| view.arguments["provider"].as_str());
     let mut spans = vec![
         Span::styled(
-            format!("{} Web Search: ", palette::tool_icon("web_search")),
+            format!(
+                "{} {}: ",
+                palette::tool_icon("web_search"),
+                palette::tool_label("web_search")
+            ),
             style.fg(palette::tool_accent("web_search")),
         ),
         Span::styled(pp_core::text::display_text(query).into_owned(), style),
@@ -207,7 +215,11 @@ pub(in crate::tui) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'stat
     wrap_block(
         Line::from(vec![
             Span::styled(
-                format!("{} Glob: ", palette::tool_icon("glob")),
+                format!(
+                    "{} {}: ",
+                    palette::tool_icon("glob"),
+                    palette::tool_label("glob")
+                ),
                 style.fg(palette::tool_accent("glob")),
             ),
             Span::styled(

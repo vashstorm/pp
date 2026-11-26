@@ -215,7 +215,7 @@ pp /stats --host 127.0.0.1 --port 0 --no-open
 
 `-F: true` 按字面量匹配元字符，跳过宽松编译链与 PCRE2 回退；此时 `\n` 是反斜杠加 n，只有真实换行才启用多行匹配。`-w: true` 要求整词匹配，可与 `-F` 组合。`-t` 接受文件类型或类型数组（`!name` 表示排除，`all` 合法，未知名报错），`-g`（无短横线别名 `glob`）接受 override glob 或数组（`!` 前缀表示排除，优先于 ignore 文件，不含 `/` 的模式匹配任意层级文件名）；两者只过滤目录遍历，`path` 中显式给出的文件始终被搜索。`max_count` 按文件限制匹配数（对齐 `rg -m`），`0` 不执行搜索并返回 `No matches found` 与 `details.fileCount: 0`。
 
-工具名统一为 `rg`：`settings.yml` 使用顶层 `rg:` 键（旧 `grep:` 键会在严格解析下失败），`tools.permission` 的键同样使用 `rg`。
+TUI 中显示为 **Grep**，工具标识为 `rg`。`settings.yml` 使用顶层 `rg:` 键（旧 `grep:` 键会在严格解析下失败），`tools.permission` 的键同样使用 `rg`。
 
 `max_output_tokens` 可选，接受正整数；省略或设为 `null` 保持默认行为。预算覆盖 `content` 正文及提示，沿用每三个 JSON 编码字节估算一个 token 的规则，不包含结构化元数据，因此不是供应商精确 token 数或整个结果的大小上限。三种输出模式仍保留 50 KiB 硬上限。预算不足时按完整渲染行停止，设置 `details.tokenLimitReached` 与 `details.truncated`；极小预算可能返回空正文，应检查元数据。计数总量仍保存在元数据中，Hashline 仅授予实际返回的完整源代码行编辑资格。例如：`rg({"pattern":"Barrier","path":"src","max_output_tokens":2000})`。
 

@@ -748,7 +748,7 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
     app.input.insert_str("draft");
     app.receive_event_for_test(receiver.recv_timeout(Duration::from_secs(2)).unwrap());
     let screen = draw(&mut app, 100, 30);
-    assert!(screen.contains("mcp__remote__echo"), "{screen}");
+    assert!(screen.contains("MCP remote Echo"), "{screen}");
     let title = screen
         .lines()
         .find(|row| row.contains("Permission required"))
@@ -796,7 +796,7 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
 
     let mut dirty = false;
     let short = draw(&mut app, 48, 10);
-    assert!(short.contains("mcp__remote__echo"), "{short}");
+    assert!(short.contains("MCP remote Echo"), "{short}");
     assert!(!short.contains("workspace sandbox"), "{short}");
     // 说明列整卡同显同隐，窄卡不出现参差。
     assert!(!short.contains("this request only"), "{short}");

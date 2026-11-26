@@ -2,10 +2,9 @@ use super::super::*;
 use super::{anatomy, glyphs};
 
 fn format_tag(label: &str) -> String {
-    let upper = label.to_ascii_uppercase();
-    let chars: Vec<char> = upper.chars().collect();
+    let chars: Vec<char> = label.chars().collect();
     if chars.len() <= 6 {
-        format!("{upper:<7}")
+        format!("{label:<7}")
     } else {
         let mut s: String = chars[..5].iter().collect();
         s.push('…');

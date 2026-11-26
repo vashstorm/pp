@@ -161,6 +161,7 @@ mod scroll_cases;
 mod search_cases;
 mod shell_cases;
 mod streaming_cases;
+mod task_cases;
 mod theme_cases;
 mod todo_cases;
 mod tool_style_cases;

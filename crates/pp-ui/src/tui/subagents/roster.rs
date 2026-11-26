@@ -726,7 +726,7 @@ mod tests {
         );
         assert!(running.contains("10K/20K 50%"));
         assert!(
-            running.replace(' ', "").contains("bash检查依赖边界"),
+            running.replace(' ', "").contains("Bash检查依赖边界"),
             "{running}"
         );
         assert!(!running.contains("cargo tree"), "{running}");
@@ -791,14 +791,14 @@ mod tests {
             "4s span",
             "Registered",
             "agent://a1",
-            "\u{f00c} bash",
-            "\u{f00c} read",
+            "\u{f00c} Bash",
+            "\u{f00c} Read",
             "◆ Response final answer",
         ] {
             assert!(parked.contains(expected), "missing {expected}\n{parked}");
         }
-        assert!(parked.replace(' ', "").contains("\u{f00c}bash检查依赖边界"));
-        assert!(!parked.replace(' ', "").contains("\u{f00c}read检查依赖边界"));
+        assert!(parked.replace(' ', "").contains("\u{f00c}Bash检查依赖边界"));
+        assert!(!parked.replace(' ', "").contains("\u{f00c}Read检查依赖边界"));
         assert!(!parked.contains("Cargo.toml"));
         assert!(!parked.contains("10K/20K 50%"));
         assert!(!parked.contains("intermediate response"));

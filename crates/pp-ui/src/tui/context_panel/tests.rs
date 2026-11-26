@@ -335,8 +335,8 @@ fn categories_expand_and_collapse_in_place_and_ascii_mode_uses_ascii_glyphs() {
     }
     assert!(matches!(panel.handle(key(KeyCode::Right)), Action::None));
     let tools_screen = draw_panel(&mut panel, 110, 26);
-    assert!(tools_screen.contains("read · Read files  1.2K  0.2%"));
-    assert!(tools_screen.contains("bash · Run shell  3.5K  0.7%"));
+    assert!(tools_screen.contains("Read · Read files  1.2K  0.2%"));
+    assert!(tools_screen.contains("Bash · Run shell  3.5K  0.7%"));
 
     // ASCII 模式下不出现 Unicode 网格字形。
     crate::tui::themes::set_active(Theme::Default, IconMode::Ascii);

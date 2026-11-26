@@ -55,7 +55,7 @@ fn mcp_title_splits_prefix_server_and_tool_with_distinct_colors() {
     let buffer = render(&mut transcript, 90, 6);
     let text = screen(&buffer);
     assert!(
-        text.contains("mcp codebase-memory-mcp search_graph"),
+        text.contains("MCP codebase-memory-mcp Search_graph"),
         "{text}"
     );
     assert!(!text.contains("mcp__"), "{text}");
@@ -75,9 +75,9 @@ fn mcp_title_splits_prefix_server_and_tool_with_distinct_colors() {
         let column = u16::try_from(line[..start].chars().count()).expect("标题行宽度有限");
         buffer[(column, row)].fg
     };
-    assert_eq!(color_at("mcp codebase"), palette::mcp_title());
+    assert_eq!(color_at("MCP codebase"), palette::mcp_title());
     assert_eq!(color_at("codebase-memory-mcp"), palette::mcp_server());
-    assert_eq!(color_at("search_graph"), palette::mcp_tool());
+    assert_eq!(color_at("Search_graph"), palette::mcp_tool());
 }
 
 #[test]
@@ -468,10 +468,10 @@ fn tool_toggle_anchors_history_and_exit_scrollback_expands_all_tools() {
     let first_height = transcript.entries[0].layout.as_ref().unwrap().height;
     transcript.follow_bottom = false;
     transcript.offset = first_height + 1;
-    assert!(screen(&render(&mut transcript, 100, 10)).contains("custom · file1"));
+    assert!(screen(&render(&mut transcript, 100, 10)).contains("Custom · file1"));
     transcript.toggle_tool_output();
     assert!(!transcript.follow_bottom);
-    assert!(screen(&render(&mut transcript, 100, 10)).contains("custom · file1"));
+    assert!(screen(&render(&mut transcript, 100, 10)).contains("Custom · file1"));
     // 收起时锚点位于隐藏内容内，也必须留在同一卡片。
     transcript.offset += 30;
     transcript.toggle_tool_output();
@@ -514,7 +514,7 @@ fn ask_card_waits_for_completion_and_preserves_native_history() {
                 "Database question?",
                 "SQLite",
                 "preview-detail",
-                "ask · running",
+                "Ask · running",
             ] {
                 assert!(!text.contains(hidden), "等待时不应显示 ask 卡片：{text}");
             }
@@ -541,7 +541,7 @@ fn ask_card_waits_for_completion_and_preserves_native_history() {
             _ => transcript.fail(),
         }
         let text = screen(&render(&mut transcript, 80, 30));
-        assert!(!text.contains("ask · running"));
+        assert!(!text.contains("Ask · running"));
         let expected = if outcome == "invalid" {
             "invalid ask response"
         } else {

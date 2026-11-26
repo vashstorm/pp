@@ -150,6 +150,14 @@ impl ActivityRow {
     pub(super) fn id(&self) -> String {
         self.key.clone()
     }
+
+    pub(super) fn display_title(&self) -> std::borrow::Cow<'_, str> {
+        if self.kind == Kind::Tool {
+            crate::tui::transcript_style::tool_label(&self.title)
+        } else {
+            self.title.as_str().into()
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

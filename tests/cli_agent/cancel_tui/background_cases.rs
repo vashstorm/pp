@@ -235,7 +235,7 @@ fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer(
             "status 复用原始卡片显示 running 与累计日志",
             |screen| {
                 let text = cancel_normalize(screen);
-                !text.contains("bash_task·")
+                !text.contains("Bashtask·")
                     && text.contains("bg-lifecycle-log")
                     && text.contains(&format!("Task{task_id}:running"))
             },
@@ -254,7 +254,7 @@ fn background_status_stop_lifecycle_displays_states_and_keeps_foreground_footer(
         cancel_assert_no_scratch(project.path());
         pty.wait_for("stop 复用卡片显示 stopped 终态", |screen| {
             let text = cancel_normalize(screen);
-            !text.contains("bash_task·") && text.contains(&format!("Task{task_id}:stopped"))
+            !text.contains("Bashtask·") && text.contains(&format!("Task{task_id}:stopped"))
         });
         // 信号停止是 stop 的预期结果：不得显示 Exit: null 冒充已结束。
         assert!(

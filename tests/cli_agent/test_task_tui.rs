@@ -22,10 +22,20 @@ fn tui_mock_task_shows_subagent_activity_and_returns_three_lane_markers() {
     let mut pty = mock_tui_empty_start(home.path(), project.path());
     pty.resize(90, 120);
     pty.input("/test-task\r");
-    pty.wait_for("three subagent sessions appear while the batch runs", |screen| {
-        let text = screen.contents();
-        text.contains("Subagents:") && text.contains("3 sessions")
-    });
+    pty.wait_for(
+        "Task card and three subagent sessions appear while the batch runs",
+        |screen| {
+            let text = screen.contents();
+            text.contains("Subagents:")
+                && text.contains("3 sessions")
+                && text
+                    .lines()
+                    .any(|line| line.contains("Task") && line.contains("Dispatched"))
+                && text
+                    .lines()
+                    .any(|line| line.contains("fast-rust-count") && line.contains("Queued"))
+        },
+    );
     pty.text("completed (review-result-33)");
     pty.text("Mock test complete");
     let rendered = pty.contents().split_whitespace().collect::<Vec<_>>().join(" ");

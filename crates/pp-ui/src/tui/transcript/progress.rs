@@ -21,11 +21,11 @@ impl Transcript {
                 }
                 AgentEvent::AssistantDelta { .. } => activity.phase("Responding"),
                 AgentEvent::ToolArgumentsDelta { tool, .. } => {
-                    activity.phase(&format!("Generating {}", pp_core::text::display_text(tool)))
+                    activity.phase(&format!("Generating {}", palette::tool_label(tool)))
                 }
                 AgentEvent::AssistantFinished { .. } => activity.phase("Processing response"),
                 AgentEvent::ToolStarted { name, .. } => {
-                    activity.phase(&format!("Running {}", name.replace(char::is_control, " ")))
+                    activity.phase(&format!("Running {}", palette::tool_label(name)))
                 }
                 AgentEvent::ToolFinished { .. } => activity.phase("Processing tool result"),
                 AgentEvent::ToolOutput { .. }
@@ -54,7 +54,7 @@ impl Transcript {
                 // hook 诊断与 auto_review 只作阶段提示，不改变对话记录结构。
                 AgentEvent::HookDiagnostic { .. } => {}
                 AgentEvent::AutoReviewStarted { tool } => {
-                    activity.phase(&format!("Reviewing {}", pp_core::text::display_text(tool)));
+                    activity.phase(&format!("Reviewing {}", palette::tool_label(tool)));
                 }
                 AgentEvent::AutoReviewFinished { .. } => {}
             }
@@ -319,6 +319,7 @@ impl Transcript {
                     .and_then(|args| args.get("args"))
                     .and_then(Value::as_array)
                     .filter(|args| args.iter().all(Value::is_string));
+                let label = palette::tool_label(&name);
                 let title = if name == "lsp" {
                     crate::tui::lsp::tool_title(arguments.as_ref().unwrap_or(&Value::Null))
                 } else if name == "eval" {
@@ -336,7 +337,7 @@ impl Transcript {
                 } else if name == "bash_task" {
                     let args = arguments.as_ref();
                     format!(
-                        "bash_task · {} · {}",
+                        "{label} · {} · {}",
                         args.and_then(|args| args["action"].as_str())
                             .unwrap_or("unknown"),
                         args.and_then(|args| args["task_id"].as_str())
@@ -360,21 +361,19 @@ impl Transcript {
                                     .as_ref()
                                     .and_then(|a| a["path"].as_str())
                                     .unwrap_or(".");
-                                format!("rg · {pattern} · {path}")
+                                format!("{label} · {pattern} · {path}")
                             } else {
-                                name.clone()
+                                label.to_string()
                             }
                         },
                         |args| {
                             format!(
-                                "{name} · {}",
+                                "{label} · {}",
                                 serde_json::to_string(args).expect("JSON values serialize")
                             )
                         },
                     )
                 } else {
-                    // MCP 名称拆成 `mcp <server> <tool>`，避免 `mcp__…__…` 整串连写。
-                    let label = palette::mcp_label(&name).unwrap_or_else(|| name.clone());
                     match detail {
                         Some(command) if name == "bash" => format!("$ {command}"),
                         Some(path) if matches!(name.as_str(), "read" | "write" | "edit") => {
@@ -382,7 +381,7 @@ impl Transcript {
                             format!("{label} · {path}")
                         }
                         Some(path) => format!("{label} · {path}"),
-                        None => label,
+                        None => label.into_owned(),
                     }
                 };
                 let title = if matches!(kind, EntryKind::Diff | EntryKind::Ask) {

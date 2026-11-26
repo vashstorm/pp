@@ -162,7 +162,7 @@ impl Panel {
             ),
             Span::styled(name, Style::default().fg(accent())),
             Span::styled(
-                format!(" {category} · {}", row.title),
+                format!(" {category} · {}", row.display_title()),
                 Style::default().fg(activity()),
             ),
             Span::styled(

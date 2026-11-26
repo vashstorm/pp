@@ -215,7 +215,7 @@ fn hub_preloads_existing_subagents_and_reuses_projection_within_root() {
     let first_open = draw(&mut app, 130, 32);
     assert!(first_open.contains("2 tools"), "{first_open}");
     assert!(first_open.contains("Recent activity"), "{first_open}");
-    assert!(first_open.contains("read"), "{first_open}");
+    assert!(first_open.contains("Read"), "{first_open}");
     assert!(!first_open.contains("Loading activity"), "{first_open}");
     assert!(!first_open.contains("— tools"), "{first_open}");
 

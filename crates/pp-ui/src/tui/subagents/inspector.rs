@@ -153,7 +153,10 @@ impl Panel {
             lines.push(Line::from(vec![
                 colored(format!("{} ", detail::format_clock(row.timestamp)), dim()),
                 colored(format!("{symbol} "), row_color(row.status)),
-                colored(format!("{} ", projection::truncate(&row.title)), muted()),
+                colored(
+                    format!("{} ", projection::truncate(&row.display_title())),
+                    muted(),
+                ),
                 colored(projection::truncate(&row.summary), activity()),
             ]));
         }

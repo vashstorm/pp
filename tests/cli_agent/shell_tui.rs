@@ -196,7 +196,7 @@ fn bash_task_polls_reuse_one_card_and_keep_bounded_tail_both_protocols() {
             pty.text(&format!("Task {task_id}:"));
             let history = pty.native_history().0;
             assert_eq!(history.lines().filter(|line| line.contains('╭') && line.contains("Bash")).count(), 1, "{history}");
-            assert!(!history.contains("bash_task ·"), "{history}");
+            assert!(!history.contains("Bash task ·"), "{history}");
         }
         let args = json!({"task_id":task_id, "action":"stop"});
         ask_reply_calls(request, protocol, json!([make_call("stop", "bash_task", args)]));

@@ -21,7 +21,7 @@ pub(super) fn paint_chrome(
             let inner_w = area.width.saturating_sub(metrics.padding()).max(1);
             let inline_cmd = anatomy::inline_bash_command(entry, inner_w);
             let (subject, mut meta) = anatomy::subject_and_meta(entry, icons, inline_cmd);
-            if entry.status == EntryStatus::Failed && !meta.contains("failed") {
+            if entry.status == EntryStatus::Failed && !meta.contains(status_label) {
                 meta = if meta.is_empty() {
                     status_label.to_owned()
                 } else {

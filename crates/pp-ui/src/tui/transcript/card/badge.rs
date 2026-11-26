@@ -29,7 +29,7 @@ pub(super) fn paint_chrome(
     match line.source() {
         Some(Source::Top) => {
             let (status_glyph, status_color, _) = anatomy::status_info(entry, icons);
-            let label = anatomy::tool_label(entry).to_ascii_uppercase();
+            let label = anatomy::tool_label(entry);
             let pill = if icons == IconMode::Ascii {
                 format!("[{label}]")
             } else {

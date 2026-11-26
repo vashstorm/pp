@@ -2,6 +2,7 @@
 
 use super::text::summarize_arguments;
 use super::*;
+use crate::tui::transcript_style::tool_label;
 
 impl Projection {
     pub(super) fn consume(&mut self, agent: &str, entry: &ObservedEntry) {
@@ -192,7 +193,7 @@ impl Projection {
                     .or_default();
                 let brief = truncate(work.draft.trim());
                 work.tool = if summary.is_empty() {
-                    name.clone()
+                    tool_label(name).into_owned()
                 } else {
                     summary.clone()
                 };

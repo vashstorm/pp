@@ -435,9 +435,9 @@ fn draw_body(frame: &mut Frame, area: Rect, p: &Palette, appearance: Appearance)
                 tool_spans.push(Span::raw("  "));
             }
             let label = if tool.starts_with("mcp__") {
-                "mcp"
+                "MCP".into()
             } else {
-                tool
+                transcript_style::tool_label(tool)
             };
             tool_spans.push(Span::styled(
                 format!("{} ", transcript_style::tool_icon_for(tool, selected_icons)),

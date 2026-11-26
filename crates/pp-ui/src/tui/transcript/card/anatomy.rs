@@ -11,6 +11,17 @@ pub(super) fn status_info(
     entry: &TranscriptEntry,
     icons: IconMode,
 ) -> (&'static str, Color, &'static str) {
+    if entry.tool.as_deref() == Some("task") {
+        let (status, color) = task_status(entry);
+        let icon = if entry.status == EntryStatus::Running {
+            entry.read_clock
+        } else if color == palette::removed() {
+            palette::fail_icon(icons)
+        } else {
+            palette::done_icon(icons)
+        };
+        return (icon, color, status);
+    }
     match entry.status {
         EntryStatus::Running => (entry.read_clock, palette::accent(), "running"),
         EntryStatus::Complete => (palette::done_icon(icons), palette::added(), "done"),
@@ -18,29 +29,30 @@ pub(super) fn status_info(
     }
 }
 
+fn task_status(entry: &TranscriptEntry) -> (&'static str, Color) {
+    tool_display::task::batch_status(
+        entry.result.as_ref(),
+        entry.status == EntryStatus::Running,
+        entry.status == EntryStatus::Failed,
+    )
+}
+
+pub(in crate::tui::transcript) fn task_header(
+    entry: &TranscriptEntry,
+) -> (String, (&'static str, Color)) {
+    (
+        tool_display::task::count_label(&entry.arguments, entry.result.as_ref()),
+        task_status(entry),
+    )
+}
+
 pub(super) fn tool_label(entry: &TranscriptEntry) -> String {
     match entry.tool.as_deref() {
-        Some("read") => "Read".into(),
-        Some("bash") => "Bash".into(),
-        Some("bash_task") => "Bash task".into(),
         Some("eval") => tool_display::EvalLang::from_entry(&entry.arguments, entry.result.as_ref())
             .label()
             .to_owned(),
-        Some("rg") => "Rg".into(),
-        Some("glob") => "Glob".into(),
-        Some("web_search") => "Web".into(),
-        Some("edit") => "Edit".into(),
-        Some("write") => "Write".into(),
-        Some("wait") => "Wait".into(),
-        Some("ask") => "Ask".into(),
-        Some("lsp") => "LSP".into(),
-        Some("todo") => "Todo".into(),
-        Some("find") => "Find".into(),
-        Some("plan_search") => "Search".into(),
-        Some("plan_find") => "Find".into(),
-        Some("plan_submit") => "Plan".into(),
         Some(name) if name.starts_with("mcp__") => "MCP".into(),
-        Some(other) => pp_core::text::display_text(other).into_owned(),
+        Some(name) => palette::tool_label(name).into_owned(),
         None if entry.kind == EntryKind::Lsp => "LSP".into(),
         None => "Tool".into(),
     }
@@ -114,7 +126,7 @@ pub(super) fn clip_spans(
 }
 
 /// 唯一头部合成器：右列贴右边缘，空间不足时左侧收缩并加省略号，确保状态列不消失。
-pub(super) fn compose_header(
+pub(in crate::tui) fn compose_header(
     left: Vec<Span<'static>>,
     right: Vec<Span<'static>>,
     width: usize,
@@ -240,6 +252,15 @@ pub(super) fn subject_and_meta(
     let tool = entry.tool.as_deref().unwrap_or_default();
     let text_style = Style::default().fg(palette::text());
     let meta_style = Style::default().fg(palette::muted());
+
+    if tool == "task" {
+        let (count, (status, _)) = task_header(entry);
+        let subject = (!count.is_empty())
+            .then(|| Span::styled(count, meta_style))
+            .into_iter()
+            .collect();
+        return (subject, status.to_owned());
+    }
 
     if entry.is_file_read() {
         if entry.read_group.len() > 1 {
@@ -445,7 +466,7 @@ pub(super) fn subject_and_meta(
         );
     }
 
-    if let Some((server, mcp_tool)) = palette::mcp_parts(tool) {
+    if let Some((server, mcp_tool)) = palette::mcp_display_parts(tool) {
         let (_, detail) = entry
             .title
             .find(" · ")
@@ -454,13 +475,13 @@ pub(super) fn subject_and_meta(
         return (
             vec![
                 Span::styled(
-                    pp_core::text::display_text(server).into_owned(),
+                    server.into_owned(),
                     Style::default()
                         .fg(palette::mcp_server())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(" {}", pp_core::text::display_text(mcp_tool)),
+                    format!(" {mcp_tool}"),
                     Style::default()
                         .fg(palette::mcp_tool())
                         .add_modifier(Modifier::BOLD),

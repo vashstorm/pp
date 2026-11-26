@@ -186,7 +186,7 @@ fn bash_task_native_history_waits_for_run_end_and_commits_final_card_once() {
     let text = retire_native(&mut transcript, 100, 10, false);
     assert_eq!(text.matches("native-command").count(), 1, "{text}");
     assert_eq!(text.matches("final-log").count(), 1, "{text}");
-    assert!(!text.contains("old-log") && !text.contains("bash_task"));
+    assert!(!text.contains("old-log") && !text.contains("Bash task"));
     assert!(
         retire_native(&mut transcript, 100, 10, true)
             .trim()

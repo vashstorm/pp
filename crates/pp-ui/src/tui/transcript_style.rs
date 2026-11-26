@@ -1,6 +1,7 @@
 use pp_config::config::IconMode;
 use pp_core::model::ThinkLevel;
 use ratatui::style::Color;
+use std::borrow::Cow;
 
 use super::themes;
 
@@ -256,6 +257,7 @@ pub(super) fn tool_accent(name: &str) -> Color {
         "bash" | "bash_task" => p.shell_title,
         "eval" => p.eval_title,
         "ask" => p.ask_title,
+        "task" => p.status_subagents,
         "todo" | "plan_submit" => p.todo_title,
         name if name.starts_with("mcp__") => p.mcp_title,
         _ => p.activity,
@@ -276,6 +278,7 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "web_search" => "\u{f059f}",
             "find" | "glob" => "\u{f024b}",
             "ask" => "\u{f02d7}",
+            "task" => "\u{f0641}",
             "plan_search" => "\u{f0232}",
             "plan_find" => "\u{f018b}",
             "plan_submit" => "\u{f012c}",
@@ -293,6 +296,7 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "web_search" => "S",
             "find" | "glob" => "*",
             "ask" => "?",
+            "task" => "T",
             "plan_search" => "/",
             "plan_find" => "*",
             "plan_submit" => "P",
@@ -334,20 +338,35 @@ pub(super) fn file_icon(path: &str, icons: IconMode) -> &'static str {
     }
 }
 
-/// `mcp__<server>__<tool>` 拆出服务名与工具名；两段都非空才算合法的 MCP 名称。
-pub(super) fn mcp_parts(name: &str) -> Option<(&str, &str)> {
-    let (server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
-    (!server.is_empty() && !tool.is_empty()).then_some((server, tool))
+pub(super) fn tool_label(name: &str) -> Cow<'_, str> {
+    match name {
+        "rg" => "Grep".into(),
+        "bash_task" => "Bash task".into(),
+        "web_search" => "Web Search".into(),
+        "plan_search" => "Plan search".into(),
+        "plan_find" => "Plan find".into(),
+        "plan_submit" => "Plan submit".into(),
+        "lsp" => "LSP".into(),
+        _ => match mcp_display_parts(name) {
+            Some((server, tool)) => format!("MCP {server} {tool}").into(),
+            None => capitalized_name(name),
+        },
+    }
 }
 
-/// MCP 卡片标题文本：`mcp__server__tool` → `mcp server tool`；非 MCP 名称返回 `None`。
-pub(super) fn mcp_label(name: &str) -> Option<String> {
-    let (server, tool) = mcp_parts(name)?;
-    Some(format!(
-        "mcp {} {}",
-        pp_core::text::display_text(server),
-        pp_core::text::display_text(tool)
-    ))
+fn capitalized_name(name: &str) -> Cow<'_, str> {
+    let name = pp_core::text::display_text(name);
+    if let Some(first) = name.chars().next().filter(|c| c.is_lowercase()) {
+        return format!("{}{}", first.to_uppercase(), &name[first.len_utf8()..]).into();
+    }
+    name
+}
+
+/// 拆出 MCP 卡片中分别着色的服务名与工具名。
+pub(super) fn mcp_display_parts(name: &str) -> Option<(Cow<'_, str>, Cow<'_, str>)> {
+    let (server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
+    (!server.is_empty() && !tool.is_empty())
+        .then(|| (pp_core::text::display_text(server), capitalized_name(tool)))
 }
 
 // 思考级别统一使用 Nerd Font 图标，状态栏与角色面板共用同一组字形；ASCII 模式使用阶梯字符。

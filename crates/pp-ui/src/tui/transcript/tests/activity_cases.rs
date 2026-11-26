@@ -353,7 +353,7 @@ fn live_activity_is_separate_from_transcript_across_model_and_tool_phases() {
                 name: "read".into(),
                 arguments: r#"{"path":"test.txt"}"#.into(),
             },
-            "Running read",
+            "Running Read",
         ),
         (
             AgentEvent::ToolFinished {

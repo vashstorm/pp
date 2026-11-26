@@ -183,6 +183,8 @@ impl Projection {
                 format!("{} {} {} {}", row.agent, name, row.title, row.summary)
                     .to_lowercase()
                     .contains(&query)
+                    || (row.kind == Kind::Tool
+                        && row.display_title().to_lowercase().contains(&query))
             })
             .map(|(index, _)| index)
             .collect()
@@ -383,7 +385,7 @@ mod tests {
                 "r1",
                 AgentEvent::ToolStarted {
                     id: "c1".into(),
-                    name: "bash".into(),
+                    name: "rg".into(),
                     arguments: "{}".into(),
                 },
             ),
@@ -409,8 +411,11 @@ mod tests {
         assert!(selected.is_empty(), "scope 无有效 Agent 时明确空态");
         let tools = projection.activity(Category::Tools, Scope::All, None, "read");
         assert!(tools.is_empty());
-        let searched = projection.activity(Category::All, Scope::All, None, "BASH");
-        assert_eq!(searched.len(), 1, "搜索大小写不敏感");
+        for query in ["RG", "Grep"] {
+            let searched = projection.activity(Category::All, Scope::All, None, query);
+            assert_eq!(searched.len(), 1, "{query}");
+            assert_eq!(projection.rows()[searched[0]].display_title(), "Grep");
+        }
     }
 
     #[test]

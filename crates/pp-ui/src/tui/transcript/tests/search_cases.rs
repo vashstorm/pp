@@ -47,7 +47,7 @@ fn rg_reference_layout_colors_and_replay() {
             .collect();
         assert!(
             rows[0].starts_with(&format!(
-                "{} rg: function applyEntry|function formatSummary 3 matches · 1 file · in",
+                "{} Grep: function applyEntry|function formatSummary 3 matches · 1 file · in",
                 palette::tool_icon("rg")
             )),
             "{text}"
@@ -71,9 +71,18 @@ fn rg_reference_layout_colors_and_replay() {
         }
         assert_eq!(transcript.entries[0].result, Some(result.clone()));
         for width in [1, 8, 40, 100] {
-            // 窄宽度按字符折行，标题的 `rg` 仍应可见；宽度 1 只剩边框列。
+            // 窄宽度按字符折行，宽度 1 只剩边框列。
             let buffer = render(&mut transcript, width, 100);
-            assert!(screen(&buffer).contains("rg") || width == 1, "{width}");
+            if width > 1 {
+                let text = screen(&buffer);
+                let header: String = text
+                    .lines()
+                    .skip(1)
+                    .take(4)
+                    .map(|line| line.trim_matches([' ', '│']))
+                    .collect();
+                assert!(header.contains("Grep"), "{width}: {header}");
+            }
         }
     }
 }
@@ -165,7 +174,7 @@ fn rg_groups_keep_paths_notices_and_failures() {
     });
     let buffer = render(&mut transcript, 100, 25);
     let text = screen(&buffer);
-    assert!(text.contains("rg: bad · failed") && text.contains("cannot search path"));
+    assert!(text.contains("Grep: bad · failed") && text.contains("cannot search path"));
     let row = text
         .lines()
         .position(|line| line.contains("cannot search path"))

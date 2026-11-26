@@ -270,13 +270,19 @@ pub(super) fn paint_chrome(
         && bg.is_none()
         && !entry.is_wait_card()
     {
-        let color = if entry.tool.is_some() {
-            palette::tool_border()
+        let (rail, color) = if entry.tool.as_deref() == Some("task") {
+            let glyphs = super::glyphs::for_style(
+                pp_config::config::ToolStyle::Classic,
+                crate::tui::themes::current_icons(),
+            );
+            (glyphs.rail, entry.tool_accent())
+        } else if entry.tool.is_some() {
+            ("│", palette::tool_border())
         } else if matches!(entry.body, EntryBody::Tips | EntryBody::Help(_)) {
-            super::super::super::statusline::accent()
+            ("│", super::super::super::statusline::accent())
         } else {
-            entry.kind.color()
+            ("│", entry.kind.color())
         };
-        Span::styled("│", Style::default().fg(color)).render(Rect::new(area.x, row, 1, 1), buffer);
+        Span::styled(rail, Style::default().fg(color)).render(Rect::new(area.x, row, 1, 1), buffer);
     }
 }

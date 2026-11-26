@@ -16,6 +16,7 @@ mod search;
 mod shell;
 pub(super) use eval::{EvalLang, eval_body, eval_code_lines};
 pub(super) use shell::command as shell_command;
+pub(super) mod task;
 mod todo;
 mod wait;
 pub(super) use wait::{render as wait_body, render_inner as wait_inner_body};
@@ -188,6 +189,9 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
     if view.name == "web_search" {
         return web_search_body(&view, width);
+    }
+    if view.name == "task" {
+        return task::body(&view, width);
     }
     if view.context.full && !matches!(view.name, "bash" | "bash_task" | "eval") {
         let text = if view.name == "write" && !view.failed {

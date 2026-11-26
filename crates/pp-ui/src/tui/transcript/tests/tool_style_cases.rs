@@ -37,7 +37,7 @@ fn build_sample_transcript() -> Transcript {
         id: "b1".into(),
         result: json!({"ok": true, "exit_code": 0, "stdout": "running 12 tests\ntest result: ok. 12 passed\n", "stderr": ""}),
     });
-    // 3. Rg
+    // 3. Grep
     tool(
         &mut t,
         "g1",
@@ -173,6 +173,9 @@ fn style_matrix_renders_across_widths_and_icon_modes_without_pua_in_ascii() {
                         !text.trim().is_empty(),
                         "empty render for {style:?} {width}"
                     );
+                    if width >= 40 {
+                        assert!(text.contains("Grep"), "{style:?} {width}:\n{text}");
+                    }
                     if icons == IconMode::Ascii {
                         assert!(
                             !text
@@ -214,7 +217,7 @@ fn new_styles_align_body_columns_and_right_status_consistently() {
         let buffer = render(&mut t, 80, 50);
         let text = screen(&buffer);
 
-        // 检查 Bash / Rg / Edit / MCP 正文首字起始列一致
+        // 检查 Bash / Grep / Edit / MCP 正文首字起始列一致
         let bash_row = text
             .lines()
             .position(|l| l.contains("running 12 tests"))

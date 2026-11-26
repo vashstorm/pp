@@ -241,7 +241,7 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         assert!(input_is_ready(pty.parser.screen()));
         assert!(!pty.parser.screen().contents().contains("out-firstout-last"));
         pty.wait_for("Bash 运行期间只有一个实时状态", |screen| {
-            live_activity_labels(&screen.contents()).eq(["Running bash"])
+            live_activity_labels(&screen.contents()).eq(["Running Bash"])
         });
         no_more(&server);
         std::fs::write(dir.path().join("release"), "").unwrap();

@@ -261,6 +261,16 @@ impl TranscriptEntry {
                         }),
                 );
             }
+        } else if self.tool.as_deref() == Some("task") {
+            let (count, (status, color)) = card::anatomy::task_header(self);
+            lines.extend(
+                tool_display::task::header(width, &count, status, color)
+                    .into_iter()
+                    .map(|line| LayoutLine {
+                        content: LayoutContent::Styled(line),
+                        height: 1,
+                    }),
+            );
         } else if self.kind != EntryKind::Lsp
             && !self.kind.hides_title()
             && !matches!(self.body, EntryBody::Tips | EntryBody::Help(_))
