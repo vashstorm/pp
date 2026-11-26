@@ -3,7 +3,7 @@
 use super::*;
 
 pub(in crate::tui) fn parse(source: &str) -> MarkdownDocument {
-    parse_styled(source, None)
+    parse_styled(source, None, true)
 }
 
 pub(in crate::tui) fn parse_streaming(source: &str, streaming: bool) -> MarkdownDocument {
@@ -11,71 +11,147 @@ pub(in crate::tui) fn parse_streaming(source: &str, streaming: bool) -> Markdown
         return parse(source);
     }
     let tail_start = source.rfind('\n').map(|newline| newline + 1);
-    parse_styled(source, tail_start)
+    parse_styled(source, tail_start, true)
 }
 
-fn parse_styled(source: &str, tail_start: Option<usize>) -> MarkdownDocument {
+/// 主线程流式预览专用解析：与 `parse_streaming` 语义完全一致，但跳过 syntect 语法高亮
+/// 以避免阻塞绘制循环。
+pub(in crate::tui) fn parse_streaming_preview(source: &str, streaming: bool) -> MarkdownDocument {
+    if !streaming || source.ends_with('\n') {
+        return parse_styled(source, None, false);
+    }
+    let tail_start = source.rfind('\n').map(|newline| newline + 1);
+    parse_styled(source, tail_start, false)
+}
+
+fn line_start(source: &str, offset: usize) -> usize {
+    let offset = offset.min(source.len());
+    source[..offset].rfind('\n').map_or(0, |index| index + 1)
+}
+
+fn ends_with_blank_line(source: &str) -> bool {
+    let mut newlines = 0usize;
+    for byte in source.bytes().rev() {
+        match byte {
+            b'\n' => {
+                newlines += 1;
+                if newlines >= 2 {
+                    return true;
+                }
+            }
+            b' ' | b'\t' | b'\r' => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn parse_styled(source: &str, tail_start: Option<usize>, highlight_code: bool) -> MarkdownDocument {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH);
-    let mut b = Builder::new(source);
+    let mut b = Builder::new(source, highlight_code);
+    let mut block_depth = 0usize;
     for (ev, range) in Parser::new_ext(source, opts).into_offset_iter() {
         match ev {
-            Event::Start(tag) => match tag {
-                Tag::Paragraph => b.start_paragraph(),
-                Tag::Heading { level, .. } => b.start_heading(level as u8),
-                Tag::BlockQuote(_) => b.start_quote(),
-                Tag::CodeBlock(kind) => b.start_code(kind, range.start),
-                Tag::HtmlBlock => b.start_html(),
-                Tag::List(start) => b.start_list(start),
-                Tag::Item => b.start_item(),
-                Tag::Table(aligns) => {
-                    if let Some(start) =
-                        tail_start.filter(|&start| range.start < start && range.end >= start)
-                    {
-                        // 末行仍可能改变表格结构，先按最近的换行处排版。
-                        let mut document = parse(&source[..start]);
-                        document.table_tail_start = Some(start);
-                        return document;
+            Event::Start(tag) => {
+                let is_block = matches!(
+                    tag,
+                    Tag::Paragraph
+                        | Tag::Heading { .. }
+                        | Tag::BlockQuote(_)
+                        | Tag::CodeBlock(_)
+                        | Tag::HtmlBlock
+                        | Tag::List(_)
+                        | Tag::Table(_)
+                );
+                if is_block {
+                    if block_depth == 0 {
+                        b.current_top_start = line_start(source, range.start);
+                        b.last_top_is_list = matches!(tag, Tag::List(_));
                     }
-                    b.start_table(aligns);
+                    block_depth += 1;
                 }
-                Tag::TableHead => b.start_table_head(),
-                Tag::TableRow => b.start_table_row(),
-                Tag::TableCell => b.start_cell(),
-                Tag::Emphasis => b.em += 1,
-                Tag::Strong => b.strong += 1,
-                Tag::Strikethrough => b.strike += 1,
-                Tag::Link { dest_url, .. } => b.links.push((dest_url.to_string(), String::new())),
-                Tag::Image { dest_url, .. } => b.images.push((dest_url.to_string(), String::new())),
-                _ => {}
-            },
-            Event::End(end) => match end {
-                TagEnd::Paragraph => {
-                    b.flush_block();
-                    b.paragraph = false;
+                match tag {
+                    Tag::Paragraph => b.start_paragraph(),
+                    Tag::Heading { level, .. } => b.start_heading(level as u8),
+                    Tag::BlockQuote(_) => b.start_quote(),
+                    Tag::CodeBlock(kind) => b.start_code(kind, range.start),
+                    Tag::HtmlBlock => b.start_html(),
+                    Tag::List(start) => b.start_list(start),
+                    Tag::Item => b.start_item(),
+                    Tag::Table(aligns) => {
+                        if let Some(start) =
+                            tail_start.filter(|&start| range.start < start && range.end >= start)
+                        {
+                            // 末行仍可能改变表格结构，先按最近的换行处排版。
+                            let mut document = parse_styled(&source[..start], None, highlight_code);
+                            document.table_tail_start = Some(start);
+                            return document;
+                        }
+                        b.start_table(aligns);
+                    }
+                    Tag::TableHead => b.start_table_head(),
+                    Tag::TableRow => b.start_table_row(),
+                    Tag::TableCell => b.start_cell(),
+                    Tag::Emphasis => b.em += 1,
+                    Tag::Strong => b.strong += 1,
+                    Tag::Strikethrough => b.strike += 1,
+                    Tag::Link { dest_url, .. } => {
+                        b.links.push((dest_url.to_string(), String::new()))
+                    }
+                    Tag::Image { dest_url, .. } => {
+                        b.images.push((dest_url.to_string(), String::new()))
+                    }
+                    _ => {}
                 }
-                TagEnd::Heading(_) => b.end_heading(),
-                TagEnd::BlockQuote(_) => b.end_quote(),
-                TagEnd::CodeBlock => b.end_code(range),
-                TagEnd::HtmlBlock => b.end_html(),
-                TagEnd::List(_) => b.end_list(),
-                TagEnd::Item => b.end_item(),
-                TagEnd::Table => b.end_table(),
-                TagEnd::TableHead => b.end_table_head(),
-                TagEnd::TableRow => b.end_table_row(),
-                TagEnd::TableCell => b.end_cell(),
-                TagEnd::Emphasis => b.em -= 1,
-                TagEnd::Strong => b.strong -= 1,
-                TagEnd::Strikethrough => b.strike -= 1,
-                TagEnd::Link => b.end_link(),
-                TagEnd::Image => b.end_image(),
-                _ => {}
-            },
+            }
+            Event::End(end) => {
+                match end {
+                    TagEnd::Paragraph => {
+                        b.flush_block();
+                        b.paragraph = false;
+                    }
+                    TagEnd::Heading(_) => b.end_heading(),
+                    TagEnd::BlockQuote(_) => b.end_quote(),
+                    TagEnd::CodeBlock => b.end_code(range),
+                    TagEnd::HtmlBlock => b.end_html(),
+                    TagEnd::List(_) => b.end_list(),
+                    TagEnd::Item => b.end_item(),
+                    TagEnd::Table => b.end_table(),
+                    TagEnd::TableHead => b.end_table_head(),
+                    TagEnd::TableRow => b.end_table_row(),
+                    TagEnd::TableCell => b.end_cell(),
+                    TagEnd::Emphasis => b.em -= 1,
+                    TagEnd::Strong => b.strong -= 1,
+                    TagEnd::Strikethrough => b.strike -= 1,
+                    TagEnd::Link => b.end_link(),
+                    TagEnd::Image => b.end_image(),
+                    _ => {}
+                }
+                if matches!(
+                    end,
+                    TagEnd::Paragraph
+                        | TagEnd::Heading(_)
+                        | TagEnd::BlockQuote(_)
+                        | TagEnd::CodeBlock
+                        | TagEnd::HtmlBlock
+                        | TagEnd::List(_)
+                        | TagEnd::Table
+                ) {
+                    block_depth = block_depth.saturating_sub(1);
+                }
+            }
             Event::Text(t) => b.on_text(&t, range.end),
             Event::Code(t) => b.on_inline_code(&t),
             Event::SoftBreak => b.on_soft_break(),
             Event::HardBreak => b.on_hard_break(),
-            Event::Rule => b.on_rule(),
+            Event::Rule => {
+                if block_depth == 0 {
+                    b.current_top_start = line_start(source, range.start);
+                    b.last_top_is_list = false;
+                }
+                b.on_rule();
+            }
             Event::TaskListMarker(checked) => b.on_task_marker(checked),
             Event::Html(t) => b.on_html(&t),
             Event::InlineHtml(t) => b.on_inline_html(&t),
@@ -121,7 +197,11 @@ struct TableState {
 
 struct Builder<'a> {
     source: &'a str,
+    highlight_code: bool,
     blocks: Vec<Block>,
+    block_top_starts: Vec<usize>,
+    current_top_start: usize,
+    last_top_is_list: bool,
     lines: Vec<WrapLine>,
     cur: Vec<Span<'static>>,
     col: usize,
@@ -148,10 +228,14 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    fn new(source: &'a str) -> Self {
+    fn new(source: &'a str, highlight_code: bool) -> Self {
         Builder {
             source,
+            highlight_code,
             blocks: Vec::new(),
+            block_top_starts: Vec::new(),
+            current_top_start: 0,
+            last_top_is_list: false,
             lines: Vec::new(),
             cur: Vec::new(),
             col: 0,
@@ -178,10 +262,20 @@ impl<'a> Builder<'a> {
         }
     }
 
+    fn push_block(&mut self, block: Block) {
+        self.blocks.push(block);
+        self.block_top_starts.push(self.current_top_start);
+    }
+
     fn finish(mut self) -> MarkdownDocument {
         self.flush_block();
+        let trailing_line_start = self.source.rfind('\n').map_or(0, |index| index + 1);
         MarkdownDocument {
             blocks: std::mem::take(&mut self.blocks),
+            block_top_starts: std::mem::take(&mut self.block_top_starts),
+            last_top_is_list: self.last_top_is_list,
+            ends_with_blank_line: ends_with_blank_line(self.source),
+            trailing_line_start,
             cached: Vec::new(),
             table_tail_start: None,
         }
@@ -325,14 +419,15 @@ impl<'a> Builder<'a> {
         }
         if !self.lines.is_empty() {
             let lines = std::mem::take(&mut self.lines);
-            self.blocks.push(if self.heading {
+            let block = if self.heading {
                 Block::Heading(lines, self.heading_level)
             } else {
                 Block::Paragraph(
                     lines,
                     (!self.lists.is_empty() && !self.paragraph).then_some(self.list_group),
                 )
-            });
+            };
+            self.push_block(block);
         }
     }
 
@@ -445,22 +540,25 @@ impl<'a> Builder<'a> {
         // tab 展开前移到解析期：span 化后无法再对 String 展开。
         let expanded: Vec<String> = lines.iter().map(|l| expand_tabs(l, TAB_STOP)).collect();
         let text = expanded.join("\n");
-        let lines: Arc<Vec<Arc<Vec<Span<'static>>>>> =
-            match highlight::highlight(code.lang.as_deref(), &text) {
-                Some(spans) => spans,
-                None => Arc::new(
-                    expanded
-                        .into_iter()
-                        .map(|line| {
-                            Arc::new(if line.is_empty() {
-                                Vec::new()
-                            } else {
-                                vec![Span::styled(line, Style::new().fg(code_block()))]
-                            })
+        let lines: Arc<Vec<Arc<Vec<Span<'static>>>>> = match self
+            .highlight_code
+            .then(|| highlight::highlight(code.lang.as_deref(), &text))
+            .flatten()
+        {
+            Some(spans) => spans,
+            None => Arc::new(
+                expanded
+                    .into_iter()
+                    .map(|line| {
+                        Arc::new(if line.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![Span::styled(line, Style::new().fg(code_block()))]
                         })
-                        .collect(),
-                ),
-            };
+                    })
+                    .collect(),
+            ),
+        };
         let closed = !code.fenced
             || match code.content_end {
                 Some(ce) => {
@@ -480,7 +578,7 @@ impl<'a> Builder<'a> {
                         >= 2
                 }
             };
-        self.blocks.push(Block::Code(CodeBlock {
+        self.push_block(Block::Code(CodeBlock {
             lang: code.lang,
             lines,
             closed,
@@ -516,11 +614,12 @@ impl<'a> Builder<'a> {
             self.push_line();
         }
         if !self.lines.is_empty() {
-            self.blocks.push(Block::Paragraph(
+            let block = Block::Paragraph(
                 std::mem::take(&mut self.lines),
                 (!self.lists.is_empty() && !self.paragraph && !self.heading)
                     .then_some(self.list_group),
-            ));
+            );
+            self.push_block(block);
         }
     }
 
@@ -596,7 +695,7 @@ impl<'a> Builder<'a> {
         self.flush_block();
         let prefix = self.prefix_spans(!self.marker_used);
         self.marker_used = true;
-        self.blocks.push(Block::Rule(prefix));
+        self.push_block(Block::Rule(prefix));
     }
 
     fn end_link(&mut self) {
@@ -709,7 +808,7 @@ impl<'a> Builder<'a> {
                 r
             })
             .collect();
-        self.blocks.push(Block::Table(TableBlock {
+        self.push_block(Block::Table(TableBlock {
             aligns: t.aligns,
             header,
             rows,

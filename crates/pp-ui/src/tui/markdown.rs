@@ -75,8 +75,30 @@ enum CachedBlock {
     },
 }
 
+#[derive(Clone, Default)]
+pub(super) struct TailMeta {
+    /// 稳定前缀占用的物理行数（跨帧共享 Arc，绝不被预览改写）。
+    pub(super) stable_rows: usize,
+    /// 活跃尾块在 source 中的起始字节偏移。
+    pub(super) tail_source_start: usize,
+    /// 活跃尾块非空时，与稳定前缀之间是否需要插入一个空行。
+    pub(super) needs_separator: bool,
+    /// 末块为未闭合代码块时的续行前缀（用于在预览期 O(delta) 续接并保留既有语法高亮）。
+    pub(super) open_code_prefix: Option<Vec<Span<'static>>>,
+    /// 末行的悬挂缩进前缀（超大活跃块超限回退时保留列表/引用缩进）。
+    pub(super) fallback_prefix: Vec<Span<'static>>,
+}
+
 pub(super) struct MarkdownDocument {
     blocks: Vec<Block>,
+    /// 与 `blocks` 一一对应的顶层块行首字节偏移。
+    block_top_starts: Vec<usize>,
+    /// 最后一个顶层块是否为列表（列表受后续空行 tight→loose 规则影响，不提前封闭）。
+    last_top_is_list: bool,
+    /// 源文本末尾是否包含空行（用于判断已封闭的顶层块）。
+    ends_with_blank_line: bool,
+    /// 源文本末尾最后一个换行之后的位置（封闭切分点保留末尾水平缩进）。
+    trailing_line_start: usize,
     cached: Vec<Option<CachedBlock>>,
     pub(super) table_tail_start: Option<usize>,
 }
@@ -132,8 +154,36 @@ mod parse;
 mod table;
 
 use self::table::layout_table;
-pub(super) use parse::{parse, parse_streaming};
+pub(super) use parse::{parse, parse_streaming, parse_streaming_preview};
 pub(super) use table::table_tail_line;
+
+pub(super) fn wrap_word_preview(
+    spans: &[Span<'static>],
+    first_avail: usize,
+    rest_avail: usize,
+) -> Vec<Vec<Span<'static>>> {
+    wrap(WrapMode::Word, spans, first_avail.max(1), rest_avail.max(1))
+}
+
+pub(super) fn wrap_char_preview(
+    spans: &[Span<'static>],
+    first_avail: usize,
+    rest_avail: usize,
+) -> Vec<Vec<Span<'static>>> {
+    wrap(WrapMode::Char, spans, first_avail.max(1), rest_avail.max(1))
+}
+
+pub(super) fn expand_tabs_preview(line: &str) -> String {
+    expand_tabs(line, TAB_STOP)
+}
+
+pub(super) fn fit_prefix_preview(prefix: &[Span<'static>], width: usize) -> Vec<Span<'static>> {
+    fit_prefix(prefix, width)
+}
+
+pub(super) fn spans_width_preview(spans: &[Span<'static>]) -> usize {
+    spans_width(spans)
+}
 
 impl MarkdownDocument {
     pub(super) fn ends_with_table(&self) -> bool {
@@ -162,15 +212,30 @@ impl MarkdownDocument {
             .collect();
         *self = next;
     }
+    #[cfg(test)]
     pub(super) fn layout_cached(&mut self, width: u16) -> Vec<Line<'static>> {
+        self.layout_cached_with_meta(width).0
+    }
+
+    pub(super) fn layout_cached_with_meta(&mut self, width: u16) -> (Vec<Line<'static>>, TailMeta) {
         if width == 0 {
-            return Vec::new();
+            return (Vec::new(), TailMeta::default());
         }
         self.cached.resize_with(self.blocks.len(), || None);
         let width_usize = usize::from(width);
         let mut out = Vec::new();
         let mut previous_group = None;
+        let last_top = self.block_top_starts.last().copied().unwrap_or(0);
+        let split_block = self
+            .block_top_starts
+            .iter()
+            .position(|&start| start == last_top)
+            .unwrap_or(self.blocks.len());
+        let mut split_rows = 0usize;
         for (i, block) in self.blocks.iter().enumerate() {
+            if i == split_block {
+                split_rows = out.len();
+            }
             let group = match block {
                 Block::Paragraph(_, group) => *group,
                 _ => None,
@@ -266,7 +331,43 @@ impl MarkdownDocument {
                 }
             }
         }
-        out
+        let open_code_prefix = match self.blocks.last() {
+            Some(Block::Code(cb)) if !cb.closed => Some(fit_prefix(&cb.rest, width_usize)),
+            _ => None,
+        };
+        let fallback_prefix = match self.blocks.last() {
+            Some(Block::Paragraph(lines, _) | Block::Heading(lines, _)) => lines
+                .last()
+                .map(|line| fit_prefix(&line.rest, width_usize))
+                .unwrap_or_default(),
+            Some(Block::Code(cb)) => fit_prefix(&cb.rest, width_usize),
+            Some(Block::Table(tb)) => fit_prefix(&tb.rest, width_usize),
+            Some(Block::Rule(_)) | None => Vec::new(),
+        };
+        let closed_by_blank = self.ends_with_blank_line
+            && open_code_prefix.is_none()
+            && !self.last_top_is_list
+            && self.table_tail_start.is_none();
+        let meta = if self.blocks.is_empty() {
+            TailMeta::default()
+        } else if closed_by_blank {
+            TailMeta {
+                stable_rows: out.len(),
+                tail_source_start: self.trailing_line_start,
+                needs_separator: !out.is_empty(),
+                open_code_prefix,
+                fallback_prefix: Vec::new(),
+            }
+        } else {
+            TailMeta {
+                stable_rows: split_rows,
+                tail_source_start: last_top,
+                needs_separator: split_rows > 0,
+                open_code_prefix,
+                fallback_prefix,
+            }
+        };
+        (out, meta)
     }
 
     /// Physical lines for `width` terminal columns. `width == 0` yields no

@@ -1,4 +1,5 @@
 //! 正文排版服务。队列按消息合并，UI 只读取已经完成的不可变结果。
+use super::markdown::TailMeta;
 use super::transcript::{EntryLayout, LayoutContent, LayoutLine};
 use pp_config::config::{IconMode, Theme};
 use ratatui::{
@@ -14,6 +15,9 @@ use std::{
     },
     thread::{self, JoinHandle},
 };
+
+/// 主线程活跃尾块同步 Markdown 预览的字节上限，超过则退回有界尾行续接。
+const PREVIEW_MARKDOWN_LIMIT: usize = 8192;
 
 thread_local! { static CURRENT: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) }; }
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -107,6 +111,7 @@ struct Rendered {
     layout: Arc<EntryLayout>,
     ends_with_table: bool,
     table_tail_start: Option<usize>,
+    tail: TailMeta,
 }
 
 struct CachedDocument {
@@ -193,7 +198,8 @@ impl Worker {
                             document.source = job.text.clone();
                             document.streaming = job.streaming;
                         }
-                        let mut lines = document.markdown.layout_cached(job.width);
+                        let (mut lines, tail) =
+                            document.markdown.layout_cached_with_meta(job.width);
                         if job.muted {
                             let muted_fg = super::themes::palette().welcome_muted;
                             for line in &mut lines {
@@ -209,10 +215,18 @@ impl Worker {
                         {
                             documents.pop_front();
                         }
-                        (lines, ends_with_table, table_tail_start)
+                        (lines, ends_with_table, table_tail_start, tail)
                     }));
-                    let (lines, ends_with_table, table_tail_start) = render
-                        .unwrap_or_else(|_| (plain(&job.text, job.width, job.muted), false, None));
+                    let (lines, ends_with_table, table_tail_start, tail) =
+                        render.unwrap_or_else(|_| {
+                            let rows = plain(&job.text, job.width, job.muted);
+                            let meta = TailMeta {
+                                stable_rows: rows.len(),
+                                tail_source_start: job.text.len(),
+                                ..TailMeta::default()
+                            };
+                            (rows, false, None, meta)
+                        });
                     // 已完成的追加版本仍可用于展示；最新版本资格由 Ticket 单独判断。
                     let mut result = slot.lock().unwrap_or_else(|e| e.into_inner());
                     if result
@@ -229,6 +243,7 @@ impl Worker {
                             layout: Arc::new(prepared(lines, job.width)),
                             ends_with_table,
                             table_tail_start,
+                            tail,
                         });
                     }
                     if job.slot.strong_count() == 1 {
@@ -409,13 +424,10 @@ impl Ticket {
         if let Some(layout) = &self.fallback {
             return layout.clone();
         }
-        // 已排版前缀保持样式，新增尾部立即预览，不等待后台排版。
-        // 预览只复用前缀并生成有限尾部，不能用于历史提交。
+        // 已排版稳定前缀零拷贝共享 Arc，活跃尾块使用同一套 Markdown 排版规则，
+        // 避免预览与后台回写之间因折行/缩进/换行规则不同而反复刷新跳动。
         let layout: Arc<EntryLayout> = match &self.displayed {
-            Some(result)
-                if (result.ends_with_table || result.table_tail_start.is_some())
-                    && text.starts_with(result.source.as_ref()) =>
-            {
+            Some(result) if is_streaming_table_tail(result, text) => {
                 // 表格布局只包含已收齐的行，预览始终另外占一行。
                 let start = result.table_tail_start.unwrap_or(result.source.len());
                 match table_tail_preview(&text[start..], width, muted) {
@@ -431,8 +443,12 @@ impl Ticket {
                 }
             }
             Some(result) if text.starts_with(result.source.as_ref()) => {
-                append_preview(result, &text[result.source.len()..], width, muted)
+                append_preview(result, text, width, muted, streaming)
             }
+            _ if text.len() <= PREVIEW_MARKDOWN_LIMIT => Arc::new(prepared(
+                preview_markdown_lines(text, width, muted, streaming),
+                width,
+            )),
             _ => Arc::new(prepared(plain(preview_tail(text), width, muted), width)),
         };
         self.fallback = Some(layout.clone());
@@ -506,8 +522,45 @@ impl Ticket {
     }
 }
 
+fn is_single_tail_line(text: &str) -> bool {
+    let trimmed = text.strip_suffix('\n').unwrap_or(text);
+    let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
+    !trimmed.contains('\n')
+}
+
+fn is_streaming_table_tail(result: &Rendered, text: &str) -> bool {
+    if !text.starts_with(result.source.as_ref()) {
+        return false;
+    }
+    if let Some(start) = result.table_tail_start {
+        return is_single_tail_line(&text[start..]);
+    }
+    if !result.ends_with_table || ends_with_blank_line(&result.source) {
+        return false;
+    }
+    let suffix = &text[result.source.len()..];
+    !suffix.starts_with('\n') && !suffix.starts_with("\r\n") && is_single_tail_line(suffix)
+}
+
+fn ends_with_blank_line(text: &str) -> bool {
+    let mut newlines = 0usize;
+    for byte in text.bytes().rev() {
+        match byte {
+            b'\n' => {
+                newlines += 1;
+                if newlines >= 2 {
+                    return true;
+                }
+            }
+            b' ' | b'\t' | b'\r' => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn preview_tail(text: &str) -> &str {
-    let start = text.len().saturating_sub(8192);
+    let start = text.len().saturating_sub(PREVIEW_MARKDOWN_LIMIT);
     let start = (start..=text.len())
         .find(|&i| text.is_char_boundary(i))
         .unwrap_or(text.len());
@@ -520,41 +573,364 @@ pub(super) fn table_tail_preview(text: &str, width: u16, muted: bool) -> Option<
         .then(|| super::markdown::table_tail_line(preview_tail(last), width, text_style(muted)))
 }
 
-/// 预览尾部：复用已排版前缀，只复制需要续接的最后一行。
-fn append_preview(result: &Rendered, suffix: &str, width: u16, muted: bool) -> Arc<EntryLayout> {
+fn preview_markdown_lines(
+    source: &str,
+    width: u16,
+    muted: bool,
+    streaming: bool,
+) -> Vec<Line<'static>> {
+    let document = super::markdown::parse_streaming_preview(source, streaming);
+    let mut lines = document.layout(width);
+    if let Some(start) = document.table_tail_start
+        && let Some(line) = table_tail_preview(&source[start..], width, muted)
+    {
+        lines.push(line);
+    }
+    apply_muted(&mut lines, muted);
+    lines
+}
+
+fn apply_muted(lines: &mut [Line<'static>], muted: bool) {
+    if muted {
+        let style = text_style(true);
+        for line in lines {
+            *line = std::mem::take(line).style(style);
+        }
+    }
+}
+
+/// 预览尾部：稳定前缀跨帧共享 `Arc`，活跃尾块复用同一套 Markdown 排版规则。
+fn append_preview(
+    result: &Rendered,
+    text: &str,
+    width: u16,
+    muted: bool,
+    streaming: bool,
+) -> Arc<EntryLayout> {
+    let suffix = &text[result.source.len()..];
     if suffix.is_empty() {
         return result.layout.clone();
     }
-    let tail = preview_tail(suffix);
-    let continuation = tail.len() == suffix.len() && !result.source.ends_with('\n');
-    let mut line = if continuation {
-        match result.layout.get(result.layout.len().saturating_sub(1)) {
-            Some(LayoutLine {
-                content: LayoutContent::Styled(line),
-                ..
-            }) => line.clone(),
-            _ => Line::default(),
-        }
-    } else {
-        Line::default()
-    };
-    if tail.len() != suffix.len() {
-        line.spans.push(Span::raw("…\n"));
+    if width == 0 {
+        return Arc::new(EntryLayout::owned(0, Vec::new()));
     }
-    line.spans
-        .push(Span::styled(tail.to_owned(), text_style(muted)));
-    let rows = super::transcript::wrap_block(line, width, "")
-        .into_iter()
-        .map(|line| LayoutLine {
-            content: LayoutContent::Styled(line),
-            height: 1,
-        })
-        .collect();
+    if let Some(rest) = &result.tail.open_code_prefix {
+        return append_code_preview(result, suffix, rest, width, muted);
+    }
+    let tail_start = result.tail.tail_source_start;
+    if tail_start <= result.source.len()
+        && result.tail.stable_rows <= result.layout.len()
+        && text.is_char_boundary(tail_start)
+        && text.len() - tail_start <= PREVIEW_MARKDOWN_LIMIT
+    {
+        let mut rows = preview_markdown_lines(&text[tail_start..], width, muted, streaming);
+        if result.tail.needs_separator && !rows.is_empty() {
+            let mut blank = Line::from("");
+            if muted {
+                blank = blank.style(text_style(true));
+            }
+            rows.insert(0, blank);
+        }
+        return Arc::new(EntryLayout::with_prefix(
+            result.layout.clone(),
+            result.tail.stable_rows,
+            rows.into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                })
+                .collect(),
+        ));
+    }
+    append_tail_fallback(result, suffix, width, muted)
+}
+
+/// 未闭合代码块流式续接：保留已语法高亮的前缀行，仅对新增尾部按字符折行并补齐缩进前缀。
+fn append_code_preview(
+    result: &Rendered,
+    suffix: &str,
+    rest: &[Span<'static>],
+    width: u16,
+    muted: bool,
+) -> Arc<EntryLayout> {
+    let tail = preview_tail(suffix);
+    let truncated = tail.len() != suffix.len();
+    let continuation = !truncated && !result.source.ends_with('\n') && !result.layout.is_empty();
+    let width_usize = usize::from(width);
+    let rest = super::markdown::fit_prefix_preview(rest, width_usize);
+    let body_width = width_usize
+        .saturating_sub(super::markdown::spans_width_preview(&rest))
+        .max(1);
+    let code_style = Style::new().fg(super::transcript_style::code_block());
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut parts = tail.split_terminator('\n');
+
+    if truncated {
+        rows.push(Line::raw("…"));
+    } else if continuation {
+        let mut spans = last_layout_spans(result);
+        if let Some(first) = parts.next() {
+            let first = first.strip_suffix('\r').unwrap_or(first);
+            let safe = pp_core::text::display_text(first);
+            let expanded = super::markdown::expand_tabs_preview(&safe);
+            if !expanded.is_empty() {
+                spans.push(Span::styled(expanded, code_style));
+            }
+        }
+        let wrapped = super::markdown::wrap_char_preview(&spans, width_usize, body_width);
+        if wrapped.is_empty() {
+            rows.push(Line::from(rest.clone()));
+        } else {
+            for (index, line) in wrapped.into_iter().enumerate() {
+                if index == 0 {
+                    rows.push(Line::from(line));
+                } else {
+                    let mut prefixed = super::markdown::fit_prefix_preview(
+                        &rest,
+                        width_usize
+                            .saturating_sub(super::markdown::spans_width_preview(&line))
+                            .saturating_add(1),
+                    );
+                    prefixed.extend(line);
+                    rows.push(Line::from(prefixed));
+                }
+            }
+        }
+    }
+
+    for part in parts {
+        let part = part.strip_suffix('\r').unwrap_or(part);
+        let safe = pp_core::text::display_text(part);
+        let expanded = super::markdown::expand_tabs_preview(&safe);
+        let spans = if expanded.is_empty() {
+            Vec::new()
+        } else {
+            vec![Span::styled(expanded, code_style)]
+        };
+        let wrapped = super::markdown::wrap_char_preview(&spans, body_width, body_width);
+        if wrapped.is_empty() {
+            rows.push(Line::from(rest.clone()));
+        } else {
+            for line in wrapped {
+                let mut prefixed = super::markdown::fit_prefix_preview(
+                    &rest,
+                    width_usize
+                        .saturating_sub(super::markdown::spans_width_preview(&line))
+                        .saturating_add(1),
+                );
+                prefixed.extend(line);
+                rows.push(Line::from(prefixed));
+            }
+        }
+    }
+
+    apply_muted(&mut rows, muted);
     Arc::new(EntryLayout::appended(
         result.layout.clone(),
         continuation,
-        rows,
+        rows.into_iter()
+            .map(|line| LayoutLine {
+                content: LayoutContent::Styled(line),
+                height: 1,
+            })
+            .collect(),
     ))
+}
+
+/// 超大活跃块（> 8 KiB）的有界续接回退：保留词级换行、悬挂缩进与无尾空行语义。
+fn append_tail_fallback(
+    result: &Rendered,
+    suffix: &str,
+    width: u16,
+    muted: bool,
+) -> Arc<EntryLayout> {
+    let tail = preview_tail(suffix);
+    let truncated = tail.len() != suffix.len();
+    let width_usize = usize::from(width);
+    let rest = super::markdown::fit_prefix_preview(&result.tail.fallback_prefix, width_usize);
+    let rest_avail = width_usize
+        .saturating_sub(super::markdown::spans_width_preview(&rest))
+        .max(1);
+
+    if truncated {
+        let mut rows = vec![Line::raw("…")];
+        push_word_paragraphs(tail, width_usize, &rest, rest_avail, &mut rows);
+        apply_muted(&mut rows, muted);
+        return Arc::new(EntryLayout::appended(
+            result.layout.clone(),
+            false,
+            rows.into_iter()
+                .map(|line| LayoutLine {
+                    content: LayoutContent::Styled(line),
+                    height: 1,
+                })
+                .collect(),
+        ));
+    }
+
+    let trimmed = tail.trim_end_matches(['\n', '\r']);
+    if trimmed.is_empty() {
+        return result.layout.clone();
+    }
+    let src_ends_blank = ends_with_blank_line(&result.source);
+    let starts_new_para = src_ends_blank
+        || trimmed.starts_with("\n\n")
+        || trimmed.starts_with("\r\n\r\n")
+        || (result.source.ends_with('\n') && trimmed.starts_with('\n'));
+    let continuation = !starts_new_para && !result.layout.is_empty();
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut paragraphs = split_fallback_paragraphs(trimmed);
+
+    if continuation {
+        let last_spans = last_layout_spans(result);
+        let (first_prefix, mut body_spans) = split_leading_prefix(last_spans, &rest);
+        if let Some(first) = paragraphs.next() {
+            let safe = pp_core::text::display_text(&first);
+            let expanded = super::markdown::expand_tabs_preview(&safe);
+            if !expanded.is_empty() {
+                let needs_space = result.source.ends_with('\n')
+                    || result.source.ends_with([' ', '\t'])
+                    || trimmed.starts_with('\n')
+                    || trimmed.starts_with("\r\n");
+                let already_spaced = body_spans
+                    .last()
+                    .is_some_and(|span| span.content.ends_with(char::is_whitespace))
+                    || expanded.starts_with(char::is_whitespace);
+                if needs_space && !already_spaced && !body_spans.is_empty() {
+                    body_spans.push(Span::raw(" "));
+                }
+                body_spans.push(Span::raw(expanded));
+            }
+        }
+        push_wrapped_spans(
+            &body_spans,
+            width_usize,
+            &first_prefix,
+            &rest,
+            rest_avail,
+            &mut rows,
+        );
+    } else if !result.layout.is_empty() && starts_new_para {
+        rows.push(Line::from(""));
+    }
+
+    for (index, paragraph) in paragraphs.enumerate() {
+        if continuation || index > 0 {
+            rows.push(Line::from(""));
+        }
+        let safe = pp_core::text::display_text(&paragraph);
+        let expanded = super::markdown::expand_tabs_preview(&safe);
+        let spans = vec![Span::raw(expanded)];
+        push_wrapped_spans(&spans, width_usize, &rest, &rest, rest_avail, &mut rows);
+    }
+
+    apply_muted(&mut rows, muted);
+    Arc::new(EntryLayout::appended(
+        result.layout.clone(),
+        continuation,
+        rows.into_iter()
+            .map(|line| LayoutLine {
+                content: LayoutContent::Styled(line),
+                height: 1,
+            })
+            .collect(),
+    ))
+}
+
+fn last_layout_spans(result: &Rendered) -> Vec<Span<'static>> {
+    let Some(LayoutLine {
+        content: LayoutContent::Styled(line),
+        ..
+    }) = result.layout.get(result.layout.len().saturating_sub(1))
+    else {
+        return Vec::new();
+    };
+    line.spans.clone()
+}
+
+fn split_fallback_paragraphs(text: &str) -> impl Iterator<Item = String> + '_ {
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+    for line in text.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(std::mem::take(&mut current));
+            }
+        } else {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(line);
+        }
+    }
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+    paragraphs.into_iter()
+}
+
+fn split_leading_prefix(
+    mut spans: Vec<Span<'static>>,
+    rest: &[Span<'static>],
+) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+    if !rest.is_empty() && spans.len() >= rest.len() && spans[..rest.len()] == *rest {
+        let body = spans.split_off(rest.len());
+        return (spans, body);
+    }
+    if spans.first().is_some_and(|span| {
+        !span.content.is_empty() && span.content.chars().all(char::is_whitespace)
+    }) {
+        let body = spans.split_off(1);
+        return (spans, body);
+    }
+    (Vec::new(), spans)
+}
+
+fn push_word_paragraphs(
+    text: &str,
+    width: usize,
+    rest: &[Span<'static>],
+    rest_avail: usize,
+    out: &mut Vec<Line<'static>>,
+) {
+    for (index, paragraph) in split_fallback_paragraphs(text).enumerate() {
+        if index > 0 {
+            out.push(Line::from(""));
+        }
+        let safe = pp_core::text::display_text(&paragraph);
+        let expanded = super::markdown::expand_tabs_preview(&safe);
+        push_wrapped_spans(&[Span::raw(expanded)], width, rest, rest, rest_avail, out);
+    }
+}
+
+fn push_wrapped_spans(
+    spans: &[Span<'static>],
+    width: usize,
+    first_prefix: &[Span<'static>],
+    rest: &[Span<'static>],
+    rest_avail: usize,
+    out: &mut Vec<Line<'static>>,
+) {
+    let first_avail = width
+        .saturating_sub(super::markdown::spans_width_preview(first_prefix))
+        .max(1);
+    let wrapped = super::markdown::wrap_word_preview(spans, first_avail, rest_avail);
+    if wrapped.is_empty() {
+        out.push(Line::from(first_prefix.to_vec()));
+        return;
+    }
+    for (index, line) in wrapped.into_iter().enumerate() {
+        let prefix = if index == 0 { first_prefix } else { rest };
+        let mut prefixed = super::markdown::fit_prefix_preview(
+            prefix,
+            width
+                .saturating_sub(super::markdown::spans_width_preview(&line))
+                .saturating_add(1),
+        );
+        prefixed.extend(line);
+        out.push(Line::from(prefixed));
+    }
 }
 
 fn prepared(lines: Vec<Line<'static>>, width: u16) -> EntryLayout {
@@ -589,313 +965,4 @@ fn plain(text: &str, width: u16, muted: bool) -> Vec<Line<'static>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crossterm::event::Event;
-    use pp_core::events::AgentEvent;
-    use ratatui::{Terminal, backend::TestBackend};
-
-    #[test]
-    fn layout_worker_plain_preserves_lines_tabs_and_unicode() {
-        let rows = plain("first\n\n中\t🙂\n", 80, false);
-        assert_eq!(
-            rows.iter().map(Line::to_string).collect::<Vec<_>>(),
-            ["first", "", "中  🙂", ""]
-        );
-    }
-
-    #[test]
-    fn layout_worker_initial_tail_keeps_utf8_boundaries_and_empty_lines() {
-        let worker = Worker::start().unwrap();
-        let pause = worker.pause();
-        let mut ticket = Ticket::default();
-        let text = format!("{}🙂\n\nend", "中".repeat(3000));
-        let preview = ticket.layout(&text, 8, false, false);
-        pause.wait();
-        let rows = preview
-            .iter()
-            .map(|line| {
-                let LayoutContent::Styled(line) = &line.content else {
-                    panic!("应为预览行")
-                };
-                line.to_string()
-            })
-            .collect::<Vec<_>>();
-        assert!(rows[0].starts_with('中'));
-        assert!(!rows.join("").contains('\u{fffd}'));
-        assert!(rows.join("").contains('🙂'));
-        assert_eq!(&rows[rows.len() - 2..], &["", "end"]);
-        assert!(!ticket.exact);
-        drop(pause);
-    }
-
-    #[test]
-    fn layout_worker_previews_latest_append_while_preserving_rendered_styles() {
-        let worker = Worker::start().unwrap();
-        let first = worker.pause();
-        let mut ticket = Ticket::default();
-        ticket.layout("**first**", 80, false, false);
-        first.wait();
-        let second = worker.pause();
-        ticket.invalidate(false);
-        ticket.layout("**first**\n\nsecond", 80, false, false);
-        drop(first);
-        // 上一任务未回写前不排队：泵到回写被吸收、最新版本交给排版线程为止。
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while ticket.in_flight != Some(ticket.version) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "最新版本应交给排版线程"
-            );
-            ticket.layout("**first**\n\nsecond", 80, false, false);
-            std::thread::yield_now();
-        }
-        second.wait();
-        let intermediate = ticket.layout("**first**\n\nsecond", 80, false, false);
-        assert!(!ticket.exact);
-        let LayoutContent::Styled(line) = &intermediate.get(0).expect("预览首行").content
-        else {
-            panic!("应为 Markdown 行");
-        };
-        assert_eq!(line.to_string(), "first");
-        assert!(line.spans.iter().any(|span| {
-            span.style
-                .add_modifier
-                .contains(ratatui::style::Modifier::BOLD)
-        }));
-        assert_eq!(layout_text(&intermediate), "first\n\nsecond");
-        drop(second);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            ticket.layout("**first**\n\nsecond", 80, false, false);
-            if ticket.exact {
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "应最终完成最新排版");
-            std::thread::yield_now();
-        }
-        let third = worker.pause();
-        ticket.invalidate(false);
-        assert!(!ticket.exact, "追加后立即撤销最新版本资格");
-        let preview = ticket.layout("**first**\n\nsecond\n\nthird", 80, false, false);
-        third.wait();
-        assert_eq!(layout_text(&preview), "first\n\nsecond\n\nthird");
-        assert!(!ticket.exact);
-        ticket.invalidate(false);
-        let preview = ticket.layout("**first**\n\nsecond\n\nthird 中🙂", 80, false, false);
-        assert_eq!(layout_text(&preview), "first\n\nsecond\n\nthird 中🙂");
-        assert!(!ticket.exact);
-        drop(third);
-    }
-
-    fn layout_text(layout: &EntryLayout) -> String {
-        layout
-            .iter()
-            .map(|line| match &line.content {
-                LayoutContent::Styled(line) => line.to_string(),
-                _ => panic!("应为样式行"),
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn layout_worker_append_preview_wraps_unicode_tabs_and_newlines() {
-        for (source, suffix, expected) in [
-            ("**ab**", "中🙂", "ab中\n🙂"),
-            ("**ab**", "\t中", "ab  \n中"),
-            ("**ab**", "\n\n中\n", "ab\n\n中\n"),
-            ("**ab**\n", "中", "ab\n中"),
-        ] {
-            let worker = Worker::start().unwrap();
-            let pause = worker.pause();
-            let mut ticket = Ticket::default();
-            ticket.layout(source, 4, true, false);
-            pause.wait();
-            *ticket.slot.lock().unwrap() = Some(Rendered {
-                epoch: ticket.epoch,
-                version: ticket.version,
-                theme: Theme::Default,
-                icons: IconMode::Nerd,
-                width: 4,
-                source: Arc::from(source),
-                layout: Arc::new(prepared(vec![Line::raw("ab")], 4)),
-                ends_with_table: false,
-                table_tail_start: None,
-            });
-            ticket.layout(source, 4, true, false);
-            ticket.invalidate(false);
-            let preview = ticket.layout(&format!("{source}{suffix}"), 4, true, false);
-            assert_eq!(layout_text(&preview), expected);
-            assert!(!ticket.exact);
-            assert!(Arc::ptr_eq(
-                &preview,
-                &ticket.layout(&format!("{source}{suffix}"), 4, true, false)
-            ));
-            drop(pause);
-        }
-    }
-
-    #[test]
-    fn layout_worker_append_preview_bounds_tail_without_losing_prefix() {
-        let result = Rendered {
-            epoch: 0,
-            version: 1,
-            theme: Theme::Default,
-            icons: IconMode::Nerd,
-            width: 80,
-            source: Arc::from("**prefix**"),
-            layout: Arc::new(prepared(vec![Line::raw("prefix")], 80)),
-            ends_with_table: false,
-            table_tail_start: None,
-        };
-        let suffix = format!("{}🙂\n\nlatest", "中".repeat(4000));
-        let preview = append_preview(&result, &suffix, 80, true);
-        let text = layout_text(&preview);
-        assert!(text.starts_with("prefix\n…\n"));
-        assert!(text.ends_with("🙂\n\nlatest"));
-        assert!(!text.contains('\u{fffd}'));
-        assert!(text.len() < 9000);
-        let LayoutContent::Styled(last) =
-            &preview.get(preview.len() - 1).expect("预览末行").content
-        else {
-            panic!("应为样式行");
-        };
-        assert_eq!(
-            last.spans[0].style.fg,
-            Some(ratatui::style::Color::Rgb(110, 117, 129))
-        );
-        assert_eq!(
-            layout_text(&append_preview(&result, "", 80, true)),
-            "prefix"
-        );
-    }
-
-    #[test]
-    fn layout_worker_preview_reuses_rendered_prefix_without_copying_lines() {
-        let result = Rendered {
-            epoch: 0,
-            version: 1,
-            theme: Theme::Default,
-            icons: IconMode::Nerd,
-            width: 80,
-            source: Arc::from("**first**\n\nsecond"),
-            layout: Arc::new(prepared(vec![Line::raw("first"), Line::raw("second")], 80)),
-            ends_with_table: false,
-            table_tail_start: None,
-        };
-        let preview = append_preview(&result, "\n\nthird", 80, false);
-        // 已排版前缀不复制：首行仍是同一块内存，只有续接的末行与尾部是新的。
-        assert!(std::ptr::eq(
-            result.layout.get(0).expect("前缀首行"),
-            preview.get(0).expect("预览首行")
-        ));
-        assert!(!std::ptr::eq(
-            result.layout.get(1).expect("前缀末行"),
-            preview.get(1).expect("续接行")
-        ));
-        assert_eq!(layout_text(&preview), "first\nsecond\n\nthird");
-        // 无新增正文时直接复用整份布局。
-        assert!(Arc::ptr_eq(
-            &append_preview(&result, "", 80, false),
-            &result.layout
-        ));
-    }
-
-    #[test]
-    fn layout_worker_blocked_render_does_not_block_input_or_commit_preview() {
-        let worker = Worker::start().unwrap();
-        let pause = worker.pause();
-        let mut app = crate::tui::App::new(Err(anyhow::anyhow!("fixture"))).unwrap();
-        app.conversation = app.conversation.fresh();
-        app.state = crate::tui::State::Running;
-        app.show_welcome = false;
-        app.native_render = true;
-        app.conversation.progress(AgentEvent::AssistantStarted);
-        app.conversation.progress(AgentEvent::AssistantDelta {
-            text: "```rust\nlet value = 1;\n```".into(),
-            refusal: false,
-        });
-        app.conversation.progress(AgentEvent::AssistantFinished {
-            text: "```rust\nlet value = 1;\n```".into(),
-        });
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        terminal
-            .draw(|frame| app.draw(frame, &Default::default()))
-            .unwrap();
-        assert!(app.conversation.render_pending());
-        assert!(app.conversation.next_native_batch(100, 1, true).is_none());
-        app.handle(Event::Paste("可继续输入🙂".into()), &mut false);
-        assert_eq!(app.input.lines(), &["可继续输入🙂"]);
-        drop(pause);
-    }
-
-    #[test]
-    fn layout_worker_unchanged_revision_reuses_snapshot_fallback_and_job() {
-        let worker = Worker::start().unwrap();
-        let pause = worker.pause();
-        let mut ticket = Ticket::default();
-        let first = ticket.layout("正文🙂", 80, false, false);
-        let source = ticket.source.clone();
-        let version = ticket.version;
-        let second = ticket.layout("正文🙂", 80, false, false);
-        assert!(Arc::ptr_eq(&first, &second));
-        assert!(Arc::ptr_eq(&source, &ticket.source));
-        assert_eq!(version, ticket.version);
-        ticket.invalidate(false);
-        ticket.layout("正文🙂新增", 80, false, false);
-        assert_eq!(ticket.version, version + 1);
-        drop(pause);
-    }
-
-    #[test]
-    fn layout_worker_rejects_replacement_and_width_mismatch() {
-        let worker = Worker::start().unwrap();
-        let pause = worker.pause();
-        let mut ticket = Ticket::default();
-        ticket.layout("old", 80, false, false);
-        // 先确认后台排版已停在暂停点，再直接写 slot；否则下面的手动结果会与
-        // 后台结果竞争，断言变成依赖调度顺序。
-        pause.wait();
-        assert!(
-            ticket.slot.lock().unwrap().is_none(),
-            "暂停点之后不应出现后台结果"
-        );
-        let old_epoch = ticket.epoch;
-        ticket.invalidate(true);
-        ticket.layout("new", 80, false, false);
-        *ticket.slot.lock().unwrap() = Some(Rendered {
-            epoch: old_epoch,
-            version: u64::MAX,
-            theme: Theme::Default,
-            icons: IconMode::Nerd,
-            width: 80,
-            source: Arc::from("old"),
-            layout: Arc::new(prepared(vec![Line::raw("stale")], 80)),
-            ends_with_table: false,
-            table_tail_start: None,
-        });
-        let rows = ticket.layout("new", 80, false, false);
-        let LayoutContent::Styled(line) = &rows.get(0).expect("首行").content else {
-            panic!("应为已排版行")
-        };
-        assert_eq!(line.to_string(), "new");
-        assert!(!ticket.exact);
-        *ticket.slot.lock().unwrap() = Some(Rendered {
-            epoch: ticket.epoch,
-            version: ticket.version,
-            theme: Theme::Default,
-            icons: IconMode::Nerd,
-            width: 80,
-            source: Arc::from("new"),
-            layout: Arc::new(prepared(vec![Line::raw("new")], 80)),
-            ends_with_table: false,
-            table_tail_start: None,
-        });
-        ticket.layout("new", 80, false, false);
-        assert!(ticket.exact);
-        ticket.layout("new", 40, false, false);
-        assert!(!ticket.exact);
-        drop(pause);
-    }
-}
+mod tests;

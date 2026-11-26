@@ -36,6 +36,7 @@ mod entry_title;
 mod entry_tool;
 mod entry_user;
 mod geometry;
+mod layout;
 mod native;
 mod preview;
 mod progress;
@@ -47,6 +48,7 @@ mod tree_layout;
 mod wrap;
 
 pub(super) use diff::diff_layout_styled;
+pub(super) use layout::{EntryLayout, LayoutContent, LayoutLine};
 use tool_result::{background_status, tool_result};
 pub(super) use wrap::{block_line, visit_wrapped_rows, wrap_block};
 
@@ -135,20 +137,6 @@ pub(super) enum Source {
     ReadItem(usize),
 }
 
-pub(super) enum LayoutContent {
-    Source {
-        source: Source,
-        range: Range<usize>,
-        title_end: bool,
-    },
-    Styled(Line<'static>),
-}
-
-pub(super) struct LayoutLine {
-    pub(super) content: LayoutContent,
-    pub(super) height: usize,
-}
-
 enum EntryBody {
     Plain,
     ArgumentsPreview {
@@ -167,90 +155,6 @@ struct AskBlock {
     args: pp_core::interaction::AskArgs,
     answers: Option<Vec<pp_core::interaction::AskAnswer>>,
     previews: Vec<Vec<Option<super::markdown::MarkdownDocument>>>,
-}
-
-/// 真实物理行布局：前缀来自已完成的排版结果，预览只追加有界尾部。
-///
-/// 前缀行不被预览改写，因此滚动锚点和冻结进原生历史的行保持稳定；只有需要
-/// 续接的最后一行会被复制一次，其余前缀行共享同一个 `Arc`。
-pub(super) struct EntryLayout {
-    pub(super) width: u16,
-    /// 所有行的物理高度之和（一行源码文本可能折成多个屏幕行）。
-    pub(super) height: usize,
-    prefix: Option<Prefix>,
-    tail: Vec<LayoutLine>,
-}
-
-/// 复用的已排版前缀；`drop_last` 表示末行由尾部首行续接，不再单独占行。
-struct Prefix {
-    layout: Arc<EntryLayout>,
-    drop_last: bool,
-}
-
-impl Prefix {
-    fn kept(&self) -> usize {
-        self.layout.len() - usize::from(self.drop_last)
-    }
-}
-
-impl EntryLayout {
-    /// 完整自有的布局：后台排版结果、非流式卡片与原生历史重排。
-    pub(super) fn owned(width: u16, lines: Vec<LayoutLine>) -> Self {
-        let height = lines.iter().map(|line| line.height).sum();
-        Self {
-            width,
-            height,
-            prefix: None,
-            tail: lines,
-        }
-    }
-
-    /// 在前缀之后追加预览尾部；`continuation` 表示尾部首行承接前缀末行。
-    pub(super) fn appended(
-        prefix: Arc<EntryLayout>,
-        continuation: bool,
-        tail: Vec<LayoutLine>,
-    ) -> Self {
-        let continuation = continuation && !prefix.is_empty();
-        let mut height = prefix.height;
-        if continuation && let Some(last) = prefix.get(prefix.len() - 1) {
-            height -= last.height;
-        }
-        height += tail.iter().map(|line| line.height).sum::<usize>();
-        Self {
-            width: prefix.width,
-            height,
-            prefix: Some(Prefix {
-                layout: prefix,
-                drop_last: continuation,
-            }),
-            tail,
-        }
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// 行数；与物理高度 `height` 不同，一行源码文本可能折成多行。
-    pub(super) fn len(&self) -> usize {
-        self.prefix.as_ref().map_or(0, Prefix::kept) + self.tail.len()
-    }
-
-    pub(super) fn iter(&self) -> impl Iterator<Item = &LayoutLine> {
-        (0..self.len()).map(move |index| self.get(index).expect("行索引在布局范围内"))
-    }
-
-    pub(super) fn get(&self, index: usize) -> Option<&LayoutLine> {
-        let kept = self.prefix.as_ref().map_or(0, Prefix::kept);
-        if index < kept {
-            return self
-                .prefix
-                .as_ref()
-                .and_then(|prefix| prefix.layout.get(index));
-        }
-        self.tail.get(index - kept)
-    }
 }
 
 struct TranscriptEntry {
