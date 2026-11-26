@@ -875,7 +875,7 @@ pub(crate) struct KernelState {
     pub(crate) running: Option<RunningKernel>,
     pub(crate) next_req_id: u64,
     pub(crate) restarted_notice: bool,
-    pub(crate) sandbox_fingerprint: Option<(pp_sandbox::EffectiveMode, bool)>,
+    pub(crate) sandbox_fingerprint: Option<(pp_sandbox::EffectiveMode, u64)>,
     /// 测试专用：下一次循环内内核回收返回固定 `CleanupError`，确定性覆盖清理失败收尾。
     #[cfg(test)]
     fail_next_shutdown: bool,
@@ -922,18 +922,21 @@ pub(crate) fn run_cell(
 
     let lang_label = req.language.display_name();
     let started = Instant::now();
-    let desired_fp = req.sandbox.as_deref().map(|p| (p.mode(), p.network()));
+    let desired_fp = req.sandbox.as_deref().map(|p| (p.mode(), p.fingerprint()));
     let mut notice: Option<String> = None;
 
     if req.reset {
         state.shutdown_running()?;
         state.restarted_notice = false;
     } else if state.running.is_some() && state.sandbox_fingerprint != desired_fp {
+        let mode_changed = state.sandbox_fingerprint.map(|(m, _)| m) != desired_fp.map(|(m, _)| m);
         state.shutdown_running()?;
         state.restarted_notice = false;
-        notice = Some(
-            "Kernel restarted: sandbox mode changed; earlier state is unavailable.".to_owned(),
-        );
+        notice = Some(if mode_changed {
+            "Kernel restarted: sandbox mode changed; earlier state is unavailable.".to_owned()
+        } else {
+            "Kernel restarted: sandbox policy changed; earlier state is unavailable.".to_owned()
+        });
     } else if let Some(kernel) = state.running.as_mut()
         && !kernel.is_alive()
         && let Some(dead) = state.running.take()

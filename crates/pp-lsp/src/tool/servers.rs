@@ -22,6 +22,14 @@ pub(super) const PROJECT_INDEXED_ACTIONS: &[&str] = &[
 ];
 
 pub(super) fn resolve_path(cwd: &Path, file: &str) -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+        if file == "~" {
+            return PathBuf::from(home);
+        }
+        if let Some(rest) = file.strip_prefix("~/") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
     let path = Path::new(file);
     if path.is_absolute() {
         path.to_path_buf()

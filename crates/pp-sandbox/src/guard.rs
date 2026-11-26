@@ -88,20 +88,17 @@ pub(crate) fn path_eq_platform(left: &Path, right: &Path) -> bool {
     path_starts_with(left, right) && path_starts_with(right, left)
 }
 
-/// 词法快路径：`target` 已是绝对路径且各分量均可直接比较（无 `..`/前缀；`.` 由
-/// `Path::components` 自行归一）时，只要它与所有拒绝根在路径分量层面互不为祖先也
-/// 互不为后代，规范化就不可能把它移入拒绝集合，可跳过 `canonicalize`。
-///
-/// 前提是调用方保证路径已存在的祖先已解析（`rg`/`glob` 的 walk 根已
-/// `canonicalize` 且 `follow_links(false)`）；symlink entry 必须改用
-/// `Policy::is_read_denied_resolved`。其余情况返回 `false`，调用方必须走
-/// `normalize_path` 的完整判定。
-pub(crate) fn lexically_outside_deny(target: &Path, deny_read: &[PathBuf]) -> bool {
+pub(crate) fn lexically_normal_abs(target: &Path) -> bool {
     let mut components = target.components();
     if !matches!(components.next(), Some(Component::RootDir)) {
         return false;
     }
-    if components.any(|component| !matches!(component, Component::Normal(_))) {
+    !components.any(|component| !matches!(component, Component::Normal(_)))
+}
+
+#[cfg(test)]
+pub(crate) fn lexically_outside_deny(target: &Path, deny_read: &[PathBuf]) -> bool {
+    if !lexically_normal_abs(target) {
         return false;
     }
     !deny_read.iter().any(|denied| paths_overlap(target, denied))
@@ -231,12 +228,37 @@ pub(crate) fn check_read_path(
     target: &Path,
     deny_read: &[PathBuf],
     allow_read: &[PathBuf],
+    home_deny_root: Option<&Path>,
+    home_allow_read: &[PathBuf],
 ) -> io::Result<()> {
-    if is_read_denied_path(target, deny_read, allow_read) {
+    if allow_read
+        .iter()
+        .any(|allowed| path_starts_with(target, allowed))
+    {
+        return Ok(());
+    }
+    if deny_read
+        .iter()
+        .any(|denied| path_starts_with(target, denied))
+    {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
                 "blocked by sandbox policy (credential or protected path read denied): {}",
+                target.display()
+            ),
+        ));
+    }
+    if let Some(home) = home_deny_root
+        && path_starts_with(target, home)
+        && !home_allow_read
+            .iter()
+            .any(|allowed| path_starts_with(target, allowed))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "blocked by sandbox policy (read outside workspace home boundary): {}",
                 target.display()
             ),
         ));
@@ -248,6 +270,8 @@ pub(crate) fn is_read_denied_path(
     target: &Path,
     deny_read: &[PathBuf],
     allow_read: &[PathBuf],
+    home_deny_root: Option<&Path>,
+    home_allow_read: &[PathBuf],
 ) -> bool {
     if allow_read
         .iter()
@@ -255,9 +279,21 @@ pub(crate) fn is_read_denied_path(
     {
         return false;
     }
-    deny_read
+    if deny_read
         .iter()
         .any(|denied| path_starts_with(target, denied))
+    {
+        return true;
+    }
+    if let Some(home) = home_deny_root
+        && path_starts_with(target, home)
+        && !home_allow_read
+            .iter()
+            .any(|allowed| path_starts_with(target, allowed))
+    {
+        return true;
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -287,7 +323,7 @@ pub(crate) fn check_write_path(
             ),
         ));
     }
-    if is_read_denied_path(target, deny_read, allow_read) {
+    if is_read_denied_path(target, deny_read, allow_read, None, &[]) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(
@@ -368,7 +404,7 @@ mod tests {
         ];
 
         for (path, expect_denied) in cases {
-            let res = check_read_path(Path::new(path), &deny, &allow);
+            let res = check_read_path(Path::new(path), &deny, &allow, None, &[]);
             assert_eq!(res.is_err(), expect_denied, "path={path}");
         }
     }

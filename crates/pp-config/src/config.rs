@@ -50,7 +50,7 @@ mod limits;
 pub use limits::{RgSettings, ToolLimits, ToolsSettings};
 
 mod sandbox;
-pub use sandbox::{SandboxMode, SandboxSettings};
+pub use sandbox::{SandboxMode, SandboxReadScope, SandboxSettings};
 
 mod web_search;
 pub use web_search::{

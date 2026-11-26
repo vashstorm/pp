@@ -49,8 +49,11 @@ pub(crate) struct SeatbeltSpec<'a> {
     pub allow_write_files: &'a [PathBuf],
     pub protect: &'a [PathBuf],
     pub immutable_protect: &'a [PathBuf],
+    pub home_deny_root: Option<&'a PathBuf>,
+    pub home_allow_read: &'a [PathBuf],
     pub deny_read: &'a [PathBuf],
     pub allow_read: &'a [PathBuf],
+    pub allow_read_metadata: &'a [PathBuf],
     pub docker_user_sock: Option<&'a PathBuf>,
     pub network: bool,
 }
@@ -179,6 +182,22 @@ pub(crate) fn compile_profile(
         sb.push_str(")\n");
     }
 
+    if let Some(home) = spec.home_deny_root {
+        ensure_valid_param_path(home)?;
+        sb.push_str("(deny file-read-data (subpath (param \"HD0\")))\n");
+        params.push(("HD0".to_owned(), home.as_os_str().to_os_string()));
+        if !spec.home_allow_read.is_empty() {
+            sb.push_str("(allow file-read-data\n");
+            for (idx, path) in spec.home_allow_read.iter().enumerate() {
+                ensure_valid_param_path(path)?;
+                let key = format!("HA{idx}");
+                let _ = writeln!(sb, "  (subpath (param \"{key}\"))");
+                params.push((key, path.as_os_str().to_os_string()));
+            }
+            sb.push_str(")\n");
+        }
+    }
+
     if !spec.deny_read.is_empty() {
         sb.push_str("(deny file-read*\n");
         for idx in 0..spec.deny_read.len() {
@@ -188,11 +207,23 @@ pub(crate) fn compile_profile(
     }
 
     if !spec.allow_read.is_empty() {
-        sb.push_str("(allow file-read*\n");
+        sb.push_str("(allow file-read* file-read-data\n");
         for (idx, path) in spec.allow_read.iter().enumerate() {
             ensure_valid_param_path(path)?;
             let key = format!("A{idx}");
             let _ = writeln!(sb, "  (subpath (param \"{key}\"))");
+            params.push((key, path.as_os_str().to_os_string()));
+        }
+        sb.push_str(")\n");
+    }
+
+    // `ls -la` 会查询 `..`，只开放父目录自身的元数据，保留目录内容的拒读规则。
+    if !spec.allow_read_metadata.is_empty() {
+        sb.push_str("(allow file-read-metadata\n");
+        for (idx, path) in spec.allow_read_metadata.iter().enumerate() {
+            ensure_valid_param_path(path)?;
+            let key = format!("AM{idx}");
+            let _ = writeln!(sb, "  (literal (param \"{key}\"))");
             params.push((key, path.as_os_str().to_os_string()));
         }
         sb.push_str(")\n");
@@ -259,8 +290,11 @@ mod tests {
             allow_write_files: &[],
             protect: &protect,
             immutable_protect: &[],
+            home_deny_root: None,
+            home_allow_read: &[],
             deny_read: &deny_read,
             allow_read: &allow_read,
+            allow_read_metadata: &[],
             docker_user_sock: Some(&docker_sock),
             network: false,
         };
@@ -297,8 +331,11 @@ mod tests {
             allow_write_files: &[],
             protect: &[],
             immutable_protect: &[],
+            home_deny_root: None,
+            home_allow_read: &[],
             deny_read: &[],
             allow_read: &[],
+            allow_read_metadata: &[],
             docker_user_sock: None,
             network: true,
         };
@@ -347,8 +384,11 @@ mod tests {
             allow_write_files: &[],
             protect: &protect,
             immutable_protect: &[],
+            home_deny_root: None,
+            home_allow_read: &[],
             deny_read: &deny_read,
             allow_read: &allow_read,
+            allow_read_metadata: &[],
             docker_user_sock: None,
             network: false,
         };

@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn approved_session_read_is_scoped_and_keeps_write_protection() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    let agent = home.join(".pp/agent");
+    let sessions = agent.join("sessions");
+    let target = sessions.join("run.subagents");
+    let restricted = target.join("private");
+    let sibling = sessions.join("other.jsonl");
+    let credentials = agent.join("models.yml");
+    std::fs::create_dir_all(&restricted).unwrap();
+    std::fs::write(&sibling, "other").unwrap();
+    std::fs::write(&credentials, "fixture").unwrap();
+    let policy = |deny_read| {
+        Sandbox::with_probe_for_test(
+            SandboxSettings {
+                mode: SandboxMode::WorkspaceWrite,
+                deny_read,
+                ..Default::default()
+            },
+            &home,
+            Some(&home),
+            Some(&home),
+            ProbeResult::Available,
+        )
+        .policy()
+        .unwrap()
+        .unwrap()
+    };
+
+    let base = policy(vec![]);
+    assert!(base.check_read(&target).is_err());
+    assert!(base.session_read_target(&credentials).is_none());
+    #[cfg(unix)]
+    {
+        let link = sessions.join("linked-models.yml");
+        std::os::unix::fs::symlink(&credentials, &link).unwrap();
+        assert!(base.session_read_target(&link).is_none());
+    }
+    let approved = base.session_read_target(&target).unwrap();
+    let scoped = base.with_approved_session_reads(&[approved]).unwrap();
+    assert!(scoped.check_read(&restricted).is_ok());
+    assert!(scoped.check_write(&target.join("new.jsonl")).is_err());
+    assert!(scoped.check_read(&sibling).is_err());
+    assert!(scoped.check_read(&credentials).is_err());
+    assert!(base.check_read(&target).is_err());
+
+    for denied in [agent, restricted] {
+        let base = policy(vec![denied.to_string_lossy().into_owned()]);
+        assert!(base.session_read_target(&target).is_none());
+        assert!(
+            base.with_approved_session_reads(std::slice::from_ref(&target))
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn off_mode_skips_the_platform_probe() {
     let dir = tempfile::tempdir().unwrap();
 
@@ -415,4 +472,233 @@ fn is_denied_output_matches_case_insensitively() {
     assert!(Policy::is_denied_output("Operation not permitted"));
     assert!(Policy::is_denied_output("blocked by sandbox policy"));
     assert!(!Policy::is_denied_output("ENOENT: no such file"));
+}
+
+#[test]
+fn classify_read_enforces_five_layer_priority_and_home_read_scope() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    let home = root.join("home");
+    let ws_file = cwd.join("src/main.rs");
+    let outside_home_notes = home.join("Documents/notes.txt");
+    let outside_home_docs_dir = home.join("docs");
+    let outside_home_doc = outside_home_docs_dir.join("guide.md");
+    let ssh_key = home.join(".ssh/id_ed25519");
+    let ssh_known = home.join(".ssh/known_hosts");
+    let cargo_cred = home.join(".cargo/credentials.toml");
+    let cargo_bin = home.join(".cargo/bin/rustc");
+    let session_file = home.join(".pp/agent/sessions/s1.jsonl");
+    let tmp_file = root.join("shared/tmp.txt");
+
+    for dir in [
+        ws_file.parent().unwrap(),
+        outside_home_notes.parent().unwrap(),
+        &outside_home_docs_dir,
+        ssh_key.parent().unwrap(),
+        cargo_cred.parent().unwrap(),
+        cargo_bin.parent().unwrap(),
+        session_file.parent().unwrap(),
+        tmp_file.parent().unwrap(),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    for file in [
+        &ws_file,
+        &outside_home_notes,
+        &outside_home_doc,
+        &ssh_key,
+        &ssh_known,
+        &cargo_cred,
+        &cargo_bin,
+        &session_file,
+        &tmp_file,
+    ] {
+        std::fs::write(file, "fixture").unwrap();
+    }
+
+    let make = |read_scope| {
+        Sandbox::with_probe_for_test(
+            SandboxSettings {
+                mode: SandboxMode::WorkspaceWrite,
+                read_scope,
+                allow_read: vec!["~/.ssh/known_hosts".into()],
+                ..Default::default()
+            },
+            &cwd,
+            Some(&home),
+            Some(&root.join("tmp")),
+            ProbeResult::Available,
+        )
+        .policy()
+        .unwrap()
+        .unwrap()
+    };
+
+    let ws_policy = make(SandboxReadScope::Workspace);
+    let cases = [
+        (&ws_file, true, "workspace file allowed"),
+        (&cargo_bin, true, "toolchain dir allowed under Workspace"),
+        (&ssh_known, true, "explicit allow_read overrides deny_read"),
+        (&tmp_file, true, "outside $HOME path allowed"),
+        (&ssh_key, false, "credential denied"),
+        (
+            &cargo_cred,
+            false,
+            "cargo credentials denied even inside .cargo",
+        ),
+        (
+            &session_file,
+            false,
+            "session path requires single approval",
+        ),
+        (
+            &outside_home_notes,
+            false,
+            "$HOME file requires outside approval",
+        ),
+    ];
+    for (path, expected_ok, label) in cases {
+        assert_eq!(ws_policy.check_read(path).is_ok(), expected_ok, "{label}");
+    }
+    assert!(matches!(
+        ws_policy.classify_read(&ssh_key),
+        ReadAccessCheck::ImmutableDenied(_)
+    ));
+    assert!(matches!(
+        ws_policy.classify_read(&cargo_cred),
+        ReadAccessCheck::ImmutableDenied(_)
+    ));
+    assert_eq!(
+        ws_policy.classify_read(&session_file),
+        ReadAccessCheck::NeedsSessionApproval(session_file.clone())
+    );
+    assert_eq!(
+        ws_policy.classify_read(&outside_home_notes),
+        ReadAccessCheck::NeedsOutsideApproval(outside_home_notes.clone())
+    );
+
+    // 批准 $HOME/docs（home_allow_read）只放行该子树，不破坏 deny_read 且拒绝直接放行 .ssh/.pp/agent。
+    let approved = ws_policy
+        .with_approved_reads(&[], std::slice::from_ref(&outside_home_docs_dir))
+        .unwrap();
+    assert_eq!(
+        approved.classify_read(&outside_home_doc),
+        ReadAccessCheck::Allowed
+    );
+    assert_eq!(
+        approved.classify_read(&outside_home_notes),
+        ReadAccessCheck::NeedsOutsideApproval(outside_home_notes.clone())
+    );
+    assert!(matches!(
+        approved.classify_read(&ssh_key),
+        ReadAccessCheck::ImmutableDenied(_)
+    ));
+    assert!(
+        ws_policy
+            .with_approved_reads(&[], &[home.join(".ssh")])
+            .is_err()
+    );
+    assert!(
+        ws_policy
+            .with_approved_reads(&[], &[home.join(".pp/agent")])
+            .is_err()
+    );
+
+    // Unrestricted 与 without_home_restriction 放开普通 $HOME 读，但凭据与会话路径仍受阻断。
+    let unrestricted = make(SandboxReadScope::Unrestricted);
+    assert_eq!(
+        unrestricted.classify_read(&outside_home_notes),
+        ReadAccessCheck::Allowed
+    );
+    assert!(matches!(
+        unrestricted.classify_read(&ssh_key),
+        ReadAccessCheck::ImmutableDenied(_)
+    ));
+    assert!(matches!(
+        unrestricted.classify_read(&session_file),
+        ReadAccessCheck::NeedsSessionApproval(_)
+    ));
+    assert_ne!(ws_policy.fingerprint(), unrestricted.fingerprint());
+    assert_ne!(ws_policy.fingerprint(), approved.fingerprint());
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn os_sandbox_blocks_home_python_read_until_approved_or_unrestricted() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let cwd = root.join("work");
+    let home = root.join("home");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let ws_file = cwd.join("ok.txt");
+    let home_secret = home.join("secret.txt");
+    let home_other = home.join("other.txt");
+    let ssh_key = home.join(".ssh/id_ed25519");
+    std::fs::write(&ws_file, "ws-ok").unwrap();
+    std::fs::write(&home_secret, "home-secret").unwrap();
+    std::fs::write(&home_other, "home-other").unwrap();
+    std::fs::write(&ssh_key, "ssh-secret").unwrap();
+
+    if Sandbox::new(SandboxSettings::default(), &cwd)
+        .status()
+        .effective
+        == EffectiveMode::Off
+    {
+        return;
+    }
+
+    let make = |read_scope| {
+        Sandbox::with_probe_for_test(
+            SandboxSettings {
+                mode: SandboxMode::WorkspaceWrite,
+                read_scope,
+                ..Default::default()
+            },
+            &cwd,
+            Some(&home),
+            Some(&root.join("tmp")),
+            ProbeResult::Available,
+        )
+        .policy()
+        .unwrap()
+        .unwrap()
+    };
+
+    let run_py = |policy: &Policy, target: &Path| {
+        let args: Vec<std::ffi::OsString> = vec![
+            "-c".into(),
+            "import sys; print(open(sys.argv[1]).read())".into(),
+            target.as_os_str().to_os_string(),
+        ];
+        let (program, wrapped_args) = policy.wrap_command("python3", &args).unwrap();
+        let mut cmd = std::process::Command::new(program);
+        cmd.current_dir(&cwd).args(wrapped_args);
+        cmd.output().unwrap()
+    };
+
+    let ws_policy = make(SandboxReadScope::Workspace);
+    assert!(run_py(&ws_policy, &ws_file).status.success());
+    let blocked = run_py(&ws_policy, &home_secret);
+    assert!(
+        !blocked.status.success(),
+        "python3 must not read $HOME file by default"
+    );
+
+    // 批准单文件后允许该文件，同级 $HOME 文件仍被拦截。
+    let approved = ws_policy
+        .with_approved_reads(&[], std::slice::from_ref(&home_secret))
+        .unwrap();
+    let allowed = run_py(&approved, &home_secret);
+    assert!(
+        allowed.status.success()
+            && String::from_utf8_lossy(&allowed.stdout).trim() == "home-secret"
+    );
+    assert!(!run_py(&approved, &home_other).status.success());
+
+    // Unrestricted 允许 $HOME 普通文件，但凭据仍拦截。
+    let unrestricted = make(SandboxReadScope::Unrestricted);
+    assert!(run_py(&unrestricted, &home_other).status.success());
+    assert!(!run_py(&unrestricted, &ssh_key).status.success());
 }

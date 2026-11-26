@@ -589,3 +589,46 @@ fn lsp_tool_multiserver_conflicts_are_reported_without_merging() {
     assert_eq!(conflicts[0]["path"], "a.rs");
     assert_eq!(conflicts[0]["servers"], json!(["a", "b"]));
 }
+
+#[test]
+fn lsp_resolve_read_targets_extracts_navigation_glob_rename_and_wildcard_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().canonicalize().unwrap();
+    let token = CancellationToken::new();
+
+    let nav = resolve_read_targets(
+        &cwd,
+        &json!({"action": "definition", "file": "src/lib.rs"}).to_string(),
+        &token,
+    )
+    .unwrap();
+    assert_eq!(nav, vec![cwd.join("src/lib.rs")]);
+
+    let glob = resolve_read_targets(
+        &cwd,
+        &json!({"action": "diagnostics", "file": "src/**/*.rs"}).to_string(),
+        &token,
+    )
+    .unwrap();
+    assert_eq!(glob, vec![cwd.join("src")]);
+
+    let rename = resolve_read_targets(
+        &cwd,
+        &json!({"action": "rename_file", "file": "a.rs", "new_name": "../b.rs"}).to_string(),
+        &token,
+    )
+    .unwrap();
+    assert_eq!(rename, vec![cwd.join("a.rs"), cwd.join("../b.rs")]);
+
+    let wild = resolve_read_targets(
+        &cwd,
+        &json!({"action": "diagnostics", "file": "*"}).to_string(),
+        &token,
+    )
+    .unwrap();
+    assert_eq!(wild, vec![cwd.clone()]);
+
+    let status =
+        resolve_read_targets(&cwd, &json!({"action": "status"}).to_string(), &token).unwrap();
+    assert!(status.is_empty());
+}

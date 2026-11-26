@@ -71,8 +71,28 @@ struct Target {
     pattern: String,
 }
 
+fn expand_tilde_str<'a>(cwd: &Path, raw: &'a str) -> std::borrow::Cow<'a, str> {
+    if !cwd.join(raw).exists()
+        && let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty())
+    {
+        if raw == "~" {
+            return std::borrow::Cow::Owned(PathBuf::from(home).to_string_lossy().into_owned());
+        }
+        if let Some(rest) = raw.strip_prefix("~/") {
+            return std::borrow::Cow::Owned(
+                PathBuf::from(home)
+                    .join(rest)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    std::borrow::Cow::Borrowed(raw)
+}
+
 fn parse_target(cwd: &Path, input: &str) -> Target {
-    let normalized = input.replace('\\', "/");
+    let expanded = expand_tilde_str(cwd, input);
+    let normalized = expanded.replace('\\', "/");
     let segments: Vec<_> = normalized.split('/').collect();
     let first = segments
         .iter()
@@ -255,29 +275,51 @@ fn sandbox_denied_entry(
     }
 }
 
+pub(in crate::tools) fn inspect_root(cwd: &Path, arguments: &str) -> Result<Option<PathBuf>> {
+    let Ok(args) = serde_json::from_str::<Args>(arguments) else {
+        return Ok(None);
+    };
+    let path = args.path.as_deref().unwrap_or(".");
+    if path.trim().is_empty()
+        || path.contains('\0')
+        || args.pattern.trim().is_empty()
+        || args.pattern.contains('\0')
+    {
+        return Ok(None);
+    }
+    let directory = normalize(&cwd.join(expand_tilde_str(cwd, path).as_ref()));
+    Ok(Some(parse_target(&directory, &args.pattern).root))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::tools) fn run_with_policy(
+    cwd: &Path,
+    arguments: &str,
+    token: &CancellationToken,
+    policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
+) -> Result<Value> {
+    run_with_timeout(cwd, arguments, token, TIMEOUT, policy)
+}
+
+#[cfg(test)]
 pub(super) fn run_with_sandbox(
     cwd: &Path,
     arguments: &str,
     token: &CancellationToken,
     sandbox: pp_sandbox::SandboxView<'_>,
 ) -> Result<Value> {
-    run_with_timeout(cwd, arguments, token, TIMEOUT, sandbox)
+    run_with_timeout(cwd, arguments, token, TIMEOUT, sandbox.policy()?)
 }
 #[cfg(test)]
 fn run(cwd: &Path, arguments: &str, token: &CancellationToken) -> Result<Value> {
-    run_with_sandbox(
-        cwd,
-        arguments,
-        token,
-        pp_sandbox::Sandbox::disabled().view(None),
-    )
+    run_with_policy(cwd, arguments, token, None)
 }
 fn run_with_timeout(
     cwd: &Path,
     arguments: &str,
     token: &CancellationToken,
     timeout: Duration,
-    sandbox: pp_sandbox::SandboxView<'_>,
+    policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
 ) -> Result<Value> {
     cancellation::check(token)?;
     let args: Args = serde_json::from_str(arguments).context("invalid glob arguments")?;
@@ -297,14 +339,14 @@ fn run_with_timeout(
         !path.trim().is_empty() && !path.contains('\0'),
         "path must be a non-empty directory and contain no NUL bytes; put the glob in pattern"
     );
-    let directory = normalize(&cwd.join(path));
+    let directory = normalize(&cwd.join(expand_tilde_str(cwd, path).as_ref()));
     ensure!(
         directory.is_dir(),
         "path must be an existing directory; put the glob in pattern"
     );
     let target = parse_target(&directory, &args.pattern);
     let deadline = Instant::now() + timeout;
-    search(cwd, args, target, token, requested, limit, sandbox, || {
+    search(cwd, args, target, token, requested, limit, policy, || {
         Instant::now() >= deadline
     })
 }
@@ -317,7 +359,7 @@ fn search(
     token: &CancellationToken,
     requested: f64,
     limit: usize,
-    sandbox: pp_sandbox::SandboxView<'_>,
+    policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
     mut expired: impl FnMut() -> bool,
 ) -> Result<Value> {
     let mut results = Results::new(limit);
@@ -336,7 +378,6 @@ fn search(
         ensure!(metadata.is_dir(), "glob search path is not a directory");
         let matcher = compile(&target.pattern)?;
         let walk_root = fs::canonicalize(&root).context("cannot resolve glob search path")?;
-        let policy = sandbox.policy()?;
         if let Some(policy) = &policy {
             policy.check_read(&walk_root)?;
         }
@@ -625,13 +666,12 @@ mod tests {
                 .unwrap_err()
                 .is::<pp_core::cancellation::Cancelled>()
         );
-        let disabled = std::sync::Arc::new(pp_sandbox::Sandbox::disabled());
         let timeout = run_with_timeout(
             root,
             r#"{"pattern":"**/*"}"#,
             &CancellationToken::new(),
             Duration::ZERO,
-            disabled.view(None),
+            None,
         )
         .unwrap();
         assert_eq!(timeout["timed_out"], true);
@@ -659,7 +699,6 @@ mod tests {
         assert!(!text(&result).contains("b.rs"));
         let args: Args = serde_json::from_value(json!({"pattern":"**/*"})).unwrap();
         let mut checkpoints = 0;
-        let disabled = std::sync::Arc::new(pp_sandbox::Sandbox::disabled());
         let result = search(
             root,
             args,
@@ -667,7 +706,7 @@ mod tests {
             &CancellationToken::new(),
             200.0,
             200,
-            disabled.view(None),
+            None,
             || {
                 checkpoints += 1;
                 checkpoints > 2

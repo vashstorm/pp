@@ -556,14 +556,14 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn contains_glob(pattern: &str) -> bool {
+pub(crate) fn contains_glob(pattern: &str) -> bool {
     pattern
         .chars()
         .any(|ch| matches!(ch, '*' | '?' | '[' | '{'))
 }
 
 /// 把 glob 拆成「静态目录根 + 相对模式」；绝对模式只看静态前缀，避免从 `/` 扫描。
-fn glob_scope(cwd: &Path, pattern: &str) -> (PathBuf, String) {
+pub(crate) fn glob_scope(cwd: &Path, pattern: &str) -> (PathBuf, String) {
     let normalized = pattern.replace('\\', "/");
     let base = if normalized.starts_with('/') {
         PathBuf::from("/")

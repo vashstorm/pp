@@ -675,6 +675,7 @@ mod tests {
         let macos_status = pp_sandbox::SandboxStatus {
             configured: pp_config::config::SandboxMode::Auto,
             effective: pp_sandbox::EffectiveMode::WorkspaceWrite,
+            read_scope: pp_config::config::SandboxReadScope::Workspace,
             degraded_reason: None,
             backend: "seatbelt",
             network: false,
@@ -708,6 +709,7 @@ mod tests {
         let linux_status = pp_sandbox::SandboxStatus {
             configured: pp_config::config::SandboxMode::Auto,
             effective: pp_sandbox::EffectiveMode::WorkspaceWrite,
+            read_scope: pp_config::config::SandboxReadScope::Workspace,
             degraded_reason: None,
             backend: "bubblewrap",
             network: false,
@@ -737,6 +739,7 @@ mod tests {
         let ro_status = pp_sandbox::SandboxStatus {
             configured: pp_config::config::SandboxMode::ReadOnly,
             effective: pp_sandbox::EffectiveMode::ReadOnly,
+            read_scope: pp_config::config::SandboxReadScope::Workspace,
             degraded_reason: None,
             backend: "seatbelt",
             network: false,

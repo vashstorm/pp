@@ -12,9 +12,9 @@ use std::{
 };
 
 use anyhow::Result;
-use pp_config::config::{SandboxMode, SandboxSettings};
+use pp_config::config::{SandboxMode, SandboxReadScope, SandboxSettings};
 
-pub use policy::{DenialMetadata, Policy, SandboxOverlay, WriteAccessCheck};
+pub use policy::{DenialMetadata, Policy, ReadAccessCheck, SandboxOverlay, WriteAccessCheck};
 
 /// 本进程级平台的沙盒探测结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,6 +81,7 @@ fn platform_probe(network: bool) -> ProbeResult {
 pub struct SandboxStatus {
     pub configured: SandboxMode,
     pub effective: EffectiveMode,
+    pub read_scope: SandboxReadScope,
     pub degraded_reason: Option<String>,
     pub backend: &'static str,
     pub network: bool,
@@ -122,8 +123,9 @@ impl SandboxStatus {
             "off (loopback only)"
         };
         let mut lines = vec![format!(
-            "Sandbox: effective={mode}, configured={}, backend={}, network={net_desc}",
+            "Sandbox: effective={mode}, configured={}, read_scope={}, backend={}, network={net_desc}",
             self.configured.as_str(),
+            self.read_scope.as_str(),
             self.backend,
         )];
         if let Some(warning) = self.warning() {
@@ -429,9 +431,9 @@ impl Sandbox {
 
     fn status_for_mode(&self, configured: SandboxMode) -> SandboxStatus {
         let probe = self.probe_for_mode(configured);
-        let network = {
+        let (network, read_scope) = {
             let state = self.state.read().expect("sandbox state lock poisoned");
-            state.effective_network()
+            (state.effective_network(), state.settings.read_scope)
         };
         let (effective, degraded_reason) = resolve_effective(configured, &probe);
         let (writable_summary, notes) = match effective {
@@ -447,6 +449,8 @@ impl Sandbox {
                         allow_write_files: &policy.allow_write_files,
                         protect: &policy.protect,
                         immutable_protect: &policy.immutable_protect,
+                        home_deny_root: policy.home_deny_root.as_ref(),
+                        home_allow_read: &policy.home_allow_read,
                         deny_read: &policy.deny_read,
                         allow_read: &policy.allow_read,
                         docker_sockets: &policy.docker_sockets,
@@ -467,6 +471,7 @@ impl Sandbox {
         SandboxStatus {
             configured,
             effective,
+            read_scope,
             degraded_reason,
             backend: platform_backend(),
             network,

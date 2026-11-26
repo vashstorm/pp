@@ -160,6 +160,18 @@ impl Tools {
             }
             "ask" => self.run_ask(call.arguments, call.call_id, call.cancellation),
             "read" => {
+                if let Some((target, path)) = access.approved_session_read {
+                    let result = read::approved_session(
+                        target,
+                        path,
+                        &self.workspace,
+                        self.limits,
+                        self.edit_mode,
+                        call.cancellation,
+                    )?;
+                    images.extend(result.images);
+                    return Ok((result.value, None, None));
+                }
                 return self.run_read(
                     call.arguments,
                     call.cancellation,
@@ -167,6 +179,7 @@ impl Tools {
                     images,
                     access.permissions,
                     sandbox,
+                    access.read_policy,
                     access.hook_ask,
                 );
             }
@@ -185,18 +198,30 @@ impl Tools {
             "bash" => self.run_bash(call, access.permissions, sandbox, access.hook_ask),
             "bash_task" => self.run_bash_task(call.arguments, call.call_id, call.emit),
             "eval" => return self.run_eval(call, hook, images, sandbox),
-            "rg" => rg::run_with_sandbox(
-                &self.cwd,
-                self.limits.rg,
-                self.edit_mode,
-                &self.workspace,
-                &mut self.snapshots.borrow_mut(),
-                call.arguments,
-                call.cancellation,
-                Some(&self.artifacts),
-                sandbox,
-            ),
-            "glob" => glob::run_with_sandbox(&self.cwd, call.arguments, call.cancellation, sandbox),
+            "rg" => {
+                let policy = match access.read_policy {
+                    Some(policy) => Some(policy),
+                    None => sandbox.policy()?,
+                };
+                rg::run_with_policy(
+                    &self.cwd,
+                    self.limits.rg,
+                    self.edit_mode,
+                    &self.workspace,
+                    &mut self.snapshots.borrow_mut(),
+                    call.arguments,
+                    call.cancellation,
+                    Some(&self.artifacts),
+                    policy,
+                )
+            }
+            "glob" => {
+                let policy = match access.read_policy {
+                    Some(policy) => Some(policy),
+                    None => sandbox.policy()?,
+                };
+                glob::run_with_policy(&self.cwd, call.arguments, call.cancellation, policy)
+            }
             "web_search" => {
                 return self.run_web_search(
                     call.arguments,

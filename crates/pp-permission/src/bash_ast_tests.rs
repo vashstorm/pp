@@ -23,6 +23,9 @@ fn sandboxed_bash(gate: &Gate, mode: PermissionMode, command: &str) -> Result<Ap
         },
         &cwd,
         &bash_args(command),
+        None,
+        &[],
+        &[],
         &[],
         false,
         None,
@@ -45,6 +48,9 @@ fn sandboxed_bash_in(
         },
         cwd,
         &bash_args(command),
+        None,
+        &[],
+        &[],
         &[],
         false,
         None,
@@ -378,4 +384,127 @@ fn ast_handles_command_wrappers_su_expansions_and_redirect_preapproval() {
             )
             .is_err()
     );
+}
+
+#[test]
+fn bash_ast_detects_tilde_and_redirect_reads_and_blocks_interpreter_memorization() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let ws = root.join("ws");
+    let home = root.join("home");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::create_dir_all(home.join(".pp/agent/sessions")).unwrap();
+    let session_file = home.join(".pp/agent/sessions/s1.jsonl");
+    let home_file = home.join("notes.txt");
+    std::fs::write(&session_file, "log").unwrap();
+    std::fs::write(&home_file, "notes").unwrap();
+
+    let policy = pp_sandbox::Sandbox::with_probe_for_test(
+        pp_config::config::SandboxSettings::default(),
+        &ws,
+        Some(&home),
+        Some(&root),
+        pp_sandbox::ProbeResult::Available,
+    )
+    .policy()
+    .unwrap()
+    .unwrap();
+
+    // 输入重定向 `<` 与扩展读命令均应识别目标并区分会话/工作区外读取。
+    let redirect_cmd = format!(
+        "head < '{}' && rg needle '{}'",
+        session_file.display(),
+        home_file.display()
+    );
+    let analysis = crate::bash_ast::analyze_command(&redirect_cmd);
+    let classified = analysis.classify_read_targets(&ws, &policy);
+    assert_eq!(classified.session_reads, vec![session_file]);
+    assert_eq!(classified.outside_reads, vec![home_file]);
+    assert!(classified.immutable_denied.is_none());
+
+    // 若已设置 HOME，则 `cat ~/...` 静态波浪号应展开并按 $HOME 读取策略分类。
+    if let Some(real_home) = std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+    {
+        let env_policy = pp_sandbox::Sandbox::with_probe_for_test(
+            pp_config::config::SandboxSettings::default(),
+            &ws,
+            Some(&real_home),
+            Some(&root),
+            pp_sandbox::ProbeResult::Available,
+        )
+        .policy()
+        .unwrap()
+        .unwrap();
+        let tilde_classified = crate::bash_ast::analyze_command("cat ~/.ssh/id_ed25519")
+            .classify_read_targets(&ws, &env_policy);
+        assert!(tilde_classified.immutable_denied.is_some());
+    }
+
+    // 解释器与路径型可执行文件禁止生成可记忆 Exact 规则。
+    for non_memorizable in [
+        "python3 read_secret.py",
+        "node script.js",
+        "ruby run.rb",
+        "./local.sh",
+        "~/bin/tool",
+        "/tmp/evil",
+        "bun run app.ts",
+        "bun -e 'console.log(1)'",
+        "deno eval '1+1'",
+        "uv run app.py",
+        "find . -exec cat {} +",
+        "xargs cat",
+    ] {
+        let analyzed = crate::bash_ast::analyze_command(non_memorizable);
+        assert!(
+            crate::bash_ast::ProgramAnalysis::suggested_rules(&analyzed.leaves).is_none(),
+            "must not memorize {non_memorizable}"
+        );
+    }
+    let memorizable = crate::bash_ast::analyze_command("git status");
+    assert!(crate::bash_ast::ProgramAnalysis::suggested_rules(&memorizable.leaves).is_some());
+
+    // 超长命令截断提示禁用可记忆授权并跳过 auto_review。
+    let mut gate = Gate::for_process(&root, Some(PermissionMode::AutoReview), false);
+    gate.set_config(ToolsSettings::default());
+    gate.set_auto_review_handler(Arc::new(|_request, _token| {
+        panic!("oversized command must skip auto_review")
+    }));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    gate.set_handler(Box::new(move |request, _| {
+        recorded
+            .lock()
+            .unwrap()
+            .push((request.persistent_grant, request.reason.clone()));
+        Ok(PermissionDecision::Approve)
+    }));
+    let long_cmd = format!("touch .pp/{}", "a".repeat(5000));
+    gate.authorize_bash(
+        PermissionMode::AutoReview,
+        ToolAccess {
+            tier: Tier::Exec,
+            sandboxed: true,
+            network_enabled: false,
+        },
+        &ws,
+        &bash_args(&long_cmd),
+        None,
+        &[],
+        &[],
+        &[],
+        false,
+        None,
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(
+        !seen[0].0,
+        "truncated prompt must not offer persistent_grant"
+    );
+    assert!(seen[0].1.contains("command truncated"), "{}", seen[0].1);
 }

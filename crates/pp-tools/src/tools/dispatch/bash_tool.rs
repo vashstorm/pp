@@ -26,25 +26,28 @@ impl Tools {
             self.limits.bash_timeout_seconds
         );
         let mut policy = sandbox.policy()?;
-        let (extra_writable, extra_network) = if let Some(request) = args.sandbox_permissions {
-            ensure!(
-                matches!(call.policy, ToolPolicy::Execute { .. }),
-                "sandbox_permissions requires Execute mode"
-            );
-            match policy.as_ref() {
-                Some(base) => {
-                    let writable = base.resolve_extra_writable(&request.writable)?;
-                    let network = request.network && !base.network();
-                    (writable, network)
+        let (extra_writable, extra_session_reads, extra_outside_reads, extra_network) =
+            if let Some(request) = args.sandbox_permissions {
+                ensure!(
+                    matches!(call.policy, ToolPolicy::Execute { .. }),
+                    "sandbox_permissions requires Execute mode"
+                );
+                match policy.as_ref() {
+                    Some(base) => {
+                        let writable = base.resolve_extra_writable(&request.writable)?;
+                        let (session_reads, outside_reads) =
+                            base.resolve_extra_readable(&request.read)?;
+                        let network = request.network && !base.network();
+                        (writable, session_reads, outside_reads, network)
+                    }
+                    None if permissions == pp_config::config::PermissionMode::DangerFullAccess => {
+                        (Vec::new(), Vec::new(), Vec::new(), false)
+                    }
+                    None => bail!("sandbox is unavailable"),
                 }
-                None if permissions == pp_config::config::PermissionMode::DangerFullAccess => {
-                    (Vec::new(), false)
-                }
-                None => bail!("sandbox is unavailable"),
-            }
-        } else {
-            (Vec::new(), false)
-        };
+            } else {
+                (Vec::new(), Vec::new(), Vec::new(), false)
+            };
         let access = pp_permission::ToolAccess {
             tier: permission::Tier::Exec,
             sandboxed: policy.is_some(),
@@ -55,7 +58,10 @@ impl Tools {
             access,
             &self.cwd,
             call.arguments,
+            policy.as_deref(),
             &extra_writable,
+            &extra_session_reads,
+            &extra_outside_reads,
             extra_network,
             hook_ask,
             cancellation,
@@ -71,6 +77,12 @@ impl Tools {
                 &approved.allow_protected,
                 approved.network,
             )?);
+        }
+        if let Some(base) = policy.as_ref()
+            && (!approved.session_reads.is_empty() || !approved.outside_reads.is_empty())
+        {
+            policy =
+                Some(base.with_approved_reads(&approved.session_reads, &approved.outside_reads)?);
         }
         pp_core::cancellation::check(cancellation)?;
         let cache = self.workspace.cache_dir()?;

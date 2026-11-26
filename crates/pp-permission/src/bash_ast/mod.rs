@@ -60,9 +60,60 @@ pub(crate) struct ProgramAnalysis {
     pub(crate) leaves: Vec<LeafCommand>,
     pub(crate) has_write_redirection: bool,
     pub(crate) write_redirect_targets: Vec<String>,
+    pub(crate) read_redirect_targets: Vec<String>,
     pub(crate) critical_reason: Option<&'static str>,
     pub(crate) unanalyzable: bool,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BashReadTargets {
+    pub(crate) session_reads: Vec<std::path::PathBuf>,
+    pub(crate) outside_reads: Vec<std::path::PathBuf>,
+    pub(crate) immutable_denied: Option<String>,
+}
+
+const READ_TARGET_PROGRAMS: &[&str] = &[
+    "ls",
+    "ll",
+    "la",
+    "dir",
+    "tree",
+    "cat",
+    "head",
+    "tail",
+    "stat",
+    "file",
+    "wc",
+    "du",
+    "nl",
+    "tac",
+    "rev",
+    "sort",
+    "uniq",
+    "cut",
+    "tr",
+    "diff",
+    "cmp",
+    "comm",
+    "jq",
+    "yq",
+    "rg",
+    "grep",
+    "egrep",
+    "fgrep",
+    "ag",
+    "ack",
+    "find",
+    "sed",
+    "awk",
+    "realpath",
+    "readlink",
+    "md5",
+    "md5sum",
+    "shasum",
+    "sha256sum",
+    "strings",
+];
 
 impl ProgramAnalysis {
     /// 当命令含多条未授权命令时提取去重后的建议精确规则（`Exact` 模式）；
@@ -104,6 +155,90 @@ impl ProgramAnalysis {
 
     pub(crate) fn needs_network(&self) -> bool {
         self.leaves.iter().any(LeafCommand::needs_network)
+    }
+
+    pub(crate) fn classify_read_targets(
+        &self,
+        cwd: &std::path::Path,
+        sandbox: &pp_sandbox::Policy,
+    ) -> BashReadTargets {
+        let mut out = BashReadTargets::default();
+        let home = std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from);
+        let mut inspect_raw = |raw: &str| {
+            let path = std::path::Path::new(raw);
+            let candidate = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                cwd.join(path)
+            };
+            match sandbox.classify_read(&candidate) {
+                pp_sandbox::ReadAccessCheck::Allowed => {}
+                pp_sandbox::ReadAccessCheck::ImmutableDenied(msg) => {
+                    if out.immutable_denied.is_none() {
+                        out.immutable_denied = Some(msg);
+                    }
+                }
+                pp_sandbox::ReadAccessCheck::NeedsSessionApproval(target) => {
+                    out.session_reads.push(target);
+                }
+                pp_sandbox::ReadAccessCheck::NeedsOutsideApproval(target) => {
+                    out.outside_reads.push(target);
+                }
+            }
+        };
+
+        for leaf in &self.leaves {
+            if leaf.is_function_call
+                || leaf.dynamic_exec
+                || !leaf
+                    .program()
+                    .is_some_and(|program| READ_TARGET_PROGRAMS.contains(&program))
+            {
+                continue;
+            }
+            let mut after_double_dash = false;
+            for (idx, token) in leaf.tokens.iter().enumerate().skip(1) {
+                let candidate = match token.as_literal() {
+                    Some(lit) => {
+                        if !after_double_dash && lit == "--" {
+                            after_double_dash = true;
+                            continue;
+                        }
+                        if !after_double_dash && lit.starts_with('-') {
+                            if let Some((_, val)) = lit.split_once('=')
+                                && !val.is_empty()
+                            {
+                                val.to_owned()
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            lit.to_owned()
+                        }
+                    }
+                    None => {
+                        let Some(raw) = leaf.raw_args.get(idx) else {
+                            continue;
+                        };
+                        let Some(expanded) = expand_static_tilde_word(raw, home.as_deref()) else {
+                            continue;
+                        };
+                        expanded
+                    }
+                };
+                inspect_raw(&candidate);
+            }
+        }
+        for target in &self.read_redirect_targets {
+            inspect_raw(target);
+        }
+        out.session_reads.sort_unstable();
+        out.session_reads.dedup();
+        out.outside_reads.sort_unstable();
+        out.outside_reads.dedup();
+        out
     }
 }
 
@@ -447,10 +582,27 @@ impl Analyzer {
                             | ast::IoFileRedirectKind::Clobber
                             | ast::IoFileRedirectKind::ReadAndWrite
                     );
+                    let is_read = matches!(
+                        kind,
+                        ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::ReadAndWrite
+                    );
                     match target {
                         ast::IoFileRedirectTarget::Filename(word)
                         | ast::IoFileRedirectTarget::Duplicate(word) => {
                             let tok = self.parse_word_token(&word.value, depth + 1);
+                            if is_read {
+                                if let ArgToken::Literal(path) = &tok {
+                                    self.analysis.read_redirect_targets.push(path.clone());
+                                } else if let Some(expanded) = expand_static_tilde_word(
+                                    &word.value,
+                                    std::env::var_os("HOME")
+                                        .filter(|v| !v.is_empty())
+                                        .as_deref()
+                                        .map(std::path::Path::new),
+                                ) {
+                                    self.analysis.read_redirect_targets.push(expanded);
+                                }
+                            }
                             if is_write {
                                 let is_dev_null =
                                     matches!(&tok, ArgToken::Literal(p) if p == "/dev/null");
@@ -817,4 +969,25 @@ fn literal_pieces(pieces: &[WordPieceWithSource]) -> Option<String> {
         }
     }
     Some(output)
+}
+
+fn expand_static_tilde_word(raw: &str, home: Option<&std::path::Path>) -> Option<String> {
+    let home = home?;
+    let pieces = word::parse(raw, &Default::default()).ok()?;
+    let (first, rest) = pieces.split_first()?;
+    if !matches!(
+        first.piece,
+        WordPiece::TildeExpansion(brush_core::parser::word::TildeExpr::Home)
+    ) {
+        return None;
+    }
+    let tail = literal_pieces(rest)?;
+    if tail.is_empty() {
+        return Some(home.to_string_lossy().into_owned());
+    }
+    let rel = tail.strip_prefix('/')?;
+    if rel.is_empty() {
+        return Some(home.to_string_lossy().into_owned());
+    }
+    Some(home.join(rel).to_string_lossy().into_owned())
 }

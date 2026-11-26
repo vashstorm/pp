@@ -45,6 +45,25 @@ impl FromStr for SandboxMode {
     }
 }
 
+/// 沙盒读范围策略：默认 `Workspace` 收紧 `$HOME` 下非工作区路径的读取；
+/// `Unrestricted` 保留全盘默认可读（仅黑名单凭据路径拒读）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxReadScope {
+    #[default]
+    Workspace,
+    Unrestricted,
+}
+
+impl SandboxReadScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Unrestricted => "unrestricted",
+        }
+    }
+}
+
 fn default_network() -> bool {
     false
 }
@@ -54,6 +73,7 @@ fn default_network() -> bool {
 #[serde(default, rename_all = "camelCase")]
 pub struct SandboxSettings {
     pub mode: SandboxMode,
+    pub read_scope: SandboxReadScope,
     #[serde(default = "default_network")]
     pub network: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -70,6 +90,7 @@ impl Default for SandboxSettings {
     fn default() -> Self {
         Self {
             mode: SandboxMode::default(),
+            read_scope: SandboxReadScope::default(),
             network: default_network(),
             writable: Vec::new(),
             deny_read: Vec::new(),

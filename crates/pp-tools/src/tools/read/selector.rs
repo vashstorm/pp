@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Range {
@@ -8,7 +8,7 @@ enum Range {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct Target {
+pub(in crate::tools) struct Target {
     pub(super) source: String,
     ranges: Vec<Range>,
     pub(super) raw: bool,
@@ -79,8 +79,19 @@ impl Target {
         }
     }
 
-    pub(super) fn is_url(&self) -> bool {
+    pub(in crate::tools) fn is_url(&self) -> bool {
         self.source.starts_with("http://") || self.source.starts_with("https://")
+    }
+
+    pub(in crate::tools) fn local_path(&self, cwd: &Path) -> Option<PathBuf> {
+        let resource = self.is_url()
+            || ["skill://", "artifact://", "pipe://", "agent://"]
+                .iter()
+                .any(|prefix| self.source.starts_with(prefix));
+        if resource {
+            return None;
+        }
+        Some(expand_local_path(&self.source, cwd))
     }
 
     pub(super) fn validate_image(&self) -> Result<()> {
@@ -91,7 +102,7 @@ impl Target {
         Ok(())
     }
 
-    pub(super) fn parse(path: &str, cwd: &Path) -> Result<Self> {
+    pub(in crate::tools) fn parse(path: &str, cwd: &Path) -> Result<Self> {
         ensure!(!path.trim().is_empty(), "path must not be blank");
         let web = path.starts_with("http://") || path.starts_with("https://");
         // POSIX 中包含冒号的真实文件名优先，不能误删合法路径尾部。
@@ -211,4 +222,18 @@ impl Target {
             &format!(":{selection}{}", if self.raw { ":raw" } else { "" }),
         )
     }
+}
+
+fn expand_local_path(raw: &str, cwd: &Path) -> PathBuf {
+    if !cwd.join(raw).exists()
+        && let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty())
+    {
+        if raw == "~" {
+            return PathBuf::from(home);
+        }
+        if let Some(rest) = raw.strip_prefix("~/") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    cwd.join(raw)
 }

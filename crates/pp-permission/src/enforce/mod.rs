@@ -22,9 +22,219 @@ pub struct ApprovedBashScope {
     pub writable: Vec<PathBuf>,
     pub allow_protected: Vec<PathBuf>,
     pub network: bool,
+    pub session_reads: Vec<PathBuf>,
+    pub outside_reads: Vec<PathBuf>,
 }
 
 impl crate::Gate {
+    /// 仅为本次调用确认由沙盒识别出的受保护会话文件。
+    pub fn authorize_session_read(
+        &self,
+        target: &Path,
+        hook_ask: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.authorize_path_reads(
+            PermissionMode::WorkspaceWrite,
+            "read",
+            Path::new("/"),
+            &[target.to_path_buf()],
+            &[],
+            hook_ask,
+            cancellation,
+        )
+    }
+
+    /// 统一的文件/目录读取审批门禁（供 `read` / `rg` / `glob` / `lsp` 共用）：
+    /// - `session_reads` 非空时：强制单次人工确认，跳过 `auto_review`，禁止会话/全局记忆；
+    /// - 仅 `outside_reads` 非空时：先核对 `read_path_grants` 与 `permission.toml`，未获批时
+    ///   经可选 `auto_review` 审批（支持单次 / 本会话 / 全局只读写入 `permission.toml`）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn authorize_path_reads(
+        &self,
+        mode: PermissionMode,
+        tool: &str,
+        cwd: &Path,
+        session_reads: &[PathBuf],
+        outside_reads: &[PathBuf],
+        hook_ask: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        pp_core::cancellation::check(cancellation)?;
+        if session_reads.is_empty() && outside_reads.is_empty() && hook_ask.is_none() {
+            return Ok(());
+        }
+        let (doc, load_error) = self.load_store();
+        let policy = self.effective_tool_policy(tool, doc.as_deref());
+        if mode != PermissionMode::DangerFullAccess
+            && matches!(policy, Some(PermissionPolicy::Deny))
+        {
+            bail!("{tool} is blocked by permission policy.");
+        }
+
+        if mode != PermissionMode::DangerFullAccess {
+            for path in outside_reads {
+                if matches!(
+                    self.lookup_fs_access(doc.as_deref(), cwd, path),
+                    Some(FsAccess::None)
+                ) {
+                    bail!(
+                        "{} is blocked by permission.toml filesystem rule.",
+                        path.display()
+                    );
+                }
+            }
+        }
+
+        let format_paths = |paths: &[PathBuf]| -> String {
+            paths
+                .iter()
+                .map(|p| {
+                    pp_core::text::display_text(&pp_core::logging::diagnostic_text(
+                        &p.display().to_string(),
+                    ))
+                    .into_owned()
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+
+        if !session_reads.is_empty() {
+            let paths_display = format_paths(session_reads);
+            let mut reasons = vec![format!("Read protected session path(s): {paths_display}")];
+            if !outside_reads.is_empty() {
+                reasons.push(format!(
+                    "Read outside workspace requires approval: {}",
+                    format_paths(outside_reads)
+                ));
+            }
+            if let Some(hook_reason) = hook_ask {
+                reasons.push(hook_reason.to_owned());
+            }
+            return self.prompt_user(
+                PermissionRequest {
+                    tool: tool.to_owned(),
+                    agent: None,
+                    reason: append_load_error(&reasons.join("\n"), load_error.as_deref()),
+                    session_grant: false,
+                    persistent_grant: false,
+                },
+                None,
+                load_error.as_deref(),
+                cancellation,
+            );
+        }
+
+        if mode == PermissionMode::DangerFullAccess {
+            if let Some(reason) = hook_ask {
+                return self.prompt_user(
+                    PermissionRequest {
+                        tool: tool.to_owned(),
+                        agent: None,
+                        reason: reason.to_owned(),
+                        session_grant: false,
+                        persistent_grant: false,
+                    },
+                    None,
+                    None,
+                    cancellation,
+                );
+            }
+            return Ok(());
+        }
+
+        let unapproved_outside = self.unapproved_read_paths(doc.as_deref(), cwd, outside_reads);
+        let forced_prompt = matches!(policy, Some(PermissionPolicy::Prompt)) || hook_ask.is_some();
+        if unapproved_outside.is_empty() && !forced_prompt {
+            return Ok(());
+        }
+
+        let mut reasons = Vec::new();
+        if !unapproved_outside.is_empty() {
+            reasons.push(format!(
+                "Read outside workspace requires approval: {}",
+                format_paths(&unapproved_outside)
+            ));
+        }
+        if let Some(hook_reason) = hook_ask {
+            reasons.push(hook_reason.to_owned());
+        } else if matches!(policy, Some(PermissionPolicy::Prompt)) && reasons.is_empty() {
+            reasons.push("required by the permission policy for this tool.".to_owned());
+        }
+        let trigger = reasons.join("\n");
+
+        if forced_prompt {
+            return self.prompt_user(
+                PermissionRequest {
+                    tool: tool.to_owned(),
+                    agent: None,
+                    reason: append_load_error(&trigger, load_error.as_deref()),
+                    session_grant: false,
+                    persistent_grant: false,
+                },
+                None,
+                load_error.as_deref(),
+                cancellation,
+            );
+        }
+
+        let persistent_grant = self.store.is_some()
+            && load_error.is_none()
+            && unapproved_outside.iter().all(|p| p.to_str().is_some());
+        let summary = format!("{tool} read={}", format_paths(&unapproved_outside));
+        self.decide_with_optional_review(
+            mode,
+            PermissionRequest {
+                tool: tool.to_owned(),
+                agent: None,
+                reason: append_load_error(&trigger, load_error.as_deref()),
+                session_grant: true,
+                persistent_grant,
+            },
+            AutoReviewRequest {
+                tool: tool.to_owned(),
+                agent: None,
+                mode,
+                cwd: cwd.to_path_buf(),
+                trigger_reason: trigger,
+                action_summary: truncate_summary(&summary, 1024),
+                requested_writable: Vec::new(),
+                requested_protected: Vec::new(),
+                requested_network: false,
+            },
+            Some(GrantTarget::HostReadPaths(unapproved_outside)),
+            load_error.as_deref(),
+            cancellation,
+        )
+    }
+
+    pub(super) fn unapproved_read_paths(
+        &self,
+        doc: Option<&rules::Document>,
+        cwd: &Path,
+        paths: &[PathBuf],
+    ) -> Vec<PathBuf> {
+        let session_granted = self
+            .read_path_grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let mut out = Vec::new();
+        for path in paths {
+            let fs_ok = matches!(
+                self.lookup_fs_access(doc, cwd, path),
+                Some(FsAccess::Read | FsAccess::Write)
+            );
+            let session_ok = session_granted
+                .iter()
+                .any(|granted| path == granted || path.starts_with(granted));
+            if !fs_ok && !session_ok && !out.contains(path) {
+                out.push(path.clone());
+            }
+        }
+        out
+    }
+
     pub fn enforce(
         &self,
         name: &str,
@@ -147,7 +357,11 @@ impl crate::Gate {
                 arguments,
                 analysis,
                 &[],
+                &[],
+                &[],
+                &[],
                 false,
+                None,
                 doc,
                 load_error,
                 cancellation,

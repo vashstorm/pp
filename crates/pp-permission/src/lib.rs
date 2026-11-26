@@ -111,6 +111,8 @@ pub struct Gate {
     bash_grants: Arc<Mutex<HashSet<BashRule>>>,
     /// 具体文件路径的会话级写授权（用于 .git/.agents/工作区外/read-only）。
     path_grants: Arc<Mutex<HashSet<PathBuf>>>,
+    /// 具体文件/目录的工作区外会话级只读授权（绝不用于会话路径或凭据路径）。
+    read_path_grants: Arc<Mutex<HashSet<PathBuf>>>,
     /// 会话级互联网访问授权。
     network_grant: Arc<Mutex<bool>>,
     /// CLI `--allowed-tools` 赋予本次运行的工具预批准集合；不随会话重置清空。
@@ -136,6 +138,7 @@ impl Gate {
             grants: Default::default(),
             bash_grants: Default::default(),
             path_grants: Default::default(),
+            read_path_grants: Default::default(),
             network_grant: Default::default(),
             preapproved: Default::default(),
             handler: None,
@@ -225,6 +228,10 @@ impl Gate {
             .unwrap_or_else(|error| error.into_inner())
             .clear();
         self.path_grants
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.read_path_grants
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
@@ -539,6 +546,41 @@ impl Gate {
                                 .unwrap_or_else(|e| e.into_inner())
                                 .insert(abs);
                         }
+                        Some(GrantTarget::HostReadPaths(paths)) => {
+                            let mut read_grants = self
+                                .read_path_grants
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            for path in paths {
+                                read_grants.insert(path);
+                            }
+                        }
+                        Some(GrantTarget::BashAndOutsideReads {
+                            rules,
+                            sandbox,
+                            read_paths,
+                        }) => {
+                            if let Some(rules) = rules {
+                                let mut bash_grants =
+                                    self.bash_grants.lock().unwrap_or_else(|e| e.into_inner());
+                                for rule in rules {
+                                    bash_grants.insert(rule);
+                                }
+                            }
+                            if let Some(sandbox) = sandbox {
+                                self.sandbox_grants
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(sandbox);
+                            }
+                            let mut read_grants = self
+                                .read_path_grants
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            for path in read_paths {
+                                read_grants.insert(path);
+                            }
+                        }
                         Some(GrantTarget::Network) => {
                             *self.network_grant.lock().unwrap_or_else(|e| e.into_inner()) = true;
                         }
@@ -568,6 +610,32 @@ impl Gate {
                             .ok_or_else(|| anyhow::anyhow!("non-UTF-8 path cannot be saved"))?;
                         store.save_host_fs(raw, FsAccess::Write)?;
                     }
+                    Some(GrantTarget::HostReadPaths(paths)) => {
+                        for abs in paths {
+                            let raw = abs
+                                .to_str()
+                                .ok_or_else(|| anyhow::anyhow!("non-UTF-8 path cannot be saved"))?;
+                            store.save_host_fs(raw, FsAccess::Read)?;
+                        }
+                    }
+                    Some(GrantTarget::BashAndOutsideReads {
+                        rules,
+                        sandbox,
+                        read_paths,
+                    }) => {
+                        if let Some(rules) = rules {
+                            store.save_bash_batch(rules)?;
+                        }
+                        if let Some(sandbox) = sandbox {
+                            store.save(sandbox)?;
+                        }
+                        for abs in read_paths {
+                            let raw = abs
+                                .to_str()
+                                .ok_or_else(|| anyhow::anyhow!("non-UTF-8 path cannot be saved"))?;
+                            store.save_host_fs(raw, FsAccess::Read)?;
+                        }
+                    }
                     Some(GrantTarget::Network) => store.save_network_enabled(true)?,
                     None => bail!("{name} was denied by the user."),
                 }
@@ -596,6 +664,12 @@ pub(crate) enum GrantTarget {
         rel: String,
     },
     HostPath(PathBuf),
+    HostReadPaths(Vec<PathBuf>),
+    BashAndOutsideReads {
+        rules: Option<Vec<BashRule>>,
+        sandbox: Option<SandboxGrant>,
+        read_paths: Vec<PathBuf>,
+    },
     Network,
 }
 

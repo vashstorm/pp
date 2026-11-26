@@ -101,6 +101,145 @@ fn permission_tui_preserves_mode_across_new_and_plan() {
 }
 
 #[test]
+fn permission_tui_asks_before_listing_protected_subagent_sessions() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let cwd = project.path().canonicalize().unwrap();
+    let sandbox = pp_sandbox::Sandbox::new(
+        pp_config::config::SandboxSettings {
+            mode: pp_config::config::SandboxMode::WorkspaceWrite,
+            network: false,
+            ..Default::default()
+        },
+        &cwd,
+    );
+    if sandbox.policy().is_err() {
+        // 平台沙盒不可用时，策略与审批门回归由各 crate 的独立用例验证。
+        return;
+    }
+    let server = server();
+    write_settings(home.path(), "tools: { sandbox: { network: false } }").unwrap();
+    std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
+    let session_dir = home
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(".pp/agent/sessions/fixture.subagents");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(session_dir.join("child-session.jsonl"), "fixture").unwrap();
+    let mut pty = Pty::start_with_args(&cwd, home.path(), &[]);
+
+    for (id, keys, approved) in [("denied", "\x1b[B\r", false), ("approved", "\r", true)] {
+        pty.input(&format!("List subagent sessions ({id})\r"));
+        let (request, _) = pty.request(&server);
+        let arguments = json!({"command": format!("ls -la -- '{}'", session_dir.display())});
+        calls_reply(request, json!([call(id, "bash", arguments)]));
+        pty.wait_for("列出子 Agent 会话目录前申请单次授权", |screen| {
+            let contents = screen.contents();
+            contents.contains("Permission required")
+                && contents.contains("Read protected session path")
+                && contents.contains("Allow once")
+                && contents.contains("Deny")
+                && !contents.contains("Always allow globally")
+        });
+        pty.input(keys);
+        let (request, body) = pty.request(&server);
+        let output = body["messages"].as_array().unwrap().iter().rev()
+            .find(|message| message["role"] == "tool").unwrap();
+        let output: Value = serde_json::from_str(output["content"].as_str().unwrap()).unwrap();
+        assert_eq!(output["ok"], approved, "{output}");
+        assert_eq!(output.to_string().contains("child-session.jsonl"), approved, "{output}");
+        let message = format!("listing {id}");
+        final_reply(request, &message);
+        pty.completed_after(&message);
+    }
+    assert!(!config_path(home.path(), "permission.toml").exists());
+    pty.input("/quit\r");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
+fn permission_tui_asks_before_reading_protected_subagent_events() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let cwd = project.path().canonicalize().unwrap();
+    let sandbox = pp_sandbox::Sandbox::new(
+        pp_config::config::SandboxSettings {
+            mode: pp_config::config::SandboxMode::WorkspaceWrite,
+            ..Default::default()
+        },
+        &cwd,
+    );
+    if sandbox.policy().is_err() {
+        // 平台沙盒不可用时，使用注入探针的工具回归验证审批路径。
+        return;
+    }
+    let server = server();
+    std::fs::write(
+        config_path(home.path(), "models.yml"),
+        fixture_models(&server),
+    )
+    .unwrap();
+    let session = home
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(".pp/agent/sessions/fixture.subagents/a2.events.jsonl");
+    std::fs::create_dir_all(session.parent().unwrap()).unwrap();
+    let event = "fixture child event";
+    std::fs::write(&session, format!("first event\n{event}\n")).unwrap();
+    let mut pty = Pty::start_with_args(&cwd, home.path(), &[]);
+
+    for (id, keys, approved) in [("approved", "\r", true), ("denied", "\x1b[B\r", false)] {
+        pty.input(&format!("Read the child session ({id})\r"));
+        let (request, _) = pty.request(&server);
+        let arguments = json!({"path": format!("{}:2-2:raw", session.display())});
+        calls_reply(request, json!([call(id, "read", arguments)]));
+        pty.wait_for(
+            "读取子 Agent 事件日志前申请单次授权",
+            |screen| {
+                let contents = screen.contents();
+                contents.contains("Permission required")
+                    && contents.contains("Read protected session path")
+                    && contents.contains("Allow once")
+                    && contents.contains("Deny")
+                    && !contents.contains("Always allow globally")
+            },
+        );
+        pty.input(keys);
+        let (request, body) = pty.request(&server);
+        let output = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .unwrap();
+        let output: Value = serde_json::from_str(output["content"].as_str().unwrap()).unwrap();
+        assert_eq!(output["ok"], approved, "{output}");
+        if approved {
+            assert_eq!(output["content"], format!("{event}\n"), "{output}");
+        } else {
+            assert!(
+                output["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("denied by the user")
+            );
+            assert!(!output.to_string().contains(event), "{output}");
+        }
+        let message = format!("Read {id}.");
+        final_reply(request, &message);
+        pty.completed_after(&message);
+    }
+    assert!(!config_path(home.path(), "permission.toml").exists());
+    pty.input("/quit\r");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
 fn permission_tui_approves_and_saves_an_exact_bash_request() {
     let server = server();
     let home = tempfile::tempdir().unwrap();
@@ -234,6 +373,142 @@ fn permission_tui_switches_independently_while_running_and_applies_to_next_tool_
     assert_eq!(std::fs::read_to_string(cwd.join("two.txt")).unwrap(), "2");
     final_reply(request, "both writes done");
     pty.completed_after("both writes done");
+    pty.input("/quit\r");
+    pty.finish();
+    no_more(&server);
+}
+
+#[test]
+fn permission_tui_approves_rg_and_glob_session_and_outside_reads() {
+    let server = server();
+    let home = tempfile::tempdir().unwrap();
+    let home_canon = home.path().canonicalize().unwrap();
+    let cwd = home_canon.join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let sandbox = pp_sandbox::Sandbox::new(
+        pp_config::config::SandboxSettings {
+            mode: pp_config::config::SandboxMode::WorkspaceWrite,
+            network: false,
+            ..Default::default()
+        },
+        &cwd,
+    );
+    if sandbox.policy().is_err() || sandbox.status().effective == pp_sandbox::EffectiveMode::Off {
+        return;
+    }
+
+    let session_dir = home_canon.join(".pp/agent/sessions/run-1");
+    let session_file = session_dir.join("events.jsonl");
+    let outside_dir = home_canon.join("outside_notes");
+    let outside_file = outside_dir.join("doc.txt");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::create_dir_all(&outside_dir).unwrap();
+    std::fs::write(&session_file, "needle: session-secret\n").unwrap();
+    std::fs::write(&outside_file, "needle: outside-secret\n").unwrap();
+
+    std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
+    let store = config_path(home.path(), "permission.toml");
+    let mut pty = Pty::start_with_args(&cwd, home.path(), &[]);
+
+    // 1. rg 读取会话文件：仅提供单次确认（不含 Always allow globally），放行但不写 permission.toml。
+    pty.input("search session and outside\r");
+    let (request, _) = pty.request(&server);
+    calls_reply(
+        request,
+        json!([call(
+            "rg-session",
+            "rg",
+            json!({"pattern": "session-secret", "path": session_file.display().to_string()})
+        )]),
+    );
+    pty.wait_for("会话读取仅单次确认", |screen| {
+        let contents = screen.contents();
+        contents.contains("Permission required")
+            && contents.contains("Allow once")
+            && !contents.contains("Always allow globally")
+    });
+    pty.input("\r");
+    let (request, body) = pty.request(&server);
+    let session_out = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "tool")
+        .unwrap();
+    let session_json: Value = serde_json::from_str(session_out["content"].as_str().unwrap()).unwrap();
+    assert_eq!(session_json["ok"], true, "{session_json}");
+    assert!(
+        session_json["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("session-secret"),
+        "{session_json}"
+    );
+    assert!(!store.exists());
+
+    // 2. glob 搜索 $HOME 普通目录：允许全局持久化，后续 rg 搜索同一目录直接放行无需再弹窗。
+    calls_reply(
+        request,
+        json!([call(
+            "glob-outside",
+            "glob",
+            json!({"pattern": "*.txt", "path": outside_dir.display().to_string()})
+        )]),
+    );
+    pty.wait_for("工作区外 glob 可选全局持久允许", |screen| {
+        let contents = screen.contents();
+        contents.contains("Permission required") && contents.contains("Always allow globally")
+    });
+    pty.input("\x1b[B\x1b[B\r");
+    let (request, body) = pty.request(&server);
+    let glob_out = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "tool")
+        .unwrap();
+    let glob_json: Value = serde_json::from_str(glob_out["content"].as_str().unwrap()).unwrap();
+    assert_eq!(glob_json["ok"], true, "{glob_json}");
+    assert!(
+        glob_json["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("doc.txt"),
+        "{glob_json}"
+    );
+    let rules = std::fs::read_to_string(&store).unwrap();
+    assert!(rules.contains("read"), "{rules}");
+
+    calls_reply(
+        request,
+        json!([call(
+            "rg-outside-reused",
+            "rg",
+            json!({"pattern": "outside-secret", "path": outside_dir.display().to_string()})
+        )]),
+    );
+    let (request, body) = pty.request(&server);
+    let rg_out = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "tool")
+        .unwrap();
+    let rg_json: Value = serde_json::from_str(rg_out["content"].as_str().unwrap()).unwrap();
+    assert_eq!(rg_json["ok"], true, "{rg_json}");
+    assert!(
+        rg_json["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("outside-secret"),
+        "{rg_json}"
+    );
+
+    final_reply(request, "read checks complete");
+    pty.completed_after("read checks complete");
     pty.input("/quit\r");
     pty.finish();
     no_more(&server);

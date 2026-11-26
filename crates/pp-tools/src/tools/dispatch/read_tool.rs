@@ -12,6 +12,7 @@ impl Tools {
         images: &mut Vec<read::ToolImage>,
         permissions: pp_config::config::PermissionMode,
         sandbox: pp_sandbox::SandboxView<'_>,
+        read_policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
         hook_ask: Option<&str>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
         let args: ReadArgs = serde_json::from_str(arguments).context("invalid read arguments")?;
@@ -53,7 +54,11 @@ impl Tools {
             .map(|result| (result.value, None, None));
         }
         if let Some(local) = read::local_path(&args.path, &self.cwd)? {
-            sandbox.check_read(&local)?;
+            if let Some(policy) = read_policy.as_deref() {
+                policy.check_read(&local)?;
+            } else {
+                sandbox.check_read(&local)?;
+            }
         } else if read::is_http_url(&args.path, &self.cwd)? {
             let network_enabled = sandbox.policy()?.is_none_or(|policy| policy.network());
             self.permission.authorize_network(

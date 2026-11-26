@@ -23,6 +23,7 @@ pub(super) struct FileInput {
     pub(super) target: Target,
     pub(super) path: PathBuf,
     pub(super) allow_directory: bool,
+    pub(super) approved: Option<pp_workspace::save::Target>,
 }
 
 impl Read for FileReader {
@@ -34,6 +35,7 @@ impl Read for FileReader {
             target,
             path: local,
             allow_directory,
+            approved,
         }: Self::Input,
         context: &mut ReadContext<'_, '_>,
     ) -> Result<ReadResult> {
@@ -71,7 +73,11 @@ impl Read for FileReader {
                 images: Vec::new(),
             });
         }
-        let mut file = open(&local)?;
+        let open_file = || match &approved {
+            Some(target) => target.open_regular_read(),
+            None => open(&local),
+        };
+        let mut file = open_file()?;
         let mut header = [0; 32];
         let n = file.read(&mut header)?;
         let image_extension = local.extension().and_then(|s| s.to_str()).is_some_and(|s| {
@@ -82,7 +88,7 @@ impl Read for FileReader {
         if is_image(&header[..n]) || image_extension {
             target.validate_image()?;
             let mut bytes = Vec::new();
-            open(&local)?
+            open_file()?
                 .take(MAX_INPUT_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)?;
             return ImageReader.read(ImageInput { target, bytes }, context);
@@ -190,14 +196,14 @@ impl Read for FileReader {
             }
         }
         // 纯文本回退路径没有已知行数：只有 tail 选择器才需要重开文件统计行数。
-        let ranges = target.resolved_ranges(|| count_lines(BufReader::new(open(&local)?)))?;
+        let ranges = target.resolved_ranges(|| count_lines(BufReader::new(open_file()?)))?;
         let mut value = page_text(
             &target,
             context.limits,
             context.mode,
             true,
             ranges,
-            |start, count, max| read(&local, start, count, max),
+            |start, count, max| read_from(BufReader::new(open_file()?), start, count, max),
         )?;
         if let Some(warning) = snapshot_warning {
             value["warning"] = serde_json::json!(warning);
@@ -219,6 +225,7 @@ pub fn open(path: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
+#[cfg(test)]
 pub(super) fn read(path: &Path, offset: usize, limit: usize, max_bytes: usize) -> Result<Page> {
     read_from(BufReader::new(open(path)?), offset, limit, max_bytes)
 }

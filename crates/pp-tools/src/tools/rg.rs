@@ -23,6 +23,7 @@ mod scan;
 pub(super) use args::definition;
 use args::{Args, Many, OutputMode, count, file_types};
 use budget::Budget;
+pub(in crate::tools) use paths::inspect_roots;
 use paths::{TargetIter, parse_paths};
 use pattern::{Compiled, compile};
 use render::grouped_header;
@@ -61,6 +62,7 @@ pub(super) fn run(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_with_sandbox(
     cwd: &Path,
@@ -72,6 +74,24 @@ pub(super) fn run_with_sandbox(
     token: &CancellationToken,
     artifacts: Option<&pp_workspace::output::Store>,
     sandbox: pp_sandbox::SandboxView<'_>,
+) -> Result<Value> {
+    let policy = sandbox.policy()?;
+    run_with_policy(
+        cwd, settings, mode, workspace, snapshots, arguments, token, artifacts, policy,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::tools) fn run_with_policy(
+    cwd: &Path,
+    settings: RgSettings,
+    mode: EditMode,
+    workspace: &save::Workspace,
+    snapshots: &mut hashline::Store,
+    arguments: &str,
+    token: &CancellationToken,
+    artifacts: Option<&pp_workspace::output::Store>,
+    policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
 ) -> Result<Value> {
     let mut args: Args = serde_json::from_str(arguments).context("invalid rg arguments")?;
     let mut budget = Budget::new(args.max_output_tokens)?;
@@ -125,7 +145,7 @@ pub(super) fn run_with_sandbox(
             types.as_ref(),
             token,
             deadline,
-            artifact.is_none().then_some(sandbox),
+            artifact.is_none().then_some(policy).flatten(),
         )?
     };
     let multiline = args.pattern.contains('\n') || (!fixed && args.pattern.contains("\\n"));

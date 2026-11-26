@@ -15,6 +15,8 @@ pub(crate) struct BwrapSpec<'a> {
     pub allow_write_files: &'a [PathBuf],
     pub protect: &'a [PathBuf],
     pub immutable_protect: &'a [PathBuf],
+    pub home_deny_root: Option<&'a PathBuf>,
+    pub home_allow_read: &'a [PathBuf],
     pub deny_read: &'a [PathBuf],
     pub allow_read: &'a [PathBuf],
     pub docker_sockets: &'a [PathBuf],
@@ -157,6 +159,8 @@ pub(crate) fn compile_args(spec: &BwrapSpec<'_>) -> Result<(Vec<OsString>, Vec<S
         .chain(spec.allow_write_files)
         .chain(spec.protect)
         .chain(spec.immutable_protect)
+        .chain(spec.home_deny_root)
+        .chain(spec.home_allow_read)
         .chain(spec.deny_read)
         .chain(spec.allow_read)
         .chain(spec.docker_sockets)
@@ -176,6 +180,34 @@ pub(crate) fn compile_args(spec: &BwrapSpec<'_>) -> Result<(Vec<OsString>, Vec<S
     args.push(OsString::from("/"));
     args.push(OsString::from("--dev"));
     args.push(OsString::from("/dev"));
+
+    let mut home_tmpfs: Option<PathBuf> = None;
+    if let Some(home) = spec.home_deny_root
+        && !spec.home_allow_read.iter().any(|allowed| allowed == home)
+        && !home.starts_with(spec.cwd)
+        && !spec.deny_read.iter().any(|denied| home.starts_with(denied))
+        && let Ok(meta) = std::fs::symlink_metadata(home)
+        && !meta.file_type().is_symlink()
+        && meta.is_dir()
+    {
+        args.push(OsString::from("--perms"));
+        args.push(OsString::from("0111"));
+        args.push(OsString::from("--tmpfs"));
+        args.push(home.as_os_str().to_os_string());
+        home_tmpfs = Some(home.clone());
+        let home_allows: Vec<PathBuf> = sort_by_depth_unique(spec.home_allow_read)
+            .into_iter()
+            .filter(|allowed| allowed.starts_with(home) && allowed != home)
+            .collect();
+        for path in home_allows {
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if !meta.file_type().is_symlink() => {
+                    push_ro_bind_try(&mut args, &path);
+                }
+                _ => {}
+            }
+        }
+    }
 
     let writable_sorted = sort_by_depth_unique(spec.writable);
     match spec.mode {
@@ -346,7 +378,10 @@ pub(crate) fn compile_args(spec: &BwrapSpec<'_>) -> Result<(Vec<OsString>, Vec<S
             MaskEvent::Allow { path } => {
                 let keep_writable = spec.mode == EffectiveMode::WorkspaceWrite
                     && writable_sorted.iter().any(|w| path.starts_with(w))
-                    && !protect_sorted.iter().any(|p| path.starts_with(p));
+                    && !protect_sorted
+                        .iter()
+                        .chain(spec.immutable_protect)
+                        .any(|p| path.starts_with(p));
                 if keep_writable {
                     push_bind_try(&mut args, &path);
                     for p in &protect_sorted {
@@ -369,6 +404,10 @@ pub(crate) fn compile_args(spec: &BwrapSpec<'_>) -> Result<(Vec<OsString>, Vec<S
     for dir in tmpfs_dirs.into_iter().rev() {
         args.push(OsString::from("--remount-ro"));
         args.push(dir.as_os_str().to_os_string());
+    }
+    if let Some(home) = home_tmpfs {
+        args.push(OsString::from("--remount-ro"));
+        args.push(home.as_os_str().to_os_string());
     }
 
     for sock in sort_by_depth_unique(spec.docker_sockets) {
@@ -470,6 +509,8 @@ mod tests {
             allow_write_files: &[],
             protect: &protect,
             immutable_protect: &[],
+            home_deny_root: None,
+            home_allow_read: &[],
             deny_read: &deny_read,
             allow_read: &allow_read,
             docker_sockets: &sockets,
@@ -540,6 +581,8 @@ mod tests {
             allow_write_files: &[],
             protect: &[],
             immutable_protect: &[],
+            home_deny_root: None,
+            home_allow_read: &[],
             deny_read: &[],
             allow_read: &[],
             docker_sockets: &[],
@@ -574,6 +617,8 @@ mod tests {
             allow_write_files: &[],
             protect: &[],
             immutable_protect: &[],
+            home_deny_root: None,
+            home_allow_read: &[],
             deny_read: &deny,
             allow_read: &[],
             docker_sockets: &[],
@@ -635,6 +680,8 @@ mod tests {
             allow_write_files: &[],
             protect: &protect,
             immutable_protect: &[],
+            home_deny_root: None,
+            home_allow_read: &[],
             deny_read: &deny_read,
             allow_read: &allow_read,
             docker_sockets: &[],
@@ -688,6 +735,8 @@ mod tests {
             allow_write_files: &[],
             protect: &protect,
             immutable_protect: &[],
+            home_deny_root: None,
+            home_allow_read: &[],
             deny_read: &[],
             allow_read: &[],
             docker_sockets: &[],

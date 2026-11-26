@@ -26,6 +26,115 @@ fn tools_with_sandbox(
 }
 
 #[test]
+fn bash_session_read_requests_one_time_approval_before_execution() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().canonicalize().unwrap();
+    let target = home.join(".pp/agent/sessions/sample.subagents");
+    fs::create_dir_all(&target).unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let mut tools = tools_with_sandbox(
+        &workspace,
+        &home,
+        SandboxMode::WorkspaceWrite,
+        ProbeResult::Available,
+    );
+    tools
+        .permission
+        .select(Some(pp_config::config::PermissionMode::WorkspaceWrite));
+    let marker = workspace.path().join("started");
+    let observed_marker = marker.clone();
+    let observed_path = target.clone();
+    tools.permission.set_handler(Box::new(move |request, _| {
+        assert_eq!(request.tool, "bash");
+        assert!(request.reason.contains(&*observed_path.to_string_lossy()));
+        assert!(!request.session_grant && !request.persistent_grant);
+        assert!(!observed_marker.exists());
+        Ok(PermissionDecision::Deny)
+    }));
+
+    let result = execute(
+        &tools,
+        "bash",
+        json!({"command": format!("printf started > started; ls -la -- '{}'", target.display())}),
+    );
+    assert_eq!(result["ok"], false, "{result}");
+    assert!(
+        result["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("denied by the user")),
+        "{result}"
+    );
+    assert!(!marker.exists());
+}
+
+#[test]
+fn read_session_file_approval_is_scoped_and_rechecks_the_target() {
+    use pp_config::config::{PermissionMode, PermissionPolicy, ToolsSettings};
+    use std::os::unix::fs::symlink;
+
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path().canonicalize().unwrap();
+    let agent = home.join(".pp/agent");
+    let sessions = agent.join("sessions/run.subagents");
+    fs::create_dir_all(&sessions).unwrap();
+    let target = sessions.join("a2.events.jsonl");
+    let credential = agent.join("models.yml");
+    fs::write(&target, "first event\nsecond event\n").unwrap();
+    fs::write(&credential, "credential fixture\n").unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let mut tools = tools_with_sandbox(
+        &workspace,
+        &home,
+        SandboxMode::WorkspaceWrite,
+        ProbeResult::Available,
+    );
+    tools.permission =
+        pp_permission::Gate::for_process(&agent, Some(PermissionMode::WorkspaceWrite), true);
+    let read = |tools: &Tools, path: String| execute(tools, "read", json!({"path": path}));
+    let request_path = format!("{}:2-2:raw", target.display());
+    let result = read(&tools, request_path.clone());
+    assert_eq!(result["ok"], false, "{result}");
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("requires permission")
+    );
+
+    tools.permission.set_config(ToolsSettings {
+        permission: [("read".into(), PermissionPolicy::Allow)].into(),
+        ..Default::default()
+    });
+    let expected_target = target.clone();
+    tools.permission.set_handler(Box::new(move |request, _| {
+        assert_eq!(request.tool, "read");
+        assert!(request.reason.contains(&*expected_target.to_string_lossy()));
+        assert!(!request.session_grant && !request.persistent_grant);
+        Ok(PermissionDecision::Approve)
+    }));
+    let result = read(&tools, request_path.clone());
+    assert_eq!(result["content"], "second event\n", "{result}");
+    let denied = read(&tools, credential.display().to_string());
+    assert_eq!(denied["ok"], false, "{denied}");
+    assert!(
+        denied["error"]
+            .as_str()
+            .unwrap()
+            .contains("blocked by sandbox policy")
+    );
+
+    let changed_target = target.clone();
+    tools.permission.set_handler(Box::new(move |_, _| {
+        fs::remove_file(&changed_target)?;
+        symlink(&credential, &changed_target)?;
+        Ok(PermissionDecision::Approve)
+    }));
+    let changed = read(&tools, request_path);
+    assert_eq!(changed["ok"], false, "{changed}");
+    assert!(changed["error"].as_str().unwrap().contains("path changed"));
+}
+
+#[test]
 fn sandbox_read_rg_and_glob_enforce_credential_denylist() {
     let root = tempfile::tempdir().unwrap();
     let root_canon = fs::canonicalize(root.path()).unwrap();
@@ -883,4 +992,304 @@ fn mcp_persistent_grant_persists_across_restarts_and_revokes() {
         "{after_revoke}"
     );
     mcp.shutdown().unwrap();
+}
+
+#[test]
+fn read_rg_glob_and_lsp_enforce_home_read_approval_plan_and_review_modes() {
+    use pp_config::config::{PermissionMode, ToolsSettings};
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let home = root.join("home");
+    let agent = home.join(".pp/agent");
+    let outside_dir = home.join("notes");
+    let outside_file = outside_dir.join("secret.rs");
+    let swapped = outside_dir.join("swapped.rs");
+    let credential = home.join(".ssh/id_ed25519");
+    fs::create_dir_all(&agent).unwrap();
+    fs::create_dir_all(&outside_dir).unwrap();
+    fs::create_dir_all(credential.parent().unwrap()).unwrap();
+    fs::write(&outside_file, "fn secret_needle() {}\n").unwrap();
+    fs::write(&swapped, "safe\n").unwrap();
+    fs::write(&credential, "SSH-KEY").unwrap();
+
+    let workspace = tempfile::tempdir().unwrap();
+    let mut tools = tools_with_sandbox(
+        &workspace,
+        &home,
+        SandboxMode::WorkspaceWrite,
+        ProbeResult::Available,
+    );
+    tools.permission =
+        pp_permission::Gate::for_process(&agent, Some(PermissionMode::WorkspaceWrite), true);
+    tools.permission.set_config(ToolsSettings::default());
+
+    let run_policy = |tools: &Tools, name: &str, args: Value, policy: ToolPolicy<'_>| {
+        let token = CancellationToken::new();
+        let execution = tools.execute(
+            name,
+            &args.to_string(),
+            "test-call",
+            policy,
+            &token,
+            &mut |_| {},
+        );
+        assert!(execution.stop_error.is_none());
+        serde_json::from_str::<Value>(&execution.output).unwrap()
+    };
+
+    // 1. 无交互 handler 时 Execute 与 Plan 模式均拦截工作区外读取；Review 直接非交互拒绝。
+    let document = pp_core::plan::PlanDocument::new().unwrap();
+    for (name, args) in [
+        ("read", json!({"path": outside_file.display().to_string()})),
+        (
+            "rg",
+            json!({"pattern": "secret_needle", "path": outside_dir.display().to_string()}),
+        ),
+        (
+            "glob",
+            json!({"pattern": "*.rs", "path": outside_dir.display().to_string()}),
+        ),
+        (
+            "lsp",
+            json!({"action": "definition", "file": outside_file.display().to_string(), "line": 1, "column": 1}),
+        ),
+    ] {
+        let exec_res = run_policy(
+            &tools,
+            name,
+            args.clone(),
+            ToolPolicy::Execute {
+                workflow: &WorkflowState::default(),
+            },
+        );
+        assert_eq!(exec_res["ok"], false, "{name}: {exec_res}");
+
+        let review_res = run_policy(&tools, name, args.clone(), ToolPolicy::Review);
+        assert_eq!(review_res["ok"], false, "{name} review: {review_res}");
+
+        if matches!(name, "read" | "rg" | "glob") {
+            let plan_res = run_policy(
+                &tools,
+                name,
+                args,
+                ToolPolicy::Plan {
+                    document: &document,
+                    sealed: false,
+                    input: None,
+                },
+            );
+            assert_eq!(plan_res["ok"], false, "{name} plan: {plan_res}");
+        }
+    }
+
+    // 2. lsp 访问凭据路径时即使有 handler 也直接硬拦截，不弹窗不启动服务。
+    tools.permission.set_handler(Box::new(|_, _| {
+        panic!("immutable credential must not prompt")
+    }));
+    let cred_lsp = execute(
+        &tools,
+        "lsp",
+        json!({"action": "definition", "file": credential.display().to_string(), "line": 1, "column": 1}),
+    );
+    assert_eq!(cred_lsp["ok"], false, "{cred_lsp}");
+
+    // 3. 人工单次批准后 Execute / Plan 模式可读取 read / rg / glob；lsp 越过权限校验到达 LSP 阶段。
+    tools
+        .permission
+        .set_handler(Box::new(|_, _| Ok(PermissionDecision::Approve)));
+    assert_eq!(
+        execute(
+            &tools,
+            "read",
+            json!({"path": outside_file.display().to_string()})
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        execute(
+            &tools,
+            "rg",
+            json!({"pattern": "secret_needle", "path": outside_dir.display().to_string()})
+        )["ok"],
+        true
+    );
+    let glob_plan = run_policy(
+        &tools,
+        "glob",
+        json!({"pattern": "*.rs", "path": outside_dir.display().to_string()}),
+        ToolPolicy::Plan {
+            document: &document,
+            sealed: false,
+            input: None,
+        },
+    );
+    assert_eq!(glob_plan["ok"], true, "{glob_plan}");
+
+    let lsp_after_approve = execute(
+        &tools,
+        "lsp",
+        json!({"action": "definition", "file": outside_file.display().to_string(), "line": 1, "column": 1}),
+    );
+    assert!(
+        !lsp_after_approve["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("permission")
+            && !lsp_after_approve["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("sandbox"),
+        "{lsp_after_approve}"
+    );
+
+    // 4. TOCTOU 复检：审批期间符号链接调包指向 ~/.ssh 凭据必须被二次检查拦截。
+    let toctou_target = swapped.clone();
+    let toctou_cred = credential.clone();
+    tools.permission.set_handler(Box::new(move |_, _| {
+        fs::remove_file(&toctou_target).unwrap();
+        symlink(&toctou_cred, &toctou_target).unwrap();
+        Ok(PermissionDecision::Approve)
+    }));
+    let toctou_res = execute(
+        &tools,
+        "read",
+        json!({"path": swapped.display().to_string()}),
+    );
+    assert_eq!(toctou_res["ok"], false, "{toctou_res}");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn bash_sandbox_blocks_home_python_read_until_sandbox_permissions_read_approved() {
+    use pp_config::config::PermissionMode;
+
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let home = root.join("home");
+    let note = home.join("private_note.txt");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(&note, "python-secret-note").unwrap();
+
+    let workspace = tempfile::tempdir().unwrap();
+    if Sandbox::new(SandboxSettings::default(), workspace.path())
+        .status()
+        .effective
+        == pp_sandbox::EffectiveMode::Off
+    {
+        return;
+    }
+
+    let mut tools = tools_with_sandbox(
+        &workspace,
+        &home,
+        SandboxMode::WorkspaceWrite,
+        ProbeResult::Available,
+    );
+    tools.permission = pp_permission::Gate::for_process(
+        &home.join(".pp/agent"),
+        Some(PermissionMode::WorkspaceWrite),
+        true,
+    );
+    tools
+        .permission
+        .set_handler(Box::new(|_, _| Ok(PermissionDecision::Approve)));
+
+    let py_cmd = format!(
+        "python3 -c 'import sys; print(open(sys.argv[1]).read())' '{}'",
+        note.display()
+    );
+    let blocked = execute(&tools, "bash", json!({ "command": py_cmd }));
+    assert_eq!(blocked["ok"], false, "{blocked}");
+
+    // 通过 sandbox_permissions.read 显式声明并获批后，python3 可读取该文件。
+    let allowed = execute(
+        &tools,
+        "bash",
+        json!({
+            "command": py_cmd,
+            "sandbox_permissions": {
+                "read": [note.display().to_string()]
+            }
+        }),
+    );
+    assert_eq!(allowed["ok"], true, "{allowed}");
+    assert!(
+        allowed["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("python-secret-note"),
+        "{allowed}"
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn eval_tool_bridge_requires_approval_while_direct_python_open_is_blocked() {
+    use pp_config::config::{EvalSettings, PermissionMode};
+
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path().canonicalize().unwrap();
+    let home = root.join("home");
+    let outside = home.join("eval_secret.txt");
+    fs::create_dir_all(home.join(".pp/agent")).unwrap();
+    fs::write(&outside, "from-eval-bridge").unwrap();
+
+    let workspace = tempfile::tempdir().unwrap();
+    if Sandbox::new(SandboxSettings::default(), workspace.path())
+        .status()
+        .effective
+        == pp_sandbox::EffectiveMode::Off
+    {
+        return;
+    }
+
+    let mut tools = tools_with_sandbox(
+        &workspace,
+        &home,
+        SandboxMode::WorkspaceWrite,
+        ProbeResult::Available,
+    );
+    tools.configure_eval(&EvalSettings::default());
+    tools.permission = pp_permission::Gate::for_process(
+        &home.join(".pp/agent"),
+        Some(PermissionMode::WorkspaceWrite),
+        true,
+    );
+
+    // 1. 直接 Python open() 读 $HOME 文件被 OS 沙盒拦截。
+    let direct = execute(
+        &tools,
+        "eval",
+        json!({ "language": "python", "code": format!("print(open({:?}).read())", outside.to_string_lossy()) }),
+    );
+    assert_eq!(direct["ok"], false, "{direct}");
+    assert_eq!(direct["sandbox"]["blocked"], true, "{direct}");
+
+    // 2. 通过 tool.read(...) 桥接在无交互 handler 时被权限审批门拦截。
+    let bridge_denied = execute(
+        &tools,
+        "eval",
+        json!({ "language": "python", "code": format!("r = tool.read(path={:?})\nassert r['ok'], r", outside.to_string_lossy()) }),
+    );
+    assert_eq!(bridge_denied["ok"], false, "{bridge_denied}");
+
+    // 3. 人工放行后，tool.read(...) 桥接可读回该文件。
+    tools
+        .permission
+        .set_handler(Box::new(|_, _| Ok(PermissionDecision::Approve)));
+    let bridge_allowed = execute(
+        &tools,
+        "eval",
+        json!({ "language": "python", "code": format!("r = tool.read(path={:?})\nprint(r['ok'], 'from-eval-bridge' in r['content'])", outside.to_string_lossy()) }),
+    );
+    assert_eq!(bridge_allowed["ok"], true, "{bridge_allowed}");
+    assert!(
+        bridge_allowed["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("True True"),
+        "{bridge_allowed}"
+    );
 }

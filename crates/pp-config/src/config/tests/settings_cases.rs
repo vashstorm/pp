@@ -981,3 +981,34 @@ fn task_token_and_cost_budgets_validate_positive_finite_values() {
         assert!(load(Some(bad), Some(VALID_MODELS)).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn sandbox_read_scope_defaults_to_workspace_and_validates_values() {
+    let default = load(None, Some(VALID_MODELS)).unwrap();
+    assert_eq!(
+        default.settings.tools.sandbox.read_scope,
+        SandboxReadScope::Workspace
+    );
+
+    for (raw, expected) in [
+        (
+            "tools:\n  sandbox:\n    readScope: workspace\n",
+            SandboxReadScope::Workspace,
+        ),
+        (
+            "tools:\n  sandbox:\n    readScope: unrestricted\n",
+            SandboxReadScope::Unrestricted,
+        ),
+    ] {
+        let loaded = load(Some(raw), Some(VALID_MODELS)).unwrap();
+        assert_eq!(loaded.settings.tools.sandbox.read_scope, expected, "{raw}");
+    }
+
+    assert!(
+        load(
+            Some("tools:\n  sandbox:\n    readScope: all\n"),
+            Some(VALID_MODELS)
+        )
+        .is_err()
+    );
+}

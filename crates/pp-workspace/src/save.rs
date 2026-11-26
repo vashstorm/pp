@@ -546,6 +546,13 @@ impl Target {
         Ok(File::from(fd))
     }
 
+    /// 通过已解析的父目录句柄打开普通文件，拒绝符号链接与特殊文件。
+    pub fn open_regular_read(&self) -> Result<File> {
+        let file = self.open_read().context("opening file without symlinks")?;
+        ensure!(file.metadata()?.is_file(), "target must be a regular file");
+        Ok(file)
+    }
+
     pub fn read(&self) -> Result<Vec<u8>> {
         let file = self
             .open_read()

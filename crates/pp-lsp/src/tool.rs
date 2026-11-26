@@ -19,6 +19,7 @@ mod servers;
 mod suggestion;
 mod symbols;
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -296,6 +297,89 @@ pub fn definition(read_only: bool) -> FunctionObject {
         })),
         ..Default::default()
     }
+}
+
+/// 预解析 `lsp` 动作将访问的本地目标路径，供调用方在启动或请求外部语言服务器前
+/// 执行沙盒读边界检查与路径审批。`status`/`reload`/`capabilities` 无具体文件或 `file == "*"` 返回空集合。
+pub fn resolve_read_targets(
+    cwd: &Path,
+    arguments: &str,
+    cancellation: &CancellationToken,
+) -> Result<Vec<PathBuf>> {
+    check(cancellation)?;
+    let Ok(params) = Params::parse(arguments) else {
+        return Ok(Vec::new());
+    };
+    let Some(file) = params
+        .file
+        .as_deref()
+        .map(str::trim)
+        .filter(|file| !file.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    if file == "*" {
+        return if matches!(
+            params.action,
+            Action::Status | Action::Reload | Action::Capabilities
+        ) {
+            Ok(Vec::new())
+        } else {
+            Ok(vec![cwd.to_path_buf()])
+        };
+    }
+    let expand_tilde = |raw: &str| -> String {
+        if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
+            if raw == "~" {
+                return PathBuf::from(home).to_string_lossy().into_owned();
+            }
+            if let Some(rest) = raw.strip_prefix("~/") {
+                return PathBuf::from(home)
+                    .join(rest)
+                    .to_string_lossy()
+                    .into_owned();
+            }
+        }
+        raw.to_owned()
+    };
+    let expanded = expand_tilde(file);
+    let mut targets = Vec::new();
+    match params.action {
+        Action::Diagnostics => {
+            if crate::diagnostics::contains_glob(&expanded) {
+                let (root, _) = crate::diagnostics::glob_scope(cwd, &expanded);
+                targets.push(root);
+            } else {
+                targets.push(servers::resolve_path(cwd, &expanded));
+            }
+        }
+        Action::RenameFile => {
+            targets.push(servers::resolve_path(cwd, &expanded));
+            if let Some(dest) = params
+                .new_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                targets.push(servers::resolve_path(cwd, &expand_tilde(dest)));
+            }
+        }
+        Action::Status | Action::Reload | Action::Capabilities => {
+            targets.push(servers::resolve_path(cwd, &expanded));
+        }
+        Action::Definition
+        | Action::TypeDefinition
+        | Action::Implementation
+        | Action::References
+        | Action::Hover
+        | Action::Symbols
+        | Action::Rename
+        | Action::CodeActions
+        | Action::Format => {
+            targets.push(servers::resolve_path(cwd, &expanded));
+        }
+    }
+    Ok(targets)
 }
 
 /// 执行层访问门禁：只读会话必须能证明动作只读，否则在解析后立即拒绝。

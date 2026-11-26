@@ -19,7 +19,7 @@ mod url;
 
 pub use file::open as open_local_file;
 use file::{FileInput, FileReader};
-use selector::Target;
+pub(super) use selector::Target;
 use text::{count_lines, page_text, read_from};
 pub(crate) use url::WebCache;
 use url::{UrlInput, UrlReader};
@@ -37,12 +37,7 @@ pub(super) fn dedup_probe(
 
 /// 与实际读取共享选择器解析，资源 URI 不参与本地项目规则发现。
 pub(super) fn local_path(path: &str, cwd: &Path) -> Result<Option<std::path::PathBuf>> {
-    let target = Target::parse(path, cwd)?;
-    let resource = target.is_url()
-        || ["skill://", "artifact://", "pipe://", "agent://"]
-            .iter()
-            .any(|prefix| target.source.starts_with(prefix));
-    Ok((!resource).then(|| cwd.join(target.source)))
+    Ok(Target::parse(path, cwd)?.local_path(cwd))
 }
 
 pub(super) fn is_http_url(path: &str, cwd: &Path) -> Result<bool> {
@@ -107,6 +102,7 @@ pub(super) fn artifact(
             target,
             path: snapshot.path.clone(),
             allow_directory: true,
+            approved: None,
         },
         &mut ReadContext {
             limits,
@@ -119,6 +115,34 @@ pub(super) fn artifact(
     )?;
     result.value["artifact"] = snapshot.metadata;
     Ok(result)
+}
+
+pub(super) fn approved_session(
+    target: Target,
+    path: std::path::PathBuf,
+    workspace: &pp_workspace::save::Workspace,
+    limits: ToolLimits,
+    mode: EditMode,
+    cancellation: &CancellationToken,
+) -> Result<ReadResult> {
+    pp_core::cancellation::check(cancellation)?;
+    let approved = workspace.external_target(&path, false)?;
+    FileReader.read(
+        FileInput {
+            target,
+            path,
+            allow_directory: false,
+            approved: Some(approved),
+        },
+        &mut ReadContext {
+            limits,
+            mode,
+            cache: &mut WebCache::default(),
+            fetch: &mut |_, _| unreachable!("会话文件仅支持本地读取"),
+            cancellation,
+            snapshots: None,
+        },
+    )
 }
 
 pub use pp_workspace::image::ToolImage;
@@ -195,12 +219,15 @@ pub(super) fn run_with_snapshots(
     } else {
         let path = skill
             .as_ref()
-            .map_or_else(|| cwd.join(&target.source), |skill| skill.path.clone());
+            .map(|skill| skill.path.clone())
+            .or_else(|| target.local_path(cwd))
+            .unwrap_or_else(|| cwd.join(&target.source));
         FileReader.read(
             FileInput {
                 target,
                 path,
                 allow_directory: skill.is_some(),
+                approved: None,
             },
             &mut context,
         )?
@@ -280,6 +307,7 @@ pub fn local_reference(
             target,
             path: path.to_path_buf(),
             allow_directory: true,
+            approved: None,
         },
         &mut ReadContext {
             limits,

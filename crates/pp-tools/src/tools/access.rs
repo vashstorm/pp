@@ -389,7 +389,9 @@ impl Tools {
         if let Some(message) = self.instruction_batch_blocked() {
             bail!("{message}");
         }
-        // Plan 中未标为只读的 MCP 工具沿用 Execute 的写档权限规则。
+        // Plan 中未标为只读的 MCP 工具沿用 Execute 的写档权限规则；
+        // Execute 与 Plan 下的本地读工具（read/rg/glob/lsp）均接入沙盒读路径分类与审批，
+        // Review 模式保持只读无交互、直接由沙盒拦截越界读取。
         let needs_permission = match call.policy {
             ToolPolicy::Execute { .. } => {
                 !(mcp_readonly_tool && self.subagent.as_ref().is_some_and(|b| b.plan_mode()))
@@ -397,7 +399,24 @@ impl Tools {
             ToolPolicy::Plan { .. } => is_mcp && !mcp_readonly_tool,
             ToolPolicy::Review => false,
         };
-        if needs_permission {
+        let is_read_checked_tool = matches!(name, "read" | "rg" | "glob" | "lsp");
+        let mut read_policy: Option<std::sync::Arc<pp_sandbox::Policy>> = None;
+        let mut approved_session_read = None;
+
+        if matches!(call.policy, ToolPolicy::Review)
+            && name == "lsp"
+            && let Some(policy) = sandbox.policy()?
+        {
+            for target in
+                pp_lsp::tool::resolve_read_targets(&self.cwd, arguments, call.cancellation)?
+            {
+                policy.check_read(&target)?;
+            }
+        }
+
+        if needs_permission
+            || (matches!(call.policy, ToolPolicy::Plan { .. }) && is_read_checked_tool)
+        {
             let perm_name = mcp_target_name;
             let perm_args = resolved_mcp_call
                 .as_ref()
@@ -414,8 +433,11 @@ impl Tools {
             let sandbox_checked_tool = matches!(call.policy, ToolPolicy::Execute { .. })
                 && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval");
             let policy = if sandbox_checked_tool
-                || (matches!(call.policy, ToolPolicy::Execute { .. })
-                    && matches!(name, "web_search" | "read"))
+                || (matches!(call.policy, ToolPolicy::Execute { .. }) && name == "web_search")
+                || (matches!(
+                    call.policy,
+                    ToolPolicy::Execute { .. } | ToolPolicy::Plan { .. }
+                ) && is_read_checked_tool)
             {
                 sandbox.policy()?
             } else {
@@ -423,14 +445,111 @@ impl Tools {
             };
             let sandboxed = sandbox_checked_tool && policy.is_some();
             let network_enabled = policy.as_ref().is_none_or(|p| p.network());
-            let read_is_http = name == "read"
-                && serde_json::from_str::<super::ReadArgs>(arguments)
-                    .ok()
-                    .and_then(|args| super::read::is_http_url(&args.path, &self.cwd).ok())
-                    .unwrap_or(false);
+            let read_target = (name == "read")
+                .then(|| serde_json::from_str::<super::ReadArgs>(arguments).ok())
+                .flatten()
+                .and_then(|args| super::read::Target::parse(&args.path, &self.cwd).ok());
             let deferred_to_dispatch = matches!(call.policy, ToolPolicy::Execute { .. })
-                && (matches!(name, "bash" | "write" | "edit" | "web_search") || read_is_http);
-            if !deferred_to_dispatch {
+                && (matches!(name, "bash" | "write" | "edit" | "web_search")
+                    || read_target.as_ref().is_some_and(|target| target.is_url()));
+
+            let mut path_reads_authorized = false;
+            if is_read_checked_tool && let Some(policy) = policy.as_ref() {
+                if permissions == PermissionMode::DangerFullAccess {
+                    read_policy = Some(policy.without_home_restriction());
+                } else {
+                    let raw_targets: Vec<PathBuf> = match name {
+                        "read" => read_target
+                            .as_ref()
+                            .and_then(|target| target.local_path(&self.cwd))
+                            .into_iter()
+                            .collect(),
+                        "rg" => super::rg::inspect_roots(&self.cwd, arguments)?,
+                        "glob" => super::glob::inspect_root(&self.cwd, arguments)?
+                            .into_iter()
+                            .collect(),
+                        "lsp" => pp_lsp::tool::resolve_read_targets(
+                            &self.cwd,
+                            arguments,
+                            call.cancellation,
+                        )?,
+                        _ => Vec::new(),
+                    };
+
+                    let mut session_checks = Vec::new();
+                    let mut outside_checks = Vec::new();
+                    let mut session_reads = Vec::new();
+                    let mut outside_reads = Vec::new();
+                    for local in raw_targets {
+                        match policy.classify_read(&local) {
+                            pp_sandbox::ReadAccessCheck::Allowed => {}
+                            pp_sandbox::ReadAccessCheck::ImmutableDenied(msg) => bail!("{msg}"),
+                            pp_sandbox::ReadAccessCheck::NeedsSessionApproval(path) => {
+                                if name == "read" {
+                                    ensure!(path.is_file(), "read requires a regular file");
+                                }
+                                session_checks.push((local, path.clone()));
+                                if !session_reads.contains(&path) {
+                                    session_reads.push(path);
+                                }
+                            }
+                            pp_sandbox::ReadAccessCheck::NeedsOutsideApproval(path) => {
+                                outside_checks.push((local, path.clone()));
+                                if !outside_reads.contains(&path) {
+                                    outside_reads.push(path);
+                                }
+                            }
+                        }
+                    }
+
+                    if !session_reads.is_empty() || !outside_reads.is_empty() {
+                        self.permission.authorize_path_reads(
+                            permissions,
+                            perm_name,
+                            &self.cwd,
+                            &session_reads,
+                            &outside_reads,
+                            hook_ask,
+                            call.cancellation,
+                        )?;
+                        for (local, expected) in &session_checks {
+                            ensure!(
+                                policy.classify_read(local)
+                                    == pp_sandbox::ReadAccessCheck::NeedsSessionApproval(
+                                        expected.clone()
+                                    ),
+                                "approved session path changed during permission check"
+                            );
+                        }
+                        for (local, expected) in &outside_checks {
+                            ensure!(
+                                matches!(
+                                    policy.classify_read(local),
+                                    pp_sandbox::ReadAccessCheck::NeedsOutsideApproval(ref current)
+                                        if current == expected
+                                ) || matches!(
+                                    policy.classify_read(local),
+                                    pp_sandbox::ReadAccessCheck::Allowed
+                                ),
+                                "approved read path changed during permission check"
+                            );
+                        }
+                        let scoped = policy.with_approved_reads(&session_reads, &outside_reads)?;
+                        if name == "read"
+                            && let Some(target) = read_target
+                            && let [only_session] = session_reads.as_slice()
+                        {
+                            approved_session_read = Some((target, only_session.clone()));
+                        }
+                        read_policy = Some(scoped);
+                        path_reads_authorized = true;
+                    } else {
+                        read_policy = Some(std::sync::Arc::clone(policy));
+                    }
+                }
+            }
+
+            if needs_permission && !path_reads_authorized && !deferred_to_dispatch {
                 self.permission.enforce_for(
                     permissions,
                     perm_name,
@@ -450,8 +569,10 @@ impl Tools {
             lsp_access,
             permissions,
             sandbox,
+            read_policy,
             hook_ask,
             resolved_mcp_call,
+            approved_session_read,
         })
     }
 }
@@ -461,8 +582,10 @@ pub(super) struct AuthorizedAccess<'a> {
     pub(super) lsp_access: pp_lsp::tool::Access,
     pub(super) permissions: PermissionMode,
     pub(super) sandbox: pp_sandbox::SandboxView<'a>,
+    pub(super) read_policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
     pub(super) hook_ask: Option<&'a str>,
     pub(super) resolved_mcp_call: Option<super::mcp_proxy::ResolvedMcpCall>,
+    pub(super) approved_session_read: Option<(super::read::Target, PathBuf)>,
 }
 
 impl Drop for Tools {

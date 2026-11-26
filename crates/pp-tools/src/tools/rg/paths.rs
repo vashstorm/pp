@@ -199,17 +199,30 @@ fn reject_symlink_components(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-#[allow(clippy::too_many_arguments)]
-pub(super) fn parse_paths(
-    cwd: &Path,
-    input: &str,
-    respect: bool,
-    globs: &[String],
-    types: Option<&ignore::types::Types>,
-    token: &CancellationToken,
-    deadline: Instant,
-    sandbox: Option<pp_sandbox::SandboxView<'_>>,
-) -> Result<(TargetIter, bool, Vec<String>)> {
+fn expand_tilde_arg(cwd: &Path, s: &str) -> String {
+    if cwd.join(s).exists() {
+        return s.to_owned();
+    }
+    let stripped = s
+        .trim()
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(s.trim());
+    if stripped == "~" || stripped.starts_with("~/") {
+        std::env::var_os("HOME")
+            .map(|home| {
+                PathBuf::from(home)
+                    .join(stripped.strip_prefix("~/").unwrap_or(""))
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|| stripped.to_owned())
+    } else {
+        stripped.to_owned()
+    }
+}
+
+fn resolve_scope_entries(cwd: &Path, input: &str) -> Result<(Vec<String>, Vec<String>)> {
     let input = if input.trim().is_empty() { "." } else { input };
     let normalized = if cwd.join(input).exists() {
         input.to_owned()
@@ -255,27 +268,7 @@ pub(super) fn parse_paths(
     let mut exclusions = Vec::new();
     let mut entries = Vec::new();
     for s in pieces {
-        let s = if cwd.join(&s).exists() {
-            s
-        } else {
-            let stripped = s
-                .trim()
-                .strip_prefix('"')
-                .and_then(|v| v.strip_suffix('"'))
-                .unwrap_or(s.trim());
-            if stripped == "~" || stripped.starts_with("~/") {
-                std::env::var_os("HOME")
-                    .map(|home| {
-                        PathBuf::from(home)
-                            .join(stripped.strip_prefix("~/").unwrap_or(""))
-                            .to_string_lossy()
-                            .into_owned()
-                    })
-                    .unwrap_or_else(|| stripped.to_owned())
-            } else {
-                stripped.to_owned()
-            }
-        };
+        let s = expand_tilde_arg(cwd, &s);
         if s.starts_with('!') && !cwd.join(&s).exists() {
             exclusions.push(s[1..].to_owned());
         } else {
@@ -285,52 +278,104 @@ pub(super) fn parse_paths(
     if entries.is_empty() {
         entries.push(".".into());
     }
-    let policy = sandbox.map(|sbx| sbx.policy()).transpose()?.flatten();
+    Ok((entries, exclusions))
+}
+
+fn split_entry_selector(cwd: &Path, entry: &str) -> Result<(String, Vec<(usize, usize)>)> {
+    if cwd.join(entry).symlink_metadata().is_ok() {
+        return Ok((entry.to_owned(), vec![]));
+    }
+    if let Some((p, r)) = entry.rsplit_once(':')
+        && !r.is_empty()
+        && r.bytes()
+            .all(|c| c.is_ascii_digit() || b"-+,Ll.".contains(&c))
+    {
+        let mut ranges = Vec::new();
+        let multiple = r.contains(',');
+        let number = |value: &str| -> Result<usize> {
+            let value = value.trim_start_matches(['L', 'l']);
+            let n = value.parse::<usize>().context("invalid line range")?;
+            ensure!(n > 0, "line numbers must be positive");
+            Ok(n)
+        };
+        for segment in r.split(',') {
+            let (a, b) = if let Some((a, b)) = segment.split_once('+') {
+                let a = number(a)?;
+                let n = number(b)?;
+                (a, a.checked_add(n - 1).context("range overflow")?)
+            } else if let Some((a, b)) =
+                segment.split_once("..").or_else(|| segment.split_once('-'))
+            {
+                let a = number(a)?;
+                (a, if b.is_empty() { usize::MAX } else { number(b)? })
+            } else {
+                let a = number(segment)?;
+                (a, if multiple { a } else { usize::MAX })
+            };
+            ensure!(b >= a, "invalid line range");
+            ranges.push((a, b));
+        }
+        return Ok((p.to_owned(), ranges));
+    }
+    Ok((entry.to_owned(), vec![]))
+}
+
+/// 预解析 `rg` 参数指向的搜索根路径，供权限门在执行遍历前分类并审批会话/外部路径。
+pub(in crate::tools) fn inspect_roots(cwd: &Path, arguments: &str) -> Result<Vec<PathBuf>> {
+    let Ok(args) = serde_json::from_str::<super::Args>(arguments) else {
+        return Ok(Vec::new());
+    };
+    if args
+        .path
+        .as_deref()
+        .is_some_and(|p| super::super::read::is_pipe_uri(p) || p.starts_with("artifact://"))
+    {
+        return Ok(Vec::new());
+    }
+    let Ok((entries, _)) = resolve_scope_entries(cwd, args.path.as_deref().unwrap_or(".")) else {
+        return Ok(Vec::new());
+    };
+    let mut roots = Vec::new();
+    for entry in entries {
+        let Ok((raw, _)) = split_entry_selector(cwd, &entry) else {
+            continue;
+        };
+        let abs = cwd.join(&raw);
+        let root = if abs.symlink_metadata().is_ok() || !glob_path(&raw) {
+            abs
+        } else {
+            let ix = raw.find(['*', '?', '[', '{']).unwrap();
+            let prefix = &raw[..ix];
+            let slash = prefix.rfind('/');
+            let base = slash.map_or(".", |i| &raw[..i]);
+            cwd.join(if base.is_empty() { "/" } else { base })
+        };
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
+    Ok(roots)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn parse_paths(
+    cwd: &Path,
+    input: &str,
+    respect: bool,
+    globs: &[String],
+    types: Option<&ignore::types::Types>,
+    token: &CancellationToken,
+    deadline: Instant,
+    policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
+) -> Result<(TargetIter, bool, Vec<String>)> {
+    let (entries, exclusions) = resolve_scope_entries(cwd, input)?;
     let one_entry = entries.len() == 1;
     let mut targets = BTreeMap::new();
     let mut missing = Vec::new();
     let mut lazy_walk = None;
     for entry in entries {
         check(token, deadline)?;
-        let (raw, ranges) = if cwd.join(&entry).symlink_metadata().is_ok() {
-            (entry.clone(), vec![])
-        } else if let Some((p, r)) = entry.rsplit_once(':') {
-            if !r.is_empty()
-                && r.bytes()
-                    .all(|c| c.is_ascii_digit() || b"-+,Ll.".contains(&c))
-            {
-                let mut ranges = Vec::new();
-                let multiple = r.contains(',');
-                let number = |value: &str| -> Result<usize> {
-                    let value = value.trim_start_matches(['L', 'l']);
-                    let n = value.parse::<usize>().context("invalid line range")?;
-                    ensure!(n > 0, "line numbers must be positive");
-                    Ok(n)
-                };
-                for segment in r.split(',') {
-                    let (a, b) = if let Some((a, b)) = segment.split_once('+') {
-                        let a = number(a)?;
-                        let n = number(b)?;
-                        (a, a.checked_add(n - 1).context("range overflow")?)
-                    } else if let Some((a, b)) =
-                        segment.split_once("..").or_else(|| segment.split_once('-'))
-                    {
-                        let a = number(a)?;
-                        (a, if b.is_empty() { usize::MAX } else { number(b)? })
-                    } else {
-                        let a = number(segment)?;
-                        (a, if multiple { a } else { usize::MAX })
-                    };
-                    ensure!(b >= a, "invalid line range");
-                    ranges.push((a, b));
-                }
-                (p.to_owned(), ranges)
-            } else {
-                (entry.clone(), vec![])
-            }
-        } else {
-            (entry.clone(), vec![])
-        };
+        let (raw, ranges) = split_entry_selector(cwd, &entry)?;
         let abs = cwd.join(&raw);
         if abs.symlink_metadata().is_ok() {
             reject_symlink_components(&abs)?;

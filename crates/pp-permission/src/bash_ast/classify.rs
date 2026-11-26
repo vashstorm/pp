@@ -135,10 +135,89 @@ impl LeafCommand {
             return None;
         }
         let program = self.program()?;
+        // Shell 解释器、代码求值器与脚本语言解释器均禁止自动记忆规则，
+        // 避免记住 `python3 script.py` 后借免审批的 write/edit 改写脚本绕过审批。
         if matches!(
             program,
-            "eval" | "source" | "." | "bash" | "sh" | "zsh" | "dash" | "ksh"
+            "eval"
+                | "source"
+                | "."
+                | "bash"
+                | "sh"
+                | "zsh"
+                | "dash"
+                | "ksh"
+                | "python"
+                | "python2"
+                | "python3"
+                | "pypy"
+                | "pypy3"
+                | "node"
+                | "nodejs"
+                | "ruby"
+                | "perl"
+                | "php"
+                | "lua"
+                | "luajit"
+                | "osascript"
+                | "pwsh"
+                | "powershell"
+                | "awk"
+                | "gawk"
+                | "nawk"
+                | "mawk"
+                | "xargs"
         ) {
+            return None;
+        }
+        // 路径型可执行文件（如 `./script.sh`、`scripts/run.sh`、`/tmp/tool`、`~/bin/run`）
+        // 位于潜在可写或动态位置，一律禁止自动记忆。
+        if self
+            .raw_args
+            .first()
+            .is_some_and(|raw| raw.contains('/') || raw.starts_with('~'))
+        {
+            return None;
+        }
+        if matches!(program, "bun" | "deno") {
+            let sub = extract_hazard_subcommand_for(program, &self.tokens[1..]);
+            let has_eval_flag = self.tokens[1..].iter().any(|tok| {
+                matches!(
+                    tok.as_literal(),
+                    Some("-e" | "--eval" | "-p" | "--print" | "eval")
+                )
+            });
+            if has_eval_flag
+                || matches!(sub.as_deref(), Some("run" | "eval" | "x"))
+                || sub.as_deref().is_some_and(|s| {
+                    s.contains('/')
+                        || s.ends_with(".js")
+                        || s.ends_with(".ts")
+                        || s.ends_with(".mjs")
+                        || s.ends_with(".cjs")
+                        || s.ends_with(".mts")
+                        || s.ends_with(".cts")
+                })
+            {
+                return None;
+            }
+        }
+        if program == "uv"
+            && matches!(
+                extract_hazard_subcommand_for("uv", &self.tokens[1..]).as_deref(),
+                Some("run" | "tool")
+            )
+        {
+            return None;
+        }
+        if program == "find"
+            && self.tokens[1..].iter().any(|tok| {
+                matches!(
+                    tok.as_literal(),
+                    Some("-exec" | "-execdir" | "-ok" | "-okdir" | "-delete")
+                )
+            })
+        {
             return None;
         }
         if SUBCOMMAND_PROGRAMS.contains(&program) {

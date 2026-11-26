@@ -205,6 +205,8 @@ struct BashPermissions {
     #[serde(default)]
     writable: Vec<std::path::PathBuf>,
     #[serde(default)]
+    read: Vec<std::path::PathBuf>,
+    #[serde(default)]
     network: bool,
 }
 
@@ -307,14 +309,20 @@ pub(super) fn sandbox_net_note(status: &pp_sandbox::SandboxStatus) -> &'static s
 }
 
 fn sandbox_exec_note(status: &pp_sandbox::SandboxStatus) -> String {
+    let read_note = match status.read_scope {
+        pp_config::config::SandboxReadScope::Workspace => {
+            "non-workspace $HOME reads require approval (use read/rg/glob or bash sandbox_permissions.read), "
+        }
+        pp_config::config::SandboxReadScope::Unrestricted => "",
+    };
     match status.effective {
         pp_sandbox::EffectiveMode::Off => "No filesystem sandbox.".into(),
         pp_sandbox::EffectiveMode::WorkspaceWrite => format!(
-            "Sandboxed (workspace-write; writes restricted to workspace/tmp, protected dirs .git/.agents/.pp read-only, credential paths unreadable, {}).",
+            "Sandboxed (workspace-write; writes restricted to workspace/tmp, protected dirs .git/.agents/.pp read-only, {read_note}credential paths unreadable, {}).",
             sandbox_net_note(status)
         ),
         pp_sandbox::EffectiveMode::ReadOnly => format!(
-            "Sandboxed (read-only; workspace is read-only, credential paths unreadable, {}).",
+            "Sandboxed (read-only; workspace is read-only, {read_note}credential paths unreadable, {}).",
             sandbox_net_note(status)
         ),
     }
@@ -455,9 +463,10 @@ fn bash_definition(
         properties["sandbox_permissions"] = json!({
             "type": "object",
             "additionalProperties": false,
-            "description": "Request permission before starting this command when it requires additional writable directories or outbound network. Normal commands omit this field. A sandbox failure does not retry the command.",
+            "description": "Request permission before starting this command when it requires additional writable directories, out-of-workspace/session read paths, or outbound network. Normal commands omit this field. A sandbox failure does not retry the command.",
             "properties": {
                 "writable": {"type": "array", "items": {"type": "string", "description": "An existing absolute directory path"}},
+                "read": {"type": "array", "items": {"type": "string", "description": "An existing absolute file or directory path outside the workspace (or in protected sessions) to request read-only access"}},
                 "network": {"type": "boolean", "description": "Allow outbound network for the command and its subprocesses"}
             }
         });

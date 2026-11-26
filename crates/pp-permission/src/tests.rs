@@ -316,6 +316,9 @@ fn auto_review_passes_allows_and_denies_or_errors_fallback_to_prompt() {
             },
             &root,
             &bash("git add aaa.txt"),
+            None,
+            &[],
+            &[],
             &[],
             false,
             None,
@@ -348,6 +351,9 @@ fn auto_review_passes_allows_and_denies_or_errors_fallback_to_prompt() {
             },
             &root,
             &bash("git push --force"),
+            None,
+            &[],
+            &[],
             &[],
             false,
             None,
@@ -638,4 +644,80 @@ fn preapproved_bash_command_patterns_check_every_ast_leaf_and_enforce_critical_r
     enforce(&gate, "bash", &bash("echo safe && git status")).unwrap();
     assert!(enforce(&gate, "bash", &bash("touch foo")).is_err());
     assert!(enforce(&gate, "bash", &bash("echo x > /etc/passwd")).is_err());
+}
+
+#[test]
+fn authorize_path_reads_separates_session_single_prompt_from_persistent_outside_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = dir.path().canonicalize().unwrap();
+    let ws = agent.join("ws");
+    let session_path = agent.join("sessions/run.jsonl");
+    let outside_path = agent.join("outside.txt");
+    std::fs::create_dir_all(session_path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(&session_path, "{}").unwrap();
+    std::fs::write(&outside_path, "outside").unwrap();
+
+    let mut gate = Gate::for_process(&agent, Some(PermissionMode::WorkspaceWrite), false);
+    gate.set_config(ToolsSettings::default());
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&calls);
+    let decision = Arc::new(Mutex::new(PermissionDecision::Approve));
+    let decision_for_handler = Arc::clone(&decision);
+    gate.set_handler(Box::new(move |request, _| {
+        recorded.lock().unwrap().push((
+            request.session_grant,
+            request.persistent_grant,
+            request.reason.clone(),
+        ));
+        Ok(*decision_for_handler.lock().unwrap())
+    }));
+
+    // 1. 会话路径每次必须单次确认（关闭 session_grant/persistent_grant，且不写入持久化规则）。
+    for _ in 0..2 {
+        gate.authorize_path_reads(
+            PermissionMode::WorkspaceWrite,
+            "rg",
+            &ws,
+            std::slice::from_ref(&session_path),
+            &[],
+            None,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    }
+    let session_calls = calls.lock().unwrap().drain(..).collect::<Vec<_>>();
+    assert_eq!(session_calls.len(), 2);
+    assert!(session_calls.iter().all(|(s, p, _)| !*s && !*p));
+
+    // 2. 普通工作区外读取允许持久化 FsAccess::Read，且跨 Gate 实例生效。
+    *decision.lock().unwrap() = PermissionDecision::ApprovePersistently;
+    gate.authorize_path_reads(
+        PermissionMode::WorkspaceWrite,
+        "rg",
+        &ws,
+        &[],
+        std::slice::from_ref(&outside_path),
+        None,
+        &CancellationToken::new(),
+    )
+    .unwrap();
+    let outside_calls = calls.lock().unwrap().drain(..).collect::<Vec<_>>();
+    assert_eq!(outside_calls.len(), 1);
+    assert!(outside_calls[0].0 && outside_calls[0].1);
+
+    let reloaded = Gate::for_process(&agent, Some(PermissionMode::WorkspaceWrite), false);
+    reloaded.set_config(ToolsSettings::default());
+    reloaded
+        .authorize_path_reads(
+            PermissionMode::WorkspaceWrite,
+            "glob",
+            &ws,
+            &[],
+            std::slice::from_ref(&outside_path),
+            None,
+            &CancellationToken::new(),
+        )
+        .unwrap();
 }

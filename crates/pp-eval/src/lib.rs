@@ -480,6 +480,23 @@ print(a["content"], b["matches"], caught)
             "{}",
             ro_res.value
         );
+
+        // 同模式下策略叠加变更（例如 allow_read / permission overlay）亦触发重启
+        sbx.set_permission_overlay(pp_sandbox::SandboxOverlay {
+            read_only: vec![home.join("overlay_ro")],
+            ..Default::default()
+        });
+        let overlay_policy = sbx.policy().unwrap().unwrap();
+        let overlay_res = run_with_policy("print(2 + 2)", Some(overlay_policy));
+        assert_eq!(overlay_res.value["ok"], true, "{}", overlay_res.value);
+        assert!(
+            overlay_res.value["notice"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("sandbox policy changed"),
+            "{}",
+            overlay_res.value
+        );
     }
 
     #[test]
