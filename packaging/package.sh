@@ -12,18 +12,10 @@ require() {
     done
 }
 
-as_root() {
-    if [ "$(id -u)" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
-    fi
-}
-
 build_macos() {
     mkdir -p "$stage/image"
     install -m 0755 "$binary" "$stage/image/pp"
-    install -m 0755 "$repo/packaging/install-macos.sh" "$stage/image/Install pp.command"
+    install -m 0755 "$repo/packaging/install-local.sh" "$stage/image/Install pp.command"
 
     if [ -n "${PP_MACOS_APP_IDENTITY:-}" ]; then
         codesign --force --options runtime --timestamp --identifier io.github.vashstorm.pp \
@@ -105,56 +97,6 @@ build_rpm() {
     fi
 }
 
-install_package() {
-    case "$platform" in
-        macos)
-            mkdir "$stage/mount"
-            if [ "$macos_image_tool" = diskutil ]; then
-                diskutil image attach --readOnly --nobrowse --mountPoint "$stage/mount" "$artifact"
-            else
-                hdiutil attach -readonly -nobrowse -mountpoint "$stage/mount" "$artifact"
-            fi
-            mount_point="$stage/mount"
-            sh "$mount_point/Install pp.command"
-            return
-            ;;
-        fedora)
-            rpm_fields='%{VERSION}-%{RELEASE}.%{ARCH}'
-            wanted=$(rpm -qp --qf "$rpm_fields" "$artifact")
-            current=$(rpm -q --qf "$rpm_fields" "$package" 2>/dev/null) || current=
-            if [ "$current" = "$wanted" ]; then
-                as_root dnf reinstall "$artifact"
-            else
-                as_root dnf install "$artifact"
-            fi
-            installed=/usr/bin/pp
-            ;;
-        ubuntu)
-            as_root apt-get install --reinstall "$artifact"
-            installed=/usr/bin/pp
-            ;;
-    esac
-    "$installed" --version
-    selected=$(command -v pp || true)
-    if ! [ "$selected" -ef "$installed" ]; then
-        printf 'Installed %s. Your PATH currently resolves pp to %s.\n' \
-            "$installed" "${selected:-no executable}" >&2
-    fi
-}
-
-cleanup() {
-    if [ -n "$mount_point" ]; then
-        case "$macos_image_tool" in
-            diskutil) diskutil eject "$mount_point" ;;
-            hdiutil) hdiutil detach "$mount_point" ;;
-        esac || {
-            printf 'pp packaging: could not detach %s\n' "$mount_point" >&2
-            return 1
-        }
-    fi
-    rm -rf "$stage"
-}
-
 [ "$#" -eq 4 ] || fail 'Invoke packaging through the Makefile.'
 action=$1
 profile=$2
@@ -172,8 +114,11 @@ repo=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
 cd "$repo"
 case "$arch" in aarch64|x86_64) ;; *) fail "Unsupported host architecture: $arch" ;; esac
 
-case "$platform" in
-    macos)
+case "$platform:$action" in
+    macos:install)
+        expected_host="$arch-apple-darwin"
+        ;;
+    macos:build)
         expected_host="$arch-apple-darwin"
         package_arch=$arch
         if [ "$arch" = aarch64 ]; then package_arch=arm64; fi
@@ -192,24 +137,24 @@ case "$platform" in
             require xcrun
         fi
         ;;
-    fedora)
+    linux:install)
+        expected_host="$arch-unknown-linux-gnu"
+        ;;
+    fedora:build)
         expected_host="$arch-unknown-linux-gnu"
         package_arch=$arch
         extension=rpm
         require rpmbuild
         if [ -n "${PP_RPM_SIGN_KEY:-}" ]; then require rpmsign; fi
-        if [ "$action" = install ]; then require rpm dnf; fi
         ;;
-    ubuntu)
+    ubuntu:build)
         expected_host="$arch-unknown-linux-gnu"
         case "$arch" in aarch64) package_arch=arm64 ;; x86_64) package_arch=amd64 ;; esac
         extension=deb
         require dpkg-deb dpkg-shlibdeps
-        if [ "$action" = install ]; then require apt-get; fi
         ;;
-    *) fail "Unsupported packaging platform: $platform" ;;
+    *) fail "Unsupported action '$action' for platform '$platform'." ;;
 esac
-if [ "$action" = install ] && [ "$platform" != macos ] && [ "$(id -u)" -ne 0 ]; then require sudo; fi
 
 compiler=${RUSTC:-rustc}
 require cargo "$compiler"
@@ -223,6 +168,11 @@ if [ "$profile" = release ]; then set -- "$@" --release; fi
 RUSTC="$compiler" PCRE2_SYS_STATIC=1 cargo build "$@"
 binary="$target_dir/$rust_host/$cargo_dir/pp"
 
+if [ "$action" = install ]; then
+    "$binary" init-config
+    exec sh "$repo/packaging/install-local.sh" "$binary"
+fi
+
 version=$("$binary" --version)
 case "$version" in 'pp '*) version=${version#pp } ;; *) fail 'Could not determine the version of pp.' ;; esac
 case "$version" in ''|*[!0-9A-Za-z.+-]*|[!0-9]*) fail "Invalid package version: $version" ;; esac
@@ -231,8 +181,7 @@ rpm_version=$(printf '%s\n' "${version%%+*}" | sed 's/-/~/g')
 output="$target_dir/packages"
 mkdir -p "$output"
 stage=$(mktemp -d "$output/.stage.XXXXXXXX")
-mount_point=
-trap 'exit_code=$?; cleanup || exit_code=1; exit "$exit_code"' EXIT
+trap 'exit_code=$?; rm -rf "$stage" || exit_code=1; exit "$exit_code"' EXIT
 trap 'exit 1' HUP INT TERM
 filename="pp-$version-$profile-$package_arch.$extension"
 artifact="$stage/$filename"
@@ -243,9 +192,5 @@ case "$platform" in
 esac
 "$binary" init-config
 
-# 保留本次安装的独立输入，即使另一个构建同时更新同名产物。
-ln "$artifact" "$stage/publish"
-mv -f "$stage/publish" "$output/$filename"
+mv -f "$artifact" "$output/$filename"
 printf '%s\n' "$output/$filename"
-
-if [ "$action" = install ]; then install_package; fi

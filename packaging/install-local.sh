@@ -6,7 +6,11 @@ case "${HOME:-}" in
     *) printf 'An absolute HOME is required to install pp.\n' >&2; exit 1 ;;
 esac
 
-image_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+binary=${1:-}
+if [ -z "$binary" ]; then
+    image_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+    binary="$image_dir/pp"
+fi
 bin_dir="$HOME/.local/bin"
 destination="$bin_dir/pp"
 mkdir -p "$bin_dir"
@@ -19,7 +23,7 @@ fi
 temporary=$(mktemp "$bin_dir/.pp.XXXXXXXX")
 trap 'rm -f "$temporary"' EXIT
 trap 'exit 1' HUP INT TERM
-install -m 0755 "$image_dir/pp" "$temporary"
+install -m 0755 "$binary" "$temporary"
 mv -f "$temporary" "$destination"
 printf 'Installed %s\n' "$destination"
 "$destination" --version

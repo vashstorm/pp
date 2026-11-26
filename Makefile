@@ -7,9 +7,11 @@ $(error Run make from a native macOS shell)
 endif
 override package_platform := macos
 else ifeq ($(host_os),Linux)
+ifneq ($(filter release dev,$(or $(MAKECMDGOALS),$(.DEFAULT_GOAL))),)
 override package_platform := $(shell ID=; if test -r /etc/os-release; then . /etc/os-release && printf '%s' "$$ID"; fi)
 ifeq ($(filter fedora ubuntu,$(package_platform)),)
 $(error Unsupported Linux distribution '$(package_platform)' (expected Fedora or Ubuntu))
+endif
 endif
 else
 $(error Unsupported operating system '$(host_os)' (expected macOS, Fedora, or Ubuntu))
@@ -30,4 +32,4 @@ release dev:
 install: install-release
 
 install-release install-dev:
-	@sh packaging/package.sh install $(@:install-%=%) $(package_platform) $(host_arch)
+	@sh packaging/package.sh install $(@:install-%=%) $(if $(filter Linux,$(host_os)),linux,$(package_platform)) $(host_arch)

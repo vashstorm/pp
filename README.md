@@ -27,18 +27,18 @@ Choose the package for your operating system and CPU architecture.
 | Fedora | Run `sudo dnf install ./PACKAGE.rpm` with the downloaded file name. |
 | Ubuntu | Run `sudo apt install ./PACKAGE.deb` with the downloaded file name. |
 
-To install from a source checkout, run one of these commands in the repository root. Make selects the package format for the current operating system and builds it with the native Rust toolchain for the current CPU architecture.
+To install from a source checkout, run one of these commands in the repository root. On macOS and Linux, both commands build with the native Rust toolchain and install the binary directly to `~/.local/bin/pp` without `sudo`.
 
 ```sh
 make install            # Release build, also available as make install-release
 make install-dev        # Development build
 ```
 
-Source installation needs GNU Make, a stable Rust toolchain, `bash`, and a C toolchain. On macOS, install the Xcode Command Line Tools. On Fedora, install `rpm-build`. On Ubuntu, install `build-essential` and `dpkg-dev`. On Linux, install `bubblewrap` to use the command sandbox when the system allows unprivileged user namespaces.
+Source installation needs GNU Make, a stable Rust toolchain, `bash`, and a C toolchain. On macOS, install the Xcode Command Line Tools. On Linux, install `bubblewrap` to use the command sandbox when the system allows unprivileged user namespaces. To build distribution packages with `make release` or `make dev`, install `rpm-build` on Fedora or `dpkg-dev` on Ubuntu.
 
 Run `pp --version` to verify the installation. Both builds use the `pp` command and share `~/.pp/agent/`. If `command -v pp` points to an older copy, adjust your `PATH` so the installed copy takes precedence. At first launch, `pp` creates any missing `settings.yml` and `models.yml` in that directory. Run `pp` in a terminal and use `/login` to configure a model.
 
-On macOS, put `export PATH="$HOME/.local/bin:$PATH"` in `~/.zshrc` and open a new terminal if your shell cannot find the installed `pp`.
+If your shell cannot find the locally installed `pp`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell startup file and open a new terminal.
 
 TUI rendering defaults to a maximum of 60 FPS. Set `tui.max_fps` in `~/.pp/agent/settings.yml` to an integer from 1 to 120 and restart to change it. Input and cancellation are processed independently of rendering; streamed text is batched for display.
 
