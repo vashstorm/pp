@@ -446,7 +446,7 @@ fn plan_write_uses_common_write_schema_and_rejects_removed_tool_and_old_argument
         ),
         (
             "write",
-            json!({"path":".pp/plans/removed.md","content":"- [ ] forbidden"}),
+            json!({"path":".pp/done/removed.md","content":"- [ ] forbidden"}),
         ),
         (
             "write",

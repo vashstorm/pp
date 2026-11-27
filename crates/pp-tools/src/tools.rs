@@ -259,8 +259,8 @@ enum EvalLanguage {
 
 const PLAN_WRITE_DESC: &str = concat!(
     "Save the complete Markdown plan using path and content. On the first save choose ",
-    ".pp/drafts/<descriptive-kebab-case-name>.md; later saves must use the exact bound plan ",
-    "path. Only this plan may be written in Plan mode. The display title derives from the file ",
+    ".pp/drafts/<descriptive-kebab-case-name>.md. For later saves, reuse the path returned by ",
+    "write. Only this plan may be written in Plan mode. The display title derives from the file ",
     "name (use H2/H3 headings; omit H1). The runtime registers the plan, advances its revision, ",
     "refuses name collisions and external changes, and returns path and revision. Renaming is ",
     "only possible through /plan-list.",

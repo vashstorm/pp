@@ -511,7 +511,7 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
                 protocol,
                 &format!("collision-{location}"),
                 "write",
-                json!({"path":format!(".pp/drafts/occupied-{location}.md"),"content":PLAN_TUI_BODY}),
+                json!({"path":format!(".pp/plans/occupied-{location}.md"),"content":PLAN_TUI_BODY}),
             ));
         }
         calls.push(plan_call(
@@ -524,7 +524,7 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
             protocol,
             "named-save",
             "write",
-            json!({"path":".pp/drafts/create-canary.md","content":PLAN_TUI_BODY}),
+            json!({"path":".pp/plans/create-canary.md","content":PLAN_TUI_BODY}),
         ));
         plan_calls(request, protocol, json!(calls));
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
@@ -568,26 +568,31 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
                     protocol,
                     "stable-save",
                     "write",
-                    json!({"path":".pp/drafts/create-canary.md","content":revised})
+                    json!({"path":".pp/plans/create-canary.md","content":revised})
                 ),
                 plan_call(
                     protocol,
                     "rename-refused",
                     "write",
                     json!({"path":".pp/drafts/another-name.md","content":"- [ ] wrong"})
+                ),
+                plan_call(
+                    protocol,
+                    "other-plan-refused",
+                    "write",
+                    json!({"path":".pp/plans/another-name.md","content":"- [ ] wrong"})
                 )
             ]),
         );
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         let outputs = cancel_tool_outputs(&body, protocol);
-        assert_eq!(
-            outputs
-                .iter()
-                .find(|(id, _)| id == "stable-save")
-                .unwrap()
-                .1["revision"],
-            2
-        );
+        let saved = &outputs
+            .iter()
+            .find(|(id, _)| id == "stable-save")
+            .unwrap()
+            .1;
+        assert_eq!(saved["path"], ".pp/drafts/create-canary.md");
+        assert_eq!(saved["revision"], 2);
         assert_eq!(
             outputs
                 .iter()
@@ -597,10 +602,19 @@ fn plan_ai_filename_is_stable_and_never_overwrites() {
             "Rename plans through /plan-list."
         );
         assert_eq!(
+            outputs
+                .iter()
+                .find(|(id, _)| id == "other-plan-refused")
+                .unwrap()
+                .1["ok"],
+            false
+        );
+        assert_eq!(
             std::fs::read_to_string(plan_path(project.path())).unwrap(),
             revised
         );
         assert!(!project.path().join(".pp/drafts/another-name.md").exists());
+        assert!(!project.path().join(".pp/plans/create-canary.md").exists());
         plan_final(request, protocol, "Named draft saved");
         pty.wait_for("named draft save finished", |screen| {
             screen.contents().contains("Named draft saved")

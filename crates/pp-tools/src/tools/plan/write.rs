@@ -17,11 +17,12 @@ pub(super) fn write(
     args: WriteArgs,
 ) -> Result<(Value, Option<PlanChange>)> {
     let components = workspace.components(Path::new(&args.path))?;
-    let requested = components.iter().collect::<std::path::PathBuf>();
     // 路径校验先于目录创建；Plan 的 write 不能写任意项目文件或登记文件。
     let (file_name, path) = if document.revision == 0 {
         ensure!(
-            components.len() == 3 && components[0] == ".pp" && components[1] == "drafts",
+            components.len() == 3
+                && components[0] == ".pp"
+                && (components[1] == "drafts" || components[1] == "plans"),
             "Tool is not available in Plan mode."
         );
         let file_name = components[2]
@@ -33,11 +34,18 @@ pub(super) fn write(
         (file_name, path)
     } else {
         let (file_name, path) = bound_target(workspace, document)?;
-        ensure!(
-            requested.parent() == Path::new(&path).parent(),
-            "Tool is not available in Plan mode."
-        );
-        ensure!(requested == Path::new(&path), "{RENAME_BOUND}");
+        let requested = components.iter().collect::<std::path::PathBuf>();
+        let bound = Path::new(&path);
+        // 兼容旧路径只允许写入同名绑定草稿，保存目标始终使用登记路径。
+        let uses_legacy_path = bound.starts_with(".pp/drafts")
+            && requested == Path::new(&plan::path_for(&file_name, PlanLocation::Plans));
+        if !uses_legacy_path {
+            ensure!(
+                requested.parent() == bound.parent(),
+                "Tool is not available in Plan mode."
+            );
+            ensure!(requested == bound, "{RENAME_BOUND}");
+        }
         (file_name, path)
     };
     plan::validate_content(&args.content)?;
