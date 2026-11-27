@@ -46,7 +46,9 @@ impl App {
         let request = permission_prompt(PermissionRequest {
             tool: "bash".into(),
             agent: None,
-            reason: "Preview only. Example request for access outside the workspace sandbox."
+            reason: "Preview only. Example request for access outside the workspace sandbox.\n\
+                Read outside workspace requires approval: /Users/example/.config/app/settings.toml, /etc/hosts\n\
+                Command: cd ~/project && git fetch --all --prune && cargo build --release 2>&1 | tee /tmp/build.log; grep -n error /etc/hosts"
                 .into(),
             session_grant: true,
             persistent_grant: true,

@@ -24,8 +24,6 @@ const CARD_PADDING: u16 = 1;
 const CARD_CHROME: u16 = 4;
 // 选项标签与说明列之间的空白。
 const DESCRIPTION_GAP: usize = 3;
-// 原因文本左侧引用条的最小可读正文宽度，低于此宽度时省略引用条。
-const MIN_QUOTE_TEXT: u16 = 8;
 
 pub(in crate::tui) struct Prompt {
     args: Arc<AskArgs>,
@@ -136,22 +134,7 @@ impl Prompt {
                 "",
             ));
         }
-        let quote = if themes::is_ascii() { "| " } else { "▎ " };
-        let quote_width = Span::raw(quote).width() as u16;
-        let (quote, text_width) = if width >= quote_width + MIN_QUOTE_TEXT {
-            (quote, width - quote_width)
-        } else {
-            ("", width)
-        };
-        let reason = Style::new().fg(palette.activity);
-        let quote_style = Style::new().fg(palette.plan_mode);
-        for line in question.question.lines() {
-            for row in wrap_block(Line::styled(line.to_owned(), reason), text_width, "") {
-                let mut spans = vec![Span::styled(quote, quote_style)];
-                spans.extend(row.spans);
-                lines.push(Line::from(spans));
-            }
-        }
+        lines.extend(super::reason::render(&question.question, width));
         lines
     }
 

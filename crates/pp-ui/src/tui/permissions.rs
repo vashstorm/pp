@@ -20,6 +20,7 @@ use crate::commands::PermissionCommand;
 use crate::tui::{editor, statusline, transcript_style};
 
 mod prompt;
+mod reason;
 pub(super) use prompt::Prompt;
 
 pub(super) fn is_prompt(call_id: &str) -> bool {
