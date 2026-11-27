@@ -163,32 +163,120 @@ fn listing_reads_preview_size_and_latest_turn_status_without_native_content() {
 fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
+    let stats_path = dir.path().join(".stats/stats.db");
+    let stats = pp_stats::Database::new(stats_path.clone());
+    let history_path = dir.path().join("history.db");
+    let locks = dir.path().join(".locks");
     let id = format!("2026-10-17T01-02-03-{}", "a".repeat(32));
     let link_id = format!("2026-10-17T01-02-03-{}", "b".repeat(32));
     let path = dir.path().join(format!("{id}.jsonl"));
-    fs::write(&path, "original bytes").unwrap();
+    let header = serde_json::json!({"type":"session","version":3,"id":id,"timestamp":"2026-10-17T01:02:03Z","cwd":dir.path()});
+    let user =
+        serde_json::json!({"type":"message","message":{"role":"user","content":"delete me"}});
+    write_log(&path, &format!("{header}\n{user}\n"));
     let artifacts = dir.path().join(&id);
     fs::create_dir(&artifacts).unwrap();
     fs::write(artifacts.join("0.bash.log"), "saved output").unwrap();
-    let guard = SessionLock::acquire(&dir.path().join(".locks"), &id).unwrap();
+    let subagents = path.with_extension("subagents");
+    fs::create_dir_all(subagents.join("sessions")).unwrap();
+    fs::write(subagents.join("sessions/child.jsonl"), "child").unwrap();
+    fs::write(subagents.join("registry.json"), "{}").unwrap();
+    fs::create_dir(subagents.join("a1.worktree")).unwrap();
+    fs::write(subagents.join("a1.worktree/keep.txt"), "keep").unwrap();
+
+    let mut history = crate::history::Store::open(&history_path).unwrap();
+    history
+        .sync_sessions(dir.path(), &pp_core::cancellation::CancellationToken::new())
+        .unwrap();
+    history.set_session_pinned(&id, true).unwrap();
+    history.append_input(dir.path(), "keep input", 10).unwrap();
+    drop(history);
+
+    pp_stats::hook(
+        &stats,
+        &pp_stats::HookRun {
+            session_file: &path,
+            cwd: dir.path(),
+            event: pp_config::config::HookEvent::Stop,
+            tool: None,
+            status: pp_stats::HookStatus::Ok,
+            modified: false,
+            timestamp: 1000,
+            duration_ms: 1.0,
+        },
+    );
+    pp_stats::hook(
+        &stats,
+        &pp_stats::HookRun {
+            session_file: &subagents.join("sessions/child.jsonl"),
+            cwd: dir.path(),
+            event: pp_config::config::HookEvent::Stop,
+            tool: None,
+            status: pp_stats::HookStatus::Ok,
+            modified: false,
+            timestamp: 1000,
+            duration_ms: 1.0,
+        },
+    );
+
+    let guard = SessionLock::acquire(&locks, &id).unwrap();
     assert!(
-        delete(dir.path(), &dir.path().join(".locks"), &id)
+        delete(dir.path(), &locks, &stats, &history_path, &id)
             .unwrap_err()
             .to_string()
             .contains("already in use")
     );
-    assert_eq!(fs::read_to_string(&path).unwrap(), "original bytes");
+    assert!(path.is_file());
     assert!(artifacts.exists());
     drop(guard);
+
     let link = dir.path().join(format!("{link_id}.jsonl"));
     symlink(&path, &link).unwrap();
-    assert!(delete(dir.path(), &dir.path().join(".locks"), &link_id).is_err());
+    assert!(delete(dir.path(), &locks, &stats, &history_path, &link_id).is_err());
     assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
-    assert!(delete(dir.path(), &dir.path().join(".locks"), "../escape").is_err());
-    delete(dir.path(), &dir.path().join(".locks"), &id).unwrap();
+    assert!(delete(dir.path(), &locks, &stats, &history_path, "../escape").is_err());
+
+    // 中途清理（如 artifact 内含 symlink）失败时，主日志文件必须保留以便重试。
+    let sentinel = dir.path().join("sentinel");
+    fs::write(&sentinel, "untouched").unwrap();
+    let bad_artifact = artifacts.join("1.bash.log");
+    symlink(&sentinel, &bad_artifact).unwrap();
+    assert!(delete(dir.path(), &locks, &stats, &history_path, &id).is_err());
+    assert!(path.is_file());
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "untouched");
+    fs::remove_file(bad_artifact).unwrap();
+
+    delete(dir.path(), &locks, &stats, &history_path, &id).unwrap();
     assert!(!path.exists());
     assert!(!artifacts.exists());
-    assert!(delete(dir.path(), &dir.path().join(".locks"), &id).is_err());
+    assert!(!locks.join(format!("{id}.lock")).exists());
+    assert!(!subagents.join("sessions").exists());
+    assert!(!subagents.join("registry.json").exists());
+    assert_eq!(
+        fs::read_to_string(subagents.join("a1.worktree/keep.txt")).unwrap(),
+        "keep"
+    );
+
+    let history = crate::history::Store::open(&history_path).unwrap();
+    assert!(
+        history
+            .search_sessions(None, "delete me")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(history.load_inputs(dir.path(), None, 10).unwrap().len(), 1);
+    let pin_count: i64 = rusqlite::Connection::open(&history_path)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM session_pins", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pin_count, 0);
+
+    let stats_conn = rusqlite::Connection::open(&stats_path).unwrap();
+    let hook_count: i64 = stats_conn
+        .query_row("SELECT COUNT(*) FROM hook_runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(hook_count, 0);
+    assert!(delete(dir.path(), &locks, &stats, &history_path, &id).is_err());
 }
 
 #[test]

@@ -562,13 +562,7 @@ impl App {
                             WorkerEvent::TreeNavigated(result)
                         }
                         WorkerCommand::DeleteSession(id) => {
-                            let result = pp_config::config::global_dir()
-                                .map(|dir| dir.join("sessions"))
-                                .and_then(|dir| {
-                                    let locks = pp_runtime::agent::persistence::locks::directory()?;
-                                    pp_runtime::agent::persistence::delete(&dir, &locks, &id)
-                                });
-                            WorkerEvent::SessionDeleted(result)
+                            WorkerEvent::SessionDeleted(agent.delete_saved_session(&id))
                         }
                         WorkerCommand::Resume { id, cancellation } => {
                             let result = agent.resume(&id, &cancellation);

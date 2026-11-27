@@ -438,4 +438,19 @@ impl Agent {
             Session::Response(request) => response_input(request).clear(),
         }
     }
+
+    pub fn delete_saved_session(&self, id: &str) -> Result<()> {
+        let dir = self.journal.directory();
+        let history_path = dir
+            .parent()
+            .context("missing agent data directory")?
+            .join("history.db");
+        persistence::delete(
+            dir,
+            self.journal.lock_dir(),
+            self.journal.stats_handle(),
+            &history_path,
+            id,
+        )
+    }
 }

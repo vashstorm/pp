@@ -3,19 +3,58 @@ use super::schema::unavailable;
 use anyhow::Result;
 use pp_core::cancellation::CancellationToken;
 use rusqlite::TransactionBehavior;
+use std::collections::HashSet;
 use std::path::Path;
 
 impl Store {
-    pub(crate) fn remove_session(&mut self, id: &str) -> Result<()> {
+    pub(crate) fn remove_session(&mut self, id: &str) -> Result<bool> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(unavailable)?;
-        tx.execute("DELETE FROM sessions WHERE session_id=?1", [id])
+        let sessions = tx
+            .execute("DELETE FROM sessions WHERE session_id=?1", [id])
             .map_err(unavailable)?;
-        tx.execute("DELETE FROM session_pins WHERE session_id=?1", [id])
+        let pins = tx
+            .execute("DELETE FROM session_pins WHERE session_id=?1", [id])
             .map_err(unavailable)?;
-        tx.commit().map_err(unavailable)
+        tx.commit().map_err(unavailable)?;
+        Ok(sessions > 0 || pins > 0)
+    }
+
+    pub(crate) fn orphan_session_ids(&self, present: &HashSet<String>) -> Result<Vec<String>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT session_id FROM sessions UNION SELECT session_id FROM session_pins")
+            .map_err(unavailable)?;
+        let mut rows = statement.query([]).map_err(unavailable)?;
+        let mut orphans = Vec::new();
+        while let Some(row) = rows.next().map_err(unavailable)? {
+            let id: String = row.get(0).map_err(unavailable)?;
+            if !present.contains(&id) {
+                orphans.push(id);
+            }
+        }
+        Ok(orphans)
+    }
+
+    /// Best-effort 回收 WAL 与空闲页；若库正被其它连接占用则告警并跳过，不阻塞 GC。
+    pub(crate) fn compact(&mut self, vacuum: bool) -> Result<()> {
+        if let Err(error) = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
+            if is_busy(&error) {
+                tracing::warn!("history database busy during wal checkpoint");
+                return Ok(());
+            }
+            return Err(unavailable(error));
+        }
+        if vacuum && let Err(error) = self.conn.execute_batch("VACUUM;") {
+            if is_busy(&error) {
+                tracing::warn!("history database busy during vacuum");
+                return Ok(());
+            }
+            return Err(unavailable(error));
+        }
+        Ok(())
     }
 
     /// 同步会话目录投影：委托 persistence 索引模块在同一连接上执行逐文件事务，
@@ -42,6 +81,13 @@ impl Store {
         tx.commit().map_err(unavailable)?;
         self.sync_sessions(dir, &CancellationToken::new())
     }
+}
+
+fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
 }
 
 #[cfg(test)]

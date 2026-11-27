@@ -178,7 +178,13 @@ pub(super) fn compact_summary(text: &str, limit: usize) -> String {
     result
 }
 
-pub fn delete(dir: &Path, lock_dir: &Path, id: &str) -> Result<()> {
+pub fn delete(
+    dir: &Path,
+    lock_dir: &Path,
+    stats: &pp_stats::Database,
+    history_path: &Path,
+    id: &str,
+) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     validate_id(id)?;
     // 当前会话及其他进程持有的会话都不可删除。
@@ -198,7 +204,13 @@ pub fn delete(dir: &Path, lock_dir: &Path, id: &str) -> Result<()> {
         current.is_file() && current.dev() == metadata.dev() && current.ino() == metadata.ino(),
         "session changed before deletion"
     );
-    fs::remove_file(path).context("deleting session")?;
-    pp_workspace::output::Store::remove(dir, id)
-        .context("session deleted, but artifact cleanup failed")
+    super::gc::purge_session_data_for_delete(dir, stats, history_path, id, &path)?;
+    fs::remove_file(&path).context("deleting session")?;
+    let lock_path = lock_dir.join(format!("{id}.lock"));
+    match fs::remove_file(&lock_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("cleaning session lock"),
+    }
+    Ok(())
 }

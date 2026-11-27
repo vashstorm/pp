@@ -77,6 +77,25 @@ impl Database {
         write(state.store.as_mut().expect("statistics store opened"))
     }
 
+    /// 仅在统计库已打开或磁盘文件已存在时执行操作，绝不为此创建空库。
+    pub(crate) fn with_existing_store<T>(
+        &self,
+        action: impl FnOnce(&mut Store) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let mut state = self.lock();
+        if state.store.is_none() {
+            match fs::symlink_metadata(&self.path) {
+                Ok(metadata) => {
+                    anyhow::ensure!(metadata.is_file(), "statistics database must be a file")
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
+            }
+            state.store = Some(self.connect()?);
+        }
+        action(state.store.as_mut().expect("statistics store opened")).map(Some)
+    }
+
     /// 请求级写入：连接与采集时的计价快照都复用，快照随 `models.yml` 指纹失效。
     pub(crate) fn with_store_and_rates<T>(
         &self,

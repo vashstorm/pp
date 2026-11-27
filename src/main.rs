@@ -405,6 +405,7 @@ fn run_gc(days: u32) -> Result<()> {
     let (logs_total, logs_removed) = logging::gc(cutoff.with_timezone(&chrono::Local).date_naive())
         .context("cleaning log files")?;
     let prompts = sessions.prompts_removed;
+    let orphans = sessions.orphans;
     let mut stdout = io::stdout().lock();
     for (label, (total, removed)) in [
         ("Logs", (logs_total + prompts, logs_removed + prompts)),
@@ -417,6 +418,9 @@ fn run_gc(days: u32) -> Result<()> {
             "{label}: total={total}, removed={removed}, remaining={}",
             total - removed
         )?;
+    }
+    if orphans > 0 {
+        writeln!(stdout, "Orphans: sessions={orphans}")?;
     }
     Ok(())
 }

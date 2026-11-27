@@ -149,18 +149,46 @@ impl GarbageCollection {
             return Ok(());
         };
         let scope = SessionScope::for_root(root)?;
-        let tx = store
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (removed, changed) = delete_records(
-            &tx,
-            "session_file = ?1 OR (session_file >= ?2 AND session_file < ?3)",
-            params![scope.root, scope.prefix, scope.upper],
-        )?;
-        tx.commit()?;
+        let (removed, changed) = remove_session_in(&mut store.conn, &scope)?;
         self.requests_removed += removed;
         self.changed |= changed;
         Ok(())
+    }
+
+    /// 轻量清理单个会话（及其子 Agent）的统计，不执行 `VACUUM` 且统计库缺失时不建空库。
+    pub fn delete_session(database: &super::Database, root: &Path) -> Result<()> {
+        let scope = SessionScope::for_root(root)?;
+        database.with_existing_store(|store| {
+            remove_session_in(&mut store.conn, &scope)?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// 枚举统计库中路径落在 `sessions_dir` 内的根会话文件名 ID（子 Agent 路径归并到根）。
+    pub fn orphan_session_ids(&self, sessions_dir: &Path) -> Result<Vec<String>> {
+        let Some(store) = &self.store else {
+            return Ok(Vec::new());
+        };
+        let scope = SessionScope::new(
+            String::new(),
+            format!("{}/", sessions_dir.to_string_lossy().trim_end_matches('/')),
+        )?;
+        let mut ids = std::collections::BTreeSet::new();
+        for table in ["requests", "tool_calls", "hook_runs"] {
+            let mut statement = store.conn.prepare(&format!(
+                "SELECT DISTINCT session_file FROM {table} \
+                 WHERE session_file >= ?1 AND session_file < ?2"
+            ))?;
+            let mut rows = statement.query(params![scope.prefix, scope.upper])?;
+            while let Some(row) = rows.next()? {
+                let path: String = row.get(0)?;
+                if let Some(id) = extract_root_session_id(&scope.prefix, &path) {
+                    ids.insert(id.to_owned());
+                }
+            }
+        }
+        Ok(ids.into_iter().collect())
     }
 
     /// 清理按时间过期的统计，并在本次 GC 结束时统一回收空间。
@@ -184,6 +212,27 @@ impl GarbageCollection {
             removed + self.requests_removed,
         ))
     }
+}
+
+fn remove_session_in(conn: &mut Connection, scope: &SessionScope) -> Result<(u64, bool)> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let result = delete_records(
+        &tx,
+        "session_file = ?1 OR (session_file >= ?2 AND session_file < ?3)",
+        params![scope.root, scope.prefix, scope.upper],
+    )?;
+    tx.commit()?;
+    Ok(result)
+}
+
+fn extract_root_session_id<'a>(prefix: &str, session_file: &'a str) -> Option<&'a str> {
+    let relative = session_file.strip_prefix(prefix)?;
+    let id = if let Some((root, _)) = relative.split_once(".subagents/sessions/") {
+        root
+    } else {
+        relative.strip_suffix(".jsonl")?
+    };
+    (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
 fn delete_records(
@@ -268,5 +317,163 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tool_calls", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining_tools, 1);
+    }
+
+    #[test]
+    fn orphan_session_ids_returns_root_ids_inside_sessions_dir_and_rolls_up_subagents() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("stats.db");
+        let sessions = dir.path().join("sessions");
+        let mut store = open_store(&db_path).unwrap();
+        let root_a = sessions.join("2026-10-17T01-02-03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jsonl");
+        let child_a = sessions.join(
+            "2026-10-17T01-02-03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.subagents/sessions/child.jsonl",
+        );
+        let child_b = sessions.join(
+            "2026-10-17T01-02-03-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.subagents/sessions/child.jsonl",
+        );
+        let root_c = sessions.join("2026-10-17T01-02-03-cccccccccccccccccccccccccccccccc.jsonl");
+        let outside = dir
+            .path()
+            .join("other/2026-10-17T01-02-03-dddddddddddddddddddddddddddddddd.jsonl");
+        let adjacent = dir
+            .path()
+            .join("sessions-other/2026-10-17T01-02-03-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.jsonl");
+
+        for (key, file) in [
+            ("k-none", None),
+            ("k-a1", Some(&root_a)),
+            ("k-a2", Some(&child_a)),
+            ("k-out", Some(&outside)),
+            ("k-adj", Some(&adjacent)),
+        ] {
+            let mut rec = fixture(key, 1000);
+            rec.session_file = file.map(|p| p.to_string_lossy().into_owned());
+            store.insert(&rec, &serde_json::Value::Null).unwrap();
+        }
+        store
+            .tool(&ToolCall {
+                request_key: Some("k-a2"),
+                session_file: &child_b,
+                call_id: "c1",
+                tool: "read",
+                status: ToolStatus::Ok,
+                error_message: None,
+                timestamp: 1000,
+                duration_ms: 1.0,
+                result_chars: None,
+            })
+            .unwrap();
+        store
+            .hook(&crate::HookRun {
+                session_file: &root_c,
+                cwd: dir.path(),
+                event: pp_config::config::HookEvent::Stop,
+                tool: None,
+                status: crate::HookStatus::Ok,
+                modified: false,
+                timestamp: 1000,
+                duration_ms: 1.0,
+            })
+            .unwrap();
+        drop(store);
+
+        let gc = GarbageCollection::open_at(&db_path).unwrap();
+        assert_eq!(
+            gc.orphan_session_ids(&sessions).unwrap(),
+            vec![
+                "2026-10-17T01-02-03-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+                "2026-10-17T01-02-03-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+                "2026-10-17T01-02-03-cccccccccccccccccccccccccccccccc".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_session_skips_missing_db_and_deletes_without_vacuum() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("stats.db");
+        let database = super::super::Database::new(db_path.clone());
+        let root = dir.path().join("sessions/root.jsonl");
+        let child = dir
+            .path()
+            .join("sessions/root.subagents/sessions/child.jsonl");
+        let keep = dir.path().join("sessions/keep.jsonl");
+
+        // 统计库不存在时绝不建空库。
+        GarbageCollection::delete_session(&database, &root).unwrap();
+        assert!(!db_path.exists());
+
+        let mut store = open_store(&db_path).unwrap();
+        for (key, file, payload) in [
+            ("r1", &root, Some(format!("\"{}\"", "x".repeat(128 * 1024)))),
+            ("c1", &child, None),
+            ("k1", &keep, None),
+        ] {
+            let mut rec = fixture(key, 1000);
+            rec.session_file = Some(file.to_string_lossy().into_owned());
+            let snapshot = payload.map(|text| crate::RequestSnapshot {
+                request: serde_json::json!({ "text": text }),
+                skills: Vec::new(),
+            });
+            store
+                .insert_with_context(
+                    &rec,
+                    &serde_json::json!([{"type":"function_call","name":"read","arguments":"{}"}]),
+                    snapshot.as_ref(),
+                )
+                .unwrap();
+        }
+        for (idx, file) in [&root, &child, &keep].into_iter().enumerate() {
+            store
+                .tool(&ToolCall {
+                    request_key: Some(if idx == 2 { "k1" } else { "r1" }),
+                    session_file: file,
+                    call_id: "call",
+                    tool: "read",
+                    status: ToolStatus::Ok,
+                    error_message: None,
+                    timestamp: 1000,
+                    duration_ms: 1.0,
+                    result_chars: None,
+                })
+                .unwrap();
+            store
+                .hook(&crate::HookRun {
+                    session_file: file,
+                    cwd: dir.path(),
+                    event: pp_config::config::HookEvent::Stop,
+                    tool: None,
+                    status: crate::HookStatus::Ok,
+                    modified: false,
+                    timestamp: 1000,
+                    duration_ms: 1.0,
+                })
+                .unwrap();
+        }
+        drop(store);
+
+        GarbageCollection::delete_session(&database, &root).unwrap();
+        let store = open_store(&db_path).unwrap();
+        for table in ["requests", "tool_calls", "hook_runs"] {
+            let remaining: Vec<String> = store
+                .conn
+                .prepare(&format!("SELECT session_file FROM {table}"))
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert_eq!(
+                remaining,
+                vec![keep.to_string_lossy().into_owned()],
+                "{table}"
+            );
+        }
+        let ctx_count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM request_contexts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ctx_count, 0);
     }
 }

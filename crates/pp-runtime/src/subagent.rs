@@ -16,7 +16,7 @@ mod uri;
 mod worker;
 mod workspace;
 
-pub(crate) use gc::remove_session_data;
+pub(crate) use gc::{has_session_data, remove_session_data};
 pub use observe::HubAgent;
 pub use observe::ObservedRecord;
 pub use observe::{EventCursor, EventPage, HubEvent, HubSnapshot, ObservedEntry, OverviewPage};

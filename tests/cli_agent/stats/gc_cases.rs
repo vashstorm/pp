@@ -583,3 +583,207 @@ fn gc_retries_partially_cleaned_sessions() {
     assert!(!artifacts.exists());
     assert!(!home.path().join(".pp/agent/history.db").exists());
 }
+
+#[test]
+fn gc_cleans_orphans_across_stores_and_continues_after_per_session_failure() {
+    use pp_config::config::HookEvent;
+    use pp_core::cancellation::CancellationToken;
+    use pp_runtime::history::Store;
+    use rustix::fs::{FlockOperation, flock};
+    use std::{
+        os::unix::fs::symlink,
+        time::{Duration, SystemTime},
+    };
+
+    let home = tempfile::tempdir().unwrap();
+    let agent = home.path().join(".pp/agent");
+    let sessions = agent.join("sessions");
+    let locks = home.path().join(".pp/run/sessions");
+    let logs = home.path().join(".pp/logs");
+    for dir in [&sessions, &locks, &logs] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    let day = chrono::Local::now().format("%Y-%m-%d");
+    let orphan_full = format!("{day}T12-00-00-{:032x}", 10);
+    let orphan_locked = format!("{day}T12-00-00-{:032x}", 11);
+    let orphan_pin = format!("{day}T12-00-00-{:032x}", 12);
+    let staged_fail = format!("{day}T12-00-00-{:032x}", 13);
+    let expired_ok = format!("{day}T12-00-00-{:032x}", 14);
+    let old = SystemTime::now() - Duration::from_secs(10 * 24 * 60 * 60);
+
+    // 1. 准备被历史索引收录后的孤儿会话：sync 后手动删除 jsonl。
+    let orphan_journal = sessions.join(format!("{orphan_full}.jsonl"));
+    let header = json!({"type":"session","id":orphan_full,"timestamp":"2026-10-17T01:02:03Z","cwd":home.path()});
+    let message = json!({"type":"message","message":{"role":"user","content":"orphanneedle"}});
+    write_session_text(&orphan_journal, &format!("{header}\n{message}\n"));
+    let expired_journal = sessions.join(format!("{expired_ok}.jsonl"));
+    write_session_text(
+        &expired_journal,
+        &format!(
+            "{}\n{}\n",
+            json!({"type":"session","id":expired_ok,"timestamp":"2026-10-17T01:02:03Z","cwd":home.path()}),
+            json!({"type":"message","message":{"role":"user","content":"expiredneedle"}})
+        ),
+    );
+    fs::File::open(&expired_journal)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+
+    let history_path = agent.join("history.db");
+    let mut history = Store::open(&history_path).unwrap();
+    history
+        .sync_sessions(&sessions, &CancellationToken::new())
+        .unwrap();
+    history.set_session_pinned(&orphan_full, true).unwrap();
+    drop(history);
+    // 直接写入仅存 pin 的孤儿记录与 orphan_full 缺失的日志。
+    let history_db = Connection::open(&history_path).unwrap();
+    history_db
+        .execute(
+            "INSERT INTO session_pins(session_id) VALUES (?1)",
+            [&orphan_pin],
+        )
+        .unwrap();
+    drop(history_db);
+    fs::remove_file(&orphan_journal).unwrap();
+
+    // orphan_full 的 artifact、subagent、prompt-debug、unlocked 锁、stats 记录。
+    let orphan_artifacts = sessions.join(&orphan_full);
+    fs::create_dir(&orphan_artifacts).unwrap();
+    fs::write(orphan_artifacts.join("0.bash.log"), "orphan log").unwrap();
+    let orphan_sub = orphan_journal.with_extension("subagents");
+    let orphan_child = orphan_sub.join("sessions/child.jsonl");
+    fs::create_dir_all(orphan_child.parent().unwrap()).unwrap();
+    fs::write(&orphan_child, "child").unwrap();
+    fs::write(orphan_sub.join("registry.json"), "{}").unwrap();
+    fs::create_dir(orphan_sub.join("a1.worktree")).unwrap();
+    fs::write(orphan_sub.join("a1.worktree/keep.txt"), "recover").unwrap();
+    fs::File::create(locks.join(format!("{orphan_full}.lock"))).unwrap();
+    fs::write(logs.join(format!("prompt-debug.{orphan_full}")), "prompt").unwrap();
+
+    // 2. 持锁的孤儿会话：本轮必须跳过。
+    let locked_journal = sessions.join(format!("{orphan_locked}.jsonl"));
+    let active_lock = fs::File::create(locks.join(format!("{orphan_locked}.lock"))).unwrap();
+    flock(&active_lock, FlockOperation::NonBlockingLockExclusive).unwrap();
+    fs::write(logs.join(format!("prompt-debug.{orphan_locked}")), "locked").unwrap();
+
+    // 3. 暂存中会失败的会话：含 symlink artifact，不能阻塞同轮清理，也不算孤儿。
+    fs::write(sessions.join(format!("{staged_fail}.jsonl.gc")), "staged").unwrap();
+    let bad_artifacts = sessions.join(&staged_fail);
+    let bad_link = bad_artifacts.join("0.bash.log");
+    let sentinel = home.path().join("sentinel");
+    fs::create_dir(&bad_artifacts).unwrap();
+    fs::write(&sentinel, "keep").unwrap();
+    symlink(&sentinel, &bad_link).unwrap();
+
+    let now = chrono::Utc::now().timestamp_millis();
+    let stats = pp_stats::Database::new(home.path().join(".pp/stats/stats.db"));
+    for file in [
+        &orphan_journal,
+        &orphan_child,
+        &locked_journal,
+        &expired_journal,
+    ] {
+        pp_stats::hook(
+            &stats,
+            &pp_stats::HookRun {
+                session_file: file,
+                cwd: home.path(),
+                event: HookEvent::Stop,
+                tool: None,
+                status: pp_stats::HookStatus::Ok,
+                modified: false,
+                timestamp: now,
+                duration_ms: 1.0,
+            },
+        );
+    }
+
+    let first = Cli::spawn(home.path(), &["gc", "7"], &[]).finish();
+    assert!(!first.status.success());
+    assert!(String::from_utf8_lossy(&first.stderr).contains("cleaning session artifacts"));
+
+    // 虽有 staged_fail 报错，orphan_full、orphan_pin 与 expired_ok 都已完成清理。
+    assert!(!orphan_artifacts.exists());
+    assert!(!orphan_sub.join("sessions").exists());
+    assert!(!orphan_sub.join("registry.json").exists());
+    assert_eq!(
+        fs::read_to_string(orphan_sub.join("a1.worktree/keep.txt")).unwrap(),
+        "recover"
+    );
+    assert!(!locks.join(format!("{orphan_full}.lock")).exists());
+    assert!(!logs.join(format!("prompt-debug.{orphan_full}")).exists());
+    assert!(!expired_journal.exists());
+
+    // orphan_locked 仍受会话锁保护，保持原样。
+    assert!(logs.join(format!("prompt-debug.{orphan_locked}")).is_file());
+    let stats_db = database(home.path());
+    let remaining_hooks: Vec<String> = stats_db
+        .prepare("SELECT session_file FROM hook_runs ORDER BY session_file")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        remaining_hooks,
+        vec![locked_journal.to_string_lossy().into_owned()]
+    );
+
+    let history = Store::open(&history_path).unwrap();
+    assert!(
+        history
+            .search_sessions(None, "orphanneedle")
+            .unwrap()
+            .is_empty()
+    );
+    drop(history);
+    let pin_count: i64 = Connection::open(&history_path)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM session_pins", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(pin_count, 0);
+
+    // 解除 staged_fail 故障并释放 orphan_locked 的锁后重跑：
+    // staged_fail 作为正常会话清理，orphan_locked 作为 1 个孤儿清理；
+    // orphan_full 因仅留用户工作树而不再被重复计为孤儿。
+    fs::remove_file(bad_link).unwrap();
+    drop(active_lock);
+    let second = Cli::spawn(home.path(), &["gc", "7"], &[]).finish();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        second_stdout.contains("Orphans: sessions=1"),
+        "{second_stdout}"
+    );
+    assert_eq!(gc_counts(&second)[3], [1, 1, 0]);
+    assert_eq!(gc_counts(&second)[4], [1]);
+    assert!(!logs.join(format!("prompt-debug.{orphan_locked}")).exists());
+    let remaining_after: i64 = stats_db
+        .query_row("SELECT COUNT(*) FROM hook_runs", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(remaining_after, 0);
+
+    // 第三次运行完全幂等，无任何孤儿或待删会话。
+    let third = Cli::spawn(home.path(), &["gc", "7"], &[]).finish();
+    assert!(third.status.success());
+    assert_eq!(gc_counts(&third).len(), 4);
+    assert_eq!(
+        fs::read_to_string(orphan_sub.join("a1.worktree/keep.txt")).unwrap(),
+        "recover"
+    );
+    for path in [&history_path, &home.path().join(".pp/stats/stats.db")] {
+        assert_eq!(
+            Connection::open(path)
+                .unwrap()
+                .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+    }
+}
