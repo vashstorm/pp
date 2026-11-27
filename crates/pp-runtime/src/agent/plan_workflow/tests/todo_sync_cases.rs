@@ -335,7 +335,8 @@ fn plan_todo_sync_rolls_back_on_journal_failure_and_keeps_completed_readonly() {
             PlanStatus::Completed
         );
         let trusted = agent.workflow.clone();
-        std::fs::remove_file(&done_path).unwrap();
+        // 归档文件仍在但正文无效时，保留已验证的进度并报告读取失败。
+        std::fs::write(&done_path, b"\xff\xfe").unwrap();
         assert!(
             sync_plan_todos(
                 &agent.tools,

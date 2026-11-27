@@ -1,4 +1,5 @@
 use super::persistence::SessionJournal;
+use super::plan_management::is_missing;
 use anyhow::{Result, bail, ensure};
 use pp_core::plan;
 use pp_core::plan::PlanDocument;
@@ -18,6 +19,8 @@ const REGISTER_CONFLICT: &str =
 
 /// 按 ID 协调结果：绑定需采纳登记、登记需首次建立，或已一致。
 enum PlanReconciliation {
+    /// 归档文件已缺失，当前会话可以继续独立工作。
+    DetachArchived,
     /// 登记表优先：把绑定同步到 canonical 名称/位置/状态。
     Adopt {
         file_name: String,
@@ -44,8 +47,8 @@ enum PlanReconciliation {
 /// 失效。未登记的 revision>=1 旧绑定按迁移规则首次登记：Draft/Ready 的
 /// 旧 Plans 绑定保留旧名迁回 Drafts（安全搬迁），Executed 仍在 Plans，
 /// Abandoned 保留原位置只读，历史 Executed 登记到 Done 时只读同步
-/// Completed，不重新授权。墓碑、路径/正文缺失一律报错，绝不从历史
-/// 快照恢复，也不让历史 Draft/Ready 绑定把已提升的位置退回 drafts。
+/// Completed。Done 登记的文件缺失时解除会话绑定，保留项目登记。
+/// 墓碑和其他路径/正文缺失仍报错，禁止从历史快照重建文件或降级生命周期位置。
 pub(super) fn reconcile_plan_state(
     workspace: &pp_workspace::save::Workspace,
     journal: &mut SessionJournal,
@@ -76,6 +79,12 @@ pub(super) fn reconcile_plan_state(
             bail!("{DELETED_PLAN}");
         }
         match snapshot.catalog.active_by_id(&id) {
+            Some(entry)
+                if entry.location == PlanLocation::Done
+                    && archived_plan_is_missing(workspace, &entry.file_name)? =>
+            {
+                PlanReconciliation::DetachArchived
+            }
             Some(entry) => {
                 let status = if entry.location == PlanLocation::Done {
                     // 登记到 Done 的历史 Executed 只读同步 Completed。
@@ -163,6 +172,7 @@ pub(super) fn reconcile_plan_state(
         }
     };
     match adopted {
+        PlanReconciliation::DetachArchived => detach_archived_plan(journal, workflow),
         PlanReconciliation::Adopt {
             file_name,
             location,
@@ -227,6 +237,29 @@ pub(super) fn reconcile_plan_state(
             Ok(())
         }
     }
+}
+
+fn archived_plan_is_missing(workspace: &pp_workspace::save::Workspace, name: &str) -> Result<bool> {
+    let path = plan::path_for(name, PlanLocation::Done);
+    match plan_catalog::file_identity(workspace, Path::new(&path)) {
+        Ok(identity) => Ok(identity.is_none()),
+        Err(error) if is_missing(&error) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+fn detach_archived_plan(journal: &mut SessionJournal, workflow: &mut WorkflowState) -> Result<()> {
+    let previous = workflow.clone();
+    workflow.plan = None;
+    workflow.review = None;
+    if workflow.todo_plan_id.take().is_some() {
+        workflow.todos.clear();
+    }
+    if let Err(error) = journal.write_workflow(workflow) {
+        *workflow = previous;
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// 绑定文档的身份三元组：登记协调是否改变了名称/位置/状态。
@@ -311,20 +344,17 @@ pub(super) fn sync_plan_todos(
     let identity_before = plan_identity(document);
     let status_before = document.status;
     reconcile_plan_state(tools.plan_workspace(), journal, workflow)?;
-    let identity_changed =
-        plan_identity(workflow.plan.as_ref().expect("plan bound")) != identity_before;
-    let executing = workflow.mode == WorkMode::Execute
-        && workflow.plan.as_ref().expect("plan bound").status == PlanStatus::Executed;
-    if executing
-        && workflow
-            .plan
-            .as_ref()
-            .expect("plan bound")
-            .approved_tasks
-            .is_none()
-    {
+    let Some(document) = workflow.plan.as_ref() else {
+        if publish_snapshot {
+            super::turn::publish_todo_state(workflow, emit);
+        }
+        return Ok(());
+    };
+    let identity_changed = plan_identity(document) != identity_before;
+    let executing = workflow.mode == WorkMode::Execute && document.status == PlanStatus::Executed;
+    if executing && document.approved_tasks.is_none() {
         // 迁移基线只能来自已登记旧正文，不能让随后读取的新磁盘任务获得批准。
-        let approved = plan::plan_tasks(&workflow.plan.as_ref().expect("plan bound").content)
+        let approved = plan::plan_tasks(&document.content)
             .into_iter()
             .map(|task| task.text)
             .collect();
@@ -340,11 +370,22 @@ pub(super) fn sync_plan_todos(
     let content = if document.revision == 0 {
         None
     } else {
-        let content = tools.read_plan(document).map_err(|error| {
-            error.context(
-                "Plan progress could not be refreshed; last synchronized progress retained.",
-            )
-        })?;
+        let content = match tools.read_plan(document) {
+            Ok(content) => content,
+            // 文件可能在协调后的两次磁盘访问之间消失。
+            Err(error) if document.status == PlanStatus::Completed && is_missing(&error) => {
+                detach_archived_plan(journal, workflow)?;
+                if publish_snapshot {
+                    super::turn::publish_todo_state(workflow, emit);
+                }
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(error.context(
+                    "Plan progress could not be refreshed; last synchronized progress retained.",
+                ));
+            }
+        };
         (content != document.content).then_some(content)
     };
     let content_changed = content.is_some();
@@ -468,7 +509,9 @@ pub(super) fn sync_restored_todos(
     let previous_source = workflow.todo_plan_id.clone();
     reconcile_plan_state(tools.plan_workspace(), journal, workflow)?;
     sync_plan_todos(tools, journal, workflow, &mut |_| {}, false)?;
-    let document = workflow.plan.as_ref().expect("restored plan bound");
+    let Some(document) = workflow.plan.as_ref() else {
+        return Ok(None);
+    };
     let changed = previous_todos != workflow.todos
         || previous_source != workflow.todo_plan_id
         || previous_plan != (document.id.clone(), document.revision, document.status);

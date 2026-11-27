@@ -69,7 +69,11 @@ impl Agent {
         }
         // 归档前安全读取当前磁盘文件并同步进度；失败保留 Executed/Plans。
         self.refresh_plan_progress(emit)?;
-        let document = self.workflow.plan.as_ref().expect("executed plan bound");
+        let Some(document) = self.workflow.plan.as_ref().filter(|document| {
+            document.status == PlanStatus::Executed && document.location == PlanLocation::Plans
+        }) else {
+            return Ok(false);
+        };
         let (completed, total) = plan::task_progress(&document.content);
         if total == 0 || completed != total {
             return Ok(false);

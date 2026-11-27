@@ -1,6 +1,105 @@
 use super::*;
 
 #[test]
+fn plan_run_continues_when_an_archived_file_is_missing() {
+    use crate::agent::tests::final_for;
+
+    for (protocol, already_reconciled) in [("completion", false), ("response", true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let server = pp_test_support::TestServer::start().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
+        agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Executed);
+        let document = agent.workflow.plan.as_mut().unwrap();
+        let old_plan_id = document.id.clone();
+        let file_name = format!("{old_plan_id}.md");
+        let archive_dir = dir.path().join(".pp/done");
+        if already_reconciled {
+            // 已协调的旧会话也可能在两次请求之间丢失整个归档目录。
+            document.status = PlanStatus::Completed;
+            document.location = PlanLocation::Done;
+            document.file_name = Some(file_name.clone());
+        } else {
+            std::fs::create_dir_all(&archive_dir).unwrap();
+        }
+        register_entry(&agent, &old_plan_id, &file_name, PlanLocation::Done);
+        seed_session(&mut agent, EXPLORATION);
+        let session_id = agent.session_id().unwrap().to_owned();
+
+        let prompt = "Continue planning with the context from this conversation.";
+        let serving = std::thread::spawn(move || {
+            let request = server
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            let body: serde_json::Value = request.json().unwrap();
+            assert!(body.to_string().contains(EXPLORATION));
+            assert!(body.to_string().contains(prompt));
+            final_for(protocol, request, "We can continue planning.", true);
+        });
+        let outcome = agent
+            .run(prompt, &CancellationToken::new(), None, &mut |_| {})
+            .unwrap();
+        serving.join().unwrap();
+
+        assert_eq!(outcome, pp_core::cancellation::RunOutcome::Completed);
+        assert_eq!(agent.session_id(), Some(session_id.as_str()));
+        assert_eq!(agent.workflow.mode, WorkMode::Plan);
+        let draft = agent.workflow.plan.as_ref().unwrap();
+        assert_ne!(draft.id, old_plan_id);
+        assert_eq!(draft.status, PlanStatus::Draft);
+        assert_eq!(draft.origin_prompt, prompt);
+        assert_eq!(journal_workflow(dir.path(), &session_id), agent.workflow);
+        assert_eq!(
+            registered_entry(&agent, &old_plan_id),
+            (file_name.clone(), PlanLocation::Done)
+        );
+        assert!(!archive_dir.join(file_name).exists());
+    }
+}
+
+#[test]
+fn plan_restore_detaches_missing_archive_and_only_its_own_todos() {
+    for bound in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = runtime_input_agent(dir.path(), "response", "127.0.0.1:1", "");
+        agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Completed);
+        agent.workflow.mode = WorkMode::Execute;
+        let document = agent.workflow.plan.as_mut().unwrap();
+        document.location = PlanLocation::Done;
+        let plan_id = document.id.clone();
+        agent.workflow.todos = pp_tools::todo::project_plan_todos(document, &[], false).unwrap();
+        let original_todos = agent.workflow.todos.clone();
+        agent.workflow.todo_plan_id = bound.then(|| plan_id.clone());
+        register_entry(
+            &agent,
+            &plan_id,
+            &format!("{plan_id}.md"),
+            PlanLocation::Done,
+        );
+        seed_session(&mut agent, EXPLORATION);
+        let session_id = agent.session_id().unwrap().to_owned();
+
+        let snapshot = crate::agent::plan_sync::sync_restored_todos(
+            &agent.tools,
+            &mut agent.journal,
+            &mut agent.workflow,
+            &[],
+        )
+        .unwrap();
+
+        assert!(snapshot.is_none());
+        assert_eq!(agent.workflow.mode, WorkMode::Execute);
+        assert!(agent.workflow.plan.is_none());
+        assert!(agent.workflow.todo_plan_id.is_none());
+        assert_eq!(
+            agent.workflow.todos,
+            if bound { vec![] } else { original_todos }
+        );
+        assert_eq!(journal_workflow(dir.path(), &session_id), agent.workflow);
+    }
+}
+
+#[test]
 fn plan_resume_adapts_mcp_and_reports_replay() {
     // /resume 从全局目录读取会话，子进程使用隔离的 HOME。
     const FIXTURE: &str = "PP_TEST_PLAN_RESUME";

@@ -30,7 +30,7 @@ impl Agent {
 
     /// 通过 NOFOLLOW 工作区句柄读取计划，导入外部修订并签发绑定当前
     /// 会话、计划、路径及精确正文的审批 token。文件缺失或不可读时报错，
-    /// 不回退到日志快照。Executed/Abandoned 可刷新但不恢复执行授权；
+    /// 不回退到日志快照，缺失归档会解除会话绑定。Executed/Abandoned 可刷新但不恢复执行授权；
     /// Plan 仅同步正文，Execute 才刷新任务投影，已脱离的普通清单不被替换。
     pub fn read_plan(&mut self) -> Result<PlanReview> {
         self.journal.check()?;
@@ -54,7 +54,11 @@ impl Agent {
             &mut |_| {},
             true,
         )?;
-        let document = self.workflow.plan.as_ref().expect("plan bound").clone();
+        let document = self
+            .workflow
+            .plan
+            .clone()
+            .ok_or_else(|| anyhow!("Archived plan file is missing."))?;
         let session_id = self
             .journal
             .id()

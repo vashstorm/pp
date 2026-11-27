@@ -94,7 +94,7 @@ fn read_plan_bytes(workspace: &Workspace, path: &Path) -> Result<String> {
 pub(crate) use pp_core::plan::plan_display_title;
 
 /// 判断错误链中是否只是“路径不存在”；生命周期目录缺失表示该分类为空。
-fn is_missing(error: &anyhow::Error) -> bool {
+pub(super) fn is_missing(error: &anyhow::Error) -> bool {
     error
         .chain()
         .any(|cause| cause.downcast_ref::<Errno>() == Some(&Errno::NOENT))
