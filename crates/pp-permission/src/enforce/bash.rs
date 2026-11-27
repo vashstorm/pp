@@ -81,11 +81,13 @@ impl crate::Gate {
             self.unapproved_read_paths(doc.as_deref(), cwd, &outside_reads)
         };
 
+        let unapproved_session_reads =
+            self.unapproved_session_reads(doc.as_deref(), &session_reads)?;
         let raw_command = extract_bash_command(arguments).unwrap_or_default();
-        let (prompt_cmd, cmd_truncated) = format_command_for_prompt(&raw_command);
+        let (prompt_cmd, _) = format_command_for_prompt(&raw_command);
 
-        let read_reason = (!session_reads.is_empty()).then(|| {
-            let paths = session_reads
+        let read_reason = (!unapproved_session_reads.is_empty()).then(|| {
+            let paths = unapproved_session_reads
                 .iter()
                 .map(|path| pp_core::text::display_text(&path.display().to_string()).into_owned())
                 .collect::<Vec<_>>()
@@ -166,7 +168,7 @@ impl crate::Gate {
             extra_writable,
             &outside_reads,
             &unapproved_outside_reads,
-            &session_reads,
+            &unapproved_session_reads,
             extra_network,
             read_reason.as_deref(),
             doc,
@@ -175,7 +177,6 @@ impl crate::Gate {
         )?;
         approved.session_reads = session_reads;
         approved.outside_reads = outside_reads;
-        let _ = cmd_truncated;
         Ok(approved)
     }
 
@@ -190,7 +191,7 @@ impl crate::Gate {
         extra_writable: &[PathBuf],
         outside_reads: &[PathBuf],
         unapproved_outside_reads: &[PathBuf],
-        _session_reads: &[PathBuf],
+        unapproved_session_reads: &[PathBuf],
         extra_network: bool,
         read_reason: Option<&str>,
         doc: Option<std::sync::Arc<rules::Document>>,
@@ -422,15 +423,18 @@ impl crate::Gate {
         }
         if let Some(reason) = read_reason {
             reasons.insert(0, reason.to_owned());
-            self.prompt_user(
-                PermissionRequest {
-                    tool: "bash".to_owned(),
-                    agent: None,
-                    reason: append_load_error(&reasons.join("\n"), load_error.as_deref()),
-                    session_grant: false,
-                    persistent_grant: false,
-                },
-                None,
+            if !unapproved_leaves.is_empty() || needs_unanalyzable_prompt || needs_sandbox_prompt {
+                reasons
+                    .push("Remembered approval applies only to the requested read paths.".into());
+            }
+            self.prompt_read_paths(
+                "bash",
+                &reasons.join("\n"),
+                unapproved_session_reads
+                    .iter()
+                    .chain(unapproved_outside_reads)
+                    .cloned()
+                    .collect(),
                 load_error.as_deref(),
                 cancellation,
             )?;

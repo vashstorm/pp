@@ -282,7 +282,7 @@ impl Policy {
         )
     }
 
-    /// 精确分类读路径的沙盒权限：区分凭据硬拒绝、会话单次审批与工作区外 `$HOME` 读审批。
+    /// 精确分类读路径的沙盒权限，区分凭据硬拒绝、受保护会话与工作区外 `$HOME` 读审批。
     pub fn classify_read(&self, path: &Path) -> ReadAccessCheck {
         let abs = self.absolutize(path);
         if self
@@ -346,7 +346,7 @@ impl Policy {
         Ok((session_reads, outside_reads))
     }
 
-    /// 只有默认的 Agent 目录拒读规则可以为具体会话路径开一次性例外。
+    /// 只有默认的 Agent 目录拒读规则可以为具体会话路径开审批例外。
     pub fn session_read_target(&self, path: &Path) -> Option<PathBuf> {
         let root = self.session_read_root.as_deref()?;
         if !guard::path_starts_with(path, root) {

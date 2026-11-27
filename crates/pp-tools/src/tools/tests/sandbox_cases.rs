@@ -26,7 +26,7 @@ fn tools_with_sandbox(
 }
 
 #[test]
-fn bash_session_read_requests_one_time_approval_before_execution() {
+fn bash_session_read_requests_approval_before_execution() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().canonicalize().unwrap();
     let target = home.join(".pp/agent/sessions/sample.subagents");
@@ -38,33 +38,39 @@ fn bash_session_read_requests_one_time_approval_before_execution() {
         SandboxMode::WorkspaceWrite,
         ProbeResult::Available,
     );
-    tools
-        .permission
-        .select(Some(pp_config::config::PermissionMode::WorkspaceWrite));
+    tools.permission = pp_permission::Gate::for_process(
+        &home.join(".pp/agent"),
+        Some(pp_config::config::PermissionMode::WorkspaceWrite),
+        false,
+    );
     let marker = workspace.path().join("started");
     let observed_marker = marker.clone();
     let observed_path = target.clone();
     tools.permission.set_handler(Box::new(move |request, _| {
         assert_eq!(request.tool, "bash");
         assert!(request.reason.contains(&*observed_path.to_string_lossy()));
-        assert!(!request.session_grant && !request.persistent_grant);
+        assert!(request.session_grant && request.persistent_grant);
         assert!(!observed_marker.exists());
         Ok(PermissionDecision::Deny)
     }));
 
-    let result = execute(
-        &tools,
-        "bash",
+    for arguments in [
         json!({"command": format!("printf started > started; ls -la -- '{}'", target.display())}),
-    );
-    assert_eq!(result["ok"], false, "{result}");
-    assert!(
-        result["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("denied by the user")),
-        "{result}"
-    );
-    assert!(!marker.exists());
+        json!({
+            "command": format!("printf started > started; python3 - '{}' <<'PY'\nimport os, sys\nprint(os.listdir(sys.argv[1]))\nPY", target.display()),
+            "sandbox_permissions": {"read": [target]}
+        }),
+    ] {
+        let result = execute(&tools, "bash", arguments);
+        assert_eq!(result["ok"], false, "{result}");
+        assert!(
+            result["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("denied by the user")),
+            "{result}"
+        );
+        assert!(!marker.exists());
+    }
 }
 
 #[test]
@@ -109,7 +115,7 @@ fn read_session_file_approval_is_scoped_and_rechecks_the_target() {
     tools.permission.set_handler(Box::new(move |request, _| {
         assert_eq!(request.tool, "read");
         assert!(request.reason.contains(&*expected_target.to_string_lossy()));
-        assert!(!request.session_grant && !request.persistent_grant);
+        assert!(request.session_grant && request.persistent_grant);
         Ok(PermissionDecision::Approve)
     }));
     let result = read(&tools, request_path.clone());

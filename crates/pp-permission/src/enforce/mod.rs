@@ -27,7 +27,7 @@ pub struct ApprovedBashScope {
 }
 
 impl crate::Gate {
-    /// 仅为本次调用确认由沙盒识别出的受保护会话文件。
+    /// 确认由沙盒识别出的受保护会话文件读取权限。
     pub fn authorize_session_read(
         &self,
         target: &Path,
@@ -46,8 +46,8 @@ impl crate::Gate {
     }
 
     /// 统一的文件/目录读取审批门禁（供 `read` / `rg` / `glob` / `lsp` 共用）：
-    /// - `session_reads` 非空时：强制单次人工确认，跳过 `auto_review`，禁止会话/全局记忆；
-    /// - 仅 `outside_reads` 非空时：先核对 `read_path_grants` 与 `permission.toml`，未获批时
+    /// - 受保护会话路径按精确路径复用只读授权，首次需要人工确认。
+    /// - 普通工作区外路径按目录范围复用授权，未获批时
     ///   经可选 `auto_review` 审批（支持单次 / 本会话 / 全局只读写入 `permission.toml`）。
     #[allow(clippy::too_many_arguments)]
     pub fn authorize_path_reads(
@@ -99,57 +99,27 @@ impl crate::Gate {
                 .join(", ")
         };
 
-        if !session_reads.is_empty() {
-            let paths_display = format_paths(session_reads);
-            let mut reasons = vec![format!("Read protected session path(s): {paths_display}")];
-            if !outside_reads.is_empty() {
-                reasons.push(format!(
-                    "Read outside workspace requires approval: {}",
-                    format_paths(outside_reads)
-                ));
-            }
-            if let Some(hook_reason) = hook_ask {
-                reasons.push(hook_reason.to_owned());
-            }
-            return self.prompt_user(
-                PermissionRequest {
-                    tool: tool.to_owned(),
-                    agent: None,
-                    reason: append_load_error(&reasons.join("\n"), load_error.as_deref()),
-                    session_grant: false,
-                    persistent_grant: false,
-                },
-                None,
-                load_error.as_deref(),
-                cancellation,
-            );
-        }
-
-        if mode == PermissionMode::DangerFullAccess {
-            if let Some(reason) = hook_ask {
-                return self.prompt_user(
-                    PermissionRequest {
-                        tool: tool.to_owned(),
-                        agent: None,
-                        reason: reason.to_owned(),
-                        session_grant: false,
-                        persistent_grant: false,
-                    },
-                    None,
-                    None,
-                    cancellation,
-                );
-            }
-            return Ok(());
-        }
-
-        let unapproved_outside = self.unapproved_read_paths(doc.as_deref(), cwd, outside_reads);
-        let forced_prompt = matches!(policy, Some(PermissionPolicy::Prompt)) || hook_ask.is_some();
-        if unapproved_outside.is_empty() && !forced_prompt {
+        let unapproved_session_reads =
+            self.unapproved_session_reads(doc.as_deref(), session_reads)?;
+        let unapproved_outside = if mode == PermissionMode::DangerFullAccess {
+            Vec::new()
+        } else {
+            self.unapproved_read_paths(doc.as_deref(), cwd, outside_reads)
+        };
+        let policy_prompt = mode != PermissionMode::DangerFullAccess
+            && matches!(policy, Some(PermissionPolicy::Prompt));
+        let forced_prompt = policy_prompt || hook_ask.is_some();
+        if unapproved_session_reads.is_empty() && unapproved_outside.is_empty() && !forced_prompt {
             return Ok(());
         }
 
         let mut reasons = Vec::new();
+        if !unapproved_session_reads.is_empty() {
+            reasons.push(format!(
+                "Read protected session path(s): {}",
+                format_paths(&unapproved_session_reads)
+            ));
+        }
         if !unapproved_outside.is_empty() {
             reasons.push(format!(
                 "Read outside workspace requires approval: {}",
@@ -158,7 +128,7 @@ impl crate::Gate {
         }
         if let Some(hook_reason) = hook_ask {
             reasons.push(hook_reason.to_owned());
-        } else if matches!(policy, Some(PermissionPolicy::Prompt)) && reasons.is_empty() {
+        } else if policy_prompt && reasons.is_empty() {
             reasons.push("required by the permission policy for this tool.".to_owned());
         }
         let trigger = reasons.join("\n");
@@ -173,6 +143,19 @@ impl crate::Gate {
                     persistent_grant: false,
                 },
                 None,
+                load_error.as_deref(),
+                cancellation,
+            );
+        }
+
+        if !unapproved_session_reads.is_empty() {
+            return self.prompt_read_paths(
+                tool,
+                &trigger,
+                unapproved_session_reads
+                    .into_iter()
+                    .chain(unapproved_outside)
+                    .collect(),
                 load_error.as_deref(),
                 cancellation,
             );
@@ -204,6 +187,66 @@ impl crate::Gate {
             },
             Some(GrantTarget::HostReadPaths(unapproved_outside)),
             load_error.as_deref(),
+            cancellation,
+        )
+    }
+
+    pub(super) fn unapproved_session_reads(
+        &self,
+        doc: Option<&rules::Document>,
+        paths: &[PathBuf],
+    ) -> Result<Vec<PathBuf>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let active = doc.and_then(|doc| doc.resolve_active_profile().ok());
+        let grants = self
+            .read_path_grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // 普通父目录的读取授权不能涵盖受保护的会话数据。
+        let mut pending = Vec::new();
+        for path in paths {
+            let access = active
+                .as_ref()
+                .and_then(|profile| profile.filesystem.host.get(path.to_str()?));
+            match access {
+                Some(FsAccess::None) => bail!(
+                    "{} is blocked by permission.toml filesystem rule.",
+                    path.display()
+                ),
+                Some(FsAccess::Read | FsAccess::Write) => {}
+                None if grants.contains(path) => {}
+                None => pending.push(path.clone()),
+            }
+        }
+        Ok(pending)
+    }
+
+    pub(super) fn prompt_read_paths(
+        &self,
+        tool: &str,
+        reason: &str,
+        paths: Vec<PathBuf>,
+        load_error: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        let persistent_grant = self.store.is_some()
+            && load_error.is_none()
+            && paths.iter().all(|path| {
+                path.to_str()
+                    .is_some_and(|path| rules::validate_host_fs_path(path).is_ok())
+            });
+        self.prompt_user(
+            PermissionRequest {
+                tool: tool.to_owned(),
+                agent: None,
+                reason: append_load_error(reason, load_error),
+                session_grant: true,
+                persistent_grant,
+            },
+            Some(GrantTarget::HostReadPaths(paths)),
+            load_error,
             cancellation,
         )
     }

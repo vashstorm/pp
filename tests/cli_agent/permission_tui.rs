@@ -129,20 +129,28 @@ fn permission_tui_asks_before_listing_protected_subagent_sessions() {
     std::fs::write(session_dir.join("child-session.jsonl"), "fixture").unwrap();
     let mut pty = Pty::start_with_args(&cwd, home.path(), &[]);
 
-    for (id, keys, approved) in [("denied", "\x1b[B\r", false), ("approved", "\r", true)] {
+    for (id, keys, approved) in [
+        ("denied", Some("\x1b[B\x1b[B\x1b[B\r"), false),
+        ("once", Some("\r"), true),
+        ("session", Some("\x1b[B\r"), true),
+        ("reused", None, true),
+    ] {
         pty.input(&format!("List subagent sessions ({id})\r"));
         let (request, _) = pty.request(&server);
         let arguments = json!({"command": format!("ls -la -- '{}'", session_dir.display())});
         calls_reply(request, json!([call(id, "bash", arguments)]));
-        pty.wait_for("列出子 Agent 会话目录前申请单次授权", |screen| {
-            let contents = screen.contents();
-            contents.contains("Permission required")
-                && contents.contains("Read protected session path")
-                && contents.contains("Allow once")
-                && contents.contains("Deny")
-                && !contents.contains("Always allow globally")
-        });
-        pty.input(keys);
+        if let Some(keys) = keys {
+            pty.wait_for("列出子 Agent 会话目录前显示四个审批选项", |screen| {
+                let contents = screen.contents();
+                contents.contains("Permission required")
+                    && contents.contains("Read protected session path")
+                    && contents.contains("Allow once")
+                    && contents.contains("Allow for this session")
+                    && contents.contains("Always allow globally")
+                    && contents.contains("Deny")
+            });
+            pty.input(keys);
+        }
         let (request, body) = pty.request(&server);
         let output = body["messages"].as_array().unwrap().iter().rev()
             .find(|message| message["role"] == "tool").unwrap();
@@ -191,23 +199,27 @@ fn permission_tui_asks_before_reading_protected_subagent_events() {
     std::fs::write(&session, format!("first event\n{event}\n")).unwrap();
     let mut pty = Pty::start_with_args(&cwd, home.path(), &[]);
 
-    for (id, keys, approved) in [("approved", "\r", true), ("denied", "\x1b[B\r", false)] {
+    for (id, keys, approved) in [
+        ("denied", Some("\x1b[B\x1b[B\x1b[B\r"), false),
+        ("global", Some("\x1b[B\x1b[B\r"), true),
+        ("reused", None, true),
+    ] {
         pty.input(&format!("Read the child session ({id})\r"));
         let (request, _) = pty.request(&server);
         let arguments = json!({"path": format!("{}:2-2:raw", session.display())});
         calls_reply(request, json!([call(id, "read", arguments)]));
-        pty.wait_for(
-            "读取子 Agent 事件日志前申请单次授权",
-            |screen| {
+        if let Some(keys) = keys {
+            pty.wait_for("读取子 Agent 事件日志前显示四个审批选项", |screen| {
                 let contents = screen.contents();
                 contents.contains("Permission required")
                     && contents.contains("Read protected session path")
                     && contents.contains("Allow once")
+                    && contents.contains("Allow for this session")
+                    && contents.contains("Always allow globally")
                     && contents.contains("Deny")
-                    && !contents.contains("Always allow globally")
-            },
-        );
-        pty.input(keys);
+            });
+            pty.input(keys);
+        }
         let (request, body) = pty.request(&server);
         let output = body["messages"]
             .as_array()
@@ -233,7 +245,8 @@ fn permission_tui_asks_before_reading_protected_subagent_events() {
         final_reply(request, &message);
         pty.completed_after(&message);
     }
-    assert!(!config_path(home.path(), "permission.toml").exists());
+    let rules = std::fs::read_to_string(config_path(home.path(), "permission.toml")).unwrap();
+    assert!(rules.contains(session.to_str().unwrap()), "{rules}");
     pty.input("/quit\r");
     pty.finish();
     no_more(&server);
@@ -410,7 +423,7 @@ fn permission_tui_approves_rg_and_glob_session_and_outside_reads() {
     let store = config_path(home.path(), "permission.toml");
     let mut pty = Pty::start_with_args(&cwd, home.path(), &[]);
 
-    // 1. rg 读取会话文件：仅提供单次确认（不含 Always allow globally），放行但不写 permission.toml。
+    // 1. rg 读取会话文件可以选单次确认，放行且无需写入 permission.toml。
     pty.input("search session and outside\r");
     let (request, _) = pty.request(&server);
     calls_reply(
@@ -421,11 +434,13 @@ fn permission_tui_approves_rg_and_glob_session_and_outside_reads() {
             json!({"pattern": "session-secret", "path": session_file.display().to_string()})
         )]),
     );
-    pty.wait_for("会话读取仅单次确认", |screen| {
+    pty.wait_for("会话读取显示四个审批选项", |screen| {
         let contents = screen.contents();
         contents.contains("Permission required")
             && contents.contains("Allow once")
-            && !contents.contains("Always allow globally")
+            && contents.contains("Allow for this session")
+            && contents.contains("Always allow globally")
+            && contents.contains("Deny")
     });
     pty.input("\r");
     let (request, body) = pty.request(&server);
@@ -458,7 +473,9 @@ fn permission_tui_approves_rg_and_glob_session_and_outside_reads() {
     );
     pty.wait_for("工作区外 glob 可选全局持久允许", |screen| {
         let contents = screen.contents();
-        contents.contains("Permission required") && contents.contains("Always allow globally")
+        contents.contains("Permission required")
+            && contents.contains("Read outside workspace requires approval")
+            && contents.contains("Always allow globally")
     });
     pty.input("\x1b[B\x1b[B\r");
     let (request, body) = pty.request(&server);

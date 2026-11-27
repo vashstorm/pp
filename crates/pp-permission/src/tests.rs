@@ -647,77 +647,83 @@ fn preapproved_bash_command_patterns_check_every_ast_leaf_and_enforce_critical_r
 }
 
 #[test]
-fn authorize_path_reads_separates_session_single_prompt_from_persistent_outside_reads() {
+fn protected_read_approvals_are_scoped_and_reusable() {
     let dir = tempfile::tempdir().unwrap();
     let agent = dir.path().canonicalize().unwrap();
     let ws = agent.join("ws");
     let session_path = agent.join("sessions/run.jsonl");
+    let other_session = agent.join("sessions/other.jsonl");
     let outside_path = agent.join("outside.txt");
     std::fs::create_dir_all(session_path.parent().unwrap()).unwrap();
     std::fs::create_dir_all(&ws).unwrap();
     std::fs::write(&session_path, "{}").unwrap();
+    std::fs::write(&other_session, "{}").unwrap();
     std::fs::write(&outside_path, "outside").unwrap();
 
     let mut gate = Gate::for_process(&agent, Some(PermissionMode::WorkspaceWrite), false);
     gate.set_config(ToolsSettings::default());
+    gate.store
+        .as_ref()
+        .unwrap()
+        .save_host_fs(agent.join("sessions").to_str().unwrap(), FsAccess::Read)
+        .unwrap();
 
     let calls = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&calls);
     let decision = Arc::new(Mutex::new(PermissionDecision::Approve));
     let decision_for_handler = Arc::clone(&decision);
     gate.set_handler(Box::new(move |request, _| {
-        recorded.lock().unwrap().push((
-            request.session_grant,
-            request.persistent_grant,
-            request.reason.clone(),
-        ));
+        assert!(request.session_grant && request.persistent_grant);
+        recorded.lock().unwrap().push(request.reason);
         Ok(*decision_for_handler.lock().unwrap())
     }));
-
-    // 1. 会话路径每次必须单次确认（关闭 session_grant/persistent_grant，且不写入持久化规则）。
-    for _ in 0..2 {
+    let read = |gate: &Gate, tool, protected: &Path, outside: &[PathBuf]| {
         gate.authorize_path_reads(
             PermissionMode::WorkspaceWrite,
-            "rg",
+            tool,
             &ws,
-            std::slice::from_ref(&session_path),
-            &[],
+            &[protected.to_path_buf()],
+            outside,
             None,
             &CancellationToken::new(),
         )
-        .unwrap();
-    }
-    let session_calls = calls.lock().unwrap().drain(..).collect::<Vec<_>>();
-    assert_eq!(session_calls.len(), 2);
-    assert!(session_calls.iter().all(|(s, p, _)| !*s && !*p));
+    };
 
-    // 2. 普通工作区外读取允许持久化 FsAccess::Read，且跨 Gate 实例生效。
+    for approval in [
+        PermissionDecision::Approve,
+        PermissionDecision::ApproveSession,
+    ] {
+        *decision.lock().unwrap() = approval;
+        read(&gate, "rg", &session_path, &[]).unwrap();
+    }
+    read(&gate, "glob", &session_path, &[]).unwrap();
+    assert_eq!(calls.lock().unwrap().len(), 2);
+
+    gate.clear_session();
     *decision.lock().unwrap() = PermissionDecision::ApprovePersistently;
-    gate.authorize_path_reads(
-        PermissionMode::WorkspaceWrite,
-        "rg",
-        &ws,
-        &[],
+    read(
+        &gate,
+        "glob",
+        &session_path,
         std::slice::from_ref(&outside_path),
-        None,
-        &CancellationToken::new(),
     )
     .unwrap();
-    let outside_calls = calls.lock().unwrap().drain(..).collect::<Vec<_>>();
-    assert_eq!(outside_calls.len(), 1);
-    assert!(outside_calls[0].0 && outside_calls[0].1);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(calls[2].contains(session_path.to_str().unwrap()));
+    assert!(calls[2].contains(outside_path.to_str().unwrap()));
 
     let reloaded = Gate::for_process(&agent, Some(PermissionMode::WorkspaceWrite), false);
-    reloaded.set_config(ToolsSettings::default());
+    read(
+        &reloaded,
+        "read",
+        &session_path,
+        std::slice::from_ref(&outside_path),
+    )
+    .unwrap();
+    assert!(read(&reloaded, "read", &other_session, &[]).is_err());
     reloaded
-        .authorize_path_reads(
-            PermissionMode::WorkspaceWrite,
-            "glob",
-            &ws,
-            &[],
-            std::slice::from_ref(&outside_path),
-            None,
-            &CancellationToken::new(),
-        )
+        .revoke_rule(&format!("fs:{}", session_path.display()))
         .unwrap();
+    assert!(read(&reloaded, "read", &session_path, &[]).is_err());
 }

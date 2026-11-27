@@ -237,6 +237,32 @@ impl Store {
         })
     }
 
+    pub(crate) fn save_host_reads(&self, paths: &[PathBuf]) -> Result<()> {
+        let paths = paths
+            .iter()
+            .map(|path| {
+                let raw = path.to_str().context("non-UTF-8 path cannot be saved")?;
+                validate_host_fs_path(raw)?;
+                Ok(raw)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.update(|doc| {
+            let host = &mut doc.active_profile_mut().filesystem.host;
+            let mut changed = false;
+            for path in paths {
+                ensure!(
+                    host.get(path) != Some(&FsAccess::None),
+                    "{path} is blocked by permission.toml filesystem rule."
+                );
+                if !matches!(host.get(path), Some(FsAccess::Read | FsAccess::Write)) {
+                    host.insert(path.to_owned(), FsAccess::Read);
+                    changed = true;
+                }
+            }
+            Ok(changed)
+        })
+    }
+
     pub(crate) fn save_network_enabled(&self, enabled: bool) -> Result<()> {
         self.update(|doc| {
             let profile = doc.active_profile_mut();

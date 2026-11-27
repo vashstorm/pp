@@ -111,7 +111,7 @@ pub struct Gate {
     bash_grants: Arc<Mutex<HashSet<BashRule>>>,
     /// 具体文件路径的会话级写授权（用于 .git/.agents/工作区外/read-only）。
     path_grants: Arc<Mutex<HashSet<PathBuf>>>,
-    /// 具体文件/目录的工作区外会话级只读授权（绝不用于会话路径或凭据路径）。
+    /// 工作区外文件/目录和受保护会话路径的会话级只读授权。
     read_path_grants: Arc<Mutex<HashSet<PathBuf>>>,
     /// 会话级互联网访问授权。
     network_grant: Arc<Mutex<bool>>,
@@ -611,12 +611,7 @@ impl Gate {
                         store.save_host_fs(raw, FsAccess::Write)?;
                     }
                     Some(GrantTarget::HostReadPaths(paths)) => {
-                        for abs in paths {
-                            let raw = abs
-                                .to_str()
-                                .ok_or_else(|| anyhow::anyhow!("non-UTF-8 path cannot be saved"))?;
-                            store.save_host_fs(raw, FsAccess::Read)?;
-                        }
+                        store.save_host_reads(&paths)?;
                     }
                     Some(GrantTarget::BashAndOutsideReads {
                         rules,
