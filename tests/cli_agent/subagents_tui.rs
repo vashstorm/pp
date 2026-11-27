@@ -132,6 +132,59 @@ fn hub_count(haystack: &str, needle: &str) -> usize {
     haystack.matches(needle).count()
 }
 
+/// 按正文定位写出该文本的 Agent 观察日志，返回 agent id 与全部记录。
+/// 新格式每行都是独立 JSON（不再共享值表），测试侧可直接用 serde_json 解析。
+fn hub_events_with(home: &std::path::Path, needle: &str) -> (String, Vec<Value>) {
+    for entry in std::fs::read_dir(hub_dir(home))
+        .expect("subagent directory")
+        .flatten()
+    {
+        let Some(agent) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_suffix(".events.jsonl"))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        let bytes = std::fs::read(entry.path()).expect("event log");
+        if !String::from_utf8_lossy(&bytes).contains(needle) {
+            continue;
+        }
+        let records = bytes
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).expect("observed event json"))
+            .collect();
+        return (agent, records);
+    }
+    panic!("no observation log contains {needle}");
+}
+
+/// 观察记录的种类：unit 变体是字符串，结构变体与 hub 记录是单键对象。
+fn hub_record_kind(record: &Value) -> String {
+    if let Some(hub) = record.get("hub") {
+        return format!(
+            "hub:{}:{}",
+            hub["kind"].as_str().unwrap_or("?"),
+            hub["status"].as_str().unwrap_or("")
+        );
+    }
+    match &record["event"] {
+        Value::String(kind) => kind.clone(),
+        Value::Object(map) => map.keys().next().cloned().unwrap_or_default(),
+        other => panic!("unexpected observed record: {other}"),
+    }
+}
+
+/// 该日志里的全部正文分片记录；相邻同变体分片合并后应只剩一条。
+fn hub_deltas(records: &[Value]) -> Vec<&Value> {
+    records
+        .iter()
+        .filter(|record| hub_record_kind(record) == "assistant_delta")
+        .collect()
+}
+
 /// 单发 Esc 并等到目标页面出现，避免它与下一按键合并成 Alt 序列。
 fn hub_escape(pty: &mut Pty, expect: &str) {
     pty.input("\x1b");
@@ -448,6 +501,189 @@ fn agent_hub_streams_and_anchors_activity() {
         hub_escape(&mut pty, "Errors");
         assert_eq!(hub_count(&pty.contents(), "\u{f00d}"), 1);
         hub_escape(&mut pty, "Roster ·");
+        hub_close(&mut pty);
+        pty.input("\x03");
+        pty.finish();
+    }
+}
+
+/// 连续正文分片必须合并成一条可回放的记录：真实二进制写出普通 JSONL，测试直接解析，
+/// 再打开详情确认合并后的正文只渲染一次。单分片子 Agent 提供同一 run 位置的首片序号基准。
+#[test]
+fn agent_hub_coalesced_event_log_replays_in_detail() {
+    // 五个片段互不为子串：任何重复或插入分隔符都会破坏“整个正文只出现一次”的计数。
+    let fragments = ["hub-coalesced-", "body-", "alpha-", "beta-", "gamma"];
+    let body = fragments.concat();
+    for protocol in ["completion", "response"] {
+        let fixture = server();
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(config_path(home.path(), "settings.yml"), task_fixture_settings()).unwrap();
+        std::fs::write(
+            config_path(home.path(), "models.yml"),
+            response_models(&fixture, Some(protocol)),
+        )
+        .unwrap();
+        let mut pty = Pty::start_with_args(project.path(), home.path(), &["--yolo"]);
+        pty.ready();
+        pty.input("delegate coalesced task\r");
+        let mut children = hub_dispatch(
+            &mut pty,
+            &fixture,
+            protocol,
+            json!({"context":"coalesce context","tasks":[
+                {"role":"fast","name":"SoloWriter","task":"emit one solo fragment"},
+                {"role":"fast","name":"BurstWriter","task":"emit the coalesced burst"}
+            ]}),
+            &["one solo fragment", "coalesced burst"],
+        );
+        // 单分片 Agent 的首个正文事件与多分片 Agent 位于同一 run 位置（下面断言前置记录
+        // 形状一致），因此两者的首个分片共用同一个 run 序号，可直接作为首片锚点基准。
+        let mut solo = children.remove(0).start_sse().unwrap();
+        streaming_delta(&mut solo, protocol, "hub-coalesced-solo");
+        streaming_complete(&mut solo, protocol, "hub-coalesced-solo");
+        solo.finish();
+        // 多分片 Agent：一次发完全部分片，间隔远小于 250ms 的缓冲时限。
+        let mut burst = children.remove(0).start_sse().unwrap();
+        for fragment in fragments {
+            streaming_delta(&mut burst, protocol, fragment);
+        }
+        streaming_complete(&mut burst, protocol, &body);
+        burst.finish();
+        // 整批完成后父方才继续；此时两个子 Agent 的终态记录都已落盘。
+        let (request, parent) = pty.request_at(&fixture, api_path(protocol));
+        assert!(!hub_is_child(&parent), "{parent}");
+        ask_final_reply(request, protocol, "coalesced-parent-done");
+        pty.text("coalesced-parent-done");
+
+        let (burst_agent, burst_records) = hub_events_with(home.path(), &body);
+        let (_, solo_records) = hub_events_with(home.path(), "hub-coalesced-solo");
+
+        // a. 相邻同变体分片合并为一条，文本逐字拼接且片段本身不重复。
+        let burst_deltas = hub_deltas(&burst_records);
+        assert_eq!(
+            burst_deltas.len(),
+            1,
+            "相邻正文分片未合并：{burst_records:#?}"
+        );
+        let merged = burst_deltas[0];
+        assert_eq!(merged["event"]["assistant_delta"]["text"], body);
+        assert_eq!(merged["event"]["assistant_delta"]["refusal"], false);
+        for fragment in fragments {
+            let seen: usize = burst_deltas
+                .iter()
+                .map(|record| {
+                    hub_count(
+                        record["event"]["assistant_delta"]["text"]
+                            .as_str()
+                            .expect("delta text"),
+                        fragment,
+                    )
+                })
+                .sum();
+            assert_eq!(seen, 1, "片段 {fragment} 被重复写出：{burst_records:#?}");
+        }
+        // 合并记录保留首片序号：与单分片 Agent 的首个正文事件同序，而不是末片位置。
+        let solo_deltas = hub_deltas(&solo_records);
+        assert_eq!(solo_deltas.len(), 1, "{solo_records:#?}");
+        let solo_delta = solo_deltas[0];
+        assert_eq!(
+            solo_delta["event"]["assistant_delta"]["text"],
+            "hub-coalesced-solo"
+        );
+        let prelude = |records: &[Value]| -> Vec<String> {
+            records
+                .iter()
+                .take_while(|record| hub_record_kind(record) != "assistant_delta")
+                .map(hub_record_kind)
+                .collect()
+        };
+        assert_eq!(
+            prelude(&burst_records),
+            prelude(&solo_records),
+            "两个子 Agent 的首个正文事件必须位于同一 run 位置才能比较序号"
+        );
+        assert_eq!(
+            merged["sequence"], solo_delta["sequence"],
+            "合并记录必须沿用首片序号：{merged} vs {solo_delta}"
+        );
+
+        // b. 合并记录先于其后的非 delta 记录，且这些记录的顺序与从未合并的 run 一致。
+        let merged_index = burst_records
+            .iter()
+            .position(|record| std::ptr::eq(record, merged))
+            .expect("merged record");
+        let tail = &burst_records[merged_index + 1..];
+        let tail_kinds = tail.iter().map(hub_record_kind).collect::<Vec<_>>();
+        for expected in [
+            "model_request_finished",
+            "assistant_finished",
+            "hub:run_state:completed",
+        ] {
+            assert!(
+                tail_kinds.iter().any(|kind| kind == expected),
+                "合并记录之后缺少 {expected}：{tail:#?}"
+            );
+        }
+        assert!(
+            tail_kinds.iter().all(|kind| kind != "assistant_delta"),
+            "合并记录必须是该 run 的最后一条正文分片：{tail:#?}"
+        );
+        let finished = tail
+            .iter()
+            .find(|record| hub_record_kind(record) == "assistant_finished")
+            .expect("assistant_finished");
+        assert_eq!(finished["event"]["assistant_finished"]["text"], body);
+        assert!(
+            merged["sequence"].as_u64() < finished["sequence"].as_u64(),
+            "合并记录必须排在回复终态之前：{merged} vs {finished}"
+        );
+        let solo_index = solo_records
+            .iter()
+            .position(|record| std::ptr::eq(record, solo_delta))
+            .expect("solo delta");
+        assert_eq!(
+            tail_kinds,
+            solo_records[solo_index + 1..]
+                .iter()
+                .map(hub_record_kind)
+                .collect::<Vec<_>>(),
+            "合并不得改变后续非 delta 记录的顺序：{tail:#?}"
+        );
+
+        // c. 瘦身信封：新行不再写与路径重复的身份字段。
+        for record in burst_records.iter().chain(solo_records.iter()) {
+            assert!(
+                record.get("root_id").is_none(),
+                "新日志不得再写 root_id：{record}"
+            );
+            assert!(
+                record.get("agent_id").is_none(),
+                "新日志不得再写 agent_id：{record}"
+            );
+            assert!(record["generation"].is_u64(), "{record}");
+            assert!(record["timestamp_ms"].is_u64(), "{record}");
+        }
+
+        // 详情回放：合并后的正文在完整帧里只出现一次。
+        pty.input("/agents\r");
+        pty.text("Roster ·");
+        // 过滤到多分片 Agent，不依赖 completed 行的默认选中顺序。
+        pty.input("/");
+        pty.input("BurstWriter");
+        pty.wait_for("roster 只剩多分片 Agent", |screen| {
+            let text = screen.contents();
+            text.contains("BurstWriter") && !text.contains("SoloWriter")
+        });
+        pty.input("\r");
+        pty.input("\r");
+        pty.text(&format!("Agent Hub · BurstWriter / {burst_agent}"));
+        // 完整帧栅栏：正文已经回放，且整块只渲染一次（流式预览与终态不叠加）。
+        pty.text(&body);
+        let frame = pty.contents();
+        assert_eq!(hub_count(&frame, &body), 1, "合并正文在详情里重复渲染：{frame}");
+        hub_escape(&mut pty, "Roster ·");
+        hub_clear_filter(&mut pty, "SoloWriter");
         hub_close(&mut pty);
         pty.input("\x03");
         pty.finish();

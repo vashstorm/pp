@@ -151,6 +151,8 @@ impl Agent {
             self.ensure_subagents()?;
         }
         if let Some(binding) = self.subagents() {
+            // 导出前把流式缓冲落盘，保证 dump 带上最后一轮 delta。
+            binding.flush_observations();
             let snapshot = binding.hub_snapshot();
             let subagent_dir = binding.directory();
             for hub_agent in &snapshot.agents {

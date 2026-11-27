@@ -73,6 +73,33 @@ fn append(binding: &Binding, id: &str, record: &str) {
     writeln!(file, "{record}").unwrap();
 }
 
+fn observe(
+    binding: &Binding,
+    id: &str,
+    run: &str,
+    generation: u64,
+    sequence: u64,
+    event: AgentEvent,
+) {
+    binding.inner.observe(
+        id,
+        Some(run),
+        generation,
+        Some(sequence),
+        Some(&event),
+        None,
+    );
+}
+
+fn delta_text(entry: &ObservedEntry) -> String {
+    match entry.record.event.clone().expect("event payload") {
+        AgentEvent::ThinkingDelta { text }
+        | AgentEvent::ReasoningSummaryDelta { text }
+        | AgentEvent::AssistantDelta { text, .. } => text,
+        other => panic!("expected delta, got {other:?}"),
+    }
+}
+
 fn read_all(binding: &Binding, id: &str) -> Vec<ObservedEntry> {
     let mut cursor = None;
     let mut all = Vec::new();
@@ -84,6 +111,55 @@ fn read_all(binding: &Binding, id: &str) -> Vec<ObservedEntry> {
             return all;
         }
     }
+}
+
+#[test]
+fn pagination_probe_sees_complete_lines_past_large_merged_records() {
+    let home = tempfile::tempdir().unwrap();
+    let binding = binding(home.path(), "a1");
+    for sequence in 1..=128 {
+        append(
+            &binding,
+            "a1",
+            &serde_json::json!({
+                "generation": 1,
+                "sequence": sequence,
+                "timestamp_ms": sequence,
+                "event": {"assistant_started": null},
+            })
+            .to_string(),
+        );
+    }
+    // 合并后的单条记录远超 4 KiB：下一个换行落在旧的固定探测窗口之外。
+    append(
+        &binding,
+        "a1",
+        &serde_json::json!({
+            "generation": 1,
+            "sequence": 129,
+            "timestamp_ms": 129,
+            "event": {"thinking_delta": {"text": "x".repeat(10 * 1024)}},
+        })
+        .to_string(),
+    );
+    append(
+        &binding,
+        "a1",
+        &serde_json::json!({
+            "generation": 1,
+            "sequence": 130,
+            "timestamp_ms": 130,
+            "event": {"assistant_finished": {"text": "done"}},
+        })
+        .to_string(),
+    );
+    let page = binding.read_events("a1", None).unwrap();
+    assert_eq!(page.entries.len(), PAGE_ENTRIES);
+    assert!(page.has_more);
+    let next = binding.read_events("a1", page.cursor.as_ref()).unwrap();
+    assert_eq!(next.entries.len(), 2);
+    assert!(!next.has_more);
+    assert_eq!(delta_text(&next.entries[0]).len(), 10 * 1024);
 }
 
 #[test]
@@ -295,24 +371,35 @@ fn progress_does_not_write_or_bump_revision_and_sequence_gaps_are_valid() {
             }),
             None,
         );
+        // 非 delta 边界先冲刷待合并缓冲，sequence 跳号仍合法。
+        binding.inner.observe(
+            "a1",
+            Some("r1"),
+            1,
+            Some(sequence + 50),
+            Some(&AgentEvent::AssistantStarted),
+            None,
+        );
     }
     let entries = read_all(&binding, "a1");
-    assert_eq!(entries.len(), 3);
+    assert_eq!(entries.len(), 5);
     assert_eq!(entries[1].record.sequence, Some(100));
-    assert_eq!(entries[2].record.sequence, Some(200));
+    assert_eq!(entries[2].record.sequence, Some(150));
+    assert_eq!(entries[3].record.sequence, Some(200));
+    assert_eq!(entries[4].record.sequence, Some(250));
     binding.inner.observe(
         "a1",
         Some("r1"),
         1,
-        Some(201),
-        Some(&AgentEvent::ModelOutputProgress { output_bytes: 201 }),
+        Some(260),
+        Some(&AgentEvent::ModelOutputProgress { output_bytes: 260 }),
         Some(HubEvent::RunState {
             status: "completed".into(),
         }),
     );
     let entries = read_all(&binding, "a1");
-    assert!(entries[3].record.event.is_none());
-    assert!(entries[3].record.hub.is_some());
+    assert!(entries[5].record.event.is_none());
+    assert!(entries[5].record.hub.is_some());
     assert!(binding.model_output_progress("a1", "r1", 1, 1).is_none());
 }
 
@@ -550,4 +637,378 @@ fn overview_events_coalesce_deltas_skip_output_and_track_activity() {
         .unwrap();
     assert!(truncated.reset);
     assert!(truncated.entries.is_empty());
+}
+
+#[test]
+fn adjacent_same_variant_deltas_coalesce_and_keep_first_anchor() {
+    let home = tempfile::tempdir().unwrap();
+    let binding = binding(home.path(), "a1");
+    for (sequence, text) in [(10, "思考"), (11, "片段"), (12, "继续")] {
+        observe(
+            &binding,
+            "a1",
+            "r1",
+            1,
+            sequence,
+            AgentEvent::ThinkingDelta { text: text.into() },
+        );
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        13,
+        AgentEvent::AssistantFinished {
+            text: "done".into(),
+        },
+    );
+    let entries = read_all(&binding, "a1");
+    assert_eq!(entries.len(), 2);
+    // 文本直接拼接、不加分隔符；合并记录保留首片序号。
+    assert_eq!(delta_text(&entries[0]), "思考片段继续");
+    assert_eq!(entries[0].record.sequence, Some(10));
+    // 合并记录沿用首片时间，而非末片时间（两段间隔后仍明显早于边界记录）。
+    let merged_ms = entries[0].record.timestamp_ms.unwrap();
+    let finished_ms = entries[1].record.timestamp_ms.unwrap();
+    assert!(
+        finished_ms >= merged_ms + 90,
+        "{merged_ms} vs {finished_ms}"
+    );
+    assert!(matches!(
+        entries[1].record.event,
+        Some(AgentEvent::AssistantFinished { .. })
+    ));
+}
+
+#[test]
+fn delta_boundaries_split_by_variant_refusal_run_and_generation() {
+    let home = tempfile::tempdir().unwrap();
+    let binding = binding(home.path(), "a1");
+    let thinking = |text: &str| AgentEvent::ThinkingDelta { text: text.into() };
+    let assistant = |text: &str, refusal: bool| AgentEvent::AssistantDelta {
+        text: text.into(),
+        refusal,
+    };
+    observe(&binding, "a1", "r1", 1, 1, thinking("a"));
+    observe(&binding, "a1", "r1", 1, 2, thinking("b"));
+    observe(&binding, "a1", "r1", 1, 3, assistant("c", false));
+    observe(&binding, "a1", "r1", 1, 4, assistant("d", false));
+    observe(&binding, "a1", "r1", 1, 5, assistant("e", true));
+    observe(&binding, "a1", "r2", 1, 6, assistant("f", true));
+    observe(&binding, "a1", "r2", 2, 7, assistant("g", true));
+    observe(
+        &binding,
+        "a1",
+        "r2",
+        2,
+        8,
+        AgentEvent::AssistantFinished { text: "end".into() },
+    );
+    let entries = read_all(&binding, "a1");
+    let events: Vec<_> = entries
+        .iter()
+        .map(|entry| entry.record.event.clone().unwrap())
+        .collect();
+    assert_eq!(events.len(), 6);
+    assert_eq!(delta_text(&entries[0]), "ab");
+    assert_eq!(entries[0].record.sequence, Some(1));
+    assert_eq!(delta_text(&entries[1]), "cd");
+    assert_eq!(entries[1].record.sequence, Some(3));
+    for (index, text) in [(2, "e"), (3, "f"), (4, "g")] {
+        assert_eq!(delta_text(&entries[index]), text);
+    }
+    assert!(matches!(
+        events[1],
+        AgentEvent::AssistantDelta { refusal: false, .. }
+    ));
+    assert!(matches!(
+        events[2],
+        AgentEvent::AssistantDelta { refusal: true, .. }
+    ));
+    assert_eq!(entries[5].record.run_id.as_deref(), Some("r2"));
+    assert_eq!(entries[5].record.generation, 2);
+    assert!(matches!(events[5], AgentEvent::AssistantFinished { .. }));
+}
+
+#[test]
+fn capacity_flush_writes_merged_buffer_and_oversized_fragment_whole() {
+    let home = tempfile::tempdir().unwrap();
+    let binding = binding(home.path(), "a1");
+    let chunk = "x".repeat(3000);
+    for sequence in 1..=4 {
+        observe(
+            &binding,
+            "a1",
+            "r1",
+            1,
+            sequence,
+            AgentEvent::ThinkingDelta {
+                text: chunk.clone(),
+            },
+        );
+    }
+    // 第 3 片拼接后达到 8 KiB 上限立即落盘，第 4 片仍在内存缓冲里。
+    let entries = read_all(&binding, "a1");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(delta_text(&entries[0]), chunk.repeat(3));
+    assert_eq!(entries[0].record.sequence, Some(1));
+    // 超过上限的单片段完整写出，不拆分也不并入缓冲。
+    let big = "y".repeat(8197);
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        5,
+        AgentEvent::ThinkingDelta { text: big.clone() },
+    );
+    let entries = read_all(&binding, "a1");
+    assert_eq!(entries.len(), 3);
+    assert_eq!(delta_text(&entries[1]), chunk);
+    assert_eq!(entries[1].record.sequence, Some(4));
+    assert_eq!(delta_text(&entries[2]), big);
+    assert_eq!(entries[2].record.sequence, Some(5));
+}
+
+#[test]
+fn expired_buffer_reaches_disk_on_observe_polling_without_new_events() {
+    let home = tempfile::tempdir().unwrap();
+    let binding = binding(home.path(), "a1");
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        1,
+        AgentEvent::ThinkingDelta {
+            text: "tail".into(),
+        },
+    );
+    std::thread::sleep(COALESCE_DELAY + std::time::Duration::from_millis(80));
+    // 只靠观察轮询（读取前冲刷）推进流式尾部，不依赖下一轮模型事件。
+    let entries = read_all(&binding, "a1");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(delta_text(&entries[0]), "tail");
+    assert_eq!(entries[0].record.sequence, Some(1));
+    assert_eq!(
+        binding
+            .inner
+            .append_gate("a1")
+            .lock()
+            .unwrap()
+            .pending
+            .as_ref()
+            .map(|pending| pending.text.len()),
+        None
+    );
+}
+
+#[test]
+fn forced_flush_writes_pending_buffer_before_dump() {
+    let home = tempfile::tempdir().unwrap();
+    let binding = binding(home.path(), "a1");
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        1,
+        AgentEvent::AssistantDelta {
+            text: "buffer".into(),
+            refusal: false,
+        },
+    );
+    assert!(read_all(&binding, "a1").is_empty());
+    binding.flush_observations();
+    let entries = read_all(&binding, "a1");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(delta_text(&entries[0]), "buffer");
+}
+
+#[test]
+fn delta_buffer_keeps_tool_and_hub_order_and_append_failures_stay_bounded() {
+    let home = tempfile::tempdir().unwrap();
+    let binding = binding(home.path(), "a1");
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        1,
+        AgentEvent::ThinkingDelta {
+            text: "before tool".into(),
+        },
+    );
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        2,
+        AgentEvent::ToolStarted {
+            id: "t1".into(),
+            name: "bash".into(),
+            arguments: "{}".into(),
+        },
+    );
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        3,
+        AgentEvent::AssistantFinished {
+            text: String::new(),
+        },
+    );
+    binding.inner.observe(
+        "a1",
+        Some("r1"),
+        1,
+        Some(4),
+        None,
+        Some(HubEvent::RunState {
+            status: "completed".into(),
+        }),
+    );
+    let entries = read_all(&binding, "a1");
+    assert_eq!(entries.len(), 4);
+    assert_eq!(delta_text(&entries[0]), "before tool");
+    assert!(matches!(
+        entries[1].record.event,
+        Some(AgentEvent::ToolStarted { .. })
+    ));
+    assert!(matches!(
+        entries[2].record.event,
+        Some(AgentEvent::AssistantFinished { .. })
+    ));
+    assert!(entries[3].record.hub.is_some());
+
+    // 追加持续失败只保留脱敏健康提示，失败缓冲不会无界累积。
+    let blocked = binding.directory().join("a2.events.jsonl");
+    fs::create_dir(&blocked).unwrap();
+    let chunk = "z".repeat(500);
+    for sequence in 1..=40 {
+        observe(
+            &binding,
+            "a2",
+            "r1",
+            1,
+            sequence,
+            AgentEvent::ThinkingDelta {
+                text: chunk.clone(),
+            },
+        );
+    }
+    assert!(
+        binding
+            .hub_snapshot()
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("possibly incomplete"))
+    );
+    let buffered = binding
+        .inner
+        .append_gate("a2")
+        .lock()
+        .unwrap()
+        .pending
+        .as_ref()
+        .map_or(0, |pending| pending.text.len());
+    assert!(buffered < COALESCE_BYTES * 2, "buffered {buffered}");
+    // 恢复后一次成功追加清掉健康提示。
+    fs::remove_dir(&blocked).unwrap();
+    observe(&binding, "a2", "r1", 1, 41, AgentEvent::AssistantStarted);
+    assert!(binding.hub_snapshot().warnings.is_empty());
+}
+
+#[test]
+fn slim_lines_omit_identity_and_both_readers_backfill_mixed_logs() {
+    let home = tempfile::tempdir().unwrap();
+    let binding = binding(home.path(), "a1");
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        1,
+        AgentEvent::ThinkingDelta { text: "思".into() },
+    );
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        2,
+        AgentEvent::ThinkingDelta { text: "考".into() },
+    );
+    observe(
+        &binding,
+        "a1",
+        "r1",
+        1,
+        3,
+        AgentEvent::ToolStarted {
+            id: "t1".into(),
+            name: "read".into(),
+            arguments: "{}".into(),
+        },
+    );
+    binding.inner.observe(
+        "a1",
+        Some("r1"),
+        1,
+        Some(4),
+        None,
+        Some(HubEvent::RunState {
+            status: "running".into(),
+        }),
+    );
+    let raw = fs::read_to_string(binding.directory().join("a1.events.jsonl")).unwrap();
+    assert!(!raw.contains("\"agent_id\""), "{raw}");
+    assert!(!raw.contains("\"root_id\""), "{raw}");
+    // 同文件里的旧行显式身份保持原样，缺省身份按请求 agent 与目录名补齐。
+    append(
+        &binding,
+        "a1",
+        r#"{"root_id":"other.subagents","agent_id":"a7","generation":1,"sequence":9,"event":{"assistant_started":null}}"#,
+    );
+    let entries = read_all(&binding, "a1");
+    assert_eq!(entries.len(), 4);
+    for entry in &entries[..3] {
+        assert_eq!(entry.record.agent_id, "a1");
+        assert_eq!(entry.record.root_id.as_deref(), Some("session.subagents"));
+    }
+    assert_eq!(delta_text(&entries[0]), "思考");
+    assert_eq!(entries[3].record.agent_id, "a7");
+    assert_eq!(
+        entries[3].record.root_id.as_deref(),
+        Some("other.subagents")
+    );
+
+    let page = binding.read_overview_events("a1", None).unwrap();
+    assert!(page.warnings.is_empty(), "{:?}", page.warnings);
+    let legacy = page
+        .entries
+        .iter()
+        .find(|entry| entry.record.sequence == Some(9))
+        .expect("legacy line");
+    assert_eq!(legacy.record.agent_id, "a7");
+    assert_eq!(legacy.record.root_id.as_deref(), Some("other.subagents"));
+    let tool = page
+        .entries
+        .iter()
+        .find(|entry| matches!(entry.record.event, Some(AgentEvent::ToolStarted { .. })))
+        .expect("tool record");
+    assert_eq!(tool.record.agent_id, "a1");
+    assert_eq!(tool.record.root_id.as_deref(), Some("session.subagents"));
+    let hub = page
+        .entries
+        .iter()
+        .find(|entry| entry.record.hub.is_some())
+        .expect("hub record");
+    assert_eq!(hub.record.agent_id, "a1");
+    assert_eq!(hub.record.root_id.as_deref(), Some("session.subagents"));
 }

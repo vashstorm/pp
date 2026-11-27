@@ -19,17 +19,21 @@ use std::{
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     sync::atomic::Ordering,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 /// 单页最多返回的完整记录条数。
 const PAGE_ENTRIES: usize = 128;
 /// 单页软读取预算；单条超大记录会继续读到行尾，绝不截断。
 const PAGE_BYTES: u64 = 256 * 1024;
-/// 预读探测长度：用于判断 offset 之后是否已有完整行。
-const PROBE_BYTES: u64 = 4096;
 /// 单条记录异常巨大时的防御上限；只是内存保护，不是截断点。
 const MAX_RECORD_BYTES: usize = 32 * 1024 * 1024;
+/// 判断“offset 之后是否还有完整行”时每次读取的窗口。
+const LINE_SCAN_CHUNK: usize = 64 * 1024;
+/// 单个待合并缓冲的文本上限：达到后立即落盘，避免缓冲无界增长。
+const COALESCE_BYTES: usize = 8 * 1024;
+/// 缓冲时限：观察轮询在读取前冲刷过期缓冲，流式尾部不等待下一轮模型事件。
+const COALESCE_DELAY: Duration = Duration::from_millis(250);
 
 /// 快照中的单个 Agent；record 用 flatten 保持既有扁平的 JSON 形状。
 #[derive(Clone, Serialize)]
@@ -76,6 +80,8 @@ pub enum HubEvent {
 pub struct ObservedRecord {
     #[serde(default)]
     pub root_id: Option<String>,
+    /// 瘦身新行缺省为空串；读取端按请求 agent id 补齐。
+    #[serde(default)]
     pub agent_id: String,
     #[serde(default)]
     pub run_id: Option<String>,
@@ -126,12 +132,59 @@ impl EventPage {
     }
 }
 
+/// 可合并的流式 delta 种类；`AssistantDelta` 的 refusal 参与边界匹配。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DeltaKind {
+    Thinking,
+    ReasoningSummary,
+    Assistant { refusal: bool },
+}
+
+impl DeltaKind {
+    fn event(self, text: String) -> AgentEvent {
+        match self {
+            Self::Thinking => AgentEvent::ThinkingDelta { text },
+            Self::ReasoningSummary => AgentEvent::ReasoningSummaryDelta { text },
+            Self::Assistant { refusal } => AgentEvent::AssistantDelta { text, refusal },
+        }
+    }
+}
+
+/// 待合并的连续 delta 缓冲：保留首片锚点，只追加文本。
+struct PendingDelta {
+    run_id: Option<String>,
+    generation: u64,
+    kind: DeltaKind,
+    sequence: Option<u64>,
+    timestamp_ms: u64,
+    text: String,
+    started: Instant,
+}
+
+/// 每个 agent 的追加状态：整行写锁加可选待合并缓冲。
+#[derive(Default)]
+pub(super) struct AppendState {
+    pending: Option<PendingDelta>,
+}
+
+/// 判定可合并的 delta，返回种类与文本借用；其余事件返回 `None`。
+fn coalescible(event: &AgentEvent) -> Option<(DeltaKind, &str)> {
+    match event {
+        AgentEvent::ThinkingDelta { text } => Some((DeltaKind::Thinking, text.as_str())),
+        AgentEvent::ReasoningSummaryDelta { text } => {
+            Some((DeltaKind::ReasoningSummary, text.as_str()))
+        }
+        AgentEvent::AssistantDelta { text, refusal } => {
+            Some((DeltaKind::Assistant { refusal: *refusal }, text.as_str()))
+        }
+        _ => None,
+    }
+}
+
 /// 流式写出的 envelope：不构造中间 `Value`，避免复制整段输出。
+/// 新行不再序列化 `root_id`/`agent_id`；读取端按请求 agent 与当前目录名补齐。
 #[derive(Serialize)]
 struct Envelope<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root_id: Option<&'a str>,
-    agent_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     run_id: Option<&'a str>,
     generation: u64,
@@ -144,17 +197,119 @@ struct Envelope<'a> {
     hub: Option<&'a HubEvent>,
 }
 
+/// 一条观察信封的可选元数据；与 payload 分开传递，避免超长参数表。
+struct RecordMeta<'a> {
+    run_id: Option<&'a str>,
+    generation: u64,
+    sequence: Option<u64>,
+    timestamp_ms: u64,
+}
+
 impl Inner {
-    /// 每个 agent 一条整行追加锁；worker 持有自己的 `Arc`，控制线程共用同一把。
-    pub(super) fn append_gate(&self, id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    /// 每个 agent 一条整行追加锁 + 待合并缓冲；worker 持有自己的 `Arc`，控制线程共用同一把。
+    pub(super) fn append_gate(&self, id: &str) -> std::sync::Arc<std::sync::Mutex<AppendState>> {
         lock(&self.appends)
             .entry(id.to_owned())
             .or_default()
             .clone()
     }
 
-    fn append_lock(&self, agent_id: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    fn append_lock(&self, agent_id: &str) -> std::sync::Arc<std::sync::Mutex<AppendState>> {
         self.append_gate(agent_id)
+    }
+
+    /// 把一条观察信封写入 `<agent>.events.jsonl`；调用方必须已持有该 agent 的 gate。
+    fn append_record(
+        &self,
+        agent_id: &str,
+        meta: RecordMeta<'_>,
+        event: Option<&AgentEvent>,
+        hub: Option<&HubEvent>,
+    ) -> Result<()> {
+        let RecordMeta {
+            run_id,
+            generation,
+            sequence,
+            timestamp_ms,
+        } = meta;
+        let path = self.directory().join(format!("{agent_id}.events.jsonl"));
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        serde_json::to_writer(
+            &mut file,
+            &Envelope {
+                run_id,
+                generation,
+                sequence,
+                timestamp_ms,
+                event,
+                hub,
+            },
+        )?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
+
+    /// 把缓冲中的一条 delta 落盘；调用方已取走该缓冲，失败即丢弃，不再累积。
+    fn write_pending(&self, agent_id: &str, pending: PendingDelta) -> Result<()> {
+        let event = pending.kind.event(pending.text);
+        self.append_record(
+            agent_id,
+            RecordMeta {
+                run_id: pending.run_id.as_deref(),
+                generation: pending.generation,
+                sequence: pending.sequence,
+                timestamp_ms: pending.timestamp_ms,
+            },
+            Some(&event),
+            None,
+        )
+    }
+
+    /// 冲掉并清空该 agent 的待合并缓冲；无缓冲时为空操作。
+    fn flush_pending(&self, agent_id: &str, state: &mut AppendState) -> Result<()> {
+        match state.pending.take() {
+            Some(pending) => self.write_pending(agent_id, pending),
+            None => Ok(()),
+        }
+    }
+
+    /// 记录一次追加结果：成功清除该 agent 的健康提示，失败保留脱敏摘要；两者都推进修订号。
+    fn record_append_outcome(&self, agent_id: &str, result: Result<()>) {
+        let mut health = lock(&self.observe_errors);
+        match result {
+            Ok(()) => {
+                health.remove(agent_id);
+            }
+            Err(error) => {
+                // 只保留脱敏摘要，避免把路径细节或正文写进 UI。
+                health.insert(
+                    agent_id.to_owned(),
+                    format!("event log is possibly incomplete: {error}"),
+                );
+            }
+        }
+        drop(health);
+        self.revision.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 观察轮询读取前冲刷超过时限的缓冲；无动作时不推进修订号。
+    fn flush_expired(&self, agent_id: &str) {
+        let gate = self.append_gate(agent_id);
+        let mut state = lock(&gate);
+        if !state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.started.elapsed() >= COALESCE_DELAY)
+        {
+            return;
+        }
+        let result = self.flush_pending(agent_id, &mut state);
+        drop(state);
+        self.record_append_outcome(agent_id, result);
     }
 
     fn observe_model_progress(
@@ -288,49 +443,81 @@ impl Inner {
             lock(&self.shell_previews).remove(agent_id);
         }
         let gate = self.append_lock(agent_id);
-        let root = self
-            .directory()
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
-        let result = (|| -> Result<()> {
-            let _guard = lock(&gate);
-            let path = self.directory().join(format!("{agent_id}.events.jsonl"));
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .with_context(|| format!("opening {}", path.display()))?;
-            serde_json::to_writer(
-                &mut file,
-                &Envelope {
-                    root_id: root.as_deref(),
-                    agent_id,
+        // `None` 表示本步只更新内存缓冲、未发生写盘，不能据此清除已有的写失败提示。
+        let result = (|| -> Option<Result<()>> {
+            let mut state = lock(&gate);
+            // 连续同变体 delta 有界合并：先留在内存，等容量、时限或边界冲刷。
+            if hub.is_none()
+                && let Some(event) = event
+                && let Some((kind, text)) = coalescible(event)
+            {
+                let timestamp = now();
+                // 单个片段已达容量上限：先冲刷旧缓冲，再完整写出，不拆分也不并入缓冲。
+                if text.len() >= COALESCE_BYTES {
+                    let flushed = self.flush_pending(agent_id, &mut state);
+                    let written = self.append_record(
+                        agent_id,
+                        RecordMeta {
+                            run_id,
+                            generation,
+                            sequence,
+                            timestamp_ms: timestamp,
+                        },
+                        Some(event),
+                        None,
+                    );
+                    return Some(flushed.and(written));
+                }
+                let compatible = state.pending.as_ref().is_some_and(|pending| {
+                    pending.run_id.as_deref() == run_id
+                        && pending.generation == generation
+                        && pending.kind == kind
+                });
+                if compatible {
+                    let pending = state.pending.as_mut().expect("compatible pending");
+                    // 时限内继续拼接，不加分隔符；达到容量后立即落盘。
+                    if pending.started.elapsed() < COALESCE_DELAY {
+                        pending.text.push_str(text);
+                        if pending.text.len() < COALESCE_BYTES {
+                            return None;
+                        }
+                        let pending = state.pending.take().expect("merged pending");
+                        return Some(self.write_pending(agent_id, pending));
+                    }
+                }
+                // 超时限，或 run/generation/变体/refusal 边界：先冲刷旧缓冲再开新缓冲。
+                let flushed = self.flush_pending(agent_id, &mut state);
+                state.pending = Some(PendingDelta {
+                    run_id: run_id.map(str::to_owned),
+                    generation,
+                    kind,
+                    sequence,
+                    timestamp_ms: timestamp,
+                    text: text.to_owned(),
+                    started: Instant::now(),
+                });
+                return flushed.err().map(Err);
+            }
+            // 其它记录先冲刷已有缓冲，保证工具、回复终态与生命周期顺序；
+            // 冲刷失败也照常尝试写当前记录，错误优先保留冲刷一侧。
+            let flushed = self.flush_pending(agent_id, &mut state);
+            let written = self.append_record(
+                agent_id,
+                RecordMeta {
                     run_id,
                     generation,
                     sequence,
                     timestamp_ms: now(),
-                    event,
-                    hub: hub.as_ref(),
                 },
-            )?;
-            file.write_all(b"\n")?;
-            Ok(())
+                event,
+                hub.as_ref(),
+            );
+            Some(flushed.and(written))
         })();
-        let mut health = lock(&self.observe_errors);
         match result {
-            Ok(()) => {
-                health.remove(agent_id);
-            }
-            Err(error) => {
-                // 只保留脱敏摘要，避免把路径细节或正文写进 UI。
-                health.insert(
-                    agent_id.to_owned(),
-                    format!("event log is possibly incomplete: {error}"),
-                );
-            }
+            Some(result) => self.record_append_outcome(agent_id, result),
+            None => self.bump_revision(),
         }
-        drop(health);
-        self.revision.fetch_add(1, Ordering::Relaxed);
     }
 
     /// 请求统计更新后让 UI 感知指标变化。
@@ -420,10 +607,13 @@ impl Binding {
             lock(&self.inner.state).disk.agents.contains_key(agent_id),
             "unknown agent"
         );
-        let path = self
-            .inner
-            .directory()
-            .join(format!("{agent_id}.events.jsonl"));
+        // 观察轮询推进流式尾部：过期缓冲先落盘，再打开文件与计算游标。
+        self.inner.flush_expired(agent_id);
+        let directory = self.inner.directory();
+        let root_id = directory
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let path = directory.join(format!("{agent_id}.events.jsonl"));
         let mut file = match File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -485,7 +675,14 @@ impl Binding {
             let position = start + consumed as u64;
             consumed += line.len();
             match serde_json::from_slice::<ObservedRecord>(&line[..line.len() - 1]) {
-                Ok(record) if record.event.is_some() || record.hub.is_some() => {
+                Ok(mut record) if record.event.is_some() || record.hub.is_some() => {
+                    // 瘦身新行缺省身份按请求 agent 与目录名补齐；旧行显式值保持原样。
+                    if record.agent_id.is_empty() {
+                        record.agent_id = agent_id.to_owned();
+                    }
+                    if record.root_id.is_none() {
+                        record.root_id = root_id.clone();
+                    }
                     entries.push(ObservedEntry {
                         start_offset: position,
                         record,
@@ -516,10 +713,7 @@ impl Binding {
         // 末尾半行留到下次，不推进 offset，也不让 has_more 引起忙循环。
         let mut has_more = capped;
         if !has_more && offset < length {
-            let mut probe = vec![0u8; PROBE_BYTES.min(length - offset) as usize];
-            if let Ok(read) = file.read_at(&mut probe, offset) {
-                has_more = probe[..read].contains(&b'\n');
-            }
+            has_more = has_complete_line(&file, offset, length)?;
         }
         Ok(EventPage {
             entries,
@@ -533,9 +727,47 @@ impl Binding {
             warnings,
         })
     }
+
+    /// 导出（`/dump all`）前强制冲刷全部 agent 的待合并缓冲。
+    pub(crate) fn flush_observations(&self) {
+        let agent_ids: Vec<String> = lock(&self.inner.appends).keys().cloned().collect();
+        for agent_id in agent_ids {
+            let gate = self.inner.append_gate(&agent_id);
+            let mut state = lock(&gate);
+            let result = match state.pending.take() {
+                Some(pending) => self.inner.write_pending(&agent_id, pending),
+                None => continue,
+            };
+            drop(state);
+            self.inner.record_append_outcome(&agent_id, result);
+        }
+    }
 }
 
 use std::os::unix::fs::FileExt;
+
+/// `offset` 之后是否还有完整行。
+///
+/// 合并后的单条记录可能远超 4 KiB，固定窗口探测会把“还有记录”误判成文件结束；
+/// 这里按窗口逐步扫到下一个换行，扫描总量以 `MAX_RECORD_BYTES` 为上限，
+/// 因此末尾半行仍不会被当成完整记录，也不会引起忙循环。
+fn has_complete_line(file: &File, offset: u64, length: u64) -> Result<bool> {
+    let end = length.min(offset.saturating_add(MAX_RECORD_BYTES as u64));
+    let mut scanned = offset;
+    let mut chunk = vec![0u8; LINE_SCAN_CHUNK];
+    while scanned < end {
+        let want = (end - scanned).min(chunk.len() as u64) as usize;
+        let read = file.read_at(&mut chunk[..want], scanned)?;
+        if read == 0 {
+            return Ok(false);
+        }
+        if chunk[..read].contains(&b'\n') {
+            return Ok(true);
+        }
+        scanned += read as u64;
+    }
+    Ok(false)
+}
 
 impl Binding {
     /// 当前会话是否登记过任何子 Agent（只读内存检查）。

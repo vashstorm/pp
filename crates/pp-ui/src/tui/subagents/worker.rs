@@ -184,6 +184,8 @@ struct State {
     force: bool,
     pending_snapshot: bool,
     last_snapshot: Instant,
+    /// 上一次强制重读观察日志的时间；驱动 250ms 过期缓冲冲刷。
+    last_read: Instant,
     order: Vec<String>,
     /// 每个 agent 的 Activity 游标。
     cursors: BTreeMap<String, Option<EventCursor>>,
@@ -208,6 +210,7 @@ impl State {
             force: true,
             pending_snapshot: true,
             last_snapshot: Instant::now() - Duration::from_secs(1),
+            last_read: Instant::now(),
             order: Vec::new(),
             cursors: BTreeMap::new(),
             more: BTreeMap::new(),
@@ -305,6 +308,18 @@ impl State {
 
     fn step(&mut self) {
         self.refresh();
+        // 运行时把连续流式片段留在内存缓冲，读取前才冲刷过期部分；
+        // 修订号只在片段入缓冲时变化，因此可见时还要按轮询周期重读一次，
+        // 否则安静下来的最后一段要等下一轮模型事件才可见。
+        if self.visible && self.last_read.elapsed() >= POLL {
+            self.last_read = Instant::now();
+            for more in self.more.values_mut() {
+                *more = true;
+            }
+            if let Some(detail) = &mut self.detail {
+                detail.more = true;
+            }
+        }
         // 当前详情优先（每轮至多读 1 页以保证控制响应）。
         let detail = self
             .detail

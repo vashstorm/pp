@@ -9,14 +9,12 @@ use serde::de::IgnoredAny;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::os::unix::fs::{FileExt, MetadataExt};
+use std::os::unix::fs::MetadataExt;
 
 /// 单页总览软读取上限（物理字节）。
 const OVERVIEW_PAGE_BYTES: u64 = 4 * 1024 * 1024;
 /// 单页保留的关键条目上限；超出后交由下一页继续扫描。
 const OVERVIEW_PAGE_ENTRIES: usize = 2048;
-/// 预读探测长度：用于判断末尾未消费片段是否包含完整行。
-const PROBE_BYTES: u64 = 4096;
 /// 与 `projection::SUMMARY_SCALARS` 对齐的摘要标量上限。
 const SUMMARY_SCALARS: usize = 512;
 
@@ -34,6 +32,8 @@ pub struct OverviewPage {
 struct OverviewLine {
     #[serde(default)]
     root_id: Option<String>,
+    /// 瘦身新行缺省为空串；读取端按请求 agent id 补齐。
+    #[serde(default)]
     agent_id: String,
     #[serde(default)]
     run_id: Option<String>,
@@ -258,10 +258,13 @@ impl Binding {
             lock(&self.inner.state).disk.agents.contains_key(agent_id),
             "unknown agent"
         );
-        let path = self
-            .inner
-            .directory()
-            .join(format!("{agent_id}.events.jsonl"));
+        // 观察轮询推进流式尾部：过期缓冲先落盘，再打开文件与计算游标。
+        self.inner.flush_expired(agent_id);
+        let directory = self.inner.directory();
+        let root_id = directory
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        let path = directory.join(format!("{agent_id}.events.jsonl"));
         let mut file = match File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -327,6 +330,13 @@ impl Binding {
                 }
                 let run_key = line.run_id.as_deref().unwrap_or("-").to_owned();
                 let mut line = line;
+                // 瘦身新行缺省身份按请求 agent 与目录名补齐；旧行显式值保持原样。
+                if line.agent_id.is_empty() {
+                    line.agent_id = agent_id.to_owned();
+                }
+                if line.root_id.is_none() {
+                    line.root_id = root_id.clone();
+                }
                 match line.event.take() {
                     None => {
                         entries.push(ObservedEntry {
@@ -488,10 +498,7 @@ impl Binding {
         let offset = start + consumed;
         let mut has_more = capped && offset < length;
         if !has_more && offset < length {
-            let mut probe = vec![0u8; PROBE_BYTES.min(length - offset) as usize];
-            if let Ok(read) = file.read_at(&mut probe, offset) {
-                has_more = probe[..read].contains(&b'\n');
-            }
+            has_more = super::has_complete_line(&file, offset, length)?;
         }
         Ok(OverviewPage {
             entries,

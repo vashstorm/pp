@@ -176,8 +176,8 @@ struct McpTools {
 struct Inner {
     // 进程内观察修订号：仅驱动 UI 增量刷新，不持久化。
     revision: AtomicU64,
-    // 每个 agent 一条整行追加锁；worker 持有自己的 Arc。
-    appends: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
+    // 每个 agent 一条整行追加锁 + 可选待合并 delta 缓冲；worker 持有自己的 Arc。
+    appends: Mutex<BTreeMap<String, Arc<Mutex<observe::AppendState>>>>,
     observe_errors: Mutex<BTreeMap<String, String>>,
     /// 独立子 Registry 清理失败后保留可重试句柄，并向父 Agent 传播 typed error。
     lsp_cleanup: Mutex<Vec<pp_lsp::Cleanup>>,
