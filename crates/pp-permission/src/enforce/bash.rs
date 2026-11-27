@@ -83,82 +83,57 @@ impl crate::Gate {
 
         let unapproved_session_reads =
             self.unapproved_session_reads(doc.as_deref(), &session_reads)?;
-        let raw_command = extract_bash_command(arguments).unwrap_or_default();
-        let (prompt_cmd, _) = format_command_for_prompt(&raw_command);
-
         let read_reason = (!unapproved_session_reads.is_empty()).then(|| {
-            let paths = unapproved_session_reads
-                .iter()
-                .map(|path| pp_core::text::display_text(&path.display().to_string()).into_owned())
-                .collect::<Vec<_>>()
-                .join(", ");
+            let paths = display_paths(&unapproved_session_reads);
+            let raw_command = extract_bash_command(arguments).unwrap_or_default();
+            let (prompt_cmd, _) = format_command_for_prompt(&raw_command);
             format!("Read protected session path(s): {paths}\nCommand: {prompt_cmd}")
         });
-        let outside_reason = (!unapproved_outside_reads.is_empty()).then(|| {
-            let paths = unapproved_outside_reads
-                .iter()
-                .map(|path| pp_core::text::display_text(&path.display().to_string()).into_owned())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("Read outside workspace requires approval: {paths}")
-        });
-
-        let prompt_once = |reason: &str| {
-            let mut combined = with_read_reason(reason, read_reason.as_deref());
-            if let Some(outside) = &outside_reason {
-                combined = format!("{outside}\n{combined}");
-            }
-            self.prompt_user(
-                PermissionRequest {
-                    tool: "bash".to_owned(),
-                    agent: None,
-                    reason: combined,
-                    session_grant: false,
-                    persistent_grant: false,
-                },
-                None,
-                None,
-                cancellation,
-            )
-        };
-        let explicit_scope = || ApprovedBashScope {
-            writable: extra_writable.to_vec(),
-            network: extra_network,
-            session_reads: session_reads.clone(),
-            outside_reads: outside_reads.clone(),
-            ..Default::default()
-        };
-        if let Some(reason) = hook_ask {
-            prompt_once(reason)?;
-            return Ok(explicit_scope());
-        }
-        if mode == PermissionMode::DangerFullAccess
-            || (policy == Some(PermissionPolicy::Allow)
-                && read_reason.is_none()
-                && outside_reason.is_none())
-        {
-            return Ok(explicit_scope());
-        }
 
         let Some(analysis) = analysis else {
-            return self.authorize_tool_call(
-                mode,
-                "bash",
-                arguments,
-                access,
-                cwd,
-                None,
-                cancellation,
-            );
+            if let Some(reason) = hook_ask {
+                let mut reason = with_read_reason(reason, read_reason.as_deref());
+                if !unapproved_outside_reads.is_empty() {
+                    reason = format!(
+                        "{}\n{reason}",
+                        outside_read_reason(&unapproved_outside_reads)
+                    );
+                }
+                self.prompt_user(
+                    PermissionRequest {
+                        tool: "bash".to_owned(),
+                        agent: None,
+                        reason,
+                        session_grant: false,
+                        persistent_grant: false,
+                    },
+                    None,
+                    None,
+                    cancellation,
+                )?;
+            } else if mode != PermissionMode::DangerFullAccess {
+                return self.authorize_tool_call(
+                    mode,
+                    "bash",
+                    arguments,
+                    access,
+                    cwd,
+                    None,
+                    cancellation,
+                );
+            }
+            return Ok(ApprovedBashScope {
+                writable: extra_writable.to_vec(),
+                network: extra_network,
+                session_reads,
+                outside_reads,
+                ..Default::default()
+            });
         };
-        if let Some(reason) = analysis.critical_reason {
-            prompt_once(reason)?;
-            return Ok(explicit_scope());
-        }
-        if matches!(policy, Some(PermissionPolicy::Prompt)) {
-            prompt_once("required by the permission policy for this tool.")?;
-            return Ok(explicit_scope());
-        }
+        let forced_reason = hook_ask.or(analysis.critical_reason).or_else(|| {
+            (policy == Some(PermissionPolicy::Prompt))
+                .then_some("required by the permission policy for this tool.")
+        });
         let mut approved = self.enforce_bash_analysis(
             mode,
             access,
@@ -166,11 +141,11 @@ impl crate::Gate {
             arguments,
             analysis,
             extra_writable,
-            &outside_reads,
             &unapproved_outside_reads,
             &unapproved_session_reads,
             extra_network,
             read_reason.as_deref(),
+            forced_reason,
             doc,
             load_error,
             cancellation,
@@ -189,11 +164,11 @@ impl crate::Gate {
         arguments: &str,
         analysis: ProgramAnalysis,
         extra_writable: &[PathBuf],
-        outside_reads: &[PathBuf],
         unapproved_outside_reads: &[PathBuf],
         unapproved_session_reads: &[PathBuf],
         extra_network: bool,
         read_reason: Option<&str>,
+        forced_reason: Option<&str>,
         doc: Option<std::sync::Arc<rules::Document>>,
         load_error: Option<String>,
         cancellation: &CancellationToken,
@@ -220,41 +195,14 @@ impl crate::Gate {
                 }
             }
         }
-        if !forced_prompt_patterns.is_empty() {
-            let mut reason = with_read_reason(
-                &format!(
+        let forced_reason = forced_reason.map(str::to_owned).or_else(|| {
+            (!forced_prompt_patterns.is_empty()).then(|| {
+                format!(
                     "Command matched a prompt permission rule ({}).",
                     forced_prompt_patterns.join("; ")
-                ),
-                read_reason,
-            );
-            if !unapproved_outside_reads.is_empty() {
-                let paths = unapproved_outside_reads
-                    .iter()
-                    .map(|p| pp_core::text::display_text(&p.display().to_string()).into_owned())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                reason = format!("Read outside workspace requires approval: {paths}\n{reason}");
-            }
-            self.prompt_user(
-                PermissionRequest {
-                    tool: "bash".to_owned(),
-                    agent: None,
-                    reason,
-                    session_grant: false,
-                    persistent_grant: false,
-                },
-                None,
-                load_error.as_deref(),
-                cancellation,
-            )?;
-            return Ok(ApprovedBashScope {
-                writable: extra_writable.to_vec(),
-                network: extra_network,
-                outside_reads: outside_reads.to_vec(),
-                ..Default::default()
-            });
-        }
+                )
+            })
+        });
 
         // 筛选确实处于保护状态的写目标（如果在 permission.toml 中显式允许写则不拦截）
         let mut protected_targets = analysis.protected_write_targets(cwd);
@@ -271,6 +219,54 @@ impl crate::Gate {
         let mut protected_sorted = protected_targets;
         protected_sorted.sort_unstable();
         protected_sorted.dedup();
+        let scope = ApprovedBashScope {
+            writable: writable_sorted,
+            allow_protected: protected_sorted,
+            network: needs_network,
+            ..Default::default()
+        };
+        let has_outside_read_needs = !unapproved_outside_reads.is_empty();
+        let mut reasons = Vec::new();
+        if has_outside_read_needs {
+            reasons.push(outside_read_reason(unapproved_outside_reads));
+        }
+        if !scope.allow_protected.is_empty() {
+            reasons.push(format!(
+                "Modifies protected path(s): {}",
+                display_paths(&scope.allow_protected)
+            ));
+        }
+        if !scope.writable.is_empty() {
+            reasons.push(format!(
+                "Extra writable directories: {}",
+                display_paths(&scope.writable)
+            ));
+        }
+        if scope.network {
+            reasons.push("Requires outbound network access".to_owned());
+        }
+        if let Some(reason) = forced_reason {
+            reasons.insert(0, reason);
+            if let Some(reason) = read_reason {
+                reasons.insert(0, reason.to_owned());
+            } else if let Some(command) = extract_bash_command(arguments) {
+                let (prompt_cmd, _) = format_command_for_prompt(&command);
+                reasons.push(format!("Command: {prompt_cmd}"));
+            }
+            self.prompt_user(
+                PermissionRequest {
+                    tool: "bash".to_owned(),
+                    agent: None,
+                    reason: append_load_error(&reasons.join("\n"), load_error.as_deref()),
+                    session_grant: false,
+                    persistent_grant: false,
+                },
+                None,
+                load_error.as_deref(),
+                cancellation,
+            )?;
+            return Ok(scope);
+        }
 
         let suggested_rules = if analysis.unanalyzable {
             None
@@ -289,13 +285,13 @@ impl crate::Gate {
             })
             .unwrap_or_else(|| extract_bash_command(arguments).unwrap_or_default());
         let has_sandbox_needs =
-            !writable_sorted.is_empty() || !protected_sorted.is_empty() || needs_network;
+            !scope.writable.is_empty() || !scope.allow_protected.is_empty() || scope.network;
 
         let sandbox_grant = has_sandbox_needs.then(|| SandboxGrant {
             command: command_key.clone(),
-            writable: writable_sorted.clone(),
-            allow_protected: protected_sorted.clone(),
-            network: needs_network,
+            writable: scope.writable.clone(),
+            allow_protected: scope.allow_protected.clone(),
+            network: scope.network,
         });
         let sandbox_preapproved = sandbox_grant.as_ref().is_none_or(|grant| {
             self.sandbox_grants
@@ -349,7 +345,7 @@ impl crate::Gate {
             if !needs_check {
                 continue;
             }
-            if is_leaf_approved(leaf) && sandbox_preapproved {
+            if is_leaf_approved(leaf) {
                 continue;
             }
             if leaf.is_high_impact() {
@@ -361,50 +357,15 @@ impl crate::Gate {
         let needs_unanalyzable_prompt =
             ask_all && analysis.unanalyzable && (!tool_granted || !sandbox_preapproved);
         let needs_sandbox_prompt = has_sandbox_needs && !sandbox_preapproved;
-        let has_outside_read_needs = !unapproved_outside_reads.is_empty();
         if unapproved_leaves.is_empty()
             && !needs_unanalyzable_prompt
             && !needs_sandbox_prompt
             && read_reason.is_none()
             && !has_outside_read_needs
         {
-            return Ok(ApprovedBashScope {
-                writable: writable_sorted,
-                allow_protected: protected_sorted,
-                network: needs_network,
-                outside_reads: outside_reads.to_vec(),
-                ..Default::default()
-            });
+            return Ok(scope);
         }
 
-        let mut reasons = Vec::new();
-        if has_outside_read_needs {
-            let list = unapproved_outside_reads
-                .iter()
-                .map(|p| pp_core::text::display_text(&p.display().to_string()).into_owned())
-                .collect::<Vec<_>>()
-                .join(", ");
-            reasons.push(format!("Read outside workspace requires approval: {list}"));
-        }
-        if !protected_sorted.is_empty() {
-            let list = protected_sorted
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            reasons.push(format!("Modifies protected path(s): {list}"));
-        }
-        if !writable_sorted.is_empty() {
-            let list = writable_sorted
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            reasons.push(format!("Extra writable directories: {list}"));
-        }
-        if needs_network {
-            reasons.push("Requires outbound network access".to_owned());
-        }
         if reasons.is_empty() && (read_reason.is_none() || has_high_impact || analysis.unanalyzable)
         {
             if has_high_impact {
@@ -438,13 +399,7 @@ impl crate::Gate {
                 load_error.as_deref(),
                 cancellation,
             )?;
-            return Ok(ApprovedBashScope {
-                writable: writable_sorted,
-                allow_protected: protected_sorted,
-                network: needs_network,
-                outside_reads: outside_reads.to_vec(),
-                ..Default::default()
-            });
+            return Ok(scope);
         }
         let need_command_rules = !unapproved_leaves.is_empty() || needs_unanalyzable_prompt;
         let final_suggested = if !need_command_rules || analysis.unanalyzable {
@@ -468,7 +423,7 @@ impl crate::Gate {
 
         let command_text = extract_bash_command(arguments).unwrap_or(command_key);
         let (prompt_cmd, cmd_truncated_for_prompt) = format_command_for_prompt(&command_text);
-        if cmd_truncated_for_prompt || has_outside_read_needs {
+        if cmd_truncated_for_prompt || has_outside_read_needs || has_sandbox_needs {
             reasons.push(format!("Command: {prompt_cmd}"));
         }
 
@@ -477,16 +432,14 @@ impl crate::Gate {
 
         let command_memorizable =
             !need_command_rules || (final_suggested.is_some() && !analysis.unanalyzable);
-        let sandbox_memorizable = !has_sandbox_needs || !analysis.unanalyzable;
+        let sandbox_memorizable = !has_sandbox_needs || suggested_rules.is_some();
         let read_paths_ok = unapproved_outside_reads
             .iter()
             .all(|p| p.to_str().is_some());
         let memorizable = !cmd_truncated_for_prompt
             && command_memorizable
             && sandbox_memorizable
-            && (final_suggested.is_some()
-                || (sandbox_grant.is_some() && !analysis.unanalyzable)
-                || has_outside_read_needs);
+            && (final_suggested.is_some() || sandbox_grant.is_some() || has_outside_read_needs);
 
         let session_grant = memorizable;
         let persistent_grant = memorizable
@@ -556,23 +509,32 @@ impl crate::Gate {
                     cwd: cwd.to_path_buf(),
                     trigger_reason: trigger,
                     action_summary: truncate_summary(&sanitized_cmd, AUTO_REVIEW_CMD_MAX_CHARS),
-                    requested_writable: writable_sorted.clone(),
-                    requested_protected: protected_sorted.clone(),
-                    requested_network: needs_network,
+                    requested_writable: scope.writable.clone(),
+                    requested_protected: scope.allow_protected.clone(),
+                    requested_network: scope.network,
                 },
                 grant_target,
                 load_error.as_deref(),
                 cancellation,
             )?;
         }
-        Ok(ApprovedBashScope {
-            writable: writable_sorted,
-            allow_protected: protected_sorted,
-            network: needs_network,
-            outside_reads: outside_reads.to_vec(),
-            ..Default::default()
-        })
+        Ok(scope)
     }
+}
+
+fn display_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| pp_core::text::display_text(&path.display().to_string()).into_owned())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn outside_read_reason(paths: &[PathBuf]) -> String {
+    format!(
+        "Read outside workspace requires approval: {}",
+        display_paths(paths)
+    )
 }
 
 fn format_command_for_prompt(command: &str) -> (String, bool) {

@@ -170,6 +170,7 @@ fn git_add_approval_is_scoped_to_exact_file_argument_and_unprotects_git() {
     let reasons = prompts.lock().unwrap().clone();
     assert_eq!(reasons.len(), 1);
     assert!(reasons[0].contains("git add aaa.txt"), "{}", reasons[0]);
+    assert!(reasons[0].contains(&*cwd.join(".git").to_string_lossy()));
 
     let toml_text = std::fs::read_to_string(root.join("permission.toml")).unwrap();
     assert!(toml_text.contains("[[rules]]"), "{toml_text}");
@@ -191,12 +192,150 @@ fn git_add_approval_is_scoped_to_exact_file_argument_and_unprotects_git() {
     .unwrap();
     assert_eq!(scope2.allow_protected, vec![cwd.join(".git")]);
 
+    let other_repo = root.join("other-repo");
+    std::fs::create_dir_all(other_repo.join(".git")).unwrap();
+    let err = sandboxed_bash_in(
+        &restarted,
+        PermissionMode::WorkspaceWrite,
+        &other_repo,
+        "git add aaa.txt",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("no interactive UI"), "{err}");
+
     for other in ["git add bbb.txt", "git add .", "git add -A"] {
         let err =
             sandboxed_bash_in(&restarted, PermissionMode::WorkspaceWrite, &cwd, other).unwrap_err();
         assert!(
             err.to_string().contains("no interactive UI"),
             "{other}: {err}"
+        );
+    }
+}
+
+#[test]
+fn forced_bash_confirmation_includes_and_applies_git_write_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let cwd = root.join("repo");
+    let git_dir = cwd.join(".git");
+    std::fs::create_dir_all(&git_dir).unwrap();
+    let policy = pp_sandbox::Sandbox::with_probe_for_test(
+        Default::default(),
+        &cwd,
+        None,
+        Some(&root),
+        pp_sandbox::ProbeResult::Available,
+    )
+    .policy()
+    .unwrap()
+    .unwrap();
+    assert!(policy.check_write(&git_dir.join("index.lock")).is_err());
+
+    let mode = PermissionMode::AutoReview;
+    for (command, hook, tool_prompt, rule_prompt, expected_reason, network) in [
+        (
+            "git fetch origin",
+            Some("Confirm Git fetch"),
+            false,
+            false,
+            "Confirm Git fetch",
+            true,
+        ),
+        (
+            "git add file.txt",
+            None,
+            true,
+            false,
+            "permission policy",
+            false,
+        ),
+        (
+            "git add file.txt",
+            None,
+            false,
+            true,
+            "prompt permission rule",
+            false,
+        ),
+        (
+            "git add file.txt && shutdown",
+            None,
+            false,
+            false,
+            "system shutdown",
+            false,
+        ),
+    ] {
+        let store = tempfile::tempdir_in(&root).unwrap();
+        let mut gate = process_gate(store.path(), mode);
+        if tool_prompt {
+            let mut config = ToolsSettings::default();
+            config
+                .permission
+                .insert("bash".into(), PermissionPolicy::Prompt);
+            gate.set_config(config);
+        }
+        if rule_prompt {
+            gate.save_bash_rule(BashRule::prefix(
+                vec!["git".into(), "add".into()],
+                PermissionPolicy::Prompt,
+            ))
+            .unwrap();
+        }
+        gate.set_auto_review_handler(Arc::new(|_, _| panic!("必须进行人工审批")));
+        let prompts = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&prompts);
+        gate.set_handler(Box::new(move |request, _| {
+            recorded.lock().unwrap().push(request);
+            Ok(PermissionDecision::Approve)
+        }));
+
+        let scope = gate
+            .authorize_bash(
+                mode,
+                ToolAccess {
+                    tier: Tier::Exec,
+                    sandboxed: true,
+                    network_enabled: false,
+                },
+                &cwd,
+                &bash_args(command),
+                Some(&policy),
+                &[],
+                &[],
+                &[],
+                false,
+                hook,
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        let prompts = prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1, "{command}");
+        let request = &prompts[0];
+        assert!(
+            request.reason.contains(expected_reason),
+            "{}",
+            request.reason
+        );
+        assert!(request.reason.contains(command), "{}", request.reason);
+        assert!(
+            request.reason.contains(&*git_dir.to_string_lossy()),
+            "{}",
+            request.reason
+        );
+        assert!(!request.session_grant && !request.persistent_grant);
+        assert_eq!(scope.allow_protected, [git_dir.clone()]);
+        assert_eq!(scope.network, network);
+
+        let scoped = policy
+            .with_approved_scope(&scope.writable, &[], &scope.allow_protected, scope.network)
+            .unwrap();
+        assert!(scoped.check_write(&git_dir.join("index.lock")).is_ok());
+        assert!(
+            scoped
+                .check_write(&cwd.join(".agents/settings.yml"))
+                .is_err()
         );
     }
 }
