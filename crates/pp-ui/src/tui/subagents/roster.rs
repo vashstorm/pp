@@ -2,6 +2,7 @@
 
 use super::inspector::{compact, format_cost, model_line, usage};
 use super::*;
+use ratatui::style::Modifier;
 
 impl Panel {
     pub(super) fn validate_selection(&mut self) {
@@ -432,16 +433,19 @@ impl Panel {
         let width = width as usize;
         let agent = &self.projection.agents()[row.agent];
         let marker = if self.selected.as_deref() == Some(agent.id.as_str()) {
-            "› "
+            Span::styled(
+                "➤ ",
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+            )
         } else {
-            "  "
+            Span::raw("  ")
         };
         let icon = status_icon(agent.status, self.clock);
         let name = projection::truncate(&agent.name);
         let model_column = width.div_ceil(2);
         let model = model_line(agent, width - model_column);
         let left = vec![
-            colored(marker, accent()),
+            marker,
             colored(row.prefix.clone(), muted()),
             colored(format!("{icon} "), status_color(agent.status)),
             colored(name, if row.muted { muted() } else { activity() }),
@@ -523,8 +527,9 @@ mod tests {
             assert_eq!(cell.fg, ask_border(), "{position:?}");
         }
         let marker = &buffer[(2, 4)];
-        assert_eq!(marker.symbol(), "›");
+        assert_eq!(marker.symbol(), "➤");
         assert_eq!(marker.fg, accent());
+        assert!(marker.modifier.contains(Modifier::BOLD));
         assert_eq!(buffer[(4, 4)].symbol(), "⠋");
         assert_eq!(buffer[(4, 4)].fg, Color::Rgb(140, 217, 123));
         assert_eq!(buffer[(5, 4)].symbol(), " ");
