@@ -613,3 +613,67 @@ fn replace_edit_and_file_changed_events() {
         }
     }
 }
+
+#[test]
+fn failed_edit_invalidates_read_dedup_and_replace_all_applies() {
+    let dir = tempfile::tempdir().unwrap();
+    let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+    let path = dir.path().join("large.txt");
+    let body = format!(
+        "{}repeat_token\nmiddle\nrepeat_token\n",
+        "filler line for dedup threshold\n".repeat(40)
+    );
+    assert!(body.len() >= 1024);
+    fs::write(&path, &body).unwrap();
+
+    // First read populates dedup cache; second read hits dedup.
+    let first = execute(&tools, "read", json!({"path": "large.txt"}));
+    assert_eq!(first["ok"], true);
+    assert_ne!(first["deduplicated"], true);
+    let second = execute(&tools, "read", json!({"path": "large.txt"}));
+    assert_eq!(second["deduplicated"], true);
+
+    // Failed edit must evict read dedup so the follow-up read returns real content.
+    let failed = execute(
+        &tools,
+        "edit",
+        json!({"path": "large.txt", "oldText": "nonexistent_target_line", "newText": "x"}),
+    );
+    assert_eq!(failed["ok"], false);
+    let after_fail = execute(&tools, "read", json!({"path": "large.txt"}));
+    assert_eq!(after_fail["ok"], true);
+    assert_ne!(after_fail["deduplicated"], true);
+    assert!(
+        after_fail["content"]
+            .as_str()
+            .unwrap()
+            .contains("repeat_token")
+    );
+
+    // replaceAll replaces every occurrence and reports total replacement count.
+    let replaced = execute(
+        &tools,
+        "edit",
+        json!({"path": "large.txt", "oldText": "repeat_token", "newText": "updated_token", "replaceAll": true}),
+    );
+    assert_eq!(replaced["ok"], true, "{replaced}");
+    assert_eq!(replaced["edits_applied"], 2);
+    let updated = fs::read_to_string(&path).unwrap();
+    assert_eq!(updated.matches("updated_token").count(), 2);
+    assert!(!updated.contains("repeat_token"));
+
+    // Hashline unread-line errors report both the target lines and seen ranges.
+    let hashline = Tools::new(dir.path().into(), EditMode::Hashline).unwrap();
+    let seen_page = read_content(&hashline, "large.txt:1-3").0;
+    let unread = execute(
+        &hashline,
+        "edit",
+        hashline_args(&seen_page, "PUT 10.=12:\n+x"),
+    );
+    assert_eq!(unread["ok"], false);
+    let err = unread["error"].as_str().unwrap();
+    assert!(
+        err.contains("unread") && err.contains("10-12") && err.contains("seen: 1-3"),
+        "{err}"
+    );
+}

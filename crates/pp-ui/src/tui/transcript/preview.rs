@@ -157,9 +157,9 @@ fn fields(raw: &str) -> Vec<(String, String)> {
 pub(super) fn path(raw: &str) -> String {
     scan_fields(
         raw,
-        |key| matches!(key, "path" | "input"),
+        |key| matches!(key, "path" | "file_path" | "filePath" | "input"),
         |key, value| match key.as_str() {
-            "path" => std::ops::ControlFlow::Break(value),
+            "path" | "file_path" | "filePath" => std::ops::ControlFlow::Break(value),
             "input" => match value.lines().find_map(|line| {
                 line.strip_prefix('[')
                     .and_then(|line| line.rsplit_once('#'))
@@ -193,8 +193,12 @@ fn partial_string(raw: &str) -> Option<String> {
 /// Line prefix and color of preview fields; unknown keys take no part in the preview.
 fn field_style(key: &str) -> Option<(&'static str, Color)> {
     match key {
-        "oldText" => Some(("-   │", palette::edit_removed())),
-        "newText" => Some(("+   │", palette::edit_added())),
+        "oldText" | "old_text" | "old_string" | "oldString" => {
+            Some(("-   │", palette::edit_removed()))
+        }
+        "newText" | "new_text" | "new_string" | "newString" => {
+            Some(("+   │", palette::edit_added()))
+        }
         "input" => Some(("", palette::activity())),
         _ => None,
     }
@@ -331,5 +335,10 @@ mod tests {
             fields(r#"{"input":"[demo#ABCD]\nPUT 1.=1:\n+hello"#)[0].1,
             "[demo#ABCD]\nPUT 1.=1:\n+hello"
         );
+        assert_eq!(
+            path(r#"{"file_path":"alias.rs","old_string":"a","new_string":"b"}"#),
+            "alias.rs"
+        );
+        assert!(field_style("old_string").is_some() && field_style("new_string").is_some());
     }
 }

@@ -4,15 +4,36 @@ use std::{borrow::Cow, ops::Range};
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
+mod diagnostics;
+use diagnostics::{format_duplicate_error, format_missing_error};
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Edit {
+    #[serde(alias = "old_text", alias = "old_string", alias = "oldString")]
     old_text: String,
+    #[serde(alias = "new_text", alias = "new_string", alias = "newString")]
     new_text: String,
+    #[serde(default, alias = "replace_all")]
+    replace_all: Option<bool>,
 }
 impl Edit {
-    pub(super) fn new(old_text: String, new_text: String) -> Self {
-        Self { old_text, new_text }
+    pub(super) fn new(old_text: String, new_text: String, replace_all: bool) -> Self {
+        Self {
+            old_text,
+            new_text,
+            replace_all: Some(replace_all),
+        }
+    }
+
+    pub(super) fn apply_default_replace_all(&mut self, default: bool) {
+        if self.replace_all.is_none() {
+            self.replace_all = Some(default);
+        }
+    }
+
+    fn is_replace_all(&self) -> bool {
+        self.replace_all.unwrap_or(false)
     }
 }
 
@@ -22,7 +43,9 @@ struct Replacement<'a> {
     text: Cow<'a, str>,
 }
 
-pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
+const MAX_REPORTED_BATCH_ERRORS: usize = 5;
+
+pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<(String, usize)> {
     ensure!(!edits.is_empty(), "edit requires at least one replacement");
     let (bom, body) = source
         .strip_prefix('\u{feff}')
@@ -35,15 +58,81 @@ pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
     let mapped = MappedText::new(&original);
     let fuzzy = &mapped.text;
     let mut replacements = Vec::with_capacity(edits.len());
+    let mut errors = Vec::new();
 
     for (index, edit) in edits.iter().enumerate() {
         let old = normalize_newlines(&edit.old_text);
-        ensure!(!old.is_empty(), "edits[{index}].oldText must not be empty");
+        if old.is_empty() {
+            errors.push(format!("edits[{index}].oldText must not be empty"));
+            continue;
+        }
         let normalized = normalize_fuzzy(&old);
-        ensure!(
-            !normalized.is_empty(),
-            "edits[{index}].oldText must not be empty"
-        );
+        if normalized.is_empty() {
+            errors.push(format!("edits[{index}].oldText must not be empty"));
+            continue;
+        }
+        let new_text = normalize_newlines(&edit.new_text);
+
+        if edit.is_replace_all() {
+            let exact: Vec<usize> = original
+                .match_indices(old.as_ref())
+                .map(|(s, _)| s)
+                .collect();
+            if !exact.is_empty() {
+                for start in exact {
+                    replacements.push(Replacement {
+                        index,
+                        range: start..start + old.len(),
+                        text: new_text.clone(),
+                    });
+                }
+                continue;
+            }
+            let fuzzy_hits: Vec<usize> = fuzzy
+                .match_indices(normalized.as_str())
+                .map(|(s, _)| s)
+                .collect();
+            if !fuzzy_hits.is_empty() {
+                let mut mapped_ranges = Vec::with_capacity(fuzzy_hits.len());
+                let mut map_error = None;
+                for start in fuzzy_hits {
+                    match mapped.original_range(start..start + normalized.len()) {
+                        Ok(range) => mapped_ranges.push(range),
+                        Err(err) => {
+                            map_error = Some(format!("edits[{index}]: {err}"));
+                            break;
+                        }
+                    }
+                }
+                if let Some(err) = map_error {
+                    errors.push(err);
+                } else {
+                    for range in mapped_ranges {
+                        replacements.push(Replacement {
+                            index,
+                            range,
+                            text: new_text.clone(),
+                        });
+                    }
+                }
+                continue;
+            }
+            let indent_hits = find_indent_matches(&original, &old);
+            if !indent_hits.is_empty() {
+                for hit in indent_hits {
+                    let aligned = reindent_replacement(&new_text, hit.old_indent, hit.src_indent);
+                    replacements.push(Replacement {
+                        index,
+                        range: hit.range,
+                        text: Cow::Owned(aligned.into_owned()),
+                    });
+                }
+                continue;
+            }
+            errors.push(format_missing_error(&original, index, &old));
+            continue;
+        }
+
         let mut candidates = fuzzy.match_indices(normalized.as_str());
         let candidate = candidates.next();
         if let Some((second, _)) = candidates.next() {
@@ -56,54 +145,75 @@ pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
                     lines.push(line_number_at(fuzzy, pos));
                 }
             }
-            let list = lines
-                .iter()
-                .map(usize::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            let suffix = if total > lines.len() {
-                format!(", ... ({total} total)")
-            } else {
-                String::new()
-            };
-            anyhow::bail!(
-                "edits[{index}].oldText is not unique (matches at lines {list}{suffix}); provide more context"
-            );
+            errors.push(format_duplicate_error(&original, index, &lines, total));
+            continue;
         }
-        let range = if let Some(start) = original.find(old.as_ref()) {
-            start..start + old.len()
-        } else {
-            let start = candidate.map(|(start, _)| start).ok_or_else(|| {
-                if let Some(hint) = missing_edit_hint(&original, &old) {
-                    anyhow::anyhow!(
-                        "could not find edits[{index}].oldText ({hint}); read the file again"
-                    )
-                } else {
-                    anyhow::anyhow!("could not find edits[{index}].oldText; read the file again")
-                }
-            })?;
-            mapped.original_range(start..start + normalized.len())?
-        };
-        replacements.push(Replacement {
-            index,
-            range,
-            text: normalize_newlines(&edit.new_text),
-        });
+        if let Some(start) = original.find(old.as_ref()) {
+            replacements.push(Replacement {
+                index,
+                range: start..start + old.len(),
+                text: new_text,
+            });
+            continue;
+        }
+        if let Some((start, _)) = candidate {
+            match mapped.original_range(start..start + normalized.len()) {
+                Ok(range) => replacements.push(Replacement {
+                    index,
+                    range,
+                    text: new_text,
+                }),
+                Err(err) => errors.push(err.to_string()),
+            }
+            continue;
+        }
+        let indent_hits = find_indent_matches(&original, &old);
+        match indent_hits.as_slice() {
+            [only] => {
+                let aligned = reindent_replacement(&new_text, only.old_indent, only.src_indent);
+                replacements.push(Replacement {
+                    index,
+                    range: only.range.clone(),
+                    text: Cow::Owned(aligned.into_owned()),
+                });
+            }
+            [_, ..] => {
+                let total = indent_hits.len();
+                let lines: Vec<usize> = indent_hits
+                    .iter()
+                    .take(5)
+                    .map(|hit| hit.line_number)
+                    .collect();
+                errors.push(format_duplicate_error(&original, index, &lines, total));
+            }
+            [] => errors.push(format_missing_error(&original, index, &old)),
+        }
     }
+
+    if !errors.is_empty() {
+        anyhow::bail!("{}", join_batch_errors(&errors));
+    }
+
     replacements.sort_unstable_by_key(|replacement| replacement.range.start);
+    let mut overlaps = Vec::new();
     for pair in replacements.windows(2) {
-        ensure!(
-            pair[0].range.end <= pair[1].range.start,
-            "edits[{}] and edits[{}] overlap; merge them into one edit",
-            pair[0].index,
-            pair[1].index
-        );
+        if pair[0].range.end > pair[1].range.start {
+            overlaps.push(format!(
+                "edits[{}] and edits[{}] overlap; merge them into one edit",
+                pair[0].index, pair[1].index
+            ));
+        }
     }
+    if !overlaps.is_empty() {
+        anyhow::bail!("{}", join_batch_errors(&overlaps));
+    }
+
+    let applied_count = replacements.len();
     let mut output = String::with_capacity(original.len());
     splice(&original, 0..original.len(), &replacements, &mut output);
     ensure!(output != original, "edit produced no changes");
     if bom.is_empty() && !crlf {
-        return Ok(output);
+        return Ok((output, applied_count));
     }
     let extra_crs = if crlf {
         output.bytes().filter(|byte| *byte == b'\n').count()
@@ -124,7 +234,22 @@ pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
     } else {
         restored.push_str(&output);
     }
-    Ok(restored)
+    Ok((restored, applied_count))
+}
+
+fn join_batch_errors(errors: &[String]) -> String {
+    if errors.len() == 1 {
+        return errors[0].clone();
+    }
+    let shown = errors.len().min(MAX_REPORTED_BATCH_ERRORS);
+    let mut out = errors[..shown].join("\n");
+    if errors.len() > shown {
+        out.push_str(&format!(
+            "\n... and {} more edit error(s)",
+            errors.len() - shown
+        ));
+    }
+    out
 }
 
 fn line_number_at(text: &str, byte_offset: usize) -> usize {
@@ -135,35 +260,214 @@ fn line_number_at(text: &str, byte_offset: usize) -> usize {
         + 1
 }
 
-/// When `oldText` misses entirely, locate the nearby line in the original from the first distinctive non-empty line, helping the model narrow the re-read.
-fn missing_edit_hint(original: &str, old: &str) -> Option<String> {
-    let anchor = old.lines().map(str::trim).find(|line| line.len() >= 6)?;
-    let multiline = old.contains('\n');
-    let mut lines = Vec::new();
-    for (idx, line) in original.lines().enumerate() {
-        let trimmed = line.trim();
-        let matched = if multiline {
-            trimmed == anchor
+struct LineSpan {
+    start: usize,
+    body_end: usize,
+    end: usize,
+}
+
+fn scan_lf_lines(text: &str) -> Vec<LineSpan> {
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    for part in text.split_inclusive('\n') {
+        let body_end = if part.ends_with('\n') {
+            offset + part.len() - 1
         } else {
-            trimmed == anchor || trimmed.contains(anchor)
+            offset + part.len()
         };
-        if matched {
-            lines.push(idx + 1);
-            if lines.len() > 3 {
-                return None;
+        let end = offset + part.len();
+        spans.push(LineSpan {
+            start: offset,
+            body_end,
+            end,
+        });
+        offset = end;
+    }
+    spans
+}
+
+fn trim_start_indent(line: &str) -> (&str, &str) {
+    let indent_len = line
+        .bytes()
+        .take_while(|&b| b == b' ' || b == b'\t')
+        .count();
+    (&line[..indent_len], &line[indent_len..])
+}
+
+fn is_blank_ecma(line: &str) -> bool {
+    line.trim_end_matches(ecma_whitespace).is_empty()
+}
+
+fn common_indent<'a>(lines: impl IntoIterator<Item = &'a str>) -> &'a str {
+    let mut common: Option<&'a str> = None;
+    for line in lines {
+        if is_blank_ecma(line) {
+            continue;
+        }
+        let (indent, _) = trim_start_indent(line);
+        common = Some(match common {
+            None => indent,
+            Some(prev) => {
+                let shared = prev
+                    .bytes()
+                    .zip(indent.bytes())
+                    .take_while(|(a, b)| a == b)
+                    .count();
+                &prev[..shared]
+            }
+        });
+    }
+    common.unwrap_or("")
+}
+
+struct IndentMatch<'a> {
+    range: Range<usize>,
+    old_indent: &'a str,
+    src_indent: &'a str,
+    line_number: usize,
+}
+
+/// Pass 3 fallback: full-line match tolerant only to uniform block indentation shift (or single
+/// full-line leading indentation shift when the trimmed content is non-trivial). Relative
+/// indentation inside a multi-line block is always preserved verbatim.
+fn find_indent_matches<'a>(original: &'a str, old: &'a str) -> Vec<IndentMatch<'a>> {
+    let src_lines = scan_lf_lines(original);
+    if src_lines.is_empty() {
+        return Vec::new();
+    }
+    let (old_body, trailing_newline) = match old.strip_suffix('\n') {
+        Some(body) => (body, true),
+        None => (old, false),
+    };
+    let old_lines: Vec<&str> = old_body.split('\n').collect();
+    let n = old_lines.len();
+    if n == 0 || n > src_lines.len() {
+        return Vec::new();
+    }
+    let Some(first_non_blank) = old_lines.iter().position(|line| !is_blank_ecma(line)) else {
+        return Vec::new();
+    };
+
+    let mut matches = Vec::new();
+    if n == 1 {
+        let (old_lead, old_rest) = trim_start_indent(old_lines[0]);
+        let old_norm = normalize_fuzzy(old_rest);
+        // Guard against matching tiny single-line fragments like `}` or `x` on indentation alone.
+        if old_norm.len() < 4 {
+            return Vec::new();
+        }
+        for (i, span) in src_lines.iter().enumerate() {
+            if trailing_newline && span.end == span.body_end {
+                continue;
+            }
+            let src_body = &original[span.start..span.body_end];
+            let (src_lead, src_rest) = trim_start_indent(src_body);
+            if src_lead != old_lead && normalize_fuzzy(src_rest) == old_norm {
+                let range_end = if trailing_newline {
+                    span.end
+                } else {
+                    span.body_end
+                };
+                matches.push(IndentMatch {
+                    range: span.start..range_end,
+                    old_indent: old_lead,
+                    src_indent: src_lead,
+                    line_number: i + 1,
+                });
             }
         }
+        return matches;
     }
-    if lines.is_empty() {
-        return None;
-    }
-    let label = if lines.len() == 1 { "line" } else { "lines" };
-    let list = lines
+
+    let old_common = common_indent(old_lines.iter().copied());
+    let old_rel: Vec<Option<String>> = old_lines
         .iter()
-        .map(usize::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(format!("first line matches near {label} {list}"))
+        .map(|line| {
+            if is_blank_ecma(line) {
+                None
+            } else {
+                Some(normalize_fuzzy(&line[old_common.len()..]))
+            }
+        })
+        .collect();
+    let first_stripped = normalize_fuzzy(trim_start_indent(old_lines[first_non_blank]).1);
+
+    let mut i = 0;
+    while i + n <= src_lines.len() {
+        if trailing_newline && src_lines[i + n - 1].end == src_lines[i + n - 1].body_end {
+            i += 1;
+            continue;
+        }
+        let probe_span = &src_lines[i + first_non_blank];
+        let probe_body = &original[probe_span.start..probe_span.body_end];
+        if is_blank_ecma(probe_body)
+            || normalize_fuzzy(trim_start_indent(probe_body).1) != first_stripped
+        {
+            i += 1;
+            continue;
+        }
+        let src_common = common_indent(
+            src_lines[i..i + n]
+                .iter()
+                .map(|span| &original[span.start..span.body_end]),
+        );
+        let all_match = old_rel.iter().enumerate().all(|(j, expected)| {
+            let span = &src_lines[i + j];
+            let src_body = &original[span.start..span.body_end];
+            match expected {
+                None => is_blank_ecma(src_body),
+                Some(expected_norm) => {
+                    !is_blank_ecma(src_body)
+                        && normalize_fuzzy(&src_body[src_common.len()..]) == *expected_norm
+                }
+            }
+        });
+        if all_match {
+            let range_end = if trailing_newline {
+                src_lines[i + n - 1].end
+            } else {
+                src_lines[i + n - 1].body_end
+            };
+            matches.push(IndentMatch {
+                range: src_lines[i].start..range_end,
+                old_indent: old_common,
+                src_indent: src_common,
+                line_number: i + 1,
+            });
+            i += n;
+        } else {
+            i += 1;
+        }
+    }
+    matches
+}
+
+fn reindent_replacement<'a>(new_text: &'a str, old_indent: &str, src_indent: &str) -> Cow<'a, str> {
+    if old_indent == src_indent || new_text.is_empty() {
+        return Cow::Borrowed(new_text);
+    }
+    let mut out = String::with_capacity(new_text.len() + 32);
+    for part in new_text.split_inclusive('\n') {
+        let (body, nl) = match part.strip_suffix('\n') {
+            Some(b) => (b, "\n"),
+            None => (part, ""),
+        };
+        if is_blank_ecma(body) {
+            out.push_str(body);
+        } else if !old_indent.is_empty() {
+            if let Some(stripped) = body.strip_prefix(old_indent) {
+                out.push_str(src_indent);
+                out.push_str(stripped);
+            } else {
+                out.push_str(body);
+            }
+        } else {
+            out.push_str(src_indent);
+            out.push_str(body);
+        }
+        out.push_str(nl);
+    }
+    Cow::Owned(out)
 }
 
 fn normalize_newlines(text: &str) -> Cow<'_, str> {
@@ -368,12 +672,10 @@ mod tests {
             source,
             &edits
                 .iter()
-                .map(|(old, new)| Edit {
-                    old_text: (*old).into(),
-                    new_text: (*new).into(),
-                })
+                .map(|(old, new)| Edit::new((*old).into(), (*new).into(), false))
                 .collect::<Vec<_>>(),
         )
+        .map(|(output, _)| output)
     }
 
     #[test]
@@ -516,8 +818,147 @@ mod tests {
         .to_string();
         assert!(
             missing.contains("could not find edits[0].oldText")
-                && missing.contains("first line matches near line 2"),
+                && missing.contains("first line matches near line 2")
+                && missing.contains("actual line 3: `    old_body();`"),
             "{missing}"
+        );
+    }
+
+    #[test]
+    fn replace_all_indent_fallback_and_batch_diagnostics() {
+        // replaceAll replaces exact, fuzzy, and indent-shifted occurrences and reports actual count.
+        let (out, count) = apply(
+            "alpha\nneedle\nbeta\nneedle\ngamma\n",
+            &[Edit::new("needle".into(), "fixed".into(), true)],
+        )
+        .unwrap();
+        assert_eq!(out, "alpha\nfixed\nbeta\nfixed\ngamma\n");
+        assert_eq!(count, 2);
+
+        let (out, count) = apply(
+            "say “Hi”\nkeep\nsay “Hi”  \n",
+            &[Edit::new("say \"Hi\"".into(), "said".into(), true)],
+        )
+        .unwrap();
+        assert_eq!(out, "said\nkeep\nsaid  \n");
+        assert_eq!(count, 2);
+
+        // Multi-line uniform indentation shift re-indents newText to match source indentation.
+        let src = "fn main() {\n    if ready {\n        run();\n    }\n}\n";
+        let out = apply_edits(
+            src,
+            &[(
+                "if ready {\n    run();\n}",
+                "if ready {\n    prepare();\n    run();\n}",
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "fn main() {\n    if ready {\n        prepare();\n        run();\n    }\n}\n"
+        );
+
+        // Dedenting an over-indented model block aligns back to column 0.
+        let out = apply_edits(
+            "/// First doc line.\n/// Second doc line.\nfn demo() {}\n",
+            &[(
+                "    /// First doc line.\n    /// Second doc line.",
+                "    /// Updated doc line.",
+            )],
+        )
+        .unwrap();
+        assert_eq!(out, "/// Updated doc line.\nfn demo() {}\n");
+
+        // Single full-line leading indent shift works for non-trivial lines and preserves source indent.
+        let out = apply_edits(
+            "fn f() {\n        let value = compute();\n}\n",
+            &[(
+                "    let value = compute();",
+                "    let value = next_compute();",
+            )],
+        )
+        .unwrap();
+        assert_eq!(out, "fn f() {\n        let value = next_compute();\n}\n");
+
+        // Ambiguous indent matches are still rejected.
+        let dup_indent = apply_edits(
+            "fn a() {\n    let value = compute();\n}\nfn b() {\n        let value = compute();\n}\n",
+            &[("let value = compute();", "let value = 2;")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            dup_indent.contains("is not unique")
+                && dup_indent.contains("lines 2, 5")
+                && dup_indent.contains("replaceAll: true"),
+            "{dup_indent}"
+        );
+
+        // Batch validation reports multiple failing items in one response instead of stopping at the first.
+        let batch_err = apply_edits(
+            "alpha\nrepeat\nbeta\nrepeat\n",
+            &[("missing_item", "x"), ("repeat", "y"), ("", "z")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            batch_err.contains("edits[0].oldText")
+                && batch_err.contains("edits[1].oldText is not unique")
+                && batch_err.contains("edits[2].oldText must not be empty"),
+            "{batch_err}"
+        );
+
+        // Actionable hints: line-number prefix, over-escaped quotes, and single-char CJK/ASCII typos.
+        let line_num = apply_edits(
+            "alpha\nlet target = compute();\nomega\n",
+            &[("2: let target = compute();", "x")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            line_num.contains("line-number prefixes") && line_num.contains("line 2"),
+            "{line_num}"
+        );
+
+        let escaped = apply_edits(
+            "let raw = r#\"{\"status\":503}\"#;\n",
+            &[("let raw = r#\"{\\\"status\\\":503}\"#;", "x")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            escaped.contains("over-escaped") && escaped.contains("line 1"),
+            "{escaped}"
+        );
+
+        let ascii_typo = apply_edits(
+            "const action = e.target.closest(\"tr[data-provider-row],tr[data-model-row]\");\n",
+            &[(
+                "const action = e.target.closest(\"tr[data-provider-row],th[data-model-row]\");",
+                "x",
+            )],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            ascii_typo.contains("closest match near line 1")
+                && ascii_typo.contains("tr[data-model-row]"),
+            "{ascii_typo}"
+        );
+
+        // CJK payload verifies Unicode bigram similarity matches a single mistyped character.
+        let cjk_typo = apply_edits(
+            "// 嵌套宿主工具调用期间暂停计算超时窗口，返回后再顺延。\n",
+            &[(
+                "// 嵡套宿主工具调用期间暂停计算超时窗口，返回后再顺延。",
+                "x",
+            )],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            cjk_typo.contains("closest match near line 1") && cjk_typo.contains("嵌套宿主工具"),
+            "{cjk_typo}"
         );
     }
 }

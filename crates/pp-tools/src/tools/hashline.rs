@@ -307,15 +307,41 @@ impl Store {
             entry.tag == tag && entry.raw.as_ref() == current,
             "hashline snapshot changed; read the file again"
         );
-        for edit in edits {
+        for (op, edit) in edits.iter().enumerate() {
             let range = edit.range();
-            ensure!(
-                entry
-                    .seen
-                    .iter()
-                    .any(|seen| seen.start <= range.start && seen.end >= range.end),
-                "hashline targets unread lines; read the target range again"
-            );
+            if !entry
+                .seen
+                .iter()
+                .any(|seen| seen.start <= range.start && seen.end >= range.end)
+            {
+                let seen_desc = if entry.seen.is_empty() {
+                    "none".to_owned()
+                } else {
+                    entry
+                        .seen
+                        .iter()
+                        .map(|r| {
+                            let end = r.end.saturating_sub(1);
+                            if r.start == end {
+                                r.start.to_string()
+                            } else {
+                                format!("{}-{end}", r.start)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                let target_end = range.end.saturating_sub(1);
+                let target_desc = if range.start == target_end {
+                    format!("line {}", range.start)
+                } else {
+                    format!("lines {}-{target_end}", range.start)
+                };
+                anyhow::bail!(
+                    "hashline targets unread lines (operation {} targets {target_desc}; seen: {seen_desc}); read the target range again",
+                    op + 1
+                );
+            }
         }
         self.clock += 1;
         entry.touched = self.clock;
@@ -412,10 +438,12 @@ pub(super) fn parse(input: &str) -> Result<Patch> {
             });
             continue;
         }
-        let locator = row
-            .strip_prefix("PUT ")
-            .and_then(|s| s.strip_suffix(':'))
-            .context("unsupported hashline operation; use PUT or CUT in one file section")?;
+        let locator = if let Some(rest) = row.strip_prefix("PUT ") {
+            rest.strip_suffix(':')
+                .context("invalid hashline PUT header; must end with ':' (e.g. PUT 1.=2:)")?
+        } else {
+            anyhow::bail!("unsupported hashline operation; use PUT or CUT in one file section");
+        };
         let mut lines = Vec::new();
         while rows.peek().is_some_and(|r| r.starts_with('+')) {
             let text = rows

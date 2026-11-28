@@ -344,9 +344,9 @@ const HASHLINE_EDIT_DESC: &str = concat!(
     r#"Prefix every PUT body row with `+` (blank row `+`). Targets original snapshot; no overlaps/no-ops; only displayed lines editable. Example: {"input":"[demo.txt#A1B2]\nPUT 1.=1:\n+edited"}"#,
 );
 const REPLACE_EDIT_DESC: &str = concat!(
-    r#"Atomically edit an existing UTF-8 file (no symlinks) using exact non-overlapping `oldText` -> `newText` replacements matched against last read. "#,
-    r#"Each `oldText` must be unique (include surrounding context). "#,
-    r#"Pass top-level `oldText` + `newText` for one edit (e.g. {"path":"demo.txt","oldText":"old","newText":"new"}), or `edits`: [{"oldText":"...","newText":"..."}] for multiple edits."#,
+    r#"Atomically edit an existing UTF-8 file (no symlinks) using non-overlapping `oldText` -> `newText` replacements matched against last read. "#,
+    r#"Each `oldText` must be unique (include surrounding context), or set `replaceAll: true` to replace every occurrence. "#,
+    r#"Pass top-level `oldText` + `newText` for one edit (e.g. {"path":"demo.txt","oldText":"old","newText":"new"}), or `edits`: [{"oldText":"...","newText":"..."}] (real JSON array, not a string) for multiple edits."#,
 );
 const WRITE_DESC: &str = "Atomically create or overwrite a UTF-8 file (creating parent dirs; no symlinks). Prefer `edit` for partial changes.";
 const AGENT_WRITE_SUFFIX: &str = " Also accepts `agent://<id>` (`content` = follow-up message) and `proc://<run_id>/kill` (cancels a running subagent).";
@@ -449,6 +449,7 @@ fn edit_definition(edit_mode: EditMode) -> FunctionObject {
                     "path": {"type": "string"},
                     "oldText": {"type": "string", "minLength": 1, "description": "Single edit target (omit `edits`)."},
                     "newText": {"type": "string", "description": "Single edit replacement (with top-level `oldText`)."},
+                    "replaceAll": {"type": "boolean", "description": "Replace every occurrence of `oldText` (default false)."},
                     "edits": {
                         "type": "array",
                         "minItems": 1,
@@ -457,7 +458,8 @@ fn edit_definition(edit_mode: EditMode) -> FunctionObject {
                             "type": "object",
                             "properties": {
                                 "oldText": {"type": "string", "minLength": 1},
-                                "newText": {"type": "string"}
+                                "newText": {"type": "string"},
+                                "replaceAll": {"type": "boolean", "description": "Replace every occurrence of this item's `oldText` (default false)."}
                             },
                             "required": ["oldText", "newText"],
                             "additionalProperties": false

@@ -257,6 +257,14 @@ impl Tools {
         &self.workspace
     }
 
+    pub(super) fn invalidate_read_dedup_path(&self, path: &Path) {
+        let mut dedup = self.read_dedup.borrow_mut();
+        dedup.invalidate_path(path);
+        if !path.is_absolute() {
+            dedup.invalidate_path(&self.cwd.join(path));
+        }
+    }
+
     /// The caller already committed safely and passes the canonical workspace-relative path; nothing is read here.
     pub(super) fn record_committed_file(
         &self,
@@ -268,13 +276,7 @@ impl Tools {
     ) {
         let diff = diff::committed(&before, Some(after));
         self.snapshots.borrow_mut().invalidate(&path);
-        {
-            let mut dedup = self.read_dedup.borrow_mut();
-            dedup.invalidate_path(&path);
-            if !path.is_absolute() {
-                dedup.invalidate_path(&self.cwd.join(&path));
-            }
-        }
+        self.invalidate_read_dedup_path(&path);
         emit(pp_core::events::AgentEvent::FileChanged {
             id: call_id.to_owned(),
             path: path.display().to_string(),

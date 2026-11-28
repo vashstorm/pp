@@ -40,15 +40,26 @@ impl Tools {
         let guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let bytes = target.read()?;
         let source = std::str::from_utf8(&bytes).context("edit requires a UTF-8 file")?;
-        if let edit::Request::Hashline(patch) = &request {
-            self.snapshots.borrow_mut().validate(
+        if let edit::Request::Hashline(patch) = &request
+            && let Err(error) = self.snapshots.borrow_mut().validate(
                 &normalized_path,
                 &patch.tag,
                 source,
                 &patch.edits,
-            )?;
+            )
+        {
+            // Evict read dedup so a follow-up `read` requested by the error message returns fresh text.
+            self.invalidate_read_dedup_path(&normalized_path);
+            return Err(error);
         }
-        let edit::Staged { output, count } = request.stage(source)?;
+        let edit::Staged { output, count } = match request.stage(source) {
+            Ok(staged) => staged,
+            Err(error) => {
+                // Evict read dedup so the model's follow-up `read` is never short-circuited by a stale cache hit.
+                self.invalidate_read_dedup_path(&normalized_path);
+                return Err(error);
+            }
+        };
         pp_core::cancellation::check(cancellation)?;
         let saved_warning = target.save_if_unchanged(&bytes, output.as_bytes())?;
         let final_bytes = output.into_bytes();
