@@ -33,19 +33,21 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct HistoryBucket {
-    pub items: Vec<DiagnosticItem>,
+    pub items: Vec<Arc<DiagnosticItem>>,
     pub tokens: u64,
     pub bytes: u64,
 }
 
 impl HistoryBucket {
+    /// The bucket owns new items: this is the only place where a classified history item becomes shared.
     fn push(&mut self, item: DiagnosticItem) {
         self.bytes = self.bytes.saturating_add(item.bytes);
         self.tokens = self.tokens.saturating_add(item.tokens);
-        self.items.push(item);
+        self.items.push(Arc::new(item));
     }
 }
 
@@ -283,14 +285,62 @@ impl ProtocolKind {
 }
 
 /// Identity of each message in the current session, used for cache-prefix decisions of history and thinking classification.
-pub(super) fn message_ids(session: &Session) -> Vec<MessageId> {
-    match session {
-        Session::Completion(request) => request.messages.iter().map(chat_message_id).collect(),
+///
+/// The fingerprint of the whole identity sequence is accumulated during the same single scan, so the thinking cache key
+/// does not need a second copy of the vector to be compared later.
+pub(super) struct MessageIds {
+    pub ids: Vec<MessageId>,
+    pub fingerprint: u64,
+}
+
+impl MessageIds {
+    /// Fingerprint of an empty identity list (used where a classification keys on having no native items).
+    pub(super) fn empty_fingerprint() -> u64 {
+        MessageIdFingerprint::default().finish()
+    }
+}
+
+/// Fingerprint of a whole identity sequence: fixed-width records make the encoding prefix free.
+#[derive(Default)]
+struct MessageIdFingerprint {
+    hasher: DefaultHasher,
+}
+
+impl MessageIdFingerprint {
+    fn push(&mut self, id: MessageId) {
+        self.hasher.write_u64(id.bytes);
+        self.hasher.write_u64(id.hash);
+    }
+
+    fn finish(self) -> u64 {
+        self.hasher.finish()
+    }
+}
+
+pub(super) fn message_ids(session: &Session) -> MessageIds {
+    let mut fingerprint = MessageIdFingerprint::default();
+    let mut push = |id: MessageId| {
+        fingerprint.push(id);
+        id
+    };
+    let ids = match session {
+        Session::Completion(request) => request
+            .messages
+            .iter()
+            .map(|message| push(chat_message_id(message)))
+            .collect(),
+        // Text input has no per-item granularity; consistent with the existing history classification, it yields no entries.
         Session::Response(request) => match &request.input {
-            // Text input has no per-item granularity; consistent with the existing history classification, it yields no entries.
             InputParam::Text(_) => Vec::new(),
-            InputParam::Items(items) => items.iter().map(response_item_id).collect(),
+            InputParam::Items(items) => items
+                .iter()
+                .map(|item| push(response_item_id(item)))
+                .collect(),
         },
+    };
+    MessageIds {
+        ids,
+        fingerprint: fingerprint.finish(),
     }
 }
 

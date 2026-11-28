@@ -88,6 +88,22 @@ enum Session {
     Response(Box<CreateResponse>),
 }
 
+/// Inputs of one successful instruction refresh.
+///
+/// The round loop compares this key before rebuilding the tool table, the project block and the system
+/// prompt. Every field is cheap and always current: the definitions key is one revision comparison, the
+/// project documents are the shared snapshot of the fingerprint cache, the subagent schema is the `task`
+/// definition list, and skills/workflow are small owned values. `system` is the prompt actually installed
+/// in the session, so a replacement or an out-of-band rewrite keeps the full path in charge.
+struct InstructionRefreshKey {
+    definitions: pp_tools::DefinitionsRevision,
+    documents: std::sync::Arc<[pp_tools::project_instructions::Document]>,
+    subagent: Vec<async_openai::types::chat::FunctionObject>,
+    skills: Vec<pp_config::skills::SkillHeader>,
+    workflow: String,
+    system: String,
+}
+
 #[derive(Clone)]
 pub struct Bootstrap {
     pub dir: PathBuf,
@@ -146,9 +162,9 @@ impl Bootstrap {
         let catalog = models.catalog_snapshot();
         let mut tools = Tools::with_mcp(self.cwd.clone(), catalog.edit_mode(), self.mcp.clone())?;
         pp_core::logging::perf::mark("tools_ready");
-        tools.skills = self.skills.clone();
-        tools.permission = self.permission.as_ref().clone();
-        tools.allowed_tools = self.allowed_tools.clone();
+        tools.set_skills(self.skills.clone());
+        tools.set_permission(self.permission.as_ref().clone());
+        tools.set_allowed_tools(self.allowed_tools.clone());
         let sandbox = self.sandbox.get_or_init_with_override(
             catalog.sandbox_settings(),
             &self.cwd,
@@ -217,6 +233,9 @@ pub struct Agent {
     /// `(path -> body)` snapshot already delivered to the model through the system prefix or a developer message.
     delivered_project_docs: std::collections::BTreeMap<PathBuf, String>,
     request_skills: Vec<pp_config::skills::SkillHeader>,
+    /// Inputs of the last successfully applied instruction refresh; `None` forces the full path after a
+    /// model or session replacement.
+    instruction_refresh: Option<InstructionRefreshKey>,
     journal: persistence::SessionJournal,
     replay: Vec<persistence::ReplayRecord>,
     debug: Option<debug::DebugState>,

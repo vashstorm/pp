@@ -3,25 +3,42 @@
 use super::*;
 
 pub(in crate::tui) fn parse(source: &str) -> MarkdownDocument {
-    parse_styled(source, None, true)
+    parse_styled(source, 0, None, true, 0)
 }
 
 pub(in crate::tui) fn parse_streaming(source: &str, streaming: bool) -> MarkdownDocument {
-    if !streaming || source.ends_with('\n') {
-        return parse(source);
-    }
-    let tail_start = source.rfind('\n').map(|newline| newline + 1);
-    parse_styled(source, tail_start, true)
+    parse_streaming_from(source, 0, streaming, 0)
+}
+
+/// Parse only the suffix of `source` starting at `base`, keeping every recorded byte offset absolute
+/// inside `source`. `group_base` continues the top-level list numbering of the retained prefix, so a
+/// list group on either side of `base` can never share an identifier.
+pub(super) fn parse_streaming_from(
+    source: &str,
+    base: usize,
+    streaming: bool,
+    group_base: usize,
+) -> MarkdownDocument {
+    parse_styled(
+        source,
+        base,
+        streaming_tail_start(source, streaming),
+        true,
+        group_base,
+    )
 }
 
 /// Parser for the main-thread streaming preview: identical semantics to `parse_streaming` but skips syntect highlighting
 /// so the draw loop is never blocked.
 pub(in crate::tui) fn parse_streaming_preview(source: &str, streaming: bool) -> MarkdownDocument {
-    if !streaming || source.ends_with('\n') {
-        return parse_styled(source, None, false);
-    }
-    let tail_start = source.rfind('\n').map(|newline| newline + 1);
-    parse_styled(source, tail_start, false)
+    parse_styled(source, 0, streaming_tail_start(source, streaming), false, 0)
+}
+
+/// Start of the still-mutable last line while streaming; `None` once the snapshot is complete.
+fn streaming_tail_start(source: &str, streaming: bool) -> Option<usize> {
+    (streaming && !source.ends_with('\n'))
+        .then(|| source.rfind('\n').map(|newline| newline + 1))
+        .flatten()
 }
 
 fn line_start(source: &str, offset: usize) -> usize {
@@ -46,12 +63,20 @@ fn ends_with_blank_line(source: &str) -> bool {
     false
 }
 
-fn parse_styled(source: &str, tail_start: Option<usize>, highlight_code: bool) -> MarkdownDocument {
+fn parse_styled(
+    source: &str,
+    base: usize,
+    tail_start: Option<usize>,
+    highlight_code: bool,
+    group_base: usize,
+) -> MarkdownDocument {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH);
-    let mut b = Builder::new(source, highlight_code);
+    // Only the suffix is parsed, but every recorded offset stays absolute inside `source`.
+    let text = &source[base..];
+    let mut b = Builder::new(source, base, group_base, highlight_code);
     let mut block_depth = 0usize;
-    for (ev, range) in Parser::new_ext(source, opts).into_offset_iter() {
+    for (ev, range) in Parser::new_ext(text, opts).into_offset_iter() {
         match ev {
             Event::Start(tag) => {
                 let is_block = matches!(
@@ -66,7 +91,7 @@ fn parse_styled(source: &str, tail_start: Option<usize>, highlight_code: bool) -
                 );
                 if is_block {
                     if block_depth == 0 {
-                        b.current_top_start = line_start(source, range.start);
+                        b.current_top_start = base + line_start(text, range.start);
                         b.last_top_is_list = matches!(tag, Tag::List(_));
                     }
                     block_depth += 1;
@@ -75,16 +100,22 @@ fn parse_styled(source: &str, tail_start: Option<usize>, highlight_code: bool) -
                     Tag::Paragraph => b.start_paragraph(),
                     Tag::Heading { level, .. } => b.start_heading(level as u8),
                     Tag::BlockQuote(_) => b.start_quote(),
-                    Tag::CodeBlock(kind) => b.start_code(kind, range.start),
+                    Tag::CodeBlock(kind) => b.start_code(kind, base + range.start),
                     Tag::HtmlBlock => b.start_html(),
                     Tag::List(start) => b.start_list(start),
                     Tag::Item => b.start_item(),
                     Tag::Table(aligns) => {
-                        if let Some(start) =
-                            tail_start.filter(|&start| range.start < start && range.end >= start)
-                        {
+                        if let Some(start) = tail_start.filter(|&start| {
+                            base + range.start < start && base + range.end >= start
+                        }) {
                             // The last line may still change the table structure, so lay out up to the nearest newline first.
-                            let mut document = parse_styled(&source[..start], None, highlight_code);
+                            let mut document = parse_styled(
+                                &source[..start],
+                                base,
+                                None,
+                                highlight_code,
+                                group_base,
+                            );
                             document.table_tail_start = Some(start);
                             return document;
                         }
@@ -113,7 +144,7 @@ fn parse_styled(source: &str, tail_start: Option<usize>, highlight_code: bool) -
                     }
                     TagEnd::Heading(_) => b.end_heading(),
                     TagEnd::BlockQuote(_) => b.end_quote(),
-                    TagEnd::CodeBlock => b.end_code(range),
+                    TagEnd::CodeBlock => b.end_code(base + range.end),
                     TagEnd::HtmlBlock => b.end_html(),
                     TagEnd::List(_) => b.end_list(),
                     TagEnd::Item => b.end_item(),
@@ -141,13 +172,13 @@ fn parse_styled(source: &str, tail_start: Option<usize>, highlight_code: bool) -
                     block_depth = block_depth.saturating_sub(1);
                 }
             }
-            Event::Text(t) => b.on_text(&t, range.end),
+            Event::Text(t) => b.on_text(&t, base + range.end),
             Event::Code(t) => b.on_inline_code(&t),
             Event::SoftBreak => b.on_soft_break(),
             Event::HardBreak => b.on_hard_break(),
             Event::Rule => {
                 if block_depth == 0 {
-                    b.current_top_start = line_start(source, range.start);
+                    b.current_top_start = base + line_start(text, range.start);
                     b.last_top_is_list = false;
                 }
                 b.on_rule();
@@ -197,6 +228,8 @@ struct TableState {
 
 struct Builder<'a> {
     source: &'a str,
+    /// Byte offset of the parsed suffix inside `source`; recorded offsets stay absolute.
+    base: usize,
     highlight_code: bool,
     blocks: Vec<Block>,
     block_top_starts: Vec<usize>,
@@ -228,13 +261,14 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    fn new(source: &'a str, highlight_code: bool) -> Self {
+    fn new(source: &'a str, base: usize, group_base: usize, highlight_code: bool) -> Self {
         Builder {
             source,
+            base,
             highlight_code,
             blocks: Vec::new(),
             block_top_starts: Vec::new(),
-            current_top_start: 0,
+            current_top_start: base,
             last_top_is_list: false,
             lines: Vec::new(),
             cur: Vec::new(),
@@ -242,7 +276,7 @@ impl<'a> Builder<'a> {
             heading: false,
             heading_level: 1,
             paragraph: false,
-            list_group: 0,
+            list_group: group_base,
             strong: 0,
             em: 0,
             strike: 0,
@@ -269,13 +303,15 @@ impl<'a> Builder<'a> {
 
     fn finish(mut self) -> MarkdownDocument {
         self.flush_block();
-        let trailing_line_start = self.source.rfind('\n').map_or(0, |index| index + 1);
+        let text = &self.source[self.base..];
+        let trailing_line_start = self.base + text.rfind('\n').map_or(0, |index| index + 1);
         MarkdownDocument {
             blocks: std::mem::take(&mut self.blocks),
             block_top_starts: std::mem::take(&mut self.block_top_starts),
             last_top_is_list: self.last_top_is_list,
-            ends_with_blank_line: ends_with_blank_line(self.source),
+            ends_with_blank_line: ends_with_blank_line(text),
             trailing_line_start,
+            has_reference_definition: text.contains("]:"),
             cached: Vec::new(),
             table_tail_start: None,
         }
@@ -530,7 +566,7 @@ impl<'a> Builder<'a> {
         });
     }
 
-    fn end_code(&mut self, range: Range<usize>) {
+    fn end_code(&mut self, end: usize) {
         let Some(code) = self.code.take() else { return };
         let mut lines: Vec<String> = Vec::new();
         for raw in code.buf.split_terminator('\n') {
@@ -562,12 +598,12 @@ impl<'a> Builder<'a> {
         let closed = !code.fenced
             || match code.content_end {
                 Some(ce) => {
-                    let tail = self.source.get(ce..range.end).unwrap_or("");
+                    let tail = self.source.get(ce..end).unwrap_or("");
                     let t = tail.trim_start_matches(['\n', '\r', ' ', '\t', '>']);
                     t.starts_with("```") || t.starts_with("~~~")
                 }
                 None => {
-                    let region = self.source.get(code.start..range.end).unwrap_or("");
+                    let region = self.source.get(code.start..end).unwrap_or("");
                     region
                         .lines()
                         .filter(|l| {

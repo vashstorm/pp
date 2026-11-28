@@ -2,7 +2,7 @@ use super::*;
 use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 use serde_json::json;
 
-fn native_rows(rows: &[Vec<ratatui::buffer::Cell>]) -> String {
+fn native_rows(rows: &[NativeRow]) -> String {
     rows.iter()
         .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
         .collect::<Vec<_>>()

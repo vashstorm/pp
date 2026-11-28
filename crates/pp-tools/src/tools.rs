@@ -111,6 +111,29 @@ pub struct Tools {
     host_defaults: pp_workspace::host_defaults::HostDefaults,
     sandbox: std::sync::Arc<pp_sandbox::Sandbox>,
     web_search: pp_config::config::WebSearchSettings,
+    /// Monotonic revision of the definition inputs that are not captured by the permission/sandbox
+    /// snapshot, the work mode or the MCP tool table: every setter that can change `all_definitions`
+    /// (or the prompt built from it) bumps it, so consumers compare one number instead of rebuilding
+    /// the whole tool table on every turn.
+    definitions_revision: u64,
+}
+
+/// Complete identity of the definitions `all_definitions(mode)` would produce.
+///
+/// Consumers (the instruction refresh of the agent loop) compare this key instead of rebuilding and
+/// deep-comparing the tool table. It deliberately contains only cheap, always-current inputs: the local
+/// revision covers edit mode, limits, allowed tools, eval/web/MCP settings, LSP state, ask/subagent/yield
+/// wiring and an explicitly replaced MCP manager; the MCP revision covers the remote tool table; the
+/// permission and sandbox snapshots are read from their live authority on every comparison so a preset
+/// or sandbox change can never be missed. Role schemas, skills and project bodies are not part of it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefinitionsRevision {
+    pub local: u64,
+    pub mcp: u64,
+    pub mode: WorkMode,
+    pub permission: pp_config::config::PermissionMode,
+    pub sandbox_mode: Option<pp_config::config::SandboxMode>,
+    pub sandbox: pp_sandbox::SandboxStatus,
 }
 
 /// Separates a tool's serialized result from a process cleanup failure that
@@ -607,6 +630,39 @@ pub(super) struct ExecuteCall<'a, 'f> {
 }
 
 impl Tools {
+    /// Definitions contributed by the subagent binding for `mode`; the single source shared by
+    /// `all_definitions` and the agent's instruction refresh key.
+    pub fn subagent_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
+        self.subagent
+            .as_ref()
+            .map(|binding| binding.definitions(mode))
+            .unwrap_or_default()
+    }
+
+    /// Current identity of the definition inputs for `mode`; equal keys mean `all_definitions(mode)`
+    /// would return the same tool table without having to build it.
+    pub fn definitions_revision(&self, mode: WorkMode) -> DefinitionsRevision {
+        let (permission, sandbox_mode) = self.permission.snapshot_with_sandbox();
+        DefinitionsRevision {
+            local: self.definitions_revision,
+            mcp: self.mcp.tools_revision(),
+            mode,
+            permission,
+            sandbox_mode,
+            sandbox: self.sandbox.view(sandbox_mode).status(),
+        }
+    }
+
+    /// Explicit invalidation for callers that cannot go through a setter; prefer the setters.
+    pub fn invalidate_definitions(&mut self) {
+        self.touch_definitions();
+    }
+
+    /// Records a change of a definition input; every setter that can change `all_definitions` calls it.
+    fn touch_definitions(&mut self) {
+        self.definitions_revision += 1;
+    }
+
     pub fn all_definitions(&self, mode: WorkMode) -> Vec<FunctionObject> {
         let mut definitions = self.mode_definitions(mode);
         let access = self.mcp_access();
@@ -616,8 +672,8 @@ impl Tools {
         } else {
             definitions.extend(self.mcp.definitions(access));
         }
-        if let Some(binding) = &self.subagent {
-            definitions.extend(binding.definitions(mode));
+        if self.subagent.is_some() {
+            definitions.extend(self.subagent_definitions(mode));
             if mode == WorkMode::Plan {
                 definitions.push(wait::definition(WorkMode::Plan));
             }

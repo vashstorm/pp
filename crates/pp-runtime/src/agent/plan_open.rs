@@ -211,6 +211,7 @@ impl Agent {
         self.thinking_history.clear();
         self.clear_session_cost();
         self.pending_instructions = None;
+        self.invalidate_instruction_refresh();
         drop(verified);
         Ok(ExecutionPreparation {
             workflow: self.workflow.clone(),

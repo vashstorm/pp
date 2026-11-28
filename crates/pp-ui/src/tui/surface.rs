@@ -1,5 +1,6 @@
 //! Main-screen incremental commit and the alternate screen share a single output entry point.
 
+use super::transcript::NativeRow;
 use crossterm::{
     SynchronizedUpdate,
     cursor::{Hide, MoveTo, Show},
@@ -205,7 +206,7 @@ impl<W: Write> Surface<W> {
         buffer: &Buffer,
         cursor: Option<Position>,
         alternate: bool,
-        history: &[Vec<Cell>],
+        history: &[NativeRow],
     ) -> io::Result<()> {
         self.paint_images(Arc::new(buffer.clone()), cursor, alternate, history, &[])
     }
@@ -215,7 +216,7 @@ impl<W: Write> Surface<W> {
         buffer: Arc<Buffer>,
         cursor: Option<Position>,
         alternate: bool,
-        history: &[Vec<Cell>],
+        history: &[NativeRow],
         graphics: &[Rect],
     ) -> io::Result<()> {
         let reset = self.reset_pending;
@@ -588,7 +589,7 @@ mod tests {
                     &frame("restored session"),
                     None,
                     false,
-                    &[frame("committed").content[..24].to_vec()],
+                    &[NativeRow::from(frame("committed").content[..24].to_vec())],
                 )
                 .unwrap();
             for byte in &surface.writer[before..] {
@@ -612,7 +613,12 @@ mod tests {
         next.set_string(0, 4, "draft", style);
         let before = s_scroll.writer.len();
         s_scroll
-            .paint(&next, cursor, false, &[buffer.content[..24].to_vec()])
+            .paint(
+                &next,
+                cursor,
+                false,
+                &[NativeRow::from(buffer.content[..24].to_vec())],
+            )
             .unwrap();
         let out = String::from_utf8_lossy(&s_scroll.writer[before..]);
         assert!(out.contains("history-to-commit") && !out.contains("retained"));
@@ -629,7 +635,7 @@ mod tests {
                 &b_empty,
                 cursor,
                 false,
-                &[frame("committed").content[..24].to_vec()],
+                &[NativeRow::from(frame("committed").content[..24].to_vec())],
             )
             .unwrap();
         assert!(String::from_utf8_lossy(&s_empty.writer[before_e..]).contains("committed"));
@@ -647,7 +653,11 @@ mod tests {
                 let cursor = Some(Position::new(3, height - 1));
                 for batch_size in [0, 1, 2, 6, 9] {
                     let history = (0..batch_size)
-                        .map(|i| frame(&format!("committed-{i:02} 中😀")).content[..24].to_vec())
+                        .map(|i| {
+                            NativeRow::from(
+                                frame(&format!("committed-{i:02} 中😀")).content[..24].to_vec(),
+                            )
+                        })
                         .collect::<Vec<_>>();
                     for y in 0..height {
                         let mut row = frame(&format!("{batch_size}-{y} 中😀"));
@@ -867,7 +877,7 @@ mod tests {
                 )
                 .unwrap();
             let start = surface.writer.len();
-            let history = vec![Cell::new("h"); 24];
+            let history = NativeRow::from(vec![Cell::new("h"); 24]);
             surface
                 .paint_images(
                     Arc::new(image.clone()),

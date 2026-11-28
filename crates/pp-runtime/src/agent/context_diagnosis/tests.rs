@@ -920,3 +920,222 @@ fn snapshot_read(snapshot: &Snapshot) -> ContextReport {
         .as_ref()
         .clone()
 }
+
+/// Every consumer-visible field of every category and item, used to compare two reports field by field.
+type ReportDigest = Vec<(
+    CategoryKey,
+    u64,
+    u64,
+    usize,
+    bool,
+    Vec<(String, String, String, u64, u64, String)>,
+)>;
+
+fn report_digest(report: &ContextReport) -> ReportDigest {
+    report
+        .categories
+        .iter()
+        .map(|cat| {
+            (
+                cat.key,
+                cat.tokens,
+                cat.bytes,
+                cat.item_count,
+                cat.in_context,
+                cat.items
+                    .iter()
+                    .map(|item| {
+                        (
+                            item.kind_label.clone(),
+                            item.title.clone(),
+                            item.subtitle.clone(),
+                            item.tokens,
+                            item.bytes,
+                            item.preview.clone(),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// Push one native thinking item so the `thinking` classification has work to cache.
+fn push_thinking(agent: &mut Agent, protocol: Protocol) {
+    match protocol {
+        Protocol::Response => match &mut agent.session {
+            Session::Response(request) => {
+                let InputParam::Items(items) = &mut request.input else {
+                    panic!("expected items");
+                };
+                items.push(InputItem::Item(Item::Reasoning(ReasoningItem {
+                    id: Some("rs_cache".into()),
+                    summary: vec![SummaryPart::SummaryText(
+                        async_openai::types::responses::SummaryTextContent {
+                            text: "Cached thinking step".into(),
+                        },
+                    )],
+                    content: None,
+                    encrypted_content: Some("E".repeat(2048)),
+                    status: None,
+                })));
+            }
+            Session::Completion(_) => panic!("expected response session"),
+        },
+        Protocol::Completion => {
+            agent.thinking_history.push(ThinkingEntry {
+                thinking: "Cached thinking step".into(),
+                summary: String::new(),
+            });
+        }
+    }
+}
+
+/// Keep only a prefix of the native history, the way compaction and tree navigation replace it wholesale.
+fn truncate_history(agent: &mut Agent, keep: usize) {
+    match &mut agent.session {
+        Session::Completion(request) => request.messages.truncate(keep.max(1)),
+        Session::Response(request) => {
+            if let InputParam::Items(items) = &mut request.input {
+                items.truncate(keep);
+            }
+        }
+    }
+    let retained = agent.thinking_history.len().min(keep);
+    crate::agent::context_diagnosis::trim_for_retained_turns(&mut agent.thinking_history, retained);
+}
+
+fn assert_published_matches_full(agent: &Agent, snapshot: &Snapshot, step: &str) {
+    let published = snapshot
+        .read()
+        .unwrap_or_else(|| panic!("report published at {step}"))
+        .unwrap_or_else(|error| panic!("diagnosis failed at {step}: {error}"));
+    let full = agent
+        .diagnose_context()
+        .unwrap_or_else(|error| panic!("full diagnosis failed at {step}: {error}"));
+    assert!(
+        report_digest(&published) == report_digest(&full),
+        "the cache-hit publish must equal a full re-diagnosis at {step}"
+    );
+}
+
+/// Diagnostics are published repeatedly from a warm cache; each publish must reproduce a full `diagnose_context()`
+/// field by field, both native protocols and with or without thinking records, and a report published earlier must not
+/// change when the session grows afterwards.
+#[test]
+fn context_diagnosis_cached_publish_matches_full_diagnosis() {
+    for protocol in [Protocol::Response, Protocol::Completion] {
+        for with_thinking in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = dir.path().join("cfg");
+            let work = dir.path().join("work");
+            let sessions = dir.path().join("sessions");
+            fs::create_dir_all(&cfg).unwrap();
+            fs::create_dir_all(&work).unwrap();
+            fs::create_dir_all(&sessions).unwrap();
+            fs::write(work.join("AGENTS.md"), "Keep cached reports identical.").unwrap();
+
+            let catalog = test_catalog(&cfg, protocol, Some(1_000_000));
+            let mut agent = Agent::new(
+                catalog,
+                Tools::new(work.clone(), EditMode::Replace).unwrap(),
+                sessions,
+            )
+            .unwrap();
+            let snapshot = agent.observe_context();
+            agent.refresh_instructions().unwrap();
+            agent.append_user("compare cached and full reports");
+            if with_thinking {
+                push_thinking(&mut agent, protocol);
+            }
+
+            // Forty tool outputs just under the live preview budget keep multi-megabyte previews materialized,
+            // so the shared-item invariant is exercised with the largest bodies the panel can actually show.
+            let big = format!(r#"{{"ok":true,"content":"{}"}}"#, "x".repeat(63 * 1024));
+            for index in 0..40 {
+                push_tool_exchange(&mut agent, &format!("call_big_{index}"), "big.txt", &big);
+            }
+            for index in 0..10 {
+                push_tool_exchange(
+                    &mut agent,
+                    &format!("call_small_{index}"),
+                    "small.txt",
+                    r#"{"ok":true,"content":"small"}"#,
+                );
+            }
+
+            agent.publish_context_snapshot();
+            assert_published_matches_full(&agent, &snapshot, "first publish");
+            let published_early = snapshot.read().unwrap().unwrap();
+            let early_digest = report_digest(&published_early);
+            assert_eq!(early_digest.len(), 10);
+            assert_eq!(
+                category(&published_early, CategoryKey::ToolOutput).item_count,
+                50
+            );
+
+            // Same state published again: the cached prefix is reused, the report is unchanged.
+            agent.publish_context_snapshot();
+            assert_published_matches_full(&agent, &snapshot, "repeated publish");
+            assert!(
+                report_digest(&published_early) == early_digest,
+                "a published report must not change when the same state is published again"
+            );
+
+            // Appended tool exchanges extend the tail; the report handed out earlier keeps its content.
+            push_tool_exchange(
+                &mut agent,
+                "call_tail_1",
+                "tail.txt",
+                r#"{"ok":true,"content":"tail"}"#,
+            );
+            push_tool_exchange(
+                &mut agent,
+                "call_tail_2",
+                "tail.txt",
+                r#"{"ok":true,"content":"tail"}"#,
+            );
+            agent.publish_context_snapshot();
+            assert_published_matches_full(&agent, &snapshot, "appended tool exchange");
+            assert_eq!(
+                category(&snapshot_read(&snapshot), CategoryKey::ToolOutput).item_count,
+                52
+            );
+            assert!(
+                report_digest(&published_early) == early_digest,
+                "a report published before the append must keep its items"
+            );
+
+            // A wholesale history replacement (compaction / tree navigation) drops the cached prefix.
+            truncate_history(&mut agent, 4);
+            agent.publish_context_snapshot();
+            assert_published_matches_full(&agent, &snapshot, "replaced history");
+            assert!(
+                report_digest(&published_early) == early_digest,
+                "a report published before a history replacement must keep its items"
+            );
+
+            // A tool-table switch must recompute the tool sections against the full diagnosis.
+            let mut defs = agent.tools.all_definitions(agent.workflow.mode);
+            defs.push(async_openai::types::chat::FunctionObject {
+                name: "mcp__docs__search".into(),
+                description: Some("Search docs via MCP".into()),
+                parameters: Some(serde_json::json!({"type": "object", "properties": {}})),
+                strict: Some(false),
+            });
+            agent.session.set_tools(defs);
+            agent.publish_context_snapshot();
+            assert_published_matches_full(&agent, &snapshot, "tool table switch");
+            assert_eq!(
+                category(&snapshot_read(&snapshot), CategoryKey::CustomTools).item_count,
+                1
+            );
+            assert!(
+                category(&published_early, CategoryKey::CustomTools)
+                    .items
+                    .is_empty(),
+                "the tool table of an earlier report must not be rewritten"
+            );
+        }
+    }
+}

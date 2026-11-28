@@ -267,6 +267,7 @@ impl Agent {
             self.reported_project_load.clear();
             self.static_project_prompt = None;
             self.delivered_project_docs.clear();
+            self.invalidate_instruction_refresh();
             self.session_date = super::super::current_session_date();
             self.session.clear_prompt_cache_key();
             self.session.apply_cache_policy(

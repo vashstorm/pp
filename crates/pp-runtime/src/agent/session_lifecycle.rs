@@ -85,7 +85,7 @@ impl Agent {
         } else {
             std::sync::Arc::new(crate::hooks::Runner::empty())
         };
-        tools.limits = checkpoint.tool_limits;
+        tools.set_limits(checkpoint.tool_limits);
         tools.configure_eval(catalog.eval_settings());
         tools.configure_web_search(catalog.web_search_settings().clone());
         tools.configure_mcp(catalog.mcp_settings());
@@ -165,6 +165,7 @@ impl Agent {
             static_project_prompt: None,
             delivered_project_docs,
             request_skills: Vec::new(),
+            instruction_refresh: None,
             journal,
             replay,
             debug: debug::DebugState::new(config.settings.debug && !ephemeral, true),
@@ -352,6 +353,7 @@ impl Agent {
         }
         self.tools.permission.clear_session();
         self.session = session;
+        self.invalidate_instruction_refresh();
         self.reset_lsp_diagnostics();
         self.tools.clear_caches();
         if let Err(error) = self.tools.stop_eval() {
@@ -419,6 +421,7 @@ impl Agent {
         self.reported_project_load.clear();
         self.static_project_prompt = None;
         self.delivered_project_docs.clear();
+        self.invalidate_instruction_refresh();
         self.session_date = super::current_session_date();
         self.tools.reset_project_instructions([]);
         self.session.clear_prompt_cache_key();

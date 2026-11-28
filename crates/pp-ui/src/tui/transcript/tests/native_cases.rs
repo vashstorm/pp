@@ -54,6 +54,55 @@ fn native_history_defers_streaming_and_seals_partial_output_only_on_exit() {
     );
 }
 
+/// A frame may only report "nothing to commit" once the frozen rows fit on screen;
+/// otherwise rows that already left the viewport would stay off the terminal.
+#[test]
+fn native_history_emits_every_frozen_row_once_in_order() {
+    let mut transcript = Transcript::new();
+    transcript.append(
+        "You",
+        &(0..300)
+            .map(|i| format!("overflow-{i:03}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    let (width, height) = (40u16, 10u16);
+    let mut batches = 0usize;
+    let mut markers = Vec::new();
+    while let Some(batch) = transcript.next_native_batch(width, height, false) {
+        batches += 1;
+        markers.extend(
+            native_rows(&batch.rows)
+                .lines()
+                .filter_map(|line| {
+                    line.find("overflow-").map(|start| {
+                        line[start..]
+                            .chars()
+                            .take("overflow-000".len())
+                            .collect::<String>()
+                    })
+                })
+                .collect::<Vec<_>>(),
+        );
+        transcript.acknowledge_native_batch(batch);
+    }
+    assert!(batches > 1, "the fixture must span several batches");
+    let expected = (0..300)
+        .map(|index| format!("overflow-{index:03}"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        markers,
+        expected[..markers.len()],
+        "frozen rows must reach the terminal once and in order"
+    );
+    assert!(
+        expected.len() - markers.len() <= usize::from(height),
+        "only rows that still fit on screen may stay uncommitted: {} of {} rows emitted",
+        markers.len(),
+        expected.len()
+    );
+}
+
 #[test]
 fn native_history_freezes_tool_preview_and_waits_for_read_group_boundary() {
     let mut transcript = Transcript::with_read_preview(false);

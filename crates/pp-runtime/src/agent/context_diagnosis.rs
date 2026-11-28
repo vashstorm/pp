@@ -6,6 +6,11 @@
 //! Semi-static sections are cached by fingerprint and per-message classification is cached by message identity: appended
 //! messages only recompute the new tail, and a wholesale history replacement recomputes from scratch. The cache is guarded
 //! by a `Mutex` inside the Agent-owned [`Snapshot`] and uses no process-wide static.
+//!
+//! Diagnostic items are shared through `Arc<DiagnosticItem>`: a cache hit, a breakdown, a capture and report assembly only
+//! clone the handle, so a published report never copies `kind_label`/`title`/`subtitle`/`preview` bodies. Items are wrapped
+//! `Arc::new` once when they are constructed; published items are immutable and a report the UI still holds never changes
+//! when later classifications append more items.
 
 mod history;
 mod sections;
@@ -32,6 +37,7 @@ use sections::{
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::Hasher;
+use std::sync::Arc;
 use thinking::build_thinking_items;
 
 const MAX_PREVIEW_BYTES: usize = 64 * 1024;
@@ -109,7 +115,8 @@ pub struct CategorySummary {
     pub item_count: usize,
     /// True means it counts toward the next request's context window; false means it is history output (such as Chat Completions thinking).
     pub in_context: bool,
-    pub items: Vec<DiagnosticItem>,
+    /// Items are shared with the classification cache: assembling a report clones handles, never item bodies.
+    pub items: Vec<Arc<DiagnosticItem>>,
 }
 
 #[derive(Clone, Debug)]
@@ -198,15 +205,17 @@ struct ClassifiedSections {
 }
 
 /// Cache key of the thinking classification: native message identity + fingerprint of the collected thinking records.
-#[derive(Clone, PartialEq, Eq)]
+///
+/// The identity is stored as the fingerprint `message_ids` accumulates in its single scan, not as a second copy of the ids.
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct ThinkingKey {
-    items: Vec<history::MessageId>,
+    items: u64,
     history: u64,
 }
 
 #[derive(Clone)]
 struct ThinkingSnapshot {
-    items: Vec<DiagnosticItem>,
+    items: Vec<Arc<DiagnosticItem>>,
     tokens: u64,
     bytes: u64,
     count: usize,
@@ -462,12 +471,13 @@ impl Agent {
             }
         };
 
-        let history = self.inspect_history_cached(&mut cache.history, &ids)?;
+        let history = self.inspect_history_cached(&mut cache.history, &ids.ids)?;
 
         let thinking_key = ThinkingKey {
             items: match &self.session {
-                Session::Response(_) => ids,
-                Session::Completion(_) => Vec::new(),
+                Session::Response(_) => ids.fingerprint,
+                // Chat Completions thinking comes from the replay records, so it keys on an empty identity list.
+                Session::Completion(_) => history::MessageIds::empty_fingerprint(),
             },
             history: thinking_history_fingerprint(&self.thinking_history),
         };
@@ -579,7 +589,7 @@ fn category(
     key: CategoryKey,
     tokens: u64,
     bytes: u64,
-    items: Vec<DiagnosticItem>,
+    items: Vec<Arc<DiagnosticItem>>,
     in_context: bool,
 ) -> CategorySummary {
     CategorySummary {

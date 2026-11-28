@@ -154,15 +154,15 @@ impl Agent {
                 },
             );
             tools.artifacts = artifacts.clone();
-            tools.limits = config.settings.tool_limits();
+            tools.set_limits(config.settings.tool_limits());
             tools.configure_eval(catalog.eval_settings());
             tools.configure_web_search(catalog.web_search_settings().clone());
             tools.configure_mcp(catalog.mcp_settings());
-            tools.skills = skills.clone();
+            tools.set_skills(skills.clone());
             if !record.spec.isolated {
                 tools.write_lock = write_lock.clone();
             }
-            tools.permission = permission.clone();
+            tools.set_permission(permission.clone());
             tools
                 .permission
                 .label(record.name.clone(), binding.owner.clone());
@@ -213,23 +213,23 @@ impl Agent {
             };
             binding.readonly = readonly;
             tools.set_lsp_readonly(readonly);
-            tools.mcp_readonly = readonly;
+            tools.set_mcp_readonly(readonly);
             tools.mcp_shared = true;
-            tools.allowed_tools = Some(allowed_tools);
-            tools.yield_schema = record.spec.output_schema.clone();
-            tools.subagent = Some(Arc::new(binding.clone()));
+            tools.set_allowed_tools(Some(allowed_tools));
+            tools.set_yield_schema(record.spec.output_schema.clone());
+            tools.set_subagent(Some(Arc::new(binding.clone())));
             let interaction_binding = binding.clone();
             if let Some(handler) = &ask {
                 let handler = handler.clone();
                 let label = record.name.clone();
                 let agent_id = record.id.clone();
-                tools.ask_handler = Some(Arc::new(move |mut request, token| {
+                tools.set_ask_handler(Some(Arc::new(move |mut request, token| {
                     request.call_id = format!("subagent-{agent_id}-{}", request.call_id);
                     for question in &mut Arc::make_mut(&mut request.args).questions {
                         question.question = format!("[{label}] {}", question.question);
                     }
                     interaction_binding.interaction(token, || handler(request, token))
-                }));
+                })));
             }
             let sessions = binding.directory().join("sessions");
             let mut child = Agent {
@@ -303,6 +303,7 @@ impl Agent {
                 static_project_prompt: None,
                 delivered_project_docs: Default::default(),
                 request_skills: Vec::new(),
+                instruction_refresh: None,
                 journal: SessionJournal::with_locks(
                     sessions.clone(),
                     sessions.join(".locks"),
@@ -358,7 +359,7 @@ impl Agent {
             if let Some(binding) = &mut child.subagent {
                 binding.model = child.current_model.reference.clone();
                 binding.thinking = child.think_level;
-                child.tools.subagent = Some(Arc::new(binding.clone()));
+                child.tools.set_subagent(Some(Arc::new(binding.clone())));
             }
             child.session.set_tools(
                 child
@@ -431,7 +432,7 @@ impl Agent {
             .subagent_control
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(binding.clone());
-        self.tools.subagent = Some(Arc::new(binding.clone()));
+        self.tools.set_subagent(Some(Arc::new(binding.clone())));
         self.subagent = Some(binding);
         Ok(())
     }
@@ -459,7 +460,7 @@ impl Agent {
         if let Some(binding) = self.subagent.as_ref().filter(|b| b.depth == 0) {
             binding.shutdown()?;
             self.subagent = None;
-            self.tools.subagent = None;
+            self.tools.set_subagent(None);
             *self
                 .subagent_control
                 .lock()

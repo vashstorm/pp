@@ -11,7 +11,7 @@ tui:
 
 `max_fps` 默认为 60，接受 1 到 120 的整数。输入处理和取消信号不等待绘制；所有正常帧（含输入、通知和历史提交）使用同一截止时间。退出收尾允许立即输出。空闲且没有变化时不绘制。
 
-TUI 按帧合并同一目标、类型和轮次的文本分片；达到 64 KiB 或遇到控制事件时提前提交。原生事件、会话日志和 CLI 输出不经过此显示缓冲。Markdown 内容变化时仍完整解析，随后按语义块和宽度复用排版结果。
+TUI 按帧合并同一目标、类型和轮次的文本分片；达到 64 KiB 或遇到控制事件时提前提交。原生事件、会话日志和 CLI 输出不经过此显示缓冲。Markdown 内容变化时先尝试“仅重解析最后一个顶层块”的增量路径（见下文“流式 Markdown 增量解析”），只有无法证明前缀稳定的快照才整篇重解析，随后按语义块和宽度复用排版结果。
 
 助手正文与思考输出在同一正文追加链、相同宽度下保留最近完成的 Markdown 快照作为前缀，新增文本在下一帧以纯文本尾部预览显示，不等待后台排版完成。已有前缀保持样式；尾部的 Markdown 标记可能短暂可见，后台完成后切换为排版结果。后台落后时，已完成的中间版本也可作为更新的前缀，尾部始终取最新正文。新分片立即撤销精确排版资格，只有最新版本能够提交原生历史；历史提交仍在终端输出成功后确认。正文整体替换或宽度变化时不复用不兼容快照。纯文本预览最多处理末尾 8192 字节，保留 UTF-8 边界、换行、空行与制表符；有兼容前缀而新增尾部超过限额时，用省略号标记预览中跳过的部分。
 
@@ -21,7 +21,7 @@ TUI 按帧合并同一目标、类型和轮次的文本分片；达到 64 KiB �
 
 ## 帧成本机制（本轮改动）
 
-本节只描述机制与可重复验证的确定性断言，不引入新的本机数字；上文“本机测量”的数字来自既有基线，本轮未重新采集。本轮执行环境禁止创建伪终端（`openpty: Operation not permitted`），`PP_TUI_PERF_ASSERT=1` 的 release PTY 断言与全部 `cli_agent` `tui::` 用例无法运行；作为替代，整帧拷贝、预览回退、输入框排版与状态栏字段的复用均有 `-p pp-ui` 的确定性用例覆盖，但 CPU 与输出字节的前后对比仍须在真实终端复测。
+本节只描述机制与可重复验证的确定性断言，不引入新的本机数字；上文“本机测量”的数字来自既有基线，本轮未重新采集。上一轮执行环境禁止创建伪终端（`openpty: Operation not permitted`），`PP_TUI_PERF_ASSERT=1` 的 release PTY 断言与 `cli_agent` `tui::` 用例当时无法运行；作为替代，整帧拷贝、预览回退、输入框排版与状态栏字段的复用均有 `-p pp-ui` 的确定性用例覆盖。本轮环境允许创建伪终端，相关 PTY 断言已按下文“第二轮改动与复测”重新运行。
 
 - **整帧缓冲只保留一份**：`surface.rs` 的差分基线与主屏幕基线改为 `Arc<Buffer>`，普通帧的 `previous` 与 `main` 共享同一块内存；`App::draw_with_layout` 只在退出路径写 `normal_snapshot`，`paint_surface` 只在非退出帧保留一份整帧拷贝。此前普通帧每帧最多产生 4 次整帧克隆，现在固定为 2 次（一份交给差分基线，一份是帧本身的拷贝）。`cleaned`／`scrolled` 分支仍在需要时另行构造清理后的基线，语义未变。
 - **输入框几何每帧只算一次**：`paint_surface` 先算 `App::main_layout`，原生批次与整帧绘制共用同一 `MainLayout`；`App::main_layout` 签名保持不变，仍可由测试直接调用。此前每帧会经 `input_rows` 把主输入框排版 3 次（布局一次、绘制一次、原生批次路径再一次）。
@@ -29,6 +29,61 @@ TUI 按帧合并同一目标、类型和轮次的文本分片；达到 64 KiB �
 - **排版背压**：`render_worker::Ticket` 记录 `in_flight`；上一任务未回写前不再排队新任务，流式增量只让 `version` 单调自增，回写后同一帧内补发最新版本。避免每个分片都排成一次全量重解析。
 - **bash 尾部预览只生成尾部**：`tail_output` 从末尾逻辑行反向生成，攒满 `limit` 个屏幕行即停止，头部只统计行数（可打印 ASCII 且不超宽时走长度快路径），`[stderr]` 分隔后的着色与“N earlier lines, showing L of T”的计数口径保持不变；展开视图仍完整换行。
 - **状态栏**：`title_field` 按字素增量累加列宽，不再为每个前缀重新度量整串；`metric_fields` 先按列宽预算决定保留哪些字段，最后只调用一次 `join_fields`（此前每降一级都重建整行并克隆全部 span）；`context_field` 由 `draw_input_status` 每帧构造一次后经 `statusline::Metrics` 传入。
+
+## 第二轮改动与复测
+
+### 流式 Markdown 增量解析
+
+`MarkdownDocument::update(previous, source, streaming)` 仅在 `source` 严格以 `previous` 为前缀时走增量路径：
+以旧文档最后一个顶层块起点为界，保留此前已稳定的块与对应 `CachedBlock`，只重解析该尾部块，因此 Setext 标题、
+列表 tight/loose、未闭合代码围栏与增长中的表格始终留在可变尾部；`block_top_starts`、`table_tail_start` 与
+`TailMeta.tail_source_start` 仍是完整正文的全局 UTF-8 字节偏移，顶层列表分组号按前缀已有最大编号续编。
+以下任一情况回退既有的整篇 `parse_streaming`：非追加（取消、换消息、整体替换）、`streaming == false` 的终态、
+空旧文档、旧文档带部分表格尾、尾部出现 `]:`，以及正文任意位置出现过 `]:`（引用定义可跨前缀与尾部互相绑定）。
+稳定前缀只按索引复用 `CachedBlock`，不再逐块深比较；只有尾部块做语义比较。`layout_cached_with_meta`、代码高亮
+缓存、后台在飞合并、预览 8 KiB 上限、主题／宽度失效与滚动锚点行为不变。
+
+临时 `perf_probe_markdown_append`（已删除）：264,204 B 文档（段落含粗体／行内代码／链接、引用块、tight+嵌套列表、
+Setext 标题、2 列表格、Rust 围栏，末尾为流式尾段）连续 200 次追加 20 B，只计时 `update`，release 三次取中位数：
+**1.3209 s → 4.8147 ms（−99.64%）**。该数字只说明“整篇解析 + 稳定前缀逐块深比较”已被移除，不代表布局输出遍历消失。
+
+### 原生历史行共享
+
+`NativeState.retained` 与 `NativeBatch.rows` 统一为 `Arc<[Cell]>`（`transcript::NativeRow`）：新行只在从排版
+buffer 转换时复制一次，`batch.next`、预览与 ACK 复用同一批行指针；`next_native_batch` 先判定本帧是否需要产出
+批次，只有不处于“retained 溢出待输出”分支时才可提前返回 `None`，未产出批次的帧不再克隆提交状态。
+
+临时 `perf_probe_native_batch`（已删除，3000 行恢复历史 + 500 次流式更新，160×40，release 三次中位数）：
+
+| 路径 | 改动前 | 改动后 | 变化 |
+| --- | ---: | ---: | ---: |
+| 空闲帧 `next_native_batch` 返回 `None`（20,000 次） | 215.006 ms | 1.041 ms | −99.5% |
+| 批次状态路径（1000 批次 + 1500 空调用） | 137.779 ms | 125.541 ms | −8.9% |
+| 整帧管线（含排版、绘制、终端差分输出） | 787.038 ms | 778.392 ms | −1.1% |
+| 终端输出 | 6,577,512 B | 6,577,512 B（同一 checksum） | 逐字节一致 |
+
+即：20% 目标只在“本帧不产批次”的子路径上达成；批次状态路径与整帧管线未达 20%，整帧差异在同机噪声内。
+保留改动的理由是它删除了确定性拷贝（每个 dirty 帧的提交状态克隆与行 `Vec` 复制），并非因为整帧 CPU 有可测收益。
+
+### 真实 PTY 复测
+
+`cli_agent` 的 `tui::` 用例在本轮环境全部通过（76 项，含恢复历史、流式正文与思考、改宽、滚动、取消与退出）。
+`PP_TUI_PERF_ASSERT=1` 的 release 验收（harness 固定 100×30、60 FPS）：
+
+| 指标 | 本次实测（protocol=response） | 本次实测（protocol=completion） | 既有基线 |
+| --- | ---: | ---: | ---: |
+| 输入 P95 | 29 ms（正文）／25 ms（代码思考） | 15／27 ms | 24–25 ms |
+| `Esc` 取消 | 15 ms | 27 ms | 26–38 ms |
+
+50 ms／100 ms 阈值全部通过；P95 最高 29 ms 比既有基线高 4 ms，本轮机器同时承载其他构建与测试，无法归因。
+计划提到的 `streaming_frame_batches` 在当前测试集中已不存在，等价覆盖改用实际存在且已运行的
+`tui::native_tui_resume_…`、`tui::tui_scrolled_stream_…`、`tui::streaming_cases::streaming_tui_both_protocols_…`
+与 `tui::transcript_blocks_markdown_thinking_streams_styles_and_replays`。
+
+另用一次性驱动脚本（已删除）在 160×48 真实 PTY 上跑 600 个 SSE 分片的混合正文与 Rust 围栏（回环 Chat
+Completions provider、隔离 HOME、release 二进制）：进程 CPU 0.84–0.87 s、终端输出 844–910 KB，屏上可见
+最后一个正文标记与代码块标记，无 panic、无错误行。该负载与上文 1500 分片基线不可比，只作为 160×48
+真实终端覆盖证据，不作为前后对比。
 
 ## 本机测量
 
@@ -65,6 +120,25 @@ cargo fmt --all --check
 ```
 
 完整回归需运行默认档和文档测试。`--profile quick` 只保留少量真实 PTY 冒烟用例，性能回归使用上面的定向命令。
+
+`streaming_frame_batches` 这条筛选在当前测试集中零匹配：先从 `cargo nextest list` 确认命中再运行，零匹配不算通过。实际存在的是
+`tui::native_tui_resume_hides_cursor_until_history_rebuild_finishes_both_protocols`、
+`tui::tui_scrolled_stream_assistant_keeps_history_and_input_both_protocols` 与
+`tui::streaming_cases::streaming_tui_both_protocols_live_colors_scroll_resize_and_bash`。
+
+第二轮实际运行的命令（`TMPDIR` 必须在工作树外，否则仓库自身的 `AGENTS.md` 会被当成项目指令）：
+
+```sh
+TMPDIR=/tmp cargo nextest run --locked -p pp-ui --lib
+TMPDIR=/tmp cargo nextest run --release --locked -p pp --test cli_agent -E 'test(native_tui_) | test(tui_scrolled_stream_) | test(streaming_tui_both_protocols) | test(transcript_blocks_markdown_thinking)'
+TMPDIR=/tmp PP_TUI_PERF_ASSERT=1 cargo nextest run --release --locked -p pp --test cli_agent tui_runtime_responsiveness --success-output immediate
+TMPDIR=/tmp cargo nextest run --locked --workspace
+```
+
+结果：`-p pp-ui --lib` 361 项、release PTY 定向 4 项、`tui_runtime_responsiveness` 1 项、全量 `--workspace` 1180 项全部通过。
+三次全量回归中有一次（第二轮编辑文档前）出现单项失败 `pp-runtime agent::plan_workflow::tests::reconcile_resume_cases::plan_missing_archive_continuation_and_restore_detach`：
+该用例单独运行、`-p pp-runtime --lib` 连跑三次、`test(plan_)` 并行连跑三次以及随后两次全量运行都通过，未复现，也不能归因于本轮改动；
+报告全量结果时以通过的两次为准，并把这次未复现的失败如实记录在此。
 
 全量并行回归运行 1437 项，1436 项通过，`tui_menu_overlay_keeps_input_cursor_and_history_anchored` 失败；该用例随后单独串行通过，与持续输出用例组成的小集合并行运行也通过。尚未确定首次失败原因，不能将本轮验证表述为全量通过。全量之后新增的分块工作量对照用例已单独通过；最后的缓冲阈值调整也通过流式与 PTY 定向验证，未重复全量回归。
 

@@ -37,6 +37,7 @@ impl Tools {
         if !registry.enabled() {
             self.lsp = None;
             self.lsp_cleanup = None;
+            self.touch_definitions();
             return;
         }
         let cleanup = registry.cleanup();
@@ -47,6 +48,7 @@ impl Tools {
         }
         self.lsp_cleanup = Some(cleanup);
         self.lsp = Some(registry);
+        self.touch_definitions();
     }
 
     /// A subagent borrows the parent Registry: it shares the same clients but never obtains the right
@@ -57,6 +59,7 @@ impl Tools {
             "child tools must not own an LSP cleanup handle"
         );
         self.lsp = registry.enabled().then_some(registry);
+        self.touch_definitions();
     }
 
     /// Hands a new cleanup handle to an external holder such as the TUI; it exists only after the owner installs.
@@ -68,6 +71,7 @@ impl Tools {
 
     pub fn set_lsp_readonly(&mut self, readonly: bool) {
         self.lsp_readonly = readonly;
+        self.touch_definitions();
     }
 
     /// LSP tool schema: present only once a Registry is installed; restricted modes trim both the

@@ -8,11 +8,12 @@
 //! splits a grapheme: a single grapheme wider than the available columns keeps
 //! its own physical line and is clipped by the viewport.
 //!
-//! Streaming updates fully re-parse the accumulated body, preserving reference links, list continuations and Setext headings.
+//! Streaming updates re-parse only the last top-level block when a snapshot strictly appends to the
+//! previous one, so a growing answer does not pay for the settled prefix again. Non-appends, terminal
+//! snapshots, partial table tails and link reference definitions fall back to a full parse.
 //! Physical lines are reused in the background by semantic block and width, so unchanged blocks are not re-wrapped.
 
 use std::borrow::Cow;
-use std::ops::Range;
 use std::sync::Arc;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -99,6 +100,10 @@ pub(super) struct MarkdownDocument {
     ends_with_blank_line: bool,
     /// Position after the last newline of the source text (the closed split point keeps the trailing horizontal indent).
     trailing_line_start: usize,
+    /// Whether the parsed region contains a link reference definition. A definition binds links in both
+    /// directions (the tail may define a link in the settled prefix and vice versa), so such documents
+    /// always take the full parse path.
+    has_reference_definition: bool,
     cached: Vec<Option<CachedBlock>>,
     pub(super) table_tail_start: Option<usize>,
 }
@@ -153,6 +158,7 @@ pub(super) struct HeadingAnchor {
 mod parse;
 mod table;
 
+use self::parse::parse_streaming_from;
 use self::table::layout_table;
 pub(super) use parse::{parse, parse_streaming, parse_streaming_preview};
 pub(super) use table::table_tail_line;
@@ -190,27 +196,101 @@ impl MarkdownDocument {
         matches!(self.blocks.last(), Some(Block::Table(_)))
     }
 
-    // Keep the whole-document semantic parse and reuse physical lines only for semantically equal blocks (or the settled lines of the same code block still growing).
-    pub(super) fn update(&mut self, source: &str, streaming: bool) {
+    /// Apply the new source snapshot that replaced `previous`, which must be the snapshot this
+    /// document was parsed from.
+    ///
+    /// A strict append re-parses only the last top-level block (the still-mutable tail) and keeps the
+    /// settled blocks with their physical lines; every other shape falls back to the full streaming
+    /// parse, which then reuses physical lines block by block.
+    pub(super) fn update(&mut self, previous: &str, source: &str, streaming: bool) {
+        if let Some(next) = self.updated_tail(previous, source, streaming) {
+            *self = next;
+            return;
+        }
         let mut next = parse_streaming(source, streaming);
         next.cached = next
             .blocks
             .iter()
             .enumerate()
             .map(|(i, block)| {
-                let matches = match (self.blocks.get(i), block) {
-                    (Some(prev), next) if prev == next => true,
-                    (Some(Block::Code(prev)), Block::Code(next)) => {
-                        prev.lang == next.lang && prev.first == next.first && prev.rest == next.rest
-                    }
-                    _ => false,
-                };
-                matches
+                let reuse = self
+                    .blocks
+                    .get(i)
+                    .is_some_and(|settled| reuse_settled_rows(settled, block));
+                reuse
                     .then(|| self.cached.get_mut(i).and_then(Option::take))
                     .flatten()
             })
             .collect();
         *self = next;
+    }
+
+    /// Append-only fast path. The settled prefix ends before the last top-level block, so Setext
+    /// headings, list tight/loose state, unclosed code fences and growing tables all stay inside the
+    /// re-parsed tail. Returns `None` when the result cannot be proven to match a full parse.
+    fn updated_tail(
+        &mut self,
+        previous: &str,
+        source: &str,
+        streaming: bool,
+    ) -> Option<MarkdownDocument> {
+        if !streaming || self.blocks.is_empty() || self.table_tail_start.is_some() {
+            return None;
+        }
+        // A link reference definition binds links in both directions, and the retained prefix may
+        // already resolve links that appear in the appended tail, so such documents keep parsing fully.
+        if self.has_reference_definition || !source.starts_with(previous) {
+            return None;
+        }
+        let base = *self.block_top_starts.last()?;
+        let split = self
+            .block_top_starts
+            .iter()
+            .position(|&start| start == base)?;
+        let tail = source.get(base..)?;
+        // A reference definition in the tail can repoint links in the settled prefix; keep the full
+        // parse instead of re-implementing reference resolution for the tail alone.
+        if tail.contains("]:") {
+            return None;
+        }
+        let group_base = self.blocks[..split]
+            .iter()
+            .filter_map(|block| match block {
+                Block::Paragraph(_, group) => *group,
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let parsed = parse_streaming_from(source, base, streaming, group_base);
+        let mut blocks = std::mem::take(&mut self.blocks);
+        let mut block_top_starts = std::mem::take(&mut self.block_top_starts);
+        let mut cached = std::mem::take(&mut self.cached);
+        let settled = blocks.split_off(split);
+        block_top_starts.truncate(split);
+        block_top_starts.extend(parsed.block_top_starts);
+        if cached.len() < split {
+            cached.resize_with(split, || None);
+        }
+        let mut settled_cached = cached.split_off(split);
+        cached.extend(parsed.blocks.iter().enumerate().map(
+            |(index, block)| match settled.get(index) {
+                Some(previous) if reuse_settled_rows(previous, block) => {
+                    settled_cached.get_mut(index).and_then(Option::take)
+                }
+                _ => None,
+            },
+        ));
+        blocks.extend(parsed.blocks);
+        Some(MarkdownDocument {
+            blocks,
+            block_top_starts,
+            last_top_is_list: parsed.last_top_is_list,
+            ends_with_blank_line: parsed.ends_with_blank_line,
+            trailing_line_start: parsed.trailing_line_start,
+            has_reference_definition: parsed.has_reference_definition,
+            cached,
+            table_tail_start: parsed.table_tail_start,
+        })
     }
     #[cfg(test)]
     pub(super) fn layout_cached(&mut self, width: u16) -> Vec<Line<'static>> {
@@ -434,6 +514,18 @@ impl MarkdownDocument {
 // ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------
+
+/// Whether the settled physical lines of `previous` still describe `next`: semantically equal blocks,
+/// or the already settled rows of the same code block that is still growing.
+fn reuse_settled_rows(previous: &Block, next: &Block) -> bool {
+    match (previous, next) {
+        (previous, next) if previous == next => true,
+        (Block::Code(previous), Block::Code(next)) => {
+            previous.lang == next.lang && previous.first == next.first && previous.rest == next.rest
+        }
+        _ => false,
+    }
+}
 
 fn spans_width(spans: &[Span<'static>]) -> usize {
     spans.iter().map(Span::width).sum()
@@ -805,18 +897,21 @@ mod cache_tests {
     fn markdown_block_cache_matches_full_semantics_after_updates_and_resize() {
         let mut document = parse("稳定段落中文🙂\n\n[link][id]\n\ntitle");
         document.layout_cached(40);
-        document.update("稳定段落中文🙂\n\n[link][id]\n\ntitle\n---\n\n[id]: https://example.com\n\n```rust\nlet x = 1;", false);
+        let appended = "稳定段落中文🙂\n\n[link][id]\n\ntitle\n---\n\n[id]: https://example.com\n\n```rust\nlet x = 1;";
+        document.update("稳定段落中文🙂\n\n[link][id]\n\ntitle", appended, false);
         assert!(document.cached[0].is_some());
         assert!(document.cached[1].is_none());
+        let mut previous = appended;
         for source in [
             "稳定段落中文🙂\n\n[link][id]\n\ntitle\n---\n\n[id]: https://example.com\n\n```rust\nlet x = 1;",
             "- item\n\n  continuation\n\n| 表 | 值 |\n| - | - |\n| 🙂 | 中文 |",
             "替换正文\n\n> quote\n\n```rust\nlet x = 2;\n```",
         ] {
-            document.update(source, false);
+            document.update(previous, source, false);
             for width in [80, 12, 40, 0] {
                 assert_eq!(document.layout_cached(width), parse(source).layout(width));
             }
+            previous = source;
         }
     }
 }

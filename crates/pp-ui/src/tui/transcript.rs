@@ -54,12 +54,15 @@ pub(super) use wrap::{block_line, visit_wrapped_rows, wrap_block};
 
 static NEXT_NATIVE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+/// One frozen terminal row of native history; the committed state, previews and batches share the same row buffer.
+pub(super) type NativeRow = Arc<[ratatui::buffer::Cell]>;
+
 /// Committed source position plus the frozen lines still on screen; the full history is not copied.
 #[derive(Clone, Default)]
 struct NativeState {
     entry: usize,
     row: usize,
-    retained: VecDeque<Vec<ratatui::buffer::Cell>>,
+    retained: VecDeque<NativeRow>,
     revision: u64,
     width: u16,
     commit_layout: Option<Arc<EntryLayout>>,
@@ -70,7 +73,7 @@ pub(super) struct NativeBatch {
     generation: u64,
     revision: u64,
     next: NativeState,
-    pub rows: Vec<Vec<ratatui::buffer::Cell>>,
+    pub rows: Vec<NativeRow>,
 }
 
 fn bash_background() -> Color {

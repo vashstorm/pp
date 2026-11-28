@@ -160,6 +160,16 @@ pub(crate) struct State {
     connect: connect_status::Progress,
     // Cancellation handle of the current background connect: shutdown and test teardown use it to end the wait promptly.
     connect_token: Option<CancellationToken>,
+    // Monotonic revision of the tool table and tool definitions; only publishing changes bumps it, reads never do.
+    tools_revision: u64,
+}
+
+impl State {
+    // Records a tool table or tool definition change: consumers compare `McpManager::tools_revision()` instead of
+    // rebuilding and deep-comparing the definition list on every turn.
+    pub(crate) fn publish_tools_change(&mut self) {
+        self.tools_revision += 1;
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -263,6 +273,12 @@ impl McpManager {
         self.lock_state().connections.len()
     }
 
+    /// Monotonic revision of the tool table and the tool definitions derived from it: it advances whenever a connect
+    /// commit, `/mcp` management change or shutdown publishes a different tool set and never for read-only queries.
+    pub fn tools_revision(&self) -> u64 {
+        self.lock_state().tools_revision
+    }
+
     #[cfg(test)]
     pub(crate) fn test_stop_servers(&self) -> Result<()> {
         let _control = self.lock_control();
@@ -333,6 +349,7 @@ mod fixtures {
                 },
             },
         );
+        state.publish_tools_change();
     }
 }
 

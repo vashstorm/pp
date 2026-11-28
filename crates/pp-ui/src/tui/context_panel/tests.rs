@@ -6,6 +6,25 @@ use pp_runtime::agent::context_diagnosis::{
     CategoryKey, CategorySummary, ContextReport, DiagnosticItem,
 };
 use ratatui::{Terminal, backend::TestBackend};
+use std::sync::Arc;
+
+fn arc_item(
+    kind_label: &str,
+    title: &str,
+    subtitle: &str,
+    tokens: u64,
+    bytes: u64,
+    preview: &str,
+) -> Arc<DiagnosticItem> {
+    Arc::new(DiagnosticItem {
+        kind_label: kind_label.into(),
+        title: title.into(),
+        subtitle: subtitle.into(),
+        tokens,
+        bytes,
+        preview: preview.into(),
+    })
+}
 
 fn sample_empty_report() -> ContextReport {
     ContextReport {
@@ -62,22 +81,22 @@ fn sample_report() -> ContextReport {
         item_count: 2,
         in_context: true,
         items: vec![
-            DiagnosticItem {
-                kind_label: "Base".into(),
-                title: "Base System Prompt (bundled)".into(),
-                subtitle: "bundled".into(),
-                tokens: 1_800,
-                bytes: 5_400,
-                preview: "Base body".into(),
-            },
-            DiagnosticItem {
-                kind_label: "Runtime".into(),
-                title: "Runtime Tool & Environment Rules".into(),
-                subtitle: "prompts/runtime.md".into(),
-                tokens: 700,
-                bytes: 2_100,
-                preview: "Runtime rules".into(),
-            },
+            arc_item(
+                "Base",
+                "Base System Prompt (bundled)",
+                "bundled",
+                1_800,
+                5_400,
+                "Base body",
+            ),
+            arc_item(
+                "Runtime",
+                "Runtime Tool & Environment Rules",
+                "prompts/runtime.md",
+                700,
+                2_100,
+                "Runtime rules",
+            ),
         ],
     };
     report.categories[1] = CategorySummary {
@@ -87,14 +106,14 @@ fn sample_report() -> ContextReport {
         bytes: 159,
         item_count: 1,
         in_context: true,
-        items: vec![DiagnosticItem {
-            kind_label: "AGENTS.md".into(),
-            title: "AGENTS.md".into(),
-            subtitle: "sent in session".into(),
-            tokens: 53,
-            bytes: 159,
-            preview: "Keep tests fast.".into(),
-        }],
+        items: vec![arc_item(
+            "AGENTS.md",
+            "AGENTS.md",
+            "sent in session",
+            53,
+            159,
+            "Keep tests fast.",
+        )],
     };
     report.categories[2] = CategorySummary {
         key: CategoryKey::Skills,
@@ -103,14 +122,14 @@ fn sample_report() -> ContextReport {
         bytes: 1_401,
         item_count: 1,
         in_context: true,
-        items: vec![DiagnosticItem {
-            kind_label: "Skill".into(),
-            title: "rust".into(),
-            subtitle: "skill://rust".into(),
-            tokens: 467,
-            bytes: 1_401,
-            preview: "Rust skill".into(),
-        }],
+        items: vec![arc_item(
+            "Skill",
+            "rust",
+            "skill://rust",
+            467,
+            1_401,
+            "Rust skill",
+        )],
     };
     report.categories[3] = CategorySummary {
         key: CategoryKey::BuiltInTools,
@@ -120,22 +139,22 @@ fn sample_report() -> ContextReport {
         item_count: 2,
         in_context: true,
         items: vec![
-            DiagnosticItem {
-                kind_label: "Built-in".into(),
-                title: "read".into(),
-                subtitle: "Read files".into(),
-                tokens: 1_200,
-                bytes: 3_600,
-                preview: "{\"name\":\"read\"}".into(),
-            },
-            DiagnosticItem {
-                kind_label: "Built-in".into(),
-                title: "bash".into(),
-                subtitle: "Run shell".into(),
-                tokens: 3_500,
-                bytes: 10_500,
-                preview: "{\"name\":\"bash\"}".into(),
-            },
+            arc_item(
+                "Built-in",
+                "read",
+                "Read files",
+                1_200,
+                3_600,
+                "{\"name\":\"read\"}",
+            ),
+            arc_item(
+                "Built-in",
+                "bash",
+                "Run shell",
+                3_500,
+                10_500,
+                "{\"name\":\"bash\"}",
+            ),
         ],
     };
     report.categories[4] = CategorySummary {
@@ -145,14 +164,14 @@ fn sample_report() -> ContextReport {
         bytes: 7_500,
         item_count: 1,
         in_context: true,
-        items: vec![DiagnosticItem {
-            kind_label: "MCP".into(),
-            title: "docs / search".into(),
-            subtitle: "mcp__docs__search".into(),
-            tokens: 2_500,
-            bytes: 7_500,
-            preview: "{\"name\":\"mcp__docs__search\"}".into(),
-        }],
+        items: vec![arc_item(
+            "MCP",
+            "docs / search",
+            "mcp__docs__search",
+            2_500,
+            7_500,
+            "{\"name\":\"mcp__docs__search\"}",
+        )],
     };
     report.categories[5] = CategorySummary {
         key: CategoryKey::UserMessages,
@@ -161,14 +180,14 @@ fn sample_report() -> ContextReport {
         bytes: 9_900,
         item_count: 1,
         in_context: true,
-        items: vec![DiagnosticItem {
-            kind_label: "User".into(),
-            title: "#1 User".into(),
-            subtitle: "Check code".into(),
-            tokens: 3_300,
-            bytes: 9_900,
-            preview: "Check code".into(),
-        }],
+        items: vec![arc_item(
+            "User",
+            "#1 User",
+            "Check code",
+            3_300,
+            9_900,
+            "Check code",
+        )],
     };
     report.categories[6] = CategorySummary {
         key: CategoryKey::AssistantMessages,
@@ -177,14 +196,14 @@ fn sample_report() -> ContextReport {
         bytes: 4_500,
         item_count: 1,
         in_context: true,
-        items: vec![DiagnosticItem {
-            kind_label: "Assistant".into(),
-            title: "#2 Assistant".into(),
-            subtitle: "Done".into(),
-            tokens: 1_500,
-            bytes: 4_500,
-            preview: "Done".into(),
-        }],
+        items: vec![arc_item(
+            "Assistant",
+            "#2 Assistant",
+            "Done",
+            1_500,
+            4_500,
+            "Done",
+        )],
     };
     report.categories[7] = CategorySummary {
         key: CategoryKey::Thinking,
@@ -193,14 +212,14 @@ fn sample_report() -> ContextReport {
         bytes: 3_600,
         item_count: 1,
         in_context: true,
-        items: vec![DiagnosticItem {
-            kind_label: "Thinking".into(),
-            title: "#3 Reasoning (turn 1)".into(),
-            subtitle: "Analyzed workspace".into(),
-            tokens: 1_200,
-            bytes: 3_600,
-            preview: "Analyzed workspace".into(),
-        }],
+        items: vec![arc_item(
+            "Thinking",
+            "#3 Reasoning (turn 1)",
+            "Analyzed workspace",
+            1_200,
+            3_600,
+            "Analyzed workspace",
+        )],
     };
     report.categories[8] = CategorySummary {
         key: CategoryKey::ToolCalls,
@@ -209,14 +228,14 @@ fn sample_report() -> ContextReport {
         bytes: 2_400,
         item_count: 1,
         in_context: true,
-        items: vec![DiagnosticItem {
-            kind_label: "Tool Call".into(),
-            title: "#4 read(src/main.rs)".into(),
-            subtitle: "call_1".into(),
-            tokens: 800,
-            bytes: 2_400,
-            preview: "read".into(),
-        }],
+        items: vec![arc_item(
+            "Tool Call",
+            "#4 read(src/main.rs)",
+            "call_1",
+            800,
+            2_400,
+            "read",
+        )],
     };
     report.categories[9] = CategorySummary {
         key: CategoryKey::ToolOutput,
@@ -225,14 +244,14 @@ fn sample_report() -> ContextReport {
         bytes: 23_940,
         item_count: 1,
         in_context: true,
-        items: vec![DiagnosticItem {
-            kind_label: "Tool Output".into(),
-            title: "#5 read".into(),
-            subtitle: "src/main.rs".into(),
-            tokens: 7_980,
-            bytes: 23_940,
-            preview: "fn main() {}".into(),
-        }],
+        items: vec![arc_item(
+            "Tool Output",
+            "#5 read",
+            "src/main.rs",
+            7_980,
+            23_940,
+            "fn main() {}",
+        )],
     };
     report
 }
@@ -365,6 +384,72 @@ fn context_panel_grid_inline_metrics_ascii_and_expand_collapse() {
         assert!(panel.expanded[3]);
         assert!(matches!(panel.handle(key(KeyCode::Esc)), Action::Close));
     }
+}
+
+/// A category can hold many entries; expanding it in place lists every one of them, keeps the selected row visible
+/// while scrolling, and renders the labels of the entries the report shares with the runtime classification.
+#[test]
+fn context_panel_expands_category_with_many_shared_items() {
+    let mut report = sample_empty_report();
+    report.empty_session = false;
+    report.active_tokens = 60_000;
+    let items: Vec<_> = (0..40)
+        .map(|index| {
+            arc_item(
+                "Tool Output",
+                &format!("#{index} read"),
+                &format!("file_{index}.txt"),
+                1_500,
+                4_500,
+                &format!("output body {index}"),
+            )
+        })
+        .collect();
+    report.categories[9] = CategorySummary {
+        key: CategoryKey::ToolOutput,
+        name: "Tool Output",
+        tokens: 60_000,
+        bytes: 180_000,
+        item_count: items.len(),
+        in_context: true,
+        items,
+    };
+
+    let mut panel = Panel::new();
+    panel.set_report(report);
+    for _ in 0..9 {
+        assert!(matches!(panel.handle(key(KeyCode::Down)), Action::None));
+    }
+    assert_eq!(panel.visible_rows()[panel.cursor], RowKind::Category(9));
+
+    assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
+    let rows = panel.visible_rows();
+    assert_eq!(rows.len(), 10 + 40 + 2);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row, RowKind::Child(9, _)))
+            .count(),
+        40
+    );
+
+    // The last entry is below the visible list, so the view scrolls with the cursor and keeps it on screen.
+    assert!(matches!(panel.handle(key(KeyCode::End)), Action::None));
+    let rows = panel.visible_rows();
+    assert_eq!(rows[51], RowKind::FreeSpace);
+    assert_eq!(rows[50], RowKind::AutoCompactBuffer);
+    assert_eq!(rows[49], RowKind::Child(9, 39));
+    assert!(matches!(panel.handle(key(KeyCode::Up)), Action::None));
+    assert!(matches!(panel.handle(key(KeyCode::Up)), Action::None));
+    assert_eq!(panel.visible_rows()[panel.cursor], RowKind::Child(9, 39));
+    let scrolled = draw_panel(&mut panel, 120, 26);
+    assert!(scrolled.contains("#39 read · file_39.txt"), "{scrolled}");
+    assert!(!scrolled.contains("#0 read"), "{scrolled}");
+
+    // Home returns to the first category row; the expanded entries are scrolled out again.
+    assert!(matches!(panel.handle(key(KeyCode::Home)), Action::None));
+    let top = draw_panel(&mut panel, 120, 26);
+    assert!(top.contains("> ⛁ System Prompt"), "{top}");
+    assert!(!top.contains("#39 read"), "{top}");
 }
 
 #[test]

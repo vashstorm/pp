@@ -12,8 +12,8 @@ use std::{
 };
 
 use super::{
-    ExecuteCall, PLAN_BASE_TOOLS, PLAN_SEARCH_TOOLS, ToolPolicy, Tools, is_plan_tool, permission,
-    plan,
+    ExecuteCall, PLAN_BASE_TOOLS, PLAN_SEARCH_TOOLS, SubagentHost, ToolPolicy, Tools, is_plan_tool,
+    permission, plan,
 };
 use pp_bash::BackgroundCleanup;
 use pp_workspace::{diff, save};
@@ -74,15 +74,65 @@ impl Tools {
             host_defaults: pp_workspace::host_defaults::current(),
             sandbox: std::sync::Arc::new(pp_sandbox::Sandbox::disabled()),
             web_search: pp_config::config::WebSearchSettings::default(),
+            definitions_revision: 0,
         })
+    }
+
+    /// Definition-affecting setters; every one of them bumps the local definitions revision so the
+    /// instruction refresh key notices the change before rebuilding the tool table.
+    pub fn set_mcp(&mut self, mcp: std::sync::Arc<pp_mcp::McpManager>) {
+        self.mcp = mcp;
+        self.touch_definitions();
+    }
+
+    pub fn set_mcp_readonly(&mut self, readonly: bool) {
+        self.mcp_readonly = readonly;
+        self.touch_definitions();
+    }
+
+    pub fn set_allowed_tools(&mut self, allowed: Option<crate::AllowedTools>) {
+        self.allowed_tools = allowed;
+        self.touch_definitions();
+    }
+
+    pub fn set_subagent(&mut self, subagent: Option<std::sync::Arc<dyn SubagentHost>>) {
+        self.subagent = subagent;
+        self.touch_definitions();
+    }
+
+    pub fn set_yield_schema(&mut self, schema: Option<Value>) {
+        self.yield_schema = schema;
+        self.touch_definitions();
+    }
+
+    pub fn set_ask_handler(&mut self, handler: Option<pp_core::interaction::SharedAskHandler>) {
+        self.ask_handler = handler;
+        self.touch_definitions();
+    }
+
+    pub fn set_permission(&mut self, gate: permission::Gate) {
+        self.permission = gate;
+        self.touch_definitions();
+    }
+
+    pub fn set_skills(&mut self, skills: pp_config::skills::SharedSkills) {
+        self.skills = skills;
+        self.touch_definitions();
+    }
+
+    pub fn set_limits(&mut self, limits: ToolLimits) {
+        self.limits = limits;
+        self.touch_definitions();
     }
 
     pub fn configure_web_search(&mut self, settings: pp_config::config::WebSearchSettings) {
         self.web_search = settings;
+        self.touch_definitions();
     }
 
     pub fn configure_mcp(&mut self, settings: pp_config::config::McpSettings) {
         self.mcp_settings = settings;
+        self.touch_definitions();
     }
 
     pub(super) fn uses_mcp_proxy(&self, access: pp_mcp::Access) -> bool {
@@ -103,6 +153,7 @@ impl Tools {
 
     pub fn set_sandbox(&mut self, sandbox: std::sync::Arc<pp_sandbox::Sandbox>) {
         self.sandbox = sandbox;
+        self.touch_definitions();
     }
 
     pub fn sandbox(&self) -> &std::sync::Arc<pp_sandbox::Sandbox> {
@@ -132,7 +183,7 @@ impl Tools {
         mcp: std::sync::Arc<pp_mcp::McpManager>,
     ) -> Result<Self> {
         let mut tools = Self::new(cwd, edit_mode)?;
-        tools.mcp = mcp;
+        tools.set_mcp(mcp);
         Ok(tools)
     }
 
@@ -161,6 +212,7 @@ impl Tools {
             self.eval_py_available = false;
             self.eval_js_available = None;
         }
+        self.touch_definitions();
     }
 
     pub fn eval_available(&self) -> bool {

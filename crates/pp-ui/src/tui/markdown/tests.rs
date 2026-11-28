@@ -494,3 +494,190 @@ fn controls_tabs_spaces_html_blanks_and_lists() {
         vec!["• first", "", "  second paragraph"]
     );
 }
+
+/// Every streaming append must keep the semantic blocks, the recorded source offsets and the physical
+/// rows identical to a freshly parsed document, because the preview slices the source at those offsets.
+#[test]
+fn streaming_appends_match_a_full_parse_for_every_block_shape() {
+    // CJK and emoji payloads make byte offsets differ from the visible column widths.
+    let base = "# Plan 🙂\n\nIntro paragraph with **bold**, `code` and a [link](https://example.test/a).\n\n\
+> quoted line with a [second](https://example.test/b) link\n\n\
+- first item\n- second item\n  - nested item\n\n\
+Setext title\n------------\n\n\
+| A | B |\n| --- | --- |\n| 1 | 2 |\n\n\
+```rust\nfn main() {\n    let value = 1;\n}\n```\n\n\
+open tail paragraph with 中文";
+    let tail = " and 🙂 words\n\n- appended item\n- second appended item\n\n\
+> appended quote with `code`\n\n\
+| C | D |\n| --- | --- |\n| 3 | 4 |\n\n\
+## appended heading\n\n\
+```rust\nlet tail = 2;\n";
+    let boundaries: Vec<usize> = tail
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(tail.len()))
+        .collect();
+    let steps = [1usize, 2, 3, 5, 8, 13, 21, 34, 64];
+    let mut document = parse_streaming(base, true);
+    let mut previous = base.to_string();
+    let mut cursor = 0usize;
+    let mut step = 0usize;
+    while cursor + 1 < boundaries.len() {
+        cursor = (cursor + steps[step % steps.len()]).min(boundaries.len() - 1);
+        step += 1;
+        let source = format!("{base}{}", &tail[..boundaries[cursor]]);
+        document.update(&previous, &source, true);
+        previous.clone_from(&source);
+        let label = format!("append step {step} ({} source bytes)", source.len());
+        let mut reference = parse_streaming(&source, true);
+        assert!(
+            document.blocks == reference.blocks,
+            "semantic blocks differ: {label}"
+        );
+        assert_eq!(
+            document.block_top_starts, reference.block_top_starts,
+            "top-level block offsets differ: {label}"
+        );
+        assert_eq!(
+            document.last_top_is_list, reference.last_top_is_list,
+            "{label}"
+        );
+        assert_eq!(
+            document.ends_with_blank_line, reference.ends_with_blank_line,
+            "{label}"
+        );
+        assert_eq!(
+            document.trailing_line_start, reference.trailing_line_start,
+            "{label}"
+        );
+        assert_eq!(
+            document.table_tail_start, reference.table_tail_start,
+            "{label}"
+        );
+        assert_eq!(
+            document.ends_with_table(),
+            reference.ends_with_table(),
+            "{label}"
+        );
+        for width in [8u16, 40, 24, 80] {
+            let (rows, meta) = document.layout_cached_with_meta(width);
+            let (expected, expected_meta) = reference.layout_cached_with_meta(width);
+            assert_eq!(
+                rows, expected,
+                "physical rows differ: {label}, width {width}"
+            );
+            assert_eq!(meta.stable_rows, expected_meta.stable_rows, "{label}");
+            assert_eq!(
+                meta.tail_source_start, expected_meta.tail_source_start,
+                "tail start differs from the full parse: {label}"
+            );
+            assert_eq!(
+                meta.needs_separator, expected_meta.needs_separator,
+                "{label}"
+            );
+            assert_eq!(
+                meta.open_code_prefix, expected_meta.open_code_prefix,
+                "{label}"
+            );
+            assert_eq!(
+                meta.fallback_prefix, expected_meta.fallback_prefix,
+                "{label}"
+            );
+            let start = meta.tail_source_start;
+            assert!(
+                start < source.len() && source.is_char_boundary(start),
+                "tail start {start} is not a character boundary: {label}"
+            );
+            assert!(
+                start == 0 || source.as_bytes()[start - 1] == b'\n',
+                "tail start {start} is not at a line start: {label}"
+            );
+            assert!(meta.stable_rows < rows.len(), "{label}, width {width}");
+        }
+    }
+    // An unchanged snapshot must not drift away from a fresh parse either.
+    document.update(&previous, &previous, true);
+    assert_eq!(
+        document.layout(24),
+        parse_streaming(&previous, true).layout(24)
+    );
+}
+
+/// Snapshot shapes that cannot be proven incremental must still match a full parse; the definition
+/// cases would otherwise keep resolving links from a stale prefix.
+#[test]
+fn streaming_fallbacks_match_a_full_parse_for_definitions_replacement_and_terminal_state() {
+    // A definition appended after the text resolves a link in the settled prefix.
+    let prefix = "Intro [docs][id] text.\n\nsecond paragraph";
+    let defined = format!("{prefix}\n\n[id]: https://example.test/defined\n");
+    let mut document = parse_streaming(prefix, true);
+    document.update(prefix, &defined, true);
+    let reference = parse_streaming(&defined, true);
+    assert!(
+        document.blocks == reference.blocks,
+        "an appended definition must re-parse the whole document"
+    );
+    let rows = texts(&document.layout(80));
+    assert_eq!(rows, texts(&reference.layout(80)));
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("(https://example.test/defined)")),
+        "the appended definition must resolve the settled link: {rows:?}"
+    );
+
+    // A definition settled in the prefix must resolve a link that only appears in the appended tail.
+    let defined = "[id]: https://example.test/settled\n\nIntro";
+    let tail_appended = format!("{defined} [docs][id]");
+    let mut document = parse_streaming(defined, true);
+    document.update(defined, &tail_appended, true);
+    let reference = parse_streaming(&tail_appended, true);
+    assert!(
+        document.blocks == reference.blocks,
+        "a prefix definition must re-parse the appended tail"
+    );
+    let rows = texts(&document.layout(80));
+    assert_eq!(rows, texts(&reference.layout(80)));
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("(https://example.test/settled)")),
+        "the appended tail must resolve against the prefix definition: {rows:?}"
+    );
+    assert_eq!(document.block_top_starts, reference.block_top_starts);
+    assert_eq!(document.trailing_line_start, reference.trailing_line_start);
+
+    // A cancelled run or a switched message replaces the source instead of extending it.
+    let replaced = "Different body 🙂\n\n> quoted\n\n```rust\nlet x = 1;\n```";
+    document.update(&tail_appended, replaced, true);
+    let reference = parse_streaming(replaced, true);
+    assert!(
+        document.blocks == reference.blocks,
+        "a replaced source body must re-parse from scratch"
+    );
+    assert_eq!(document.block_top_starts, reference.block_top_starts);
+    assert_eq!(
+        texts(&document.layout(40)),
+        texts(&reference.layout(40)),
+        "replaced source rows"
+    );
+
+    // The terminal snapshot ends the stream and completes the table the streaming preview held back.
+    let partial_table = "intro\n\n| A | B |\n| --- | --- |";
+    let still_streaming = format!("{partial_table} | 1 |");
+    let mut document = parse_streaming(partial_table, true);
+    assert!(document.table_tail_start.is_some());
+    document.update(partial_table, &still_streaming, true);
+    let reference = parse_streaming(&still_streaming, true);
+    assert!(
+        document.blocks == reference.blocks,
+        "a growing table tail must keep matching the full parse"
+    );
+    let terminal = format!("{partial_table} | 1 | 2 |\n");
+    document.update(&still_streaming, &terminal, false);
+    let reference = parse(&terminal);
+    assert!(
+        document.blocks == reference.blocks,
+        "the terminal snapshot must re-parse the held-back table"
+    );
+    assert_eq!(document.table_tail_start, reference.table_tail_start);
+    assert_eq!(texts(&document.layout(40)), texts(&reference.layout(40)));
+}

@@ -69,6 +69,27 @@ TMPDIR=/private/tmp HOME=/private/tmp/perf-home PP_PERF_TRACE=1 \
 优化后一列为同一套命令在本轮改动后的中位数（三次）。
 
 - `-p` 冷启动到首个请求：MCP 0 个 46 → 38 ms；1 个 77 → 70 ms；3 个 104 → 132 ms（三次样本 126／135／132 ms）。
+
+### 启动期 MCP 并行建连（本轮）
+
+启动期后台建连改为按配置顺序分块（每块最多 4 个服务）并行发现，提交、进度快照与工具表仍按配置顺序；
+显式 `/mcp reconnect|reload` 保持串行。下表用同一 release 二进制、同一隔离 HOME 与同一批 stdio fixture
+（`tests/fixtures/mcp_barrier_server.sh`，每个服务在 `initialize` 前固定延迟 1 s，3 个服务），
+把 `CONNECT_PARALLELISM` 临时改为 1 复现旧串行行为做 A/B，各跑三次取中位数：
+
+| 指标 | 串行（并行度 1） | 并行（并行度 4） | 变化 |
+| --- | ---: | ---: | ---: |
+| 建连总耗时（`Connected to MCP servers: … (耗时)`） | 3.1 s | 1.0 s | −67.7% |
+| `request_ready` | 3420.1 ms | 1362.8 ms | −60.2% |
+| 同一 `mcp.json` 下 MCP 归因增量（相对 0 服务） | ~3.1 s | ~1.03 s | −66.8% |
+
+三次样本：串行 `request_ready` 3471.9／3404.3／3420.1 ms，并行 1362.8／1410.8／1356.1 ms（恢复并行度 4 后复测
+1457.6／1391.5／1390.5 ms）；0 服务基线在本机为 336.7／332.0／322.6 ms，所以上表只比较 MCP 归因增量，
+不与本文早先记录的 37.6–46.1 ms 绝对值混用。A/B 两次运行的三种工具表内容一致（`mcp__alpha__echo`、
+`mcp__beta__echo`、`mcp__gamma__echo`），首个请求仍拿完整工具表。
+
+同一改动在 crate 内探针（3 个各延迟 150 ms 的隔离服务）上的 `start_connect → await_connect` 墙钟为
+522 ms → 181 ms（−65.3%），与上表方向一致。
 - `tools_ready` 43 → 15 ms：`Tools::new` 不再探测 Python（默认配置下这是首个任务前最大的一笔固定开销）。
 - `sandbox_ready` 51 → 15 ms：`tools.sandbox.mode: off` 不再启动一次 `sandbox-exec` 子进程；启用模式的探测时机不变。
 - MCP 每增加一个 stdio 服务，首请求前仍多等约 30–50 ms；`await_connect` 的“首个请求必须带完整工具表”语义未改，这一列的高方差来自 fixture 服务进程启动，不代表本轮改动。
@@ -97,6 +118,46 @@ TMPDIR=/private/tmp HOME=/private/tmp/perf-home PP_PERF_TRACE=1 \
 
 `/context` 诊断的发布路径同时改为增量分类 + 指纹缓存：同一会话的全量强算实测约 4.4 ms，
 复用缓存发布约 83 µs（该数字来自临时探针，仓库内没有对应可复制入口，仅作量级参考）。
+
+### 无变化轮次的提示词刷新短路（本轮）
+
+`Agent` 现在保存 `InstructionRefreshKey`（工具定义修订键、项目文档 `Arc`、子 Agent `task` schema、
+技能头、工作流提示与已写入 session 的 system）。每轮仍执行 `project_documents()` 的指纹／stat 刷新并读取
+上述小输入；全部相同则以 `Ok(false)` 提前返回，跳过 `all_definitions`、项目正文渲染、Handlebars compose
+与 `Session::update_tools`。工具定义修订键由本地修订号、`McpManager::tools_revision()`、`WorkMode`、
+权限预设与完整 `SandboxStatus` 组成，任何一项变化都完整走原路径。
+
+临时 `perf_probe_refresh`（已删除）fixture：真实 `AGENTS.md`（80 条规则）+ 256 个 MCP 工具
+（`mcp.proxy: never`，共 268 个定义）、已有历史、请求边界已上报全部文档；预热后连续 50 次无变化刷新，
+release 三次取中位数：
+
+| 变体 | 修改前 | 修改后（缓存命中） | 变化 |
+| --- | ---: | ---: | ---: |
+| 256 MCP 工具 + 项目指令 | 257.5 µs/轮 | 4.982 µs/轮 | −98.1% |
+| 同上 + 子 Agent 绑定（生产根 Agent 形态） | 288.1 µs/轮（同 fixture 强制失效对照） | 17.817 µs/轮 | −93.8% |
+
+修改前数字来自未改动代码的真实运行（`13.795667／12.874375／12.844917 ms` per 50 轮）；修改后把键强制失效
+得到的全量路径为 13.14 ms/50 轮，与修改前一致，说明对照可靠。任意输入变化（MCP 工具表、内建配置、权限／
+沙盒、角色、技能、Plan revision、AGENTS.md 增删、模型与会话替换）仍在下一轮立即生效，测试见
+`crates/pp-runtime/src/agent/tests/refresh_cases.rs`。
+
+### `/context` 诊断项共享所有权（本轮）
+
+诊断项集合统一为 `Vec<Arc<DiagnosticItem>>`：缓存命中、`breakdown`、`capture` 与报告组装只克隆句柄，
+只有构造新项时 `Arc::new`；`message_ids` 在同一次扫描里返回 ID 向量与整串指纹，`ThinkingKey` 只保存该指纹。
+临时 `perf_probe_context_publish`（已删除）fixture：Response 协议 201 条原生消息（100 组工具 exchange），
+其中 40 个工具输出各 63 KiB（低于 64 KiB 活预览预算，使 preview 真正持有全文），另 60 个小输出；
+每次取 20 次缓存命中发布的逐次耗时中位数，release 三次取中位数：
+
+| 路径 | 修改前 | 修改后 | 变化 |
+| --- | ---: | ---: | ---: |
+| 生产每轮发布（复用本轮估算 `publish_context_snapshot_with_usage`） | 196.5 µs | 91.2 µs | −53.6% |
+| 回退重估发布 `publish_context_snapshot()` | 2039 µs | 1921 µs | −5.8% |
+| 冷路径全量 `diagnose_context()` | 8.84 ms | 8.84 ms | 不变 |
+
+两条发布路径的缓存命中报告都与全量 `diagnose_context()` 逐字段相等（探针与永久用例
+`context_diagnosis_cached_publish_matches_full_diagnosis` 都断言）；第二行余量主要在 `context_usage()`
+的全量重估，不属于本项范围。
 
 > 计划要求的 `Active.file` `BufWriter` 未落地：用户态缓冲会推迟写入可见性，与
 > `tree_view()` 只读、失败收尾字节不变、`publish_project_load` 写失败必须当场返回
@@ -155,14 +216,21 @@ TUI 帧指标的口径与负载（160×48 PTY、400 段中英混排文本 + 100 
 
 本轮新增的每帧拷贝与预览回退指标（4 次整帧 `Buffer` 克隆降为 2 次、预览回退按前缀
 `Arc` 复用、输入框每帧只排版一次、状态栏字段只构造一次、尾部预览只处理末尾行）在同
-PTY 负载下需要真实终端复测；本轮执行环境禁止创建伪终端（见下），因此该表未更新，
+PTY 负载下需要真实终端复测；上一轮执行环境禁止创建伪终端（见下），因此该表未更新，
 而是在 `docs/tui-performance.md` 记录机制与确定性断言。
+
+第二轮改动（流式 Markdown 增量解析、原生历史行改为共享 `Arc<[Cell]>`、`/context` 诊断项共享所有权）的
+机制、探针数值与真实 PTY 复测记录在 `docs/tui-performance.md` 的“第二轮改动与复测”一节；本文件只保留
+启动、每轮与工具路径的数字。
 
 ## 未验证边界
 
-- 本机执行沙盒拒绝创建伪终端（`openpty: Operation not permitted`），因此 TUI 首帧时间、
-  流式每帧 CPU 与 PTY 断言无法在本环境重跑；上述 TUI 数字来自既有 `docs/tui-performance.md`
-  记录，需要真实终端复测才能更新。
+- 上一轮执行沙盒拒绝创建伪终端（`openpty: Operation not permitted`），当时 TUI 首帧时间、流式每帧 CPU 与
+  PTY 断言无法重跑。第二轮环境允许创建伪终端：`cli_agent` 的 `tui::` 用例、`PP_TUI_PERF_ASSERT=1` 的
+  release 验收与一次 160×48 手动 PTY 冒烟都已实际运行，结果见 `docs/tui-performance.md`；但 harness 固定
+  100×30，160×48 只有一次性冒烟（不与 1500 分片基线做前后对比），也没有真实终端渲染器的视觉验收。
 - mock provider 只实现 Chat Completions 的非流式语义（单分片文本 / 单次工具调用），
   不代表真实供应商的分片节奏；`-p` 路径不含 TUI 绘制与 `/context` 诊断开销。
+- 本机 `-p` 冷启动的固定开销（0 个 MCP 服务时 `request_ready` 约 332 ms）明显高于本文早先记录的
+  37.6–46.1 ms，因此本轮 MCP 只比较同一二进制内的归因增量与 A/B，不把绝对值写回上面的启动表。
 - 所有数字都是本机单一硬件与热文件缓存下的结果，不能外推到其他机器。

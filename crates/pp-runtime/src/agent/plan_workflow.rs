@@ -216,6 +216,8 @@ impl Agent {
         self.last_request = None;
         self.last_request_raw_tokens = None;
         self.pending_instructions = None;
+        // The model name is part of the composed system prompt; a replacement always refreshes it.
+        self.invalidate_instruction_refresh();
     }
 
     /// New sources are rendered by section; old sessions keep using the indivisible base
@@ -656,6 +658,7 @@ impl Agent {
                 .keys()
                 .map(std::path::PathBuf::from),
         );
+        self.invalidate_instruction_refresh();
         self.thinking_history = super::context_diagnosis::extract_thinking_from_replay(&replay);
         self.replay = replay;
         self.tools.clear_caches();

@@ -469,6 +469,7 @@ mod tests {
                     },
                 },
             );
+            state.publish_tools_change();
         }
 
         assert_eq!(manager.available_tool_count(Access::Full, |_| true), 3);

@@ -75,6 +75,7 @@ impl McpManager {
         state.closing = true;
         let servers = std::mem::take(&mut state.servers);
         state.tools.clear();
+        state.publish_tools_change();
         let mut slots: Vec<(String, SharedConnection)> = servers
             .iter()
             .map(|(name, server)| (name.clone(), server.connection.clone()))
@@ -180,10 +181,11 @@ impl McpManager {
         let _removed = {
             let mut state = self.lock_state();
             let removed = state.servers.remove(name);
-            if removed.is_some()
-                && let Some(entry) = state.directory.entries.get_mut(name)
-            {
-                entry.status = "not connected";
+            if removed.is_some() {
+                state.publish_tools_change();
+                if let Some(entry) = state.directory.entries.get_mut(name) {
+                    entry.status = "not connected";
+                }
             }
             state.tools.retain(|_, tool| tool.server != name);
             removed
@@ -249,6 +251,7 @@ impl McpManager {
             let dropped: Vec<SharedServer> =
                 std::mem::take(&mut state.servers).into_values().collect();
             state.tools.clear();
+            state.publish_tools_change();
             state.connections.clear();
             dropped
         };

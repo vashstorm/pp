@@ -19,7 +19,19 @@ use super::{
     Access, ConnectSnapshot, McpManager, POLL, RemoteTool, ServerConfig, ServerConnect,
     ServerState, SharedServer, TOOL_LIMIT, VERSIONS, config, safe_name,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+// Startup discovery runs at most this many servers at once; commits stay in configuration order.
+const CONNECT_PARALLELISM: usize = 4;
+
+// One server's spawn and discovery result, before anything is published to the shared tool table.
+struct Discovered {
+    tools: BTreeMap<String, RemoteTool>,
+    client: Client,
+}
+
+// One worker of a discovery chunk: `None` when the config entry vanished before discovery started.
+type ChunkOutcome = (Duration, Option<(ServerConfig, Result<Discovered>)>);
 
 impl McpManager {
     // Load the config on first need; a failure leaves it unloaded so the next call retries.
@@ -113,7 +125,8 @@ impl McpManager {
         }
     }
 
-    // Background thread body: holds control throughout, serialized against `/mcp` changes and shutdown.
+    // Background thread body: holds control throughout, serialized against `/mcp` changes and shutdown. Discovery runs in
+    // chunks of at most `CONNECT_PARALLELISM` servers in parallel, while commits and progress stay in configuration order.
     fn run_connect(self: Arc<Self>, token: CancellationToken, access: Access) {
         let _control = self.lock_control();
         let prepared = (|| -> Result<Vec<String>> {
@@ -146,44 +159,67 @@ impl McpManager {
                 return;
             }
         };
-        for name in names {
+        for chunk in names.chunks(CONNECT_PARALLELISM) {
             if token.is_cancelled() {
                 break;
             }
-            self.lock_state().connect.connecting(&name);
-            let started = Instant::now();
-            // Ordinary connection failures only affect the entry status; cancellation and reaping failures end the round and log diagnostics.
-            match self.connect_one_outcome(&name, &token) {
-                Ok(reason) => {
-                    let connected = self
-                        .lock_state()
-                        .directory
-                        .entries
-                        .get(&name)
-                        .is_some_and(|entry| entry.status == "connected");
-                    self.lock_state().connect.complete(
-                        &name,
-                        connected,
-                        started.elapsed(),
-                        if connected { None } else { reason.as_deref() },
-                    );
+            // Register the whole chunk before spawning: later chunks stay pending until their turn.
+            for name in chunk {
+                self.lock_state().connect.connecting(name);
+            }
+            let mut aborted = false;
+            for (name, (elapsed, outcome)) in chunk.iter().zip(self.discover_chunk(chunk, &token)) {
+                if aborted {
+                    // A discovery that finished after the abort is never published: stop that client explicitly instead of
+                    // leaving it to `Drop`, and leave the entry unfinished so the round teardown makes it retryable.
+                    if let Some((_, Ok(mut discovered))) = outcome
+                        && let Err(error) = discovered.client.stop()
+                    {
+                        tracing::error!(
+                            event = "mcp_connect_cleanup_failed",
+                            server = %name,
+                            error = %pp_core::text::display_text(&format!("{error:#}"))
+                        );
+                    }
+                    continue;
                 }
-                Err(error) => {
-                    let message = format!("{error:#}");
-                    tracing::error!(
-                        event = "mcp_connect_aborted",
-                        server = %name,
-                        kind = if error.is::<Cancelled>() { "cancelled" } else { "cleanup" },
-                        error = %pp_core::text::display_text(&message)
-                    );
-                    self.lock_state().connect.complete(
-                        &name,
-                        false,
-                        started.elapsed(),
-                        Some(&message),
-                    );
-                    break;
+                let result = match outcome {
+                    Some((config, discovered)) => self.finish_connect(name, &config, discovered),
+                    None => Ok(None),
+                };
+                // Ordinary connection failures only affect the entry status; cancellation and reaping failures end the round and log diagnostics.
+                match result {
+                    Ok(reason) => {
+                        let connected = self
+                            .lock_state()
+                            .directory
+                            .entries
+                            .get(name)
+                            .is_some_and(|entry| entry.status == "connected");
+                        self.lock_state().connect.complete(
+                            name,
+                            connected,
+                            elapsed,
+                            if connected { None } else { reason.as_deref() },
+                        );
+                    }
+                    Err(error) => {
+                        let message = format!("{error:#}");
+                        tracing::error!(
+                            event = "mcp_connect_aborted",
+                            server = %name,
+                            kind = if error.is::<Cancelled>() { "cancelled" } else { "cleanup" },
+                            error = %pp_core::text::display_text(&message)
+                        );
+                        self.lock_state()
+                            .connect
+                            .complete(name, false, elapsed, Some(&message));
+                        aborted = true;
+                    }
                 }
+            }
+            if aborted {
+                break;
             }
         }
         let mut state = self.lock_state();
@@ -255,34 +291,8 @@ impl McpManager {
         else {
             return Ok(None);
         };
-        let result = self.add_server(name, &config, token);
-        let status = if result.is_ok() {
-            "connected"
-        } else if result.as_ref().is_err_and(|error| error.is::<Cancelled>()) {
-            "not connected"
-        } else if result.as_ref().err().is_some_and(|error| {
-            error
-                .chain()
-                .any(|cause| cause.to_string().contains("timed out"))
-        }) {
-            "failed (timeout)"
-        } else if result
-            .as_ref()
-            .err()
-            .is_some_and(|error| error.to_string() == "starting MCP process failed")
-        {
-            "failed (process start)"
-        } else {
-            "failed (initialization)"
-        };
-        if let Some(entry) = self.lock_state().directory.entries.get_mut(name) {
-            entry.status = status;
-        }
-        match result {
-            Ok(()) => Ok(None),
-            Err(error) if error.is::<CleanupError>() || error.is::<Cancelled>() => Err(error),
-            Err(error) => Ok(Some(format!("{error:#}"))),
-        }
+        let discovered = self.discover_server(name, &config, token);
+        self.finish_connect(name, &config, discovered)
     }
 
     // The connection can be cancelled by the caller's token: checked before every spawn and throughout discovery;
@@ -296,10 +306,13 @@ impl McpManager {
         validate_config(configs)?;
         let manager = Self::with_optional_config(None, cwd.to_owned(), false);
         for (name, config) in configs {
-            if let Err(error) = manager
-                .add_server(name, config, cancellation)
-                .with_context(|| format!("connecting MCP server {name}"))
-            {
+            // The blocking test entry point keeps both stages serial and reports every failure, including the ones the
+            // startup path isolates per server.
+            let result = manager
+                .discover_server(name, config, cancellation)
+                .and_then(|discovered| manager.commit_discovered_server(name, config, discovered))
+                .with_context(|| format!("connecting MCP server {name}"));
+            if let Err(error) = result {
                 return match manager.stop_tracked() {
                     Ok(()) => Err(error),
                     Err(cleanup) => {
@@ -311,12 +324,13 @@ impl McpManager {
         Ok(manager)
     }
 
-    fn add_server(
+    // First stage: register the connection slot, spawn the service and discover its tools without publishing anything.
+    fn discover_server(
         &self,
         name: &str,
         config: &ServerConfig,
         token: &CancellationToken,
-    ) -> Result<()> {
+    ) -> Result<Discovered> {
         cancellation::check(token)?;
         let process: SharedConnection = Arc::new(Mutex::new(ConnectionSlot {
             child: None,
@@ -345,7 +359,19 @@ impl McpManager {
                 });
             }
         };
-        // The connect entry point is serialized by control; validation and commit happen in two short critical sections.
+        Ok(Discovered { tools, client })
+    }
+
+    // Second stage: validate and publish one finished discovery. Callers run this in configuration order, so a duplicate
+    // name or the tool limit is decided by configuration order instead of by which worker finished discovery first.
+    fn commit_discovered_server(
+        &self,
+        name: &str,
+        config: &ServerConfig,
+        discovered: Discovered,
+    ) -> Result<()> {
+        let Discovered { tools, mut client } = discovered;
+        // Validation and commit happen in two short critical sections and never hold the state lock across a stop.
         let validation = {
             let state = self.lock_state();
             (|| -> Result<()> {
@@ -366,20 +392,74 @@ impl McpManager {
             client.stop().map_err(CleanupError)?;
             return Err(error);
         }
-        {
-            let mut state = self.lock_state();
-            state.tools.extend(tools);
-            state.servers.insert(
-                name.to_owned(),
-                SharedServer::new(ServerState {
-                    config: config.clone(),
-                    cwd: self.cwd.clone(),
-                    client,
-                    restart_after_cancel: false,
-                }),
-            );
-        }
+        let mut state = self.lock_state();
+        state.tools.extend(tools);
+        state.servers.insert(
+            name.to_owned(),
+            SharedServer::new(ServerState {
+                config: config.clone(),
+                cwd: self.cwd.clone(),
+                client,
+                restart_after_cancel: false,
+            }),
+        );
+        state.publish_tools_change();
         Ok(())
+    }
+
+    // Both stages for one server in order: records the directory status and splits ordinary failures (isolated per
+    // server) from cancellation and cleanup failures (which end the round).
+    fn finish_connect(
+        &self,
+        name: &str,
+        config: &ServerConfig,
+        discovered: Result<Discovered>,
+    ) -> Result<Option<String>> {
+        let result = discovered
+            .and_then(|discovered| self.commit_discovered_server(name, config, discovered));
+        let status = entry_status(&result);
+        if let Some(entry) = self.lock_state().directory.entries.get_mut(name) {
+            entry.status = status;
+        }
+        match result {
+            Ok(()) => Ok(None),
+            Err(error) if error.is::<CleanupError>() || error.is::<Cancelled>() => Err(error),
+            Err(error) => Ok(Some(format!("{error:#}"))),
+        }
+    }
+
+    // Discovers one chunk of at most `CONNECT_PARALLELISM` servers at once; results come back in configuration order.
+    fn discover_chunk(&self, names: &[String], token: &CancellationToken) -> Vec<ChunkOutcome> {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    scope.spawn(move || {
+                        let started = Instant::now();
+                        let config = self
+                            .lock_state()
+                            .directory
+                            .entries
+                            .get(name)
+                            .and_then(|entry| entry.config.clone());
+                        let outcome = config.map(|config| {
+                            let discovered = self.discover_server(name, &config, token);
+                            (config, discovered)
+                        });
+                        (started.elapsed(), outcome)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| match handle.join() {
+                    Ok(outcome) => outcome,
+                    // A panicking worker drops its client (best-effort stop) while unwinding; keep unwinding after the join
+                    // so the scope still joins the remaining workers before reporting it.
+                    Err(panic) => std::panic::resume_unwind(panic),
+                })
+                .collect()
+        })
     }
 
     // Lazy rebuild after cancellation: runs once, only when a new task actually calls a tool of this server.
@@ -443,6 +523,29 @@ impl McpManager {
         state.client = client;
         state.restart_after_cancel = false;
         Ok(())
+    }
+}
+
+// Directory status shown by `/mcp list` for one server's connection result.
+fn entry_status(result: &Result<()>) -> &'static str {
+    if result.is_ok() {
+        "connected"
+    } else if result.as_ref().is_err_and(|error| error.is::<Cancelled>()) {
+        "not connected"
+    } else if result.as_ref().err().is_some_and(|error| {
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains("timed out"))
+    }) {
+        "failed (timeout)"
+    } else if result
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.to_string() == "starting MCP process failed")
+    {
+        "failed (process start)"
+    } else {
+        "failed (initialization)"
     }
 }
 
@@ -665,5 +768,340 @@ mod background_tests {
             assert!(started.elapsed() < Duration::from_secs(1));
             assert!(manager.connect_snapshot().tip().is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod parallel_connect {
+    use super::*;
+    use crate::{Access, Action, ConnectPhase};
+    use rustix::process::{Pid, test_kill_process};
+    use std::path::Path;
+
+    const DEADLINE: Duration = Duration::from_secs(10);
+
+    // Barrier fixture service: every server exposes the same single echo tool unless `MCP_TOOLS` says otherwise.
+    fn barrier_server(env: &[(&str, String)]) -> Value {
+        let env: serde_json::Map<String, Value> = env
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), json!(value)))
+            .collect();
+        json!({
+            "command": "bash",
+            "args": [format!(
+                "{}/../../tests/fixtures/mcp_barrier_server.sh",
+                env!("CARGO_MANIFEST_DIR")
+            )],
+            "env": env,
+            "timeout": 30_000
+        })
+    }
+
+    // Isolated instance: the only config source is the temporary directory written here.
+    fn isolated(dir: &Path, servers: &[(&str, Value)]) -> Arc<McpManager> {
+        let mut entries = serde_json::Map::new();
+        for (name, definition) in servers {
+            entries.insert((*name).to_string(), definition.clone());
+        }
+        let path = dir.join("mcp.json");
+        std::fs::write(&path, json!({"mcpServers": entries}).to_string()).unwrap();
+        Arc::new(McpManager::new_isolated(path, dir.to_path_buf()))
+    }
+
+    fn marker_count(dir: &Path, extension: &str) -> usize {
+        std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| {
+                        let path = entry.ok()?.path();
+                        (path.extension()? == extension).then_some(())
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    fn wait_until(condition: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + DEADLINE;
+        while Instant::now() < deadline {
+            if condition() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        condition()
+    }
+
+    fn statuses(manager: &McpManager) -> Vec<(String, String)> {
+        manager
+            .view(Access::Full)
+            .entries
+            .into_iter()
+            .map(|entry| (entry.name, entry.status.to_string()))
+            .collect()
+    }
+
+    fn definition_names(manager: &McpManager) -> Vec<String> {
+        manager
+            .definitions(Access::Full)
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect()
+    }
+
+    // PIDs the fixture services published for the current round.
+    fn started_pids(dir: &Path) -> Vec<i32> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                if path.extension()? != "pid" {
+                    return None;
+                }
+                std::fs::read_to_string(&path).ok()?.trim().parse().ok()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn startup_connect_handshakes_servers_in_parallel_and_keeps_config_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = dir.path().to_string_lossy().into_owned();
+        let server = |tool: &str| {
+            barrier_server(&[
+                ("MCP_BARRIER_DIR", barrier.clone()),
+                ("MCP_TOOLS", tool.to_string()),
+            ])
+        };
+        let manager = isolated(
+            dir.path(),
+            &[
+                ("alpha", server("alpha_tool")),
+                ("beta", server("beta_tool")),
+                ("gamma", server("gamma_tool")),
+            ],
+        );
+        manager.start_connect(Access::Full);
+        // Every server of the chunk must sit in the initialize handshake at the same time; a serial startup connect never
+        // gets to the second server before the release, so this cannot hold without parallel discovery.
+        let handshaking = wait_until(|| marker_count(dir.path(), "ready") == 3);
+        let snapshot = manager.connect_snapshot();
+        let in_flight: Vec<ConnectPhase> =
+            snapshot.servers.iter().map(|server| server.phase).collect();
+        std::fs::write(dir.path().join("release"), "go").unwrap();
+        assert!(
+            handshaking,
+            "startup connect must handshake several servers at once: {snapshot:?}"
+        );
+        assert_eq!(in_flight, [ConnectPhase::Connecting; 3]);
+
+        // The first request barrier still waits for the whole round and sees every tool.
+        manager.await_connect(&CancellationToken::new()).unwrap();
+        let snapshot = manager.connect_snapshot();
+        let finished: Vec<(&str, ConnectPhase)> = snapshot
+            .servers
+            .iter()
+            .map(|server| (server.name.as_str(), server.phase))
+            .collect();
+        assert_eq!(
+            finished,
+            [
+                ("alpha", ConnectPhase::Connected),
+                ("beta", ConnectPhase::Connected),
+                ("gamma", ConnectPhase::Connected),
+            ]
+        );
+        assert_eq!(
+            definition_names(&manager),
+            [
+                "mcp__alpha__alpha_tool",
+                "mcp__beta__beta_tool",
+                "mcp__gamma__gamma_tool",
+            ]
+        );
+        // Line mode claims the finished services in configuration order as well.
+        let claimed: Vec<String> = manager
+            .take_connect_services()
+            .into_iter()
+            .map(|server| server.name)
+            .collect();
+        assert_eq!(claimed, ["alpha", "beta", "gamma"]);
+        manager.shutdown().unwrap();
+    }
+
+    #[test]
+    fn startup_connect_applies_the_tool_limit_in_configuration_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = (0..100)
+            .map(|index| format!("t{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Discovery finishes in reverse configuration order; the limit must still be decided by configuration order, so the
+        // last configured server is the one that does not fit.
+        let server = |delay: &str| {
+            barrier_server(&[
+                ("MCP_TOOLS", tools.clone()),
+                ("MCP_INIT_DELAY_SECONDS", delay.to_string()),
+            ])
+        };
+        let manager = isolated(
+            dir.path(),
+            &[
+                ("alpha", server("0.3")),
+                ("beta", server("0.15")),
+                ("gamma", server("0")),
+            ],
+        );
+        manager.start_connect(Access::Full);
+        manager.await_connect(&CancellationToken::new()).unwrap();
+        assert_eq!(
+            statuses(&manager),
+            [
+                ("alpha".to_string(), "connected".to_string()),
+                ("beta".to_string(), "connected".to_string()),
+                ("gamma".to_string(), "failed (initialization)".to_string()),
+            ]
+        );
+        let names = definition_names(&manager);
+        assert_eq!(names.len(), 200);
+        assert!(
+            names
+                .iter()
+                .all(|name| name.starts_with("mcp__alpha__") || name.starts_with("mcp__beta__")),
+            "the limit must reject the last configured server: {}..",
+            names.len()
+        );
+        let reason = manager.connect_snapshot().servers[2]
+            .reason()
+            .unwrap_or_default()
+            .to_string();
+        assert!(reason.contains("too many MCP tools"), "{reason}");
+        manager.shutdown().unwrap();
+    }
+
+    #[test]
+    fn startup_connect_isolates_a_failing_server_and_still_publishes_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = isolated(
+            dir.path(),
+            &[
+                ("alpha", barrier_server(&[])),
+                (
+                    "broken",
+                    barrier_server(&[("MCP_BARRIER_INVALID_SCHEMA", "1".to_string())]),
+                ),
+                ("gamma", barrier_server(&[])),
+            ],
+        );
+        manager.start_connect(Access::Full);
+        manager.await_connect(&CancellationToken::new()).unwrap();
+        assert_eq!(
+            statuses(&manager),
+            [
+                ("alpha".to_string(), "connected".to_string()),
+                ("broken".to_string(), "failed (initialization)".to_string()),
+                ("gamma".to_string(), "connected".to_string()),
+            ]
+        );
+        assert_eq!(
+            definition_names(&manager),
+            ["mcp__alpha__echo", "mcp__gamma__echo"]
+        );
+        let tip = manager.connect_snapshot().tip().unwrap_or_default();
+        assert!(
+            tip.starts_with("Connected to MCP servers: 2 succeeded, 1 failed"),
+            "{tip}"
+        );
+        manager.shutdown().unwrap();
+    }
+
+    #[test]
+    fn startup_connect_cancellation_reaps_the_chunk_and_skips_later_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let barrier = dir.path().to_string_lossy().into_owned();
+        let names = ["s1", "s2", "s3", "s4", "s5", "s6"];
+        let server = || barrier_server(&[("MCP_BARRIER_DIR", barrier.clone())]);
+        let manager = isolated(
+            dir.path(),
+            &[
+                (names[0], server()),
+                (names[1], server()),
+                (names[2], server()),
+                (names[3], server()),
+                (names[4], server()),
+                (names[5], server()),
+            ],
+        );
+        manager.start_connect(Access::Full);
+        assert!(
+            wait_until(|| marker_count(dir.path(), "ready") == 4),
+            "the first chunk of four servers must handshake at once"
+        );
+        let snapshot = manager.connect_snapshot();
+        let pending: Vec<&str> = snapshot
+            .servers
+            .iter()
+            .filter(|server| server.phase == ConnectPhase::Pending)
+            .map(|server| server.name.as_str())
+            .collect();
+        assert_eq!(pending, ["s5", "s6"]);
+
+        // Shutdown cancels the round: the in-flight chunk is joined and reaped and no later chunk starts.
+        manager.shutdown().unwrap();
+        assert_eq!(marker_count(dir.path(), "pid"), 4);
+        let pids = started_pids(dir.path());
+        assert_eq!(pids.len(), 4);
+        for pid in pids {
+            let pid = Pid::from_raw(pid).unwrap();
+            assert!(
+                test_kill_process(pid).is_err(),
+                "in-flight MCP process {pid} was not reaped"
+            );
+        }
+        // Cancelled targets return to a retryable state instead of staying connecting or looking connected.
+        let statuses = statuses(&manager);
+        assert_eq!(statuses.len(), 6);
+        assert!(
+            statuses.iter().all(|(_, status)| status == "not connected"),
+            "{statuses:?}"
+        );
+        assert!(manager.definitions(Access::Full).is_empty());
+    }
+
+    #[test]
+    fn tools_revision_advances_on_every_published_tool_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = isolated(dir.path(), &[("alpha", barrier_server(&[]))]);
+        let empty = manager.tools_revision();
+        // Read-only queries never advance the revision.
+        assert!(manager.definitions(Access::Full).is_empty());
+        assert_eq!(manager.tools_revision(), empty);
+
+        manager.start_connect(Access::Full);
+        manager.await_connect(&CancellationToken::new()).unwrap();
+        let connected = manager.tools_revision();
+        assert!(connected > empty);
+        assert_eq!(definition_names(&manager), ["mcp__alpha__echo"]);
+        assert_eq!(manager.tools_revision(), connected);
+
+        // Management changes that withdraw or republish tools advance it as well.
+        let token = CancellationToken::new();
+        manager
+            .manage(&Action::Disable("alpha".to_string()), &token, Access::Full)
+            .unwrap();
+        let disabled = manager.tools_revision();
+        assert!(disabled > connected);
+        assert!(manager.definitions(Access::Full).is_empty());
+        manager
+            .manage(&Action::Enable("alpha".to_string()), &token, Access::Full)
+            .unwrap();
+        let enabled = manager.tools_revision();
+        assert!(enabled > disabled);
+        assert_eq!(definition_names(&manager), ["mcp__alpha__echo"]);
+
+        // Shutdown withdraws the published tools and advances the revision once more.
+        manager.shutdown().unwrap();
+        assert!(manager.tools_revision() > enabled);
+        assert!(manager.definitions(Access::Full).is_empty());
     }
 }

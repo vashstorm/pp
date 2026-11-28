@@ -352,7 +352,7 @@ fn run_scenario(
         }
         // `Tools::new` defaults to an empty `McpManager`: mock scenarios never read real user MCP definitions.
         let mut tools = Tools::new(workspace.clone(), scenario.edit_mode)?;
-        tools.ask_handler = ask;
+        tools.set_ask_handler(ask);
         let mut agent = Agent::new_mock(catalog, tools, sessions, locks, Arc::new(scripts))?;
         let mut result = (|| {
             emit(MockTestEvent::Prepared(MockTestSnapshot {

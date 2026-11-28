@@ -347,3 +347,160 @@ fn layout_worker_blocked_unchanged_and_rejection() {
     assert!(!t2.exact);
     drop(pause);
 }
+
+// ---------------------------------------------------------------------------
+// Streaming frames: the background document is updated incrementally, so every frame it commits and
+// every preview the main thread derives from it must equal a frame built from a fresh parse.
+// ---------------------------------------------------------------------------
+
+struct Background {
+    source: Arc<str>,
+    document: super::super::markdown::MarkdownDocument,
+    width: u16,
+}
+
+impl Background {
+    fn start(source: &str, width: u16) -> Self {
+        Self {
+            source: Arc::from(source),
+            document: super::super::markdown::parse_streaming(source, true),
+            width,
+        }
+    }
+
+    /// Mirror the layout worker: update the cached document from the previous snapshot, then lay out.
+    fn render(&mut self, text: &str, muted: bool) -> Rendered {
+        if self.source.as_ref() != text {
+            self.document.update(&self.source, text, true);
+            self.source = Arc::from(text);
+        }
+        let (mut lines, tail) = self.document.layout_cached_with_meta(self.width);
+        apply_muted(&mut lines, muted);
+        Rendered {
+            epoch: 0,
+            version: 1,
+            theme: Theme::Default,
+            icons: IconMode::Nerd,
+            width: self.width,
+            source: self.source.clone(),
+            layout: Arc::new(prepared(lines, self.width)),
+            ends_with_table: self.document.ends_with_table(),
+            table_tail_start: self.document.table_tail_start,
+            tail,
+        }
+    }
+}
+
+#[test]
+fn layout_worker_streaming_frames_match_full_parse_for_each_append() {
+    let width = 32u16;
+    let base = "# Title\n\nIntro with **bold** and a [link](https://example.test/a).\n\n\
+- item one\n- item two\n\n\
+```rust\nlet alpha = 1;\n";
+    let suffix = "let beta = 2;\n```\n\nappended paragraph\n\n- appended item\n\n\
+| A | B |\n| --- | --- |\n| 1 | 2 |";
+    let boundaries: Vec<usize> = suffix
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(suffix.len()))
+        .collect();
+    let steps: Vec<String> = boundaries
+        .iter()
+        .skip(1)
+        .step_by(3)
+        .map(|&end| format!("{base}{}", &suffix[..end]))
+        .collect();
+    assert!(steps.len() >= 8, "the walk must cover several appends");
+    for muted in [false, true] {
+        let mut background = Background::start(base, width);
+        let mut frame = background.render(base, muted);
+        let mut previous = base.to_string();
+        for next in &steps {
+            let reference = rendered_from_markdown(&previous, width, muted, true);
+            let preview = append_preview(&frame, next, width, muted, true);
+            let expected = append_preview(&reference, next, width, muted, true);
+            assert_eq!(
+                layout_text(&preview),
+                layout_text(&expected),
+                "streaming preview differs from a fresh parse: muted={muted}, next={next:?}"
+            );
+            assert_eq!(
+                preview.height, expected.height,
+                "streaming preview height differs: muted={muted}"
+            );
+            frame = background.render(next, muted);
+            let committed = rendered_from_markdown(next, width, muted, true);
+            assert_eq!(
+                layout_text(&frame.layout),
+                layout_text(&committed.layout),
+                "committed rows differ from a fresh parse: muted={muted}, next={next:?}"
+            );
+            assert_eq!(frame.layout.height, committed.layout.height);
+            assert_eq!(frame.table_tail_start, committed.table_tail_start);
+            assert_eq!(frame.ends_with_table, committed.ends_with_table);
+            previous = next.clone();
+        }
+    }
+}
+
+/// Wait for the background write-back of `text`, which is the frame the terminal actually shows.
+fn wait_for_exact(
+    ticket: &mut Ticket,
+    text: &str,
+    width: u16,
+    streaming: bool,
+) -> Arc<EntryLayout> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let layout = ticket.layout(text, width, false, streaming);
+        if ticket.exact {
+            return layout;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the background layout should settle"
+        );
+        std::thread::yield_now();
+    }
+}
+
+/// Foreground of the Rust `let` keyword in the committed code row, i.e. the theme's syntax color.
+fn code_keyword_colors(layout: &EntryLayout) -> Vec<Option<ratatui::style::Color>> {
+    layout
+        .iter()
+        .filter_map(|row| match &row.content {
+            LayoutContent::Styled(line) => line
+                .spans
+                .iter()
+                .find(|span| span.content.contains("let"))
+                .map(|span| span.style.fg),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn layout_worker_rehighlights_streaming_code_after_a_theme_change() {
+    // The worker must outlive the ticket: it owns the layout thread the ticket dispatches to.
+    let _worker = Worker::start().unwrap();
+    let mut ticket = Ticket::default();
+    let theme_keyword = |theme: Theme| {
+        crate::tui::themes::set_active(theme, IconMode::Nerd);
+        crate::tui::transcript_style::syntax_keyword()
+    };
+    let source = "```rust\nlet alpha = 1;\n```\n\nstreaming tail";
+    let dark = theme_keyword(Theme::Default);
+    let night = theme_keyword(Theme::TokyoNight);
+    assert_ne!(dark, night, "the fixture needs two distinct palettes");
+
+    crate::tui::themes::set_active(Theme::Default, IconMode::Nerd);
+    let first = wait_for_exact(&mut ticket, source, 32, true);
+    assert_eq!(code_keyword_colors(&first), vec![Some(dark)]);
+
+    // Swapping the theme mid-stream must not keep the settled code block in the old palette.
+    crate::tui::themes::set_active(Theme::TokyoNight, IconMode::Nerd);
+    let extended = format!("{source} and more");
+    let second = wait_for_exact(&mut ticket, &extended, 32, true);
+    assert_eq!(code_keyword_colors(&second), vec![Some(night)]);
+    crate::tui::themes::set_active(Theme::Default, IconMode::Nerd);
+}

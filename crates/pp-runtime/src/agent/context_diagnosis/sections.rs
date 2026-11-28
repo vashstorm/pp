@@ -13,16 +13,17 @@ use pp_core::context::estimate_bytes;
 use pp_tools::project_instructions::{self, InspectedDocument};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub(super) struct SectionWithRanges {
-    pub items: Vec<DiagnosticItem>,
+    pub items: Vec<Arc<DiagnosticItem>>,
     pub tokens: u64,
     pub bytes: u64,
     pub ranges: Vec<(usize, usize)>,
     /// Items added as a fallback purely from `reported_loads` (absent from `actual_system`); if that path already
     /// arrived as a dynamic developer message, the merge phase counts the real history message instead to avoid double counting.
-    pub fallback_items: Vec<(String, DiagnosticItem)>,
+    pub fallback_items: Vec<(String, Arc<DiagnosticItem>)>,
 }
 
 /// Strip from `actual_system` and build the `AGENTS.md` instruction file entries actually injected,
@@ -63,14 +64,14 @@ pub(super) fn build_agent_md_items(
         let t = b.div_ceil(3);
         tokens = tokens.saturating_add(t);
         bytes = bytes.saturating_add(b);
-        items.push(DiagnosticItem {
+        items.push(Arc::new(DiagnosticItem {
             kind_label: "Boundary".into(),
             title: "Project Root Boundaries".into(),
             subtitle: "Nested git root isolation notices".into(),
             tokens: t,
             bytes: b,
             preview: boundaries_text,
-        });
+        }));
     }
 
     // Prefer extracting the really injected `[Project instructions: <path>]...[End project instructions]` blocks directly from actual_system
@@ -96,7 +97,7 @@ pub(super) fn build_agent_md_items(
             .strip_prefix(cwd)
             .map(|rel| rel.display().to_string())
             .unwrap_or_else(|_| path_str.clone());
-        items.push(DiagnosticItem {
+        items.push(Arc::new(DiagnosticItem {
             kind_label: "AGENTS.md".into(),
             title: display_path,
             subtitle: if root_str.is_empty() {
@@ -112,7 +113,7 @@ pub(super) fn build_agent_md_items(
                 body.len(),
                 truncate_preview(body),
             ),
-        });
+        }));
         pos = end;
     }
 
@@ -141,7 +142,7 @@ pub(super) fn build_agent_md_items(
             .unwrap_or_else(|_| path_str.clone());
         fallback_items.push((
             path_str.clone(),
-            DiagnosticItem {
+            Arc::new(DiagnosticItem {
                 kind_label: "AGENTS.md".into(),
                 title: display_path,
                 subtitle: format!("root {}", doc_opt.root.display()),
@@ -154,7 +155,7 @@ pub(super) fn build_agent_md_items(
                     doc_opt.content.len(),
                     truncate_preview(&doc_opt.content)
                 ),
-            },
+            }),
         ));
     }
 
@@ -175,7 +176,7 @@ pub(super) fn build_agent_md_items(
             .unwrap_or_else(|_| doc.document.path.display().to_string());
         fallback_items.push((
             path_str,
-            DiagnosticItem {
+            Arc::new(DiagnosticItem {
                 kind_label: "AGENTS.md".into(),
                 title: display_path,
                 subtitle: format!("root {}", doc.document.root.display()),
@@ -188,7 +189,7 @@ pub(super) fn build_agent_md_items(
                     doc.document.content.len(),
                     truncate_preview(&doc.document.content)
                 ),
-            },
+            }),
         ));
     }
 
@@ -251,14 +252,14 @@ pub(super) fn build_skill_items(
         for (name, uri, desc, raw_line) in parse_skill_entries(inner_entries, headers) {
             let b = estimate_bytes(&raw_line)?;
             let t = b.div_ceil(3);
-            items.push(DiagnosticItem {
+            items.push(Arc::new(DiagnosticItem {
                 kind_label: "Skill".into(),
                 title: name.clone(),
                 subtitle: uri.clone(),
                 tokens: t,
                 bytes: b,
                 preview: format!("Name: {name}\nURI: {uri}\nDescription: {desc}"),
-            });
+            }));
         }
     }
 
@@ -337,7 +338,7 @@ pub(super) fn build_system_items(
     append_part: Option<(String, String)>,
     workflow_text: &str,
     excluded_ranges: &[(usize, usize)],
-) -> Result<(Vec<DiagnosticItem>, u64, u64)> {
+) -> Result<(Vec<Arc<DiagnosticItem>>, u64, u64)> {
     let residual = strip_ranges(actual_system, excluded_ranges);
     if residual.trim().is_empty() {
         return Ok((Vec::new(), 0, 0));
@@ -360,14 +361,14 @@ pub(super) fn build_system_items(
                 matched_ranges.push((pos, end));
                 let b = estimate_bytes(&trimmed)?;
                 let t = b.div_ceil(3);
-                items.push(DiagnosticItem {
+                items.push(Arc::new(DiagnosticItem {
                     kind_label: kind.into(),
                     title,
                     subtitle,
                     tokens: t,
                     bytes: b,
                     preview: truncate_preview(trimmed),
-                });
+                }));
             }
             Ok(())
         };
@@ -408,7 +409,7 @@ pub(super) fn build_system_items(
         let is_only = items.is_empty();
         items.insert(
             0,
-            DiagnosticItem {
+            Arc::new(DiagnosticItem {
                 kind_label: "Base".into(),
                 title: if is_only {
                     base_title
@@ -423,7 +424,7 @@ pub(super) fn build_system_items(
                 tokens: t,
                 bytes: b,
                 preview: truncate_preview(leftover.trim()),
-            },
+            }),
         );
     }
 
@@ -467,10 +468,10 @@ fn strip_ranges(source: &str, ranges: &[(usize, usize)]) -> String {
 
 #[derive(Clone)]
 pub(super) struct SplitToolsBreakdown {
-    pub tool_items: Vec<DiagnosticItem>,
+    pub tool_items: Vec<Arc<DiagnosticItem>>,
     pub tools_tokens: u64,
     pub tools_bytes: u64,
-    pub mcp_items: Vec<DiagnosticItem>,
+    pub mcp_items: Vec<Arc<DiagnosticItem>>,
     pub mcp_tokens: u64,
     pub mcp_bytes: u64,
 }
@@ -501,7 +502,7 @@ pub(super) fn build_split_tool_items(
         if let Some((server, original)) = mcp_identity {
             mcp_tokens = mcp_tokens.saturating_add(tokens);
             mcp_bytes = mcp_bytes.saturating_add(bytes);
-            mcp_items.push(DiagnosticItem {
+            mcp_items.push(Arc::new(DiagnosticItem {
                 kind_label: "MCP".into(),
                 title: format!("{server} / {original}"),
                 subtitle: def.name.clone(),
@@ -512,7 +513,7 @@ pub(super) fn build_split_tool_items(
                     def.name,
                     truncate_preview(&schema_pretty)
                 ),
-            });
+            }));
         } else {
             tools_tokens = tools_tokens.saturating_add(tokens);
             tools_bytes = tools_bytes.saturating_add(bytes);
@@ -521,14 +522,14 @@ pub(super) fn build_split_tool_items(
                 .as_deref()
                 .map(first_line_preview)
                 .unwrap_or_default();
-            tool_items.push(DiagnosticItem {
+            tool_items.push(Arc::new(DiagnosticItem {
                 kind_label: "Built-in".into(),
                 title: def.name.clone(),
                 subtitle: desc,
                 tokens,
                 bytes,
                 preview: truncate_preview(&schema_pretty),
-            });
+            }));
         }
     }
 

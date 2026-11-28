@@ -3,6 +3,7 @@ use pp_core::plan::PlanLocation;
 use std::{fs, sync::mpsc::sync_channel};
 mod artifact_cases;
 mod background_cases;
+mod definition_revision_cases;
 mod edit_cases;
 mod embedded_shell;
 mod eval_cases;

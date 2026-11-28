@@ -1021,6 +1021,7 @@ impl Agent {
         // The next refresh merges all currently active AGENTS.md back into the new static prefix.
         self.static_project_prompt = None;
         self.delivered_project_docs.clear();
+        self.invalidate_instruction_refresh();
         let retained_turns = match &self.session {
             Session::Completion(request) => request
                 .messages

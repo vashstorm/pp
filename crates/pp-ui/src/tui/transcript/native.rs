@@ -1,6 +1,6 @@
 use super::{
     Activity, Arc, Buffer, EntryKind, EntryLayout, Frame, LayoutContent, LayoutLine, Line,
-    NativeBatch, NativeState, Rect, Span, Transcript, Widget, wrap_block,
+    NativeBatch, NativeRow, NativeState, Rect, Span, Transcript, Widget, wrap_block,
 };
 
 impl Transcript {
@@ -38,7 +38,7 @@ impl Transcript {
                 for line in reflow_row(cells, width) {
                     let mut buffer = Buffer::empty(Rect::new(0, 0, width, 1));
                     line.render(buffer.area, &mut buffer);
-                    retained.push_back(buffer.content);
+                    retained.push_back(NativeRow::from(buffer.content));
                 }
             }
             self.native.retained = retained;
@@ -74,9 +74,9 @@ impl Transcript {
                 }
                 if lines.is_empty() {
                     if self.native.row == layout.height && layout.height > 0 {
-                        self.native
-                            .retained
-                            .push_back(Buffer::empty(Rect::new(0, 0, width, 1)).content);
+                        self.native.retained.push_back(NativeRow::from(
+                            Buffer::empty(Rect::new(0, 0, width, 1)).content,
+                        ));
                     }
                     self.native.entry += 1;
                     self.native.commit_layout = None;
@@ -184,19 +184,26 @@ impl Transcript {
             return None;
         }
         self.prepare_native_layout(width);
-        let mut next = self.native.clone();
         let capacity = usize::from(height);
-        let mut overflow =
-            (next.retained.len() + self.native_height(&next)).saturating_sub(capacity);
+        let mut overflow = (self.native.retained.len() + self.native_height(&self.native))
+            .saturating_sub(capacity);
+        // A frame that produces no batch must not pay for the state clone; draining still
+        // decides first, because retained rows have to leave the screen before anything is
+        // committed.
+        let draining = overflow > 0 && !self.native.retained.is_empty();
+        if !draining
+            && ((overflow == 0 && self.native.row == 0)
+                || self.native.entry >= self.native_frontier(exiting))
+        {
+            return None;
+        }
+        let mut next = self.native.clone();
         let mut rows = Vec::new();
-        if overflow > 0 && !next.retained.is_empty() {
+        if draining {
             for _ in 0..overflow.min(64).min(next.retained.len()) {
                 rows.push(next.retained.pop_front().expect("retained row"));
             }
         } else {
-            if (overflow == 0 && next.row == 0) || next.entry >= self.native_frontier(exiting) {
-                return None;
-            }
             let entry = &self.entries[next.entry];
             if next.commit_layout.is_none() {
                 next.commit_layout = entry.layout.clone();
@@ -225,7 +232,7 @@ impl Transcript {
                     false,
                 );
                 for row in buffer.content.chunks(usize::from(width)) {
-                    next.retained.push_back(row.to_vec());
+                    next.retained.push_back(NativeRow::from(row));
                 }
                 next.row += count;
             }
@@ -249,6 +256,7 @@ impl Transcript {
     }
 
     pub(in crate::tui) fn preview_native_batch(&mut self, batch: &NativeBatch) {
+        // Row buffers are shared, so the preview only bumps row refcounts.
         self.native_preview = Some(batch.next.clone());
     }
 

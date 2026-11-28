@@ -9,6 +9,7 @@ mod hook_permission_cases;
 mod input_tool_cases;
 mod model_role_cases;
 mod plan_model_cases;
+mod refresh_cases;
 mod runtime_model_cases;
 mod session_task_cases;
 mod tree_todo_cases;

@@ -8,6 +8,7 @@ use async_openai::types::responses::{
     InputItem, InputParam, Item, ReasoningItem, ReasoningItemContent, SummaryPart,
 };
 use pp_core::{context::estimate_bytes, events::AgentEvent};
+use std::sync::Arc;
 
 /// Committed LLM thinking records of single turns within the session (covers streaming and `/resume` replay).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,7 +110,7 @@ pub(crate) fn trim_for_retained_turns(
 }
 
 pub(super) struct ThinkingBreakdown {
-    pub items: Vec<DiagnosticItem>,
+    pub items: Vec<Arc<DiagnosticItem>>,
     pub tokens: u64,
     pub bytes: u64,
     pub count: usize,
@@ -160,14 +161,14 @@ fn build_response_thinking(
         let fallback_entry = history.get(reasoning_idx);
         reasoning_idx += 1;
         let (subtitle, preview) = format_reasoning_item(reasoning, fallback_entry);
-        items.push(DiagnosticItem {
+        items.push(Arc::new(DiagnosticItem {
             kind_label: "Thinking".into(),
             title: format!("#{seq} Reasoning (turn {count})"),
             subtitle,
             tokens,
             bytes,
             preview,
-        });
+        }));
     }
 
     // If the session has no native Reasoning items yet but streamed thinking was collected (some compatible gateways omit Reasoning items), add it for display.
@@ -208,14 +209,14 @@ fn build_completion_thinking(history: &[ThinkingEntry]) -> Result<ThinkingBreakd
         total_tokens = total_tokens.saturating_add(tokens);
         count += 1;
 
-        items.push(DiagnosticItem {
+        items.push(Arc::new(DiagnosticItem {
             kind_label: "Thinking".into(),
             title: format!("Turn #{} Thinking", idx + 1),
             subtitle: first_line_preview(&combined),
             tokens,
             bytes,
             preview: truncate_preview(&combined),
-        });
+        }));
     }
 
     Ok(ThinkingBreakdown {

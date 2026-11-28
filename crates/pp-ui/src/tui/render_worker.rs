@@ -194,7 +194,9 @@ impl Worker {
                         if !Arc::ptr_eq(&document.source, &job.text)
                             || document.streaming != job.streaming
                         {
-                            document.markdown.update(&job.text, job.streaming);
+                            document
+                                .markdown
+                                .update(&document.source, &job.text, job.streaming);
                             document.source = job.text.clone();
                             document.streaming = job.streaming;
                         }

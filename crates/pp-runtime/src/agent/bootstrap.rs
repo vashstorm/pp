@@ -1,5 +1,5 @@
 //! Agent construction entry points, shared model state and prompt snapshot refresh.
-use super::{Agent, Session, debug, persistence::SessionJournal};
+use super::{Agent, InstructionRefreshKey, Session, debug, persistence::SessionJournal};
 use anyhow::{Context, Result, ensure};
 use async_openai::types::chat::ChatCompletionRequestMessage;
 use pp_config::config::ModelCatalog;
@@ -53,7 +53,10 @@ impl Agent {
         // Each unit test holds its own isolated manager: the `/mcp reload` of a Plan handoff test reads the temporary `mcp.json` this
         // catalog points at, and must not fall back to real user config or Claude/Codex sources under HOME.
         let cwd = tools.cwd().to_owned();
-        tools.mcp = std::sync::Arc::new(pp_mcp::McpManager::new_isolated(catalog.mcp_path(), cwd));
+        tools.set_mcp(std::sync::Arc::new(pp_mcp::McpManager::new_isolated(
+            catalog.mcp_path(),
+            cwd,
+        )));
         Self::new_with_prompt(
             ModelState::shared(catalog),
             tools,
@@ -120,7 +123,7 @@ impl Agent {
         let (config, selection) = Self::resolve_selection(&models)?;
         let think_level = selection.effort;
         let model_source = models.source();
-        tools.limits = config.settings.tool_limits();
+        tools.set_limits(config.settings.tool_limits());
         tools.configure_eval(catalog.eval_settings());
         tools.configure_web_search(catalog.web_search_settings().clone());
         tools.configure_mcp(catalog.mcp_settings());
@@ -228,6 +231,7 @@ impl Agent {
             static_project_prompt: None,
             delivered_project_docs: Default::default(),
             request_skills: Vec::new(),
+            instruction_refresh: None,
             journal,
             replay: Vec::new(),
             debug: debug::DebugState::new(config.settings.debug && !ephemeral, false),
@@ -256,7 +260,7 @@ impl Agent {
         scripts: pp_llm::MockScripts,
     ) -> Result<Self> {
         // Mock scenarios always get an empty manager: real user MCP definitions are never read.
-        tools.mcp = std::sync::Arc::new(pp_mcp::McpManager::empty());
+        tools.set_mcp(std::sync::Arc::new(pp_mcp::McpManager::empty()));
         let mut agent = Self::new_with_prompt(
             ModelState::shared(catalog),
             tools,
@@ -295,7 +299,8 @@ impl Agent {
     }
 
     pub fn set_ask_handler(&mut self, handler: pp_core::interaction::AskHandler) {
-        self.tools.ask_handler = Some(std::sync::Arc::from(handler));
+        self.tools
+            .set_ask_handler(Some(std::sync::Arc::from(handler)));
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
     }
@@ -323,6 +328,7 @@ impl Agent {
     ) -> Result<()> {
         self.tools.permission.select(mode);
         self.tools.sandbox().set_mode_override(None);
+        self.tools.invalidate_definitions();
         self.sync_permission_mode()?;
         Ok(())
     }
@@ -357,6 +363,7 @@ impl Agent {
             self.tools.sandbox().set_mode_override(previous);
             return Err(error);
         }
+        self.tools.invalidate_definitions();
         self.refresh_instructions_changed()?;
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
@@ -369,6 +376,7 @@ impl Agent {
         mode: pp_config::config::SandboxMode,
     ) -> Result<()> {
         self.tools.sandbox().update_settings_mode(mode);
+        self.tools.invalidate_definitions();
         self.refresh_instructions_changed()?;
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
@@ -397,10 +405,55 @@ impl Agent {
         Ok(())
     }
 
+    /// Drops the cached refresh key so the next round rebuilds the tool table, project block and system
+    /// prompt. Every model or session replacement must call this.
+    pub(in crate::agent) fn invalidate_instruction_refresh(&mut self) {
+        self.instruction_refresh = None;
+    }
+
+    /// System prompt currently installed in the native request, if any.
+    fn installed_system(&self) -> Option<&str> {
+        match &self.session {
+            Session::Completion(request) => match request.messages.first() {
+                Some(ChatCompletionRequestMessage::System(message)) => match &message.content {
+                    async_openai::types::chat::ChatCompletionRequestSystemMessageContent::Text(
+                        text,
+                    ) => Some(text),
+                    _ => None,
+                },
+                _ => None,
+            },
+            Session::Response(request) => request.instructions.as_deref(),
+        }
+    }
+
     pub(in crate::agent) fn refresh_instructions_changed(&mut self) -> Result<bool> {
+        // Cheap, always-current refresh inputs first: the project scope must be refreshed on every round
+        // (fingerprint/stat pass, shared snapshot) and the definition key replaces rebuilding the table.
+        let definitions_revision = self.tools.definitions_revision(self.workflow.mode);
+        let documents = self.tools.project_documents()?;
+        let subagent_definitions = self.tools.subagent_definitions(self.workflow.mode);
+        let skills = self
+            .tools
+            .skills
+            .lock()
+            .map_err(|_| anyhow::anyhow!("skill registry unavailable"))?
+            .headers();
+        let workflow_instructions = crate::subagent::catalog::workflow_instructions(&self.workflow);
+        // An unchanged round keeps the tool table, the project block, the composed prompt and the
+        // developer delta untouched: all of them were already applied and nothing that feeds them moved.
+        if self.instruction_refresh.as_ref().is_some_and(|key| {
+            key.definitions == definitions_revision
+                && std::sync::Arc::ptr_eq(&key.documents, &documents)
+                && key.subagent == subagent_definitions
+                && key.skills == skills
+                && key.workflow == workflow_instructions
+                && self.installed_system() == Some(key.system.as_str())
+        }) {
+            return Ok(false);
+        }
         let definitions = self.tools.all_definitions(self.workflow.mode);
         let names = definitions.iter().map(|d| d.name.clone()).collect();
-        let documents = self.tools.project_documents()?;
         let scope_summary = self.tools.project_scope_summary();
         let rendered_all = scope_summary + &pp_tools::project_instructions::render(&documents);
 
@@ -419,7 +472,7 @@ impl Agent {
         };
 
         let (system, skills) = self.compose_prompt_with_project(
-            &crate::subagent::catalog::workflow_instructions(&self.workflow),
+            &workflow_instructions,
             self.workflow.mode_name(),
             &self.current_model.model,
             names,
@@ -493,6 +546,16 @@ impl Agent {
             }
             Session::Response(request) => request.instructions.as_deref() == Some(system.as_str()),
         };
+        // The key is recorded only after the whole path succeeded: any failure above keeps the old key and
+        // repeats the full refresh next round.
+        self.instruction_refresh = Some(InstructionRefreshKey {
+            definitions: definitions_revision,
+            documents,
+            subagent: subagent_definitions,
+            skills: self.request_skills.clone(),
+            workflow: workflow_instructions,
+            system: system.clone(),
+        });
         if unchanged {
             return Ok(session_changed);
         }

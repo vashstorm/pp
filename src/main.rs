@@ -841,9 +841,9 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
                         session.edit_mode(),
                         manager.clone(),
                     )?;
-                    tools.skills = skills.clone();
-                    tools.permission = bootstrap.permission.as_ref().clone();
-                    tools.allowed_tools = allowed_tools.clone();
+                    tools.set_skills(skills.clone());
+                    tools.set_permission(bootstrap.permission.as_ref().clone());
+                    tools.set_allowed_tools(allowed_tools.clone());
                     let sbx = sandbox.get_or_init_with_override(
                         models.catalog_snapshot().sandbox_settings(),
                         &cwd,

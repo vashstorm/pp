@@ -415,6 +415,7 @@ impl Agent {
         self.pending_instructions = None;
         self.static_project_prompt = None;
         self.delivered_project_docs.clear();
+        self.invalidate_instruction_refresh();
         Ok(true)
     }
 }
