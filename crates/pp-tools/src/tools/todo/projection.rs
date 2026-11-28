@@ -1,9 +1,9 @@
-//! 计划正文到 todo 投影的转换。
+//! Conversion from plan bodies to the todo projection.
 use pp_core::todo::{TodoItem, TodoPhase, TodoStatus};
 
 use super::state::normalize_in_progress;
 
-/// Markdown 是任务及勾选的权威；仅在来源及批准基线相同时保留按序号的运行态。
+/// Markdown is the authority for tasks and checkboxes; ordinal-based runtime state is kept only while the source and approved baseline match.
 pub fn project_plan_todos(
     document: &pp_core::plan::PlanDocument,
     previous: &[TodoPhase],

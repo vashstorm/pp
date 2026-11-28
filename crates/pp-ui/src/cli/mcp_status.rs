@@ -1,13 +1,16 @@
-//! 行模式与 `-p` 的启动期 MCP 建连提示：逐服务滚动一行，最后给总状态。
+//! Startup MCP connect hints for line mode and `-p`: one line per server as they
+//! settle, then a final overall status.
 //!
-//! 建连由 runtime 在后台线程完成，这里只轮询内存快照；文案与耗时同样来自 runtime。
+//! The runtime connects on a background thread; this only polls an in-memory snapshot,
+//! and both the wording and the timings come from the runtime.
 use pp_runtime::agent::Agent;
 use std::io::Write;
 use std::time::Duration;
 
 const POLL: Duration = Duration::from_millis(25);
 
-// 逐条输出本进程尚未打印过的已完成服务；由 manager 的快照游标去重。
+// Emit completed servers this process has not printed yet; deduplicated by the
+// manager's snapshot cursor.
 fn write_claimed(manager: &pp_mcp::McpManager, stderr: &mut impl Write) {
     for server in manager.take_connect_services() {
         let _ = writeln!(stderr, "MCP: {}", server.describe());
@@ -17,9 +20,12 @@ fn write_claimed(manager: &pp_mcp::McpManager, stderr: &mut impl Write) {
     }
 }
 
-/// 等启动期建连结束（或在收到取消信号时提前退出），期间把新完成的服务逐条写到 stderr。
-/// 已打印的服务由 manager 的快照游标去重：同一进程的后续任务与取消后的重试都不会重打。
-/// 提示不影响任务结果：写失败（例如管道断开）被忽略，不改变任务输出。
+/// Waits for startup connects to finish (or exits early when cancellation is
+/// signalled), writing each newly completed server to stderr as it arrives.
+/// Already printed servers are deduplicated by the manager's snapshot cursor, so later
+/// tasks in the same process and retries after cancellation never print them again.
+/// The hints never affect the task result: write failures (for example a broken pipe)
+/// are ignored and do not change task output.
 pub(crate) fn wait(
     agent: &Agent,
     stderr: &mut impl Write,
@@ -36,9 +42,10 @@ pub(crate) fn wait(
         }
         std::thread::sleep(POLL);
     }
-    // 结束与新服务完成之间存在窗口：收尾时再排一次，保证最后一批也输出完整。
+    // There is a window between finishing and a new server completing: drain once more
+    // on the way out so the last batch is fully printed.
     write_claimed(&manager, stderr);
-    // 总状态只输出一次：同一进程的后续任务不再重复。
+    // The overall status prints once: later tasks in the same process do not repeat it.
     if let Some(tip) = manager.take_connect_report() {
         let _ = writeln!(stderr, "{tip}");
     }

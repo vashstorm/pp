@@ -1,5 +1,5 @@
 /**
- * Projects 页面：按工作目录汇总费用、请求数、模型构成与最近请求列表。
+ * Projects page: cost, request count, model breakdown and recent request list per working directory.
  */
 
 import {
@@ -134,7 +134,7 @@ function projectFooter(rows) {
 }
 
 /**
- * 渲染 Projects 页面。
+ * Renders the Projects page.
  * @returns {string}
  */
 export function projectsPage() {

@@ -1,4 +1,4 @@
-//! 模型失败分类、错误脱敏与重试预算。
+//! Model failure classification, error redaction and retry budget.
 
 use anyhow::Result;
 use async_openai::error::OpenAIError;
@@ -9,7 +9,7 @@ use pp_core::events::AgentEvent;
 
 use super::{OpenAiClient, elapsed_millis};
 
-/// 模型边界错误与本地事务错误分开，防止重试磁盘写入或工具副作用。
+/// Model-boundary errors stay apart from local transaction errors so disk writes or tool side effects are never retried.
 #[derive(Debug)]
 pub(super) struct ModelFailure {
     pub(super) message: String,
@@ -28,7 +28,7 @@ pub fn model_request_failed(error: &anyhow::Error) -> bool {
     error.is::<ModelFailure>()
 }
 
-/// 请求因超出上下文窗口被供应商拒绝；属于确定性输入超限，不应做指数退避重试。
+/// The provider rejected the request for exceeding the context window; a deterministic input limit that must not use exponential backoff.
 pub fn is_context_overflow(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<ModelFailure>()
@@ -158,7 +158,7 @@ impl OpenAiClient {
 }
 
 pub(super) fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
-    // 先保存 SDK 仍持有的原始解析现场，再生成面向终端的脱敏消息。
+    // Capture the raw parse context the SDK still holds, then build the redacted terminal message.
     tracing::error!(
         event = "ai_transport_error",
         pid = std::process::id(),
@@ -193,7 +193,7 @@ pub(super) fn redacted_error(error: OpenAIError, api: &str) -> anyhow::Error {
 }
 
 fn response_decode_error(error: &serde_json::Error, raw: &str, api: &str) -> anyhow::Error {
-    // 只展示已知字段和事件名称；错误值、完整分片和供应商正文留在诊断日志。
+    // Show only known fields and event names; error values, full chunks and provider bodies stay in diagnostic logs.
     const FIELDS: &[&str] = &[
         "type",
         "sequence_number",
@@ -284,17 +284,17 @@ fn response_decode_error(error: &serde_json::Error, raw: &str, api: &str) -> any
     anyhow::anyhow!("decoding {api} response: {reason} (event: {event}{location})")
 }
 
-/// middleware 通过自构造 code 标记传递 Retry-After 整数秒；错误正文仅写诊断日志。
-/// 脱敏错误只展示状态码，不输出该内部标记。
+/// Middleware passes integer-seconds Retry-After through a self-constructed code marker; the error body goes to diagnostic logs only.
+/// The redacted error shows the status code only and never prints that internal marker.
 const RETRY_AFTER_CODE_PREFIX: &str = "pp-retry-after:";
-/// middleware 通过自构造 code 标记传递上下文超窗分类；不向终端泄露原始响应正文。
+/// Middleware passes the context-window-overflow classification through a self-constructed code marker; the raw response body never reaches the terminal.
 pub(super) const CONTEXT_OVERFLOW_CODE: &str = "pp-context-overflow";
 
 /// Safety valve so a provider answering `Retry-After: 0` cannot turn the
 /// retry budget into a tight request loop.
 const REQUEST_MAX_ATTEMPTS: u32 = 10;
 
-/// 基于 HTTP 状态码与有界错误体识别上下文窗口超限（供 middleware 在脱敏丢弃正文前判定）。
+/// Detect context-window overflow from the HTTP status code and a bounded error body (so middleware can decide before redaction drops the body).
 pub(super) fn body_indicates_context_overflow(status: reqwest::StatusCode, body: &[u8]) -> bool {
     if !matches!(status.as_u16(), 400 | 413 | 422) {
         return false;
@@ -358,7 +358,7 @@ fn retry_after_seconds(error: &OpenAIError) -> Option<u64> {
         .ok()
 }
 
-/// 分类已脱敏的供应商错误；协议和流解析错误使用 ModelError。
+/// Classify an already redacted provider error; protocol and stream parse errors use ModelError.
 fn request_retry_reason(error: &OpenAIError) -> Option<pp_core::events::RequestRetryReason> {
     use pp_core::events::RequestRetryReason;
     match error {

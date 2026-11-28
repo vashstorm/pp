@@ -1,14 +1,15 @@
-// 验证项 4（token 指标，双协议）：流式生成期间在 Ctx 左侧显示不带前缀的非零估算
-// 速度；服务端权威 usage 到达后更新平均速度，In/CRead/CWrite 使用最近一次已完成
-// 普通请求，Out 累计整个会话（input 仍含缓存命中总数，CRead/CWrite 只是其中的明细）；
-// 下一轮缺失 usage 时最近请求指标退回未知而累计 out 保留，估算速度冻结；/new 清空全部新指标。
+// Coverage 4 (token metrics, both protocols): while streaming, show a non-zero estimated speed without a prefix to the
+// left of Ctx; once the server's authoritative usage arrives, update the average speed; In/CRead/CWrite use the latest
+// completed ordinary request while Out accumulates the whole session (input still carries the cache-hit total, of which
+// CRead/CWrite are the breakdown); when the next round has no usage, the latest-request metrics fall back to unknown with
+// the cumulative out preserved and the estimated speed frozen; /new clears every new metric.
 #[test]
 fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
     let protocol = "response";
         let fixture = server();
         let (_home, mut pty) = context_tui_start(&fixture, protocol, 40000, 80);
-        // 初始 100×30 无任何数据时整行隐藏（含 Ctx）。
-        pty.wait_for("初始无数据时整行隐藏", context_tui_metrics_hidden);
+        // Initially at 100×30 with no data at all the whole row is hidden, Ctx included.
+        pty.wait_for("the whole row is hidden while there is no data", context_tui_metrics_hidden);
 
         pty.input("context-metrics-live\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
@@ -16,36 +17,37 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         let first = format!("context-metrics-live-one {}", "x".repeat(600));
         streaming_delta(&mut stream, protocol, &first);
         pty.text("context-metrics-live-one");
-        // SSE 仍被服务端握住：速度只能是估算；in 与缓存尚无完成的请求，out 按已接收字节增长。
-        pty.wait_for("流式生成中显示非零估算速度", context_tui_positive_speed);
+        // The SSE is still held by the server: the speed can only be an estimate; in and the cache counters have no completed
+        // request yet, so out grows with the received bytes.
+        pty.wait_for("streaming shows a non-zero estimated speed", context_tui_positive_speed);
         let first_out = first.len().div_ceil(3);
-        pty.wait_for("生成中的 out 按已接收字节估算", |screen| {
+        pty.wait_for("live out is estimated from the received bytes", |screen| {
             let live = screen.contents();
             live.contains(&format!("\u{f04e2} —/{first_out}")) && live.contains("\u{f01bc} —/—")
         });
         let live = pty.parser.screen().contents();
         assert!(
             !live.contains("\u{f04e2} —/—"),
-            "生成中的 out 不能继续显示未知：{live}"
+            "live out must stop showing unknown: {live}"
         );
         let (speed_row, speed_column) =
-            context_tui_locate(pty.parser.screen(), "tok/s").expect("流式生成中必须显示速率字段");
+            context_tui_locate(pty.parser.screen(), "tok/s").expect("the rate field must be visible while streaming");
         let (ctx_row, ctx_column) =
-            context_tui_locate(pty.parser.screen(), "\u{e62a} ").expect("Ctx 必须可见");
-        assert_eq!(speed_row, ctx_row, "指标必须与 Ctx 同在输入栏上沿");
-        assert!(speed_column < ctx_column, "速度必须位于 Ctx 左侧");
+            context_tui_locate(pty.parser.screen(), "\u{e62a} ").expect("Ctx must be visible");
+        assert_eq!(speed_row, ctx_row, "the metrics must share the top row of the input bar with Ctx");
+        assert!(speed_column < ctx_column, "the speed must sit to the left of Ctx");
 
         let second = " context-metrics-live-two";
         streaming_delta(&mut stream, protocol, second);
         pty.text("context-metrics-live-two");
         assert!(
             context_tui_speed(pty.parser.screen()).is_some_and(|(_, marked)| !marked),
-            "流式速度不得带 ~ 前缀"
+            "a streaming speed must not carry the ~ prefix"
         );
-        // 第二个 delta 到达后估算必须增长，而不是停在首个分片的值。
+        // Once the second delta arrives the estimate must grow instead of sticking to the first chunk's value.
         let grown_out = (first.len() + second.len()).div_ceil(3);
         assert!(grown_out > first_out);
-        pty.wait_for("生成中的 out 随分片增长", |screen| {
+        pty.wait_for("live out grows with the chunks", |screen| {
             screen
                 .contents()
                 .contains(&format!("\u{f04e2} —/{grown_out}"))
@@ -57,16 +59,16 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
             &format!("{first} context-metrics-live-two"),
         );
         stream.finish();
-        pty.wait_for("权威 usage 更新完成态指标", |screen| {
+        pty.wait_for("authoritative usage updates the completed metrics", |screen| {
             let contents = screen.contents();
             contents.contains("12K/300") && contents.contains("40/120")
         });
         pty.ready();
         let screen = pty.parser.screen();
-        let (rate, marked) = context_tui_speed(screen).expect("完成后必须显示精确速度");
-        assert!(!marked, "权威 usage 到达后不得保留 ~");
-        assert!(rate > 0.0, "完成速度必须为正：{rate}");
-        let (row, ctx_column) = context_tui_locate(screen, "\u{e62a} ").expect("Ctx 必须可见");
+        let (rate, marked) = context_tui_speed(screen).expect("an exact speed must be shown after completion");
+        assert!(!marked, "the ~ must not survive once authoritative usage arrives");
+        assert!(rate > 0.0, "the completed speed must be positive: {rate}");
+        let (row, ctx_column) = context_tui_locate(screen, "\u{e62a} ").expect("Ctx must be visible");
         let speed_column = context_tui_locate(screen, "tok/s").unwrap().1;
         assert!(speed_column < ctx_column);
         let mut previous = ctx_column;
@@ -82,11 +84,11 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
             previous = column;
             assert_eq!(screen.cell(row, column).unwrap().fgcolor(), color);
         }
-        // 速度图标按 tok/s 分三档（映射由 pp-ui 单元测试覆盖），此处只验证它出现在状态栏且为粉色。
+        // The speed icon has three tiers by tok/s (the mapping is covered by pp-ui unit tests); here only verify it shows in the status bar in pink.
         let (speed_row, speed_icon_column) = ["\u{f0f86}", "\u{f0f85}", "\u{f04c5}"]
             .into_iter()
             .find_map(|icon| context_tui_locate(screen, icon))
-            .expect("状态栏必须显示速度档位图标");
+            .expect("the status bar must show a speed tier icon");
         assert_eq!(speed_row, row);
         assert_eq!(
             screen.cell(row, speed_icon_column).unwrap().fgcolor(),
@@ -108,15 +110,15 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
             vt100::Color::Idx(15)
         );
 
-        // 下一轮：成功但没有 usage。计数退回未知，流式估算不带前缀并冻结。
-        // 加宽以容纳请求临时状态，同时验证上一轮读写计数保留。
+        // Next round: successful but without usage. The counters fall back to unknown and the streaming estimate is unprefixed and frozen.
+        // Widen to fit the request's transient state and confirm the read/write counters of the previous round are kept.
         pty.resize(30, 140);
         pty.input("context-metrics-missing\r");
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         let mut stream = request.start_sse().unwrap();
-        // 服务端暂不返回首个 delta：新请求等待期间必须保留上一笔完成速度。
+        // The server delays the first delta: the previous completed speed must survive while the new request waits.
         pty.wait_for(
-            "下一请求等待首字节时速度不闪回未知",
+            "the speed does not flash back to unknown while waiting for the first byte",
             |screen| {
                 screen.contents().contains("Requesting model")
                     && screen.contents().contains("40/120")
@@ -127,26 +129,26 @@ fn context_tui_token_metrics_live_then_authoritative_both_protocols() {
         streaming_delta(&mut stream, protocol, "context-metrics-missing-answer");
         pty.text("context-metrics-missing-answer");
         pty.wait_for(
-            "缺失 usage 的请求也显示估算速度",
+            "a request without usage still shows an estimated speed",
             context_tui_positive_speed,
         );
         streaming_complete(&mut stream, protocol, "context-metrics-missing-answer");
         stream.finish();
-        pty.wait_for("缺失 usage 后最近请求指标退回未知而累计 out 保留", |screen| {
+        pty.wait_for("after missing usage the latest-request metrics fall back to unknown while cumulative out is kept", |screen| {
             let contents = screen.contents();
             contents.contains("\u{f04e2} —/300") && contents.contains("\u{f01bc} —/—")
         });
         let (rate, marked) =
-            context_tui_speed(pty.parser.screen()).expect("流式字节必须保留最终估算速度");
+            context_tui_speed(pty.parser.screen()).expect("the streamed bytes must keep the final estimated speed");
         assert!(
             !marked && rate > 0.0,
-            "缺失 usage 时速度也不带 ~ 前缀：{rate}"
+            "without usage the speed also carries no ~ prefix: {rate}"
         );
 
         pty.ready();
         pty.resize(30, 100);
         pty.input("/new\r");
-        pty.wait_for("/new 清空全部新指标并整行隐藏", context_tui_metrics_hidden);
+        pty.wait_for("/new clears every new metric and hides the whole row", context_tui_metrics_hidden);
         pty.input("\x03");
         pty.finish();
         no_more(&fixture);

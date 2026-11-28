@@ -1,9 +1,10 @@
-//! 面板与会话类事件：树、会话列表、子 Agent 根、MCP 与 LSP。
+//! Panel and session events: tree, session list, subagent root, MCP and LSP.
 
 use crate::tui::{App, Level, State, WorkerEvent, editor};
 
 impl App {
-    /// 面板／会话事件族：只在本地面板与快照上生效，I/O 仍由 worker 完成。
+    /// Panel/session event family: it only affects local panels and snapshots; all I/O still
+    /// runs in the worker.
     pub(super) fn on_panel_event(&mut self, event: WorkerEvent) -> bool {
         let mut changed = false;
         match event {
@@ -13,7 +14,8 @@ impl App {
                 changed = true;
             }
             WorkerEvent::PipeStoreBound { store } => {
-                // 同一实例重复发布是幂等的；换根才递增 epoch，面板据此丢弃旧回复。
+                // Republishing the same instance is idempotent; only a root switch bumps the
+                // epoch, and the panel drops old replies accordingly.
                 if self.install_pipe_store(Some(store)) {
                     changed = true;
                 }
@@ -98,7 +100,8 @@ impl App {
             }
 
             WorkerEvent::SessionDeleted(result) => {
-                // 删除仍走 Agent worker 的会话锁与 JSONL 删除；成功后再同步派生索引。
+                // Deletion still goes through the Agent worker's session lock and JSONL removal;
+                // the derived index is synced only after success.
                 self.state = State::Ready;
                 let mut refresh = None;
                 if let Some(panel) = &mut self.session_panel {
@@ -110,7 +113,8 @@ impl App {
                 }
                 match result {
                     Ok(()) => {
-                        // 先报告已删除，再展示索引刷新错误；刷新失败清空旧行。
+                        // Report the deletion first, then show index refresh errors; a failed
+                        // refresh clears the stale rows.
                         self.notify(Level::Normal, "Session deleted.".into());
                         if let Some((generation, request_id, cwd, query)) = refresh
                             && !self.history_sync_and_search(generation, request_id, cwd, query)
@@ -134,7 +138,8 @@ impl App {
                     Ok(state) => {
                         self.session_id = Some(state.id.clone());
                         self.session_panel = None;
-                        // 历史、费用和用量已由 ExecutionPrepared 接管；这里只补通知。
+                        // History, cost and usage were already taken over by ExecutionPrepared;
+                        // this only adds the notification.
                         self.token_speed.clear();
                         match self.resume_note.take() {
                             Some(error) => self.notify(Level::Error, error),
@@ -144,7 +149,8 @@ impl App {
                         }
                     }
                     Err(error) => {
-                        // 恢复失败：保留列表、选中项与旧对话，可重新选择或取消。
+                        // Resume failed: the list, selection and old conversation are kept so the
+                        // user can pick again or cancel.
                         if let Some(panel) = &mut self.session_panel {
                             panel.restore_failed();
                         }

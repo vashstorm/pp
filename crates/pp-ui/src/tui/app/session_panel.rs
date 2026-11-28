@@ -4,10 +4,12 @@ impl App {
     pub(in crate::tui) fn close_session_panel(&mut self) {
         self.session_panel = None;
         self.menu_dismissed = true;
-        // 检索仍可能在 worker 中运行：迟到的回复按代次丢弃，绝不会重开面板。
+        // The search may still be running in the worker: late replies are dropped by
+        // generation and never reopen the panel.
     }
 
-    /// 打开 /resume：分配新代次并向 history worker 发送首次同步检索。
+    /// Opens /resume: allocates a new generation and sends the first synchronous search to the
+    /// history worker.
     pub(in crate::tui) fn open_session_panel(&mut self) {
         let generation = self.next_session_generation();
         let mut panel = sessions::Panel::new(
@@ -27,7 +29,8 @@ impl App {
         }
     }
 
-    /// 查询/范围变化后发送一次异步 Search；失败时保留编辑但清空旧行。
+    /// Sends one async Search after a query/range change; on failure the edits are kept but
+    /// stale rows are cleared.
     pub(in crate::tui) fn search_session_panel(&mut self) {
         let request = self.session_panel.as_mut().and_then(|panel| {
             let generation = panel.generation();
@@ -45,7 +48,8 @@ impl App {
         }
     }
 
-    /// history worker 的会话检索回复：只安装当前面板代次与最新请求的结果。
+    /// Session search reply from the history worker: only results for the current panel
+    /// generation and the newest request are installed.
     pub(in crate::tui) fn receive_session_search(
         &mut self,
         panel_generation: u64,

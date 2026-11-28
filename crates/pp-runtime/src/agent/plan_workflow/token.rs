@@ -33,8 +33,8 @@ impl Agent {
                 && token.content == document.content,
             "{NOT_CURRENT}"
         );
-        // 重命名/移位/删除后旧路径 token 不能继续授权；与登记表解析出的
-        // 实际路径（由按 ID 协调同步）精确比较。
+        // After a rename/move/deletion the old path token can no longer authorize; compare
+        // exactly against the actual path resolved from the registry (synced by ID).
         ensure!(
             document.path().is_some_and(|path| path == token.path),
             "{NOT_CURRENT}"
@@ -56,7 +56,8 @@ impl Agent {
         token: &ReviewToken,
         input: &InputQueue,
     ) -> Result<()> {
-        // 校验前按 ID 协调：登记重命名/搬迁使旧 path token 失效。
+        // Reconcile by ID before validating: a registry rename/move invalidates the old path
+        // token.
         self.reconcile_plan_location()?;
         ensure!(self.plan_token_status(token, input)?.is_none(), "{CHANGED}");
         Ok(())
@@ -86,7 +87,8 @@ impl Agent {
         Ok(())
     }
 
-    /// 安全核对已保存正文后保留草稿，再退出 Plan；不发起模型请求。
+    /// Keep the draft after safely verifying the saved body, then leave Plan; no model request
+    /// is made.
     pub fn save_plan_and_leave(
         &mut self,
         token: ReviewToken,

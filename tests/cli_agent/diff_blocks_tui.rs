@@ -1,13 +1,16 @@
-// Diff 块级渲染 PTY 回归：两种 edit 模式／两协议的真实提交 diff（磁盘落盘 + 屏幕
-// 红/绿与行号 + 统计）、write 新建/覆盖/同内容/空文件、CRLF→LF／末尾换行删除／BOM
-// /非 UTF-8 的 unavailable 回退、无读权限文件的 write 不被快照失败阻断、失败 edit
-// 不伪造 diff、超过 40 行的默认折叠与Ctrl+O 展开/收起、退出原生历史保持当时的折叠状态
-// 保留颜色，以及 /resume 与启动恢复重放相同 diff 且不重新执行旧工具、缺 FileChanged
-// 的旧日志正常加载。生成期间的临时参数预览卡片另有两协议 × edit/write 的流式用例：
-// 预览先于提交出现、磁盘未变、取消后消失、提交后替换为唯一真实卡片且不进入 journal。
-// 全部通过真实 PTY、loopback HTTP 与磁盘文件观察，不用 sleep 猜测阶段；辅助函数一律
-// 使用 `diff_blocks_` 前缀，测试函数使用 `transcript_blocks_` / `*_preview_tui_` 前缀，
-// 不新增 use 声明以免与兄弟 include 文件冲突。
+// PTY regression for diff block rendering: the real committed diff for both edit modes and both protocols
+// (disk writes + red/green and line numbers on screen + stats), write creating/overwriting/identical
+// content/empty file, the unavailable fallback for CRLF→LF / trailing-newline removal / BOM / non-UTF-8,
+// write to an unreadable file not being blocked by a snapshot failure, failed edits not faking a diff, the
+// default folding above 40 lines with Ctrl+O expand/collapse, the exit scrollback keeping the collapse
+// state and colors it had, and /resume and startup restore replaying the same diff without re-running the
+// old tools while logs missing FileChanged still load. The temporary argument preview cards produced while
+// generating have their own streaming cases (both protocols × edit/write): the preview appears before the
+// commit, the disk is unchanged, it disappears on cancellation, and after the commit it is replaced by the
+// single real card without entering the journal. Everything is observed through the real PTY, loopback
+// HTTP and disk files, never sleep to guess stages; helpers all use the `diff_blocks_` prefix and test
+// functions use the `transcript_blocks_` / `*_preview_tui_` prefixes, adding no use declaration to avoid
+// clashing with sibling include files.
 
 const DIFF_BLOCKS_ADDED: vt100::Color = vt100::Color::Rgb(137, 210, 129);
 const DIFF_BLOCKS_REMOVED: vt100::Color = vt100::Color::Rgb(252, 58, 75);
@@ -20,9 +23,9 @@ fn diff_blocks_settings(mode: &str) -> String {
     )
 }
 
-// 直接按终端单元格匹配 ASCII 文本及颜色，避免标题图标影响列号计算。
+// Match ASCII text and colors directly per terminal cell, so the title icon does not affect column math.
 fn diff_blocks_screen_colored(screen: &vt100::Screen, needle: &str, color: vt100::Color) -> bool {
-    // edit 使用参考图色板，局部变更以背景强调。
+    // edit uses the reference palette, emphasizing partial changes through the background.
     let edit_color = match color {
         DIFF_BLOCKS_ADDED => vt100::Color::Rgb(153, 208, 137),
         DIFF_BLOCKS_REMOVED => vt100::Color::Rgb(232, 76, 82),
@@ -79,16 +82,16 @@ fn diff_blocks_tool_result(body: &Value, protocol: &str, id: &str) -> Value {
         .1
 }
 
-// Ctrl-C 退出后读取原生滚动历史及主屏幕，保留颜色用于断言。
+// Read the native scrollback and the main screen after the Ctrl-C exit, keeping colors for assertions.
 fn diff_blocks_exit_scrollback(pty: &mut Pty, last_answer: &str) -> (String, Vec<u8>) {
     pty.input("\x03");
-    pty.wait_for("退出后恢复输入模式", |screen| !screen.bracketed_paste());
+    pty.wait_for("input mode is restored after exit", |screen| !screen.bracketed_paste());
     let (contents, raw) = pty.native_history();
     assert!(contents.contains(last_answer), "{contents}");
     (contents, raw)
 }
 
-// 复制一份真实 journal 并删除全部 FileChanged 事件行，模拟缺少 diff 事件的旧日志。
+// Copy a real journal and drop every FileChanged event line, simulating an old log without diff events.
 fn diff_blocks_clone_journal_without_file_changed(home: &Path, source: &str, id: &str) {
     let journal = resume_history_journal_dir(home).join(format!("{source}.jsonl"));
     let text = session_text(&journal);
@@ -127,8 +130,8 @@ fn diff_blocks_clone_journal_without_file_changed(home: &Path, source: &str, id:
     );
 }
 
-// replace 模式的真实 edit old→new 与 write 新建/覆盖/同内容/空文件：屏幕红绿、
-// 行号、+N -N 统计和磁盘结果一致。
+// A real edit old→new in replace mode plus write creating/overwriting/identical content/empty file: screen
+// red/green, line numbers, the +N -N stats and the disk result all agree.
 #[test]
 fn transcript_blocks_diff_replace_edit_and_write_cards() {
     let protocol = "response";

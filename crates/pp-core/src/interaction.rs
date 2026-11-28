@@ -100,7 +100,8 @@ pub fn definition() -> FunctionObject {
 }
 
 impl AskArgs {
-    /// 归一化 provider 参数后统一校验；不回显输入或解析器原文。
+    /// Normalize provider arguments then validate uniformly; never echoes the input or the parser
+    /// text.
     pub fn parse(arguments: &str) -> Result<Self> {
         let args = arguments::parse(arguments)?;
         args.validate()?;
@@ -321,18 +322,18 @@ mod tests {
                 ),
             ];
             for (options, hint, expected) in cases {
-                let mut question =
-                    json!({"id":"choice","question":"完整问题？","multi":null,"options":options});
+                let mut question = json!({"id":"choice","question":"Full question?","multi":null,"options":options});
                 if let Some(hint) = hint {
                     question["recommended"] = hint;
                 }
                 let input = json!({"questions":[question]}).to_string();
-                // 同时覆盖普通参数与 provider 再次编码成 JSON 字符串的参数。
+                // Covers both plain arguments and arguments the provider encoded as a JSON string
+                // again.
                 for input in [input.clone(), serde_json::to_string(&input).unwrap()] {
                     let args = AskArgs::parse(&input).unwrap();
                     let question = &args.questions[0];
                     assert_eq!(question.recommended, expected);
-                    assert_eq!(question.question, "完整问题？");
+                    assert_eq!(question.question, "Full question?");
                     assert!(!question.multi);
                     assert_eq!(
                         question
@@ -639,7 +640,8 @@ mod tests {
                 ordered[2].selected_options,
                 vec!["lint".to_string(), "unit".to_string(), "docs".to_string()]
             );
-            // 前后空格与中文 label 原样保留，只按选项声明顺序重排。
+            // Padding and the multi-byte label are preserved verbatim; only the declared option
+            // order changes.
             assert_eq!(ordered[3].id, "labels");
             assert_eq!(
                 ordered[3].selected_options,
@@ -649,7 +651,8 @@ mod tests {
     }
 }
 
-/// 所有 Agent 共用一条可取消的 FIFO 交互队列；释放许可后才显示下一项。
+/// Every agent shares one cancellable FIFO interaction queue; the next item appears only after the
+/// permit is released.
 #[derive(Default)]
 pub struct DialogQueue {
     state: std::sync::Mutex<(u64, std::collections::VecDeque<u64>)>,

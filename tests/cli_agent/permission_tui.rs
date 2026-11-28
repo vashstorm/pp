@@ -32,12 +32,12 @@ fn permission_tui_cycles_modes_with_both_shortcuts_and_keeps_draft() {
                 .is_some_and(|row| row.contains("off · \u{ed25} Ask for approval ·"))
     };
     let mut pty = Pty::start_with_existing_files(home.path());
-    pty.wait_for("默认启动时 effort 后带盾牌的 Ask for approval", default_footer);
+    pty.wait_for("default startup shows Ask for approval with a shield after effort", default_footer);
     pty.input("permission draft");
     pty.draft("permission draft");
     pty.input("\x1b[D");
     let (row, column) = pty.parser.screen().cursor_position();
-    pty.wait_for("草稿内光标", |screen| screen.cursor_position() == (row, column.saturating_sub(1)));
+    pty.wait_for("cursor inside the draft", |screen| screen.cursor_position() == (row, column.saturating_sub(1)));
     let cursor = pty.parser.screen().cursor_position();
     for (keys, label, color) in [
         ("\x1b[17~", "Approve for me", Rgb(254, 188, 56)),
@@ -50,25 +50,25 @@ fn permission_tui_cycles_modes_with_both_shortcuts_and_keeps_draft() {
         ("\x1b[65;3u", "Ask for approval", Rgb(125, 207, 255)),
     ] {
         pty.input(keys);
-        pty.wait_for(&format!("{keys:?} 切换至 {label}"), |screen| {
+        pty.wait_for(&format!("{keys:?} switches to {label}"), |screen| {
             permission_label(screen, label, color)
         });
         assert_eq!(pty.prompt(), "permission draft");
         assert_eq!(pty.parser.screen().cursor_position(), cursor);
     }
     pty.resize(24, 22);
-    pty.wait_for("窄屏 Ask for approval", |screen| {
+    pty.wait_for("narrow screen Ask for approval", |screen| {
         permission_label(screen, "Ask for approval", Rgb(125, 207, 255))
     });
     pty.input("\x1b[17~\x1b[17~");
-    pty.wait_for("窄屏 Full Access", |screen| {
+    pty.wait_for("narrow screen Full Access", |screen| {
         permission_label(screen, "Full Access", Rgb(224, 108, 117))
     });
     pty.input("\x03");
     pty.finish();
 
     let mut restarted = Pty::start_with_existing_files(home.path());
-    restarted.wait_for("重启后恢复默认 Ask for approval", default_footer);
+    restarted.wait_for("restart restores the default Ask for approval", default_footer);
     restarted.input("\x03");
     restarted.finish();
 }
@@ -87,7 +87,7 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
         &cwd,
     );
     if sandbox.policy().is_err() {
-        // 平台上的隔离能力由 pp-sandbox 定向用例验证。
+        // The platform's isolation capability is verified by the pp-sandbox targeted cases.
         return;
     }
     write_settings(home.path(), "tools: { sandbox: { network: false } }").unwrap();
@@ -102,7 +102,7 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
             && tool["function"]["parameters"]["properties"].get("sandbox_permissions").is_some()
     }));
     calls_reply(request, json!([call("sandbox-test", "bash", request_arguments.clone())]));
-    pty.wait_for("预执行授权与持久化选项", |screen| {
+    pty.wait_for("pre-execution approval and persistence options", |screen| {
         let contents = screen.contents();
         contents.contains("Permission required")
             && contents.contains("outbound network")
@@ -141,7 +141,8 @@ fn permission_tui_approves_and_saves_an_exact_bash_request() {
     pty.finish();
     no_more(&server);
 
-    // 另一项目工作目录下启动，同名命令与范围直接命中同一全局持久化规则，不再弹确认。
+    // Started in another project's working directory, the same command and scope hit the same global persistent
+    // rule directly, so no confirmation pops up again.
     let other_project = tempfile::tempdir().unwrap();
     let other_cwd = other_project.path().canonicalize().unwrap();
     let mut second_pty = Pty::start_with_args(&other_cwd, home.path(), &[]);

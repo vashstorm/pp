@@ -1,4 +1,4 @@
-//! `edit` 分支：快照校验、写锁内提交与保存后诊断联动。
+//! `edit` branch: snapshot validation, commit under the write lock and post-save diagnostics linkage.
 
 use super::*;
 
@@ -35,7 +35,7 @@ impl Tools {
         let absolute = registry
             .map(|registry| registry.cwd().join(&normalized_path))
             .unwrap_or_else(|| self.cwd.join(&normalized_path));
-        // 旧诊断在新 mutation 的第一时间失效；必须早于写锁与客户端 operation。
+        // Stale diagnostics are invalidated as soon as the new mutation starts; this must precede the write lock and the client operation.
         let ticket = registry.map(|registry| registry.diagnostics().mutate(&absolute));
         let guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
         let bytes = target.read()?;
@@ -53,7 +53,7 @@ impl Tools {
         let saved_warning = target.save_if_unchanged(&bytes, output.as_bytes())?;
         let final_bytes = output.into_bytes();
         let bytes_written = final_bytes.len();
-        // 记录与 diff 使用本次实际提交的内容。
+        // Recording and diff use the content actually committed by this call.
         self.record_committed_file(
             call_id,
             normalized_path,
@@ -63,7 +63,7 @@ impl Tools {
         );
         drop(guard);
         if cancellation.is_cancelled() {
-            // 已提交的副作用保留，沿用现有取消链。
+            // Committed side effects are kept and the existing cancellation chain is reused.
             return Err(Cancelled.into());
         }
         let mut result = json!({"ok":true,"edits_applied":count,"bytes_written":bytes_written});

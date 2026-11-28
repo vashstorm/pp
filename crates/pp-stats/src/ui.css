@@ -1,7 +1,8 @@
 /*
- * omp-stats 设计令牌、外壳（topbar / sidebar / shell-panel）与共享组件。
- * 共享组件类名统一带 `x-` 前缀，避免与 stats.css 中其他页面的旧样式冲突；
- * 外壳类名（topbar-*、sidebar、nav-*、shell-*、live-chip）独占，无前缀。
+ * omp-stats design tokens, shell (topbar / sidebar / shell-panel) and shared components.
+ * Shared component class names all carry the `x-` prefix so they do not clash with the older
+ * per-page styles in stats.css; shell class names (topbar-*, sidebar, nav-*, shell-*, live-chip) are
+ * exclusive and keep no prefix.
  */
 :root,
 [data-theme="light"] {
@@ -122,7 +123,7 @@ kbd {
   scrollbar-color: var(--line-3) transparent;
 }
 
-/* 外壳 */
+/* Shell */
 .shell-ambient {
   position: fixed;
   z-index: 0;
@@ -352,7 +353,7 @@ kbd {
   }
 }
 
-/* 基础工具类 */
+/* Basic utility classes */
 .x-mono {
   font-family: var(--font-mono);
   font-size: 0.93em;
@@ -419,7 +420,8 @@ kbd {
   animation: x-rise var(--dur-3) var(--ease-out) backwards;
   animation-delay: calc(var(--i, 0) * var(--stagger));
 }
-/* 页内交互与定时刷新只更新内容，不重播进入动画，避免展开行、切换指标或刷新时整页闪烁。 */
+/* In-page interactions and periodic refreshes only update content and never replay the enter
+   animation, so expanding rows, switching metrics or refreshing does not flash the whole page. */
 #page[data-enter="false"] .x-rise {
   animation: none;
 }
@@ -436,7 +438,7 @@ kbd {
   }
 }
 
-/* 页面、卡片与指标 */
+/* Pages, cards and metrics */
 .x-page {
   display: flex;
   flex-direction: column;

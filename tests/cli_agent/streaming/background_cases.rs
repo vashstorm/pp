@@ -19,7 +19,7 @@ fn background_task_cleanup_at_run_boundaries() {
                     "start",
                     "bash",
                     json!({
-                        // TERM 清理同时写满两条管道；任务收尾必须持续排空至标记落盘。
+                        // The TERM cleanup fills both pipes at once; settling the task must keep draining until the marker lands.
                         "command": "cleanup() { for ((i=0;i<64;i++)); do printf '%4096s' ''; printf '%4096s' '' >&2; done; printf done > cleanup.done; exit 0; }; trap cleanup TERM; sleep 60 & service=$!; printf '%s' \"$service\" > service.pid; wait \"$service\"; while :; do sleep 60 & wait $!; done",
                         "mode": "background"
                     })
@@ -52,13 +52,13 @@ fn background_task_cleanup_at_run_boundaries() {
             }
         }
         cancel_wait_pid_dead(&service_pid);
-        // 任务收尾与 agent 运行边界异步可见：scratch 目录只在解释器（含
-        // TERM trap）结束后才删除，先以它同步，再断言 trap 的落盘标记。
+        // Task settle and the agent run boundary become visible asynchronously: the scratch directory is removed only after
+        // the interpreter (TERM trap included) exits, so sync on it first and then assert the trap's on-disk marker.
         cancel_assert_no_scratch(dir.path());
         assert_eq!(
             std::fs::read_to_string(dir.path().join("cleanup.done")).unwrap(),
             "done",
-            "{protocol:?} {boundary:?}: TERM 清理未完成"
+            "{protocol:?} {boundary:?}: TERM cleanup did not finish"
         );
         cli.assert_running();
 

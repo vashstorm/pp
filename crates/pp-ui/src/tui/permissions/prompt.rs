@@ -1,4 +1,4 @@
-//! 工具权限审批卡片：展示申请原因与可用授权范围。
+//! Tool permission approval card: shows the request reason and the available grant scopes.
 
 use std::sync::Arc;
 
@@ -20,9 +20,9 @@ use crate::tui::{dialog::Action, themes, transcript::wrap_block, transcript_styl
 const TITLE: &str = "Permission required";
 const MIN_BORDER_WIDTH: u16 = 28;
 const CARD_PADDING: u16 = 1;
-// 两行外框、一行分隔线、一行快捷键。
+// Two border rows, one separator row, one shortcut row.
 const CARD_CHROME: u16 = 4;
-// 选项标签与说明列之间的空白。
+// Gap between the option label and the description column.
 const DESCRIPTION_GAP: usize = 3;
 
 pub(in crate::tui) struct Prompt {
@@ -123,7 +123,7 @@ impl Prompt {
         };
         let mut lines = Vec::new();
         if let Some(tool) = question.header.as_ref().filter(|tool| !tool.is_empty()) {
-            // 工具名以徽章形式突出；超宽时交给通用换行逻辑。
+            // The tool name is highlighted as a badge; over-wide names fall back to the generic wrapping logic.
             let chip = Style::new()
                 .fg(palette.panel_bg)
                 .bg(palette.plan_mode)
@@ -138,7 +138,7 @@ impl Prompt {
         lines
     }
 
-    /// 详情与选项之间的留白只在详情能完整显示时保留，紧凑高度优先给内容。
+    /// The gap between detail and options is kept only when the detail fits fully; a compact height gives priority to content.
     fn gap(details: usize, budget: usize) -> usize {
         usize::from(details > 0 && details < budget)
     }
@@ -233,7 +233,7 @@ impl Prompt {
             .map(|option| Span::raw(display_text(&option.label)).width())
             .max()
             .unwrap_or(0);
-        // 说明列整卡同显同隐：任一说明放不下就全部省略，避免参差和截成半句。
+        // The description column shows or hides as a whole card: if any description does not fit, all are omitted, avoiding ragged or half-cut lines.
         let description_width = self
             .options()
             .iter()
@@ -349,7 +349,7 @@ impl Prompt {
             Span::styled(marker, Style::new().fg(palette.accent).bold()),
             Span::styled(label.to_string(), style),
         ];
-        // 说明列按最长标签对齐；`None` 表示本卡宽度不足以显示说明。
+        // The description column aligns to the longest label; `None` means this card is too narrow to show descriptions.
         if let (Some(label_width), Some(description)) = (
             label_width,
             option

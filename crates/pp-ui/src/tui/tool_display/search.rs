@@ -1,4 +1,4 @@
-//! rg／glob／plan_search 的标题与结果正文布局。
+//! Title and result body layout of rg/glob/plan_search.
 
 use super::*;
 use crate::tui::transcript::card::{self, CardSurface};
@@ -376,7 +376,7 @@ pub(super) fn rg_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for line in logical(view.text) {
         if structured {
-            // 路径已在标题或文件分组中展示；hash anchor 仍保留在原始工具结果。
+            // The path already shows in the title or file group; the hash anchor stays in the raw tool result.
             if single
                 && files.is_some()
                 && line.starts_with('[')

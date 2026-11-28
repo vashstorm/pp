@@ -1,4 +1,4 @@
-//! 计划面板按键：焦点切换、操作选择、滚动与粘贴。
+//! Plan panel keys: focus switching, action selection, scrolling and paste.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use pp_core::plan::ExecutionContext;
@@ -6,7 +6,7 @@ use pp_core::plan::ExecutionContext;
 use super::{ACTIONS, Action, Focus, Panel};
 
 impl Panel {
-    /// 返回 false 时由主输入框接收粘贴；只读面板吞掉粘贴。
+    /// Returning false hands the paste to the main input box; a read-only panel swallows it.
     pub(in crate::tui) fn paste(&mut self, _text: &str) -> bool {
         if self.token.is_some() && !self.readonly() {
             self.focus = Focus::Input;
@@ -24,7 +24,7 @@ impl Panel {
             return Action::None;
         }
         if key.code == KeyCode::Esc && key.modifiers.is_empty() {
-            // Esc 仅关闭面板：不降级、不执行，保留模式与正文。
+            // Esc only closes the panel: no degradation, no execution, mode and body are kept.
             return Action::Close;
         }
         if self.focus != Focus::Input
@@ -133,7 +133,7 @@ impl Panel {
             KeyCode::Up => self.scroll_by(false, 1),
             KeyCode::Down => self.scroll_by(true, 1),
             KeyCode::Left | KeyCode::Right if self.report.is_some() => {
-                // 左右键切换 Plan/Review 标签；各自保留滚动位置。
+                // Left/right switch the Plan/Review tabs; each keeps its own scroll position.
                 self.tab = self.tab.toggled();
             }
             _ => {}

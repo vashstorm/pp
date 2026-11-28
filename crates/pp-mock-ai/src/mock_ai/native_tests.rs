@@ -1,7 +1,7 @@
-//! 原生 `OpenAiClient` 对 mock Responses 服务的往返行为回归。
+//! Round-trip regression of the native `OpenAiClient` against the mock Responses service.
 //!
-//! 这里只走公开客户端入口与真实 HTTP；URL 路由、FIFO、409、限速与原始
-//! SSE 编码已由同目录的协议测试覆盖。
+//! Only the public client entry point and real HTTP are used here; URL routing, FIFO, 409, rate
+//! limiting and raw SSE encoding are covered by the protocol tests in the same directory.
 
 mod integration {
     use super::super::{MockEndpoint, MockServer};
@@ -27,7 +27,7 @@ mod integration {
         model: &str,
     ) -> OpenAiClient {
         let mut settings: pp_config::config::Settings = serde_json::from_value(json!({})).unwrap();
-        // 400/409 必须立即返回，避免默认重试预算拖慢断言。
+        // 400/409 must return immediately so the default retry budget does not slow the assertions down.
         settings.rate_limit_retry_budget_seconds = 0;
         OpenAiClient::new(&pp_config::config::Config {
             auth: None,
@@ -133,7 +133,7 @@ mod integration {
         text
     }
 
-    /// 原生客户端在 `response.completed` 即返回；等待服务端写完 chunk 结尾并释放 busy。
+    /// The native client returns at `response.completed`; wait for the server to write the chunk terminator and release busy.
     fn settle() {
         thread::sleep(Duration::from_millis(50));
     }
@@ -201,7 +201,7 @@ mod integration {
             assert_eq!(calls[0].arguments, r#"{"path":"src/lib.rs"}"#);
             assert!(!calls[0].call_id.is_empty());
 
-            // fast 客户端仍有自己的首次 pending，不会因 root 已消费而丢失。
+            // The fast client still has its own first pending entry; it is not lost because root already consumed its own.
             let (fast_first, _) = run_response(
                 &mut fast,
                 &CreateResponse::default(),
@@ -210,7 +210,7 @@ mod integration {
             assert_eq!(fast_first.unwrap().text, "fast-initial");
             settle();
 
-            // 队列仍有数据时，后续请求携带的另一套脚本与错误 model 都必须被忽略。
+            // While the queue still holds data, both the other script and the wrong model carried by a later request must be ignored.
             root.set_mock_scripts(scripts(&[(
                 "mock-root/primary",
                 json!([{"content": "must-not-be-used"}]),
@@ -228,7 +228,7 @@ mod integration {
             assert!(!assistant_text(&second_events).contains("must-not-be-used"));
             settle();
 
-            // pending 已被消费；脚本耗尽后不再重放或伪造成功内容。
+            // The pending entry is consumed; once the script is exhausted nothing is replayed or faked as a successful reply.
             let (exhausted, _) = run_response(
                 &mut root,
                 &CreateResponse::default(),

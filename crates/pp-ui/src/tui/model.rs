@@ -72,7 +72,7 @@ impl Panel {
             search: editor(),
             menu: SelectionMenu::new(Vec::new(), 0),
             area: Rect::default(),
-            // 打开时按完整模型列表确定高度，之后筛选不移动搜索框与提示行。
+            // The height is fixed from the full model list on open, so later filtering does not move the search box or hint row.
             initial_height: (4 + model_count.clamp(1, LIST_ROWS) as u16).min(MAX_HEIGHT),
         };
         panel.search.set_wrap_mode(WrapMode::None);
@@ -106,7 +106,7 @@ impl Panel {
                 current: current == Some(choice.reference.as_str()),
             })
             .collect();
-        // 稳定排序：收藏优先，其后按实际请求次数降序；缺失按 0，次数相同保持目录顺序。
+        // Stable sort: favorites first, then by descending actual request count (missing counts as 0), ties keep catalog order.
         items.sort_by_key(|item| match item.value {
             MenuAction::Model(index) => {
                 let reference = &choices[index].reference;
@@ -223,7 +223,7 @@ impl Panel {
                 _ => {}
             }
         }
-        // 面板只允许单行搜索；换行、提交修饰键与功能键不穿透主输入框。
+        // The panel only allows single-line search; newlines, submit modifiers and function keys do not reach the main input box.
         if matches!(
             key.code,
             KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc
@@ -284,8 +284,8 @@ impl Panel {
         let input = Rect::new(inner.x + prefix, inner.y, inner.width - prefix, 1);
         frame.render_widget(&self.search, input);
         if input.width > 0 {
-            // 扩宽后收回多余的横向偏移；先渲染以更新编辑器的 viewport 尺寸，
-            // 再在光标仍可见的范围内左滚，不改变搜索词、光标或撤销历史。
+            // After widening, reclaim the excess horizontal offset; render first to update the editor's viewport size,
+            // then scroll left as long as the cursor stays visible, without changing the query, cursor or undo history.
             let (_, left) = self.search.scroll_offset();
             let target = self
                 .search

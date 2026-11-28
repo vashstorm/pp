@@ -32,7 +32,7 @@ fn read_skill_uris_and_selectors() {
             .save(root.join("picture.png"))
             .unwrap();
         let skills = pp_config::skills::Skills::from_dir(&dir).shared();
-        // 同名真实路径不能把虚拟技能 URI 或选择器劫持为本地读取。
+        // A same-named real path must not hijack a virtual skill URI or selector into a local read.
         std::fs::create_dir_all(home.path().join("skill:")).unwrap();
         std::fs::write(home.path().join("skill:/rust:2-3:raw"), "wrong local file").unwrap();
         let limits = ToolLimits {
@@ -48,7 +48,7 @@ fn read_skill_uris_and_selectors() {
                 mode,
                 &skills,
                 &mut WebCache::default(),
-                &mut |_, _| panic!("技能读取不得访问网络"),
+                &mut |_, _| panic!("skill reads must not access the network"),
                 &CancellationToken::new(),
             )
         };
@@ -316,7 +316,7 @@ fn read_skill_uris_and_selectors() {
         );
         assert_eq!(third["content"], "f\ng\n");
         assert_eq!(third["next_path"], Value::Null);
-        // 第二个区间放不进当前页时，保留整个区间供下一页读取。
+        // When the second range does not fit the current page, the whole range is kept for the next page.
         std::fs::write(dir.path().join("file"), "a\nskip\nlong\n").unwrap();
         let first = run_text(
             "file:1,3",
@@ -359,7 +359,7 @@ fn read_images_and_web_urls() {
                 .write_to(&mut bytes, format)
                 .unwrap();
             let bytes = bytes.into_inner();
-            // 不依赖扩展名或 HTTP MIME，真实图片内容仍应进入图片处理流程。
+            // Without relying on extension or HTTP MIME, real image bytes must still enter the image pipeline.
             std::fs::write(dir.path().join("payload.dat"), &bytes).unwrap();
             let local = run(
                 "payload.dat",
@@ -368,7 +368,7 @@ fn read_images_and_web_urls() {
                 EditMode::Hashline,
                 &pp_config::skills::Skills::default().shared(),
                 &mut WebCache::default(),
-                &mut |_, _| panic!("本地读取不应抓取 URL"),
+                &mut |_, _| panic!("local reads must not fetch URLs"),
                 &CancellationToken::new(),
             )
             .unwrap();
@@ -415,7 +415,7 @@ fn read_images_and_web_urls() {
             EditMode::Hashline,
             &pp_config::skills::Skills::default().shared(),
             &mut WebCache::default(),
-            &mut |_, _| panic!("本地读取不应抓取 URL"),
+            &mut |_, _| panic!("local reads must not fetch URLs"),
             &CancellationToken::new(),
         )
         .unwrap();
@@ -469,7 +469,7 @@ fn read_images_and_web_urls() {
 
     {
         let dir = tempfile::tempdir().unwrap();
-        // 即使图片损坏，选择器错误仍先于解码错误返回。
+        // Even with a corrupted image, a selector error is still returned before a decode error.
         std::fs::write(dir.path().join("image.png"), "invalid image").unwrap();
         for source in ["image.png", "https://example.com/image"] {
             for suffix in [":1", ":raw", ":-1", ":1-2:raw"] {
@@ -585,7 +585,7 @@ fn read_pipe_streams_and_eviction() {
         let observer = run.observer();
         let pipeline = observer.begin(None, 2, false, false).unwrap();
         let (_consumer, mut producer) = observer.pipe(pipeline, 1, "cat", "cat").unwrap().unwrap();
-        // CRLF 折叠为一个换行，ANSI 颜色串不进入正文，保留真实文本。
+        // CRLF folds into one newline, ANSI color sequences stay out of the body and the real text is kept.
         let body = b"one\r\n\x1b[31mtwo\x1b[0m\n\xe5\x9b\x9bthree\x07\n";
         producer.write_all(body).unwrap();
         wait_stream_bytes(&store, run.id(), 1, body.len() as u64);
@@ -616,7 +616,7 @@ fn read_pipe_streams_and_eviction() {
         assert_eq!(read(":2", EditMode::Replace)["content"], "two\n四three\n");
         assert_eq!(read(":2-2", EditMode::Replace)["content"], "two\n");
         assert_eq!(read(":-1", EditMode::Replace)["content"], "四three\n");
-        // :raw 只影响选择/锚点，Hashline 模式也不会给临时流签发标签。
+        // :raw only affects selection/anchors, and Hashline mode never issues tags for temporary streams.
         assert_eq!(read(":raw:2", EditMode::Hashline)["content"], "two\n");
         assert!(!full["content"].as_str().unwrap().contains('\u{1b}'));
         assert!(!full["content"].as_str().unwrap().contains('\u{7}'));
@@ -671,7 +671,7 @@ fn read_pipe_streams_and_eviction() {
             );
         }
 
-        // 同名 POSIX 文件不能让虚拟 pipe 前缀被本地读取劫持。
+        // A same-named POSIX file must not let the virtual pipe prefix be hijacked into a local read.
         std::fs::create_dir_all(dir.path().join("pipe:")).unwrap();
         std::fs::write(dir.path().join("pipe:/abc"), "local file").unwrap();
         let error = read_pipe(

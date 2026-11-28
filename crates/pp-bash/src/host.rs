@@ -1,8 +1,9 @@
-//! 嵌入式 Bash 宿主执行器。
+//! Embedded Bash host executor.
 //!
-//! 该模块在调用方线程上直接运行 brush 解释器：不创建辅助 shell 进程，不写宿主
-//! stdio，也不修改宿主进程级状态。外部程序仍由 [`super::supervisor::Supervisor`]
-//! 监督；本模块只负责逻辑 shell、临时目录、逻辑 FD 与输出排空。
+//! This module runs the brush interpreter directly on the caller's thread: it creates no helper shell
+//! process, writes no host stdio and mutates no process-level host state. External programs are still
+//! supervised by [`super::supervisor::Supervisor`]; this module only owns the logical shell, the
+//! temporary directory, logical FDs and output draining.
 
 use super::streams::{PipeRun, RunEnd};
 use super::supervisor::Supervisor;
@@ -32,32 +33,36 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// 与工具卡片一致：运行中最多每 50ms 发布一次有变化的预览。
+/// Consistent with the tool card: publish a changed preview at most once every 50ms while running.
 const PREVIEW_INTERVAL: Duration = Duration::from_millis(50);
-/// 解释器与监督器都已结束后，等待两条逻辑输出流排空的上限。
-/// 故意脱离组的后代可能仍持有继承的写端；此时报告未排空而不是永久挂起。
+/// Upper bound for waiting until both logical output streams drain after the interpreter and supervisor
+/// have finished. Descendants that deliberately left the process group may still hold inherited write
+/// ends; report not-drained instead of hanging forever.
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(1);
 const OUTPUT_CHUNK: usize = 64 * 1024;
 
 pub(crate) use super::supervisor::Termination;
 
-/// 前台/后台共用的内部执行入口参数。路径与命令只在本次调用期间借用。
+/// Internal execution entry parameters shared by the foreground and background paths. Paths and command
+/// are only borrowed for the duration of this call.
 pub(crate) struct HostConfig<'a> {
     pub(crate) cwd: &'a Path,
     pub(crate) cache: &'a Path,
     pub(crate) command: &'a str,
     pub(crate) timeout_seconds: u64,
     pub(crate) call_id: &'a str,
-    /// 父任务取消：解释器与外部组按 `Cancelled` 收尾。
+    /// Parent task cancellation: the interpreter and external groups finish as `Cancelled`.
     pub(crate) cancellation: &'a CancellationToken,
-    /// 显式停止句柄由调用方（后台 TaskManager）持有；按 `Stopped` 收尾。
+    /// The explicit stop handle is owned by the caller (the background TaskManager); the run finishes as
+    /// `Stopped`.
     pub(crate) stop: &'a CancellationToken,
     pub(crate) umask: u32,
     pub(crate) pipes: &'a PipeRun,
     pub(crate) sandbox: Option<&'a Arc<Policy>>,
 }
 
-/// 解释器的真实终态；`Termination` 由监督器判定，不能从输出或退出码反推。
+/// Real terminal state of the interpreter; `Termination` is decided by the supervisor and cannot be
+/// inferred from output or the exit code.
 pub(crate) struct HostOutcome {
     pub(crate) exit_code: Option<i32>,
     pub(crate) termination: Termination,
@@ -68,7 +73,8 @@ pub(crate) struct HostOutcome {
 struct SinkShared {
     sink: Arc<Mutex<OutputSink>>,
     dirty: AtomicBool,
-    /// 宿主封存 sink 后，迟到的 reader 必须丢弃数据而不是写入已结束的 sink。
+    /// After the host seals the sink, late readers must discard data instead of writing into the finished
+    /// sink.
     closed: AtomicBool,
 }
 
@@ -126,8 +132,8 @@ impl Readers {
                     "embedded shell output reader thread panicked"
                 ));
             }
-            // 未完成的 reader 仍阻塞在宿主持有的管道上；丢弃句柄让其自行退出，
-            // 不能为了 join 而永久阻塞运行收尾。
+            // Readers that have not finished are still blocked on pipes held by the host; dropping the handle
+            // lets them exit on their own, because joining must never block run shutdown forever.
         }
         DrainResult {
             drained,
@@ -147,7 +153,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// 在当前调用方线程上执行一次嵌入式 shell，直到解释器与受管外部程序都收尾。
+/// Execute one embedded shell on the current caller thread until both the interpreter and managed
+/// external programs have finished.
 pub(crate) fn run_host(
     config: HostConfig<'_>,
     sink: Arc<Mutex<OutputSink>>,
@@ -184,7 +191,7 @@ fn run_host_inner(
         dirty: AtomicBool::new(false),
         closed: AtomicBool::new(false),
     });
-    // 0 表示无截止时间；取消和显式停止仍由监督器处理。
+    // 0 means no deadline; cancellation and explicit stop are still handled by the supervisor.
     let deadline = if config.timeout_seconds == 0 {
         None
     } else {
@@ -215,10 +222,12 @@ fn run_host_inner(
         &shared,
         &mut emit,
     ));
-    // 解释器结束后，逻辑后台任务只能靠 runtime 丢弃；先取消它们再排空写端。
+    // After the interpreter finishes, logical background tasks can only be discarded through the runtime;
+    // cancel them first, then drain the write ends.
     runtime.shutdown_timeout(Duration::ZERO);
 
-    // 先确认所有受管外部组已收尾，再等待继承写端的管道真正到 EOF。
+    // First confirm every managed external group has finished, then wait for pipes holding inherited write
+    // ends to really reach EOF.
     supervisor.interpreter_finished();
     let supervisor_outcome = supervisor.wait();
     let cleanup_error = supervisor_outcome.cleanup_error;
@@ -238,7 +247,7 @@ fn run_host_inner(
     } = drain;
     {
         let mut output = lock(&shared.sink);
-        // 与 reader 共用 sink 锁：封存后到达的数据会被丢弃。
+        // Shares the sink lock with the readers: data arriving after sealing is discarded.
         shared.closed.store(true, Ordering::Release);
         output.finish();
     }
@@ -299,7 +308,7 @@ fn spawn_readers(
     let stderr_handle = match spawn_reader(stderr, OutputStream::Stderr, shared, done.clone()) {
         Ok(handle) => handle,
         Err(error) => {
-            // 第一个 reader 在写端随本次失败返回释放后自然退出。
+            // The first reader exits naturally once the write end is released when this failure returns.
             drop(stdout_handle);
             return Err(error).context("starting embedded shell stderr reader");
         }
@@ -331,7 +340,7 @@ fn spawn_reader(
                     if shared.closed.load(Ordering::Acquire) {
                         break Ok(());
                     }
-                    // 只持有短锁，逐块直接追加；不经解释器线程中转。
+                    // Hold the lock only briefly and append block by block; the interpreter thread is not involved.
                     output.append(stream, &buffer[..count]);
                     drop(output);
                     shared.dirty.store(true, Ordering::Release);
@@ -376,13 +385,14 @@ async fn run_interpreter(
         .build()
         .await
         .context("creating embedded shell")?;
-    // 必须在构建后立即进入 embedded 模式：移除 BASHPID/PPID，并让缺失的
-    // 逻辑 fd0/1/2 解析为 null，绝不回退到 pp 自己继承的 stdio。
+    // Embedded mode must be entered right after the build: BASHPID/PPID are removed and missing logical
+    // fd0/1/2 resolve to null instead of ever falling back to pp's own inherited stdio.
     shell.set_embedded_mode(true);
     shell.set_umask(config.umask);
     let dyn_supervisor: Arc<dyn ProcessSupervisor> = supervisor.clone();
     shell.set_process_supervisor(dyn_supervisor);
-    // 本次 run 专属的临时目录与缓存只写入逻辑 Shell，不改宿主环境。
+    // The temporary directory and cache are specific to this run and only written into the logical Shell;
+    // the host environment is untouched.
     set_exported_path(&mut shell, "TMPDIR", scratch)?;
     set_exported_path(&mut shell, "TMP", scratch)?;
     set_exported_path(&mut shell, "TEMP", scratch)?;
@@ -394,13 +404,14 @@ async fn run_interpreter(
     // run_string does not push this frame itself; mirror run_dash_c_command.
     shell.start_command_string_mode();
     let mut params = shell.default_exec_params();
-    // 监督器在 deadline/取消/显式 stop 时取消该 token；core 在边界协作退出。
+    // The supervisor cancels this token on deadline/cancellation/explicit stop; the core exits
+    // cooperatively at its boundaries.
     params.set_cancel_token(supervisor.execution_token());
     params.set_pipeline_observer(config.pipes.observer());
 
     let run_result = {
         let source = SourceInfo::from("-c");
-        // tokio 的 select!/pin! 需要 macros feature；这里只用 time + std::pin。
+        // tokio's select!/pin! need the macros feature; this uses time plus std::pin only.
         let mut run = std::pin::pin!(shell.run_string(config.command, &source, &params));
         let mut last_pipe_revision = config.pipes.revision();
         let mut last_shell_revision = 0;
@@ -433,7 +444,8 @@ async fn run_interpreter(
                     }
                     let changed = shared.dirty.swap(false, Ordering::AcqRel);
                     if changed && emit.is_some() {
-                        // 预览复制在锁内，emit 在锁外；阻塞的 UI 回调不阻塞 reader。
+                        // The preview is copied under the lock and emitted outside it; a blocking UI callback does
+                        // not block the readers.
                         let preview = lock(&shared.sink).preview();
                         if let Some(callback) = emit.as_mut() {
                             (*callback)(AgentEvent::ToolOutputSnapshot {
@@ -453,14 +465,15 @@ async fn run_interpreter(
         Ok(result) => (Some(i32::from(u8::from(result.exit_code))), None),
         Err(error) => (None, Some(anyhow::Error::new(error))),
     };
-    // 成功 exec 已把逻辑 shell 替换为受管外部程序，不能再执行旧 EXIT trap；
-    // 正常 exit（ExitShell）仍需运行。EXIT handler 复用本轮受管参数：deadline/
-    // 取消仍能在解释器边界停止它，其中的管道照常进入观察器。
+    // A successful exec has already replaced the logical shell with a managed external program, so the old
+    // EXIT trap can no longer run. A normal exit (ExitShell) still needs to run. The EXIT handler reuses this
+    // round's managed parameters: deadline/cancellation can still stop it at the interpreter boundary, and
+    // pipelines inside it still reach the observer as usual.
     if error.is_none() && !exec_replaced {
         let _ = shell.on_exit_with_params(&params).await;
     }
     drop(params);
-    // 释放逻辑输出写端，让本轮唯一的 reader 看到 EOF。
+    // Release the logical output write end so the single reader of this round sees EOF.
     drop(shell);
     Ok(RunReport { exit_code, error })
 }

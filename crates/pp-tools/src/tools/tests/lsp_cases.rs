@@ -7,8 +7,8 @@ mod integration {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// 安装一个已经启用但不会自行启动服务器的 Registry：用户级配置为空对象，
-    /// 只合并内置定义，`lazy=true` 保证被拒绝的调用不会拉起任何进程。
+    /// Install an already enabled Registry that never starts servers on its own: the user-level config is an empty object,
+    /// only built-in definitions are merged, and `lazy=true` guarantees a rejected call spawns no process.
     fn tools_with_lsp(dir: &tempfile::TempDir) -> Tools {
         let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         let user = dir.path().join("lsp.json");
@@ -69,7 +69,7 @@ mod integration {
                         .all_definitions(mode)
                         .iter()
                         .any(|definition| definition.name == "lsp"),
-                    "未安装 Registry 时不能暴露 lsp schema"
+                    "lsp schema must not be exposed without an installed Registry"
                 );
             }
             assert!(
@@ -86,7 +86,7 @@ mod integration {
                         .all_definitions(mode)
                         .iter()
                         .any(|definition| definition.name == "lsp"),
-                    "{mode:?} 应暴露 lsp"
+                    "{mode:?} should expose lsp"
                 );
             }
             assert!(
@@ -94,10 +94,10 @@ mod integration {
                     .review_definitions()
                     .iter()
                     .any(|definition| definition.name == "lsp"),
-                "Review 应暴露受限 lsp"
+                "Review should expose the restricted lsp"
             );
 
-            // enabled=false 时安装被忽略：没有 schema，也没有清理权。
+            // With enabled=false the install is ignored: no schema and no cleanup right.
             let disabled = pp_lsp::Registry::new(
                 dir.path().into(),
                 None,
@@ -117,7 +117,7 @@ mod integration {
                     .any(|definition| definition.name == "lsp")
             );
 
-            // 未安装/关闭时显式调用也只是普通工具失败，不会发现或启动服务器。
+            // When not installed or disabled, an explicit call is just an ordinary tool failure and never discovers or starts a server.
             let workflow = WorkflowState::default();
             let result = run_lsp(
                 &plain,
@@ -136,7 +136,7 @@ mod integration {
 
             let mut child = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
             child.install_shared_lsp(owner.lsp_registry().unwrap().clone());
-            // 子 Agent 能看到工具并共享同一批客户端，但不会取得停止父 Registry 的句柄。
+            // A subagent sees the tool and shares the same clients but never gets the handle that stops the parent Registry.
             assert!(child.lsp_registry().is_some());
             assert!(child.lsp_cleanup().is_none());
             assert!(
@@ -171,7 +171,7 @@ mod integration {
                     "{arguments}: {result}"
                 );
             }
-            // Review 拒绝必须发生在任何服务器启动或文件变更之前。
+            // A Review rejection must happen before any server start or file change.
             assert!(!tools.lsp_registry().unwrap().has_started());
             assert!(!dir.path().join("src/main.rs").exists());
         }
@@ -223,7 +223,7 @@ mod integration {
                 },
             );
             assert_eq!(result["ok"], false, "{result}");
-            // 只读强制先于权限门：不会弹出权限询问，也不会被当成“用户拒绝”。
+            // Read-only enforcement precedes the permission gate: no permission prompt appears and it is not counted as a "user denial".
             let error = result["error"].as_str().unwrap_or_default();
             assert!(!error.contains("denied by the user"), "{result}");
             assert_eq!(prompts.load(Ordering::SeqCst), 0);
@@ -239,7 +239,7 @@ mod integration {
             tools.permission.select(Some(PermissionMode::ReadOnly));
             tools.permission.set_handler(deny_handler(&prompts));
 
-            // reload 是 Write 档：always-ask 下必须经过权限询问，询问发生在分发之前。
+            // reload is write tier: under always-ask it must go through a permission prompt, and the prompt happens before dispatch.
             let result = run_lsp(
                 &tools,
                 json!({"action":"reload"}),
@@ -268,7 +268,7 @@ mod integration {
             tools.permission.select(Some(PermissionMode::ReadOnly));
             tools.permission.set_handler(deny_handler(&prompts));
 
-            // 无匹配服务器的扩展名：动作是只读档，跳过审批，由工具返回无服务器结果。
+            // An extension without a matching server: the action is read tier, approval is skipped and the tool returns a no-server result.
             let result = run_lsp(
                 &tools,
                 json!({"action":"hover","file":"notes.zzz","line":1}),

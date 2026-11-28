@@ -129,7 +129,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
     no_more(&fixture);
 }
 
-// Plan 与 Execute 共用同一批 MCP 进程和工具。
+// Plan and Execute share the same set of MCP processes and tools.
 fn plan_mcp_initialized(dir: &Path) -> usize {
     cancel_mcp_log(dir)
         .iter()
@@ -171,12 +171,12 @@ fn plan_mcp_session(
     (fixture, home, project, pty)
 }
 
-// 进程常驻：进入 Plan 不断开进程，保留上下文执行复用同一连接，只在退出时回收。
+// Processes stay resident: entering Plan keeps them connected, keep-context execution reuses the same connections, and they are only reaped on exit.
 fn plan_mcp_resident_case() {
     let protocol = "response";
     let (fixture, _home, project, mut pty) = plan_mcp_session(protocol);
     pty.ready();
-    // Execute 首个请求：MCP 工具在表内，fixture 只握手一次。
+    // First Execute request: the MCP tool is in the table and the fixture handshakes only once.
     pty.input("Execute before Plan\r");
     let (request, body) = pty.request_at(&fixture, api_path(protocol));
     assert!(
@@ -188,10 +188,10 @@ fn plan_mcp_resident_case() {
     pty.ready();
     assert_eq!(plan_mcp_initialized(project.path()), 1);
     plan_enter(&mut pty, &fixture);
-    // 进入 Plan 不再断开进程：PID 存活且没有新的握手。
+    // Entering Plan no longer disconnects the process: the PID is alive and there is no new handshake.
     cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
     assert_eq!(plan_mcp_initialized(project.path()), 1);
-    // 无只读标记的工具也进入 Plan 工具表。
+    // Tools without a read-only marker also enter the Plan tool table.
     plan_drive_ready_with_mcp(
         &mut pty,
         &fixture,
@@ -202,7 +202,7 @@ fn plan_mcp_resident_case() {
     );
     cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
     assert_eq!(plan_mcp_initialized(project.path()), 1);
-    // 保留上下文执行继续复用同一批连接。
+    // Keep-context execution keeps reusing the same connections.
     plan_choose(&mut pty, 1);
     let (request, body) = pty.request_at(&fixture, api_path(protocol));
     assert!(
@@ -224,7 +224,7 @@ fn plan_mcp_resident_case() {
     let mcp = outputs.iter().find(|(id, _)| id == "execute-mcp").unwrap();
     assert_eq!(mcp.1["ok"], true);
     assert_eq!(mcp.1["result"]["content"][0]["text"], "中文结果");
-    // 执行期仍是同一次握手、同一个进程；随后取消未完成的后续请求。
+    // Execution still uses the same handshake and the same process; the unfinished follow-up request is cancelled afterwards.
     assert_eq!(plan_mcp_initialized(project.path()), 1);
     cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
     pty.input("\x03");
@@ -234,13 +234,13 @@ fn plan_mcp_resident_case() {
     cancel_mcp_assert_pid_stopped(&project.path().join("mcp-log.pid"));
 }
 
-// 进程边界：恢复 Plan 时重建 MCP 连接，转入 Execute 后继续复用。
+// Process boundary: restoring a Plan rebuilds the MCP connections, and switching to Execute keeps reusing them.
 fn plan_mcp_process_boundary_case(off: bool) {
     let protocol = "response";
     let (fixture, home, project, mut pty) = plan_mcp_session(protocol);
     pty.ready();
     plan_enter(&mut pty, &fixture);
-    // 启动进程在 Execute 下建立的连接在进入 Plan 后仍然存活。
+    // The connection the launch process established under Execute is still alive after entering Plan.
     cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
     plan_drive_ready_with_mcp(
         &mut pty,
@@ -278,7 +278,7 @@ fn plan_mcp_process_boundary_case(off: bool) {
         !screen.contents().contains("connected")
     });
     if off {
-        // 裸 /plan 直接切换退出：无本地确认框，已保存草稿保留在磁盘。
+        // A bare /plan switches straight out: no local confirmation dialog and the saved draft stays on disk.
         pty.input("/plan\r");
         plan_wait_execute(&mut pty);
         no_more(&fixture);
@@ -293,7 +293,7 @@ fn plan_mcp_process_boundary_case(off: bool) {
         plan_mcp_tool_names(&body, protocol).contains(&"mcp__local__echo"),
         "{body}"
     );
-    // 复用恢复 Plan 时建立的连接。
+    // Reuse the connection established while restoring the Plan.
     assert_eq!(plan_mcp_initialized(project.path()), 2);
     plan_calls(
         request,
@@ -376,7 +376,7 @@ fn plan_completion_requires_success_and_approved_tasks() {
             json!({"path":plan_relative,"edits":[{"oldText":old,"newText":old.replace("- [ ]","- [x]")}]}),
         )
     };
-    // 同批直接勾选两项：同一批计划编辑只在批后同步一次实际正文。
+    // Tick both tasks in the same batch: plan edits within one batch sync the real body only once after the batch.
     let (request, _) = pty.request_at(&fixture, api_path(protocol));
     plan_calls(
         request,
@@ -388,7 +388,7 @@ fn plan_completion_requires_success_and_approved_tasks() {
     );
     let plans_path = project.path().join(".pp/plans/create-canary.md");
 
-    // 全部勾选但最终错误：流中错误使任务失败，不归档。
+    // All checked but a final error: a mid-stream error fails the task, so it is not archived.
     let (request, _) = pty.request_at(&fixture, api_path(protocol));
     {
         let mut stream = request.start_sse().unwrap();
@@ -431,7 +431,7 @@ fn plan_completion_requires_success_and_approved_tasks() {
     });
     no_more(&fixture);
 
-    // 全部勾选但取消：同样不归档。
+    // All checked but cancelled: likewise not archived.
     pty.input("Final check\r");
     let (_request, _) = pty.request_at(&fixture, api_path(protocol));
     pty.input("\x1b");
@@ -447,7 +447,7 @@ fn plan_completion_requires_success_and_approved_tasks() {
     );
     no_more(&fixture);
 
-    // 改写批准任务：编辑落盘后同步立即拒绝，不发起下一次模型请求。
+    // Rewrite an approved task: the sync is rejected immediately after the edit lands, with no further model request.
     pty.input("Rewrite the second approved task\r");
     let (request, _) = pty.request_at(&fixture, api_path(protocol));
     plan_calls(
@@ -473,7 +473,7 @@ fn plan_completion_requires_success_and_approved_tasks() {
     );
     no_more(&fixture);
 
-    // 恢复批准正文（逐字节还原）后成功收尾：已同步未再次变化也归档。
+    // Restoring the approved body (byte-for-byte) finishes successfully: an already-synced body archived even when it did not change again.
     let approved_checked = PLAN_TUI_BODY.replace("- [ ]", "- [x]");
     std::fs::write(&plans_path, &approved_checked).unwrap();
     assert_eq!(

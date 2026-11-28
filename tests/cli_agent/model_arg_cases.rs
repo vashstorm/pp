@@ -1,7 +1,8 @@
 use super::*;
 
-// 两个 provider 共用模型 id `flash`：省略 provider 时同档内收藏优先，wire 名、
-// 密钥与档位都必须跟随实际选中的 provider，而不是 catalog 里的第一个。
+// Both providers share the model id `flash`: when the provider is omitted, favorites win within the same tier, and
+// the wire name, key and level must follow the provider that is actually selected rather than the first one in the
+// catalog.
 fn flash_catalog(server: &TestServer, fixture_thinking: Value) -> String {
     let mut fixture = json!({"model": "fixture-flash"});
     if !fixture_thinking.is_null() {
@@ -17,7 +18,8 @@ fn flash_catalog(server: &TestServer, fixture_thinking: Value) -> String {
     .to_string()
 }
 
-// 旧 settings 字段在启动迁移时导入 agent.db；用它播种收藏，不读个人偏好。
+// The old settings fields are imported into agent.db during the startup migration; they seed the favorites without
+// reading personal preferences.
 fn favorite_gateway_settings() -> String {
     format!("{}favorite_models: [gateway/flash]\n", fixture_settings())
 }
@@ -38,7 +40,8 @@ fn flash_home(server: &TestServer, thinking: Value) -> tempfile::TempDir {
     home
 }
 
-// 启动命令的唯一一次请求：收藏 provider 的 wire 名与密钥、显式档位、展开后的模板。
+// The single request of the startup command: the favorite provider's wire name and key, the explicit level and the
+// expanded template.
 fn assert_gateway_commit_request(request: &CapturedRequest, body: &Value) {
     assert_eq!(body["model"], "gateway-flash");
     assert_eq!(authorization(request), "Bearer gateway-key");

@@ -84,7 +84,7 @@ fn plan_wait_mode(pty: &mut Pty, mode: &str) {
 }
 
 fn plan_wait_execute(pty: &mut Pty) {
-    pty.wait_for("执行模式隐藏模式标签", |screen| {
+    pty.wait_for("execute mode hides the mode label", |screen| {
         screen.contents().lines().last().is_some_and(|line| {
             line.trim_start().starts_with("\u{f1d9} · ")
                 && !line.contains('\u{f0132}')
@@ -219,7 +219,7 @@ fn plan_choose(pty: &mut Pty, action: usize) {
 fn plan_journal(home: &Path, id: &str) -> Vec<Value> {
     records(&home.join(".pp/agent/sessions").join(format!("{id}.jsonl")))
 }
-// plan_*_cases 子模块由 cli_agent/tui.rs 注册；本文件只保留共享 helper。
+// The plan_*_cases submodules are registered by cli_agent/tui.rs; this file keeps only the shared helpers.
 
 
 

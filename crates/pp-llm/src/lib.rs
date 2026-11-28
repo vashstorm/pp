@@ -27,7 +27,7 @@ use retry::retry_after_code;
 
 pub const EMPTY_SUMMARY: &str = "context compaction failed: expected a non-empty summary";
 
-/// 内嵌 mock server 的按模型引用分组脚本表；仅在开发构建中随请求发送。
+/// Script table of the embedded mock server keyed by model reference; sent with requests in dev builds only.
 #[cfg(debug_assertions)]
 pub type MockScripts =
     std::sync::Arc<std::collections::BTreeMap<String, std::sync::Arc<serde_json::Value>>>;
@@ -50,15 +50,15 @@ pub struct OpenAiClient {
     stats_key: Option<String>,
     task_accounting: Option<pp_config::task_status::Ledger>,
     model_reference: String,
-    // mock 客户端的脚本表按模型引用索引；仅在开发构建中存在。
+    // Script table of the mock client indexed by model reference; only present in dev builds.
     #[cfg(debug_assertions)]
     mock_scripts: Option<MockScripts>,
-    // 下一条真正发出的模型请求是否携带初始脚本；每个客户端独立。
+    // Whether the next real model request carries the initial script; per client.
     #[cfg(debug_assertions)]
     mock_script_pending: bool,
-    // 惰性打开并复用的 agent.db 连接；首次计数时打开，失败后整个客户端周期不再重开。
+    // Lazily opened and reused agent.db connection; opened on the first usage count and never reopened for the rest of the client lifetime after a failure.
     usage_store: UsageStore,
-    // 仅测试持有临时目录生命周期，保证计数数据库路径在客户端存续期内有效。
+    // Only tests hold the temp dir lifetime, keeping the usage-count database path valid for the client's lifetime.
     #[cfg(test)]
     usage_dir: Option<tempfile::TempDir>,
 }
@@ -95,7 +95,7 @@ impl OpenAiClient {
                     }))
     }
     pub fn set_stats_context(&mut self, context: pp_stats::RequestContext) {
-        // mock 客户端不写全局统计，也不保留被晚到的真实上下文调用覆盖的现场。
+        // Mock clients write no global stats and keep no snapshot that a late real-context call could overwrite.
         #[cfg(debug_assertions)]
         if self.mock_scripts.is_some() {
             return;
@@ -107,27 +107,27 @@ impl OpenAiClient {
         &self.model_reference
     }
 
-    /// 安装 mock 脚本并重建绕过系统代理的模型 HTTP 连接；仅开发构建可用。
+    /// Install mock scripts and rebuild the model HTTP connection bypassing system proxies; dev builds only.
     #[cfg(debug_assertions)]
     pub fn set_mock_scripts(&mut self, scripts: MockScripts) -> Result<()> {
-        // 先完成可能失败的连接重建，再切换状态，失败时保持原客户端不变。
+        // Finish the fallible connection rebuild first, then switch state; on failure the client is left unchanged.
         let client = build_client(self.client.config().clone(), self.request_timeout, true)?;
         self.client = client;
         self.mock_scripts = Some(scripts);
         self.mock_script_pending = true;
-        // 构造期可能已安装真实统计上下文；mock 运行不写统计库。
+        // Construction may already have installed a real stats context; mock runs write no stats database.
         self.stats_context = None;
         self.stats_key = None;
         Ok(())
     }
 
-    /// 借用脚本表用于父子 agent 继承；不消费初始脚本。
+    /// Borrow the script table for parent/child agent inheritance; does not consume the initial script.
     #[cfg(debug_assertions)]
     pub fn mock_scripts(&self) -> Option<&MockScripts> {
         self.mock_scripts.as_ref()
     }
 
-    /// 取当前模型引用对应的初始脚本；pending 只消费一次，后续工具续轮不再携带。
+    /// Take the initial script for the current model reference; pending is consumed once and later tool continuation turns carry none.
     #[cfg(debug_assertions)]
     fn take_mock_script(&mut self) -> Result<Option<std::sync::Arc<serde_json::Value>>> {
         if !self.mock_script_pending {
@@ -161,7 +161,7 @@ impl OpenAiClient {
     }
 
     pub fn copy_stats_context(&self, target: &mut Self) {
-        // mock 客户端之间/与真实客户端之间都不传播统计上下文，避免绕过 set_stats_context 的忽略规则。
+        // Never propagate the stats context between mock clients or to real ones, so the `set_stats_context` ignore rules cannot be bypassed.
         #[cfg(debug_assertions)]
         if self.mock_scripts.is_some() || target.mock_scripts.is_some() {
             return;
@@ -177,10 +177,10 @@ impl OpenAiClient {
         self.stats_key.take()
     }
 
-    /// 每次逻辑模型请求收尾恰好调用一次的使用计数；与 stats 保存无关。
-    /// 失败只发固定脱敏警告，不更改已发生的模型结果，也不重试请求。
+    /// Usage counter invoked exactly once at the end of each logical model request; unrelated to stats persistence.
+    /// A failure only emits a fixed redacted warning; it never alters the model result already produced and never retries the request.
     fn record_model_usage(&mut self) {
-        // mock 请求不是真实模型用量；不写真实统计库也不发不可用警告。
+        // Mock requests are not real model usage; write no real stats database and emit no unavailable warning.
         #[cfg(debug_assertions)]
         if self.mock_scripts.is_some() {
             return;
@@ -236,7 +236,7 @@ impl OpenAiClient {
             mock_scripts: None,
             #[cfg(debug_assertions)]
             mock_script_pending: false,
-            // 首次逻辑请求计数时才惰性打开；失败后才发脱敏警告。
+            // Opened lazily on the first logical request count; the redacted warning is emitted only after a failure.
             usage_store: UsageStore::Pending(config.agent_db_path.clone()),
             #[cfg(test)]
             usage_dir: None,
@@ -255,7 +255,7 @@ impl OpenAiClient {
             .enable_all()
             .build()
             .map_err(|_| anyhow::anyhow!("initializing model runtime failed"))?;
-        // mock 客户端重建时同样绕过系统代理；普通客户端保持既有代理行为。
+        // Mock client rebuilds bypass system proxies too; plain clients keep the existing proxy behavior.
         #[cfg(debug_assertions)]
         let bypass_proxy = self.mock_scripts.is_some();
         #[cfg(not(debug_assertions))]
@@ -280,8 +280,8 @@ impl OpenAiClient {
         let Some(auth) = &self.auth else {
             return Ok(());
         };
-        // auth.path 是 agent.db；启动与 auth::service 已完成一次性迁移，
-        // 持锁期间只读/写 auth_credentials，绝不触发迁移或读取旧 auth.yml。
+        // auth.path is agent.db; startup and auth::service already ran the one-time migration,
+        // so holding the lock only reads/writes auth_credentials and never triggers migration or reads the old auth.yml.
         let _lock = pp_config::auth::StoreLock::acquire(&auth.path, cancellation)?;
         let mut store = pp_config::auth::Store::load(&auth.path)?;
         let credential = store.credentials.get(&auth.provider).ok_or_else(|| {
@@ -301,7 +301,7 @@ impl OpenAiClient {
             let renewed = self
                 .runtime
                 .as_ref()
-                .expect("运行时已初始化")
+                .expect("runtime is initialized")
                 .block_on(async {
                     cancellation
                         .run_until_cancelled(auth::refresh(auth.provider, credential))
@@ -340,11 +340,12 @@ impl OpenAiClient {
             );
             headers.insert(
                 "x-initiator",
-                HeaderValue::from_str(initiator).expect("固定请求来源"),
+                HeaderValue::from_str(initiator).expect("fixed request origin"),
             );
             headers.insert(
                 "x-interaction-type",
-                HeaderValue::from_str(&format!("conversation-{initiator}")).expect("固定交互类型"),
+                HeaderValue::from_str(&format!("conversation-{initiator}"))
+                    .expect("fixed interaction type"),
             );
             if has_images {
                 headers.insert("copilot-vision-request", HeaderValue::from_static("true"));
@@ -376,7 +377,7 @@ impl OpenAiClient {
         }
     }
 
-    /// 网页请求使用独立连接池，绝不复用模型认证头或限流重试策略。
+    /// Web read uses its own connection pool and never reuses model auth headers or the rate-limit retry policy.
     pub fn fetch_read_url(
         &mut self,
         url: &str,
@@ -464,7 +465,7 @@ impl OpenAiClient {
         })
     }
 
-    /// 网页搜索使用独立连接池，不携带模型认证头；在 current-thread runtime 内执行并发搜索与软硬超时。
+    /// Web search uses its own connection pool without model auth headers; concurrent searches and soft/hard timeouts run inside the current-thread runtime.
     pub fn search_web(
         &mut self,
         request: &web_search::WebSearchRequest,
@@ -529,7 +530,7 @@ fn run_search_web(
     })
 }
 
-/// 开发构建专用：无需模型配置直接执行单次同步网页搜索，供 `/test-web-search` 降级路径复用。
+/// Dev builds only: run a single synchronous web search without model configuration, reused by the `/test-web-search` fallback path.
 #[cfg(debug_assertions)]
 pub fn search_web_standalone(
     request: &web_search::WebSearchRequest,
@@ -564,19 +565,19 @@ fn build_client(
     bypass_proxy: bool,
 ) -> Result<Client<OpenAIConfig>> {
     let mut builder = reqwest::Client::builder()
-        // 只限制建连和连续无数据的等待，持续生成不设总耗时上限。
+        // Limit only the connect and consecutive idle waits; steady generation has no total duration cap.
         .connect_timeout(timeout)
         .read_timeout(timeout)
         .redirect(Policy::none())
         .retry(reqwest::retry::never());
     if bypass_proxy {
-        // 内嵌 mock server 只监听回环地址，不能被用户代理环境变量拦截。
+        // The embedded mock server listens on loopback only and must not be intercepted by user proxy env vars.
         builder = builder.no_proxy();
     }
     let http = builder
         .build()
         .map_err(|_| anyhow::anyhow!("initializing HTTP client failed"))?;
-    // HTTP 失败现场只写诊断日志；终端与重试分类仍仅使用状态码。
+    // HTTP failure context goes to diagnostic logs only; terminal output and retry classification still use the status code alone.
     let service = tower::ServiceBuilder::new()
         .and_then(|mut response: reqwest::Response| async move {
             if response.status().is_success() {
@@ -592,7 +593,7 @@ fn build_client(
                     .to_owned();
                 let mut body = Vec::new();
                 let mut complete = false;
-                // 错误页可能无限输出或不结束；诊断读取最多 64 KiB、至多一秒。
+                // An error page may stream forever or never end; diagnostic reads cap at 64 KiB and one second.
                 let read = tokio::time::timeout(Duration::from_secs(1), async {
                     while let Some(chunk) = response.chunk().await? {
                         let remaining = 64 * 1024 - body.len();

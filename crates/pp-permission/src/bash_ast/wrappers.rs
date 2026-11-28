@@ -1,13 +1,13 @@
-//! 透明命令包装器剥离、提权前缀处理与多子命令 CLI 子命令提取。
+//! Transparent command wrapper stripping, privilege prefix handling and subcommand extraction for multi-subcommand CLIs.
 
 use super::ArgToken;
 
-/// 可安全剥离的透明命令包装器；`sudo`/`su`/`doas` 等提权命令绝不在此剥离。
+/// Transparent command wrappers that can be stripped safely; privilege commands such as `sudo`/`su`/`doas` are never stripped here.
 const TRANSPARENT_WRAPPERS: &[&str] = &[
     "env", "command", "builtin", "nohup", "time", "nice", "timeout", "stdbuf",
 ];
 
-/// 多子命令 CLI 工具：推导持久前缀时取 `[program, subcommand]`。
+/// Multi-subcommand CLI tools: persistent prefix derivation takes `[program, subcommand]`.
 pub(super) const SUBCOMMAND_PROGRAMS: &[&str] = &[
     "git",
     "cargo",
@@ -96,7 +96,7 @@ pub(super) fn strip_privilege_prefix<'a>(
                 }
             }
             if saw_command_script {
-                // 保留 `su`/`runuser` 与 `-c` 供 nested 解析处理，不剥离为无前缀脚本。
+                // Keep `su`/`runuser` and `-c` for nested parsing instead of stripping them into a prefix-less script.
                 idx = start_idx;
                 break;
             }
@@ -159,8 +159,8 @@ pub(super) fn strip_transparent_wrappers(
                 j
             }
             "command" => {
-                // 只检查紧跟在 `command` 之后、`--` 或首个操作数之前的选项（含合并短选项如 `-pv`），
-                // 避免被目标命令自身的 `-v` 参数（如 `command rm -rf / -v`）误判为查询。
+                // Only inspect options right after `command`, up to `--` or the first operand (combined short options like `-pv` included),
+                // so the target command's own `-v` argument (e.g. `command rm -rf / -v`) is not mistaken for a query.
                 let mut j = idx + 1;
                 let mut is_query = false;
                 while j < tokens.len() {
@@ -230,7 +230,7 @@ pub(super) fn strip_transparent_wrappers(
                 let mut j = idx + 1;
                 while let Some(ArgToken::Literal(arg)) = tokens.get(j) {
                     if arg == "--" {
-                        // `--` 结束选项后紧跟的第一个参数仍是 duration，一并跳过再取真实命令。
+                        // After `--` ends the options, the next argument is still the duration; skip it together and then take the real command.
                         j = (j + 2).min(tokens.len());
                         break;
                     }
@@ -350,8 +350,8 @@ pub(super) fn extract_subcommand_for(program: &str, args: &[ArgToken]) -> Option
     extract_safe_subcommand_index(program, args).map(|(sub, _)| sub)
 }
 
-/// git 全局取值选项：危险扫描跳过取值继续向后识别真实子命令；
-/// 安全前缀提取则将它们视为不可安全记住而拒绝。
+/// git value-carrying global options: the hazard scan skips the value and keeps looking for the real subcommand;
+/// safe prefix extraction instead treats them as unsafe to remember and refuses.
 const GIT_VALUED_GLOBALS: &[&str] = &[
     "-c",
     "--config-env",
@@ -362,12 +362,12 @@ const GIT_VALUED_GLOBALS: &[&str] = &[
     "--namespace",
 ];
 
-/// cargo 的 `--config`/`-Z` 等取值选项同理。
+/// The same holds for cargo's value-carrying options such as `--config`/`-Z`.
 const CARGO_VALUED_GLOBALS: &[&str] = &["--config", "-Z", "--manifest-path", "-C"];
 
-/// JS 包管理器的带值全局选项：`--prefix`/`--registry`/`--workspace` 等会改写执行目录、
-/// 安装源或配置，其取值绝不能被当作可记忆的子命令。pnpm 的 `-w` 是布尔型
-/// `--workspace-root`，与 npm 的带值 `-w|--workspace` 语义不同，因此不列入 pnpm 表。
+/// Value-carrying global options of JS package managers: `--prefix`/`--registry`/`--workspace` etc. rewrite the working
+/// directory, install source or configuration, so their value must never be taken as a memorable subcommand. pnpm's `-w` is the boolean
+/// `--workspace-root`, which differs from npm's value-carrying `-w|--workspace`, so it is not listed for pnpm.
 const NPM_VALUED_GLOBALS: &[&str] = &[
     "-w",
     "--workspace",
@@ -391,7 +391,7 @@ fn valued_globals(program: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-/// token 是否为表中的带值全局选项（分离、`=` 附加或短选项附加形态）。
+/// Whether a token is a value-carrying global option from the table (separate, `=`-attached or short-option-attached form).
 fn valued_global_form(arg: &str, valued: &[&str]) -> bool {
     valued.iter().any(|flag| {
         if arg == *flag {
@@ -404,13 +404,13 @@ fn valued_global_form(arg: &str, valued: &[&str]) -> bool {
     })
 }
 
-/// 危险分类专用的子命令扫描。
+/// Subcommand scan used only for hazard classification.
 ///
-/// 与 [`extract_safe_subcommand_index`] 的分工：后者服务于持久授权前缀推导，
-/// 遇到不可安全记住的配置覆盖参数（`git -c`、`cargo --config`、npm 系 `--registry` 等）
-/// 必须返回 `None`；本函数则跳过这些选项及其取值（分离或 `=` 形式）继续向后识别
-/// 真实子命令，防止 `git -c …=… push` 之类命令因前置配置参数被静默放行。
-/// 动态参数等无法静态证明的形态仍返回 `None`，由调用方按既有语义处理。
+/// Division of labour with [`extract_safe_subcommand_index`]: the latter serves persistent grant prefix derivation and
+/// must return `None` when it meets a configuration override that cannot be remembered safely (`git -c`, `cargo --config`, npm's `--registry`, ...);
+/// this function instead skips those options and their values (separate or `=` form) and keeps looking for the
+/// real subcommand, so commands like `git -c …=… push` are not silently allowed because of a leading configuration argument.
+/// Forms that cannot be proven statically, such as dynamic arguments, still return `None` and the caller handles them as before.
 pub(super) fn extract_hazard_subcommand_for(program: &str, args: &[ArgToken]) -> Option<String> {
     extract_hazard_subcommand_index(program, args).map(|(sub, _)| sub)
 }
@@ -435,9 +435,9 @@ pub(super) fn extract_hazard_subcommand_index(
                         _ => None,
                     };
                 }
-                // `--opt=value` 与短选项附加形态（如 `-Csub`）单 token 自带取值；
-                // 分离形态需同时跳过取值 token。cargo 的 `+toolchain` 全局参数
-                // 与取值选项同理，跳过后继续识别真实子命令。
+                // `--opt=value` and short-option-attached forms (e.g. `-Csub`) carry the value in one token;
+                // the separate form also needs the value token skipped. cargo's `+toolchain` global argument
+                // behaves like a value-carrying option; skip it and keep looking for the real subcommand.
                 let attached = if arg.starts_with("--") {
                     arg.contains('=')
                 } else {
@@ -459,7 +459,7 @@ pub(super) fn extract_hazard_subcommand_index(
     None
 }
 
-/// 提取子命令及其在 `args` 后的索引位置；会拒绝不安全的配置覆盖参数（如 `git -c`、`cargo --config`）。
+/// Extracts the subcommand and its index position after `args`; refuses unsafe configuration override arguments (e.g. `git -c`, `cargo --config`).
 pub(super) fn extract_safe_subcommand_index(
     program: &str,
     args: &[ArgToken],
@@ -537,8 +537,8 @@ pub(super) fn extract_safe_subcommand_index(
             while idx < args.len() {
                 match &args[idx] {
                     ArgToken::Literal(arg) => {
-                        // 带值全局选项改写执行目录、安装源或配置，其取值不可当作
-                        // 可记忆的子命令；出现即拒绝持久前缀推导。
+                        // A value-carrying global option rewrites the working directory, install source or configuration, so its
+                        // value cannot be a memorable subcommand; its presence refuses persistent prefix derivation.
                         if valued_global_form(arg, valued) {
                             return None;
                         }

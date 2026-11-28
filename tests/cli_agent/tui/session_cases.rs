@@ -9,13 +9,16 @@ fn tui_session_resume_replays_history_without_request() {
     let path = api_path(protocol);
 
     let mut pty = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
-    pty.wait_for("恢复的对话且没有常规提醒", |screen| {
-        let text = screen.contents();
-        text.contains("remember tui-marker")
-            && text.contains("tui-remembered")
-            && !text.contains("Resumed session:")
-    });
-    // 无欢迎页；工具卡片重放保存的退出状态，不伪造 wall duration。
+    pty.wait_for(
+        "the restored conversation shows no routine notice",
+        |screen| {
+            let text = screen.contents();
+            text.contains("remember tui-marker")
+                && text.contains("tui-remembered")
+                && !text.contains("Resumed session:")
+        },
+    );
+    // No welcome page; tool cards replay the saved exit state without faking a wall duration.
     let text = pty.parser.screen().contents();
     assert!(!text.contains("▄▄▄██▀▀██"));
     assert!(text.contains("print(\"tool-out\")"));
@@ -24,7 +27,7 @@ fn tui_session_resume_replays_history_without_request() {
     assert!(text.contains("Timeout: 60s"));
     assert!(!text.contains("Exit:"));
     assert!(!text.contains("Wall:"));
-    // 输入框为空且未处于历史浏览状态。
+    // The input box is empty and history browsing is not active.
     pty.ready();
     let prompt_line = pty
         .parser
@@ -36,15 +39,15 @@ fn tui_session_resume_replays_history_without_request() {
         .trim()
         .to_owned();
     assert_eq!(prompt_line, "❯");
-    // 恢复不发送任何请求。
+    // The restore sends no request.
     no_more(&server);
-    // input history 已恢复：↑ 直接回填旧输入。
+    // Input history is restored: ↑ refills the old input directly.
     pty.input("\x1b[A");
     pty.draft("remember tui-marker");
     pty.input("\x1b[B");
     pty.draft("");
 
-    // 新输入沿用原上下文，追加到原文件且 ID 不变。
+    // The new input keeps the original context, appends to the same file and keeps the ID.
     pty.input("what did I say\r");
     let (request, body) = pty.request_at(&server, path);
     if protocol == "completion" {
@@ -77,7 +80,7 @@ fn tui_session_resume_replays_history_without_request() {
     }
     pty.text("you said tui-marker");
     pty.ready();
-    // 已恢复的 session 不再重复提示新建 Session ID。
+    // A restored session no longer reports a new Session ID again.
     assert!(!pty.parser.screen().contents().contains("Session:"));
     pty.input("/quit\r");
     pty.finish();
@@ -91,7 +94,7 @@ fn tui_session_resume_replays_history_without_request() {
     .unwrap();
     assert!(journal.contains("what did I say"));
 
-    // 强制终止可丢失本轮未提交正文，原生历史仍不得包含失败前缀。
+    // A forced termination may lose this round's uncommitted body, but the native history must still hold no failure prefix.
     let interrupted_home = tempfile::tempdir().unwrap();
     std::fs::write(
         config_path(interrupted_home.path(), "settings.yml"),
@@ -137,12 +140,15 @@ fn tui_session_resume_replays_history_without_request() {
         &["-r", &interrupted_id],
     );
 
-    resumed.wait_for("恢复中断会话显示红色弹窗", |screen| {
-        notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
-            && screen
-                .contents()
-                .contains("Previous request was interrupted.")
-    });
+    resumed.wait_for(
+        "resuming an interrupted session shows a red dialog",
+        |screen| {
+            notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
+                && screen
+                    .contents()
+                    .contains("Previous request was interrupted.")
+        },
+    );
     resumed.ready();
     let screen = resumed.parser.screen().contents();
     assert_eq!(screen.matches("interrupted input").count(), 1);

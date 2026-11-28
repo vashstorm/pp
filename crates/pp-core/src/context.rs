@@ -19,7 +19,8 @@ pub struct ContextUsage {
     pub estimated_tokens: u64,
     pub context_window: Option<u64>,
     pub last_request: Option<TokenUsage>,
-    /// 整个会话所有普通请求的服务端 output tokens 之和；只随会话根变化重置。
+    /// Sum of server-side output tokens over every ordinary request in the whole session; reset
+    /// only when the session root changes.
     #[serde(default)]
     pub session_output_tokens: u64,
     pub auto_compact: bool,
@@ -59,23 +60,27 @@ impl ContextUsage {
     }
 }
 
-/// 原生 JSON 文本按三字节估一 token，内嵌图片每张估 4096 token。
-/// 这只是容量启发式，既不是计费依据，也不分配完整历史的序列化副本。
+/// Native JSON text estimates one token per three bytes, with each embedded image estimated at 4096
+/// tokens. This is only a capacity heuristic: it is neither a billing basis nor a serialized copy of
+/// the full history.
 pub fn estimate_tokens(value: &impl Serialize) -> Result<u64> {
     estimate_bytes(value).map(estimate_tokens_from_bytes)
 }
 
-/// 把估算字节数折算成 token：每三字节一 token，向上取整。
+/// Convert estimated bytes into tokens: one token per three bytes, rounded up.
 ///
-/// 全量估算与增量累加共用这一条折算规则，不允许各自取整。
+/// Whole-request estimation and incremental accumulation share this single conversion rule and must
+/// not round independently.
 pub fn estimate_tokens_from_bytes(bytes: u64) -> u64 {
     bytes.div_ceil(3)
 }
 
-/// 逐条消息累加的估算字节数：单条估算之和，加上 `n - 1` 个 JSON 数组逗号。
+/// Estimated bytes accumulated per message: the sum of the individual estimates plus `n - 1` JSON
+/// array commas.
 ///
-/// 它与 [`estimate_bytes`] 可组合：请求骨架（其余字段与数组方括号）的字节数加上
-/// 本累计，等于整棵请求序列化后的字节数。空切片为 0。
+/// It composes with [`estimate_bytes`]: the request skeleton bytes (remaining fields and array
+/// brackets) plus this accumulation equal the byte count of the whole serialized request. An empty
+/// slice is 0.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MessageBytes {
     bytes: u64,
@@ -83,13 +88,13 @@ pub struct MessageBytes {
 }
 
 impl MessageBytes {
-    /// 追加一条已用 [`estimate_bytes`] 估算过的消息。
+    /// Append one message already estimated with [`estimate_bytes`].
     pub fn push(&mut self, bytes: u64) {
         self.bytes = self.bytes.saturating_add(bytes);
         self.count = self.count.saturating_add(1);
     }
 
-    /// 丢弃全部累计；整段替换历史后必须重算。
+    /// Drop all accumulation; it must be recomputed after the history is replaced wholesale.
     pub fn clear(&mut self) {
         *self = Self::default();
     }
@@ -98,14 +103,14 @@ impl MessageBytes {
         self.count
     }
 
-    /// 消息数组内部（不含方括号）的估算字节数。
+    /// Estimated bytes inside the message array (excluding the brackets).
     pub fn total(&self) -> u64 {
         self.bytes
             .saturating_add(self.count.saturating_sub(1) as u64)
     }
 }
 
-/// 统计原生 JSON 文本的估算字节数（内嵌图片等价 4096 * 3 字节）。
+/// Count the estimated bytes of native JSON text (an embedded image equals 4096 * 3 bytes).
 pub fn estimate_bytes(value: &impl Serialize) -> Result<u64> {
     let mut count = EstimateCount::default();
     serde_json::to_writer(&mut count, value)

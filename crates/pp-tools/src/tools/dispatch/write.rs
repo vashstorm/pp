@@ -1,4 +1,4 @@
-//! `write` 分支：Plan 模式转计划保存、基线提交与保存后诊断联动。
+//! `write` branch: plan saving in Plan mode, baseline commits and post-save diagnostics linkage.
 
 use super::*;
 
@@ -48,14 +48,14 @@ impl Tools {
         let absolute = registry
             .map(|registry| registry.cwd().join(&normalized_path))
             .unwrap_or_else(|| self.cwd.join(&normalized_path));
-        // 旧诊断在新 mutation 的第一时间失效；必须早于写锁与客户端 operation。
+        // Stale diagnostics are invalidated as soon as the new mutation starts; this must precede the write lock and the client operation.
         let ticket = registry.map(|registry| registry.diagnostics().mutate(&absolute));
         let guard = self.write_lock.lock().unwrap_or_else(|e| e.into_inner());
-        // 精确基线：可读的目标只在内容未变化时提交，绝不无条件覆盖外部改动。
+        // Exact baseline: a readable target is committed only while its content is unchanged, never overwriting external edits unconditionally.
         let baseline = match target.read_optional() {
             Ok(Some(bytes)) => WriteBaseline::Existing(bytes),
             Ok(None) => WriteBaseline::Missing,
-            // 快照失败不阻止提交；diff 必须如实标记为不可用。
+            // A snapshot failure does not block the commit; the diff must truthfully be marked unavailable.
             Err(_) => WriteBaseline::Unavailable,
         };
         pp_core::cancellation::check(cancellation)?;
@@ -71,7 +71,7 @@ impl Tools {
         }?;
         let final_bytes = args.content.into_bytes();
         let bytes_written = final_bytes.len();
-        // 记录与 diff 使用本次实际提交的内容。
+        // Recording and diff use the content actually committed by this call.
         let original = match baseline {
             WriteBaseline::Existing(bytes) => diff::Original::Bytes(bytes),
             WriteBaseline::Missing => diff::Original::Missing,
@@ -80,7 +80,7 @@ impl Tools {
         self.record_committed_file(call_id, normalized_path, original, &final_bytes, emit);
         drop(guard);
         if cancellation.is_cancelled() {
-            // 已提交的副作用保留，沿用现有取消链。
+            // Committed side effects are kept and the existing cancellation chain is reused.
             return Err(Cancelled.into());
         }
         let mut result = json!({"ok":true,"bytes_written":bytes_written});

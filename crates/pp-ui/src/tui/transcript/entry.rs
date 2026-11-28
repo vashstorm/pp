@@ -54,7 +54,7 @@ impl TranscriptEntry {
         self.markdown_dirty = true;
     }
 
-    /// 同一路径只保留最新报告；内联事件、工具结果与后续同步不会叠成重复卡片。
+    /// Only the latest report per path is kept; inline events, tool results and later syncs never stack into duplicate cards.
     pub(super) fn set_diagnostic(&mut self, report: pp_core::lsp_report::DiagnosticReport) {
         if let Some(existing) = self
             .diagnostics
@@ -146,7 +146,7 @@ impl Activity {
             return;
         }
         for part in text.split_inclusive('\n') {
-            // 只保留当前行的有界前缀；摘要正文仍由 Transcript 完整管理。
+            // Only the bounded prefix of the current line is kept; the summary body is still fully managed by Transcript.
             for character in part.trim_end_matches('\n').chars() {
                 if self.summary_line.len() + character.len_utf8() > 1024 {
                     break;
@@ -191,7 +191,7 @@ impl Activity {
         } else {
             now + Self::SUMMARY_SETTLE_DELAY
         };
-        // 同一候选补齐换行时可提前就绪；正文继续流入不推迟已有标题。
+        // The same candidate can become ready earlier once it gets a newline; the body streaming on does not postpone the existing title.
         match &mut self.pending_summary {
             Some((pending, ready)) if *pending == label => *ready = (*ready).min(ready_at),
             _ => self.pending_summary = Some((label, ready_at)),
@@ -205,7 +205,7 @@ impl Activity {
         }
         let mut excerpt = String::new();
         let mut width = 0;
-        // 按字素和显示列截断，为省略号留一列，保留组合字符与 Emoji。
+        // Truncate by grapheme and display column, reserving one column for the ellipsis and keeping combining characters and emoji.
         for grapheme in line.styled_graphemes(Style::default()) {
             width += Span::raw(grapheme.symbol).width();
             if width >= Self::SUMMARY_WIDTH {
@@ -232,7 +232,7 @@ impl Activity {
         {
             return false;
         }
-        // 只发布最新候选，不轮播限流期间积压的中间摘要。
+        // Only the latest candidate is published; intermediate summaries queued during throttling are not cycled through.
         self.summary_label = self.pending_summary.take().map(|(label, _)| label);
         self.summary_updated_at = Some(now);
         true
@@ -258,7 +258,7 @@ impl Activity {
         let base = Style::default().fg(dim);
         let line = Line::raw(label);
         let graphemes: Vec<_> = line.styled_graphemes(base).collect();
-        // 光带从首字移至末字，尾部留出短暂停顿后重新开始。
+        // The light band moves from the first character to the last, pauses briefly at the tail and starts over.
         let head = (self.frame % (graphemes.len() as u128 + 8)) as usize;
         let mut spans = vec![Span::styled(
             format!("{} ", self.clock),
@@ -299,7 +299,7 @@ impl Activity {
         if self.running && self.label != "Cancelling" && self.label != label {
             self.label = label.into();
             let now = Instant::now();
-            // ask 单独计算等待时间；其他阶段继续使用整轮任务的起点。
+            // The ask stage measures its own wait time; other stages keep using the start of the whole turn.
             self.waiting_started =
                 (label == "Waiting for input" && self.started.is_some()).then_some(now);
             self.tick(now);

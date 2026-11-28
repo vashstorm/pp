@@ -1,4 +1,4 @@
-//! `/pipes` 面板按键：只改本地状态并返回后续命令。
+//! `/pipes` panel keys: only change local state and return follow-up commands.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
@@ -69,7 +69,7 @@ impl Panel {
                 self.following = false;
                 self.scroll = 0;
                 if self.body.trimmed {
-                    // 面板副本已裁掉前缀：重新取保留区间起点，但仍保持冻结。
+                    // The panel copy already trimmed the prefix: re-read the start of the retained range, staying frozen.
                     self.awaiting = true;
                     self.reload_frozen = true;
                     return Action::Refresh { full: true };
@@ -124,7 +124,7 @@ impl Panel {
         true
     }
 
-    /// 从“指定 run 不可用”回到当前最近 run，仅在本地面板内切换。
+    /// Return from "the requested run is unavailable" to the current latest run, switching only inside the local panel.
     fn rebind_current_run(&mut self) -> bool {
         if self.runs.is_empty() {
             return false;

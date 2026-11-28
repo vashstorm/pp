@@ -816,7 +816,7 @@ mod tests {
         let mut snapshot = Skills::default();
         snapshot.entries.push(Skill {
             name: "rust".into(),
-            description: "测试".into(),
+            description: "test".into(),
             path: "SKILL.md".into(),
             enabled: true,
         });

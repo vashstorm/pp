@@ -1,4 +1,5 @@
-//! 基于已提交的原生记录重建逻辑会话树，节点只保存日志游标。
+//! Rebuild logical session trees from committed native records; nodes only store journal
+//! cursors.
 mod build;
 mod select;
 mod view;
@@ -25,9 +26,10 @@ pub(in crate::agent) struct Prepared {
     pub replay: Vec<ReplayRecord>,
     pub selection: Selection,
     pub draft: Option<String>,
-    /// 目标 cursor 之前最后一条 State/Workflow 记录折叠出的历史 todo 投影：
-    /// 普通 `todos` 无来源，计划投影带 `todo_plan_id`；空 + None 为无清单。
-    /// 只保留最新一份，不逐节点复制整个清单。
+    /// Historical todo projection folded from the last State/Workflow record before the
+    /// target cursor: plain `todos` have no source, plan projections carry `todo_plan_id`;
+    /// empty with None means no list.
+    /// Only the latest copy is kept, so the whole list is not duplicated per node.
     pub todos: Vec<TodoPhase>,
     pub todo_plan_id: Option<String>,
 }

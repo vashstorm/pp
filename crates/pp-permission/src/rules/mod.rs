@@ -1,11 +1,11 @@
-//! Codex 风格的用户级全局权限规则存储（`~/.pp/agent/permission.toml`）。
+//! Codex-style user-level global permission rule store (`~/.pp/agent/permission.toml`).
 //!
-//! 独立配置文件省略 `permissions.` 前缀，支持：
-//! - `[<profile>.filesystem]`、`[<profile>.filesystem.":workspace"]`
+//! The standalone config file omits the `permissions.` prefix and supports:
+//! - `[<profile>.filesystem]`, `[<profile>.filesystem.":workspace"]`
 //! - `[<profile>.network]`
 //! - `[<profile>.tools]`
-//! - `[[rules]]` 细粒度命令规则（`exact` / `prefix`）
-//! - `[[sandbox]]` 沙盒扩权规则（额外目录 / 受保护路径豁免 / 出站网络）
+//! - `[[rules]]` fine-grained command rules (`exact` / `prefix`)
+//! - `[[sandbox]]` sandbox expansion rules (extra directories / protected path exemptions / outbound network)
 
 mod codec;
 mod store;
@@ -72,9 +72,9 @@ impl MatchMode {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FilesystemConfig {
-    /// 绝对路径或 `~/...` 路径规则。
+    /// Absolute path or `~/...` path rules.
     pub(crate) host: BTreeMap<String, FsAccess>,
-    /// 工作区相对路径规则（`[profile.filesystem.":workspace"]`）。
+    /// Workspace-relative path rules (`[profile.filesystem.":workspace"]`).
     pub(crate) workspace: BTreeMap<String, FsAccess>,
 }
 
@@ -277,7 +277,7 @@ fn deserialize_decision<'de, D: serde::Deserializer<'de>>(
     }
 }
 
-/// Codex `[[rules]]` 细粒度命令规则：默认 `match = "exact"`。
+/// Codex `[[rules]]` fine-grained command rule; defaults to `match = "exact"`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BashRule {
     pub pattern: Vec<String>,
@@ -385,7 +385,7 @@ impl Document {
         self.profiles.entry(name).or_default()
     }
 
-    /// 合并 `extends` 继承链，解析出当前生效 profile 的聚合视图。
+    /// Merges the `extends` inheritance chain to resolve the aggregate view of the currently active profile.
     pub(crate) fn resolve_active_profile(&self) -> Result<ResolvedProfile> {
         let mut chain = Vec::new();
         let mut visited = HashSet::new();
@@ -430,7 +430,7 @@ impl Document {
         Ok(resolved)
     }
 
-    /// 导出给 `pp-sandbox` 的文件系统与网络叠加策略。
+    /// Filesystem and network overlay exported to `pp-sandbox`.
     pub(crate) fn sandbox_overlay(
         &self,
         cwd: &Path,

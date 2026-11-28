@@ -29,7 +29,8 @@ impl App {
             .menu
             .as_ref()
             .filter(|menu| !self.native_render && menu.anchored_to_input());
-        // 为对话留一行，有空间时再为命令补全留一行。
+        // Keep one row for the conversation, plus one for command completion when space
+        // allows.
         let content_min =
             1 + u16::from(slash_menu.is_some() && available.saturating_sub(input_height) > 1);
         let image_count = if self.resources.images.is_empty() {
@@ -37,7 +38,8 @@ impl App {
         } else {
             self.resources.active_images(&self.input_text()).len()
         };
-        // 边框 + 一行正文；空间不足时让位给对话与输入。
+        // Border plus one body row; when space runs short this yields to the conversation and
+        // the input.
         let retry_height = u16::from(self.retry_visible()) * 3;
         let attachments_height = (if image_count > 0 { 8 } else { 0 }
             + u16::from(self.resources.job.is_some()))
@@ -56,7 +58,7 @@ impl App {
                 .map_or(0, |panel| panel.height(base, area.height))
         }
         .min(above);
-        // 极矮的终端优先保留至少一行对话内容。
+        // A very short terminal keeps at least one line of conversation content first.
         let ask_spacing = u16::from(ask_height > 0 && above - ask_height > 1);
         let remaining = above - ask_height - ask_spacing;
         let panel_budget = remaining.saturating_sub(content_min);
@@ -121,14 +123,16 @@ impl App {
         }
     }
 
-    /// 单元测试直接绘制的入口；生产路径统一经 `paint_surface` 复用预计算布局。
+    /// Entry point for unit tests that draw directly; the production path always reuses the
+    /// precomputed layout from `paint_surface`.
     #[cfg(test)]
     pub(in crate::tui) fn draw(&mut self, frame: &mut Frame, context: &StatusContext) {
         self.draw_with_layout(frame, context, None, false);
     }
 
-    /// `layout` 由 `paint_surface` 先行计算时复用，避免每帧重复排版输入框；
-    /// `exiting` 时额外保留整帧快照供退出绘制，其余帧不再多余拷贝。
+    /// Reuses `layout` when `paint_surface` computed it first, so the input box is not
+    /// re-laid out every frame; with `exiting` a full-frame snapshot is also kept for the exit
+    /// draw, while other frames avoid the extra copy.
     pub(in crate::tui) fn draw_with_layout(
         &mut self,
         frame: &mut Frame,
@@ -286,8 +290,9 @@ impl App {
             && let Some(panel) = &mut self.plan_panel
             && panel.token().is_none()
         {
-            // 全屏审阅/进度视图：底部保留状态栏；Esc 由面板处理，只关闭面板。
-            // 从 /plan-list 打开的详情/审阅额外显示一行列表快捷键。
+            // Full-screen review/progress view: the status line stays at the bottom; Esc is
+            // handled by the panel and only closes it. Details/review opened from /plan-list
+            // also show one row of list shortcuts.
             let with_hint = self.plan_list_panel.is_some();
             let available = area.height.saturating_sub(1);
             let panel_height = available.saturating_sub(u16::from(with_hint));
@@ -324,7 +329,8 @@ impl App {
             && let Some(panel) = &mut self.plan_list_panel
             && self.plan_panel.is_none()
         {
-            // 全屏计划管理页：底部保留状态栏；Esc 由面板处理，只关闭面板。
+            // Full-screen plan management page: the status line stays at the bottom; Esc is
+            // handled by the panel and only closes it.
             let available = area.height.saturating_sub(1);
             panel.draw(frame, Rect::new(area.x, area.y, area.width, available));
             frame.render_widget(
@@ -371,7 +377,7 @@ impl App {
         if loading > 0 {
             frame.render_widget(
                 Line::styled(
-                    "正在准备输入资源… Esc 取消",
+                    "preparing input resources… Esc to cancel",
                     Style::default().fg(statusline::accent()),
                 ),
                 Rect::new(attachments.x, attachments.y, attachments.width, 1),
@@ -396,7 +402,8 @@ impl App {
         {
             frame.render_widget(Line::from(binding.summary()), subagents);
         }
-        // 文件补全和待处理队列的浮层仍画在对话区内。
+        // File completion and the pending queue still draw their overlays inside the
+        // conversation area.
         let menu_overlay_height = if self.native_render || slash_completion.is_some() {
             0
         } else {
@@ -433,7 +440,8 @@ impl App {
             } else {
                 conversation
             };
-        // 独立审查页优先渲染：底部输入与状态栏照常可用，草稿可继续编辑但提交被拒。
+        // The standalone review tab renders first: the bottom input and status line stay
+        // usable, and the draft stays editable while submissions are rejected.
         if self.native_render {
             self.conversation.draw_native(frame, conversation);
         } else if let Some(panel) = &mut self.mcp_panel {
@@ -465,7 +473,8 @@ impl App {
                         } else if self.menu.is_some() {
                             menu::separator()
                         } else if self.shell_mode {
-                            // 模式独立于正文，首个切换用的 `!` 不在输入框显示。
+                            // The mode is independent of the body, so the leading `!` used to
+                            // switch is not shown in the input box.
                             statusline::shell_mode()
                         } else {
                             statusline::accent()
@@ -515,7 +524,8 @@ impl App {
                     }
                 }
             }
-            // 渲染后获取折行和滚动偏移，让输入法与终端原生光标共享插入位置。
+            // Read the wrap and scroll offsets after rendering so the IME and the terminal
+            // caret share the insertion position.
             let cursor = self.input.screen_cursor();
             let (top, left) = self.input.scroll_offset();
             if let (Some(row), Some(column)) = (
@@ -563,7 +573,8 @@ impl App {
         if !self.native_render
             && let Some(panel) = &mut self.model_panel
         {
-            // 模型面板向上展开，给输入框上方的活动状态留出空间。
+            // The model panel expands upward, leaving room for the activity state above the
+            // input box.
             let height = panel.height(activity.y.saturating_sub(area.y));
             let popup = Rect::new(input.x, activity.y - height, input.width, height);
             panel.draw(frame, popup);
@@ -596,7 +607,8 @@ impl App {
                 elapsed.as_deref(),
             )
         });
-        // ctx 字段每帧只构造一次，宽度预算与实际指标簇共享同一行。
+        // The ctx field is built once per frame, so the width budget and the real metric
+        // cluster share one row.
         let context = usage.map(statusline::context_field);
         let context_width = context.as_ref().map_or(0, |context| {
             u16::try_from(context.width() + 2).unwrap_or(u16::MAX)
@@ -645,7 +657,7 @@ impl App {
             let metrics = statusline::metric_fields(
                 statusline::Metrics {
                     usage,
-                    context: context.expect("ctx 字段已随用量构造"),
+                    context: context.expect("ctx field is built alongside usage"),
                 },
                 speed,
                 running_subagents,

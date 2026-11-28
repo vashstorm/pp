@@ -9,10 +9,10 @@ use std::{
 };
 
 impl Store {
-    /// 会话目录检索。`cwd` 为 None 表示全部项目，否则按绝对路径精确相等过滤；
-    /// 空查询返回 scope 内全部目录行。所有词都必须命中，且同一个词可命中
-    /// summary/preview/id/cwd 或该会话任意一条 prompt（各词独立判断，
-    /// 不要求位于同一条消息）。置顶优先，组内按 (updated_at_secs, nanos, session_id) 降序。
+    /// Session catalog search. `cwd` of None means all projects, otherwise exact absolute-path equality;
+    /// an empty query returns every catalog row in scope. All words must hit, and one word may hit
+    /// summary/preview/id/cwd or any single prompt of that session (each word is judged independently,
+    /// not required to be in the same message). Pinned first; within a group, (updated_at_secs, nanos, session_id) descending.
     pub fn search_sessions(&self, cwd: Option<&Path>, query: &str) -> Result<Vec<SessionSummary>> {
         let folded = query.to_lowercase();
         let mut values = vec![cwd.map_or(SqlValue::Null, |cwd| {
@@ -37,7 +37,7 @@ impl Store {
                            JOIN prompt_fts ON prompt_fts.rowid=p.rowid WHERE prompt_fts MATCH ?{phrase}))"
                 ).expect("writing to String");
             }
-            // validate_id 限定 ASCII ID，唯一的大写字符是固定日期分隔符 T。
+            // validate_id restricts IDs to ASCII; the only uppercase character is the fixed date separator T.
             write!(
                 sql,
                 " AND (instr(s.summary_folded,?{parameter})>0
@@ -86,7 +86,7 @@ impl Store {
         Ok(summaries)
     }
 
-    /// 只修改用户偏好，不改写会话日志或更新时间；显式目标值使重复请求保持幂等。
+    /// Changes user preference only, never rewriting the session log or its timestamp; an explicit target value keeps repeated requests idempotent.
     pub fn set_session_pinned(&mut self, id: &str, pinned: bool) -> Result<()> {
         let tx = self
             .conn
@@ -114,12 +114,12 @@ impl Store {
     }
 }
 
-/// FTS5 双引号 literal phrase：内部双引号加倍转义，保证 OR/引号/操作符按字面处理。
+/// FTS5 double-quoted literal phrase: inner double quotes are doubled so OR/quotes/operators stay literal.
 fn fts_phrase(term: &str) -> String {
     format!("\"{}\"", term.replace('"', "\"\""))
 }
 
-/// 目录行的秒/纳秒整数还原为 SystemTime；纳秒来自 duration 的亚秒部分，非负。
+/// Restores a catalog row's seconds/nanoseconds into a SystemTime; nanoseconds come from the subsecond part, non-negative.
 fn to_system_time(secs: i64, nanos: i64) -> Result<SystemTime> {
     ensure!((0..1_000_000_000).contains(&nanos), UNAVAILABLE);
     let base = if secs >= 0 {
@@ -201,7 +201,7 @@ mod tests {
         let path = root.path().join("history.db");
         let sessions = root.path().join("sessions");
         fs::create_dir(&sessions).unwrap();
-        // 从真实 v2 schema 升级，保留既有输入和会话索引。
+        // Upgrade from the real v2 schema, keeping existing input and session index.
         let conn = pp_core::sqlite::open(&path).unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute_batch(
@@ -255,7 +255,7 @@ mod tests {
         );
         assert!(
             store.search_sessions(None, "absent").unwrap().is_empty(),
-            "pin 不能绕过搜索条件"
+            "a pin cannot bypass the search filter"
         );
         drop(store);
         let mut store = Store::open(&path).unwrap();
@@ -280,7 +280,7 @@ mod tests {
             fs::metadata(&journal).unwrap().modified().unwrap(),
             modified
         );
-        // 数据库锁竞争失败不能改变已提交的偏好。
+        // A lost database lock race must not change already committed preferences.
         let blocker = pp_core::sqlite::open(&path).unwrap();
         blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
         let error = store.set_session_pinned(&ids[1], false).unwrap_err();
@@ -307,7 +307,7 @@ mod tests {
         let id_c = format!("2026-10-30T12-00-03-{random}");
         let at = |secs: u64, nanos: u32| SystemTime::UNIX_EPOCH + Duration::new(secs, nanos);
 
-        // A：首条摘要/助手预览均无关键词，第二条 user 才包含 needle。
+        // A: neither the first summary nor the assistant preview has the keyword; only the second user message contains needle.
         write_session(
             &sessions,
             &id_a,
@@ -320,7 +320,7 @@ mod tests {
                 assistant_message("done", true),
             ],
         );
-        // B：同一项目较新文件；prompt 覆盖 %、_、引号、OR 等字面输入。
+        // B: newer file in the same project; prompts cover literal input such as %, _, quotes and OR.
         write_session(
             &sessions,
             &id_b,
@@ -333,7 +333,7 @@ mod tests {
                 assistant_message("ok", true),
             ],
         );
-        // C：另一项目；用于 scope 隔离与纳秒级排序。
+        // C: another project; used for scope isolation and nanosecond-level ordering.
         write_session(
             &sessions,
             &id_c,
@@ -351,7 +351,7 @@ mod tests {
             .unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
 
-        // 空查询返回 scope 内全部行；目录行摘要/预览/done/纳秒更新时间还原一致。
+        // An empty query returns every row in scope; catalog summary/preview/done/nanosecond timestamp restore identically.
         let listed = store.search_sessions(Some(&project_a), "").unwrap();
         assert_eq!(summary_ids(&listed), [id_b.clone(), id_a.clone()]);
         let summary = &listed[1];
@@ -365,7 +365,7 @@ mod tests {
             [id_b.clone(), id_a.clone(), id_c.clone()]
         );
 
-        // 关键词只在第二条 user prompt：2 字符词走 instr，3 字符词走 FTS 候选。
+        // The keyword is only in the second user prompt: 2-char terms go through instr, 3-char terms through the FTS candidate.
         assert_eq!(
             summary_ids(
                 &store
@@ -391,12 +391,12 @@ mod tests {
             std::slice::from_ref(&id_c)
         );
 
-        // 多词 AND，且两个词分布在不同消息（摘要 + 第二条 prompt）。
+        // Multi-word AND with the two words in different messages (summary + second prompt).
         assert_eq!(
             summary_ids(&store.search_sessions(None, "running needle_42").unwrap()),
             std::slice::from_ref(&id_a)
         );
-        // Unicode 大小写折叠：查询大小写与原文无关。
+        // Unicode case folding: query case is independent of the original text.
         assert_eq!(
             summary_ids(&store.search_sessions(None, "RUNNING").unwrap()),
             std::slice::from_ref(&id_a)
@@ -405,12 +405,12 @@ mod tests {
             summary_ids(&store.search_sessions(None, "Running").unwrap()),
             std::slice::from_ref(&id_a)
         );
-        // 1 字符短词走 instr，不因长度返回假空。
+        // A 1-char short term goes through instr and never returns a false empty result because of length.
         assert_eq!(
             summary_ids(&store.search_sessions(None, "模").unwrap()),
             [id_b.clone(), id_a.clone(), id_c.clone()]
         );
-        // %、_、OR、引号、NOT 均按字面处理，绝不作为查询语法。
+        // %, _, OR, quotes and NOT are handled literally and never as query syntax.
         assert_eq!(
             summary_ids(&store.search_sessions(None, "50%").unwrap()),
             std::slice::from_ref(&id_b)
@@ -439,7 +439,7 @@ mod tests {
         );
         assert!(store.search_sessions(None, "needle_43").unwrap().is_empty());
 
-        // 派生投影可完整重建：清空 sessions 级联后 rebuild 恢复检索，input_history 不动。
+        // The derived projection rebuilds completely: clearing sessions with its cascade then rebuilding restores search while input_history is untouched.
         store.append_input(&project_a, "kept input", 1).unwrap();
         let diagnostics = store.rebuild_sessions(&sessions).unwrap();
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
@@ -456,7 +456,7 @@ mod tests {
             "kept input"
         );
 
-        // SQLite/FTS 查询错误必须展示检索失败，不可静默降级为只搜标题。
+        // SQLite/FTS query errors must surface the search failure, never silently degrade to a title-only search.
         store.conn.execute("DROP TABLE prompt_fts", []).unwrap();
         let error = store.search_sessions(None, "needle_42").err().unwrap();
         assert_eq!(error.to_string(), UNAVAILABLE);

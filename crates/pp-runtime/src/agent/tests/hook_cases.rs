@@ -1,4 +1,4 @@
-//! 五事件 hook 的可见边界：输入拒绝、参数改写、结果变换、受限路径与 Stop。
+//! Visibility boundaries of the five-event hooks: input rejection, argument rewriting, result transformation, restricted paths and Stop.
 
 mod integration {
     use super::super::*;
@@ -17,7 +17,7 @@ mod integration {
         path.display().to_string()
     }
 
-    /// 用户级 `hooks.yml` 正文：只有事件顶层键。
+    /// Body of the user-level `hooks.yml`: only top-level event keys.
     fn hook_yaml(event: &str, script: &str) -> String {
         format!("{event}:\n  - hooks:\n      - type: command\n        command: '{script}'\n")
     }
@@ -28,7 +28,7 @@ mod integration {
         )
     }
 
-    /// (call_id, text) 按原生顺序提取工具结果。
+    /// Extract tool results as (call_id, text) in native order.
     fn tool_outputs(protocol: &str, body: &Value) -> Vec<(String, String)> {
         match protocol {
             "completion" => body["messages"]
@@ -58,7 +58,7 @@ mod integration {
         }
     }
 
-    /// 原生 assistant 调用：名称与原始参数字符串。
+    /// Native assistant calls: name and raw argument string.
     fn assistant_arguments(protocol: &str, body: &Value) -> Vec<(String, String)> {
         match protocol {
             "completion" => body["messages"]
@@ -142,10 +142,10 @@ mod integration {
                         .is_none(),
                     "a rejected prompt must not reach the provider"
                 );
-                // 拒绝首条输入可以留下有效的空 session，但不能留下 user 记录。
+                // Rejecting the first input may leave a valid empty session, but must not leave a user record.
                 let id = agent
                     .session_id()
-                    .expect("hook 前已建立有效 session")
+                    .expect("a valid session was established before the hook")
                     .to_owned();
                 drop(agent);
                 let restored = persistence::load_test(
@@ -259,9 +259,9 @@ printf '{{"hookSpecificOutput":{{"hookEventName":"UserPromptSubmit","additionalC
                         .filter(|text| text.contains("input context"))
                         .count()
                         >= 1,
-                    "允许的补充输入必须带上自己的上下文"
+                    "allowed supplementary input must carry its own context"
                 );
-                // 被拒项不写 journal：恢复后只重放真正提交的输入。
+                // Rejected items are not journaled: a restore replays only really committed input.
                 let id = agent.session_id().unwrap().to_owned();
                 drop(agent);
                 let restored = persistence::load_test(
@@ -281,7 +281,7 @@ printf '{{"hookSpecificOutput":{{"hookEventName":"UserPromptSubmit","additionalC
                     .collect();
                 assert_eq!(users, vec!["initial prompt", "steer good"]);
                 drop(restored);
-                // 恢复只重放已保存历史：脚本副作用计数不因读取会话增加。
+                // A restore replays only saved history: the script side-effect counter does not grow by reading the session.
                 assert_eq!(
                     std::fs::read_to_string(&counted).unwrap().lines().count(),
                     3
@@ -355,7 +355,7 @@ fi"#,
                     .unwrap_err();
                 handle.join().unwrap();
                 assert!(format!("{error:#}").contains("status 7"), "{error:#}");
-                // 故障项留在队列里等待显式恢复，不自动重试也不丢失。
+                // A failed item stays in the queue awaiting explicit recovery; it is neither retried automatically nor lost.
                 assert_eq!(queue.snapshot_since(None).unwrap().unwrap().steering(), 1);
                 assert!(queue.recall(1).unwrap().is_some());
                 no_more_requests(&server);
@@ -383,7 +383,7 @@ echo ran >> {}",
                     &server.addr().to_string(),
                     &hook_yaml("PreToolUse", &script),
                 );
-                // Plan 只读路径：即使配置了同一条 hooks，也不得启动任何脚本。
+                // Plan read-only path: even with the same hooks configured, no script may start.
                 agent.workflow.mode = pp_core::plan::WorkMode::Plan;
                 agent.workflow.plan = Some(pp_core::plan::PlanDocument::new().unwrap());
                 let serving = protocol.to_owned();
@@ -413,7 +413,7 @@ echo ran >> {}",
                     )
                     .unwrap();
                 let next = handle.join().unwrap();
-                assert!(!marker.exists(), "Plan 模式不得运行 hook 脚本");
+                assert!(!marker.exists(), "Plan mode must not run hook scripts");
                 let outputs = tool_outputs(protocol, &next);
                 assert!(outputs[0].1.contains("REAL-CONTENT"), "{}", outputs[0].1);
             }
@@ -426,7 +426,7 @@ echo ran >> {}",
                 .recv_timeout(Duration::from_millis(150))
                 .unwrap()
                 .is_none(),
-            "hook 故障不得继续请求模型"
+            "a hook failure must not fall through to a model request"
         );
     }
 
@@ -438,8 +438,8 @@ echo ran >> {}",
                 let source = dir.path().join("second.txt");
                 std::fs::write(&source, "REAL-CONTENT").unwrap();
                 let written = dir.path().join("written.txt");
-                // 改写目标是工作区相对路径：临时目录在 macOS 上是 /var 拼写，保存层
-                // 规范化为 /private/var，绝对路径会被误判为工作区外。
+                // The rewrite target is a workspace-relative path: the temporary directory is spelled /var on macOS, while the save
+                // layer canonicalizes it to /private/var, so an absolute path would be misjudged as outside the workspace.
                 let read_script = hook_script(
                     dir.path(),
                     "read-rewrite.sh",
@@ -493,7 +493,7 @@ echo ran >> {}",
                     )
                     .unwrap();
                 let next = handle.join().unwrap();
-                // 只有改写后的目标发生变化。
+                // Only the rewritten target changes.
                 assert!(!dir.path().join("target.txt").exists());
                 assert!(!dir.path().join("first.txt").exists());
                 assert_eq!(std::fs::read_to_string(&written).unwrap(), "rewritten");
@@ -508,12 +508,12 @@ echo ran >> {}",
                     "{}",
                     started_arguments[1]
                 );
-                // 模型结果来自改写后的调用：读到真实内容，写入报告成功。
+                // The model result comes from the rewritten call: it reads the real content and reports the write as successful.
                 let outputs = tool_outputs(protocol, &next);
                 assert_eq!(outputs[0].0, "call-1");
                 assert!(outputs[0].1.contains("REAL-CONTENT"), "{}", outputs[0].1);
                 assert!(outputs[1].1.contains("\"ok\":true"), "{}", outputs[1].1);
-                // 原生 assistant 调用保存同一份有效参数。
+                // The native assistant call stores the same effective arguments.
                 let calls = assistant_arguments(protocol, &next);
                 assert_eq!(calls[0].0, "read");
                 assert!(calls[0].1.contains("second.txt"), "{}", calls[0].1);
@@ -528,7 +528,7 @@ echo ran >> {}",
                 std::fs::create_dir_all(dir.path().join("sub")).unwrap();
                 std::fs::write(dir.path().join("sub/AGENTS.md"), "sub rules").unwrap();
                 let target = dir.path().join("sub/blocked.txt");
-                // 改写目标是工作区相对路径，不受临时目录符号链接拼写影响。
+                // The rewrite target is a workspace-relative path and is unaffected by the temporary directory's symlink spelling.
                 let script = hook_script(
                     dir.path(),
                     "rewrite.sh",
@@ -541,7 +541,7 @@ echo ran >> {}",
                     &server.addr().to_string(),
                     &hook_yaml("PreToolUse", &script),
                 );
-                // 顶层规则未随请求发送，`sub` 的规则更没有进入请求快照。
+                // The top-level rule was not sent with the request, and `sub`'s rule certainly did not enter the request snapshot.
                 agent.tools.reset_project_instructions([]);
                 let serving = protocol.to_owned();
                 let worker = Arc::clone(&server);
@@ -566,7 +566,10 @@ echo ran >> {}",
                     .run("write a file", &CancellationToken::new(), None, &mut |_| {})
                     .unwrap();
                 let next = handle.join().unwrap();
-                assert!(!target.exists(), "改写后的目标也必须经过规则门禁");
+                assert!(
+                    !target.exists(),
+                    "the rewritten target must also pass the rule gate"
+                );
                 let outputs = tool_outputs(protocol, &next);
                 assert!(outputs[0].1.contains("AGENTS.md"), "{}", outputs[0].1);
                 assert!(outputs[0].1.contains("Not executed"), "{}", outputs[0].1);
@@ -766,7 +769,7 @@ echo ran >> {}",
                 assert_eq!(
                     developer.matches("ONLY-ONCE-CONTEXT").count(),
                     1,
-                    "前置 hook 上下文只能进入历史一次：{developer}"
+                    "pre-hook context may enter history only once: {developer}"
                 );
             }
         }
@@ -779,7 +782,7 @@ echo ran >> {}",
                 "mark.sh",
                 &format!("cat > /dev/null\necho ran >> {}", marker.display()),
             );
-            // Claude 的项目配置文件不是来源：pp 只读自己的 hooks.yml 与 .pp/hooks.yml。
+            // Claude's project config files are not a source: pp reads only its own hooks.yml and .pp/hooks.yml.
             std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
             std::fs::write(
             dir.path().join(".claude/settings.json"),
@@ -798,7 +801,7 @@ echo ran >> {}",
                 .unwrap();
             assert!(
                 !marker.exists(),
-                "人工 shell 与外来的 .claude 配置都不得启动脚本"
+                "neither the manual shell nor the foreign .claude config may start scripts"
             );
         }
     }
@@ -868,12 +871,15 @@ echo ran >> {}",
                     )
                     .unwrap();
                 let next = handle.join().unwrap();
-                assert!(ok_marker.exists(), "成功的调用必须触发 PostToolUse");
+                assert!(
+                    ok_marker.exists(),
+                    "a successful call must fire PostToolUse"
+                );
                 assert!(
                     fail_marker.exists(),
-                    "失败的调用必须触发 PostToolUseFailure"
+                    "a failed call must fire PostToolUseFailure"
                 );
-                // 真实结果保持原样：ToolFinished 与文件的真实内容不变。
+                // The real result stays as is: ToolFinished and the file's real content are unchanged.
                 assert_eq!(finished[0]["content"], "REAL-CONTENT");
                 assert_eq!(finished[1]["ok"], false);
                 assert_eq!(std::fs::read_to_string(&existing).unwrap(), "REAL-CONTENT");
@@ -884,7 +890,7 @@ echo ran >> {}",
                 let joined = developer.join("\n");
                 assert!(joined.contains("post success context"), "{joined}");
                 assert!(joined.contains("post failure context"), "{joined}");
-                // 所有工具结果必须排在 developer 上下文之前。
+                // All tool results must precede the developer context.
                 let entries = match protocol {
                     "completion" => next["messages"].as_array().unwrap().clone(),
                     _ => next["input"].as_array().unwrap().clone(),
@@ -899,7 +905,10 @@ echo ran >> {}",
                     .iter()
                     .position(|entry| entry["role"] == "developer")
                     .unwrap();
-                assert!(last_tool < first_developer, "上下文必须在完整批次之后");
+                assert!(
+                    last_tool < first_developer,
+                    "context must come after the complete batch"
+                );
             }
         }
 
@@ -908,7 +917,7 @@ echo ran >> {}",
                 let dir = tempfile::tempdir().unwrap();
                 let existing = dir.path().join("exists.txt");
                 std::fs::write(&existing, "REAL-CONTENT").unwrap();
-                // 第二个 handler 试图改 `ok`：按 post 故障策略丢弃它的决定并告警。
+                // The second handler tries to change `ok`: its decision is discarded per the post failure policy and a warning is logged.
                 let script = hook_script(
                     dir.path(),
                     "transform.sh",
@@ -969,9 +978,9 @@ echo ran >> {}",
                 assert!(!outputs[0].1.contains("REAL-CONTENT"), "{}", outputs[0].1);
                 assert!(
                     diagnostics.iter().any(|message| message.contains("ok")),
-                    "改状态字段必须留下诊断：{diagnostics:?}"
+                    "changing a status field must leave a diagnostic: {diagnostics:?}"
                 );
-                // Tools 页的结果字符数取最终回填模型的文本，而不是被过滤掉的真实结果。
+                // The Tools page result character count follows the text finally fed back to the model, not the filtered-out real result.
                 let reported = outputs[0].1.chars().count() as u64;
                 let database = agent.journal.stats_database().to_owned();
                 drop(agent);
@@ -1032,9 +1041,12 @@ echo ran >> {}",
             let outputs = tool_outputs("completion", &next);
             let output: Value = serde_json::from_str(&outputs[0].1).unwrap();
             assert_eq!(output["content"], "filtered");
-            assert_eq!(output["kind"], "image", "附件识别字段必须保留");
+            assert_eq!(
+                output["kind"], "image",
+                "the attachment discriminator must be kept"
+            );
 
-            // 切到 Responses 模型：convert 会重新校验 Chat 附件与工具结果的对应关系。
+            // Switch to a Responses model: convert re-validates the correspondence between Chat attachments and tool results.
             let path = dir.path().join("models.yml");
             let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             models["providers"]["other"] = json!({
@@ -1047,7 +1059,7 @@ echo ran >> {}",
             agent.reload_models().unwrap();
             agent.switch_model("other/two").unwrap();
             let Session::Response(request) = &agent.session else {
-                panic!("切换后应保存 Responses 原生历史");
+                panic!("the switch should keep Responses native history");
             };
             let InputParam::Items(items) = &request.input else {
                 panic!()
@@ -1065,7 +1077,7 @@ echo ran >> {}",
                 .unwrap();
             let async_openai::types::responses::FunctionCallOutput::Content(parts) = &output.output
             else {
-                panic!("图片附件必须进入 Responses 工具结果");
+                panic!("the image attachment must enter the Responses tool result");
             };
             assert!(parts.iter().any(|part| matches!(
             part,
@@ -1142,8 +1154,8 @@ printf '{{"decision":"block","reason":"finish the report"}}'"#,
         {
             for protocol in ["completion", "response"] {
                 let dir = tempfile::tempdir().unwrap();
-                // 脚本先等测试线程把 Steering 放进队列，再返回 continue:false，
-                // 固定“Stop 执行期间收到输入”的竞态窗口。
+                // The script first waits for the test thread to enqueue the Steering and then returns continue:false,
+                // pinning the race window of "input received while Stop runs".
                 let started = dir.path().join("stop-started");
                 let release = dir.path().join("stop-release");
                 let script = hook_script(
@@ -1177,7 +1189,7 @@ printf '{{"decision":"block","reason":"finish the report"}}'"#,
                     while !started.exists() && std::time::Instant::now() < deadline {
                         std::thread::sleep(Duration::from_millis(10));
                     }
-                    assert!(started.exists(), "Stop 脚本必须启动");
+                    assert!(started.exists(), "the Stop script must start");
                     worker_queue
                         .enqueue(
                             input::PendingKind::Steering,
@@ -1187,7 +1199,7 @@ printf '{{"decision":"block","reason":"finish the report"}}'"#,
                         )
                         .unwrap();
                     std::fs::write(&release, "").unwrap();
-                    // 旧逻辑会在 Stop 后继续请求模型；这里回一个回复，让多发的请求快速暴露。
+                    // The old logic kept requesting the model after Stop; reply here so the extra request surfaces quickly.
                     let mut count = 1;
                     while let Ok(Some(request)) = worker.recv_timeout(Duration::from_millis(500)) {
                         count += 1;
@@ -1205,9 +1217,16 @@ printf '{{"decision":"block","reason":"finish the report"}}'"#,
                     .unwrap_err();
                 let requests = handle.join().unwrap();
                 assert!(format!("{error:#}").contains("stop wins"), "{error:#}");
-                assert_eq!(requests, 1, "Stop 决定后不得再请求模型");
+                assert_eq!(
+                    requests, 1,
+                    "no further model request after a Stop decision"
+                );
                 let snapshot = queue.snapshot_since(None).unwrap().unwrap();
-                assert_eq!(snapshot.steering(), 1, "补充输入必须保留为待处理");
+                assert_eq!(
+                    snapshot.steering(),
+                    1,
+                    "supplementary input must stay pending"
+                );
                 assert_eq!(snapshot.items[0].preview, "late steering");
             }
         }
@@ -1278,7 +1297,7 @@ fi"#,
                 assert_eq!(
                     handle.join().unwrap(),
                     1,
-                    "全部补充输入被拒绝时不得再发起模型请求"
+                    "no model request may be issued once every supplementary input is rejected"
                 );
                 no_more_requests(&server);
             }
@@ -1314,7 +1333,10 @@ fi"#,
                     .unwrap();
                 assert_eq!(outcome, RunOutcome::Completed);
                 handle.join().unwrap();
-                assert!(!marker.exists(), "等待用户答复时不触发 Stop hook");
+                assert!(
+                    !marker.exists(),
+                    "the Stop hook does not fire while awaiting the user's answer"
+                );
             }
         }
     }
@@ -1354,7 +1376,7 @@ fi"#,
                 format!("{error:#}").contains("Stop hook continuation limit reached (8)"),
                 "{error:#}"
             );
-            assert_eq!(requests, 9, "初始请求 + 8 次 hook 续跑");
+            assert_eq!(requests, 9, "initial request + 8 hook continuations");
         }
     }
 
@@ -1418,7 +1440,7 @@ fi"#,
                 });
                 assert!(
                     card.is_some(),
-                    "未执行的工具卡片必须进入展示快照以便恢复回放"
+                    "cards for calls that never ran must enter the display snapshot so a restore can replay them"
                 );
             }
         }
@@ -1463,16 +1485,16 @@ fi"#,
             while !started.exists() {
                 assert!(
                     std::time::Instant::now() < deadline,
-                    "PreToolUse 脚本没有启动"
+                    "the PreToolUse script did not start"
                 );
                 std::thread::sleep(Duration::from_millis(20));
             }
             token.cancel();
             let (mut agent, result) = runner.join().unwrap();
             serve.join().unwrap();
-            // 取消以 `RunOutcome::Cancelled` 收尾，而不是工具失败或任务错误。
+            // Cancellation ends as `RunOutcome::Cancelled`, not as a tool failure or task error.
             assert_eq!(result.unwrap(), RunOutcome::Cancelled);
-            // 取消后原生历史不能留下没有结果的 function_call。
+            // After cancellation the native history must not keep a function_call without a result.
             let Session::Response(request) = &mut agent.session else {
                 panic!("response protocol fixture")
             };
@@ -1480,9 +1502,9 @@ fi"#,
                 !super::super::super::turn::response_input(request)
                     .iter()
                     .any(|item| matches!(item, InputItem::Item(Item::FunctionCall(_)))),
-                "取消必须回退本轮调用"
+                "cancellation must roll back this turn's calls"
             );
-            // 下一次任务的原生请求同样干净。
+            // The native request of the next task is equally clean.
             let worker = Arc::clone(&server);
             let handle = std::thread::spawn(move || {
                 let request = worker
@@ -1504,7 +1526,7 @@ fi"#,
                     .unwrap()
                     .iter()
                     .any(|item| item["type"] == "function_call"),
-                "下一次请求不得携带无结果的调用：{next}"
+                "the next request must not carry a call without a result: {next}"
             );
             assert_eq!(user_messages("response", &next), ["read the file", "again"]);
         }
@@ -1553,7 +1575,7 @@ fi"#,
                 while !started.exists() {
                     assert!(
                         std::time::Instant::now() < deadline,
-                        "PostToolUse 脚本没有启动"
+                        "the PostToolUse script did not start"
                     );
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -1585,11 +1607,11 @@ fi"#,
                         }
                         _ => None,
                     })
-                    .expect("未执行的调用必须有卡片");
+                    .expect("a call that did not run must have a card");
                 assert_eq!(
                     skipped["cancelled"].as_bool(),
                     Some(true),
-                    "取消导致的跳过必须保留 cancelled 标记：{skipped}"
+                    "skips caused by cancellation must keep the cancelled marker: {skipped}"
                 );
             }
         }

@@ -1,4 +1,4 @@
-//! 位置与符号：行文本、符号匹配与 UTF-16 列解析。
+//! Positions and symbols: line text, symbol matching and UTF-16 column resolution.
 
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
@@ -24,7 +24,7 @@ fn is_identifier_byte(byte: u8) -> bool {
     byte == b'$' || byte == b'_' || byte.is_ascii_alphanumeric()
 }
 
-/// 在单行文本上找出全部匹配的字节下标；裸标识符要求词边界。
+/// Find the byte index of every match on a single line of text; a bare identifier requires word boundaries.
 fn find_matches(line: &str, symbol: &str, case_insensitive: bool) -> Vec<usize> {
     if symbol.is_empty() {
         return Vec::new();
@@ -54,7 +54,7 @@ fn find_matches(line: &str, symbol: &str, case_insensitive: bool) -> Vec<usize> 
     matches
 }
 
-/// `name` 或 `name#N`（N 为 1-based 出现次数，贪婪解析 `#` 后缀）。
+/// `name` or `name#N` (N is a 1-based occurrence count, the `#` suffix is parsed greedily).
 fn parse_symbol_spec(spec: &str) -> (String, usize) {
     if let Some((name, digits)) = spec.rsplit_once('#')
         && !name.is_empty()
@@ -67,7 +67,7 @@ fn parse_symbol_spec(spec: &str) -> (String, usize) {
     (spec.to_owned(), 1)
 }
 
-/// 在目标行未找到符号时扫描相邻 ±5 行，返回按距离排序的最多 3 个候选行号（1-based）。
+/// Scan ±5 neighbouring lines when the symbol is not found on the target line, returning at most 3 candidate line numbers (1-based) sorted by distance.
 fn nearby_symbol_lines(text: &str, line: u32, symbol: &str) -> Vec<u32> {
     const WINDOW: u32 = 5;
     let start = line.saturating_sub(WINDOW).max(1);
@@ -95,7 +95,7 @@ fn nearby_symbol_lines(text: &str, line: u32, symbol: &str) -> Vec<u32> {
     hits
 }
 
-/// 解析 `line` 上的 UTF-16 列；无 `symbol` 时取首个非空白字符。
+/// Resolve the UTF-16 column on `line`; without `symbol` use the first non-whitespace character.
 pub(super) fn resolve_column(text: &str, line: u32, spec: Option<&str>) -> Result<u32> {
     let line = line.max(1);
     let current = line_text(text, line);

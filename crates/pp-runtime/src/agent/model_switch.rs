@@ -1,4 +1,4 @@
-//! 运行时模型／档位切换与失败回报；整块搬迁，切换语义不可再拆。
+//! Runtime model/effort switching and failure reporting; moved as a whole, the switching semantics can no longer be split.
 use super::{Agent, Session, history, persistence::Metadata, plan_workflow};
 use anyhow::{Result, ensure};
 use pp_config::config::{ModelChoice, RoleRoute};
@@ -55,7 +55,7 @@ impl Agent {
         else {
             return Ok(false);
         };
-        // 两次意图是独立提交，按 revision 顺序应用（旧者先、新者后），高 revision 的 effort 胜出。
+        // The two intents are independent commits applied in revision order (older first, newer last); the higher revision's effort wins.
         match (model, think) {
             (Some(model), Some(think)) if think.revision < model.revision => {
                 self.apply_think_target(&think);
@@ -78,7 +78,7 @@ impl Agent {
     }
 
     fn apply_think_target(&mut self, target: &crate::model_control::ThinkTarget) {
-        // 失败只回报 ThinkFailed 并保留旧档位：不向外返回错误、不重试。
+        // On failure only report ThinkFailed and keep the old level: no error propagates out, no retry.
         let result = self.set_think_level(target.effort);
         let Some(binding) = self.runtime_models.as_ref() else {
             return;
@@ -123,7 +123,7 @@ impl Agent {
         let binding = self
             .runtime_models
             .as_ref()
-            .expect("模型绑定在应用期间保留");
+            .expect("model binding is retained during application");
         binding.report(crate::model_control::Report::Applied {
             agent: binding.agent.clone(),
             revision: target.revision,
@@ -178,7 +178,7 @@ impl Agent {
         }
     }
 
-    /// 把当前模型同步给子 Agent 监督绑定；失败上报并终止本次切换。
+    /// Sync the current model to the subagent supervising binding; a failure is reported and aborts this switch.
     fn persist_active_model(&mut self, target: &crate::model_control::Target) -> Result<()> {
         let Some(supervisor) = &self.subagent else {
             return Ok(());
@@ -207,7 +207,7 @@ impl Agent {
         Ok(())
     }
 
-    /// 应用一次显式选择：写 `a` 后按源切换；切换失败时把 `a` 与运行时字段一起回滚。
+    /// Apply one explicit selection: write `a` and then switch by source; on a failed switch roll back `a` together with the runtime fields.
     fn apply_override_selection(&mut self, selection: Selection) -> Result<()> {
         let previous_source = self.model_source;
         let previous_route = self.role_route.take();
@@ -247,10 +247,10 @@ impl Agent {
         self.apply_override_selection(selection)
     }
 
-    /// CLI `--model`：模糊选择后写入手动覆盖 `a`，返回最终选择供 CLI 显示。
+    /// CLI `--model`: fuzzy-select and write the manual override `a`, returning the final selection for the CLI to display.
     ///
-    /// 选择或应用失败时不改变当前模型与档位；覆盖由进程级 `ModelState` 持有，
-    /// 重建 Agent、进出 Plan 与恢复会话都不会丢失。
+    /// A failed selection or application leaves the current model and level untouched; the override is held by the
+    /// process-wide `ModelState`, so it survives Agent rebuilds, entering/leaving Plan and session restores.
     pub fn select_model(&mut self, query: &str) -> Result<pp_config::config::ModelSelection> {
         let selection = self.catalog.select(query)?;
         let chosen = Selection {
@@ -409,7 +409,7 @@ impl Agent {
         self.think_level = target_level;
         self.prompt_cache_key_enabled = config.prompt_cache_key;
         self.prompt_cache_retention = config.prompt_cache_retention;
-        // 切模型只丢弃最近请求指标，会话累计输出跨模型保留。
+        // A model switch drops only the last-request metrics; cumulative session output survives model switches.
         self.last_request = None;
         self.last_request_raw_tokens = None;
         self.pending_instructions = None;

@@ -1,4 +1,4 @@
-//! 诊断动作：目标解析、逐文件采集与结构化报告。
+//! Diagnostic actions: target resolution, per-file collection and structured reports.
 
 use crate::Registry;
 use crate::diagnostics;
@@ -26,8 +26,8 @@ pub(super) fn diagnostics_action(
         file != "*",
         "Workspace diagnostics are not run by LSP. Use bash for cargo check, tsc, go build or other project checks."
     );
-    // 未显式给 timeout 时诊断等待沿用 requestTimeout；显式 timeout 已经缩短
-    // 了 call deadline，两者共用同一个绝对期限。
+    // Without an explicit timeout the diagnostics wait follows requestTimeout; an explicit timeout has already shortened
+    // the call deadline, and both share the same absolute deadline.
     let diagnostic_deadline = match params.timeout {
         Some(_) => deadline,
         None => deadline.min(Instant::now() + registry.settings().request_budget()),
@@ -61,7 +61,7 @@ pub(super) fn diagnostics_action(
             diagnostic_deadline,
             cancellation,
         )?;
-        // 全部服务器失败才不成功；未验证或没有能力都显式出现在正文里。
+        // Only when every server failed is the call unsuccessful; unverified or missing capability always shows up explicitly in the body.
         success &= report
             .servers
             .iter()

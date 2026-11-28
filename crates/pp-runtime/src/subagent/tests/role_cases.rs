@@ -47,7 +47,7 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
         .expect("task schema");
     assert!(
         role_names.contains(&json!("explorer")),
-        "启用 explorer 后必须出现在 task 角色枚举中：{role_names:?}"
+        "an enabled explorer must appear in the task role enum: {role_names:?}"
     );
     binding
         .execute(
@@ -63,7 +63,7 @@ fn model_roles_subagent_selection_controls_model_effort_permissions_and_route() 
             &Default::default(),
         )
         .unwrap();
-    // 派发后修改配置不改变该批记录冻结的主备快照。
+    // Changing config after dispatch does not alter the primary/standby snapshot frozen for that batch of records.
     binding.set_model_roles(BTreeMap::new());
     let state = lock(&binding.inner.state);
     for (id, model, effort) in [

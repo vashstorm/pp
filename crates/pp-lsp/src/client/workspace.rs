@@ -1,4 +1,4 @@
-//! 工作区根发现与追加，以及 rust-analyzer 的 workspace-ready 轮询。
+//! Workspace root discovery and appending, plus rust-analyzer's workspace-ready polling.
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -16,7 +16,7 @@ use super::{
     DEFAULT_STATUS_TIMEOUT, Op,
 };
 
-/// 单个工作区根的 `WorkspaceFolder` 形态；initialize 与后续追加共用同一形状。
+/// `WorkspaceFolder` shape for a single workspace root; initialize and later appends share the same shape.
 pub(super) fn folder_json(path: &Path) -> Value {
     json!({
         "uri": path_to_uri(path),
@@ -26,9 +26,9 @@ pub(super) fn folder_json(path: &Path) -> Value {
     })
 }
 
-/// 打开 `file` 前应该追加的工作区根：解析 symlink 后文件所在 checkout，
-/// 且不是客户端根所在的 checkout、也不是包含 HOME 的根（dotfiles 仓库会把
-/// 整个主目录交给服务器索引）。只有声明 `changeNotifications` 的服务器才追加。
+/// Workspace root that should be appended before opening `file`: the checkout containing the file after resolving symlinks,
+/// provided it is neither the checkout of the client root nor a root containing HOME (a dotfiles repository would hand
+/// the entire home directory to the server for indexing). Only servers declaring `changeNotifications` append.
 pub(super) fn checkout_to_add(
     root: &Path,
     change_notifications: bool,
@@ -51,8 +51,8 @@ pub(super) fn checkout_to_add(
     Some(checkout)
 }
 
-/// 解析 symlink 的绝对路径；缺失的尾部保留，逐级解析已存在的父目录。
-/// 解析失败时退回词法绝对路径，绝不因为权限/竞态而放弃判断。
+/// Absolute path with symlinks resolved; a missing tail is kept, resolving existing parent directories step by step.
+/// Falls back to the lexical absolute path on failure, never giving up the decision because of permissions or a race.
 pub(super) fn real_path(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -73,7 +73,7 @@ pub(super) fn real_path(path: &Path) -> PathBuf {
     }
 }
 
-/// 从 `start` 向上找最近的含 `.git`（文件或目录）的目录。
+/// Walk up from `start` to the nearest directory containing `.git` (file or directory).
 fn find_repo_root(start: &Path) -> Option<PathBuf> {
     let mut current = real_path(start);
     loop {
@@ -84,7 +84,7 @@ fn find_repo_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// `path` 是否等于或位于 `workspace` 之内（按路径组件比较）。
+/// Whether `path` equals or lies inside `workspace` (compared by path component).
 fn path_inside(workspace: &Path, path: &Path) -> bool {
     path.strip_prefix(workspace).is_ok()
 }
@@ -105,7 +105,7 @@ impl Client {
             .collect()
     }
 
-    /// rust-analyzer 的 workspace-ready 轮询；其它服务器立即返回。
+    /// rust-analyzer's workspace-ready polling; other servers return immediately.
     pub(crate) fn wait_workspace_ready(
         &self,
         deadline: Instant,
@@ -176,12 +176,12 @@ impl Client {
         })
     }
 
-    /// 打开 `path` 前把其 checkout 加入工作区。
+    /// Add the file's checkout to the workspace before opening `path`.
     ///
-    /// 仅在服务器声明 `workspaceFolders.changeNotifications`、文件位于另一个
-    /// checkout，且该 checkout 不包含 HOME 时追加。调用方已经持有操作锁，因此
-    /// 这里直接使用同一个 `Op`，不再进入另一个 operation；追加必须发生在首次
-    /// didOpen 之前。
+    /// It is appended only when the server declares `workspaceFolders.changeNotifications`, the file lives in another
+    /// checkout, and that checkout does not contain HOME. The caller already holds the operation lock, so
+    /// this uses the same `Op` directly and does not enter another operation; the append must happen before the first
+    /// didOpen.
     pub(crate) fn ensure_workspace_folder(&self, op: &mut Op<'_>, path: &Path) -> Result<()> {
         let Some(checkout) = self.workspace_folder_to_add(path) else {
             return Ok(());
@@ -209,9 +209,9 @@ impl Client {
         )
     }
 
-    /// 在已持有的操作里发送一次文件夹追加；失败撤销本次新增与加载登记。
+    /// Send one folder append inside the operation already held; on failure undo this addition and its load registration.
     fn deliver_workspace_folder(&self, op: &mut Op<'_>, root: &Path) -> Result<()> {
-        // 先登记待加载：旧项目的进度 end 不能完成这次新根的加载等待。
+        // Register the pending load first: a progress end from the old project cannot complete the wait for this new root.
         self.signals.begin_pending_load();
         {
             let mut folders = self.folders.lock().unwrap_or_else(|e| e.into_inner());
@@ -248,22 +248,22 @@ mod integration {
         std::fs::write(root.join("src/a.rs"), "").unwrap();
         std::fs::write(other.join("b.rs"), "").unwrap();
 
-        // 服务器不支持 changeNotifications：永不追加。
+        // The server does not support changeNotifications: never append.
         assert_eq!(
             checkout_to_add(&root, false, &root.join("src/a.rs"), None),
             None
         );
-        // 文件与客户端根在同一个 checkout：服务器已经知道它。
+        // The file and the client root are in the same checkout: the server already knows it.
         assert_eq!(
             checkout_to_add(&root, true, &root.join("src/a.rs"), None),
             None
         );
-        // 另一个 checkout：追加解析 symlink 后的根。
+        // Another checkout: append the symlink-resolved root.
         assert_eq!(
             checkout_to_add(&root, true, &other.join("b.rs"), None),
             Some(real_path(&other))
         );
-        // 包含 HOME 的 checkout 不追加。
+        // A checkout containing HOME is not appended.
         assert_eq!(
             checkout_to_add(&root, true, &other.join("b.rs"), Some(&other)),
             None
@@ -272,14 +272,14 @@ mod integration {
             checkout_to_add(&root, true, &other.join("b.rs"), Some(&root)),
             Some(real_path(&other))
         );
-        // 最近的 .git 优先。
+        // The nearest .git wins.
         std::fs::create_dir_all(other.join("nested/.git")).unwrap();
         std::fs::write(other.join("nested/c.rs"), "").unwrap();
         assert_eq!(
             checkout_to_add(&root, true, &other.join("nested/c.rs"), None),
             Some(real_path(&other.join("nested")))
         );
-        // 路径中的 symlink 先解析，再判断 checkout。
+        // Symlinks in the path are resolved first, then the checkout is decided.
         std::os::unix::fs::symlink(&other, dir.path().join("link")).unwrap();
         assert_eq!(
             checkout_to_add(&root, true, &dir.path().join("link/b.rs"), None),

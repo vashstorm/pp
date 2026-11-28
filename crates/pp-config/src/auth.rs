@@ -110,7 +110,7 @@ pub struct Config {
     pub generation: String,
 }
 
-// 凭证类型不实现 Debug，避免令牌进入诊断日志。
+// The credential types deliberately do not implement Debug, so tokens never reach diagnostic logs.
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 pub struct Credential {
     #[serde(default)]
@@ -194,7 +194,7 @@ pub fn copilot_endpoint(value: &str) -> bool {
     })
 }
 
-// 授权持久化在 agent.db 的 auth_credentials 表；load/save 的 path 即 agent.db。
+// Authorization persists in the agent.db auth_credentials table; the load/save path is agent.db itself.
 #[derive(Default, Deserialize, PartialEq, Eq)]
 pub struct Store {
     #[serde(default)]
@@ -212,7 +212,7 @@ impl Store {
     }
 }
 
-/// 仅供一次性迁移读取旧 auth.yml；运行期授权一律走 agent.db，绝不回落到此文件。
+/// Reads the legacy auth.yml for the one-time migration only; runtime authorization always goes through agent.db and never falls back to this file.
 pub(crate) fn load_legacy_store(path: &Path) -> Result<Store> {
     let store: Store = read_yaml(path, "auth")?.unwrap_or_default();
     for (provider, credential) in &store.credentials {
@@ -262,7 +262,7 @@ pub(super) fn save_yaml(path: &Path, value: &impl Serialize) -> Result<()> {
         );
     }
     let parent = path.parent().context("invalid auth file directory")?;
-    // tempfile 默认以 0600 创建；原子替换前同步，失败时保留旧凭证。
+    // tempfile creates at 0600 by default; sync before the atomic replace, and old credentials survive any failure.
     let mut temp = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| anyhow::anyhow!("failed to create auth temp file"))?;
     serde_yaml::to_writer(&mut temp, value)
@@ -275,12 +275,12 @@ pub(super) fn save_yaml(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
-// 所有进程共享同一把锁；同一目录、同一领域内串行化跨进程写。
-// 领域决定锁文件名与错误用词：授权刷新用 `auth.lock`，settings 保存用 `settings.lock`；
-// 两个领域互不阻塞（各自保护各自的资源）。
+// All processes share the same lock; writes serialize across processes within one directory and one domain.
+// The domain fixes the lock file name and the error wording: `auth.lock` for authorization refresh, `settings.lock` for settings saves;
+// the two domains never block each other (each guards its own resource).
 pub struct StoreLock(File);
 
-/// 锁的领域：固定锁文件名与固定错误提示（脱敏，不包含路径或配置值）。
+/// Lock domain: fixes the lock file name and the fixed error text (redacted, without paths or configuration values).
 #[derive(Clone, Copy, Debug)]
 struct LockDomain {
     file_name: &'static str,
@@ -302,13 +302,13 @@ impl LockDomain {
 }
 
 impl StoreLock {
-    /// 取得同目录 `auth.lock`，保护 agent.db 授权写与迁移；公共签名与错误文本保持不变。
+    /// Acquires the sibling `auth.lock`, guarding agent.db authorization writes and migrations; the public signature and error text stay unchanged.
     pub fn acquire(path: &Path, cancellation: &CancellationToken) -> Result<Self> {
         Self::acquire_domain(path, cancellation, LockDomain::AUTH)
     }
 
-    /// 取得同目录 `settings.lock`，串行化 `settings.yml` 跨进程保存；
-    /// 设置保存无外部取消令牌，调用方传入未取消的令牌，锁等待沿用 30 秒上限。
+    /// Acquires the sibling `settings.lock`, serializing cross-process `settings.yml` saves;
+    /// settings saves have no external cancellation token, so callers pass an uncancelled token and lock waiting keeps the 30 second bound.
     pub(super) fn acquire_settings(path: &Path, cancellation: &CancellationToken) -> Result<Self> {
         Self::acquire_domain(path, cancellation, LockDomain::SETTINGS)
     }

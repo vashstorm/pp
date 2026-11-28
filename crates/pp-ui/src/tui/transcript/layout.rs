@@ -1,4 +1,4 @@
-//! 物理行布局容器：支持共享不可变前缀 `Arc` 与有界预览尾部零拷贝拼接。
+//! Physical line layout container: supports a shared immutable prefix `Arc` and zero-copy concatenation of a bounded preview tail.
 
 use super::{Line, Range, Source};
 use std::sync::Arc;
@@ -17,19 +17,19 @@ pub(in crate::tui) struct LayoutLine {
     pub(in crate::tui) height: usize,
 }
 
-/// 真实物理行布局：前缀来自已完成的排版结果，预览只追加有界尾部。
+/// Real physical line layout: the prefix comes from a finished layout result and the preview appends only a bounded tail.
 ///
-/// 前缀行不被预览改写，因此滚动锚点和冻结进原生历史的行保持稳定；只有需要
-/// 重排或续接的尾部会重新生成，其余前缀行共享同一个 `Arc`。
+/// Prefix lines are never rewritten by the preview, so the scroll anchor and the lines frozen into native history stay stable; only the tail that
+/// needs re-layout or continuation is regenerated, and the remaining prefix lines share one `Arc`.
 pub(in crate::tui) struct EntryLayout {
     pub(super) width: u16,
-    /// 所有行的物理高度之和（一行源码文本可能折成多个屏幕行）。
+    /// Sum of the physical heights of all lines (one source line may wrap into several screen rows).
     pub(in crate::tui) height: usize,
     prefix: Option<Prefix>,
     tail: Vec<LayoutLine>,
 }
 
-/// 复用的已排版前缀；`kept` 表示从前缀中零拷贝保留的行数。
+/// Reused laid-out prefix; `kept` is the number of lines retained from the prefix by zero-copy.
 struct Prefix {
     layout: Arc<EntryLayout>,
     kept: usize,
@@ -42,7 +42,7 @@ impl Prefix {
 }
 
 impl EntryLayout {
-    /// 完整自有的布局：后台排版结果、非流式卡片与原生历史重排。
+    /// Fully owned layout: background layout results, non-streaming cards and native history re-layout.
     pub(in crate::tui) fn owned(width: u16, lines: Vec<LayoutLine>) -> Self {
         let height = lines.iter().map(|line| line.height).sum();
         Self {
@@ -53,7 +53,7 @@ impl EntryLayout {
         }
     }
 
-    /// 复用前缀的前 `kept` 行并追加尾部；前缀保留行跨帧共享 `Arc`，不被复制或改写。
+    /// Reuse the first `kept` lines of the prefix and append the tail; the retained prefix lines share an `Arc` across frames and are neither copied nor rewritten.
     pub(in crate::tui) fn with_prefix(
         prefix: Arc<EntryLayout>,
         kept: usize,
@@ -89,7 +89,7 @@ impl EntryLayout {
         }
     }
 
-    /// 在前缀之后追加预览尾部；`continuation` 表示尾部首行承接前缀末行。
+    /// Append the preview tail after the prefix; `continuation` means the first tail line continues the last prefix line.
     pub(in crate::tui) fn appended(
         prefix: Arc<EntryLayout>,
         continuation: bool,
@@ -107,13 +107,13 @@ impl EntryLayout {
         self.len() == 0
     }
 
-    /// 行数；与物理高度 `height` 不同，一行源码文本可能折成多行。
+    /// Number of lines; unlike the physical `height`, one source line may wrap into several rows.
     pub(in crate::tui) fn len(&self) -> usize {
         self.prefix.as_ref().map_or(0, Prefix::kept) + self.tail.len()
     }
 
     pub(in crate::tui) fn iter(&self) -> impl Iterator<Item = &LayoutLine> {
-        (0..self.len()).map(move |index| self.get(index).expect("行索引在布局范围内"))
+        (0..self.len()).map(move |index| self.get(index).expect("line index within layout bounds"))
     }
 
     pub(in crate::tui) fn get(&self, index: usize) -> Option<&LayoutLine> {

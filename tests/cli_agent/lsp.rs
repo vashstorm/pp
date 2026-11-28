@@ -334,7 +334,7 @@ fn lsp_fifo(path: &Path) {
 }
 
 fn lsp_release_fifo(path: &Path) {
-    // O_RDWR 打开 FIFO 不会等待读者；读者随后仍能读到这一字节。
+    // Opening the FIFO with O_RDWR does not wait for a reader; the reader can still read this byte afterwards.
     let mut stream = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -438,8 +438,8 @@ fn lsp_no_more_tui(server: &TestServer) {
     }
 }
 
-/// 一次完整的 `-p` 会话：query → modify → diagnostics → final，全部使用真实
-/// 磁盘与真实 stdio 协议；工具结果按 native call/result 成对校验。
+/// One full `-p` session: query → modify → diagnostics → final, all through real disk and the real stdio protocol;
+/// tool results are checked in native call/result pairs.
 #[test]
 fn lsp_roundtrip_chat_and_responses_query_modify_diagnostic() {
     for protocol in ["completion", "response"] {
@@ -691,7 +691,8 @@ fn lsp_roundtrip_chat_and_responses_query_modify_diagnostic() {
     }
 }
 
-/// Plan 会话：受限 schema + 执行层门禁；服务端 callback 在只读操作中被拒绝。
+/// Plan session: restricted schema plus execution-layer gating; server callbacks are rejected during read-only
+/// operations.
 #[cfg(unix)]
 #[test]
 fn lsp_roundtrip_plan_readonly_denies_mutations_and_server_apply_edit() {

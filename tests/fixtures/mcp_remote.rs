@@ -1,4 +1,5 @@
-// 回环 MCP 服务；只使用测试凭证，连接和处理线程均由夹具统一回收。
+// Loopback MCP server for integration tests only; it uses fixture credentials and the fixture owns both
+// the listener and the handler threads.
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -50,7 +51,7 @@ impl RemoteServer {
             while !shared.stopped.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((socket, _)) => {
-                        // macOS 的 accept 会继承监听器的非阻塞标志；处理线程使用阻塞读取。
+                        // macOS inherits the listener's non-blocking flag through accept; handler threads read blocking.
                         socket.set_nonblocking(false).unwrap();
                         socket
                             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -98,7 +99,7 @@ impl RemoteServer {
     pub fn wait_calls(&self, count: usize) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while self.state.calls.load(Ordering::SeqCst) < count {
-            assert!(Instant::now() < deadline, "未收到远程工具调用");
+            assert!(Instant::now() < deadline, "no remote tool call arrived");
             thread::sleep(Duration::from_millis(2));
         }
     }
@@ -272,7 +273,7 @@ fn serve(mut socket: TcpStream, state: &State) -> std::io::Result<()> {
         "tools/call" => {
             json!({"content":[{"type":"text","text":body["params"]["arguments"]["text"]}],"structuredContent":{"count":1},"isError":body["params"]["name"] == "fail"})
         }
-        _ => panic!("未知测试请求"),
+        _ => panic!("unknown test request"),
     };
     let id = if state.mode == "wrong_id" && calling {
         json!("wrong")

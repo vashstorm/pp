@@ -1,4 +1,4 @@
-//! LSP 投递仅在 Agent 调用线程发生；显示与下一次普通模型请求各自确认。
+//! LSP delivery happens only on the Agent's calling thread; display and the next normal model request acknowledge separately.
 use super::*;
 
 impl Agent {
@@ -41,8 +41,8 @@ impl Agent {
         Ok(())
     }
 
-    /// 调用点必须在完整 native exchange 之后、下一次普通请求之前。
-    /// 提交失败时保留已注入标记，下一次尝试不会复制 developer 正文。
+    /// Call sites must be after a complete native exchange and before the next normal request.
+    /// When the commit fails the injected marker is kept, so the next attempt does not duplicate the developer body.
     pub(super) fn receive_lsp_diagnostics(
         &mut self,
         emit: &mut dyn FnMut(AgentEvent),

@@ -82,7 +82,8 @@ fn journal_write_creation_corruption_and_lock_boundaries() {
                 .commit((&session).into())
                 .and_then(|()| tools.commit_wait_results());
             assert!(committed.is_err());
-            // 下一批次释放预留后仍能读到同一完成结果，失败提交没有提前确认消费。
+            // The next batch releases the reservation and can still read the same completion
+            // result: a failed commit never confirms consumption early.
             tools.start_wait_batch();
             let again: serde_json::Value =
                 serde_json::from_str(&execute("wait", "{}").output).unwrap();
@@ -319,7 +320,8 @@ fn deletion_rejects_locked_sessions_symlinks_and_invalid_ids() {
     assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
     assert!(delete(dir.path(), &locks, &stats, &history_path, "../escape").is_err());
 
-    // 中途清理（如 artifact 内含 symlink）失败时，主日志文件必须保留以便重试。
+    // When intermediate cleanup fails (for example an artifact contains a symlink), the main
+    // journal file must survive so cleanup can be retried.
     let sentinel = dir.path().join("sentinel");
     fs::write(&sentinel, "untouched").unwrap();
     let bad_artifact = artifacts.join("1.bash.log");
@@ -374,16 +376,16 @@ fn listing_preview_sorting_headers_and_isolation_boundaries() {
         let mut data = format!(
             "{header}\n{}\n{}\n",
             serde_json::json!({"type":"message",
-                "message":{"role":"user", "content":"  修复\n测试 "}}),
+                "message":{"role":"user", "content":"  Fix\ntests "}}),
             serde_json::json!({"type":"message",
                 "message":{"role":"assistant", "content":[{"type":"thinking", "thinking":"private thought"},
-                {"type":"text", "text":"已经\n修复"}], "stopReason":"stop"}})
+                {"type":"text", "text":"Already\nfixed"}], "stopReason":"stop"}})
         );
         write_log(&path, &data);
         let listing = indexed_listing(dir.path()).unwrap();
         let summary = &listing.sessions[0];
-        assert_eq!(summary.summary, "修复 测试");
-        assert_eq!(summary.preview, "已经 修复");
+        assert_eq!(summary.summary, "Fix tests");
+        assert_eq!(summary.preview, "Already fixed");
         assert_eq!(summary.bytes, fs::metadata(&path).unwrap().len());
         assert!(summary.done);
         for tail in [
@@ -733,14 +735,15 @@ fn replay_repair_incomplete_commit_and_transient_snapshots() {
         journal.event(&AgentEvent::ToolPipelineSnapshot {
             id: "call".into(),
             pipes: serde_json::json!({"run_id": "run"}),
-            preview: Some("瞬时阶段正文".into()),
+            preview: Some("transient stage body".into()),
         });
         journal.event(&AgentEvent::ToolArgumentsDelta {
             tool: "edit".into(),
             index: 0,
-            text: "临时编辑参数".into(),
+            text: "temporary edit arguments".into(),
         });
-        // 瞬时预览不进入可恢复日志；最终结果里的 pipes 才是权威。
+        // Transient previews do not enter the recoverable journal; only the pipes in the
+        // final result are authoritative.
         assert_eq!(fs::read(&path).unwrap(), before);
     }
 }
@@ -821,7 +824,8 @@ fn context_failed_history_replacement_restores_native_memory_and_disk() {
                 .unwrap()
                 .expect("summary request");
             let body: serde_json::Value = request.json().unwrap();
-            // 缓存友好压缩保留主会话 tools 定义，通过 tool_choice="none" 禁止工具调用。
+            // Cache-friendly compaction keeps the main session's tools definitions and bans
+            // tool calls through tool_choice="none".
             assert_eq!(body["tool_choice"], "none");
             assert!(
                 !body.to_string().contains("old-2"),
@@ -1047,7 +1051,8 @@ fn instruction_loading_and_stats_context_journal_boundaries() {
             .unwrap();
         let id = journal.id().unwrap().to_owned();
         let path = dir.path().join(format!("{id}.jsonl"));
-        // 用只读句柄制造真实写入失败，不能把未落盘的加载报告为成功。
+        // Force a real write failure through a read-only handle; a load that never reached
+        // disk must not be reported as success.
         journal.active.as_mut().unwrap().file = File::open(&path).unwrap();
         std::fs::write(dir.path().join("AGENTS.md"), "frozen project body").unwrap();
         let mut state = pp_tools::project_instructions::State::new(dir.path());
@@ -1556,7 +1561,8 @@ fn commit_plan_handoff_atomic_rollback_and_creation_latch() {
     }
 }
 
-// 测试观察逻辑记录；物理字节和游标断言仍直接读取文件。
+// Tests observe logical records; physical bytes and cursor assertions still read the file
+// directly.
 pub(crate) fn read_log(path: &Path) -> String {
     let mut reader = SessionReader::new(BufReader::new(File::open(path).unwrap()));
     let mut line = Vec::new();

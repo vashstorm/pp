@@ -1,4 +1,4 @@
-//! `task` 工具的 schema、参数结构与调用入口。
+//! Schema, argument structures and call entry point of the `task` tool.
 
 use anyhow::{Context, Result, bail};
 use async_openai::types::chat::FunctionObject;

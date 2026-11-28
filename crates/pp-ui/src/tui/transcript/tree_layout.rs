@@ -13,7 +13,7 @@ impl Transcript {
         reveal: bool,
     ) {
         self.viewport_height = usize::from(area.height);
-        // 树视图的边框与分组几何独立于普通历史浏览；接管时丢弃备用屏幕前缀几何。
+        // The tree view's border and group geometry are independent of regular history browsing; the alternate-screen prefix geometry is dropped on takeover.
         self.browse_anchor = None;
         self.geometry.clear();
         if area.is_empty() {

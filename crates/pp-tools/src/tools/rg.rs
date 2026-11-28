@@ -1,5 +1,5 @@
-//! 本地内容搜索，基于 ripgrep 内核（grep-searcher/grep-regex/grep-pcre2）与 ignore 遍历；
-//! 行为参考 Oh My Pi d4279540（MIT License）。
+//! Local content search built on the ripgrep core (grep-searcher/grep-regex/grep-pcre2) and ignore traversal;
+//! behaviour follows Oh My Pi d4279540 (MIT License).
 use super::{hashline, save};
 use anyhow::{Context, Result, ensure};
 use pp_config::config::EditMode;
@@ -273,7 +273,7 @@ pub(in crate::tools) fn run_with_policy(
         );
     }
     let mut previous_dirs = Vec::new();
-    // `head_limit`：content 模式按正文行计数，其余模式按条目计数。
+    // `head_limit`: content mode counts body lines, other modes count entries.
     let mut emitted = 0usize;
     let mut head_cut = false;
     for file in page {
@@ -316,8 +316,8 @@ pub(in crate::tools) fn run_with_policy(
                             .any(|pair| pair[0] == b'\r' && pair[1] != b'\n')
                         && !raw.ends_with('\r') =>
                 {
-                    // 搜索已读过正文；这里只重读一次以证明快照对应磁盘当前字节，
-                    // 标签在同一次比对结果上算好，不再由 `record` 重算。
+                    // The search already read the body; this re-reads it once to prove the snapshot matches the current disk bytes,
+                    // and the tag is computed on that same comparison instead of being recomputed by `record`.
                     workspace
                         .target(&file.target.path, false)
                         .ok()
@@ -330,7 +330,7 @@ pub(in crate::tools) fn run_with_policy(
         } else {
             None
         };
-        // 一次写入即完成登记；具体展示行由 `extend_seen` 在行渲染后补记。
+        // A single write completes the registration; `extend_seen` adds the actually displayed lines after rendering.
         let editable = editable
             .filter(|(key, raw, tag)| snapshots.record(key.clone(), tag, raw.clone(), Vec::new()));
         let mut header = if single {
@@ -413,7 +413,7 @@ pub(in crate::tools) fn run_with_policy(
             ignored.join(", ")
         ));
     }
-    // head_limit 截断时不输出按整页计算的 skip，避免提示跳过尚未展示的文件。
+    // On head_limit truncation no whole-page skip is emitted, so it never suggests skipping files that were not shown.
     let entry_head_cut = head_cut && output_mode != OutputMode::Content;
     if file_limit && !head_cut {
         notes.push(format!(
@@ -697,7 +697,7 @@ mod tests {
                 EditMode::Hashline,
                 &mut store,
             );
-            // 上游向量：file_hash("hello\n") == 5BF9。标签必须来自磁盘字节，且一次写入只算一次。
+            // Upstream vector: file_hash("hello\n") == 5BF9. The tag must come from the disk bytes and be computed once per write.
             assert!(
                 result["content"]
                     .as_str()
@@ -706,7 +706,7 @@ mod tests {
                 "{result}"
             );
             assert_eq!(hashline::take_tag_computations(), 1, "{result}");
-            // 快照正文等于磁盘当前字节：已展示行可编，未展示行不可。
+            // The snapshot body equals the current disk bytes: shown lines are editable, hidden ones are not.
             let shown = hashline::parse("[file#5BF9]\nCUT 1.=1").unwrap();
             let hidden = hashline::parse("[file#5BF9]\nCUT 2.=2").unwrap();
             assert!(

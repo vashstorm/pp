@@ -206,7 +206,7 @@ fn draw_body(frame: &mut Frame, area: Rect, p: &Palette, appearance: Appearance)
     let mut y = area.y;
     let end = area.bottom();
 
-    // 1. 用户消息条（全宽 user_bg，无角色前缀标签，对齐真实会话样式）
+    // 1. User message bar (full-width user_bg, no role prefix label, matching the real conversation style)
     push_row(
         frame,
         area,
@@ -224,7 +224,7 @@ fn draw_body(frame: &mut Frame, area: Rect, p: &Palette, appearance: Appearance)
         push_row(frame, area, &mut y, p.md_bg, Vec::new());
     }
 
-    // 2. 助手 Markdown 与语法高亮代码块
+    // 2. Assistant Markdown with a syntax-highlighted code block
     if h >= 14 {
         push_row(
             frame,
@@ -358,7 +358,7 @@ fn draw_body(frame: &mut Frame, area: Rect, p: &Palette, appearance: Appearance)
         push_row(frame, area, &mut y, p.md_bg, Vec::new());
     }
 
-    // 3. Read 摘要与 Edit 框卡
+    // 3. Read summary and the Edit card
     let check_icon = transcript_style::done_icon(selected_icons);
     if y < end {
         push_row(
@@ -415,7 +415,7 @@ fn draw_body(frame: &mut Frame, area: Rect, p: &Palette, appearance: Appearance)
         return;
     }
 
-    // 4. 宽裕高度下追加工具与思考档位图标预览（方便 Icon Style 直观对比）
+    // 4. At generous heights append the tool and thinking-level icon preview (for a direct Icon Style comparison)
     let remaining = end.saturating_sub(y);
     if remaining >= 3 {
         push_row(frame, area, &mut y, p.md_bg, Vec::new());
@@ -514,7 +514,7 @@ fn draw_input_metrics_bar(frame: &mut Frame, area: Rect, p: &Palette, selected_i
         Span::styled("0.14 ", Style::default().fg(p.status_cost).bg(bg)),
     ];
 
-    // 至少保留 4 个边框字符；宽度不足时逐组降级。
+    // Keep at least 4 border characters; degrade group by group when the width is short.
     let candidates: [Vec<Span<'static>>; 3] = [
         [
             speed.clone(),

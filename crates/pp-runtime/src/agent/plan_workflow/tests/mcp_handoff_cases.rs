@@ -1,7 +1,7 @@
-// --- 执行交接复用 Plan 期 MCP 连接 ---
+// --- Execution handoff reuses the MCP connections from Plan ---
 
-/// 把服务定义写入配置目录的 mcp.json；Agent 的 `catalog.mcp_path()` 就在
-/// 同一目录，因此测试无需真实用户配置。
+/// Write a server definition to mcp.json in the config directory; the Agent's
+/// `catalog.mcp_path()` lives in that same directory, so the test needs no real user config.
 fn write_mcp_config(dir: &std::path::Path, servers: serde_json::Value) {
     std::fs::write(
         dir.join("mcp.json"),
@@ -10,8 +10,8 @@ fn write_mcp_config(dir: &std::path::Path, servers: serde_json::Value) {
     .unwrap();
 }
 
-/// fixture 服务定义。每个服务用独立日志记录收到的 JSON-RPC 原文，
-/// `initialize` 条数即真实握手次数。
+/// fixture server definition. Each server logs the received JSON-RPC payloads to its own log,
+/// so the number of `initialize` entries is the number of real handshakes.
 fn fixture_server(log: &std::path::Path, read_only: bool, mode: Option<&str>) -> serde_json::Value {
     let mut env = json!({
         "MCP_LOG": log.to_str().unwrap(),
@@ -34,7 +34,7 @@ fn fixture_server(log: &std::path::Path, read_only: bool, mode: Option<&str>) ->
     server
 }
 
-/// 统计日志中已收到的 initialize 请求条数；文件缺失按 0 计。
+/// Count the initialize requests already received in the log; a missing file counts as 0.
 fn initialize_count(log: &std::path::Path) -> usize {
     std::fs::read_to_string(log)
         .unwrap_or_default()
@@ -43,8 +43,8 @@ fn initialize_count(log: &std::path::Path) -> usize {
         .count()
 }
 
-/// 轮询等待日志出现 `expected` 条 initialize 请求，用作“服务已开始握手”
-/// 的取消栅栏；超时返回 false，不静默通过。
+/// Poll until the log shows `expected` initialize requests, used as a cancellation barrier for
+/// "the server started its handshake"; returns false on timeout instead of passing silently.
 fn wait_for_initialize(log: &std::path::Path, expected: usize) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
@@ -56,8 +56,9 @@ fn wait_for_initialize(log: &std::path::Path, expected: usize) -> bool {
     false
 }
 
-/// fixture 服务启动时把自身 PID 写入 `<日志>.pid`；信号 0 只探测进程是否
-/// 存在，不向它递送信号，因此能区分“进程仍在运行”和“仅条目仍写 connected”。
+/// The fixture server writes its own PID to `<log>.pid` on startup; signal 0 only probes whether
+/// the process exists without delivering a signal, so "the process is still running" can be
+/// distinguished from "the entry merely says connected".
 fn assert_server_alive(log: &std::path::Path) {
     let pid_path = format!("{}.pid", log.display());
     let pid: i32 = std::fs::read_to_string(&pid_path)
@@ -65,12 +66,12 @@ fn assert_server_alive(log: &std::path::Path) {
         .trim()
         .parse()
         .expect("fixture pid");
-    // SAFETY: kill(pid, 0) 只做存在性探测，不递送任何信号。
+    // SAFETY: kill(pid, 0) only probes existence and delivers no signal.
     let alive = unsafe { libc::kill(pid, 0) } == 0;
     assert!(alive, "MCP fixture process {pid} is not alive");
 }
 
-/// 当前 manager 在该 access 下暴露的工具名。
+/// Tool names the current manager exposes under that access.
 fn mcp_tool_names(agent: &Agent, access: Access) -> Vec<String> {
     agent
         .tools
@@ -81,7 +82,8 @@ fn mcp_tool_names(agent: &Agent, access: Access) -> Vec<String> {
         .collect()
 }
 
-/// `/mcp` 列表里该服务此刻的状态；未登记按 "missing" 计。
+/// Current status of that server in the `/mcp` list; an unregistered entry counts as
+/// "missing".
 fn mcp_status(agent: &Agent, access: Access, name: &str) -> &'static str {
     agent
         .tools
@@ -93,7 +95,7 @@ fn mcp_status(agent: &Agent, access: Access, name: &str) -> &'static str {
         .map_or("missing", |entry| entry.status)
 }
 
-/// 先进入 Plan，再写入并加载新配置，覆盖 Plan 内的 /mcp reload。
+/// Enter Plan first, then write and load a new config, covering /mcp reload inside Plan.
 fn enter_plan_with_mcp(agent: &mut Agent, dir: &std::path::Path, servers: serde_json::Value) {
     agent.enter_plan(&CancellationToken::new()).unwrap();
     write_mcp_config(dir, servers);
@@ -102,7 +104,7 @@ fn enter_plan_with_mcp(agent: &mut Agent, dir: &std::path::Path, servers: serde_
         .unwrap();
 }
 
-/// 进入 Plan 后持有 Ready 计划并取得当前审批 token。
+/// Enter Plan, hold a Ready plan and obtain the current approval token.
 fn ready_plan_token(agent: &mut Agent) -> ReviewToken {
     agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Ready);
     write_plan_file(agent, PLAN_CONTENT);
@@ -116,7 +118,7 @@ fn plan_exit_reuses_connected_mcp_service_without_reinitializing() {
     let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
     let local_log = dir.path().join("local.log");
     let extra_log = dir.path().join("extra.log");
-    // Execute 下先连接两个服务：各一次真实握手。
+    // Connect two servers under Execute first: one real handshake each.
     write_mcp_config(
         dir.path(),
         json!({
@@ -134,7 +136,7 @@ fn plan_exit_reuses_connected_mcp_service_without_reinitializing() {
     assert_server_alive(&local_log);
     assert_server_alive(&extra_log);
 
-    // 进入 Plan 后复用两个进程，主会话仍可调用它们的工具。
+    // Reuse both processes after entering Plan; the main session can still call their tools.
     agent.enter_plan(&CancellationToken::new()).unwrap();
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&extra_log), 1);
@@ -157,14 +159,14 @@ fn plan_exit_reuses_connected_mcp_service_without_reinitializing() {
         );
     }
 
-    // Plan 运行读取计划正文，不触碰 MCP 连接。
+    // Running Plan reads the plan body and does not touch the MCP connections.
     let token = ready_plan_token(&mut agent);
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&extra_log), 1);
     assert_server_alive(&local_log);
     assert_server_alive(&extra_log);
 
-    // 退出 Plan 后沿用两个进程和完整工具表。
+    // After leaving Plan, both processes and the full tool list are reused.
     let preparation = agent
         .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
         .unwrap();
@@ -183,7 +185,8 @@ fn plan_exit_reuses_connected_mcp_service_without_reinitializing() {
         agent.tools.all_definitions(WorkMode::Execute).len()
     );
 
-    // 再次进入 Plan 并批准执行：同一批连接贯穿审批，不重启服务。
+    // Enter Plan again and approve execution: the same batch of connections spans the
+    // approval and no server is restarted.
     agent.enter_plan(&CancellationToken::new()).unwrap();
     let token = ready_plan_token(&mut agent);
     assert_eq!(initialize_count(&local_log), 1);
@@ -223,7 +226,8 @@ fn plan_handoff_ignores_external_config_until_reload() {
     assert_eq!(initialize_count(&local_log), 1);
     let token = ready_plan_token(&mut agent);
 
-    // Plan 期改写配置：交接既不重读配置，也不启动新进程。
+    // Config rewritten during Plan: the handoff neither rereads config nor starts new
+    // processes.
     write_mcp_config(
         dir.path(),
         json!({"replacement": fixture_server(&replacement_log, true, None)}),
@@ -241,7 +245,8 @@ fn plan_handoff_ignores_external_config_until_reload() {
         .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
         .unwrap();
     assert_eq!(preparation.workflow.mode, WorkMode::Execute);
-    // 交接仍用旧连接与旧工具：新服务未出现，旧进程未重启。
+    // The handoff still uses the old connections and tools: the new server never appears and
+    // the old processes are not restarted.
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&replacement_log), 0);
     assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
@@ -254,7 +259,8 @@ fn plan_handoff_ignores_external_config_until_reload() {
         "{names:?}"
     );
 
-    // 只有显式 /mcp reload 才加载新配置：旧服务停止，新服务首次握手。
+    // Only an explicit /mcp reload loads the new config: the old server stops and the new one
+    // performs its first handshake.
     agent
         .manage_mcp(&pp_mcp::Action::Reload, &CancellationToken::new())
         .unwrap();
@@ -285,7 +291,8 @@ fn plan_exit_isolates_supplementary_initialize_failure() {
             "broken": fixture_server(&broken_log, false, Some("init_error")),
         }),
     );
-    // Plan 内加载时尝试连接两个服务，单服务失败不影响其他服务。
+    // Loading inside Plan attempts both servers; a single server failure does not affect the
+    // others.
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&broken_log), 1);
     assert_eq!(
@@ -298,7 +305,7 @@ fn plan_exit_isolates_supplementary_initialize_failure() {
         .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
         .unwrap();
 
-    // 交接继续复用 Plan 期的健康连接，并保留失败状态。
+    // The handoff keeps reusing Plan's healthy connection and preserves the failure state.
     assert_eq!(preparation.workflow.mode, WorkMode::Execute);
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&broken_log), 1);
@@ -324,7 +331,7 @@ fn plan_exit_cancel_keeps_mcp_connections_intact() {
     let extra_log = dir.path().join("extra.log");
     let stuck_log = dir.path().join("stuck.log");
     let mut stuck = fixture_server(&stuck_log, false, Some("timeout_init"));
-    // 卡住的握手不能拖住测试：最坏情况下按 5s 截止时间失败。
+    // A stuck handshake must not stall the test: the worst case fails at the 5s deadline.
     stuck["timeout"] = json!(5_000);
     agent.enter_plan(&CancellationToken::new()).unwrap();
     write_mcp_config(
@@ -335,7 +342,8 @@ fn plan_exit_cancel_keeps_mcp_connections_intact() {
             "stuck": stuck,
         }),
     );
-    // 构造仍有待连接服务的状态，直接覆盖交接补连中的取消路径。
+    // Build a state that still has a pending service, exercising the cancellation path of the
+    // handoff reconnect directly.
     agent
         .tools
         .mcp
@@ -349,19 +357,20 @@ fn plan_exit_cancel_keeps_mcp_connections_intact() {
 
     let token = ready_plan_token(&mut agent);
     let cancellation = CancellationToken::new();
-    // 补连按服务名序执行：extra 先连上，stuck 卡在 initialize，此时取消。
+    // The reconnect runs in server-name order: extra connects first while stuck is blocked in
+    // initialize, which is when we cancel.
     let barrier = {
         let token = cancellation.clone();
         let log = stuck_log.clone();
         std::thread::spawn(move || {
-            assert!(wait_for_initialize(&log, 1), "stuck 服务未开始握手");
+            assert!(wait_for_initialize(&log, 1), "stuck server never started its handshake");
             token.cancel();
         })
     };
     let error = agent
         .save_plan_and_leave(token, &InputQueue::default(), &cancellation)
         .err()
-        .expect("交接被取消");
+        .expect("handoff was cancelled");
     barrier.join().unwrap();
 
     assert!(error.is::<pp_core::cancellation::Cancelled>(), "{error:#}");
@@ -370,8 +379,9 @@ fn plan_exit_cancel_keeps_mcp_connections_intact() {
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&extra_log), 1);
     assert_eq!(initialize_count(&stuck_log), 1);
-    // 取消不回滚已建立的连接：extra 与 local 保持 connected；只有尚未完成
-    // 握手的 stuck 以“未连接”收尾（它自己的进程在失败路径被停止）。
+    // Cancellation does not roll back established connections: extra and local stay connected;
+    // only stuck, whose handshake never completed, ends up "not connected" (its own process is
+    // stopped on the failure path).
     assert_eq!(mcp_status(&agent, Access::Full, "extra"), "connected");
     assert_eq!(mcp_status(&agent, Access::Full, "stuck"), "not connected");
     assert_eq!(mcp_status(&agent, Access::Full, "local"), "connected");
@@ -401,23 +411,24 @@ fn plan_handoff_failure_keeps_mcp_connections_intact() {
     );
     let token = ready_plan_token(&mut agent);
 
-    // 会话日志改为只读：交接在 commit_plan_exit 处失败。
+    // The session journal becomes read-only: the handoff fails at commit_plan_exit.
     let id = agent.session_id().unwrap().to_owned();
     let path = dir.path().join("sessions").join(format!("{id}.jsonl"));
     agent.journal.use_read_only_file(&path);
     let error = agent
         .save_plan_and_leave(token, &InputQueue::default(), &CancellationToken::new())
         .err()
-        .expect("只读日志使交接失败");
+        .expect("read-only journal makes the handoff fail");
 
     assert_eq!(agent.workflow.mode, WorkMode::Plan);
-    // 失败来自会话持久化，而不是 MCP 连接。
+    // The failure comes from session persistence, not from the MCP connections.
     assert!(
         error.to_string().starts_with("persisting session "),
         "{error:#}"
     );
     assert!(agent.plan_cleanup_error.is_none());
-    // 交接失败后，Plan 中已连接的 extra 与 local 仍可用。
+    // After the failed handoff, the extra and local servers connected during Plan remain
+    // usable.
     assert_eq!(initialize_count(&local_log), 1);
     assert_eq!(initialize_count(&extra_log), 1);
     assert_eq!(mcp_status(&agent, Access::Full, "extra"), "connected");

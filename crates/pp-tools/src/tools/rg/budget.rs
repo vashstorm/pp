@@ -1,4 +1,4 @@
-//! 搜索正文的可选 token 预算；结构化元数据保留在预算之外。
+//! Optional token budget for the search body; structured metadata stays outside the budget.
 use anyhow::{Result, ensure};
 use pp_core::context::estimate_tokens;
 
@@ -26,7 +26,7 @@ impl Budget {
         let Some(limit) = self.max_tokens else {
             return Ok(true);
         };
-        // 预留完整截断提示；极小预算放不下提示时，由结构化标记说明截断。
+        // Reserve room for the full truncation notice; when a tiny budget cannot fit it, the structured mark reports the truncation.
         let fits = estimate_tokens(&format!("{content}{text}\n\n{NOTICE}"))? <= limit;
         self.reached |= !fits;
         Ok(fits)

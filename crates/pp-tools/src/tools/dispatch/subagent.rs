@@ -1,8 +1,8 @@
-//! 子 Agent 前置分支：`wait`、`task` 与 `read`／`write` 的 URI 结果读取。
+//! Subagent pre-branch: `wait`, `task` and URI result reads for `read`/`write`.
 use super::*;
 
 impl Tools {
-    /// 返回被处理的工具结果；`None` 表示交给普通 match 分发。
+    /// Returns the handled tool result; `None` means hand off to normal match dispatch.
     pub(in crate::tools) fn dispatch_subagent(
         &self,
         name: &str,

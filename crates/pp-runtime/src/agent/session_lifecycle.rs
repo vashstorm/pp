@@ -1,4 +1,4 @@
-//! 会话恢复、树导航与新建会话根的生命周期切换。
+//! Session restore, tree navigation and lifecycle switches to a new session root.
 use super::{
     Agent, Session, TreeNavigation, debug, history,
     persistence::{self, Metadata},
@@ -39,7 +39,7 @@ impl Agent {
         let catalog = models.catalog_snapshot();
         let (config, resolved) = Self::resolve_selection(&models)?;
         let model_source = models.source();
-        // 旧 checkpoint 的角色路由不再参与恢复；已失效的路由必须落一次清理。
+        // Role routes of an old checkpoint no longer participate in the restore; a stale route must be cleaned up once.
         let had_route = checkpoint.role_route.take().is_some();
         let compatible = match &checkpoint.session {
             Session::Completion(_) => config.protocol == Protocol::Completion,
@@ -57,7 +57,7 @@ impl Agent {
                 checkpoint.edit_mode,
             )?;
         }
-        // 覆盖态用覆盖的档位；否则保留会话已保存且仍受支持的档位。
+        // The override source uses the override level; otherwise keep the level saved in the session while still supported.
         let think_level = if model_source == ModelSource::Override {
             resolved.effort
         } else if config.thinking.supports(checkpoint.think_level) {
@@ -79,7 +79,7 @@ impl Agent {
         }
         let client = OpenAiClient::new(&config)?;
         let ephemeral = journal.is_ephemeral();
-        // hook 配置不从 checkpoint 恢复：始终重新读取用户级与项目级 hooks 文件；`--no-hooks` 时跳过。
+        // Hook config is not restored from the checkpoint: user-level and project-level hooks files are always re-read; `--no-hooks` skips them.
         let hooks = if hooks_enabled {
             Self::compile_hooks(&catalog, tools.cwd())?
         } else {
@@ -89,16 +89,16 @@ impl Agent {
         tools.configure_eval(catalog.eval_settings());
         tools.configure_web_search(catalog.web_search_settings().clone());
         tools.configure_mcp(catalog.mcp_settings());
-        // 恢复不承诺旧进程的临时管道正文：显式换一个空 registry。
+        // A restore does not promise the temporary pipe bodies of the old process: switch to an empty registry explicitly.
         tools.reset_pipe_store();
         if let Some(id) = journal.id() {
             let _ = tools.artifacts.bind(journal.directory(), id);
         }
-        // 权限配置沿用当前 settings.yml，不恢复 checkpoint 中的旧值；
-        // 会话级授权本来就不序列化。
+        // Permission config follows the current settings.yml and is not restored from the old checkpoint;
+        // session-level grants were never serialized in the first place.
         tools.permission.set_config(config.settings.tools.clone());
-        // 复用进程级单例：启动期后台建连可能仍在进行，这里只登记目标 access，
-        // 首个任务入口统一等待并刷新工具，切换会话不阻塞界面。
+        // Reuse the process-wide singleton: the background connect at startup may still be running, so only the target access is registered here and the first
+        // task entry waits and refreshes the tool table uniformly, keeping session switches non-blocking for the UI.
         if tools.allows_any_mcp() {
             tools.mcp.start_connect(tools.mcp_access());
         }
@@ -359,7 +359,7 @@ impl Agent {
         if let Err(error) = self.tools.stop_eval() {
             tracing::warn!(error = %error, "stopping Python eval kernel on tree navigation failed");
         }
-        // 导航到另一会话根：旧根的临时管道正文不能跨根复用。
+        // Navigating to another session root: the old root's temporary pipe bodies cannot be reused across roots.
         self.tools.reset_pipe_store();
         self.clear_session_usage();
         self.thinking_history = super::context_diagnosis::extract_thinking_from_replay(&replay);
@@ -412,7 +412,7 @@ impl Agent {
         self.journal.reset();
         self.sync_auto_review();
         self.tools.artifacts = Default::default();
-        // /new 是新的会话根：旧临时管道正文与 URI 一律失效。
+        // /new is a new session root: old temporary pipe bodies and URIs all become invalid.
         self.tools.reset_pipe_store();
         if let Some(debug) = &mut self.debug {
             debug.set_prompt_recorded(false);

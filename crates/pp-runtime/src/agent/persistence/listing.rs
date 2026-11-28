@@ -187,7 +187,7 @@ pub fn delete(
 ) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     validate_id(id)?;
-    // 当前会话及其他进程持有的会话都不可删除。
+    // Sessions held by the current process or another process cannot be deleted.
     let _lock = SessionLock::acquire(lock_dir, id)?;
     let path = dir.join(format!("{id}.jsonl"));
     let file = OpenOptions::new()

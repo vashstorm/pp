@@ -116,7 +116,8 @@ fn resume_boundary_close(pty: &mut Pty) {
     });
 }
 
-// 进程内 `/resume` 复用启动目录的 MCP 连接：不重新握手，也不替换服务进程。
+// An in-process `/resume` reuses the MCP connection of the launch directory: no new handshake and no
+// replacement of the service process.
 fn resume_boundary_assert_mcp_reused(dir: &Path) {
     let requests = std::fs::read_to_string(dir.join("mcp-log")).unwrap();
     assert_eq!(
@@ -125,7 +126,7 @@ fn resume_boundary_assert_mcp_reused(dir: &Path) {
             .filter(|line| line.contains("\"method\":\"initialize\""))
             .count(),
         1,
-        "resume 不应重新初始化 MCP 服务\n{requests}"
+        "resume must not reinitialize the MCP service\n{requests}"
     );
     let pid: i32 = std::fs::read_to_string(dir.join("mcp-log.pid"))
         .unwrap()
@@ -134,7 +135,7 @@ fn resume_boundary_assert_mcp_reused(dir: &Path) {
     let pid = rustix::process::Pid::from_raw(pid).unwrap();
     assert!(
         rustix::process::test_kill_process(pid).is_ok(),
-        "resume 应复用启动目录的 MCP 进程"
+        "resume must reuse the MCP process of the launch directory"
     );
 }
 
@@ -163,16 +164,17 @@ fn tui_slash_resume_pins_persist_reorder_search_and_report_save_failure() {
     let mut pty = Pty::start_with_args(launch.path(), home.path(), &[]);
     pty.ready();
     resume_boundary_open(&mut pty);
-    pty.wait_for("新会话默认排在旧会话之前", |screen| {
+    pty.wait_for("new sessions sort before old ones by default", |screen| {
         let text = screen.contents();
         text.lines().any(|line| line.starts_with('›') && line.contains("pin newer session"))
             && text.contains("pin older session")
     });
     pty.input("\x1b[B");
-    pty.wait_for("选中旧会话", |screen| screen.contents().lines()
+    pty.wait_for("the older session is selected", |screen| screen.contents().lines()
         .any(|line| line.starts_with('›') && line.contains("pin older session")));
 
-    // 写锁失败明确反馈，不提前更新图钉标记、不改变选择；解除锁后可重试。
+    // A write-lock failure is reported explicitly, without updating the pin marker early or changing the
+    // selection; the attempt can be retried once the lock is released.
     let blocker = rusqlite::Connection::open(home.path().join(".pp/agent/history.db")).unwrap();
     blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
     pty.input("\x10");
@@ -181,18 +183,18 @@ fn tui_slash_resume_pins_persist_reorder_search_and_report_save_failure() {
         line.starts_with('›') && line.contains("pin older session") && !line.contains('')));
     blocker.execute_batch("ROLLBACK").unwrap();
     pty.input("\x10");
-    pty.wait_for("旧会话置顶并保留选中", |screen| {
+    pty.wait_for("the older session is pinned and stays selected", |screen| {
         let rows: Vec<_> = screen.contents().lines().filter(|line| line.contains("pin older session") || line.contains("pin newer session")).map(str::to_owned).collect();
         rows.len() == 2 && rows[0].starts_with('›') && rows[0].contains(" pin older session")
     });
-    // 置顶不会绕过检索；清空查询后再次按 pin 优先排序。
+    // Pinning does not bypass search; after clearing the query the pin-first ordering applies again.
     pty.input("newer");
-    pty.wait_for("查询排除不匹配的置顶会话", |screen| {
+    pty.wait_for("the query excludes the non-matching pinned session", |screen| {
         let text = screen.contents();
         text.contains("> newer") && text.contains("pin newer session") && !text.contains("pin older session")
     });
     pty.input("\x15");
-    pty.wait_for("清空查询仍保留置顶排序", |screen| screen.contents().lines()
+    pty.wait_for("clearing the query keeps the pin ordering", |screen| screen.contents().lines()
         .any(|line| line.starts_with('›') && line.contains(" pin older session")));
     resume_boundary_close(&mut pty);
     pty.input("/quit\r");
@@ -200,19 +202,20 @@ fn tui_slash_resume_pins_persist_reorder_search_and_report_save_failure() {
     assert_eq!(std::fs::read(resume_boundary_journal(home.path(), &older)).unwrap(), original);
     assert_eq!(std::fs::metadata(resume_boundary_journal(home.path(), &older)).unwrap().modified().unwrap(), epoch + Duration::from_secs(1000));
 
-    // 新进程在当前目录范围也安装持久偏好；取消 pin 后仍选中旧 ID。
+    // A new process also installs the persistent preference within the current directory's scope; the old
+    // ID stays selected after unpinning.
     let mut pty = Pty::start_with_args_in_alt_screen(project.path(), home.path(), &["-r"]);
-    pty.wait_for("重启后置顶仍在当前目录列表首位", |screen| screen.contents().lines()
+    pty.wait_for("after restart the pin is still first in the current directory list", |screen| screen.contents().lines()
         .any(|line| line.starts_with('›') && line.contains(" pin older session")));
     pty.input("\x10");
-    pty.wait_for("取消置顶恢复时间排序并保留旧会话选择", |screen| {
+    pty.wait_for("unpinning restores time ordering and keeps the old selection", |screen| {
         let text = screen.contents();
         let rows: Vec<_> = text.lines().filter(|line| line.contains("pin older session") || line.contains("pin newer session")).collect();
         rows.len() == 2 && rows[0].contains("pin newer session")
             && rows[1].starts_with('›') && rows[1].contains("pin older session") && !rows[1].contains('')
     });
     pty.input("\r");
-    pty.wait_for("排序变化后恢复原选中的会话", |screen| {
+    pty.wait_for("the previously selected session is restored after the reorder", |screen| {
         !screen.contents().contains("Resume session") && input_is_ready(screen)
             && tui_session_is_locked(home.path(), &older)
     });
@@ -240,7 +243,7 @@ fn tui_slash_resume_locked_session_keeps_current_session_and_cwd() {
         &locked_journal,
         std::time::SystemTime::now() + Duration::from_secs(3600),
     );
-    // 另一进程持锁：恢复必须失败且不破坏当前会话。
+    // Another process holds the lock: restoration must fail without damaging the current session.
     let guard = std::fs::File::open(
         home.path().join(".pp/run/sessions").join(format!("{locked_id}.lock")),
     ).unwrap();
@@ -258,17 +261,17 @@ fn tui_slash_resume_locked_session_keeps_current_session_and_cwd() {
     pty.text("locked session marker");
     pty.input("\r");
     let red = vt100::Color::Rgb(224, 108, 117);
-    pty.wait_for("持锁会话恢复失败显示错误弹窗", |screen| {
+    pty.wait_for("resuming a locked session fails and shows an error popup", |screen| {
         screen.contents().contains("Failed to resume session:")
             && screen.contents().contains("Resume session (")
     });
     pty.text("Resume session");
     resume_boundary_close(&mut pty);
-    pty.wait_for("关闭列表后主消息栏保留红框错误", |screen| {
+    pty.wait_for("the main message area keeps the red-framed error after the list closes", |screen| {
         notification_bounds(screen, "Error", red).is_some()
     });
 
-    // cwd 未切换：相对路径 write 工具仍落在 launch 目录；上下文保留。
+    // cwd is unchanged: a relative-path write tool still lands in the launch directory, and the context is kept.
     pty.input("after lock\r");
     let (request, body) = pty.request(&server);
     let body_text = serde_json::to_string(&body).unwrap();

@@ -338,7 +338,10 @@ fn task_argument_and_invalid_batch_rejections() {
             assert_eq!(output["ok"], false, "{output}");
             let error = output["error"].as_str().unwrap();
             for field in ["context", "tasks[]", "role", "task"] {
-                assert!(error.contains(field), "缺少参数层级指引 {field}: {error}");
+                assert!(
+                    error.contains(field),
+                    "missing parameter level guidance {field}: {error}"
+                );
             }
             let state = lock(&binding.inner.state);
             assert!(state.disk.agents.is_empty());
@@ -512,7 +515,7 @@ fn run_permit_queues_initialization_and_releases_after_failure_or_cancellation()
         entered_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
         next
     );
-    // 已有 worker 的后续 Run 同样排队，不能绕过当前占用的名额。
+    // Follow-up Runs on an existing worker also queue and cannot bypass the permit currently held.
     let followup = binding.control(&first, "send", Some("follow-up")).unwrap();
     let followup = followup["run_id"].as_str().unwrap();
     {
@@ -546,7 +549,7 @@ fn run_permit_queues_initialization_and_releases_after_failure_or_cancellation()
     {
         let remaining = deadline
             .checked_duration_since(Instant::now())
-            .expect("Run 未及时结束");
+            .expect("Run did not finish in time");
         state = binding
             .inner
             .changed
@@ -790,7 +793,7 @@ fn spec_json(cost: Value) -> Value {
 #[test]
 fn registry_spec_cache_write_serialization_and_run_cost() {
     {
-        // 旧版本把缺省的 cacheWrite 写成 null，/resume 必须仍能读取子 Agent 注册表。
+        // Older versions wrote an omitted cacheWrite as null; /resume must still read the subagent registry.
         let spec: Spec = serde_json::from_value(spec_json(
             json!({"input":0.3,"cacheRead":0.006,"cacheWrite":null,"output":1.2}),
         ))
@@ -798,7 +801,7 @@ fn registry_spec_cache_write_serialization_and_run_cost() {
         let cost = spec.cost.unwrap();
         assert_eq!(cost.cache_write, None);
         assert_eq!(cost.output, 1.2);
-        // 其余字段仍严格校验：缺必填项依旧报错。
+        // The other fields are still strictly validated: a missing required field still fails.
         assert!(
             serde_json::from_value::<Spec>(spec_json(
                 json!({"input":1,"cacheWrite":null,"output":1})
@@ -843,10 +846,10 @@ fn registry_spec_cache_write_serialization_and_run_cost() {
             cache_write_tokens: Some(100),
             reasoning_tokens: None,
         };
-        // 700 未缓存 + 200 缓存读 + 100 缓存写 + 100 输出。
+        // 700 uncached + 200 cache read + 100 cache write + 100 output.
         let total = accumulate_cost(Some(0.001), Some(priced), usage).unwrap();
         assert!((total - 0.00354).abs() < 1e-12);
-        // 未知缓存读、缺费率、已未知的小计都不能被补零。
+        // An unknown cache read, a missing rate or an already-unknown subtotal must never be padded with zero.
         assert!(
             accumulate_cost(
                 Some(0.0),
@@ -860,7 +863,7 @@ fn registry_spec_cache_write_serialization_and_run_cost() {
         );
         assert!(accumulate_cost(Some(0.0), None, usage).is_none());
         assert!(accumulate_cost(None, Some(priced), usage).is_none());
-        // 有独立写入价时未知写入量仍未定价；无写入价的费率把写入并入输入价。
+        // With a separate write price an unknown write volume is still unpriced; a rate without a write price folds writes into the input price.
         assert!(
             accumulate_cost(
                 Some(0.0),
@@ -872,7 +875,7 @@ fn registry_spec_cache_write_serialization_and_run_cost() {
             )
             .is_none()
         );
-        // 无写入价时未知写入量按 0 计：其余 800 输入按输入价与缓存读价计算。
+        // Without a write price an unknown write volume counts as 0: the other 800 input tokens are priced at the input and cache-read rates.
         let merged = accumulate_cost(
             Some(0.0),
             Some(no_write_price),
@@ -883,7 +886,7 @@ fn registry_spec_cache_write_serialization_and_run_cost() {
         )
         .unwrap();
         assert!((merged - 0.00244).abs() < 1e-12);
-        // 缓存读写超过总输入时检查溢出，不产生负数金额。
+        // Cache reads and writes above the total input are checked for overflow and never produce a negative amount.
         assert!(
             accumulate_cost(
                 Some(0.0),

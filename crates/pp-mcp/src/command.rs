@@ -1,4 +1,4 @@
-//! `/mcp` 子命令表与 `View` 的文本渲染。
+//! `/mcp` subcommand table and text rendering for `View`.
 
 use super::View;
 

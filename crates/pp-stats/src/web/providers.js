@@ -1,5 +1,6 @@
 /**
- * Providers 页面：按 provider 汇总指标、Token 构成展开、堆叠燃烧图与本地小时峰值。
+ * Providers page: per-provider aggregates, expandable token breakdown, stacked burn chart and local
+ * hourly peaks.
  */
 
 import { averageSpeed, fillBuckets } from "./analytics-shared.js";
@@ -76,7 +77,8 @@ const providerBucketUnit = () =>
   app.range === "1h" ? "5 minutes" : app.range === "24h" ? "hour" : "day";
 
 /**
- * 颜色按总 tokens 降序固定分配，排序与筛选不改变色带。
+ * Colors are assigned by descending total tokens, so sorting and filtering never change the color
+ * band.
  * @param {ProviderAggregate[]} groups
  * @returns {Map<string, string>}
  */
@@ -221,7 +223,7 @@ function providerColumns(groups, colors) {
       render: (group) => `<span class="x-num">${averageSpeed(group.tokens_per_second)}</span>`,
     },
     {
-      // pp 不采集订阅倍数单位，缺失值不补零。
+      // pp does not collect subscription multiplier units, so the missing value is not zero-filled.
       key: "premium",
       header: "Premium",
       title: "Premium requests (subscription multiplier units)",
@@ -431,7 +433,7 @@ function providerPeakCard(groups) {
 }
 
 /**
- * 渲染 Providers 页面。
+ * Renders the Providers page.
  * @returns {string}
  */
 export function providersPage() {
@@ -451,7 +453,7 @@ export function providersPage() {
 }
 
 /**
- * 处理 Providers 页交互点击。
+ * Handles interaction clicks on the Providers page.
  * @param {MouseEvent} e
  * @returns {boolean}
  */
@@ -502,7 +504,7 @@ export function providersClick(e) {
 }
 
 /**
- * 处理 Providers 峰值时段筛选下拉框变化。
+ * Handles changes of the Providers peak-hour filter dropdown.
  * @param {Event} e
  * @returns {boolean}
  */

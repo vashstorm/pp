@@ -1,4 +1,4 @@
-//! code_actions：候选枚举、resolve 与快速修复上下文。
+//! code_actions: candidate enumeration, resolve and quick-fix context.
 
 use crate::Registry;
 use crate::client::Client;
@@ -19,7 +19,7 @@ use super::{
     Action, LspToolHost, Params, deny_service, done, is_control, with_server, with_useless,
 };
 
-/// `code_actions` 为快速修复提供的诊断上下文等待预算。
+/// Wait budget for the diagnostics context `code_actions` supplies to quick fixes.
 const CODE_ACTION_DIAGNOSTICS_WAIT: Duration = Duration::from_secs(3);
 
 enum CodeActionEntry {
@@ -137,8 +137,8 @@ fn diagnostic_json(diagnostic: &Diagnostic) -> Value {
     value
 }
 
-/// `code_actions` 的快速修复上下文：优先使用当前代次且版本匹配的缓存报告，否则做一次
-/// 有界采集；诊断失败本身不会阻止重构类动作。
+/// Quick-fix context for `code_actions`: prefer a cached report from the current generation whose version matches, otherwise do one
+/// bounded collection; a diagnostics failure itself never blocks refactoring actions.
 fn code_action_diagnostics(
     client: &Client,
     path: &Path,
@@ -147,8 +147,8 @@ fn code_action_diagnostics(
     cancellation: &CancellationToken,
 ) -> Result<Vec<Diagnostic>> {
     let expected = client.document(path).map(|state| state.version as u64);
-    // 新鲜度（未被失效、代次未被 refresh 推进）与 push 复用/`unchanged` 同一判定；
-    // 这里只额外要求缓存报告的版本与当前文档一致或不带版本。
+    // Freshness (not invalidated, generation not advanced by refresh) uses the same decision as push reuse and `unchanged`;
+    // only the additional requirement is that the cached report's version matches the current document or carries no version.
     if let Some(entry) = client.diagnostics.fresh_snapshot(uri)
         && entry
             .version
@@ -306,7 +306,7 @@ pub(super) fn code_actions(
         && client.capabilities.code_action_resolve
         && (item.command.is_none() || item.raw.get("data").is_some())
     {
-        // resolve 只补全编辑；失败时不能继续应用一个不完整的动作。
+        // resolve only fills in the edit; on failure an incomplete action must not be applied.
         let mut service = deny_service();
         let resolved = client.operation(deadline, cancellation, &mut service, |op| {
             op.request("codeAction/resolve", item.raw.clone())
@@ -386,7 +386,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    /// 隔离的 fixture 注册表；日志留在临时目录里供拉取计数断言。
+    /// Isolated fixture registry; logs stay in the temp directory for pull-count assertions.
     fn fixture_registry(dir: &Path) -> Registry {
         std::fs::create_dir_all(dir.join(".pp")).unwrap();
         let script =
@@ -434,7 +434,7 @@ mod tests {
         let token = CancellationToken::new();
         let client = registry.ensure_client("fixture", deadline, &token).unwrap();
 
-        // publish：一次 pull 采集把当前版本的报告发布进缓存。
+        // publish: one pull collection publishes the report for the current version into the cache.
         let outcome = client.collect_diagnostics(&path, deadline, &token).unwrap();
         assert!(
             outcome
@@ -446,9 +446,9 @@ mod tests {
         assert_eq!(pull_count(&cwd), 1);
         let uri = crate::uri::path_to_uri(&path);
 
-        // refresh：服务器要求重新计算，旧代次的报告不得再当作新鲜结果。
+        // refresh: the server asks for a recomputation, so reports from the old generation no longer count as fresh.
         client.diagnostics.refresh();
-        // 磁盘内容已同时修复：复用旧缓存会把旧错误继续当作快速修复上下文。
+        // The on-disk content was fixed at the same time: reusing the old cache would keep feeding the old error into the quick-fix context.
         std::fs::write(&path, "fine\n").unwrap();
 
         let diagnostics = code_action_diagnostics(&client, &path, &uri, deadline, &token).unwrap();

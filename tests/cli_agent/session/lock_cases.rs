@@ -50,7 +50,7 @@ fn session_lock_survives_idle_and_gc_then_releases_after_process_death_both_apis
             &["session is already in use"],
             &["fixture-key"],
         );
-        // 即使长时间空闲且锁文件超过保留期，GC 也必须跳过实际持锁的文件。
+        // Even when idle for a long time and the lock file is past its retention period, GC must skip the file that is really locked.
         fs::File::open(&path).unwrap().set_modified(old).unwrap();
         let output = command(home.path(), cwd.path(), &["gc"]).output().unwrap();
         assert!(
@@ -83,7 +83,7 @@ fn session_lock_survives_idle_and_gc_then_releases_after_process_death_both_apis
         );
         assert!(!path.exists());
         assert_eq!(fs::read(&journal).unwrap(), journal_before);
-        // 锁文件已清理时，仍可重新创建并恢复原始会话。
+        // Once the lock file is cleaned up, the original session can be created and restored again.
         let mut resumed = start(home.path(), cwd.path(), &["-r", &id]);
         resumed.wait_for(Pipe::Err, &format!("Resumed session: {id}"));
         assert_held(&path);

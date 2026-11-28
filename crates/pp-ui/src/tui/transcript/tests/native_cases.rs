@@ -27,7 +27,7 @@ fn native_history_requires_ack_and_keeps_only_bounded_frozen_tail() {
             .trim()
             .is_empty()
     );
-    // 完整数据仍供备用屏幕使用。
+    // The full data is still available to the alternate screen.
     assert!(screen(&render(&mut transcript, 40, 230)).contains("native-000"));
 }
 

@@ -96,7 +96,7 @@ fn streaming_completion_preserves_exact_markdown_layout_when_visible_text_is_unc
     let _worker = crate::tui::render_worker::Worker::start().unwrap();
     let text = format!(
         "# Preserved heading\n\n{}\n```rust\nlet value = 1;\n```",
-        "**正文** with Unicode 🙂 and `inline code`.\n\n".repeat(200)
+        "**Body** with Unicode 🙂 and `inline code`.\n\n".repeat(200)
     );
     assert!(text.len() > 8192);
     for refusal in [false, true] {
@@ -110,7 +110,10 @@ fn streaming_completion_preserves_exact_markdown_layout_when_visible_text_is_unc
             if entry.render.exact {
                 break;
             }
-            assert!(Instant::now() < deadline, "等待流式 Markdown 排版超时");
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for streaming Markdown layout"
+            );
             std::thread::yield_now();
         }
         let layout = entry.layout.as_ref().unwrap().clone();
@@ -125,7 +128,10 @@ fn streaming_completion_preserves_exact_markdown_layout_when_visible_text_is_unc
         let after = entry_text(entry, 80);
         assert_eq!(entry.status, EntryStatus::Complete);
         assert!(entry.refusal.is_empty());
-        assert!(entry.render.exact, "相同正文完成后应保留精确排版");
+        assert!(
+            entry.render.exact,
+            "the exact layout must be kept once the same body completes"
+        );
         assert!(Arc::ptr_eq(&layout, entry.layout.as_ref().unwrap()));
         assert_eq!(before, after);
     }

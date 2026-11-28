@@ -38,7 +38,7 @@ mod integration {
                     effort: ThinkLevel::High,
                 }),
             )));
-            // 控制线程已提交配置，worker 尚未处理刷新命令。
+            // The control thread has committed the config; the worker has not processed the refresh command yet.
             control.flush();
             seed_session(&mut agent, "planning context marker");
             agent.enter_plan(&CancellationToken::new()).unwrap();
@@ -138,7 +138,7 @@ mod integration {
             )
             .unwrap();
             agent.hooks = hooks;
-            // 使 journal.sent 失败，强制触发回退分支。
+            // Make journal.sent fail to force the fallback branch.
             std::fs::write(dir.path().join("sessions"), b"not-a-dir").unwrap();
 
             let before_len = agent.session_len();

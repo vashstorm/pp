@@ -1,7 +1,7 @@
-//! Mock Responses 指令协议：严格 schema、分组校验与 usage 汇总。
+//! Mock Responses instruction protocol: strict schema, group validation and usage aggregation.
 //!
-//! 脚本只接受裸指令数组，或普通 Responses 请求顶层的 `mock_script` 数组；
-//! 指令内未知字段一律拒绝。错误消息固定且不含请求或脚本内容。
+//! A script is either a bare instruction array or a `mock_script` array at the top
+//! level of a normal Responses request; unknown instruction fields are rejected. Error messages are fixed and never contain request or script content.
 
 use std::time::Duration;
 
@@ -13,12 +13,12 @@ use serde_json::{Value, json};
 pub(super) const INVALID_MOCK_SCRIPT: &str = "invalid_mock_script";
 pub(super) const MOCK_SCRIPT_REQUIRED: &str = "mock_script_required";
 
-/// 客户端可纠正的脚本错误。
+/// A script error the client can correct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ScriptError {
-    /// OpenAI 风格错误码。
+    /// OpenAI-style error code.
     pub code: &'static str,
-    /// 固定错误说明，不包含请求或脚本内容。
+    /// Fixed error message that never contains request or script content.
     pub message: &'static str,
 }
 
@@ -46,13 +46,13 @@ impl std::fmt::Display for ScriptError {
 
 impl std::error::Error for ScriptError {}
 
-/// 一段正文或 reasoning 文本。
+/// A segment of message or reasoning text.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub(super) enum Text {
-    /// 字符串按 Unicode scalar 分片；不限速时可整段发送。
+    /// A string is split by Unicode scalar; sent whole when the rate is unlimited.
     String(String),
-    /// 显式分片；每个非空元素算一个 mock token。
+    /// Explicit chunks; each non-empty element counts as one mock token.
     Chunks(Vec<String>),
 }
 
@@ -63,7 +63,7 @@ impl Default for Text {
 }
 
 impl Text {
-    /// 是否不会产生任何正文或 reasoning 内容。
+    /// Whether this yields no message or reasoning content at all.
     pub(super) fn is_empty(&self) -> bool {
         match self {
             Self::String(text) => text.is_empty(),
@@ -71,7 +71,7 @@ impl Text {
         }
     }
 
-    /// 拼接后的完整文本。
+    /// The full text after joining.
     pub(super) fn joined(&self) -> String {
         match self {
             Self::String(text) => text.clone(),
@@ -80,7 +80,7 @@ impl Text {
     }
 }
 
-/// 一次真实工具调用；mock server 只发送调用，不执行工具。
+/// A real tool call; the mock server only sends it and never executes the tool.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Tool {
@@ -88,7 +88,7 @@ pub(super) struct Tool {
     pub arguments: Value,
 }
 
-/// 一条顺序执行的 mock 指令。
+/// One mock instruction executed in order.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Instruction {
@@ -106,8 +106,8 @@ pub(super) struct Instruction {
     pub auto_continue: bool,
     #[serde(default, deserialize_with = "deserialize_usage")]
     pub usage: Option<TokenUsage>,
-    /// 声明后本次请求直接以该 HTTP 状态码失败，不发送 SSE；
-    /// 用于重现供应商错误与自动重试，不能与其他输出字段同时出现。
+    /// When set, this request fails with that HTTP status and sends no SSE;
+    /// used to reproduce provider errors and automatic retries, and cannot appear together with other output fields.
     #[serde(default)]
     pub status: Option<u16>,
 }
@@ -145,10 +145,10 @@ where
     Ok(usage.map(Into::into))
 }
 
-/// 解析并完整校验客户端提交的新脚本。
+/// Parse and fully validate a new script submitted by the client.
 ///
-/// 请求是裸指令数组，或带顶层 `mock_script` 数组的普通 Responses 请求。
-/// 缺少数组返回 `mock_script_required`；数组非法返回 `invalid_mock_script`。
+/// The request is a bare instruction array, or a normal Responses request with a top-level `mock_script` array.
+/// A missing array returns `mock_script_required`; an invalid array returns `invalid_mock_script`.
 pub(super) fn parse_script(
     reader: &mut dyn std::io::Read,
 ) -> std::result::Result<Vec<Instruction>, ScriptError> {
@@ -182,9 +182,9 @@ pub(super) fn parse_script(
     Ok(instructions)
 }
 
-/// 汇总一组连续指令的 mock usage；全部省略时返回 `None`。
+/// Aggregate mock usage for a run of consecutive instructions; returns `None` when all of them omit it.
 ///
-/// 输出使用 Responses 完成体的字段形状；cache token 不重复计入输入总数。
+/// The output uses the Responses completion field shape; cache tokens are not counted again in the input total.
 pub(super) fn group_usage(instructions: &[Instruction]) -> anyhow::Result<Option<Value>> {
     let mut present = false;
     let mut input_tokens = 0_u64;
@@ -256,7 +256,7 @@ fn validate_instructions(instructions: &[Instruction]) -> std::result::Result<()
     }
     let mut start = 0;
     while start < instructions.len() {
-        // 失败指令自成一组，不要求正文或工具调用。
+        // A failure instruction forms its own group and needs no text or tool call.
         if instructions[start].status.is_some() {
             start += 1;
             continue;
@@ -299,7 +299,7 @@ fn validate_instruction(instruction: &Instruction) -> std::result::Result<(), Sc
                 "mock status must be an HTTP error status",
             ));
         }
-        // 显式 `response:null` 等同未声明，不会产生回显正文。
+        // An explicit `response:null` counts as absent and never produces echoed text.
         let echoes_response = instruction
             .response
             .as_ref()
@@ -332,8 +332,8 @@ fn validate_rate(instruction: &Instruction) -> std::result::Result<(), ScriptErr
     let interval = Duration::try_from_secs_f64(1.0 / rate)
         .map_err(|_| ScriptError::invalid("tokens_per_second cannot be scheduled"))?;
     let tokens = instruction_token_count(instruction)?;
-    // 首 token 立即发送，后续每个 mock token 累计一个 interval；
-    // 校验所有 token 的最坏累计值可表示，运行期不再 panic。
+    // The first token is sent immediately, each later mock token adds one interval;
+    // validate that the worst-case total across all tokens is representable so the runtime never panics.
     scheduling_horizon(interval, tokens).ok_or_else(rate_horizon_error)?;
     Ok(())
 }
@@ -540,7 +540,7 @@ mod tests {
             let parsed = parse(r#"[{"status":503},{"content":"recovered"}]"#).unwrap();
             assert_eq!(parsed[0].status, Some(503));
             assert_eq!(parsed[1].status, None);
-            // 失败步骤自成一组、不需要正文；携带输出字段或非错误码时拒绝。
+            // A failure step forms its own group and needs no text; rejected when it carries output fields or a non-error status.
             for script in [
                 r#"[{"status":200}]"#,
                 r#"[{"status":399}]"#,
@@ -556,7 +556,7 @@ mod tests {
             ] {
                 assert_eq!(code(script), "invalid_mock_script", "{script}");
             }
-            // 显式 `response:null` 不产生回显正文，仍是合法的独立失败指令。
+            // An explicit `response:null` produces no echoed text and is still a valid standalone failure instruction.
             assert!(parse(r#"[{"status":503,"response":null}]"#).is_ok());
         }
         {
@@ -564,12 +564,12 @@ mod tests {
             assert!(parse(r#"[{"content":"abc","tokens_per_second":0}]"#).is_ok());
             assert!(parse(r#"[{"content":"abc","tokens_per_second":-0.0}]"#).is_ok());
             assert!(parse(r#"[{"content":"a","tokens_per_second":1e9}]"#).is_ok());
-            // 1e19 秒可表示；两个 Unicode scalar 的最坏累计值溢出。
+            // 1e19 seconds is representable; the worst-case total for two Unicode scalars overflows.
             assert_eq!(
                 code(r#"[{"content":"xy","tokens_per_second":1e-19}]"#),
                 "invalid_mock_script"
             );
-            // 1e20 秒本身已不可表示；即使没有任何 payload token 也拒绝。
+            // 1e20 seconds is not representable by itself; rejected even without any payload token.
             let empty_payload = Instruction {
                 tokens_per_second: 1e-20,
                 ..instruction(Text::default(), false)
@@ -579,19 +579,19 @@ mod tests {
                 code(r#"[{"tool":{"name":"read","arguments":{}},"tokens_per_second":1e-20}]"#),
                 "invalid_mock_script"
             );
-            // 显式分片的空元素不是 token。
+            // An empty element of explicit chunks is not a token.
             assert!(parse(r#"[{"content":["","x"],"tokens_per_second":1e-19}]"#).is_ok());
             assert_eq!(
                 code(r#"[{"content":["","x","y"],"tokens_per_second":1e-19}]"#),
                 "invalid_mock_script"
             );
-            // 非 string 的 response 按紧凑 JSON 的 scalar 计 token。
+            // A non-string `response` counts tokens by the scalars of its compact JSON.
             assert!(parse(r#"[{"response":"x","tokens_per_second":1e-19}]"#).is_ok());
             assert_eq!(
                 code(r#"[{"response":{"a":1},"tokens_per_second":1e-19}]"#),
                 "invalid_mock_script"
             );
-            // think 与工具参数同样按该条目的速率计算。
+            // `think` and tool arguments are paced at the same entry rate.
             assert_eq!(
                 code(r#"[{"think":"xy","content":"a","tokens_per_second":1e-19}]"#),
                 "invalid_mock_script"
@@ -714,7 +714,7 @@ mod tests {
                 ),
                 "invalid_mock_script"
             );
-            // 不同响应组各自独立汇总，不把两组输入相加。
+            // Different response groups are aggregated independently; the inputs of two groups are not summed.
             assert!(
             parse(
                 r#"[{"content":"a","usage":{"input_tokens":4294967295,"output_tokens":0}},{"content":"b","usage":{"input_tokens":4294967295,"output_tokens":0}}]"#

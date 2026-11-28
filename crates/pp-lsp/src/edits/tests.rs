@@ -2,8 +2,8 @@ use super::*;
 use pp_workspace::save::Workspace;
 use std::fs;
 fn fixture() -> (tempfile::TempDir, Workspace) {
-    // 保存层按 canonical 根校验绝对路径；临时父目录规范化后 `dir.path()`
-    // 与工作区根拼写一致（macOS 默认 TMPDIR 含 /var 符号链接）。
+    // The save layer validates absolute paths against the canonical root; once the temporary parent is normalized, `dir.path()`
+    // matches the workspace root spelling (on macOS the default TMPDIR contains a /var symlink).
     let dir = tempfile::Builder::new()
         .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
         .unwrap();

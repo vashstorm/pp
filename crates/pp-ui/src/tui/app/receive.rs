@@ -21,7 +21,8 @@ impl App {
         }
     }
 
-    /// 正常 worker 优先；mock 通道独立存在，正常通道缺失时仍可推进。
+    /// The normal worker takes priority; the mock channel exists separately and progress
+    /// continues even when the normal channel is absent.
     fn next_worker_event(&mut self) -> Option<std::result::Result<WorkerEvent, TryRecvError>> {
         match self.events.as_ref().map(Receiver::try_recv) {
             Some(Ok(event)) => return Some(Ok(event)),
@@ -58,7 +59,8 @@ impl App {
         None
     }
 
-    /// 安装根会话临时管道 registry；换实例时递增 epoch 并关闭旧面板。
+    /// Installs the root-session temp pipe registry; on an instance change it bumps the epoch
+    /// and closes the old panel.
     pub(in crate::tui) fn install_pipe_store(&mut self, store: Option<pp_bash::PipeStore>) -> bool {
         let changed = match (&self.pipe_store, &store) {
             (Some(current), Some(next)) => !current.same_instance(next),
@@ -68,7 +70,8 @@ impl App {
         self.pipe_store = store;
         if changed {
             self.pipe_store_epoch = self.pipe_store_epoch.wrapping_add(1);
-            // 旧面板只持有旧 store 的索引；关闭观察线程并释放正文。
+            // The old panel only holds indices of the old store; close the observer thread and
+            // release the body.
             self.close_pipes();
         }
         changed
@@ -100,7 +103,8 @@ impl App {
             }
             changed = true;
         }
-        // 浏览器 warning 是独立通道，单独轮询；它不占用 `/stats` 的回复。
+        // Browser warnings use a separate channel polled on its own; they never consume the
+        // `/stats` reply.
         while let Some(warning) = self
             .stats_worker
             .as_ref()
@@ -205,8 +209,8 @@ impl App {
             if receive_started.elapsed() >= std::time::Duration::from_millis(2) {
                 break;
             }
-            // 正常 worker 与隔离 mock worker 共用同一事件预算；任何一侧不存在
-            // 都不能阻止另一侧被处理。
+            // The normal worker and the isolated mock worker share one event budget; a missing
+            // side must never stop the other from being handled.
             let Some(incoming) = self.next_worker_event() else {
                 break;
             };
@@ -267,7 +271,8 @@ impl App {
         )
     }
 
-    /// 按事件族把 worker 事件分派给各自的处理入口；返回是否有可见变化。
+    /// Dispatches worker events to their per-family handlers; returns whether anything became
+    /// visible.
     fn apply_worker_event(&mut self, event: WorkerEvent) -> bool {
         match event {
             WorkerEvent::DialogFinished { .. } | WorkerEvent::Ask { .. } => {

@@ -1,4 +1,5 @@
-//! Esc 键语义：关闭历史浏览／shell 模式、取消运行或准备会话树入口。
+//! Esc key semantics: close history browsing/shell mode, cancel the run or prepare the session
+//! tree entry.
 
 use crossterm::event::{KeyEvent, KeyEventKind};
 
@@ -8,8 +9,9 @@ impl App {
     pub(super) fn handle_escape_key(&mut self, key: KeyEvent) {
         if self.history_browser {
             self.history_browser = false;
-            // 只恢复当前显示的转录：审查页浏览后 Esc 回跟随，而不是无条件
-            // 把主对话拉回底部（主对话的滚动位置保持不变）。
+            // Restore only the currently displayed transcript: after browsing the review tab,
+            // Esc resumes following instead of unconditionally pulling the main conversation to
+            // the bottom (whose scroll position stays put).
             self.active_transcript().follow();
             self.escape_tap.reset();
             return;
@@ -68,8 +70,8 @@ impl App {
                     self.secondary_status = Some("Cancelling mock test...".into());
                 }
                 State::ReviewingPlan => {
-                    // 取消 reviewer；保持 ReviewingPlan，等待 worker
-                    // 的 PlanReviewed 受控收尾后回五项菜单。
+                    // Cancel the reviewer but stay in ReviewingPlan until the worker's controlled
+                    // PlanReviewed shutdown returns to the five-item menu.
                     if let Some(review) = &mut self.review_transcript {
                         review.cancelling();
                     }

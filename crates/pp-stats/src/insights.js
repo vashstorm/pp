@@ -1,5 +1,5 @@
 /**
- * Tools 页面与 Insights 分组交互分发（Tools / Hooks / Projects）。
+ * Tools page and Insights group interaction dispatch (Tools / Hooks / Projects).
  */
 
 import {
@@ -115,7 +115,7 @@ function toolNormalize(tool) {
 }
 
 /**
- * 构建 Tools 页面视图模型，便于测试与渲染共享。
+ * Builds the Tools page view model so tests and rendering share it.
  * @param {ToolsResponse | null} [source]
  */
 export function toolView(source = /** @type {ToolsResponse | null} */ (app.data)) {
@@ -156,7 +156,7 @@ export function toolView(source = /** @type {ToolsResponse | null} */ (app.data)
       ? 0
       : null;
   const usageKnown = rows.reduce((sum, row) => sum + row.usageKnown, 0);
-  // 已知请求覆盖：完全未知时为 null，不把未知行当作已覆盖。
+  // Known-request coverage: null when entirely unknown, and unknown rows never count as covered.
   const tokenCoverage = tokens == null || calls === 0 ? null : usageKnown / calls;
   const knownCosts = rows.filter((row) => row.costShare != null);
   const cost = knownCosts.length
@@ -657,7 +657,7 @@ function toolModelTable(view) {
 }
 
 /**
- * 渲染 Tools 页面。
+ * Renders the Tools page.
  * @returns {string}
  */
 export function toolsPage() {
@@ -692,7 +692,7 @@ export function toolsPage() {
 }
 
 /**
- * 处理 Tools / Hooks / Projects 页点击交互。
+ * Handles click interaction on the Tools / Hooks / Projects pages.
  * @param {MouseEvent} e
  * @returns {boolean}
  */
@@ -768,7 +768,7 @@ export function insightsClick(e) {
 }
 
 /**
- * 处理 Tools 与 Projects 页面的下拉选择变化。
+ * Handles dropdown selection changes on the Tools and Projects pages.
  * @param {Event} e
  * @returns {boolean}
  */
@@ -793,7 +793,7 @@ export function insightsChange(e) {
 let insightsBound = false;
 
 /**
- * 绑定图表随窗口宽度重绘监听（幂等）。
+ * Binds the chart redraw listener for window width changes (idempotent).
  */
 export function initInsights() {
   if (insightsBound) return;

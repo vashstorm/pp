@@ -1,4 +1,4 @@
-//! 命令惯用法：分页、`test`、`set`、语言标注、副作用徽标。
+//! Command idioms: pagination, `test`, `set`, language tagging and side-effect badges.
 
 use brush_core::parser::ast::{self, CommandPrefixOrSuffixItem as Item};
 use std::collections::HashMap;

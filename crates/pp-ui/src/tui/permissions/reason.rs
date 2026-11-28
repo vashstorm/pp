@@ -1,7 +1,7 @@
-//! 审批原因的结构化展示：突出需要授权的路径，并把串联的 shell 命令拆成逐步清单。
+//! Structured rendering of approval reasons: highlight the paths needing authorization and split chained shell commands into a step list.
 //!
-//! `PermissionRequest::reason` 是逐行的脱敏文本。这里只按已知的行前缀做尽力解析；
-//! 识别不了的行原样作为带引用条的说明显示，因此新增原因文案不会丢信息。
+//! `PermissionRequest::reason` is redacted line-oriented text. Only known line prefixes are parsed, best effort;
+//! unrecognized lines are shown verbatim as quoted notes, so new reason wording never loses information.
 
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -10,16 +10,16 @@ use ratatui::{
 
 use crate::tui::{themes, transcript::wrap_block};
 
-// 说明文本左侧引用条的最小可读正文宽度，低于此宽度时省略引用条。
+// Minimum readable body width next to the quote bar on notes; below it the quote bar is omitted.
 const MIN_QUOTE_TEXT: u16 = 8;
-// 命令步骤左侧的操作符列宽（`&& `、`|  `、`;  `）。
+// Width of the operator column left of a command step (`&& `, `|  `, `;  `).
 const GUTTER: usize = 3;
-// 单个步骤最多显示的屏幕行数，超出部分提示用 Ctrl+O 查看完整命令。
+// Maximum screen rows for one step; beyond that a hint suggests Ctrl+O for the full command.
 const STEP_MAX_ROWS: usize = 4;
 const COMMAND_PREFIX: &str = "Command: ";
 const WARNING_PREFIX: &str = "[WARNING:";
 
-/// 后接 `: <路径列表>` 的原因行标签。
+/// Reason-line label followed by `: <path list>`.
 const PATH_LABELS: &[&str] = &[
     "Read protected session path(s)",
     "Read outside workspace requires approval",
@@ -29,7 +29,7 @@ const PATH_LABELS: &[&str] = &[
     "Write requires approval in read-only mode",
 ];
 
-/// 出现在命令之后、可用来判断多行命令已经结束的其他原因行前缀。
+/// Other reason-line prefixes that appear after a command and can mark the end of a multi-line command.
 const OTHER_LINES: &[&str] = &[
     "Protected path write requires approval (",
     "Internet access (",
@@ -71,7 +71,7 @@ fn is_known_line(line: &str) -> bool {
         .any(|prefix| line.starts_with(prefix))
 }
 
-/// 路径列表以 `, ` 连接；只在下一段看起来仍是路径起点时才切分。
+/// Path lists are joined with `, `; split only when the next segment still looks like the start of a path.
 fn split_paths(list: &str) -> Vec<String> {
     let mut items = Vec::new();
     let mut start = 0;
@@ -141,7 +141,7 @@ fn parse(reason: &str) -> Vec<Block> {
         if let Some(first) = line.strip_prefix(COMMAND_PREFIX) {
             let mut text = first.to_owned();
             let mut warning = None;
-            // 多行命令一直延续到截断警告或下一条已知原因行。
+            // A multi-line command continues until a truncation warning or the next known reason line.
             while index < lines.len() && !is_known_line(lines[index]) {
                 let next = lines[index];
                 index += 1;
@@ -164,8 +164,8 @@ fn parse(reason: &str) -> Vec<Block> {
     blocks
 }
 
-/// 把 shell 命令按顶层 `&&`、`||`、`|`、`;`、`&` 与换行拆成 `(前置操作符, 步骤)`。
-/// 引号、反斜杠、括号与反引号内部不拆；含 heredoc 的命令保持整体。
+/// Split a shell command at top-level `&&`, `||`, `|`, `;`, `&` and newlines into `(leading operator, step)`.
+/// Never split inside quotes, backslash escapes, parentheses or backticks; commands with a heredoc stay whole.
 fn split_steps(command: &str) -> Vec<(&'static str, String)> {
     #[derive(Default)]
     struct Splitter {
@@ -178,7 +178,7 @@ fn split_steps(command: &str) -> Vec<(&'static str, String)> {
             let text = self.current.trim().to_owned();
             self.current.clear();
             if text.is_empty() {
-                // 空步骤只允许用更强的连接符覆盖，例如 `a &&\n b` 保持 `&&`。
+                // An empty step may only be overridden by a stronger operator, so `a &&\n b` keeps `&&`.
                 if matches!(next, "&&" | "||" | "|" | "|&") {
                     self.op = next;
                 }
@@ -291,7 +291,7 @@ pub(super) fn render(reason: &str, width: u16) -> Vec<Line<'static>> {
     let mut previous_note = true;
     for block in &blocks {
         let note = matches!(block, Block::Note(_));
-        // 连续说明行保持紧凑，其余区块之间留一行空白。
+        // Consecutive note lines stay compact; other blocks are separated by one blank row.
         if !lines.is_empty() && !(note && previous_note) {
             lines.push(Line::default());
         }
@@ -326,7 +326,7 @@ fn note_lines(lines: &mut Vec<Line<'static>>, text: &str, width: u16) {
     }
 }
 
-/// 按风险给路径区块配色：受保护／修改红，写入橙，网络紫，读取蓝。
+/// Color path blocks by risk: protected/modify in red, write in orange, network in purple, read in blue.
 fn path_color(label: &str) -> Color {
     let palette = themes::palette();
     if label.starts_with("Modifies protected") || label.starts_with("Protected path") {
@@ -357,7 +357,7 @@ fn path_lines(lines: &mut Vec<Line<'static>>, label: &str, items: &[String], wid
     for item in items {
         let mut spans = vec![Span::styled(marker, strong)];
         match item.rsplit_once('/') {
-            // 目录部分保持普通文字，末段（文件或目录名）加粗着色；URL 等整体着色。
+            // The directory part stays plain while the last segment (file or directory name) is bold and colored; URLs are colored whole.
             Some((dir, name)) if !item.contains("://") && !name.is_empty() => {
                 spans.push(Span::styled(
                     format!("{dir}/"),
@@ -442,7 +442,7 @@ fn command_lines(
     }
 }
 
-/// 连接符配色：`&&` 绿（前一步成功才继续）、`||` 黄、管道青、`;` 灰、后台紫。
+/// Operator colors: `&&` green (continue only if the previous step succeeded), `||` yellow, pipe cyan, `;` gray, background purple.
 fn operator_color(op: &str) -> Color {
     let palette = themes::palette();
     match op {
@@ -454,8 +454,8 @@ fn operator_color(op: &str) -> Color {
     }
 }
 
-/// 程序名蓝色加粗；选项青、字符串、变量、重定向各自着色；
-/// 命中待授权路径的参数用警示色加粗并加下划线。
+/// The program name is bold blue; options, strings, variables and redirections each get their own color;
+/// arguments hitting an awaiting-authorization path are bold and underlined in the warning color.
 fn step_spans(step: &str, marked: &[&str]) -> Vec<Span<'static>> {
     let palette = themes::palette();
     let mut spans = Vec::new();

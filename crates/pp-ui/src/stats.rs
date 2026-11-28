@@ -1,4 +1,5 @@
-//! 复用当前二进制的 stats 子命令；后台线程独占子进程，退出时回收。
+//! Reuses the current binary's stats subcommand; a background thread owns the child
+//! process and reaps it on exit.
 
 use anyhow::{Context, Result, bail};
 use std::{
@@ -11,7 +12,8 @@ use std::{
 pub(crate) struct Worker {
     requests: Option<Sender<String>>,
     pub(crate) replies: Receiver<Result<String>>,
-    // 浏览器启动失败的提示走独立通道：它与 launcher 的“一次请求一条回复”互不挤占。
+    // Browser-launch failures use a separate channel so they never compete with the
+    // launcher's "one reply per request".
     pub(crate) warnings: Receiver<String>,
     thread: Option<JoinHandle<()>>,
 }
@@ -68,7 +70,8 @@ impl Worker {
             .map_err(|_| anyhow::anyhow!("statistics launcher stopped"))
     }
 
-    /// 非阻塞排空已到达的浏览器 warning；调用方在 `/stats` 前后各调用一次。
+    /// Non-blocking drain of browser warnings that already arrived; callers invoke it
+    /// once before and once after `/stats`.
     pub(crate) fn drain_warnings(&self, sink: &mut impl Write) {
         while let Ok(warning) = self.warnings.try_recv() {
             let _ = writeln!(sink, "{warning}");
@@ -77,7 +80,8 @@ impl Worker {
     }
 }
 
-// 与独立 stats 入口一致：浏览器启动不阻塞服务或退出收尾。
+// Matches the standalone stats entry point: launching a browser blocks neither the
+// server nor shutdown cleanup.
 fn open_browser(url: &str, warnings: &Sender<String>) {
     let opened_url = url.to_owned();
     let failure_url = url.to_owned();
@@ -155,7 +159,8 @@ impl Server {
             server.url = format!("http://{url}");
             return Ok(server);
         }
-        // 先终止再读取有界诊断，避免非服务输出（例如 --help）阻塞收尾。
+        // Kill first, then read the bounded diagnostic, so non-server output (for
+        // example --help) cannot block shutdown.
         let _ = server.child.kill();
         let _ = server.child.wait();
         let mut diagnostic = String::new();

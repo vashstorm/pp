@@ -1,4 +1,5 @@
-//! 行模式事件输出：stdout/stderr 增量、shell 运行状态与上下文压缩结果。
+//! Line-mode event output: stdout/stderr deltas, shell run status and context
+//! compaction results.
 
 use anyhow::{Context, Result};
 use std::io::{self, Write};
@@ -29,7 +30,8 @@ pub(crate) fn cli_write(
     }
 }
 
-// 头尾窗口滚动后停止追加，结束时仅补显示最终尾窗，避免反复打印头部。
+// Stops appending once the head/tail window scrolls, and only re-displays the final
+// tail window at the end, so the head is never printed repeatedly.
 pub(crate) fn cli_output_delta(output: &str, previous: &mut String, finished: bool) -> String {
     if let Some(delta) = output.strip_prefix(previous.as_str()) {
         let delta = delta.to_owned();
@@ -86,7 +88,8 @@ pub(crate) fn cli_output_result(
         text.push_str(&notice);
         text.push('\n');
     }
-    // 阶段正文不进入主输出；这里只追加有界状态与补读 URI。
+    // Stage bodies never enter the main output; only bounded status and follow-up URIs
+    // are appended here.
     if let Some(status) = pp_workspace::output::pipes_status(&value["pipes"]) {
         text.push_str(&status.notice());
         text.push('\n');

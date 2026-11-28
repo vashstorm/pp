@@ -117,7 +117,8 @@ pub fn gc(cutoff: NaiveDate) -> anyhow::Result<(u64, u64)> {
     Ok((total, removed))
 }
 
-/// 清理已删除会话的首轮提示词日志，沿用日志写入的跨进程锁。
+/// Remove the first-turn prompt log of a deleted session, reusing the cross-process lock used by
+/// log writes.
 pub fn remove_session_prompt(id: &str) -> anyhow::Result<bool> {
     let name = format!("prompt-debug.{id}");
     ensure!(
@@ -389,7 +390,8 @@ mod tests {
             assert_eq!(fs::read(state.file.path(date(), 2)).unwrap(), before);
             assert_eq!(records(&state.file.dir).len(), 3);
 
-            // Debug 文本日志共用同一体积上限：超限记录整条拒绝，文件保持原样。
+            // Debug text logs share the same size limit: an oversized record is rejected whole and
+            // the file stays untouched.
             let mut debug = DebugLog {
                 file: RotatingFile::new(dir.path().join("debug-logs")).unwrap(),
             };

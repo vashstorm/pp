@@ -1,6 +1,8 @@
 /**
- * Traces 页：按根会话折叠子 Agent 的会话列表，以及单会话时间线阅读器入口。
- * 结构、交互与配色对齐 omp stats 的 #/traces；数据来自 pp stats 自己的快照。
+ * Traces page: the session list that folds subagents into their root session, plus the entry point of
+ * the single-session timeline reader.
+ * Structure, interaction and colors follow `#/traces` of omp stats; the data comes from pp stats' own
+ * snapshots.
  */
 
 import { pricingNotice } from "./web/analytics-shared.js";
@@ -47,7 +49,7 @@ import {
 /** @typedef {import("./web/traces-state.js").TraceViewModel} TraceViewModel */
 
 /**
- * 返回当前请求中的 trace 会话请求 ID（列表视图时为 null）。
+ * Returns the trace session request ID in the current request (null in the list view).
  * @returns {string | null}
  */
 export function getTraceRequest() {
@@ -55,7 +57,7 @@ export function getTraceRequest() {
 }
 
 /**
- * 返回上次渲染的 trace 数据签名。
+ * Returns the data signature of the last render.
  * @returns {string}
  */
 export function getTraceRenderedSignature() {
@@ -63,7 +65,7 @@ export function getTraceRenderedSignature() {
 }
 
 /**
- * 根据 URL 查询参数重置 Traces 视图状态。
+ * Resets the Traces view state from the URL query parameters.
  * @param {URL} url
  */
 export function resetTraces(url) {
@@ -84,7 +86,8 @@ export function resetTraces(url) {
 }
 
 /**
- * 计算 Traces 列表或详情载荷的稳定签名，供 5 秒轮询判断是否跳过重绘。
+ * Computes a stable signature of the Traces list or detail payload so the 5-second poll can skip a
+ * redraw.
  * @param {TracesListResponse | TraceDetailResponse | null | undefined} payload
  * @param {string} [range]
  * @returns {string}
@@ -331,7 +334,7 @@ function traceListPage() {
 }
 
 /**
- * 根据单条根会话详情载荷构建轨道、span 与 Transcript 视图模型。
+ * Builds the track, span and Transcript view model from a single root session detail payload.
  * @param {TraceDetailResponse} [payload]
  * @param {string} [needle]
  * @returns {TraceViewModel}
@@ -551,7 +554,7 @@ function tracePage() {
 }
 
 /**
- * 渲染 Traces 列表页或单会话时间线详情页。
+ * Renders the Traces list page or the single-session timeline detail page.
  * @returns {string}
  */
 export function tracesPage() {
@@ -581,7 +584,7 @@ function traceBindPageListeners() {
 }
 
 /**
- * 在页面 DOM 挂载后绑定 Traces 画布、Minimap、Transcript 与滚动恢复。
+ * Binds the Traces canvas, Minimap, Transcript and scroll restoration after the page DOM is mounted.
  */
 export function wireTraces() {
   traceBindPageListeners();
@@ -642,7 +645,7 @@ function tracesRerender() {
 }
 
 /**
- * 处理 Traces 列表与详情交互点击。
+ * Handles interaction clicks on the Traces list and detail.
  * @param {MouseEvent} event
  * @returns {boolean}
  */
@@ -788,7 +791,7 @@ export function tracesClick(event) {
 let tracesInitialized = false;
 
 /**
- * 注册 Traces 模块桥接与全局抽屉 Esc/主题监听（幂等）。
+ * Registers the Traces module bridge and the global drawer Esc/theme listeners (idempotent).
  */
 export function initTraces() {
   traceBridge.redraw = traceRedraw;

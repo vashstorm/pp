@@ -24,7 +24,7 @@ fn tui_ctrl_c_keeps_partial_output_without_waiting_for_response() {
     streaming_delta(&mut stream, protocol, "partial-retained 中😀");
     pty.text("partial-retained");
     pty.input("\x03");
-    pty.wait_for("退出后保留未完成的流式输出", |screen| {
+    pty.wait_for("the unfinished streaming output survives exit", |screen| {
         !screen.alternate_screen()
             && screen.contents().contains("partial-retained 中😀")
             && background_color(screen, "pending-task") == USER_BACKGROUND

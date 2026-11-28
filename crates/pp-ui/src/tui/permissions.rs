@@ -1,4 +1,4 @@
-//! 权限审批卡片、权限规则后台 I/O worker 与模态 `/permissions` 命令浮层。
+//! Permission approval card, the background I/O worker for permission rules and the modal `/permissions` command overlay.
 
 use std::{
     sync::mpsc::{self, Receiver, Sender},
@@ -46,8 +46,8 @@ pub(super) struct Worker {
 }
 
 impl Worker {
-    /// 独立后台线程执行 `permission.toml` 读取与持锁撤销；故意 detach，
-    /// 防止另一进程长期占用 `permission.lock` 时阻塞 TUI 退出或取消。
+    /// A dedicated background thread performs the `permission.toml` read and the lock-held revoke; it is detached on purpose
+    /// so another process holding `permission.lock` for long cannot block TUI exit or cancellation.
     pub(super) fn new() -> Result<Self> {
         let (requests, receiver) = mpsc::channel::<RuleRequest>();
         let (sender, replies) = mpsc::channel();
@@ -88,8 +88,8 @@ pub(super) enum OverlayAction {
     Submit(String),
 }
 
-/// 模态状态下的 `/permissions` 命令入口：不关闭底层面板、不改动主草稿，
-/// 支持直接查看详情、切档或通过后台 worker 列出／撤销持久规则。
+/// `/permissions` entry point in the modal state: it leaves the panel underneath open, leaves the main draft untouched
+/// and supports viewing details, switching level or listing/revoking persistent rules through the background worker.
 pub(super) struct Overlay {
     input: TextArea<'static>,
     output: String,

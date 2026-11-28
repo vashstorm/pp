@@ -8,7 +8,7 @@ fn streaming_backgrounds_roles_and_thinking_styles() {
         let mut entry = TranscriptEntry::new(
             kind,
             "title".into(),
-            "  body 中😀\n\n    code".into(),
+            "  body 😀\n\n    code".into(),
             tool.then(|| "tool".into()),
         );
         entry.status = EntryStatus::Failed;
@@ -36,7 +36,7 @@ fn streaming_backgrounds_roles_and_thinking_styles() {
         if tool {
             assert!(buffer[(4, 1)].modifier.contains(Modifier::DIM));
         }
-        assert!(screen(&buffer).contains("  body 中"));
+        assert!(screen(&buffer).contains("  body 😀"));
         assert!(screen(&buffer).contains("    code"));
     }
 
@@ -99,15 +99,19 @@ fn tool_icons_use_nerd_font_private_use_glyphs_across_card_styles() {
     let mut icons = std::collections::HashSet::new();
     for name in names {
         let icon = palette::tool_icon(name);
-        assert!(icons.insert(icon), "工具图标应独立：{name}");
+        assert!(icons.insert(icon), "tool icons must be distinct: {name}");
         assert!(
             icon.chars().next().is_some_and(|glyph| {
                 ('\u{e000}'..='\u{f8ff}').contains(&glyph)
                     || ('\u{f0000}'..='\u{ffffd}').contains(&glyph)
             }),
-            "图标应使用 Nerd Font 私用区字形：{name}"
+            "the icon must use a Nerd Font private use area glyph: {name}"
         );
-        assert_eq!(Span::raw(icon).width(), 1, "图标布局宽度应为一列：{name}");
+        assert_eq!(
+            Span::raw(icon).width(),
+            1,
+            "the icon must take one layout column: {name}"
+        );
         let mut transcript = Transcript::new();
         tool(
             &mut transcript,
@@ -137,7 +141,7 @@ fn tool_icons_use_nerd_font_private_use_glyphs_across_card_styles() {
                 } else {
                     icon
                 };
-                // 窄宽度允许卡片标题被裁切；仅在图标实际可见时校验其布局。
+                // Narrow widths may clip the card title; check the layout only when the icon is actually visible.
                 let Some(row) = (0..buffer.area.height).find_map(|row| {
                     (0..buffer.area.width)
                         .find(|&column| buffer[(column, row)].symbol() == display_icon)
@@ -145,7 +149,7 @@ fn tool_icons_use_nerd_font_private_use_glyphs_across_card_styles() {
                 }) else {
                     continue;
                 };
-                // 图标与标题之间仅保留一列 ASCII 空格。
+                // Exactly one ASCII space is kept between the icon and the title.
                 assert_eq!(buffer[(row.0 + 1, row.1)].symbol(), " ");
                 if width == 80 {
                     assert_eq!(
@@ -213,23 +217,23 @@ fn thinking_turns_markdown_highlights_and_streaming_deltas() {
             }
             panic!("missing {needle} in:\n{text}");
         };
-        // 普通文本保持灰色基调 + 助手暗色背景。
+        // Plain text keeps the gray tone plus the dark assistant background.
         let plain = cell_of("plain");
         assert_eq!(buffer[plain].fg, muted_text());
         assert_eq!(buffer[plain].bg, assistant_background());
-        // 粗体叠加 BOLD modifier 与紫色语义高亮。
+        // Bold adds the BOLD modifier on top of the purple semantic highlight.
         let bold = cell_of("bold");
         assert_eq!(buffer[bold].fg, palette::md_strong());
         assert!(buffer[bold].modifier.contains(Modifier::BOLD));
-        // 行内代码使用独立的绿色语义高亮。
+        // Inline code uses its own green semantic highlight.
         let code = cell_of("code");
         assert_eq!(buffer[code].fg, palette::md_code());
         assert_eq!(buffer[code].bg, assistant_background());
-        // 围栏代码块按 syntect 语义高亮，`let` 为 keyword 色。思考正文的行级灰
-        // 基调被语义 span 覆盖，与粗体/行内代码的约定一致。
+        // A fenced code block is highlighted by syntect semantics, with `let` in the keyword color. The line-level gray
+        // tone of the thinking body is overridden by the semantic span, matching the bold/inline-code convention.
         let block = cell_of("let x = 1;");
         assert_eq!(buffer[block].fg, palette::syntax_keyword());
-        // 表格渲染出真实分隔线而非原始管道符。
+        // The table renders real separators instead of the raw pipe characters.
         assert!(text.contains('│'));
         assert!(text.contains("─┼─"));
         assert!(!text.contains("**"));
@@ -243,7 +247,7 @@ fn thinking_turns_markdown_highlights_and_streaming_deltas() {
         transcript.progress(AgentEvent::ThinkingDelta {
             text: "**bo".into(),
         });
-        // 先触发布局缓存，再补齐标记，验证新片段会使旧解析结果失效。
+        // Trigger the layout cache first, then complete the marker to verify that the new chunk invalidates the old parse.
         assert!(screen(&render(&mut transcript, 80, 10)).contains("**bo"));
         transcript.progress(AgentEvent::ThinkingDelta {
             text: "ld**".into(),

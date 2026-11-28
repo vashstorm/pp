@@ -47,9 +47,9 @@ fn read_content(tools: &Tools, path: &str) -> (String, bool) {
     )
 }
 
-// 逃逸夹具必须同时位于工作区与受管临时根（`/tmp`）之外，否则保存层会把它
-// 当作临时根目标而允许写入；`/var/tmp` 在 macOS 与 Linux 上均可写且不在
-// 两个受管根内。
+// The escape fixture must sit outside both the workspace and the managed temp root (`/tmp`), otherwise the save layer
+// treats it as a temp-root target and allows the write; `/var/tmp` is writable on macOS and Linux and lies outside both
+// managed roots.
 pub(super) fn outside_dir() -> tempfile::TempDir {
     tempfile::Builder::new().tempdir_in("/var/tmp").unwrap()
 }

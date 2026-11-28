@@ -276,7 +276,7 @@ fn skill_read_execution_and_disablement_apply_to_every_workflow() {
                 );
                 let result: Value = serde_json::from_str(&execution.output).unwrap();
                 assert_eq!(result["ok"], false, "{name}: {result}");
-                // Plan 的 write 已开放，非法 JSON 应进入参数校验；Review 仍在门禁拒绝。
+                // Plan's write is already open, so invalid JSON should reach argument validation; Review is still rejected by the gate.
                 let error = if name == "write"
                     && arguments == "{"
                     && error == "Tool is not available in Plan mode."
@@ -385,8 +385,8 @@ fn user_image_requests_restore_navigate_and_switch_protocol_without_source() {
             .unwrap();
         std::fs::write(dir.path().join("note"), "RESOURCE-TEXT").unwrap();
         let prepared = crate::user_input::prepare(
-            "看图 @shot.png @note".into(),
-            "看图 @shot.png @note",
+            "look at @shot.png @note".into(),
+            "look at @shot.png @note",
             Vec::new(),
             dir.path(),
             pp_config::config::ToolLimits::default(),

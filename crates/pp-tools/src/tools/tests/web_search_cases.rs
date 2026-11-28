@@ -86,7 +86,7 @@ mod integration {
         });
         run_with(ToolPolicy::Review);
 
-        // 关闭 webSearch.enabled 后，三个模式均不再暴露且执行期拒绝。
+        // With webSearch.enabled off, none of the three modes exposes it and execution rejects it.
         tools.configure_web_search(WebSearchSettings {
             enabled: false,
             ..Default::default()
@@ -136,7 +136,7 @@ mod integration {
         )));
         let workflow = WorkflowState::default();
 
-        // 默认无本地 SearXNG 时，断网沙盒未授权前拒绝。
+        // With no local SearXNG by default, it is rejected until the offline sandbox is authorized.
         let denied = tools.execute_with_web(
             "web_search",
             &json!({"query": "rust"}).to_string(),
@@ -158,7 +158,7 @@ mod integration {
             "{val}"
         );
 
-        // 配置本地回环 SearXNG 后，macOS loopback 允许语义下放行并传入 allow_external_network=false。
+        // After configuring a local loopback SearXNG it passes under the macOS loopback-allow semantics and receives allow_external_network=false.
         tools.configure_web_search(WebSearchSettings {
             provider: WebSearchProvider::Auto,
             searxng: Some(SearxngSettings {
@@ -198,7 +198,7 @@ mod integration {
         assert_eq!(val["ok"], true, "{val}");
         assert_eq!(observed_external, Some(false));
 
-        // 显式要求外部引擎仍被沙盒拒绝。
+        // Explicitly requesting an external engine is still rejected by the sandbox.
         let explicit_ext = tools.execute_with_web(
             "web_search",
             &json!({"query": "rust", "provider": "duckduckgo"}).to_string(),
@@ -214,7 +214,7 @@ mod integration {
         let val: Value = serde_json::from_str(&explicit_ext.output).unwrap();
         assert_eq!(val["ok"], false);
 
-        // 批准联网后，断网沙盒下的 web_search 放行并传入 allow_external=true
+        // Once networking is approved, web_search passes under the offline sandbox and receives allow_external=true
         let mut approved_tools = Tools::new(dir.path().to_path_buf(), EditMode::Replace).unwrap();
         approved_tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
             SandboxSettings {
@@ -260,7 +260,7 @@ mod integration {
         let val: Value = serde_json::from_str(&ok_search.output).unwrap();
         assert_eq!(val["ok"], true, "{val}");
 
-        // 显式开启沙盒但平台不可用时，必须 fail-closed 拒绝外部搜索。
+        // With the sandbox explicitly enabled but unavailable on the platform, external search must fail closed.
         let unavailable = Sandbox::with_probe_for_test(
             SandboxSettings {
                 mode: SandboxMode::ReadOnly,

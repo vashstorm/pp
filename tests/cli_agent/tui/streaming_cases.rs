@@ -88,7 +88,7 @@ fn thinking_and_bash_cards_stream_with_default_style_and_expand_without_editing_
     assert!(!pty.parser.screen().contents().contains("output-00"));
     pty.input("draft-中");
     pty.draft("draft-中");
-    // Option/Alt+O 不再展开工具输出，所有平台统一使用 Ctrl+O。
+    // Option/Alt+O no longer expands tool output; every platform uses Ctrl+O.
     pty.input("\x1bo");
     pty.input("!");
     pty.draft("draft-中!");
@@ -140,7 +140,7 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         let mut stream = request.start_sse().unwrap();
         streaming_delta(&mut stream, protocol, "first-中");
         pty.text("first-中");
-        pty.wait_for("流式回复状态带有时钟", |screen| {
+        pty.wait_for("the streaming reply status carries a clock", |screen| {
             live_activity_labels(&screen.contents()).any(|label| label == "Responding")
         });
         pty.drain();
@@ -171,9 +171,10 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         pty.wait_for("paged older output", |s| {
             s.contents().contains("line-30") && !s.contents().contains("line-59")
         });
-        // 活动行固定占一行，且上方还有一行空白分隔行（252f311 起）。流式结束时
-        // 这两行一起收回、转录区变高，所以"上翻视口不跳"只能比较完成前后都属于
-        // 转录区的行，否则视口变高露出的后续行会被误判为拉回底部。
+        // The activity line always takes one row and has one blank separator row above it (since 252f311). When streaming ends
+        // both rows are reclaimed and the transcript grows, so "the scrolled-up viewport does not jump" can only compare rows
+        // that belong to the transcript both before and after completion; otherwise rows revealed by the taller viewport would
+        // be misread as a pull back to the bottom.
         let before: Vec<String> = pty
             .parser
             .screen()
@@ -184,8 +185,11 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         let activity = before
             .iter()
             .position(|row| row.contains("Responding"))
-            .expect("流式状态行应显示在活动区");
-        assert!(activity > 1, "上翻后转录区应已有可见行: {before:?}");
+            .expect("the streaming status line must show in the activity area");
+        assert!(
+            activity > 1,
+            "the transcript must already have visible rows after paging up: {before:?}"
+        );
         let old_view = before[..activity - 1].to_vec();
         streaming_delta(&mut stream, protocol, "-last");
         full.push_str("-last");
@@ -202,16 +206,16 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         assert_eq!(
             after[..old_view.len()],
             old_view[..],
-            "上翻时视口应保持原位"
+            "the viewport must stay in place while paged up"
         );
         assert!(
             !pty.parser.screen().contents().contains("line-59-last"),
-            "完成时不应跳到底部"
+            "completion must not jump to the bottom"
         );
         pty.draft("draft-中");
         pty.input("\x1b[6~");
         pty.text("line-59-last");
-        // 首轮任务完成后显示会话弹框，翻到底部后再验证下一任务跟随输出。
+        // The session dialog appears after the first task completes; page to the bottom and then verify the next task follows the output.
         pty.input("\x1b[6~");
         pty.completed();
         pty.resize(4, 20);
@@ -239,7 +243,7 @@ fn streaming_tui_both_protocols_live_colors_scroll_resize_and_bash() {
         pty.drain();
         assert!(input_is_ready(pty.parser.screen()));
         assert!(!pty.parser.screen().contents().contains("out-firstout-last"));
-        pty.wait_for("Bash 运行期间只有一个实时状态", |screen| {
+        pty.wait_for("exactly one live status while Bash runs", |screen| {
             live_activity_labels(&screen.contents()).eq(["Running Bash"])
         });
         no_more(&server);

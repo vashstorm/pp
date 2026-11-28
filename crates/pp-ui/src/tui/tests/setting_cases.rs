@@ -36,7 +36,7 @@ fn flush_settings(app: &mut App) {
     );
 }
 
-/// Roles 页 Effort 选择器当前高亮的档位名。
+/// Name of the level currently highlighted in the Roles page Effort picker.
 fn highlighted_effort(app: &mut App) -> String {
     let selected_bg = crate::tui::themes::palette().panel_alt_bg;
     let buffer = draw_buffer(app, 110, 30);
@@ -103,7 +103,7 @@ fn setting_aliases_and_general_tab_persist_and_complete() {
             assert_eq!(app.active_settings_tab(), None, "{cmd}");
         }
 
-        // 合并后主菜单只展示 `/setting (config)`，不再单列 `/config`。
+        // After the merge the main menu only shows `/setting (config)` and no longer lists `/config` separately.
         app.insert_input("/".into());
         app.refresh_candidates(true);
         let top_labels: Vec<_> = active_menu(&app)
@@ -121,7 +121,7 @@ fn setting_aliases_and_general_tab_persist_and_complete() {
         assert!(!top_labels.contains(&"/setting"));
         assert!(!top_labels.contains(&"/config"));
 
-        // 命令补全支持 `setting` 与 `config`（含前缀与模糊匹配），并补全为 `/setting`。
+        // Command completion accepts `setting` and `config` (prefix and fuzzy matching) and completes to `/setting`.
         for query in ["/set", "/setting", "/settings", "/conf", "/config", "/cfg"] {
             app.clear_input();
             app.insert_input(query.into());
@@ -136,7 +136,7 @@ fn setting_aliases_and_general_tab_persist_and_complete() {
             assert_eq!(app.input_text(), "/setting", "{query}");
         }
 
-        // `/con` 匹配 `/setting (config)` 与 `/context`，`/co` 同时匹配 `/compact`。
+        // `/con` matches `/setting (config)` and `/context`, while `/co` also matches `/compact`.
         for (query, expected) in [
             ("/con", vec!["/setting (config)", "/context"]),
             ("/co", vec!["/setting (config)", "/compact", "/context"]),
@@ -152,7 +152,7 @@ fn setting_aliases_and_general_tab_persist_and_complete() {
             assert_eq!(co_labels, expected, "{query}");
         }
 
-        // Tab 补全支持 `/settings <tab>`、`/setting <tab>` 与 `/config <tab>`。
+        // Tab completion accepts `/settings <tab>`, `/setting <tab>` and `/config <tab>`.
         for (typed, expected) in [
             ("/settings r", "/settings roles"),
             ("/setting r", "/setting roles"),
@@ -190,7 +190,7 @@ fn setting_aliases_and_general_tab_persist_and_complete() {
         assert!(rendered.contains("Editing & Tools"), "{rendered}");
         assert!(rendered.contains("Read max lines"), "{rendered}");
 
-        // 1. 首项为 `edit`，空格切换为 hashline 并写入磁盘。
+        // 1. The first item is `edit`; Space toggles it to hashline and writes to disk.
         app.handle(key(KeyCode::Char(' ')), &mut false);
         flush_settings(&mut app);
         assert_eq!(
@@ -198,7 +198,7 @@ fn setting_aliases_and_general_tab_persist_and_complete() {
             EditMode::Hashline
         );
 
-        // 2. 移动到第 3 项 `read.maxLines`（跳过 sandbox.mode），进入内联数字编辑并输入包含 `2` `3` 的数字，不应误切标签页。
+        // 2. Move to the third item `read.maxLines` (skipping sandbox.mode), enter inline number editing and type digits containing `2` and `3`, which must not switch tabs.
         app.handle(key(KeyCode::Down), &mut false);
         app.handle(key(KeyCode::Down), &mut false);
         app.handle(key(KeyCode::Enter), &mut false);
@@ -213,7 +213,7 @@ fn setting_aliases_and_general_tab_persist_and_complete() {
         flush_settings(&mut app);
         assert_eq!(read_settings(&settings_path).unwrap().read_max_lines, 234);
 
-        // 3. 切到 `Display & System` 修改 `tui.maxFps` 与 `cost.currency`，验证运行期即时生效。
+        // 3. Switch to `Display & System` to change `tui.maxFps` and `cost.currency` and verify they take effect at runtime.
         app.handle(key(KeyCode::Tab), &mut false);
         for _ in 0..4 {
             app.handle(key(KeyCode::Down), &mut false);
@@ -254,7 +254,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
         flush_settings(&mut app);
         assert_eq!(app.active_settings_tab(), Some(settings::Tab::General));
 
-        // 数字与 `[/]` 不再切换标签页。
+        // Digits and `[/]` no longer switch tabs.
         for code in [
             KeyCode::Char('['),
             KeyCode::Char(']'),
@@ -267,11 +267,11 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
             assert_eq!(app.active_settings_tab(), Some(settings::Tab::General));
         }
 
-        // `→` 切到 Roles。
+        // `→` switches to Roles.
         app.handle(key(KeyCode::Right), &mut false);
         assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
 
-        // 在 Roles 打开模型搜索输入文本或按左右方向键时，不应误切标签页。
+        // Typing into the model search on Roles or pressing the left/right arrows must not switch tabs.
         app.handle(key(KeyCode::Tab), &mut false);
         app.handle(key(KeyCode::Enter), &mut false);
         app.handle(key(KeyCode::Char('3')), &mut false);
@@ -281,7 +281,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
         app.handle(key(KeyCode::Esc), &mut false);
         assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
 
-        // Effort 选择器内 ←/→ 与 Tab/Shift+Tab 都只滚动档位，不切换外层页签。
+        // Inside the Effort picker, ←/→ and Tab/Shift+Tab only cycle levels and never switch the outer tab.
         app.handle(key(KeyCode::Enter), &mut false);
         app.handle(key(KeyCode::Enter), &mut false);
         let effort_screen = draw(&mut app, 110, 30);
@@ -305,7 +305,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
         assert_eq!(highlighted_effort(&mut app), initial);
         assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
 
-        // Ctrl + ←/→ 仍是显式切页签手势，不被 Effort 选择器吞掉。
+        // Ctrl + ←/→ remains an explicit tab-switch gesture and is not swallowed by the Effort picker.
         app.handle(
             Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL)),
             &mut false,
@@ -314,7 +314,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
         app.handle(key(KeyCode::Left), &mut false);
         assert_eq!(app.active_settings_tab(), Some(settings::Tab::Roles));
 
-        // 按 `→` 切到 Themes 并触发 Icon Style 预览变更（默认 Nerd -> Down 预览 ASCII）。
+        // Pressing `→` switches to Themes and triggers an Icon Style preview change (default Nerd -> Down previews ASCII).
         app.handle(key(KeyCode::Right), &mut false);
         assert_eq!(app.active_settings_tab(), Some(settings::Tab::Themes));
         let bar = draw(&mut app, 110, 30);
@@ -325,7 +325,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
             (Theme::Default, IconMode::Ascii)
         );
 
-        // 点击顶部 General 图标离开 Themes：ASCII 预览改变图标后仍应命中并回滚。
+        // Clicking the top General icon leaves Themes: even after the ASCII preview changed the icons, the hit test must work and roll back.
         let preview = draw_buffer(&mut app, 110, 30);
         let general_col = (0..preview.area.width)
             .find(|&x| preview[(x, 0)].symbol() == "*")
@@ -345,7 +345,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
             (Theme::Default, IconMode::Nerd)
         );
 
-        // `←` 反向循环到 Skills，再 `→` 回到 General。
+        // `←` wraps backwards to Skills, then `→` returns to General.
         app.handle(key(KeyCode::Left), &mut false);
         wait_for_skills(&mut app);
         assert_eq!(app.active_settings_tab(), Some(settings::Tab::Skills));
@@ -379,7 +379,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
                 app.handle(key(KeyCode::Right), &mut false);
             }
             assert_eq!(app.active_settings_tab(), Some(expected));
-            // 即使 Skills 后台回复尚未到达，也必须保持在备用屏幕，不闪回主屏。
+            // Even before the Skills background reply arrives the panel must stay on the alternate screen without flashing back to the main screen.
             assert!(
                 app.needs_alternate(),
                 "{expected:?} should stay on alternate screen"
@@ -393,7 +393,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
         let skills_loaded_screen = draw(&mut app, 110, 30);
         let skills_loaded_buf = draw_buffer(&mut app, 110, 30);
 
-        // 切回 General 时应立即使用缓存快照渲染完整设置列表，不出现空白加载帧。
+        // Switching back to General must render the full settings list from the cached snapshot immediately, with no blank loading frame.
         app.handle(key(KeyCode::Right), &mut false);
         assert!(app.needs_alternate());
         let general_revisit = draw(&mut app, 110, 30);
@@ -401,7 +401,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
         assert!(general_revisit.contains("Edit mode"));
         flush_settings(&mut app);
 
-        // 四个页签的顶部 Tab 文字起始列坐标完全不变，外框和第 2 行分隔线对齐。
+        // The top tab text starts at the same column on all four tabs, and the frame and the row-2 separator line up.
         let tab_labels = ["General", "Roles", "Themes", "Skills"];
         let expected_cols: Vec<usize> = tab_labels
             .iter()
@@ -433,7 +433,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
             );
         }
 
-        // 四个页签使用一致的外框边框色与背景色。
+        // All four tabs use the same frame border color and background.
         let expected_border_fg = buffers[0].1[(0, 5)].fg;
         for (tab, buf) in buffers
             .iter()
@@ -447,7 +447,7 @@ fn setting_tabs_switch_revert_and_keep_stable_geometry() {
             );
         }
 
-        // 四个页签的侧边栏竖线位于完全相同的列坐标。
+        // The sidebar divider sits at the same column on all four tabs.
         let general_pipe = screens[0].1.lines().nth(4).unwrap().find('│').unwrap();
         for (tab, screen) in screens
             .iter()
@@ -472,7 +472,7 @@ fn themes_and_skills_sidebars_mouse_focus_and_resize() {
         let _guard = ThemeGuard::reset_default();
         let (mut app, _requests, _events) = plan_app();
 
-        // 1. Themes 页签：点击左侧 Color Theme 切换分类，点击列表行预览。
+        // 1. Themes tab: clicking Color Theme on the left switches category, clicking a list row previews it.
         app.insert_input("/config themes".into());
         app.submit(PendingKind::Steering);
         let screen = draw(&mut app, 110, 30);
@@ -528,7 +528,7 @@ fn themes_and_skills_sidebars_mouse_focus_and_resize() {
                 .any(|line| line.starts_with("│❯ "))
         );
 
-        // 2. Skills 页签：按 `→` 切到 Skills，点击左侧 Global management 切换分类，点击开关图标列启停技能。
+        // 2. Skills tab: press `→` to reach Skills, click Global management on the left to switch category, click the toggle icon column to enable or disable a skill.
         app.handle(key(KeyCode::Right), &mut false);
         wait_for_skills(&mut app);
         let mut snapshot = pp_config::skills::Skills::default();
@@ -616,7 +616,7 @@ fn themes_and_skills_sidebars_mouse_focus_and_resize() {
                     event.kind = kind;
                     app.handle(Event::Key(event), &mut false);
                 }
-                // 重复与松键不切焦点；End / Home 操作侧边栏，即使右侧技能列表为空。
+                // Repeats and key releases do not move focus; End / Home drive the sidebar even when the right-hand skill list is empty.
                 for (code, marker) in [
                     (KeyCode::End, last),
                     (KeyCode::End, last),
@@ -637,7 +637,7 @@ fn themes_and_skills_sidebars_mouse_focus_and_resize() {
                     "{right}"
                 );
 
-                // 缩窄窗口时清除不可见侧边栏焦点，Tab 恢复分类切换。
+                // Narrowing the window clears focus from the invisible sidebar, and Tab returns to category switching.
                 app.handle(key(KeyCode::Tab), &mut false);
                 draw(&mut app, 40, 30);
                 app.handle(key(KeyCode::Tab), &mut false);
@@ -687,7 +687,7 @@ fn setting_tabs_show_arrow_only_on_focused_pane() {
         (left, right)
     };
 
-    // 1. General：默认焦点在右侧列表，Tab 切到左侧栏后仅左侧显示箭头，且不使用选中高亮背景。
+    // 1. General: focus starts on the right list; after Tab moves it to the left column only the left shows the arrow, without the selected highlight background.
     let palette = crate::tui::themes::palette();
     let assert_no_selected_bg = |buf: &ratatui::buffer::Buffer| {
         let mut arrows = 0;
@@ -712,7 +712,7 @@ fn setting_tabs_show_arrow_only_on_focused_pane() {
     assert_eq!(pane_arrows(&general_left), (1, 0), "{general_left}");
     assert_no_selected_bg(&draw_buffer(&mut app, 110, 30));
 
-    // 2. Themes：Tab 聚焦侧边栏，方向键切换分类，Shift+Tab 回到列表。
+    // 2. Themes: Tab focuses the sidebar, the arrow keys switch category and Shift+Tab returns to the list.
     app.open_settings(settings::Tab::Themes);
     let themes_icons = draw(&mut app, 110, 30);
     assert_eq!(pane_arrows(&themes_icons), (0, 1), "{themes_icons}");
@@ -740,7 +740,7 @@ fn setting_tabs_show_arrow_only_on_focused_pane() {
     );
     app.handle(key(KeyCode::Esc), &mut false);
 
-    // 3. Skills：在侧边栏只导航分类，Enter 聚焦列表后才切换技能。
+    // 3. Skills: the sidebar only navigates categories; skills toggle only after Enter focuses the list.
     let mut snapshot = pp_config::skills::Skills::default();
     snapshot.entries.push(pp_config::skills::Skill {
         name: "rust".into(),

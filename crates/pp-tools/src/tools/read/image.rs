@@ -146,7 +146,7 @@ mod tests {
                 (sent_width, sent_height)
             );
         }
-        // 未超过视觉上限时保持原始字节，不重新编码。
+        // Below the vision limit the original bytes are kept without re-encoding.
         let mut bytes = Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(3, VISION_MAX_IMAGE_SIDE)
             .write_to(&mut bytes, image::ImageFormat::Png)

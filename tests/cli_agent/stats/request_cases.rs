@@ -50,13 +50,13 @@ fn stats_chat_captures_metrics_first_request_context_and_tool_calls() {
     assert_eq!(last["cache"], 100);
     assert_eq!(last["cache_write"], 10);
     assert!(last["ttft"].is_number());
-    // 工具调用只落工具名与参数字符数，不再从回答正文反推。
+    // Tool calls only persist the tool name and the argument character count; nothing is inferred back from the answer body.
     let calls = tools(dir.path());
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["request"], records[0]["id"]);
     assert_eq!(calls[0]["tool"], "read");
     assert!(calls[0]["args"].as_i64().unwrap() > 0);
-    // 技能摘要头不含用户输入或凭据；回答正文与思考完全不入库。
+    // The skills summary header holds neither user input nor credentials; the answer body and thinking never reach the database.
     let skills = database(dir.path())
         .query_row(
             "SELECT group_concat(skills_json) FROM request_contexts",
@@ -90,7 +90,7 @@ fn stats_chat_captures_metrics_first_request_context_and_tool_calls() {
     assert_eq!(trace["requests"].as_array().unwrap().len(), 2);
     assert!(!body.contains("private input marker"));
     assert!(!body.contains("verified reasoning"));
-    // 详情只返回指标行与首请求快照，正文与会话条目字段不再存在。
+    // The detail endpoint returns only the metric row and the first-request snapshot; body and session-entry fields no longer exist.
     let (status, body) = http(
         &address,
         &format!("/api/stats/requests/{}", last["id"]),
@@ -133,7 +133,7 @@ fn stats_chat_captures_metrics_first_request_context_and_tool_calls() {
             assert!((value["summary"]["cost"].as_f64().unwrap() - 0.000185).abs() < 1e-10);
         }
     }
-    // 费用在请求记录时写入快照：改写 models.yml 不重算历史。
+    // Cost is snapshotted when the request is recorded: rewriting models.yml does not recompute history.
     models["providers"]["fixture"]["models"]["primary"]["cost"] =
         json!({"input":4,"cacheRead":0.4,"cacheWrite":5,"output":16});
     std::fs::write(config_path(dir.path(), "models.yml"), models.to_string()).unwrap();

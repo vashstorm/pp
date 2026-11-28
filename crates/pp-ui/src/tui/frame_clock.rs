@@ -1,4 +1,4 @@
-//! 所有正常画面共用帧截止时间；输入处理不等待绘制。
+//! Every normal frame shares a frame deadline; input handling never waits for drawing.
 use std::time::{Duration, Instant};
 
 pub(super) struct FrameClock {

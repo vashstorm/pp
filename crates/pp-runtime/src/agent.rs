@@ -96,28 +96,28 @@ pub struct Bootstrap {
     pub prompt: crate::system_prompt::Snapshot,
     pub permission: std::sync::Arc<pp_permission::Gate>,
     pub sandbox_override: Option<pp_config::config::SandboxMode>,
-    /// 进程级共享的沙盒单例；首次加载配置时初始化，认证/重建保留会话覆盖。
+    /// Process-wide shared sandbox singleton; initialized on first config load, and auth/rebuild keeps the session override.
     pub sandbox: pp_sandbox::SharedSandbox,
-    /// 进程级共享的 MCP 单例；根 Agent、子 Agent 与恢复的会话都用它。
+    /// Process-wide shared MCP singleton; the root agent, subagents and restored sessions all use it.
     pub mcp: std::sync::Arc<pp_mcp::McpManager>,
-    /// 进程级共享的模型状态：首次成功加载后一直复用，重建 Agent 不丢失手动覆盖。
+    /// Process-wide shared model state: reused after the first successful load, so rebuilding an agent keeps manual overrides.
     pub models: pp_config::model_state::SharedModels,
-    /// 可选工具能力白名单（非交互 `-p` 默认只读集合或 `--allowed-tools`）。
+    /// Optional tool capability allowlist (non-interactive `-p` defaults to the read-only set or `--allowed-tools`).
     pub allowed_tools: Option<pp_tools::AllowedTools>,
-    /// 是否允许初始化与派发子 Agent（非交互 `-p` 默认关闭，仅 `--allowed-tools Task` 开启）。
+    /// Whether subagents may be initialized and dispatched (off by default in non-interactive `-p`, enabled only by `--allowed-tools Task`).
     pub subagents_enabled: bool,
-    /// 是否启用生命周期 hooks（`--no-hooks` 传 `false` 跳过加载与执行）。
+    /// Whether lifecycle hooks are enabled (`--no-hooks` passes `false` to skip loading and execution).
     pub hooks_enabled: bool,
-    /// 是否以无持久化内存模式运行（`--ephemeral` 绝不写盘或申请会话锁）。
+    /// Whether to run in memory-only mode without persistence (`--ephemeral` never writes to disk or acquires a session lock).
     pub ephemeral: bool,
-    /// 非交互单次任务最大模型请求轮次（`--max-turns`）。
+    /// Maximum model request rounds for a non-interactive one-off task (`--max-turns`).
     pub max_turns: Option<usize>,
-    /// 非交互终态输出 JSON Schema 约束（`--output-schema`）。
+    /// JSON Schema constraint for non-interactive final output (`--output-schema`).
     pub output_schema: Option<serde_json::Value>,
 }
 
 impl Bootstrap {
-    /// 进程内唯一模型状态：首次成功加载后复用，认证/登录重建 Agent 不丢失手动覆盖。
+    /// The single in-process model state: reused after the first successful load, so auth/login agent rebuilds keep manual overrides.
     pub fn model_state(&self) -> Result<std::sync::Arc<ModelState>> {
         self.models
             .get_or_load(&self.dir.join("settings.yml"), &self.dir.join("models.yml"))
@@ -127,8 +127,8 @@ impl Bootstrap {
         self.build_with_stats(pp_stats::Database::new(pp_stats::database_path()?))
     }
 
-    /// 模型目录尚未加载成功时，独立应用已成功解析的权限与沙盒设置；
-    /// 首次初始化共享沙盒后保留运行中手动选择与覆盖，不重复覆写。
+    /// Applies the successfully parsed permission and sandbox settings on their own when the model catalog has not loaded yet;
+    /// after the shared sandbox is initialized once, the running manual selection and overrides are kept and not overwritten again.
     pub fn apply_tools_settings(&self, tools: &pp_config::config::ToolsSettings) {
         self.permission.set_config(tools.clone());
         let _ = self.sandbox.get_or_init_with_override(
@@ -138,9 +138,9 @@ impl Bootstrap {
         );
     }
 
-    /// 注入进程级统计库句柄：请求、工具、hook、标题与子 Agent 复用同一连接。
+    /// Injects the process-wide stats database handle: requests, tools, hooks, titles and subagents reuse the same connection.
     ///
-    /// 根 `main::run` 构造句柄后走这里；[`Self::build`] 保留自解析路径入口。
+    /// The root `main::run` calls this after constructing the handle; [`Self::build`] keeps the self-resolving path entry point.
     pub fn build_with_stats(&self, stats: pp_stats::Database) -> Result<Agent> {
         let models = self.model_state()?;
         let catalog = models.catalog_snapshot();
@@ -189,15 +189,15 @@ pub struct Agent {
     auto_prune: bool,
     auto_prune_threshold_percent: u8,
     last_request: Option<TokenUsage>,
-    /// 最近一次收到真实 `last_request` 时的原始估算 token（用于校准水位阈值，随 `last_request` 一并清理）。
+    /// Raw estimated tokens from the last real `last_request` (used to calibrate the usage threshold and cleared together with `last_request`).
     last_request_raw_tokens: Option<u64>,
-    /// 本次会话普通请求的 output tokens 累计；会话根变化才清空。
+    /// Accumulated output tokens for plain requests in this session; cleared only when the session root changes.
     session_output_tokens: u64,
-    /// 当前会话已提交轮次的思考/推理记录（用于 `/context` 真实统计，覆盖双协议及恢复）。
+    /// Thinking/reasoning records of committed rounds in this session (for real `/context` statistics across both protocols and restores).
     thinking_history: Vec<context_diagnosis::ThinkingEntry>,
-    /// 进程内唯一的模型决议权威（手动覆盖 `a` → 配置默认 `b`）。
+    /// The single in-process authority for model resolution (manual override `a` → configured default `b`).
     models: std::sync::Arc<ModelState>,
-    /// 当前生效模型的来源；只有 fallback 会在任务边界按 `resolve()` 回落。
+    /// Source of the currently effective model; only fallback drops back to `resolve()` at task boundaries.
     model_source: ModelSource,
     catalog: ModelCatalog,
     current_model: ModelChoice,
@@ -209,12 +209,12 @@ pub struct Agent {
     pending_instructions: Option<String>,
     pending_project_load: Vec<pp_tools::project_instructions::Document>,
     reported_project_load: turn::ReportedProjectLoads,
-    /// 会话创建/重置时冻结的日期字符串，避免跨午夜改写系统提示词前缀破坏缓存。
+    /// Date string frozen when the session is created/reset, so crossing midnight cannot rewrite the system prompt prefix and break the cache.
     session_date: String,
-    /// 首轮固化在 system/instructions 中的静态项目规则块；会话已产生历史后保持不变，
-    /// 后续新激活或变更的 `AGENTS.md` 改为以 developer 消息增量追加。
+    /// Static project rules block frozen into system/instructions on the first round; it stays fixed once the session has history,
+    /// and later newly activated or changed `AGENTS.md` files are appended incrementally as developer messages.
     static_project_prompt: Option<String>,
-    /// 已通过 system 前缀或 developer 消息送达模型的 `(路径 -> 正文)` 快照。
+    /// `(path -> body)` snapshot already delivered to the model through the system prefix or a developer message.
     delivered_project_docs: std::collections::BTreeMap<PathBuf, String>,
     request_skills: Vec<pp_config::skills::SkillHeader>,
     journal: persistence::SessionJournal,
@@ -225,18 +225,18 @@ pub struct Agent {
     /// run/continue until a successful `/plan` retry clears it.
     plan_cleanup_error: Option<String>,
     plan_lease: Option<pp_tools::plan_catalog::PlanLease>,
-    /// 本次运行已追加但尚未完成 native commit 的迟到报告，避免错误重试复制正文。
+    /// Late reports already appended in this run but not yet committed natively, so an error retry does not duplicate the body.
     lsp_injected: std::collections::HashSet<u64>,
-    /// 进程内冻结的用户级 hook 配置；子 Agent 克隆同一份。
+    /// User-level hook configuration frozen in-process; subagents clone the same instance.
     hooks: std::sync::Arc<crate::hooks::Runner>,
-    /// 子 Agent 的角色定义名（`agent_type`）；根 Agent 为 `None`。
+    /// Role definition name of the subagent (`agent_type`); `None` for the root agent.
     hook_agent_type: Option<String>,
     ephemeral: bool,
     max_turns: Option<usize>,
     output_schema: Option<output_schema::OutputSchema>,
-    /// `auto_review` 模式下的独立安全审阅器共享状态。
+    /// Shared state of the independent safety reviewer in `auto_review` mode.
     auto_review: Option<std::sync::Arc<auto_review::AutoReviewState>>,
-    /// 声明在 `tools`/`subagent` 之后，确保先关闭子 Agent 再清理临时目录。
+    /// Declared after `tools`/`subagent` so subagents shut down before the temporary directory is cleaned up.
     ephemeral_subagent_dir: Option<tempfile::TempDir>,
 }
 
@@ -299,8 +299,8 @@ pub(in crate::agent) fn generate_prompt_cache_key(session_id: Option<&str>) -> S
     format!("pp-{h1:016x}{h2:016x}")
 }
 
-/// 为同一角色、共享上下文与计划下的并发/后续子 Agent 生成稳定共享的 `prompt_cache_key`，
-/// 令相同前缀批次命中 OpenAI Responses 服务端前缀缓存。
+/// Generates a stable shared `prompt_cache_key` for concurrent/follow-up subagents under the same role, shared context and plan,
+/// so batches with the same prefix hit the OpenAI Responses server-side prefix cache.
 pub(in crate::agent) fn generate_subagent_prompt_cache_key(
     definition: &str,
     shared_context: &str,
@@ -322,7 +322,7 @@ pub(in crate::agent) fn generate_subagent_prompt_cache_key(
     format!("pp-sub-{h1:016x}{h2:016x}")
 }
 
-/// 为摘要、标题、自动审查等内部辅助请求选择目标模型允许的最低推理档位。
+/// Selects the lowest thinking level the target model allows for internal helper requests such as summaries, titles and automatic review.
 pub(in crate::agent) fn lowest_think_level(
     thinking: &pp_config::models::ModelThinking,
     fallback: ThinkLevel,
@@ -540,7 +540,7 @@ impl Session {
         let _ = self.update_tools(definitions);
     }
 
-    /// 更新工具列表并返回是否发生实质变更；仅比较工具定义自身，避免序列化整段会话历史。
+    /// Updates the tool list and reports whether anything materially changed; compares only the tool definitions themselves, avoiding serialization of the whole session history.
     fn update_tools(
         &mut self,
         definitions: Vec<async_openai::types::chat::FunctionObject>,

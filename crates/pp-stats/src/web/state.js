@@ -1,5 +1,6 @@
 /**
- * 跨模块共享的应用状态与运行时回调桥接，避免循环导入与全局污染。
+ * Application state shared across modules plus the runtime callback bridge, avoiding circular imports
+ * and globals.
  */
 
 /** @typedef {import("../../web-types/api.d.ts").AnalyticsResponse} AnalyticsResponse */
@@ -66,7 +67,7 @@ export const hooks = {
 };
 
 /**
- * 注册入口级运行时回调，由 `stats.js` 在启动时调用。
+ * Registers the entry-level runtime callbacks, called by `stats.js` at startup.
  * @param {Partial<typeof hooks>} next
  */
 export function registerHooks(next) {
@@ -74,7 +75,7 @@ export function registerHooks(next) {
 }
 
 /**
- * 请求同源统计 JSON，统一将 HTTP 状态映射为可读错误消息。
+ * Requests same-origin stats JSON and maps HTTP statuses to readable error messages.
  * @template T
  * @param {string} url
  * @param {AbortSignal} [signal]

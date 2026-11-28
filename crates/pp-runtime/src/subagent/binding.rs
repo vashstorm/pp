@@ -1,4 +1,4 @@
-//! `Binding` 构造、模型／角色绑定与目录访问。
+//! `Binding` construction, model/role binding and directory access.
 
 use anyhow::{Result, ensure};
 use pp_config::config::{ModelRole, ModelRoles};

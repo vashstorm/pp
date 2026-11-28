@@ -1,11 +1,14 @@
-//! 主对话与独立审查页的进度事件：用量、测速、重试与计划进度缓存。
+//! Progress events for the main conversation and the standalone review tab: usage, token
+//! speed, retries and the plan progress cache.
 
 use crate::tui::{AgentEvent, App, Instant, ModelSource, Selection};
 
 impl App {
-    /// 主对话进度：用量与 token 测速由 App 缓存，其余交给 Transcript。
+    /// Main conversation progress: App caches usage and token speed, everything else goes to
+    /// Transcript.
     pub(super) fn on_agent_event(&mut self, event: AgentEvent) -> bool {
-        // 用量快照由 App 缓存，供状态栏渲染；不进入 Transcript。
+        // The usage snapshot is cached by App for status-line rendering and never enters
+        // Transcript.
         match event {
             event @ (AgentEvent::ThinkingDelta { .. }
             | AgentEvent::ReasoningSummaryDelta { .. }
@@ -38,8 +41,9 @@ impl App {
                         self.think_level = effort;
                         self.usage = None;
                     }
-                    // 来源跟随实际路由：override/default 同步覆盖快照，
-                    // role/fallback 只覆盖当前路由，不改变手动覆盖槽。
+                    // The source follows the actual route: override/default sync the override
+                    // snapshot, while role/fallback only override the current route and leave the
+                    // manual override slot untouched.
                     self.current_source = Some(source);
                     self.override_selection = match source {
                         ModelSource::Override => Some(Selection {
@@ -85,17 +89,20 @@ impl App {
                 self.token_speed.clear();
                 self.conversation.progress(event);
             }
-            // 重试期间只更新固定信息框，不追加对话条目。
+            // During a retry only the fixed notice box is updated and no conversation entry is
+            // appended.
             AgentEvent::RequestRetrying {
                 reason,
                 attempt,
                 wait_ms,
             } => self.retry_started(reason, attempt, wait_ms),
-            // 输入确认由 App 直接回显；不进 Transcript progress，不重复记录历史。
+            // Input acceptance is echoed directly by App; it never enters Transcript progress and
+            // records no duplicate history.
             AgentEvent::UserInputAccepted { text, .. } => {
                 self.append("You", &text);
             }
-            // 被 hook 拒绝的补充分只展示原因与原文，不伪装成成功的 You 输入。
+            // Input rejected by a hook shows only the reason and the original text and is not
+            // disguised as a successful You input.
             AgentEvent::UserInputRejected { text, reason, .. } => {
                 let mut body = format!("Input rejected: {reason}");
                 if !text.trim().is_empty() {
@@ -104,7 +111,8 @@ impl App {
                 }
                 self.append("Rejected", &body);
             }
-            // 执行期计划进度：只更新缓存与只读面板，不追加整篇正文到 Transcript。
+            // Execution-time plan progress: only the cache and read-only panel are updated, and
+            // the whole body is not appended to Transcript.
             AgentEvent::PlanProgressUpdated {
                 plan_id,
                 revision,
@@ -118,9 +126,11 @@ impl App {
         true
     }
 
-    /// 审查进度只进独立 review transcript：单独成方法以保留两套流缓冲顺序。
+    /// Review progress goes only to the standalone review transcript: a separate method keeps
+    /// the ordering of both stream buffers.
     pub(super) fn on_review_progress(&mut self, event: AgentEvent) -> bool {
-        // 审查进度只进独立 review transcript：不更新用量/主对话/派发。
+        // Review progress goes only to the standalone review transcript: no usage/main
+        // conversation/dispatch updates.
         if let Some(event) = self.stream.take() {
             self.conversation.progress(event);
         }

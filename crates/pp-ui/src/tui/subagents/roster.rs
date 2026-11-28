@@ -1,4 +1,4 @@
-//! Roster 页：选择校验、列表绘制与概览指标。
+//! Roster page: selection validation, list drawing and overview metrics.
 
 use super::inspector::{compact, format_cost, model_line, usage};
 use super::*;
@@ -36,7 +36,7 @@ impl Panel {
         if list.is_empty() {
             return None;
         }
-        // 过滤后旧选择可能不可见：控制只能作用于当前可见行。
+        // The old selection may be invisible after filtering: control may only act on the currently visible row.
         let index = self.selected_index(&list).unwrap_or(0);
         self.projection.agents().get(list[index].agent)
     }
@@ -632,7 +632,7 @@ mod tests {
         panel.handle(key(KeyCode::Tab), &mut drafts);
         let inspector = render(&mut panel, &mut drafts, 80, 24).join("\n");
         assert!(inspector.contains("Usage"), "{inspector}");
-        // Esc 先退出 inspector，再关闭 Hub。
+        // Esc leaves the inspector first and then closes the Hub.
         let close = panel.handle(key(KeyCode::Esc), &mut drafts);
         assert!(!close);
         let close = panel.handle(key(KeyCode::Esc), &mut drafts);
@@ -644,7 +644,7 @@ mod tests {
         let mut drafts = Drafts::default();
         let mut agent = record("a1", "Main", "running");
         agent.registered_ms = Some(500);
-        let task = "盘点工作区中的依赖和边界".repeat(12);
+        let task = "Inventory the dependencies and boundaries of the workspace".repeat(12);
         let mut work = run("r1", "a1", "running", &task);
         let mut panel = panel(vec![agent.clone()], vec![work.clone()]);
         panel.clock = 5_000;
@@ -818,9 +818,13 @@ mod tests {
         }
         panel.handle(key(KeyCode::Enter), &mut drafts);
         let rows = panel.visible();
-        assert_eq!(rows.len(), 2, "树中保留匹配项的祖先");
+        assert_eq!(
+            rows.len(),
+            2,
+            "the tree keeps the ancestors of matching entries"
+        );
         assert!(rows[0].muted && !rows[1].muted);
-        // 无匹配时不保留隐藏选择，也不能继续发控制。
+        // A hidden selection is not kept when nothing matches, and control can no longer be sent.
         for character in "zzz".chars() {
             panel.handle(key(KeyCode::Char('/')), &mut drafts);
             panel.handle(key(KeyCode::Char(character)), &mut drafts);

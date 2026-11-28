@@ -1,4 +1,5 @@
-//! 自动重试等待期的固定信息框：只在输入框上方展示，不进入对话与历史。
+//! Fixed notice box during automatic retry waits: shown above the input box only and never
+//! entering the conversation or history.
 use crate::tui::{App, Instant, transcript_style};
 use pp_core::events::RequestRetryReason;
 use ratatui::{
@@ -12,10 +13,10 @@ use std::time::Duration;
 
 pub(in crate::tui) struct Notice {
     reason: RequestRetryReason,
-    /// 刚刚失败的尝试序号（从 1 开始）。
+    /// Sequence number of the attempt that just failed (starting at 1).
     attempt: u32,
     deadline: Instant,
-    /// 剩余秒数向上取整，同一秒内保持显示稳定。
+    /// Remaining seconds rounded up, so the display stays stable within one second.
     shown_seconds: u64,
 }
 
@@ -59,12 +60,13 @@ impl App {
         ));
     }
 
-    /// 请求已重新开始、收尾或取消：立刻收起固定信息框。
+    /// The request restarted, finished or was cancelled: collapse the fixed notice box at
+    /// once.
     pub(in crate::tui) fn retry_finished(&mut self) {
         self.retry_notice = None;
     }
 
-    /// 推进倒计时；返回是否需要重绘。
+    /// Advances the countdown; returns whether a redraw is needed.
     pub(in crate::tui) fn retry_tick(&mut self, now: Instant) -> bool {
         let Some(notice) = self.retry_notice.as_ref() else {
             return false;
@@ -86,7 +88,8 @@ impl App {
         self.retry_notice.is_some()
     }
 
-    /// 固定信息框：与对话区分离，不随滚动移出视口。
+    /// Fixed notice box: separate from the conversation area and never scrolled out of the
+    /// viewport.
     pub(in crate::tui) fn draw_retry_notice(&self, frame: &mut Frame, area: Rect) {
         let Some(notice) = &self.retry_notice else {
             return;

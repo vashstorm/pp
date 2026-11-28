@@ -59,7 +59,7 @@ fn wait_subagent_reports_status_without_consuming_results_and_rejects_other_owne
     assert!(!first.to_string().contains("answer-r1"), "{first}");
     tools.commit_wait_results().unwrap();
     assert_eq!(binding.deliveries(&[]).len(), 1);
-    // Registry 落盘失败也不提前提交内存中的 consumed 标记。
+    // A failed registry persist must not commit the in-memory consumed flag early.
     let path = binding.directory().join("registry.json");
     fs::create_dir_all(binding.directory()).unwrap();
     if path.exists() {
@@ -111,7 +111,7 @@ fn wait_wrong_id_kinds_explain_selectors_without_reserving_results() {
             "task_ids",
             "agent_id",
         ] {
-            assert!(error.contains(hint), "缺少 ID 用途指引 {hint}: {error}");
+            assert!(error.contains(hint), "missing ID usage guidance {hint}: {error}");
         }
         assert_eq!(binding.deliveries(&[]).len(), 1);
     }
@@ -176,7 +176,7 @@ fn wait_mixed_targets_wait_for_child_and_background_bash() {
                         None,
                     )
                     .unwrap();
-                // 新出现的 Run 不属于本次 wait 固定的目标集合。
+                // A newly appearing Run is not part of the target set fixed by this wait.
                 lock(&binding.inner.state)
                     .disk
                     .runs
@@ -251,7 +251,7 @@ fn wait_timeout_cancels_only_selected_runs_and_their_descendant_tokens() {
             r#"{"run_ids":["r1","r2"]}"#,
             "timeout",
             &Default::default(),
-            &mut |_| panic!("超时必须进入回收路径"),
+            &mut |_| panic!("a timeout must enter the reaping path"),
             || pp_tools::wait::TIMEOUT,
         )
         .unwrap();
@@ -267,7 +267,7 @@ fn wait_timeout_cancels_only_selected_runs_and_their_descendant_tokens() {
         binding.wait_jobs(&["r3".into()]).unwrap()[0].status,
         "running"
     );
-    // 取消完成不等于消费成功；原生历史提交前结果仍可再次交付。
+    // Completed cancellation is not successful consumption; results can still be delivered again before the native history commit.
     assert_eq!(binding.deliveries(&["r2".into()]).len(), 1);
     tools.commit_wait_results().unwrap();
     assert_eq!(binding.deliveries(&["r1".into(), "r2".into()]).len(), 2);

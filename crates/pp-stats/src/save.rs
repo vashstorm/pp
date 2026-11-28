@@ -83,7 +83,8 @@ pub fn save(
             cost: None,
             rates: None,
         };
-        // 复用进程级连接与计价快照；费用与费率仍在采集时固定，读取路径不再回算。
+        // Reuses the process-wide connection and pricing snapshot; cost and rate are still fixed at
+        // collection time, so the read path never recomputes them.
         context.database.with_store_and_rates(|store, rates| {
             let (cost, rate) = rates.snapshot(
                 &record.model_reference,
@@ -197,7 +198,8 @@ mod tests {
             store
                 .link("legacy", Path::new("/missing/session.jsonl"))
                 .unwrap();
-            // 模拟没有快照表的旧库：重开时幂等建表，请求历史保持原样。
+            // Simulate a legacy database without the snapshot tables: reopening creates them
+            // idempotently and the request history stays as it was.
             store
                 .conn
                 .execute_batch("DROP TABLE request_contexts; DROP TABLE request_tools;")
@@ -250,7 +252,7 @@ mod tests {
             );
             assert!(detail.get("output_message").is_none());
             assert!(detail.get("session_entry").is_none());
-            // 重复键的写入不会补写工具行或覆盖快照。
+            // Writes with a duplicate key neither add tool rows nor overwrite the snapshot.
             assert_eq!(
                 store
                     .conn
@@ -307,7 +309,8 @@ mod tests {
             assert_eq!(
                 rows,
                 vec![
-                    // 同一请求内不按调用 id 去重；null 参数为 0，对象按 JSON 文本计字符。
+                    // Calls are not deduplicated by id within one request; null arguments count 0 and
+                    // objects count the characters of their JSON text.
                     (1, "read".to_owned(), 3),
                     (1, "bash".to_owned(), 0),
                     (1, "edit".to_owned(), 15),
@@ -323,7 +326,8 @@ mod tests {
             store
                 .insert(&fixture("native", 1001), &Value::Null)
                 .unwrap();
-            // 手工还原旧库形态：request_payloads 保存原生输出包装与会话条目快照。
+            // Reconstruct the legacy database by hand: request_payloads held the native output wrapper
+            // and the session entry snapshot.
             store
             .conn
             .execute_batch(
@@ -339,7 +343,7 @@ mod tests {
                 "type":"message",
                 "message":{"content":[{"type":"toolCall","name":"read","arguments":"abc"}]}
             }]);
-            // 已提交会话条目里有 toolCall 时优先，原生输出不参与。
+            // A toolCall in the committed session entry wins, and the native output does not take part.
             let saved_output = json!({
                 "native":{"tool_calls":[{"function":{"name":"ignored","arguments":"zzz"}}]},
                 "text":"answer body","thinking":"thinking body","partial":null
@@ -356,7 +360,8 @@ mod tests {
                 ],
             )
             .unwrap();
-            // 没有会话条目时从旧包装的 native 回退，参数按字符数计。
+            // Without a session entry the legacy wrapper's native output is the fallback, and arguments
+            // are counted by characters.
             let native_output = json!({
                 "native":[{"type":"function_call","name":"grep","arguments":"中😀"}],
                 "text":"answer body"
@@ -468,7 +473,7 @@ mod tests {
                 vec![(1, "read".to_owned(), 3), (2, "grep".to_owned(), 2)]
             );
             assert_eq!(requests(&store), before);
-            // 迁移结束恢复打开时的默认超时。
+            // The migration restores the default timeout from when the store was opened.
             assert_eq!(
                 store
                     .conn
@@ -477,7 +482,7 @@ mod tests {
                 250
             );
 
-            // 旧表已不存在：重复调用是空操作，不写任何行。
+            // The legacy table is already gone: a repeated call is a no-op that writes no rows.
             maintain(&mut store.conn).unwrap();
             for (table, expected) in [("request_contexts", 1), ("request_tools", 2)] {
                 assert_eq!(
@@ -556,7 +561,7 @@ mod tests {
                     5.0,
                 ))
                 .unwrap();
-            // 同一会话的同一个 call ID 只保留最后一次结果。
+            // Only the last result for the same call ID of the same session is kept.
             store
                 .tool(&tool_call(
                     &session,
@@ -568,7 +573,8 @@ mod tests {
                     300.0,
                 ))
                 .unwrap();
-            // 范围外与无法关联请求的执行不能污染范围内的计数。
+            // Executions outside the range or not linked to a request must not pollute the counts inside
+            // the range.
             store
                 .tool(&ToolCall {
                     request_key: None,
@@ -583,7 +589,8 @@ mod tests {
                 })
                 .unwrap();
 
-            // Errors 端点只返回失败请求行；工具失败不再进入该负载，历史行为由 Tools 页统计覆盖。
+            // The Errors endpoint returns only failed request rows; tool failures no longer enter that
+            // payload and their historical behavior is covered by the Tools page statistics.
             let errors = store.errors(Range::Day, now, 50).unwrap();
             let mut keys = errors
                 .as_object()
@@ -626,7 +633,8 @@ mod tests {
             assert_eq!(read["cancelled"], 1);
             assert_eq!(read["avg_duration_ms"], 7.5);
             assert!(!tools.to_string().contains("/tmp/x"));
-            // 取消不是错误：取消信息不出现在任何工具错误汇总里。
+            // A cancellation is not an error: cancellation details never show up in any tool error
+            // summary.
             assert!(!tools.to_string().contains("Tool cancelled"));
 
             store.conn.execute_batch("DROP TABLE tool_calls;").unwrap();
@@ -637,7 +645,7 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM tool_calls", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(count, 0);
-            // 重开后表与索引按幂等 schema 重建。
+            // Reopening recreates tables and indexes through the idempotent schema.
             assert_eq!(
             store
                 .conn

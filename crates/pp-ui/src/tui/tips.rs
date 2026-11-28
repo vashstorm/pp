@@ -40,7 +40,7 @@ fn section_lines(lines: &mut Vec<Line<'static>>, section: &'static Section, widt
         Style::default().fg(first()).add_modifier(Modifier::BOLD),
     ));
     let rule_style = Style::default().fg(separator());
-    // 双列由实际数据宽度决定：正文宽度容得下两个按对齐键名渲染的条目再加四列间隔。
+    // The two-column layout depends on the actual data width: the body must fit two entries rendered with aligned key names plus a four-column gap.
     let two_column = usize::from(width) >= row_width() * 2 + 4;
     if two_column {
         let rows = tips.len().div_ceil(2);

@@ -1,8 +1,8 @@
-//! 诊断编排：只向匹配的 language server 采集诊断，生成可信报告。
+//! Diagnostic orchestration: collect diagnostics only from matching language servers and produce a trustworthy report.
 //!
-//! 报告里的每个状态都来自真实响应：没有匹配服务器、启动失败、没有诊断能力与
-//! 未收到新鲜报告各自保留原因；任何一条路径都不会把“未知”渲染成“干净”。
-//! 显式 diagnostics 永远返回当前真实问题，不套跨轮去重账本。
+//! Every status in the report comes from a real response: no matching server, startup failure, no diagnostic capability and
+//! no fresh report each keep their own reason; no path ever renders "unknown" as "clean".
+//! Explicit diagnostics always return the current real problems and bypass the cross-turn dedup ledger.
 
 use anyhow::{Context, Result, ensure};
 use globset::GlobBuilder;
@@ -21,31 +21,31 @@ use pp_core::lsp_report::ReportDiagnostic;
 use pp_core::lsp_report::ReportStatus;
 use pp_core::lsp_report::ServerReport;
 
-/// 一次 glob diagnostics 最多解析的普通文件数。
+/// Maximum number of regular files a single glob diagnostics call resolves.
 pub(crate) const MAX_TARGETS: usize = 20;
 
-/// 自动钩子（保存/编辑后）最多展示的诊断消息数。
+/// Maximum number of diagnostic messages displayed by the automatic hook (after save/edit).
 pub const AUTO_MESSAGE_LIMIT: usize = 50;
 
-/// 显式 `lsp diagnostics` 单文件最多展示的诊断消息数。
+/// Maximum number of diagnostic messages per file displayed by explicit `lsp diagnostics`.
 pub const EXPLICIT_MESSAGE_LIMIT: usize = 100;
 
-/// 单条诊断正文渲染上限（字符数），避免巨型类型报错淹没上下文。
+/// Render cap for a single diagnostic body (in characters), so a huge type error cannot flood the context.
 const MAX_DIAGNOSTIC_MESSAGE_CHARS: usize = 500;
 
-/// glob 解析结果；`truncated` 为 true 时调用方必须提示只检查了前 20 个文件。
+/// Glob resolution result; when `truncated` is true the caller must say only the first 20 files were checked.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct DiagnosticTargets {
     pub(crate) paths: Vec<PathBuf>,
     pub(crate) truncated: bool,
 }
 
-/// 采集单个文件的诊断。
+/// Collect diagnostics for a single file.
 ///
-/// - 查询所有文件类型匹配的真实服务器；旧 CLI adapter 明确报告为不支持。
-/// - 单服务器的启动/请求失败写入该服务器的 `ServerReport`，不影响其他服务器；
-///   取消与清理失败保留 typed error 向上传播。
-/// - `deadline` 是绝对期限，启动、加载与请求共用，不要每层重新起算。
+/// - Query every real server whose file types match; legacy CLI adapters are reported explicitly as unsupported.
+/// - A per-server startup/request failure is recorded in that server's `ServerReport` and does not affect other servers;
+///   cancellation and cleanup failures keep their typed error and propagate.
+/// - `deadline` is an absolute deadline shared by startup, load and request; do not restart it at each layer.
 pub(crate) fn collect(
     registry: &Registry,
     path: &Path,
@@ -57,9 +57,9 @@ pub(crate) fn collect(
 ) -> Result<DiagnosticReport> {
     pp_core::cancellation::check(cancellation)?;
     ensure!(registry.enabled(), "LSP support is disabled.");
-    // 配置错误是显式调用必须看到的原因，不能被“没有匹配服务器”掩盖。
+    // A configuration error is a reason explicit calls must see, and must not be masked by "no matching server".
     let _config = registry.config()?;
-    // 保存调用方给出的路径用于展示，但读写都基于工作区内的绝对路径。
+    // The caller-supplied path is kept for display, but reads and writes use the absolute path inside the workspace.
     let target = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -104,11 +104,11 @@ fn is_control(error: &anyhow::Error) -> bool {
         .any(|cause| cause.is::<Cancelled>() || cause.is::<CleanupError>())
 }
 
-/// 把报告渲染成工具/终端共用的英文分组正文。
+/// Render the report into the English grouped body shared by the tool and the terminal.
 ///
-/// `max_messages` 只给自动钩子使用（最多 50 条）；显式 diagnostics 传 `None`
-/// 保留完整报告，由工具输出限额控制正文。任何“没有报告”的状态都会显式出现，
-/// 不会读成 OK。
+/// `max_messages` is used only by the automatic hook (at most 50); explicit diagnostics pass `None`
+/// to keep the full report, with the body size controlled by the tool output limit. Any "no report" status shows up explicitly
+/// and never reads as OK.
 pub fn render(report: &DiagnosticReport, max_messages: Option<usize>) -> String {
     let path = clean_text(&report.path);
     if report.servers.is_empty() {
@@ -165,11 +165,11 @@ pub fn render(report: &DiagnosticReport, max_messages: Option<usize>) -> String 
     lines.join("\n")
 }
 
-/// 把 diagnostics 的 `file` 参数解析成有界、排序固定的普通文件列表。
+/// Resolve the `file` argument of diagnostics into a bounded, fixed-order list of regular files.
 ///
-/// 无 glob 字符时按单文件处理；其余情况按 cwd 相对 glob 扫描，最多返回
-/// [`MAX_TARGETS`] 个路径并置 `truncated`。无匹配返回空列表，由调用方明确
-/// 提示“没有匹配”，不能当成 OK。
+/// Without glob characters it is treated as a single file; otherwise a cwd-relative glob scan returns at most
+/// [`MAX_TARGETS`] paths and sets `truncated`. No match returns an empty list, and the caller must explicitly
+/// say "no match" rather than treat it as OK.
 pub(crate) fn resolve_targets(
     cwd: &Path,
     pattern: &str,
@@ -236,8 +236,8 @@ pub(crate) fn resolve_targets(
             continue;
         }
         matches.insert(normalize(entry.path()));
-        // 只保留最小的 MAX_TARGETS 个路径；多出来的最大值立即丢弃，扫描期间
-        // 的占用因此有界，而不是先收集整个工作区再截断。
+        // Keep only the smallest MAX_TARGETS paths; any larger one is dropped immediately, so the footprint during the scan
+        // stays bounded instead of collecting the whole workspace and truncating afterwards.
         if matches.len() > MAX_TARGETS {
             truncated = true;
             matches.pop_last();
@@ -277,7 +277,7 @@ fn server_report(
     })
 }
 
-/// 单服务器失败写入报告；取消与清理失败不是“服务器报告”，必须保留类型上抛。
+/// A single-server failure goes into the report; cancellation and cleanup failures are not "server reports" and must keep their type and propagate.
 fn failed_or_control(name: &str, error: anyhow::Error) -> Result<ServerReport> {
     if is_control(&error) {
         return Err(error);
@@ -290,7 +290,7 @@ fn failed_or_control(name: &str, error: anyhow::Error) -> Result<ServerReport> {
     })
 }
 
-/// LSP 位置是 0-based UTF-16；报告统一保存 1-based，供工具与终端直接展示。
+/// LSP positions are 0-based UTF-16; reports store them uniformly as 1-based so tools and the terminal can display them directly.
 fn report_diagnostic(diagnostic: &Diagnostic) -> ReportDiagnostic {
     ReportDiagnostic {
         line: diagnostic.range.start.line.saturating_add(1),
@@ -316,11 +316,11 @@ fn code_text(code: &serde_json::Value) -> String {
     }
 }
 
-/// 跨服务器按 range+message 去重，重复时保留更高 severity。
+/// Deduplicate across servers by range+message, keeping the higher severity on duplicates.
 ///
-/// 第一遍只读扫描，用借用消息的键记录每个身份当前的胜者下标；第二遍按原顺序
-/// 把胜者移回对应服务器分组，不复制任何诊断内容。同等级重复保留先到的条目，
-/// 保证结果稳定。最后每个服务器内部按 severity、位置与消息稳定排序。
+/// The first pass is a read-only scan that records, with keys borrowing the messages, the current winner index per identity; the second pass moves
+/// the winners back into their server group in the original order, copying no diagnostic content. Duplicates of equal severity keep the earlier entry,
+/// which keeps the result stable. Finally each server's entries are stably sorted by severity, position and message.
 fn deduplicate(servers: &mut [ServerReport]) {
     let mut flat: Vec<(usize, ReportDiagnostic)> = Vec::new();
     for (index, server) in servers.iter_mut().enumerate() {
@@ -334,7 +334,7 @@ fn deduplicate(servers: &mut [ServerReport]) {
             let key = DiagnosticKey::of(item);
             match winners.get(&key).copied() {
                 Some(owner) if item.severity < flat[owner].1.severity => {
-                    // 更严重的重复替换胜者：hint 不可能压掉后到的 error。
+                    // A more severe duplicate replaces the winner: a hint can never suppress a later error.
                     winners.insert(key, index);
                 }
                 Some(_) => {}
@@ -367,7 +367,7 @@ fn deduplicate(servers: &mut [ServerReport]) {
     }
 }
 
-/// 去重身份键：借用诊断自身的消息，避免为扫描复制内容。
+/// Deduplication identity key: borrows the diagnostic's own message, avoiding a copy just for the scan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct DiagnosticKey<'a> {
     line: u32,
@@ -562,7 +562,7 @@ pub(crate) fn contains_glob(pattern: &str) -> bool {
         .any(|ch| matches!(ch, '*' | '?' | '[' | '{'))
 }
 
-/// 把 glob 拆成「静态目录根 + 相对模式」；绝对模式只看静态前缀，避免从 `/` 扫描。
+/// Split a glob into "static directory root + relative pattern"; an absolute pattern only looks at the static prefix, avoiding a scan from `/`.
 pub(crate) fn glob_scope(cwd: &Path, pattern: &str) -> (PathBuf, String) {
     let normalized = pattern.replace('\\', "/");
     let base = if normalized.starts_with('/') {
@@ -778,7 +778,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.is::<Cancelled>(), "{error:#}");
-        // 让阻塞在 FIFO 上的 fixture 继续走到 shutdown，避免退出清理只能等超时。
+        // Let a fixture blocked on the FIFO proceed to shutdown, so exit cleanup does not have to wait for the timeout.
         let unblock = barrier.clone();
         std::thread::spawn(move || {
             use std::io::Write;
@@ -819,7 +819,7 @@ mod tests {
         assert_eq!(servers[1].diagnostics[1].severity, 2);
         assert_eq!(servers[1].diagnostics[1].line, 1);
 
-        // 顺序反转时 error 先到，hint 直接丢弃，错误位置不变。
+        // With the order reversed, error arrives first and the hint is dropped outright; the error position is unchanged.
         let mut reversed = vec![
             ServerReport {
                 server: "error".to_owned(),
@@ -839,7 +839,7 @@ mod tests {
         assert_eq!(reversed[0].diagnostics[0].severity, 1);
         assert!(reversed[1].diagnostics.is_empty());
 
-        // 同等级的重复保留先到条目，后到条目被丢弃。
+        // Duplicates of equal severity keep the earlier entry and drop the later one.
         let mut equal = vec![
             ServerReport {
                 server: "first".to_owned(),
@@ -917,7 +917,7 @@ mod tests {
         assert!(text.contains("src/lib.rs:2:1 [error] first"), "{text}");
         assert!(text.contains("src/lib.rs:4:1 [warning] second"), "{text}");
 
-        // 自动调用方最多 50 条；这里用 1 条验证截断提示，显式调用保留全部。
+        // The automatic caller shows at most 50; one is used here to verify the truncation notice, while explicit calls keep everything.
         let limited = render(&issues, Some(1));
         assert!(
             limited.contains("1 more diagnostic(s) not shown"),

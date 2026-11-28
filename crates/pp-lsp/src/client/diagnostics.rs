@@ -1,4 +1,4 @@
-//! 诊断缓存（push/pull）、进度与项目加载信号，以及按文档采集诊断的客户端方法。
+//! Diagnostic cache (push/pull), progress and project-load signals, and the client methods that collect per-document diagnostics.
 
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -16,18 +16,18 @@ use pp_core::lsp_report::ReportStatus;
 use super::handshake::unauthorized_edit;
 use super::{COLD_WINDOW, Client, Op, POLL, SETTLE};
 
-/// 一次诊断等待的结果；`diagnostics: None` 表示未验证，绝不能读作干净。
+/// Result of one diagnostic wait; `diagnostics: None` means unverified and must never be read as clean.
 #[derive(Clone, Debug)]
 pub(crate) struct DiagnosticOutcome {
     pub(crate) diagnostics: Option<Vec<Diagnostic>>,
     pub(crate) note: Option<String>,
-    /// 有版本证明或来自本次拉取。
-    /// 供上层直接生成 `ServerReport`，不必解析英文 note。
+    /// Either backed by a version proof or produced by this pull.
+    /// Lets upper layers build a `ServerReport` directly without parsing the English note.
     pub(crate) status: ReportStatus,
 }
 
 impl DiagnosticOutcome {
-    /// 有效报告：空诊断是 clean，非空是 issues；调用方不得改写这个判定。
+    /// Valid report: empty diagnostics are clean, non-empty are issues; callers must not override this decision.
     fn reported(
         diagnostics: Vec<Diagnostic>,
         _version: Option<u64>,
@@ -46,7 +46,7 @@ impl DiagnosticOutcome {
         }
     }
 
-    /// 没有拿到足够新的报告（超时、等待未完成、无缓存 unchanged 等）。
+    /// No sufficiently fresh report was obtained (timeout, incomplete wait, cached unchanged, etc.).
     fn unverified(note: String) -> Self {
         Self {
             diagnostics: None,
@@ -55,7 +55,7 @@ impl DiagnosticOutcome {
         }
     }
 
-    /// 请求或报告本身失败；不能描述成“没有诊断”。
+    /// The request or the report itself failed; it cannot be described as "no diagnostics".
     fn failed(note: String) -> Self {
         Self {
             diagnostics: None,
@@ -64,7 +64,7 @@ impl DiagnosticOutcome {
         }
     }
 
-    /// 服务器没有可用的诊断能力。
+    /// The server has no usable diagnostics capability.
     fn unsupported(note: String) -> Self {
         Self {
             diagnostics: None,
@@ -82,7 +82,7 @@ pub(crate) struct Published {
     pub(crate) epoch: u64,
 }
 
-/// 诊断缓存：push 报告按 URI 保存，带接收序号与缓存代次。
+/// Diagnostic cache: push reports are stored per URI with a receive sequence number and a cache epoch.
 #[derive(Default)]
 pub(crate) struct Diagnostics {
     entries: Mutex<HashMap<String, Published>>,
@@ -93,7 +93,7 @@ pub(crate) struct Diagnostics {
 
 impl Diagnostics {
     pub(crate) fn publish(&self, uri: &str, version: Option<u64>, diagnostics: Vec<Diagnostic>) {
-        // 在 `entries` 持锁状态下分配 `seq` 与读取 `epoch`，避免与 `invalidate()` 及并发 `pull()` 乱序覆盖。
+        // Allocate `seq` and read `epoch` while holding the `entries` lock, avoiding out-of-order overwrites with `invalidate()` and concurrent `pull()`.
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
         let epoch = self.epoch.load(Ordering::SeqCst);
@@ -108,7 +108,7 @@ impl Diagnostics {
         );
     }
 
-    /// 标记某个 URI 的缓存过期（刚提交内容变更时调用）。
+    /// Mark the cache for a URI stale (called when content was just committed).
     pub(crate) fn invalidate(&self, uri: &str) {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(entry) = entries.get_mut(uri) {
@@ -128,26 +128,26 @@ impl Diagnostics {
         self.seq.load(Ordering::SeqCst)
     }
 
-    /// 统一的新鲜快照判定：`seq > 0`（未被 [`Diagnostics::invalidate`] 标脏）且
-    /// `epoch` 仍是当前代次（未被 [`Diagnostics::refresh`] 推进）。
+    /// Unified freshness decision: `seq > 0` (not marked stale by [`Diagnostics::invalidate`]) and
+    /// `epoch` is still the current generation (not advanced by [`Diagnostics::refresh`]).
     ///
-    /// 版本是否匹配按调用方语义另行追加；但这两条基线只在这里判定，
-    /// push 复用、`unchanged` 报告与快速修复上下文不得各写一套。
+    /// Whether the version matches is appended separately per caller semantics; but these two baselines are decided only here,
+    /// and push reuse, `unchanged` reports and quick-fix context must not each implement their own.
     pub(crate) fn fresh_snapshot(&self, uri: &str) -> Option<Published> {
         let epoch = self.epoch.load(Ordering::SeqCst);
         let entry = self.snapshot(uri)?;
         (entry.seq > 0 && entry.epoch == epoch).then_some(entry)
     }
 
-    /// `workspace/diagnostic/refresh`：使旧代次的报告不再算新鲜。
+    /// `workspace/diagnostic/refresh`: reports from older generations no longer count as fresh.
     pub(crate) fn refresh(&self) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// `unchanged` 报告只有缓存版本与当前文档版本一致、且代次未被刷新时才可信；
-    /// 没有可信缓存时必须按未验证处理，绝不能读作干净。
+    /// An `unchanged` report is trustworthy only when the cached version matches the current document version and the generation was not refreshed;
+    /// without a trustworthy cache it must be treated as unverified, never read as clean.
     pub(crate) fn unchanged_report(&self, uri: &str, expected: u64) -> Option<Vec<Diagnostic>> {
-        // 新鲜度由 `fresh_snapshot` 统一判定；这里只追加“版本必须与当前文档一致”。
+        // Freshness is decided uniformly by `fresh_snapshot`; only "version must match the current document" is added here.
         let entry = self.fresh_snapshot(uri)?;
         (entry.version == Some(expected)).then_some(entry.diagnostics)
     }
@@ -168,18 +168,18 @@ impl Diagnostics {
     }
 }
 
-/// 进度与项目加载信号。
+/// Progress and project-load signals.
 #[derive(Default)]
 pub(crate) struct Signals {
-    /// 已 begin 未 end 的进度 token；`report` 不算活动进度。
+    /// Progress tokens that began but have not ended; `report` does not count as active progress.
     active: Mutex<HashSet<String>>,
-    /// 已追加工作区根、还没看到由这次追加触发的 `begin` 的加载数。
+    /// Number of loads whose workspace root was appended but whose triggering `begin` has not been seen yet.
     pending_loads: AtomicU64,
     pub(crate) closed: AtomicBool,
 }
 
-/// 原子饱和递减：`try_update` 超出 MSRV 1.88，`fetch_update` 已在其后更名弃用，
-/// 因此用 CAS 循环表达“永不下溢”的语义。
+/// Atomic saturating decrement: `try_update` is beyond MSRV 1.88 and `fetch_update` was renamed and deprecated after it,
+/// so a CAS loop expresses the "never underflow" semantics.
 fn saturating_decrement(counter: &AtomicU64) {
     let mut expected = counter.load(Ordering::SeqCst);
     loop {
@@ -233,12 +233,12 @@ impl Signals {
             .is_empty()
     }
 
-    /// 追加工作区根之前登记一次等待加载：只有随后出现的 `begin` 才会消费它。
+    /// Register one pending load before appending a workspace root: only a subsequently observed `begin` consumes it.
     pub(super) fn begin_pending_load(&self) {
         self.pending_loads.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// 追加失败时撤销这次登记。
+    /// Undo that registration when the append fails.
     pub(super) fn cancel_pending_load(&self) {
         saturating_decrement(&self.pending_loads);
     }
@@ -247,10 +247,10 @@ impl Signals {
         saturating_decrement(&self.pending_loads);
     }
 
-    /// 等待所有进度结束且没有未开始的追加；超时、取消或连接关闭返回 false（未验证）。
+    /// Wait until all progress ends and no append is still pending; timeout, cancellation or a closed connection returns false (unverified).
     ///
-    /// 在追加之前开始的进度 token 仍算活动：它稍后的 `end` 不会完成这次等待，
-    /// 否则旧项目的结束会被误认为新根已加载。
+    /// A progress token that started before the append still counts as active: its later `end` does not complete this wait,
+    /// otherwise the end of the old project would be mistaken for the new root being loaded.
     pub(super) fn wait_project_load_with(
         &self,
         deadline: Instant,
@@ -282,9 +282,9 @@ struct PushTarget<'a> {
 }
 
 impl Client {
-    /// 采集目标文件的诊断；`diagnostics: None` 表示未验证。
+    /// Collect diagnostics for the target file; `diagnostics: None` means unverified.
     ///
-    /// `deadline` 是绝对期限：启动、等待 push 与 pull 共用这份预算。
+    /// `deadline` is an absolute deadline: startup, waiting for pushes and the pull all share this budget.
     pub(crate) fn collect_diagnostics(
         &self,
         path: &Path,
@@ -301,7 +301,7 @@ impl Client {
         let mut service = |request: ServerRequest| request.respond(unauthorized_edit());
         let mut outcome = None;
         self.operation(deadline, cancellation, &mut service, |op| {
-            // 基线必须在 didOpen/didChange 之前保存：打开动作触发的 push 才算新鲜。
+            // The baseline must be recorded before didOpen/didChange so pushes triggered by the open count as fresh.
             let seq_before = self.diagnostics.seq();
             let (state, synced) = self.open_or_refresh_with_sync(op, path)?;
             let expected = state.version as u64;
@@ -351,14 +351,14 @@ impl Client {
         let mut note = None;
         match report.get("kind").and_then(Value::as_str) {
             Some("full") => {
-                // `items` 必须显式存在且严格解析：畸形报告是失败，不是空报告。
+                // `items` must be present explicitly and parse strictly: a malformed report is a failure, not an empty report.
                 let items = match full_items(&report) {
                     Ok(items) => items,
                     Err(reason) => {
                         bail!("The server returned a malformed diagnostic report: {reason}.");
                     }
                 };
-                // 先解析成功，再更新 resultId 与缓存。
+                // Parse successfully first, then update resultId and the cache.
                 let (related, warnings) = related_reports(&report);
                 if let Some(result_id) = report.get("resultId").and_then(Value::as_str) {
                     self.diagnostics.set_result_id(uri, result_id);
@@ -371,7 +371,7 @@ impl Client {
                 note = join_notes(warnings);
             }
             Some("unchanged") => {
-                // 只有版本匹配且代次未刷新的缓存才能证明当前版本没有诊断。
+                // Only a cache whose version matches and whose generation was not refreshed can prove the current version has no diagnostics.
                 match self.diagnostics.unchanged_report(uri, expected) {
                     Some(items) => {
                         if let Some(result_id) = report.get("resultId").and_then(Value::as_str) {
@@ -400,7 +400,7 @@ impl Client {
         ))
     }
 
-    /// pull 失败时仍可使用本次基线之后到达、版本匹配的 push；没有则未验证。
+    /// When the pull fails, a version-matching push that arrived after this baseline is still usable; otherwise unverified.
     fn pull_failure(
         &self,
         failure: Failure,
@@ -449,9 +449,9 @@ impl Client {
         }
     }
 
-    /// 基线之后到达、版本匹配且代次仍有效的 push 报告。
+    /// A push report that arrived after the baseline, matches the version and is still in a valid generation.
     fn fresh_push(&self, uri: &str, expected: u64, seq_before: u64) -> Option<DiagnosticOutcome> {
-        // 基线之前到达的报告不能证明本次请求之后的状态，因此还要比 `seq_before`。
+        // A report that arrived before the baseline cannot prove the state after this request, hence also compare `seq_before`.
         let entry = self.diagnostics.fresh_snapshot(uri)?;
         if entry.seq <= seq_before || entry.version != Some(expected) {
             return None;
@@ -477,8 +477,8 @@ impl Client {
             synced,
             opened_at,
         } = target;
-        // 本次未向服务器发送 didOpen/didChange 时，若当前版本与 epoch 已有新鲜缓存，直接复用，
-        // 避免 push-only 服务器重复查询未改文件或保存联动早于收集返回时等待到超时。
+        // When this call sent no didOpen/didChange and a fresh cache exists for the current version and epoch, reuse it directly,
+        // avoiding a redundant query of an unchanged file on push-only servers or waiting until timeout when save linkage returned before collection.
         if !synced && let Some(entry) = self.diagnostics.fresh_snapshot(uri) {
             match entry.version {
                 Some(version) if version == expected => {
@@ -506,7 +506,7 @@ impl Client {
         let mut settled_at: Option<Instant> = None;
         let mut last_seq = seq_before;
         loop {
-            // 等待期间也响应取消；不能在后台等满 deadline 才返回。
+            // Cancellation is honored while waiting too; the call must not sit until the deadline and then return.
             pp_core::cancellation::check(cancellation)?;
             if let Some(entry) = self.diagnostics.fresh_snapshot(uri)
                 && entry.seq > seq_before
@@ -562,8 +562,8 @@ impl Client {
     }
 }
 
-/// `full` 报告的 `items` 必须显式存在且严格可解析；缺失或畸形都是失败。
-/// 错误信息不回显服务器给的任何值。
+/// `items` of a `full` report must be present explicitly and strictly parseable; missing or malformed is a failure.
+/// Error messages never echo any value the server supplied.
 pub(super) fn full_items(report: &Value) -> Result<Vec<Diagnostic>, String> {
     let Some(items) = report.get("items") else {
         return Err("the full report has no items".to_owned());
@@ -572,7 +572,7 @@ pub(super) fn full_items(report: &Value) -> Result<Vec<Diagnostic>, String> {
         .map_err(|_| "the full report's items are not a valid diagnostic array".to_owned())
 }
 
-/// `relatedDocuments` 中单个 URI 畸形只跳过该 URI 并记录 warning，不影响目标报告。
+/// A malformed single URI in `relatedDocuments` only skips that URI and records a warning; the target report is unaffected.
 pub(super) fn related_reports(report: &Value) -> (Vec<(String, Vec<Diagnostic>)>, Vec<String>) {
     let Some(related) = report.get("relatedDocuments") else {
         return (Vec::new(), Vec::new());
@@ -784,7 +784,7 @@ mod integration {
         assert_eq!(outcome.status, ReportStatus::ReportedIssues);
         assert_eq!(outcome.diagnostics.as_ref().map(Vec::len), Some(1));
 
-        // 发生过新同步时，即使存在同版本旧缓存也必须等待更新的推送，不得误用。
+        // When a new sync happened, a newer push must be awaited even if a stale cache with the same version exists; it must not be misused.
         let stale_outcome = client
             .wait_push(
                 PushTarget {

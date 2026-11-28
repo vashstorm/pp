@@ -5,7 +5,7 @@ use pp_core::events::DiffLineKind;
 use ratatui::text::Span;
 use std::{collections::HashMap, ops::Range};
 
-/// 只比较连续替换段中对应行的公共前后缀，不在绘制时重新读取文件。
+/// Compare only the common prefix and suffix of the corresponding lines inside a consecutive replaced run; never re-reads the file while drawing.
 pub(super) fn highlights(lines: &[DiffLine]) -> HashMap<usize, Range<usize>> {
     let mut result = HashMap::new();
     let mut start = 0;
@@ -35,7 +35,7 @@ pub(super) fn highlights(lines: &[DiffLine]) -> HashMap<usize, Range<usize>> {
                 .take_while(|(a, b)| a == b)
                 .map(|(c, _)| c.len_utf8())
                 .sum();
-            // 整行替换已经用前景色标识；只强调具有公共正文的局部变化。
+            // A fully replaced line is already marked by the foreground color; only local changes with a common body are emphasized.
             if !a[..prefix].trim().is_empty() || suffix > 0 {
                 result.insert(old, prefix..a.len() - suffix);
                 result.insert(new, prefix..b.len() - suffix);
@@ -108,7 +108,7 @@ pub(super) fn spans(
     ) {
         return vec![Span::styled(text.to_owned(), base)];
     }
-    // 轻量词法着色仅影响上下文；不声称解析完整语言语法。
+    // Lightweight lexical coloring only affects the context; it does not claim to parse the full language grammar.
     let mut result = Vec::new();
     let mut chars = text.char_indices().peekable();
     while let Some((start, c)) = chars.next() {

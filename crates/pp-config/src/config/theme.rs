@@ -271,7 +271,7 @@ impl Default for TuiSettings {
 }
 
 impl TuiSettings {
-    /// 复用配置的严格校验与原子更新，同时保存 TUI 主题、图标模式与工具卡片风格偏好。
+    /// Reuses the configuration's strict validation and atomic update, saving the TUI theme, icon mode and tool card style preferences together.
     pub fn save_appearance(
         path: &Path,
         theme: Theme,
@@ -348,7 +348,7 @@ mod tests {
 
         std::fs::write(
             &path,
-            "# 保留说明\ndebug: true # 调试\ntui:\n  max_fps: 90\n  theme: catppuccin-mocha\n  icons: nerd-font\n  tool_style: badge\n",
+            "# preserved note\ndebug: true # debug\ntui:\n  max_fps: 90\n  theme: catppuccin-mocha\n  icons: nerd-font\n  tool_style: badge\n",
         )
         .unwrap();
         let loaded = read_settings(&path).unwrap().tui;
@@ -370,8 +370,8 @@ mod tests {
         assert_eq!(updated.icons, IconMode::Nerd);
         assert_eq!(updated.tool_style, ToolStyle::Ledger);
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("# 保留说明"));
-        assert!(text.contains("debug: true # 调试"));
+        assert!(text.contains("# preserved note"));
+        assert!(text.contains("debug: true # debug"));
     }
 
     #[test]

@@ -1,16 +1,16 @@
-//! 项目计划身份登记表（`.pp/plan-index.json`）与计划级辅助锁。
+//! Project plan identity registry (`.pp/plan-index.json`) and the plan-level auxiliary lock.
 //!
-//! 登记表是跨会话的稳定身份来源：只保存 `{id, file_name, location, deleted,
-//! deleted_file_identity}`，不保存正文、标题、进度或会话信息；它不是第二套
-//! TODO 数据库，也不授予执行权限。所有读写都经 `Workspace`/`Target` 的
-//! NOFOLLOW 安全路径；并发变更通过读取基线与 `save_if_unchanged` 拒绝，
-//! 绝不自动重试或覆盖。
+//! The registry is the stable cross-session identity source: it stores only `{id, file_name, location, deleted,
+//! deleted_file_identity}`, never bodies, titles, progress or session information; it is not a second
+//! TODO database and grants no execution permission. All reads and writes go through the `Workspace`/`Target`
+//! NOFOLLOW safe paths; concurrent changes are rejected by the read baseline and `save_if_unchanged`,
+//! and are never retried or overwritten automatically.
 //!
-//! 锁约定：同一计划 ID 的模型任务与管理动作互斥使用 `.pp/plan-locks/<id>.lock`
-//! （`PlanLease`）；登记表的短事务另用 `.pp/plan-index.lock`
-//! （`PlanCatalogLock`）。同时持有时顺序固定为计划 lease → 登记表锁。
-//! `load_catalog`/`save_catalog` 不自行加锁，调用方必须已持有
-//! `PlanCatalogLock`。
+//! Lock protocol: model tasks and management actions for the same plan ID are mutually exclusive via `.pp/plan-locks/<id>.lock`
+//! (`PlanLease`); short registry transactions additionally use `.pp/plan-index.lock`
+//! (`PlanCatalogLock`). When both are held the order is fixed: plan lease → registry lock.
+//! `load_catalog`/`save_catalog` never lock on their own, so the caller must already hold
+//! `PlanCatalogLock`.
 
 mod entries;
 mod io;
@@ -24,10 +24,10 @@ pub use io::{load_catalog, save_catalog};
 pub use lock::{PlanCatalogLock, PlanLease};
 pub use moves::{cleanup_confirmed_leftover, commit_plan_move, file_identity, publish_plan_move};
 
-/// 登记表读取上限 16 MiB；损坏或超大的登记文件必须显式报错，禁止当空表覆盖。
+/// Registry read cap is 16 MiB; a corrupted or oversized registry file must report an explicit error and never be overwritten as an empty table.
 pub const CATALOG_MAX_BYTES: usize = 16 * 1024 * 1024;
 
-/// 当前登记表 schema 版本；加载时不匹配即拒绝。
+/// Current registry schema version; loading rejects any mismatch.
 pub const CATALOG_VERSION: u32 = 1;
 
 #[cfg(test)]

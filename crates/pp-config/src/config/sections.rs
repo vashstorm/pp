@@ -1,10 +1,10 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-/// MCP 工具代理模式：
-/// - `auto`（默认）：可用 MCP 工具数超过 `proxyThreshold`（默认 12）时切换为固定双工具代理 `mcp_search` + `mcp_call`，避免大量 MCP schema 膨胀上下文与破坏缓存；
-/// - `always`：只要存在可用 MCP 工具即始终使用固定双工具代理；
-/// - `never`：始终直接暴露全部 `mcp__*` 工具 schema。
+/// MCP tool proxy mode:
+/// - `auto` (default): switch to the fixed two-tool proxy `mcp_search` + `mcp_call` once the available MCP tools exceed `proxyThreshold` (default 12), so a large MCP schema neither bloats the context nor breaks the cache;
+/// - `always`: always use the fixed two-tool proxy whenever available MCP tools exist;
+/// - `never`: always expose every `mcp__*` tool schema directly.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum McpProxyMode {
@@ -92,7 +92,7 @@ impl OutputSettings {
     }
 }
 
-/// 同时选择工具权限策略与沙盒边界（进程内状态，不再持久化到配置文件）。
+/// Selects both the tool permission policy and the sandbox boundary (in-process state, no longer persisted to the configuration file).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionMode {
     #[default]
@@ -221,18 +221,18 @@ impl Default for TaskSettings {
     }
 }
 
-/// `settings.yml` 的 `lsp:` 小节；字段名沿用 oh-my-pi 的 camelCase。
+/// The `lsp:` section of `settings.yml`; field names keep oh-my-pi's camelCase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LspSettings {
-    /// 总开关：false 时不发现、不预热、不调用自动钩子、不投递迟到诊断、不暴露工具。
+    /// Master switch: when false there is no discovery, no warm-up, no automatic hooks, no late diagnostics and no exposed tools.
     pub enabled: bool,
-    /// true 时首次实际动作才启动服务器；false 时 TUI 会话在后台预热。
+    /// When true the server starts on the first real action; when false the TUI session warms it up in the background.
     pub lazy: bool,
     pub diagnostics_on_write: bool,
     pub diagnostics_on_edit: bool,
     pub diagnostics_deduplicate: bool,
-    /// 单次 RPC 等待预算（秒），5..=300。
+    /// Wait budget for a single RPC in seconds, 5..=300.
     pub request_timeout: u64,
 }
 
@@ -280,8 +280,8 @@ impl EditMode {
     }
 }
 
-/// `settings.yml` 的 `cost` 定义显示币种与 1 USD 的兑换金额。
-/// 图标由 `currency` 派生，配置不再接受手写图标。
+/// The `cost` section of `settings.yml` defines the display currency and the exchange amount for 1 USD.
+/// Icons are derived from `currency`; the configuration no longer accepts hand-written icons.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CostDisplay {
     pub currency: String,
@@ -289,8 +289,8 @@ pub struct CostDisplay {
 }
 
 impl CostDisplay {
-    /// 受支持的显示币种及对应的 Nerd Font / ASCII 图标：
-    /// 美国 `f01c1` (`$`)、欧洲 `f01ad` (`E`)、日本 `f07bc` (`Y`)、韩国 `f07bd` (`W`)、中国 `f07ba` (`Y`)、巴西 `f0b85` (`$`)。
+    /// Supported display currencies and their Nerd Font / ASCII icons:
+    /// United States `f01c1` (`$`), Europe `f01ad` (`E`), Japan `f07bc` (`Y`), Korea `f07bd` (`W`), China `f07ba` (`Y`), Brazil `f0b85` (`$`).
     const CURRENCY_ICONS: [(&'static str, char, char); 6] = [
         ("USD", '\u{f01c1}', '$'),
         ("EUR", '\u{f01ad}', 'E'),
@@ -300,14 +300,14 @@ impl CostDisplay {
         ("BRL", '\u{f0b85}', '$'),
     ];
 
-    /// 币种 Nerd Font 图标；不受支持的币种返回 `None`（配置校验已拒绝该取值）。
+    /// Nerd Font icon for the currency; unsupported currencies return `None` (configuration validation already rejects that value).
     pub fn icon(&self) -> Option<char> {
         Self::CURRENCY_ICONS
             .iter()
             .find_map(|(code, icon, _)| (*code == self.currency).then_some(*icon))
     }
 
-    /// 币种纯 ASCII 图标；不受支持的币种返回 `None`。
+    /// Plain ASCII icon for the currency; unsupported currencies return `None`.
     pub fn ascii_icon(&self) -> Option<char> {
         Self::CURRENCY_ICONS
             .iter()
@@ -346,7 +346,7 @@ pub fn default_eval_max_timeout_seconds() -> u64 {
     600
 }
 
-/// `settings.yml` 的 `eval:` 小节，控制持久 Python / JavaScript 内核的可用性与超时窗口。
+/// The `eval:` section of `settings.yml`, controlling the availability and timeout window of the persistent Python / JavaScript kernels.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EvalSettings {

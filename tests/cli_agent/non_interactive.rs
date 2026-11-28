@@ -60,7 +60,8 @@ fn non_interactive_defaults_to_read_grep_glob_and_disables_subagents() {
     );
     assert!(!read_tool_description(&body, protocol).contains("agent://"));
 
-    // 模型尝试调用未授权写工具/Bash/Subagent 时，执行层硬门禁拒绝且不创建 .subagents。
+    // When the model tries to call an unauthorized write tool/Bash/Subagent, the execution-layer hard gate
+    // rejects it and no .subagents directory is created.
     if protocol == "completion" {
         calls_reply(
             request,
@@ -151,8 +152,8 @@ fn allowed_tools_preapproves_in_always_ask_and_gates_subagent_via_task() {
     )
     .unwrap();
 
-    // 1. `--allowed_tools "Read,Grep,Edit,Bash"` 在 always-ask 下免审批放行 edit 与 bash，
-    //    但仍拦截 critical bash 命令，且不暴露 task。
+    // 1. `--allowed_tools "Read,Grep,Edit,Bash"` under always-ask lets edit and bash through without approval,
+    //    while critical bash commands are still blocked and task is not exposed.
     let cli = Cli::spawn(
         dir.path(),
         &[
@@ -217,7 +218,8 @@ fn allowed_tools_preapproves_in_always_ask_and_gates_subagent_via_task() {
         "after\n"
     );
 
-    // 2. 显式 `tools.permission: { write: deny }` 仍拦截即使列入 `--allowed-tools` 的工具。
+    // 2. An explicit `tools.permission: { write: deny }` still blocks a tool even when it is listed in
+    //    `--allowed-tools`.
     let cli = Cli::spawn(
         dir.path(),
         &["-p", "--allowed-tools", "Read,Write", "blocked write"],
@@ -248,7 +250,8 @@ fn allowed_tools_preapproves_in_always_ask_and_gates_subagent_via_task() {
     assert!(cli.finish().status.success());
     assert!(!dir.path().join("denied.txt").exists());
 
-    // 3. `--allowed-tools Read,Task` 开启 subagent，`*` 放行常规工具但不包含 task。
+    // 3. `--allowed-tools Read,Task` enables the subagent, and `*` lets regular tools through without including
+    //    task.
     let cli = Cli::spawn(
         dir.path(),
         &["-p", "--allowed-tools", "Read,Task", "use subagent"],
@@ -295,7 +298,7 @@ fn allowed_tools_preapproves_in_always_ask_and_gates_subagent_via_task() {
     final_reply(request, "wildcard ok");
     assert!(cli.finish().status.success());
 
-    // 4. 非法工具名立即失败。
+    // 4. An invalid tool name fails immediately.
     let bad = Cli::spawn(
         dir.path(),
         &["-p", "--allowed-tools", "NotATool", "fail"],
@@ -320,7 +323,7 @@ fn output_mode_json_and_stream_json_emit_events_and_terminal_results() {
     write_settings(dir.path(), fixture_settings()).unwrap();
     std::fs::write(config_path(dir.path(), "models.yml"), models).unwrap();
 
-    // 1. `--mode stream-json`：验证 init、过程事件与末行 result。
+    // 1. `--mode stream-json`: verify init, the progress events and the result line at the end.
     let cli = Cli::spawn(
         dir.path(),
         &[
@@ -478,8 +481,8 @@ fn output_mode_json_and_stream_json_emit_events_and_terminal_results() {
     assert_eq!(last["usage"]["output_tokens"], 23);
     let session_id = last["session_id"].as_str().unwrap().to_owned();
 
-    // 2. `--mode json` + `-p -r <id> "prompt"`（且把 `--mode json` 放在位置参数之后）：
-    //    stdout 仅输出单条终态汇总 JSON。
+    // 2. `--mode json` with `-p -r <id> "prompt"` (and `--mode json` placed after the positional argument):
+    //    stdout emits only one terminal summary JSON.
     let cli = Cli::spawn(
         dir.path(),
         &["-p", "-r", &session_id, "summarize json", "--mode", "json"],
@@ -502,7 +505,7 @@ fn output_mode_json_and_stream_json_emit_events_and_terminal_results() {
     assert_eq!(summary["text"], "single json ok");
     assert_eq!(summary["turns"], 1);
 
-    // 3. 运行期 HTTP 500 错误：json 与 stream-json 均向 stdout 写终态 error JSON 且脱敏。
+    // 3. A runtime HTTP 500 error: both json and stream-json write a terminal error JSON to stdout, redacted.
     for mode in ["json", "stream-json"] {
         let cli = Cli::spawn(dir.path(), &["-p", "explode", "--mode", mode], &[]);
         let (request, _) = receive_at(&server, path);
@@ -536,7 +539,7 @@ fn output_mode_json_and_stream_json_emit_events_and_terminal_results() {
         );
     }
 
-    // 4. 启动前失败（非法 --resume ID）：stdout 仍输出终态 error JSON。
+    // 4. Failing before startup (invalid --resume ID): stdout still emits the terminal error JSON.
     let early = Cli::spawn(
         dir.path(),
         &["-p", "-r", "../escape", "bad", "--mode", "json"],

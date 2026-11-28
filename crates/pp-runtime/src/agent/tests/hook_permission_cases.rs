@@ -1,4 +1,4 @@
-//! 运行中权限切换与工具批内 Hook 联动场景。
+//! Runtime permission switching and in-batch Hook interplay scenarios.
 
 mod integration {
     use super::super::*;
@@ -77,7 +77,10 @@ mod integration {
             let count_ref = Arc::clone(&prompt_count);
             agent.set_permission_handler(Box::new(move |_request, _| {
                 let n = count_ref.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                assert_eq!(n, 0, "切换为 YOLO 后同批次后续调用不得再次询问");
+                assert_eq!(
+                    n, 0,
+                    "later calls in the same batch must not ask again after switching to YOLO"
+                );
                 gate.select(Some(pp_config::config::PermissionMode::DangerFullAccess));
                 Ok(pp_permission::PermissionDecision::Approve)
             }));

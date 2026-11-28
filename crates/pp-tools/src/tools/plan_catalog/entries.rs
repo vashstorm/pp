@@ -1,4 +1,4 @@
-//! 登记表数据类型、活动条目查找与结构校验。
+//! Registry data types, active entry lookups and structural validation.
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -22,8 +22,8 @@ pub struct PlanCatalogEntry {
     pub file_name: String,
     pub location: PlanLocation,
     pub deleted: bool,
-    /// 删除前记录的文件身份；仅 tombstone 允许携带，用于区分删除残留与
-    /// 后来在相同路径新建的不同文件。为 `None` 时不写入序列化结果。
+    /// File identity recorded before deletion; only tombstones may carry it, distinguishing delete leftovers
+    /// from a different file later created at the same path. Not serialized when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deleted_file_identity: Option<PlanFileIdentity>,
 }
@@ -35,8 +35,8 @@ pub struct PlanFileIdentity {
     pub inode: u64,
 }
 
-/// 登记表读取快照：解析后的目录与磁盘上的精确原始字节。
-/// `raw` 提供下一次 `save_catalog` 的基线；`None` 表示登记文件尚不存在。
+/// Registry read snapshot: the parsed catalog plus the exact raw bytes on disk.
+/// `raw` provides the baseline for the next `save_catalog`; `None` means the registry file does not exist yet.
 #[derive(Debug)]
 pub struct CatalogSnapshot {
     pub catalog: PlanCatalog,
@@ -51,14 +51,14 @@ impl PlanCatalog {
         }
     }
 
-    /// 按 ID 查找活动（未删除）条目；tombstone 不参与身份解析。
+    /// Find an active (not deleted) entry by ID; tombstones take no part in identity resolution.
     pub fn active_by_id(&self, id: &str) -> Option<&PlanCatalogEntry> {
         self.entries
             .iter()
             .find(|entry| !entry.deleted && entry.id == id)
     }
 
-    /// 按活动文件名查找条目；三个生命周期目录共享全局唯一命名空间。
+    /// Find an entry by active file name; the three lifecycle directories share one global namespace.
     pub fn active_by_file_name(&self, file_name: &str) -> Option<&PlanCatalogEntry> {
         self.entries
             .iter()
@@ -66,9 +66,9 @@ impl PlanCatalog {
     }
 }
 
-/// 校验登记表结构：版本、ID/文件名合法性、活动条目的全局唯一性，
-/// 以及墓碑身份字段只允许出现在已删除条目上。任何违规都返回明确错误；
-/// 调用方不得把违规登记表当空表覆盖。
+/// Validate the registry structure: version, ID/file-name validity, global uniqueness of active entries,
+/// and tombstone identity fields allowed only on deleted entries. Any violation returns an explicit error;
+/// the caller must not overwrite a violating registry as an empty table.
 pub fn validate_catalog(catalog: &PlanCatalog) -> Result<()> {
     ensure!(
         catalog.version == CATALOG_VERSION,
@@ -137,7 +137,7 @@ mod tests {
         let error = validate_catalog(&duplicate_id).unwrap_err();
         assert!(error.to_string().contains("duplicate id"), "{error}");
         assert!(save_catalog(&ws, None, &duplicate_id).is_err());
-        // 校验先于任何磁盘动作，不会留下部分写入。
+        // Validation precedes any disk action, so no partial write is left behind.
         assert!(!index_path(&dir).exists());
 
         let mut duplicate_name = PlanCatalog::empty();
@@ -225,7 +225,7 @@ mod tests {
 
         let parsed: PlanCatalog = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, catalog);
-        // tombstone 不参与活动身份解析。
+        // Tombstones take no part in active identity resolution.
         assert!(parsed.active_by_file_name("old.md").is_none());
         assert!(parsed.active_by_id(&sample_id(2)).is_none());
     }

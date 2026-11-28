@@ -124,7 +124,7 @@ case "$platform:$action" in
         if [ "$arch" = aarch64 ]; then package_arch=arm64; fi
         extension=dmg
         macos_version=$(sw_vers -productVersion)
-        # 从 macOS 27 起，diskutil 支持直接从目录创建映像。
+        # From macOS 27 on, diskutil can build an image straight from a directory.
         if [ "${macos_version%%.*}" -ge 27 ]; then
             macos_image_tool=diskutil
         else
@@ -164,7 +164,7 @@ rust_host=$("$compiler" --print host-tuple)
 target_dir="$repo/target"
 if [ "$action:$profile" = install:dev ]; then
     require jq
-    # 沿用 cargo build 的构建配置，并从 Cargo 的产物消息获取实际路径。
+    # Reuse the cargo build configuration and read the real path from Cargo artifact messages.
     messages=$(cargo build --locked -p pp --bin pp --message-format=json-render-diagnostics)
     binary=$(printf '%s\n' "$messages" | jq -ers '
         [.[] | select(.reason == "compiler-artifact" and .target.name == "pp"
@@ -172,7 +172,7 @@ if [ "$action:$profile" = install:dev ]; then
         | if length == 1 then .[0] else empty end
     ') || fail 'Expected exactly one pp executable from Cargo.'
 else
-    # 发行构建显式使用已校验的本机目标，并静态链接 PCRE2。
+    # Release builds pin the verified host target explicitly and link PCRE2 statically.
     set -- --locked -p pp --bin pp --target "$rust_host" --target-dir "$target_dir"
     if [ "$profile" = release ]; then set -- "$@" --release; fi
     RUSTC="$compiler" PCRE2_SYS_STATIC=1 cargo build "$@"

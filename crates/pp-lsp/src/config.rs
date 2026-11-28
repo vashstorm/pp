@@ -1,12 +1,12 @@
-//! LSP 服务器定义解析、合并与本地发现。
+//! LSP server definition parsing, merging and local discovery.
 //!
-//! 内置定义取自 oh-my-pi（MIT License）固定提交
-//! `1c291b87e4b889398cc4b8e4ccdfa650b56a0486` 的
-//! `packages/coding-agent/src/lsp/defaults.json`，仅把 TypeScript 的
-//! `hostInfo` 换成 `pp`。配置只读 `~/.pp/agent/lsp.json` 与
-//! `<startup-cwd>/.pp/lsp.json`，不读取插件 marketplace、Claude/Codex 目录或
-//! YAML 变体。所有解析错误只报告来源文件、字段路径与错误类别，不回显命令、
-//! 参数或配置值。
+//! Built-in definitions come from oh-my-pi (MIT License) at the pinned commit
+//! `1c291b87e4b889398cc4b8e4ccdfa650b56a0486`,
+//! file `packages/coding-agent/src/lsp/defaults.json`, with only TypeScript's
+//! `hostInfo` changed to `pp`. Configuration reads only `~/.pp/agent/lsp.json` and
+//! `<startup-cwd>/.pp/lsp.json`, never a plugin marketplace, Claude/Codex directories or
+//! YAML variants. Every parse error reports only the source file, field path and error category, never echoing commands,
+//! arguments or configuration values.
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
@@ -46,7 +46,7 @@ const NODE_ROOT_MARKERS: &[&str] = &[
 const RUBY_ROOT_MARKERS: &[&str] = &["Gemfile", "Gemfile.lock"];
 const GO_ROOT_MARKERS: &[&str] = &["go.mod", "go.sum", "go.work"];
 
-/// rust-analyzer `workspace/ready` 轮询参数；`None` 表示沿用模块默认值。
+/// rust-analyzer `workspace/ready` polling parameters; `None` keeps the module default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ReadyTimings {
     pub(crate) timeout_ms: Option<u64>,
@@ -70,12 +70,12 @@ pub(crate) struct ServerDefinition {
     pub(crate) is_linter: bool,
     pub(crate) _capabilities: Value,
     pub(crate) ready: ReadyTimings,
-    /// 发现阶段解析出的可执行文件绝对路径；未发现时为 `None`。
+    /// Absolute path of the executable resolved during discovery; `None` when not discovered.
     pub(crate) resolved_command: Option<PathBuf>,
 }
 
 impl ServerDefinition {
-    /// 启动使用的实际参数：`$PID` 替换为当前进程 ID（omnisharp）。
+    /// Actual arguments used to spawn: `$PID` is replaced with the current process ID (omnisharp).
     pub(crate) fn spawn_args(&self) -> Vec<String> {
         self.args
             .iter()
@@ -112,18 +112,18 @@ impl ServerDefinition {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Config {
-    /// 已发现（标记命中且可执行文件存在）的服务器，保持定义顺序。
+    /// Discovered servers (marker matched and executable present), in definition order.
     pub(crate) servers: Vec<ServerDefinition>,
-    /// 合并后的完整定义表（含未发现与已禁用项），供 status/capabilities 使用。
+    /// Full merged definition table (including undiscovered and disabled entries), used by status/capabilities.
     pub(crate) definitions: Vec<ServerDefinition>,
     pub(crate) idle_timeout_ms: Option<u64>,
 }
 
 impl Config {
-    /// 读取用户（显式传入）与项目 `lsp.json`，合并内置定义后做本地发现。
+    /// Read the user (supplied explicitly) and project `lsp.json`, merge built-in definitions and do local discovery.
     ///
-    /// 用户级路径必须由调用方从配置目录注入；这里不读取 HOME，避免测试或
-    /// 非默认配置目录意外读取开发者个人配置。
+    /// The user-level path must be injected by the caller from the config directory; HOME is never read here, so tests or a
+    /// non-default config directory cannot accidentally read the developer's personal configuration.
     pub(crate) fn load_with(cwd: &Path, user: Option<&Path>) -> Result<Self> {
         let layers = layer_paths(cwd, user);
         let mut merged = merge_layers(&layers)?;
@@ -142,7 +142,7 @@ impl Config {
         self.servers.iter().find(|server| server.name == name)
     }
 
-    /// 文件匹配的服务器，非 linter 优先，同档保持定义顺序。
+    /// Servers matching the file, non-linters first, preserving definition order within a tier.
     pub(crate) fn servers_for_file(&self, path: &Path) -> Vec<&ServerDefinition> {
         let mut matches: Vec<&ServerDefinition> = self
             .servers
@@ -153,7 +153,7 @@ impl Config {
         matches
     }
 
-    /// 具体文件匹配的 LSP 服务器（排除 Biome/SwiftLint 这类 CLI adapter）。
+    /// LSP servers matching a concrete file (excluding CLI adapters such as Biome/SwiftLint).
     pub(crate) fn real_servers_for_file(&self, path: &Path) -> Vec<&ServerDefinition> {
         self.servers_for_file(path)
             .into_iter()
@@ -176,7 +176,7 @@ fn read_idle_timeout(paths: &LayerPaths) -> Result<Option<u64>> {
     Ok(idle)
 }
 
-/// 配置层顺序：用户 → 项目；内置层单独在合并入口加入。
+/// Configuration layer order: user → project; the built-in layer is added separately at the merge entry point.
 struct LayerPaths {
     user: Option<PathBuf>,
     project: PathBuf,
@@ -195,7 +195,7 @@ fn layer_paths(cwd: &Path, user: Option<&Path>) -> LayerPaths {
     }
 }
 
-/// 读取一个配置来源；缺失视为正常，其它不可读状态都是配置错误。
+/// Read one configuration source; missing is normal, any other unreadable state is a configuration error.
 fn read_source(path: &Path) -> Result<Option<String>> {
     let fd = match rustix::fs::open(
         path,
@@ -233,13 +233,13 @@ fn read_source(path: &Path) -> Result<Option<String>> {
 type RawFields = Vec<(String, Raw)>;
 type LayerEntry = (String, RawFields, String);
 
-/// 内置层的来源标签；保持与改动前相同的错误文案。
+/// Source label for the built-in layer; keeps the same error text as before.
 const BUILTIN_LABEL: &str = "<builtin lsp defaults>";
 
-/// 内置默认层（`defaults.json`）的解析与字段校验结果。
+/// Parse and field-validation result of the built-in default layer (`defaults.json`).
 ///
-/// 它是编译期常量，与 cwd、`lsp.json` 内容和设置都无关，因此整个进程只
-/// 解析一次；每个 Registry 仍各自读取用户/项目层并做本地发现。
+/// It is a compile-time constant, independent of cwd, `lsp.json` content and settings, so the whole process
+/// parses it once; each Registry still reads the user/project layers itself and does local discovery.
 static BUILTIN_ENTRIES: OnceLock<Vec<LayerEntry>> = OnceLock::new();
 
 fn builtin_entries() -> Result<&'static [LayerEntry]> {
@@ -254,7 +254,7 @@ fn builtin_entries() -> Result<&'static [LayerEntry]> {
         validate_server_shape(&name, &value, &source)?;
         entries.push((name, object_fields(&value), BUILTIN_LABEL.to_owned()));
     }
-    // 内置层自身必须是完整定义；错误归属与逐层校验保持一致。
+    // The built-in layer must itself be complete definitions; error attribution matches per-layer validation.
     for (name, fields, label) in &entries {
         finish_definition(name, fields, label)?;
     }
@@ -265,9 +265,9 @@ struct MergedEntry {
     definition: ServerDefinition,
 }
 
-/// 合并内置 → 用户 → 项目三层定义。
+/// Merge the built-in → user → project definitions.
 fn merge_layers(paths: &LayerPaths) -> Result<Vec<MergedEntry>> {
-    // 内置层来自进程级缓存：这里只克隆字段表，不再重复解析 53 个定义。
+    // The built-in layer comes from the process-level cache: only the field tables are cloned here, the 53 definitions are not re-parsed.
     let mut entries: Vec<LayerEntry> = builtin_entries()?.to_vec();
     for path in paths.iter() {
         let Some(text) = read_source(path)? else {
@@ -318,8 +318,8 @@ fn apply_layer(entries: &mut Vec<LayerEntry>, source: &Source) -> Result<()> {
             None => entries.push((name, object_fields(&value), source.label.clone())),
         }
     }
-    // 内置层与每一层覆盖都必须在合并后仍是完整定义；错误归属最后修改该
-    // 服务器的来源层。
+    // The built-in layer and every layer override must still be complete definitions after merging; error attribution points at the layer
+    // that last modified the server.
     for (name, fields, label) in entries.iter() {
         finish_definition(name, fields, label)?;
     }
@@ -389,7 +389,7 @@ fn object_fields(value: &Raw) -> Vec<(String, Raw)> {
     }
 }
 
-/// 校验一层里单个服务器定义的字段类型（此时可能只是部分覆盖）。
+/// Validate field types of one server definition inside a layer (which may be only a partial override at this point).
 fn validate_server_shape(name: &str, value: &Raw, source: &Source) -> Result<()> {
     let Raw::Object(fields) = value else {
         bail!(
@@ -576,7 +576,7 @@ fn expect_string_array(value: &Raw, path: &str, source: &Path) -> Result<Vec<Str
 }
 
 // =============================================================================
-// 严格 JSON 解析（保留键顺序并拒绝重复键）
+// Strict JSON parsing (preserves key order and rejects duplicate keys)
 // =============================================================================
 
 #[derive(Clone, Debug)]
@@ -715,7 +715,7 @@ impl<'de> Deserialize<'de> for Raw {
     }
 }
 
-/// 解析 JSON 文本并拒绝重复键；错误信息只保留路径与类别。
+/// Parse JSON text and reject duplicate keys; error messages keep only the path and category.
 fn parse_raw(text: &str, path: &Path) -> Result<Raw> {
     let mut deserializer = serde_json::Deserializer::from_str(text);
     let parsed: Raw = serde_path_to_error::deserialize(&mut deserializer).map_err(|error| {
@@ -736,23 +736,23 @@ fn parse_raw(text: &str, path: &Path) -> Result<Raw> {
     Ok(parsed)
 }
 
-/// serde_json 的错误位置本身不含配置值；剥掉可能出现的原文片段。
+/// A serde_json error location never contains configuration values; strip any original text fragment that may appear.
 fn classify_json_error(error: &serde_json::Error) -> String {
     match error.classify() {
         serde_json::error::Category::Io => "read error".to_owned(),
         serde_json::error::Category::Syntax => "syntax error".to_owned(),
-        // 只有本模块的 Raw visitor 会产出 Data 类错误（重复键、非有限数字），
-        // 文案里只有键名，不含配置值。
+        // Only this module's Raw visitor produces Data-category errors (duplicate keys, non-finite numbers),
+        // and the text holds only key names, no configuration values.
         serde_json::error::Category::Data => error.to_string(),
         serde_json::error::Category::Eof => "unexpected end of input".to_owned(),
     }
 }
 
 // =============================================================================
-// 本地发现
+// Local discovery
 // =============================================================================
 
-/// 过滤出根标记命中且可执行文件可解析的服务器。
+/// Filter to servers whose root marker matched and whose executable can be resolved.
 pub(crate) fn discover(cwd: &Path, definitions: &[ServerDefinition]) -> Vec<ServerDefinition> {
     let mut servers = Vec::new();
     for definition in definitions {
@@ -806,8 +806,8 @@ pub(crate) fn has_root_markers(cwd: &Path, markers: &[String]) -> bool {
 }
 
 fn is_executable_file(path: &Path) -> bool {
-    // `metadata` 跟随符号链接：launcher symlink 指向可执行普通文件时可用，
-    // 这只放宽“解析可执行文件”，不放宽任何写入限制。
+    // `metadata` follows symlinks: a launcher symlink pointing to an executable regular file is usable, but
+    // this only relaxes "resolving the executable", never any write restriction.
     match fs::metadata(path) {
         Ok(metadata) => metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
         Err(_) => false,
@@ -839,7 +839,7 @@ fn local_bin_dirs(cwd: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// 解析服务器命令：工作区本地 bin 目录优先，其次 PATH。
+/// Resolve the server command: workspace-local bin directories first, then PATH.
 pub(crate) fn resolve_command(command: &str, cwd: &Path) -> Option<PathBuf> {
     if command.contains('/') {
         let path = Path::new(command);
@@ -862,8 +862,8 @@ pub(crate) fn resolve_command(command: &str, cwd: &Path) -> Option<PathBuf> {
         .find(|candidate| is_executable_file(candidate))
 }
 
-/// 只保留一个 TypeScript 服务器：`tsc` 所在包缺少 `lib/tsserver.js` 时
-/// （TypeScript 7 原生实现）保留 `typescript-native`，否则保留包装器。
+/// Keep only one TypeScript server: when the package shipping `tsc` lacks `lib/tsserver.js`
+/// (the TypeScript 7 native implementation) keep `typescript-native`, otherwise keep the wrapper.
 fn select_typescript_server(servers: &mut Vec<ServerDefinition>) {
     let Some(native) = servers
         .iter()

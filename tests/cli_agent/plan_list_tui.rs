@@ -1,5 +1,6 @@
-// /plan-list 管理页真实 TUI 覆盖：列表/分类/搜索/预览/零请求，以及冲突安全的重命名与删除。
-// 复用 plan_tui.rs 的真实二进制 + PTY + loopback fixture（同一 include 模块共享 helpers）。
+// Real TUI coverage for the /plan-list management page: list/category/search/preview/zero requests,
+// plus conflict-safe rename and delete.
+// Reuses the real binary + PTY + loopback fixture from plan_tui.rs (same include module shares helpers).
 
 fn plan_list_seed(project: &Path) {
     for dir in ["drafts", "plans", "done"] {
@@ -7,7 +8,7 @@ fn plan_list_seed(project: &Path) {
     }
     std::fs::write(
         project.join(".pp/drafts/fix-config.md"),
-        "# 修复配置\n\n- [ ] 更新配置加载\n- [ ] 读取回验证\n",
+        "# Fix config\n\n- [ ] Update config loading\n- [ ] Read back to verify\n",
     )
     .unwrap();
     std::fs::write(
@@ -24,13 +25,13 @@ fn plan_list_seed(project: &Path) {
 
 fn plan_list_open(pty: &mut Pty) {
     pty.input("/plan-list\r");
-    pty.wait_for("计划管理页打开", |screen| {
+    pty.wait_for("plan management page opens", |screen| {
         cancel_normalize(screen).contains("Planlist")
     });
 }
 
 fn plan_list_wait_closed(pty: &mut Pty) {
-    pty.wait_for("管理页关闭并恢复主输入", |screen| {
+    pty.wait_for("management page closes and restores the main input", |screen| {
         !screen.alternate_screen()
     });
 }
@@ -45,11 +46,11 @@ fn plan_list_filters_previews_and_preserves_input() {
     pty.ready();
     plan_wait_execute(&mut pty);
 
-    // 打开列表：三个目录的标题、紧凑时间与 All 分类标记。
+    // Open the list: titles from all three directories, compact time and the All category marker.
     plan_list_open(&mut pty);
-    pty.wait_for("三目录条目齐全", |screen| {
+    pty.wait_for("entries from all three directories are present", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("修复配置")
+        text.contains("Fixconfig")
             && !text.contains("0/2")
             && text.contains("Approvedplan")
             && text.contains("Completedplan")
@@ -61,84 +62,85 @@ fn plan_list_filters_previews_and_preserves_input() {
             && !text.contains("Current")
     });
 
-    // 分类过滤：Right 切到 Drafts，只显示草稿。
+    // Category filter: Right switches to Drafts, which shows only drafts.
     pty.input("\x1b[C");
-    pty.wait_for("Drafts 分类只显示草稿", |screen| {
+    pty.wait_for("Drafts category shows only drafts", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("修复配置")
+        text.contains("Fixconfig")
             && !text.contains("Approvedplan")
             && !text.contains("Completedplan")
             && !text.contains("[Draft]")
     });
     pty.input("\x1b[D");
-    pty.wait_for("回到 All 显示全部", |screen| {
+    pty.wait_for("back on All, everything is shown", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("修复配置")
+        text.contains("Fixconfig")
             && text.contains("Approvedplan")
             && text.contains("Completedplan")
     });
 
-    // 搜索：多词 AND、大小写无关；Enter 回列表后 query 继续过滤。
+    // Search: multi-word AND, case-insensitive; after Enter returns to the list the query keeps filtering.
     pty.input("/Completed");
-    pty.wait_for("搜索命中唯一条目", |screen| {
+    pty.wait_for("search matches a single entry", |screen| {
         let text = cancel_normalize(screen);
         text.contains("Completedplan")
-            && !text.contains("修复配置")
+            && !text.contains("Fixconfig")
             && !text.contains("Approvedplan")
     });
     pty.input("\r");
-    pty.wait_for("搜索退出但过滤保留", |screen| {
+    pty.wait_for("search exits but the filter persists", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("Completedplan") && !text.contains("修复配置")
+        text.contains("Completedplan") && !text.contains("Fixconfig")
             && text.contains("Search:Completed")
     });
-    // 重新进入搜索后 Ctrl+U 才清空 query。
+    // Only Ctrl+U after re-entering search clears the query.
     pty.input("/\x15");
-    pty.wait_for("Ctrl+U 清空恢复全部", |screen| {
+    pty.wait_for("Ctrl+U clears the query and restores all entries", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("修复配置")
+        text.contains("Fixconfig")
             && text.contains("Approvedplan")
             && text.contains("Completedplan")
             && !text.contains("Search:Completed")
     });
 
-    // Enter 打开完整操作菜单；打开本身不调模型，Esc 返回列表。
-    pty.input("修复");
-    pty.wait_for("选中 fix-config", |screen| {
+    // Enter opens the full action menu; opening it does not call the model, Esc returns to the list.
+    pty.input("Fix");
+    pty.wait_for("fix-config is selected", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("修复配置") && !text.contains("Approvedplan")
+        text.contains("Fixconfig") && !text.contains("Approvedplan")
     });
     pty.input("\r");
     pty.input("\r");
-    pty.wait_for("操作菜单打开且显示正文", |screen| {
+    pty.wait_for("action menu opens and shows the body", |screen| {
         let text = cancel_normalize(screen);
         text.contains("Executeinanewsession") && text.contains("SavedraftandleavePlanmode")
             && text.contains(".pp/drafts/fix-config.md")
-            && text.contains("更新配置加载")
+            && text.contains("Updateconfigloading")
     });
     pty.input("\x1b");
-    pty.wait_for("预览返回列表且保留状态", |screen| {
+    pty.wait_for("preview returns to the list and keeps state", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("Planlist") && text.contains("修复配置")
-            && text.contains("Search:修复")
+        text.contains("Planlist") && text.contains("Fixconfig")
+            && text.contains("Search:Fix")
     });
 
-    // F5 刷新与 resize 后列表仍正常。
+    // The list still works after an F5 refresh and a resize.
     pty.input("\x1b[15~");
-    pty.wait_for("F5 刷新完成", |screen| {
+    pty.wait_for("F5 refresh completes", |screen| {
         let text = cancel_normalize(screen);
-        text.contains("修复配置") && text.contains("Search:修复")
+        text.contains("Fixconfig") && text.contains("Search:Fix")
     });
     pty.resize(50, 120);
-    pty.wait_for("resize 后列表仍渲染", |screen| {
-        cancel_normalize(screen).contains("修复配置")
+    pty.wait_for("list still renders after resize", |screen| {
+        cancel_normalize(screen).contains("Fixconfig")
     });
 
-    // 关闭恢复主输入；打开菜单已保存载入会话，但整个浏览过程零模型请求。
+    // Closing restores the main input; opening the menu saved the loaded session, but browsing makes
+    // zero model requests.
     pty.input("\x1b");
     plan_list_wait_closed(&mut pty);
     pty.input("kept draft");
-    pty.wait_for("主输入可用且草稿保留", |screen| {
+    pty.wait_for("main input is usable and the draft is kept", |screen| {
         cancel_normalize(screen).contains("keptdraft")
     });
     no_more(&fixture);
@@ -148,7 +150,7 @@ fn plan_list_filters_previews_and_preserves_input() {
     pty.finish();
 }
 
-/// 候选会话原生请求中的用户文本（两种协议统一提取）。
+/// User text in the native requests of the candidate session (extracted uniformly for both protocols).
 fn plan_list_user_texts(protocol: &str, body: &Value) -> Vec<String> {
     let entries = if protocol == "completion" {
         body["messages"].as_array().unwrap()
@@ -173,7 +175,7 @@ fn plan_list_user_texts(protocol: &str, body: &Value) -> Vec<String> {
         .collect()
 }
 
-/// 候选会话的系统提示文本（completion 的 system 消息 / responses 的 instructions）。
+/// System prompt text of the candidate session (the system message for completion / instructions for responses).
 fn plan_list_system_text(protocol: &str, body: &Value) -> String {
     if protocol == "completion" {
         body["messages"]
@@ -216,7 +218,7 @@ fn plan_list_execution_requires_new_local_approval() {
         pty.ready();
         plan_wait_execute(&mut pty);
 
-        // done 先写（较早修改时间），drafts 的 listed-exec.md 排在首位。
+        // done is written first (older modification time), so listed-exec.md in drafts sorts first.
         std::fs::create_dir_all(project.path().join(".pp/done")).unwrap();
         std::fs::write(
             project.path().join(".pp/done/finished.md"),
@@ -228,31 +230,32 @@ fn plan_list_execution_requires_new_local_approval() {
         std::fs::write(project.path().join(".pp/drafts/listed-exec.md"), body).unwrap();
 
         plan_list_open(&mut pty);
-        pty.wait_for("未登记文件纳管显示", |screen| {
+        pty.wait_for("unregistered file is picked up and displayed", |screen| {
             let text = cancel_normalize(screen);
             text.contains("Listedexec") && text.contains("Finished")
         });
         no_more(&fixture);
 
-        // Done 条目只读：e 没有执行入口，零请求且列表保持。
+        // Done entries are read-only: `e` has no execution entry point, so zero requests and the list stays.
         pty.input("\x1b[B");
-        pty.wait_for("选中 done 条目", |screen| {
+        pty.wait_for("done entry is selected", |screen| {
             cancel_normalize(screen).contains("Finished")
         });
         pty.input("e");
         no_more(&fixture);
-        pty.wait_for("Done 无执行动作", |screen| {
+        pty.wait_for("Done has no execution action", |screen| {
             let text = cancel_normalize(screen);
             text.contains("Planlist") && text.contains("Finished")
         });
         pty.input("\x1b[A");
-        pty.wait_for("回到 drafts 条目", |screen| {
+        pty.wait_for("back on the drafts entry", |screen| {
             cancel_normalize(screen).contains("Listedexec")
         });
 
-        // e 打开完整五项菜单；已勾选进度原样展示，打开菜单零模型请求。
+        // `e` opens the full five-item menu; completed progress is shown as-is, and opening the menu makes
+        // zero model requests.
         pty.input("e");
-        pty.wait_for("完整操作菜单打开", |screen| {
+        pty.wait_for("full action menu opens", |screen| {
             let text = cancel_normalize(screen);
             text.contains("Executeinanewsession")
                 && text.contains("ReviewPlan")
@@ -262,20 +265,20 @@ fn plan_list_execution_requires_new_local_approval() {
         });
         no_more(&fixture);
 
-        // 返回列表再进入：取消无代码副作用。
+        // Return to the list and enter again: cancelling has no code side effects.
         pty.input("\x1b");
-        pty.wait_for("返回列表", |screen| {
+        pty.wait_for("returns to the list", |screen| {
             cancel_normalize(screen).contains("Planlist")
         });
         no_more(&fixture);
         assert!(project.path().join(".pp/drafts/listed-exec.md").exists());
         pty.input("e");
-        pty.wait_for("再次进入执行审阅", |screen| {
+        pty.wait_for("execution review opens again", |screen| {
             cancel_normalize(screen).contains("Executeinanewsession")
         });
 
-        // 明确 Execute（固定 Fresh）：新执行会话只带选中计划，已勾选状态
-        // 保留；模型请求在本地批准之后才发出。
+        // Explicit Execute (always Fresh): the new execution session carries only the selected plan and
+        // keeps completed progress; the model request is sent only after local approval.
         plan_choose(&mut pty, 0);
         let (request, exec_body) = pty.request_at(&fixture, api_path(protocol));
         let users = plan_list_user_texts(protocol, &exec_body);
@@ -303,7 +306,7 @@ fn plan_list_execution_requires_new_local_approval() {
         );
         pty.text("Executed.");
 
-        // 本地批准把 drafts 搬到 plans；未全部完成不会归档到 done。
+        // Local approval moves drafts to plans; an unfinished plan is not archived to done.
         assert!(!project.path().join(".pp/drafts/listed-exec.md").exists());
         assert_eq!(
             std::fs::read_to_string(project.path().join(".pp/plans/listed-exec.md")).unwrap(),

@@ -322,7 +322,7 @@ mod tests {
                 "missing section {section}"
             );
         }
-        // 短命令对齐到固定列，长命令在 100 列下折叠为缩进说明行。
+        // Short commands align to a fixed column; long ones fold into an indented description row at 100 columns.
         assert!(wide_text.iter().any(|line| {
             line.starts_with("/model [provider/model]")
                 && line.contains("Select a model at the next safe boundary")
@@ -347,7 +347,7 @@ mod tests {
                 .any(|line| line == "• commands/broken.md: Invalid command metadata")
         );
 
-        // 窄屏省略顶栏副标题，并以单行连接符自然折行。
+        // Narrow screens drop the top-bar subtitle and let the single-line connector wrap naturally.
         let narrow = lines(40, &block);
         let narrow_text: Vec<String> = narrow
             .iter()

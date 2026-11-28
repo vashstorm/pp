@@ -54,7 +54,7 @@ fn resource_image_markers_submission_and_queue_snapshots() {
     assert!(!submit_app.submit(PendingKind::Steering));
     settle(&mut submit_app);
     let WorkerCommand::RunInput { prepared, .. } = commands.try_recv().unwrap() else {
-        panic!("应发送结构化输入")
+        panic!("structured input should be sent")
     };
     assert_eq!(
         prepared
@@ -193,7 +193,7 @@ fn resource_plan_discussion_and_clipboard_guards() {
     app.handle(key(KeyCode::Enter), &mut false);
     settle(&mut app);
     let WorkerCommand::RunInput { prepared, .. } = commands.try_recv().unwrap() else {
-        panic!("计划讨论应携带结构化输入")
+        panic!("the plan discussion should carry structured input")
     };
     assert!(prepared.has_images());
     assert!(
@@ -464,7 +464,7 @@ fn resource_image_references_snapshot_stale_load_and_plan_prompt() {
     app.submit(PendingKind::Steering);
     settle(&mut app);
     let WorkerCommand::RunInput { prepared, .. } = commands.try_recv().unwrap() else {
-        panic!("应发送图片快照")
+        panic!("the image snapshot should be sent")
     };
     assert!(prepared.has_images() && prepared.images[0].summary.contains("3 x 5"));
     image::DynamicImage::new_rgb8(3, 5).save(&path).unwrap();

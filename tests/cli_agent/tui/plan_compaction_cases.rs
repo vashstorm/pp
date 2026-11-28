@@ -1,6 +1,6 @@
 use super::*;
 
-// 压缩后执行或回退：每个 outcome 是独立会话，按用例拆分以便并行与定位失败。
+// Execute or back out after compaction: each outcome is a separate session, split per case for parallel runs and easier failure isolation.
 fn plan_tui_compact_then_execute_case(outcome: &str) {
     let protocol = "response";
     let fixture = server();
@@ -37,10 +37,13 @@ fn plan_tui_compact_then_execute_case(outcome: &str) {
             .unwrap(),
         "cancel" => {
             pty.input("\x1b");
-            pty.wait_for("取消压缩并恢复计划菜单", |screen| {
-                screen.contents().contains("Plan execution cancelled")
-                    || screen.contents().contains("cancelled")
-            });
+            pty.wait_for(
+                "cancelling the compaction restores the plan menu",
+                |screen| {
+                    screen.contents().contains("Plan execution cancelled")
+                        || screen.contents().contains("cancelled")
+                },
+            );
             drop(request);
         }
         "unchanged" => plan_final(request, protocol, &"verbose summary ".repeat(500)),
@@ -58,7 +61,7 @@ fn plan_tui_compact_then_execute_case(outcome: &str) {
         assert!(encoded.contains("[Approved Markdown snapshot]"), "{body}");
         assert!(encoded.contains("approved bytes"), "{body}");
         assert_eq!(saved_session_id(home.path()), id);
-        // 终答显式等待用户：批准任务仍未勾选，等待识别阻止完成提醒追加请求。
+        // The final answer explicitly waits on the user: the approval task is still unchecked, so the wait acknowledgement blocks the completion notice's extra request.
         plan_final(
             request,
             protocol,

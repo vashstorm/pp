@@ -1,10 +1,10 @@
-//! 位置换算：UTF-16 列 → 字节偏移，以及全量替换使用的范围。
+//! Position conversion: UTF-16 column → byte offset, plus the range used for whole-document replacement.
 
 use serde_json::{Value, json};
 
 use crate::types::Position;
 
-/// 全量替换用的范围：覆盖旧内容的最后一行末列。
+/// Range used for whole-document replacement: covers the last line and column of the old content.
 pub(super) fn whole_range(previous: &str) -> Value {
     let mut line = 0u32;
     let mut character = 0u32;
@@ -22,10 +22,10 @@ pub(super) fn whole_range(previous: &str) -> Value {
     })
 }
 
-/// 位置换算：按 UTF-16 列从行首切分。
+/// Position conversion: split from the line start by UTF-16 column.
 ///
-/// 返回 `None` 表示行不存在、列超出该行，或列落在代理对中间：调用方必须
-/// 拒绝这个位置，不能猜测相邻位置。CRLF 的 `\r` 不属于行内容。
+/// `None` means the line does not exist, the column exceeds that line, or the column falls inside a surrogate pair: the caller must
+/// reject this position rather than guess a neighbouring one. A CRLF's `\r` is not line content.
 pub(crate) fn position_offset(text: &str, position: Position) -> Option<usize> {
     let mut line_start = 0;
     for _ in 0..position.line {
@@ -79,7 +79,7 @@ mod tests {
             ),
             Some(1)
         );
-        // 列落在代理对中间：拒绝，不能夹到相邻字符。
+        // The column falls inside a surrogate pair: reject, do not snap to a neighbouring character.
         assert_eq!(
             position_offset(
                 text,
@@ -110,7 +110,7 @@ mod tests {
             ),
             Some(6)
         );
-        // CRLF 的 \r 不属于行内容。
+        // A CRLF's \r is not line content.
         assert_eq!(
             position_offset(
                 text,

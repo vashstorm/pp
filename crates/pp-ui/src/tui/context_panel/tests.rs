@@ -280,7 +280,7 @@ fn context_panel_grid_inline_metrics_ascii_and_expand_collapse() {
         assert_eq!(grid_only.matches('⛝').count(), 60);
         assert_eq!(grid_only.matches('⛶').count(), 340);
 
-        // 具体大小与占比紧跟在分类文字后方（2 空格间隔），绝不推到窗口右边缘对齐；空会话全为 0。
+        // Size and share follow the category text immediately (two spaces apart) and are never pushed to the right edge; an empty session shows 0 throughout.
         assert!(screen.contains("> ⛁ System Prompt  0  0.0%"));
         assert!(screen.contains("  ⛁ Instruction Files  0  0.0%"));
         assert!(screen.contains("  ⛁ Skills  0  0.0%"));
@@ -316,7 +316,7 @@ fn context_panel_grid_inline_metrics_ascii_and_expand_collapse() {
         assert!(header_screen.contains("Cache 50%"), "{header_screen}");
         assert!(header_screen.contains("Reasoning 1.2K"), "{header_screen}");
 
-        // 在 System Prompt 按 Enter 原地展开 2 个子项。
+        // Pressing Enter on System Prompt expands its 2 children in place.
         assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
         let expanded_screen = draw_panel(&mut panel, 130, 26);
         assert!(expanded_screen.contains("> ⛁ System Prompt ▾  2.5K  0.5%"));
@@ -326,7 +326,7 @@ fn context_panel_grid_inline_metrics_ascii_and_expand_collapse() {
                 .contains("Runtime Tool & Environment Rules · prompts/runtime.md  700  0.1%")
         );
 
-        // 向下进入第一个子项，按 Left 收起所属分类并将光标拉回分类行。
+        // Move down into the first child, then Left collapses the parent category and pulls the cursor back to its row.
         assert!(matches!(panel.handle(key(KeyCode::Down)), Action::None));
         assert!(matches!(
             panel.visible_rows()[panel.cursor],
@@ -337,7 +337,7 @@ fn context_panel_grid_inline_metrics_ascii_and_expand_collapse() {
         let collapsed_screen = draw_panel(&mut panel, 110, 26);
         assert!(!collapsed_screen.contains("Base System Prompt (bundled)"));
 
-        // 移动到 Built-in Tools (index 3) 并用 Right 展开；r 刷新；Esc 关闭。
+        // Move to Built-in Tools (index 3) and expand with Right; r refreshes; Esc closes.
         for _ in 0..3 {
             assert!(matches!(panel.handle(key(KeyCode::Down)), Action::None));
         }
@@ -346,7 +346,7 @@ fn context_panel_grid_inline_metrics_ascii_and_expand_collapse() {
         assert!(tools_screen.contains("Read · Read files  1.2K  0.2%"));
         assert!(tools_screen.contains("Bash · Run shell  3.5K  0.7%"));
 
-        // ASCII 模式下不出现 Unicode 网格字形。
+        // ASCII mode renders no Unicode grid glyphs.
         crate::tui::themes::set_active(Theme::Default, IconMode::Ascii);
         let ascii_screen = draw_panel(&mut panel, 110, 26);
         crate::tui::themes::set_active(Theme::Default, IconMode::Nerd);
@@ -356,7 +356,7 @@ fn context_panel_grid_inline_metrics_ascii_and_expand_collapse() {
         assert!(!ascii_screen.contains('⛶'));
         assert!(!ascii_screen.contains('⛝'));
 
-        // 刷新后保留未失效的展开态。
+        // A refresh keeps the expansion state that is still valid.
         assert!(matches!(
             panel.handle(key(KeyCode::Char('r'))),
             Action::Refresh
@@ -387,7 +387,7 @@ fn app_context_command_states_and_compaction_policy_sync() {
             assert!(!app.has_pending());
             assert!(cmd_rx.try_recv().is_err());
 
-            // 迟到的诊断回复不能覆盖主任务的状态。
+            // A late diagnostics reply must not overwrite the main task state.
             app.receive_event_for_test(WorkerEvent::ContextInspected(Ok(sample_report())));
             app.handle(key(KeyCode::Char('r')), &mut dirty);
             assert!(cmd_rx.try_recv().is_err());

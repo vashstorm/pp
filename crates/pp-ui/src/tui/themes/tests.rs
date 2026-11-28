@@ -59,7 +59,7 @@ fn categories_preview_and_save_independently() {
         assert!(icons.contains("Themes — Icon Style"), "{icons}");
         assert!(icons.contains("Nerd Font") && icons.contains("ASCII"));
 
-        // 切换分类仅预览该分类，其余两项使用已保存值。
+        // Switching category previews only that category; the other two use their saved values.
         assert_eq!(
             panel.set_category(Category::Theme),
             Action::Preview(app_of(Theme::Default, IconMode::Nerd, ToolStyle::Classic))
@@ -80,7 +80,7 @@ fn categories_preview_and_save_independently() {
             assert_eq!(panel.category, Category::Theme);
         }
 
-        // 切到 Tools 分类：独立预览，不带入其它分类的未保存草稿。
+        // Switching to the Tools category previews independently and does not carry in other categories' unsaved drafts.
         assert_eq!(
             panel.set_category(Category::Tools),
             Action::Preview(app_of(Theme::Default, IconMode::Nerd, ToolStyle::Classic))
@@ -146,7 +146,7 @@ fn preview_renders_aligned_cards_full_width_backgrounds_and_status_across_sizes(
             for y in 0..h {
                 let row: String = (0..w).map(|x| buffer[(x, y)].symbol()).collect();
                 screen_rows.push(row);
-                // 浅色主题下任何单元格不得回落到终端默认 Reset 背景。
+                // Under a light theme no cell may fall back to the terminal's default Reset background.
                 for x in 0..w {
                     assert_ne!(
                         buffer[(x, y)].bg,
@@ -162,7 +162,7 @@ fn preview_renders_aligned_cards_full_width_backgrounds_and_status_across_sizes(
             assert!(screen.contains("Solarized Light"), "{w}x{h}:\n{screen}");
             assert!(screen.contains("gpt-5"), "{w}x{h}:\n{screen}");
 
-            // 用户消息条、Edit 卡片与底栏均按视口全宽铺满对应背景色，且 Edit 四角列对齐。
+            // The user message bar, Edit card and bottom bar all fill their background across the viewport width, and the Edit corners line up.
             let preview_y = screen_rows
                 .iter()
                 .position(|r| r.contains("Live Preview"))
@@ -280,7 +280,7 @@ fn tools_category_renders_all_six_styles_with_live_preview_and_mouse_navigation(
         }
     }
 
-    // 侧边栏第 3 行点击切换到 Tools 分类，点击列表行切换到对应风格。
+    // Clicking row 3 of the sidebar switches to the Tools category, and clicking a list row switches to that style.
     let mut panel = Panel::new(app_of(Theme::Default, IconMode::Nerd, ToolStyle::Classic));
     let _ = render_screen(&mut panel, 110, 32);
     assert_eq!(
@@ -309,7 +309,7 @@ fn color_theme_list_caps_height_scrolls_and_renders_all_palettes() {
     let mut panel = Panel::new(app_of(Theme::Default, IconMode::Nerd, ToolStyle::Classic));
     let _ = panel.set_category(Category::Theme);
 
-    // 常规终端高度下列表框受 MAX_LIST_ROWS 限制，超出时开启滚动。
+    // At a typical terminal height the list is capped by MAX_LIST_ROWS and scrolling turns on beyond it.
     let initial = render_screen(&mut panel, 110, 32);
     assert!(panel.list_area.height <= render::MAX_LIST_ROWS);
     assert_eq!(panel.list_area.height, render::MAX_LIST_ROWS);
@@ -318,7 +318,7 @@ fn color_theme_list_caps_height_scrolls_and_renders_all_palettes() {
     assert!(!initial.contains("Night Owl"));
     assert!(initial.contains("Live Preview"));
 
-    // PageDown 翻页并更新选中与滚动窗口。
+    // PageDown pages and updates the selection and scroll window.
     assert_eq!(
         key(&mut panel, KeyCode::PageDown),
         Action::Preview(app_of(
@@ -331,7 +331,7 @@ fn color_theme_list_caps_height_scrolls_and_renders_all_palettes() {
     assert!(panel.list_scroll > 0);
     assert!(paged.contains(Theme::ALL[usize::from(render::MAX_LIST_ROWS)].label()));
 
-    // End 滚动到最末主题，鼠标点击可视行能正确命中滚动偏移后的主题。
+    // End scrolls to the last theme, and clicking a visible row hits the theme at the scrolled offset.
     assert_eq!(
         key(&mut panel, KeyCode::End),
         Action::Preview(app_of(Theme::NightOwl, IconMode::Nerd, ToolStyle::Classic))
@@ -378,7 +378,7 @@ fn color_theme_list_caps_height_scrolls_and_renders_all_palettes() {
     assert_eq!(panel.list_scroll, 0);
     assert!(back_top.contains("Default"));
 
-    // 全部 20 套主题均能完整渲染，且任何单元格不回退到 Reset 背景。
+    // All 20 themes render fully and no cell falls back to the Reset background.
     for theme in Theme::ALL {
         let mut themed = Panel::new(app_of(theme, IconMode::Nerd, ToolStyle::Classic));
         let _ = themed.set_category(Category::Theme);

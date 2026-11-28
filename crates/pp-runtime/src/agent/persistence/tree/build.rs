@@ -250,8 +250,10 @@ impl Tree {
             {
                 let saved: Entry = serde_json::from_slice(&line)
                     .map_err(|_| anyhow::anyhow!("invalid session tree record"))?;
-                // 计划交接把用户消息紧邻写在原生快照之前，普通输入的顺序相反。
-                // 同会话交接从 Plan 切到 Execute，打开计划或新上下文交接则尚无快照。
+                // Plan handoff writes the user message immediately before the native snapshot;
+                // ordinary input is ordered the other way around.
+                // A same-session handoff switches from Plan to Execute, while opening a plan or
+                // handing over a new context has no snapshot yet.
                 if let Some((index, before_len)) = &mut pending_user
                     && let Payload::Custom {
                         custom: Custom::State(state),
@@ -433,7 +435,8 @@ mod tests {
             assert!(!native.contains("question-b"));
             assert!(!native.contains("answer-b"));
 
-            // 树与恢复只保留有效的 A 路径；列表摘要固定使用最初消息。
+            // Tree and resume keep only the valid A path; the listing summary always uses the
+            // initial message.
             let tree = journal.tree().unwrap();
             assert_eq!(tree.nodes.len(), 2);
             assert_eq!(tree.nodes[1].parent, Some(0));
@@ -664,7 +667,7 @@ mod tests {
             let mut session =
                 Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
 
-            // 第一轮正常问答
+            // First turn: normal question and answer
             turn(
                 &mut journal,
                 &mut session,
@@ -674,7 +677,8 @@ mod tests {
                 false,
             );
 
-            // 第二轮模拟 UserPromptSubmit hook 追加 additionalContext (User + Developer)
+            // Second turn simulates a UserPromptSubmit hook appending additionalContext
+            // (User + Developer)
             match &mut session {
                 Session::Completion(request) => request.messages.push(
                     serde_json::from_value(json!({"role":"user","content":"hooked-user"})).unwrap(),

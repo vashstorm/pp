@@ -1,13 +1,17 @@
-//! 会话目录（JSONL）到 history.db 派生投影的增量索引。
+//! Incremental indexing of the session directory (JSONL) into the history.db derived
+//! projection.
 //!
-//! 只索引 `validate_id` 认可、NOFOLLOW/NONBLOCK 打开的普通 `.jsonl`：
-//! fingerprint（device/inode/字节数/mtime 秒+纳秒）未变化的文件只 stat；
-//! 变化的文件在单独的 BEGIN IMMEDIATE 事务中流式重解析，并完整替换该
-//! 文件的目录行、prompt 行与 FTS 文档。只有 `type=message`、`role=user`
-//! 的实际正文按起始 byte offset 进入 prompt 索引；native_append/
-//! session_state 中的重复副本不索引。取消在逐文件/逐行边界检查：当前
-//! 文件事务回滚并返回 Cancelled，已提交的文件保留。派生行的删除绝不
-//! 触碰 `input_history`，也不修改原 JSONL。
+//! Only regular `.jsonl` files accepted by `validate_id` and opened with
+//! NOFOLLOW/NONBLOCK are indexed: files whose fingerprint (device/inode/byte
+//! count/mtime seconds+nanos) is unchanged are only stat'ed; changed files are
+//! streamed and reparsed in a dedicated BEGIN IMMEDIATE transaction that fully
+//! replaces that file's directory row, prompt rows and FTS document. Only the
+//! actual body of `type=message`, `role=user` records enters the prompt index by
+//! its starting byte offset; duplicate copies in native_append/session_state are
+//! not indexed. Cancellation is checked at per-file/per-line boundaries: the
+//! current file transaction rolls back and Cancelled is returned, while committed
+//! files are kept. Derived row deletion never touches `input_history` and never
+//! modifies the original JSONL.
 
 use super::{
     parse_timestamp,
@@ -33,8 +37,9 @@ fn unavailable<E>(_: E) -> anyhow::Error {
     anyhow::anyhow!(UNAVAILABLE)
 }
 
-/// 同步 `dir` 下全部会话文件的派生投影，返回逐文件脱敏诊断（仅会话 ID
-/// 与固定原因，不含日志正文、路径或参数）。
+/// Sync the derived projection of every session file under `dir` and return
+/// per-file redacted diagnostics (session ID and a fixed reason only, never log
+/// bodies, paths or arguments).
 pub(crate) fn sync(
     conn: &mut Connection,
     dir: &Path,
@@ -43,7 +48,8 @@ pub(crate) fn sync(
     cancellation::check(cancellation)?;
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        // 目录缺失是成功判定：清空派生行，等待目录重新出现时重建。
+        // A missing directory is a success verdict: clear the derived rows and
+        // rebuild once the directory reappears.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             conn.execute("DELETE FROM sessions", [])
                 .map_err(unavailable)?;
@@ -55,7 +61,8 @@ pub(crate) fn sync(
     let mut diagnostics = Vec::new();
     let mut seen = HashSet::new();
     for entry in entries {
-        // 迭代中途失败时不移除任何行：未遍历项不能当作已删除。
+        // Mid-iteration failure removes no rows: unvisited entries must not be
+        // treated as deleted.
         let entry = entry.context("reading session directory")?;
         let Some(id) = session_id(&entry.file_name()) else {
             continue;
@@ -79,14 +86,14 @@ pub(crate) fn sync(
     Ok(diagnostics)
 }
 
-/// 有效的会话文件名：`.jsonl` 后缀 + `validate_id` 认可的会话 ID。
+/// A valid session file name: `.jsonl` suffix plus a session ID accepted by `validate_id`.
 fn session_id(file_name: &OsStr) -> Option<String> {
     let id = file_name.to_str()?.strip_suffix(".jsonl")?;
     validate_id(id).ok()?;
     Some(id.to_owned())
 }
 
-/// NOFOLLOW/NONBLOCK 打开：拒绝符号链接，不阻塞在非常规文件上。
+/// Open with NOFOLLOW/NONBLOCK: reject symlinks and never block on unusual files.
 fn open_session(path: &Path) -> std::io::Result<File> {
     OpenOptions::new()
         .read(true)
@@ -94,10 +101,11 @@ fn open_session(path: &Path) -> std::io::Result<File> {
         .open(path)
 }
 
-/// 派生行的源文件 fingerprint：路径身份（device/inode）与内容边界
-/// （字节数、mtime 秒+纳秒）。任一字段变化都触发该文件完整重解析；
-/// 同一 inode 修改旧正文并增长时仅看增长会留下错误索引，因此采用
-/// 按变更文件整体替换而不是追加。
+/// Source-file fingerprint of a derived row: path identity (device/inode) and
+/// content boundary (byte count, mtime seconds+nanos). Any changed field triggers
+/// a full reparse of that file; rewriting the old body in place on the same inode
+/// while growing it would leave a wrong index if only growth were watched, so a
+/// changed file is replaced wholesale rather than appended to.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Fingerprint {
     device: i64,
@@ -119,7 +127,8 @@ impl Fingerprint {
     }
 }
 
-/// 重新 fstat 打开的 fd；失败视为变化（无法验证稳定性时不提交）。
+/// Re-fstat the opened fd; failure counts as a change (do not commit when stability
+/// cannot be verified).
 fn refstat(file: &File) -> Option<Fingerprint> {
     file.metadata().ok().map(|stat| Fingerprint::of(&stat))
 }
@@ -171,7 +180,7 @@ fn recorded_fingerprint(tx: &Transaction<'_>, id: &str) -> Result<Option<Fingerp
     .map_err(unavailable)
 }
 
-/// 单文件结果：true 表示该文件的派生行应保留在目录中。
+/// Single-file result: true means the file's derived rows should stay in the directory.
 fn index_file(
     conn: &mut Connection,
     path: &Path,
@@ -181,7 +190,8 @@ fn index_file(
 ) -> Result<bool> {
     let file = match open_session(path) {
         Ok(file) => file,
-        // 目录扫描后文件消失：等同外部删除，仅移除派生行，不算损坏。
+        // The file vanished after the directory scan: treat it as an external
+        // deletion, remove only the derived rows and do not count it as corruption.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return remove(conn, id).map(|_| false);
         }
@@ -214,25 +224,27 @@ fn index_file(
         diagnostics,
     )?;
     match step {
-        // 未变化、已提交新投影或并发变化后回滚：目录行保留。
+        // Unchanged, new projection committed, or rolled back after a concurrent
+        // change: keep the directory row.
         Step::Kept => Ok(true),
-        // 源无效（坏 header/首条 user 前损坏/读取失败）或没有 user 消息：
-        // 移除派生行；诊断已在 project 内记录（无 user 时静默）。
+        // Invalid source (bad header / corruption before the first user / read
+        // failure) or no user message: remove the derived rows; the diagnostic was
+        // already recorded inside project (silent when there is no user).
         Step::Invalid | Step::Gone => Ok(false),
     }
 }
 
 enum Step {
-    /// 目录行保留。
+    /// Keep the directory row.
     Kept,
-    /// 源无效，诊断已记录；调用方移除派生行。
+    /// Invalid source, diagnostic already recorded; the caller removes the derived rows.
     Invalid,
-    /// 源有效但没有 user 消息：不列出，静默移除。
+    /// Valid source without a user message: not listed, silently removed.
     Gone,
 }
 
-/// 在一笔 BEGIN IMMEDIATE 中重建单个文件的投影。任何提前返回都让事务
-/// 随 drop 回滚（未写入任何已提交数据）。
+/// Rebuild the projection of a single file inside one BEGIN IMMEDIATE. Any early
+/// return lets the transaction roll back on drop (no committed data was written).
 fn project(
     tx: Transaction<'_>,
     file: &File,
@@ -282,7 +294,7 @@ fn project_contents(
     cancellation: &CancellationToken,
     diagnostics: &mut Vec<String>,
 ) -> Result<Step> {
-    // fd 边界受限读取：打开后文件增长的部分永不进入本次投影。
+    // fd-bounded read: anything the file gains after opening never enters this projection.
     let mut reader =
         pp_core::session_jsonl::Reader::new(BufReader::new(file.take(current.bytes as u64)));
     let mut line = Vec::new();
@@ -298,8 +310,9 @@ fn project_contents(
         }
     };
 
-    // 完整替换该文件的派生行：先删除旧行（级联 prompt/FTS），再插入占位
-    // 会话行以流式写入 prompt，提交前补齐 summary/preview/fingerprint。
+    // Fully replace the file's derived rows: delete the old rows first (cascading to
+    // prompt/FTS), then insert a placeholder session row so prompts can be streamed in
+    // and fill in summary/preview/fingerprint before commit.
     tx.execute("DELETE FROM sessions WHERE session_id=?1", [id])
         .map_err(unavailable)?;
     let created_ms = parse_timestamp(&header.timestamp).map_err(unavailable)?;
@@ -350,12 +363,13 @@ fn project_contents(
                 return Ok(Step::Invalid);
             }
         };
-        // 边界处的不完整尾行不入索引；补齐后的元数据变化会触发重建。
+        // An incomplete trailing line at the boundary does not enter the index; the
+        // metadata change after completion triggers a rebuild.
         if !line.ends_with(b"\n") {
             done = false;
             break;
         }
-        // 逐行取消边界：返回时事务随 drop 回滚。
+        // Per-line cancellation boundary: the transaction rolls back on drop when returning.
         cancellation::check(cancellation)?;
         match summary::classify(&line) {
             Ok(record) => {
@@ -376,7 +390,8 @@ fn project_contents(
             }
             Err(_) if head.has_summary() => {
                 done = false;
-                // 保留有效前缀的摘要/prompts，done=false，停止在坏行前。
+                // Keep the valid prefix's summary/prompts, set done=false and stop
+                // before the bad line.
                 diagnostics.push(format!(
                     "{id}: invalid session record after first user message"
                 ));
@@ -394,7 +409,7 @@ fn project_contents(
     drop(insert_prompt);
 
     let Some((summary, preview)) = head.finish() else {
-        // 没有 user 消息的文件不列出：静默移除派生行。
+        // Files without a user message are not listed: silently remove derived rows.
         return Ok(Step::Gone);
     };
     tx.execute(
@@ -415,14 +430,15 @@ fn project_contents(
     Ok(Step::Kept)
 }
 
-/// 移除单个文件的派生行；级联删除 prompts 并经触发器同步 FTS。
+/// Remove a single file's derived rows; prompts cascade and FTS is synced by triggers.
 fn remove(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM sessions WHERE session_id=?1", [id])
         .map_err(unavailable)?;
     Ok(())
 }
 
-/// 目录扫描完整成功后移除已不存在的会话行；绝不触碰 input_history。
+/// Remove rows for sessions that no longer exist after a complete directory scan;
+/// never touches input_history.
 fn drop_absent(
     conn: &mut Connection,
     dir: &Path,
@@ -581,8 +597,8 @@ mod tests {
             let mut fixture = Fixture::new();
             let id = session(1);
             let head = header_text(&id, "/project");
-            let first = user("首条 无关键词的介绍");
-            let needle = user("修复模型切换失败 needle_42");
+            let first = user("first intro without keywords");
+            let needle = user("fix model switch failure needle_42");
             let base = format!("{head}{first}{needle}{}", stopped());
             fixture.write_session(1, &base);
 
@@ -593,11 +609,11 @@ mod tests {
                 vec![
                     (
                         super::super::tests::encode_log(&head).len() as i64,
-                        "首条 无关键词的介绍".into()
+                        "first intro without keywords".into()
                     ),
                     (
                         super::super::tests::encode_log(&format!("{head}{first}")).len() as i64,
-                        "修复模型切换失败 needle_42".into()
+                        "fix model switch failure needle_42".into()
                     ),
                 ]
             );
@@ -606,14 +622,16 @@ mod tests {
             assert!(summary.done);
             assert_eq!(summary.bytes, fs::metadata(fixture.path(1)).unwrap().len());
 
-            // 追加不完整尾行（自定义事件）：不入索引，done=false，不重复。
+            // Appending an incomplete trailing line (custom event): not indexed, done=false,
+            // no duplicates.
             let partial = "{\"type\":\"custom\",\"customType\":\"pp.event\",\"data\":{";
             fixture.append(1, partial);
             fixture.sync();
             assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 2);
             assert!(!fixture.summary(&id).done);
 
-            // 尾行补齐：custom 记录不是 user prompt，末尾状态回退到 assistant stop。
+            // Completing the trailing line: a custom record is not a user prompt, so the
+            // terminal status falls back to the assistant stop.
             fixture.append(1, "}}\n");
             let complete = fs::read(fixture.path(1)).unwrap();
             fixture.sync();
@@ -621,7 +639,7 @@ mod tests {
             assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 2);
             assert!(fixture.summary(&id).done);
 
-            // 不完整的 user 尾行：不入索引且 done=false。
+            // Incomplete user trailing line: not indexed and done=false.
             let open_user =
                 "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"补齐前\"}";
             fixture.append(1, open_user);
@@ -630,14 +648,16 @@ mod tests {
             assert!(fixture.search("补齐前").is_empty());
             assert!(!fixture.summary(&id).done);
 
-            // user 尾行补齐：prompt 入索引，最后一条完整记录是 user → done=false。
+            // Completing the user trailing line: the prompt enters the index, and the last
+            // complete record is a user → done=false.
             fixture.append(1, "}\n");
             fixture.sync();
             assert_eq!(fixture.count("SELECT COUNT(*) FROM session_prompts"), 3);
             assert_eq!(fixture.search("补齐前"), vec![id.clone()]);
             assert!(!fixture.summary(&id).done);
 
-            // 重复同步：fingerprint 未变化只 stat，无重复行，JSONL 字节不变。
+            // Repeated sync: an unchanged fingerprint is only stat'ed, no duplicate rows and
+            // the JSONL bytes stay identical.
             let before = (
                 fixture.count("SELECT COUNT(*) FROM sessions"),
                 fixture.count("SELECT COUNT(*) FROM session_prompts"),
@@ -654,7 +674,7 @@ mod tests {
                 )
             );
 
-            // bytes 记录当前文件长度。
+            // bytes records the current file length.
             assert_eq!(fixture.summary(&id).bytes, bytes.len() as u64);
         }
 
@@ -666,13 +686,13 @@ mod tests {
                 &format!(
                     "{}{}{}",
                     header_text(&id, "/project"),
-                    user("旧的 needle_old 内容"),
+                    user("old needle_old content"),
                     stopped()
                 ),
             );
             fixture
                 .store
-                .append_input(Path::new("/project"), "保留的输入", 1)
+                .append_input(Path::new("/project"), "kept input", 1)
                 .unwrap();
             fixture.sync();
             assert_eq!(fixture.search("needle_old"), vec![id.clone()]);
@@ -686,14 +706,15 @@ mod tests {
                 )
                 .unwrap();
 
-            // 同路径换 inode：完整替换投影，旧内容不残留。
+            // Same path, new inode: the projection is fully replaced and old content does
+            // not linger.
             fs::remove_file(fixture.path(2)).unwrap();
             fixture.write_session(
                 2,
                 &format!(
                     "{}{}{}",
                     header_text(&id, "/project"),
-                    user("新的 needle_new 内容"),
+                    user("new needle_new content"),
                     stopped()
                 ),
             );
@@ -712,23 +733,28 @@ mod tests {
                 .unwrap();
             assert_ne!(old, new);
 
-            // 截短：截掉的内容不再可搜。
+            // Truncation: truncated content is no longer searchable.
             fixture.write_session(
                 2,
-                &format!("{}{}", header_text(&id, "/project"), user("截短后的内容")),
+                &format!(
+                    "{}{}",
+                    header_text(&id, "/project"),
+                    user("content after truncation")
+                ),
             );
             fixture.sync();
             assert!(fixture.search("needle_new").is_empty());
             assert_eq!(fixture.prompts(&id).len(), 1);
 
-            // 外部删除文件：派生行移除，input_history 保留。
+            // External deletion: derived rows are removed, input_history is kept.
             fs::remove_file(fixture.path(2)).unwrap();
             fixture.sync();
             assert_eq!(fixture.count("SELECT COUNT(*) FROM sessions"), 0);
             assert_eq!(fixture.count("SELECT COUNT(*) FROM input_history"), 1);
             assert_eq!(fixture.count("SELECT COUNT(*) FROM prompt_fts"), 0);
 
-            // 目录整体缺失（成功判定）：清空派生行；input_history 仍保留。
+            // Whole directory missing (success verdict): derived rows are cleared;
+            // input_history is still kept.
             let other = session(3);
             fixture.write_session(
                 3,
@@ -754,13 +780,13 @@ mod tests {
                 &format!(
                     "{}{}{}",
                     header_text(&id, "/project"),
-                    user("重建 needle_rebuild"),
+                    user("rebuild needle_rebuild"),
                     stopped()
                 ),
             );
             fixture
                 .store
-                .append_input(Path::new("/project"), "原始输入保留", 1)
+                .append_input(Path::new("/project"), "original input kept", 1)
                 .unwrap();
             fixture.sync();
             let bytes = fs::read(fixture.path(4)).unwrap();
@@ -782,14 +808,14 @@ mod tests {
                 &format!(
                     "{}{}{}",
                     header_text(&good, "/project"),
-                    user("完好的 needle_good"),
+                    user("intact needle_good"),
                     stopped()
                 ),
             );
-            // 坏 header。
+            // Bad header.
             let bad = session(6);
             fixture.write_session(6, "bad header\n");
-            // 首条 user 前损坏：整个文件无效。
+            // Corruption before the first user: the whole file is invalid.
             let pre = session(7);
             fixture.write_session(
                 7,
@@ -799,19 +825,19 @@ mod tests {
                     user("needle_pre")
                 ),
             );
-            // 首条 user 后损坏：保留有效前缀，done=false。
+            // Corruption after the first user: keep the valid prefix, done=false.
             let post = session(8);
             fixture.write_session(
                 8,
                 &format!(
                     "{}{}broken after user\n{}{}",
                     header_text(&post, "/project"),
-                    user("有效前缀 needle_post"),
-                    user("第二条"),
+                    user("valid prefix needle_post"),
+                    user("second"),
                     stopped()
                 ),
             );
-            // 符号链接不是普通会话文件。
+            // A symlink is not a regular session file.
             let link = session(9);
             std::os::unix::fs::symlink(fixture.path(5), fixture.dir.join(format!("{link}.jsonl")))
                 .unwrap();
@@ -822,7 +848,7 @@ mod tests {
             assert_eq!(fixture.search("needle_post"), vec![post.clone()]);
             let summary = fixture.summary(&post);
             assert!(!summary.done);
-            // 停止在坏行前：坏行之后的第二条 user 未入索引。
+            // Stop before the bad line: the second user record after it is not indexed.
             assert_eq!(fixture.prompts(&post).len(), 1);
             assert_eq!(diagnostics.len(), 4);
             assert!(
@@ -833,14 +859,15 @@ mod tests {
             assert!(diagnostics.iter().all(|d| !d.contains("needle")
                 && !d.contains("bad header")
                 && !d.contains("broken")
-                && !d.contains("有效前缀")));
-            // 修复坏 header 后重新同步：恢复索引，诊断消失。
+                && !d.contains("valid prefix")));
+            // Resyncing after fixing the bad header restores the index and the diagnostics
+            // disappear.
             fixture.write_session(
                 6,
                 &format!(
                     "{}{}{}",
                     header_text(&bad, "/project"),
-                    user("修复后 needle_fixed"),
+                    user("fixed needle_fixed"),
                     stopped()
                 ),
             );
@@ -861,17 +888,19 @@ mod tests {
                 &format!(
                     "{}{}{}",
                     header_text(&id, "/project"),
-                    user("持锁 needle_locked"),
+                    user("locked needle_locked"),
                     stopped()
                 ),
             );
-            // 打开中的会话只读索引：持有 session 锁仍可搜索，但不获取锁。
+            // An open session is indexed read-only: it stays searchable while the session
+            // lock is held, but no lock is acquired here.
             let lock = SessionLock::acquire(&fixture.dir.join(".locks"), &id).unwrap();
             fixture.sync();
             assert_eq!(fixture.search("needle_locked"), vec![id.clone()]);
             drop(lock);
 
-            // 已取消的同步立即返回 Cancelled，已提交的投影保留。
+            // An already-cancelled sync returns Cancelled immediately and keeps committed
+            // projections.
             let token = CancellationToken::new();
             token.cancel();
             let error = fixture
@@ -890,7 +919,7 @@ mod tests {
             let content = format!(
                 "{}{}{}",
                 header_text(&target, "/project"),
-                user("目标 needle_target"),
+                user("target needle_target"),
                 stopped()
             );
             fixture.write_session(11, &content);
@@ -899,7 +928,7 @@ mod tests {
                 &format!(
                     "{}{}{}",
                     header_text(&replaced, "/project"),
-                    user("待替换 needle_replaced"),
+                    user("to replace needle_replaced"),
                     stopped()
                 ),
             );

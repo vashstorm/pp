@@ -63,7 +63,8 @@ fn rate_limited_opening_retries_then_finishes_on_either_protocol() {
     }
 }
 
-// 传输故障分支必须观察真实线上字节，因此保留本文件私有的原始 TCP fixture。
+// The transport-failure branches must observe real on-the-wire bytes, so this file keeps its own private raw TCP
+// fixture.
 fn raw_models(addr: SocketAddr, responses: bool) -> String {
     if responses {
         json!({"providers": {"fixture": {
@@ -75,7 +76,7 @@ fn raw_models(addr: SocketAddr, responses: bool) -> String {
         .to_string()
     } else {
         format!(
-            "# 此测试进程的回环服务\nproviders:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://{addr}/v1\n    models:\n      primary:\n        model: fixture-model\n"
+            "# Loopback service for this test process\nproviders:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://{addr}/v1\n    models:\n      primary:\n        model: fixture-model\n"
         )
     }
 }
@@ -97,7 +98,8 @@ fn raw_accept(listener: &TcpListener) -> TcpStream {
     }
 }
 
-// 读取一个完整的 Content-Length 请求：请求头到空行为止，正文严格按长度补齐。
+// Read one complete Content-Length request: the headers up to the empty line, with the body filled in strictly by
+// length.
 fn raw_request(stream: &mut TcpStream) -> (String, Vec<u8>) {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -170,7 +172,7 @@ fn raw_no_more(listener: &TcpListener, stream: &mut TcpStream) {
     }
 }
 
-// Chat 流：与 reply 相同的两帧 delta 加终止标记。
+// Chat stream: the same two delta frames as reply plus the terminating marker.
 fn raw_chat_sse(text: &str) -> Vec<u8> {
     let mut body = String::new();
     for frame in [
@@ -183,8 +185,8 @@ fn raw_chat_sse(text: &str) -> Vec<u8> {
     body.into_bytes()
 }
 
-// Responses 流：复现 response_final 的 delta→content_part.done→output_item.done
-// →response.completed 顺序。
+// Responses stream: reproduces the delta→content_part.done→output_item.done→response.completed order of
+// response_final.
 fn raw_response_sse(text: &str) -> Vec<u8> {
     let item = response_message("msg-final", json!([response_text(text)]));
     let output = json!([item.clone()]);

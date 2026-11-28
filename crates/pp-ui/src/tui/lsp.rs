@@ -1,7 +1,7 @@
-//! LSP 专用终端渲染：工具卡片、诊断分组与多文件变更。
+//! Terminal rendering specific to LSP: tool cards, diagnostic groups and multi-file changes.
 //!
-//! 这里只做展示；报告本身由工具结果或 `LspDiagnostics` 事件冻结携带，
-//! 渲染不会重新读取磁盘或查询 language server。
+//! This module only displays; the report itself is frozen into the tool result or the `LspDiagnostics` event,
+//! and rendering never re-reads disk or queries the language server.
 
 use super::transcript::{block_line, diff_layout_styled, wrap_block};
 use super::transcript_style as palette;
@@ -16,11 +16,11 @@ use ratatui::{
 };
 use serde_json::Value;
 
-/// 折叠时最多展示的诊断正文行数（摘要行也在其中）。
+/// Maximum diagnostic body rows shown when collapsed (the summary row counts toward it).
 pub(super) const COLLAPSED_LINES: usize = 10;
 const CONTENT_PREVIEW_LINES: usize = 4;
 
-/// LSP 卡片累积的多文件变更；普通 write/edit 仍只保留单文件 diff。
+/// Multi-file changes accumulated by the LSP card; plain write/edit still keeps a single-file diff.
 #[derive(Default)]
 pub(super) struct Block {
     pub(super) content: Option<String>,
@@ -33,7 +33,7 @@ pub(super) struct Change {
 }
 
 impl Block {
-    /// 同一路径的后续通知替换前一份 diff，路径顺序保持首次出现顺序。
+    /// Later notifications for the same path replace the earlier diff, while path order stays first-seen.
     pub(super) fn record_change(&mut self, path: String, diff: FileDiff) {
         if let Some(existing) = self.changes.iter_mut().find(|change| change.path == path) {
             existing.diff = diff;
@@ -49,7 +49,7 @@ impl Block {
     }
 }
 
-/// 标题固定为 `LSP · <action> · <file/query>`；缺失目标时省略末段。
+/// Title is always `LSP · <action> · <file/query>`; the last segment is omitted when the target is missing.
 pub(super) fn tool_title(arguments: &Value) -> String {
     let action = arguments["action"].as_str().unwrap_or("lsp");
     let target = arguments["file"]
@@ -64,7 +64,7 @@ pub(super) fn tool_title(arguments: &Value) -> String {
     pp_core::text::display_text(&title).into_owned()
 }
 
-/// 迟到报告的独立卡片标题；不附带工具名，避免看起来像一次新调用。
+/// Title of the standalone card for a late report; it carries no tool name so it cannot look like a new call.
 pub(super) fn late_title() -> String {
     "LSP diagnostics (late)".into()
 }
@@ -101,7 +101,7 @@ pub(super) fn body(block: &Block, action: &str, width: u16, expanded: bool) -> V
 
 fn symbol_lines(content: &str, width: u16, expanded: bool) -> Vec<Line<'static>> {
     let mut lines = content.lines().peekable();
-    // 文件已在卡片标题显示；符号正文按原始行渲染，避免 Markdown 合并换行。
+    // The file is already in the card title; the symbol body renders raw lines so Markdown does not merge newlines.
     if lines
         .peek()
         .is_some_and(|line| line.starts_with("Symbols in ") && line.ends_with(':'))
@@ -396,7 +396,7 @@ fn formatter_line(
     )
 }
 
-/// 按文件/服务器分组渲染报告；折叠时保留摘要与省略数。
+/// Render the report grouped by file/server; when collapsed keep the summary and the omitted count.
 pub(super) fn diagnostics_lines(
     reports: &[DiagnosticReport],
     width: u16,
@@ -433,8 +433,8 @@ pub(super) fn diagnostics_lines(
     rows
 }
 
-/// 工具结果里的结构化报告；单文件是对象，glob 是数组。只为内联展示使用，
-/// 迟到投递走事件。
+/// Structured report inside a tool result: an object for a single file, an array for globs. Used for inline display only,
+/// while late delivery goes through events.
 pub(super) fn reports_from_result(result: &Value) -> Vec<DiagnosticReport> {
     let Some(value) = result.get("diagnostics") else {
         return Vec::new();
@@ -548,7 +548,7 @@ mod tests {
         report.servers[0].diagnostics.clear();
         report.servers[0].status = ReportStatus::ReportedIssues;
         report.deduplicated = 0;
-        // 自动钩子只保留前 50 条结构化消息，其余计入 omitted。
+        // Automatic hooks keep only the first 50 structured messages; the rest are counted as omitted.
         report.omitted = 25;
         let text = text(&diagnostics_lines(&[report], 120, true));
         assert!(text.contains("25 issues"), "{text}");
@@ -579,7 +579,7 @@ mod tests {
                 hunks: Vec::new(),
             },
         );
-        // 同一路径重复通知替换而不是追加第二张卡。
+        // Repeated notifications for the same path replace instead of appending a second card.
         block.record_change(
             "new/name.rs".into(),
             FileDiff::Text {

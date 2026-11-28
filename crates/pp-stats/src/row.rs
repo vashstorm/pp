@@ -27,10 +27,10 @@ pub(crate) struct RequestRow {
     pub status: String,
     pub stop_reason: Option<String>,
     pub error_message: Option<String>,
-    /// 采集时记录的费用快照；旧行没有快照时保持未定价。
+    /// Cost snapshot recorded at collection time; legacy rows without one stay unpriced.
     #[serde(skip)]
     pub cost: Option<CostSnapshot>,
-    /// 采集时记录的费率快照，供概览的模型费率面板读取。
+    /// Rate snapshot recorded at collection time, read by the model rate panel of the overview.
     #[serde(skip)]
     pub rates: Option<RateSnapshot>,
 }
@@ -60,7 +60,7 @@ pub(super) fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RequestRow> {
         stop_reason: r.get(18)?,
         error_message: r.get(19)?,
         cache_write_tokens: r.get(20)?,
-        // 单行快照损坏只按未定价处理，不让整页查询失败。
+        // A corrupt row snapshot only counts as unpriced; it must not fail the whole page query.
         cost: r
             .get::<_, Option<String>>(21)?
             .and_then(|json| serde_json::from_str(&json).ok()),
@@ -78,7 +78,8 @@ impl RequestRow {
     pub fn rates(&self) -> Option<RateSnapshot> {
         self.rates.clone()
     }
-    /// 列表与详情共用的请求 JSON：`cost` 为快照总额，`cost_components` 为四分量。
+    /// Request JSON shared by the list and the detail: `cost` is the snapshot total and
+    /// `cost_components` holds the four components.
     pub fn value(&self) -> Result<Value> {
         let mut value = serde_json::to_value(self)?;
         let cost = self.cost();
@@ -88,7 +89,8 @@ impl RequestRow {
     }
 }
 
-/// 列表查询的 SQL；最后一列是 `has_context`（是否已采集首次请求快照）。
+/// SQL of the list query; the last column is `has_context` (whether a first-request snapshot was
+/// collected).
 pub(super) fn latest_sql() -> String {
     format!(
         "SELECT {COLUMNS},EXISTS(SELECT 1 FROM request_contexts WHERE request_id=requests.id AND request_json IS NOT NULL) FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"

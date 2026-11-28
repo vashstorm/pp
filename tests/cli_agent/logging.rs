@@ -411,7 +411,8 @@ fn logging_operational_events_do_not_store_content_or_secrets() {
             assert_eq!(record["level"], "INFO");
         }
 
-        // HTTP 错误正文保留现场，但请求提示词与实际凭据仍不落盘。
+        // The HTTP error body is kept for diagnosis, but the request prompt and the real credentials still never hit
+        // the disk.
         let failure_server = super::server();
         let failure_home = tempfile::tempdir().unwrap();
         let failure_work = tempfile::tempdir().unwrap();

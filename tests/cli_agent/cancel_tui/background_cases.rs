@@ -1,8 +1,8 @@
-// —— 后台任务 PTY 场景（计划 TUI 部分）：真实受管进程、PID 文件栅栏、
-// 可见屏幕断言，不测静态标题文案。 ——
+// —— Background task PTY scenario (plan TUI part): a real managed process, PID file fences,
+// and visible-screen assertions; static header copy is not under test. ——
 
-// 受管理的后台命令：显式外部 sh 忽略 TERM，父 sh 与子 sleep 的 PID 写入
-// marker 文件，停止路径必须用 grace 后的 KILL 回收整个进程组。
+// Managed background command: the explicit outer sh ignores TERM, the parent sh and child sleep
+// PIDs go into marker files, and the stop path must reap the whole process group with a KILL after grace.
 fn background_hold_command(parent_marker: &str, child_marker: &str, log: Option<&str>) -> String {
     let mut script = String::from("trap \"\" TERM; ");
     if let Some(log) = log {
@@ -14,7 +14,7 @@ fn background_hold_command(parent_marker: &str, child_marker: &str, log: Option<
     format!("sh -c '{script}'")
 }
 
-// 按协议回复单个工具调用。
+// Reply to a single tool call per protocol.
 fn background_reply_call(
     request: CapturedRequest,
     protocol: &str,
@@ -29,7 +29,7 @@ fn background_reply_call(
     }
 }
 
-// 断言请求中的工具结果与 call_id 恰好配对一次，返回其结果快照。
+// Assert each tool result in the request pairs the original call_id exactly once and return its snapshot.
 fn background_paired_snapshot(body: &Value, protocol: &str, call_id: &str) -> Value {
     let outputs = cancel_tool_outputs(body, protocol);
     assert_eq!(
@@ -38,14 +38,15 @@ fn background_paired_snapshot(body: &Value, protocol: &str, call_id: &str) -> Va
             .map(|(id, _)| id.as_str())
             .collect::<Vec<_>>(),
         [call_id],
-        "后台调用必须与原 call_id 恰好一次配对"
+        "a background call must pair its original call_id exactly once"
     );
     outputs[0].1.clone()
 }
 
-// 启动受管后台任务：PID marker 证明 bash 父子真正运行；启动后的下一次模型请求
-// 携带启动结果并被持有（模型停在等待响应阶段）；屏幕必须显示 task_id 与 running，
-// start 的完成不能被当作服务已退出。返回 (task_id, 启动快照, 持有的请求)。
+// Start a managed background task: the PID markers prove the bash parent and child really run; the next
+// model request after the start carries the start result and is held (the model stops while awaiting the
+// response); the screen must show the task_id and running, and start completion must not count as exit.
+// Returns (task_id, start snapshot, held request).
 fn background_start_and_wait(
     pty: &mut Pty,
     fixture: &TestServer,
@@ -54,7 +55,7 @@ fn background_start_and_wait(
     start: &BackgroundStart<'_>,
 ) -> (String, Value, CapturedRequest) {
     let [parent, child] = start.markers else {
-        panic!("后台启动需要恰好两个 PID marker");
+        panic!("a background start needs exactly two PID markers");
     };
     let command = background_hold_command(parent, child, start.log);
     pty.input(&format!("{}\r", start.prompt));
@@ -71,17 +72,17 @@ fn background_start_and_wait(
     let snapshot = background_paired_snapshot(&body, protocol, start.call_id);
     let task_id = snapshot["task_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("启动结果缺少 task_id：{snapshot}"))
+        .unwrap_or_else(|| panic!("start result is missing task_id: {snapshot}"))
         .to_owned();
     assert_eq!(snapshot["ok"], true);
     assert_eq!(snapshot["status"], "running");
-    pty.wait_for("屏幕显示后台 task_id 与 running 状态", |screen| {
+    pty.wait_for("screen shows the background task_id and running state", |screen| {
         cancel_normalize(screen).contains(&format!("Task{task_id}:running"))
     });
     (task_id, snapshot, request)
 }
 
-// 一次后台启动的输入：marker 列表同时用于生成命令与进程级栅栏。
+// Input of one background start: the marker list generates both the command and the process-level fence.
 struct BackgroundStart<'a> {
     prompt: &'a str,
     call_id: &'a str,
@@ -89,9 +90,9 @@ struct BackgroundStart<'a> {
     log: Option<&'a str>,
 }
 
-// 两协议先启动后台任务并把下一模型请求停在等待响应阶段。Esc 后必须先清理
-// 父子 PID 与 scratch，再回到 Ready 且只留下取消状态行；下一用户任务正常执行，
-// 不重放旧启动调用。
+// Both protocols start a background task first and hold the next model request while it awaits the response.
+// After Esc the parent and child PIDs plus scratch must be cleaned before Ready, leaving only the cancel
+// status line; the next user task runs normally without replaying the old start call.
 #[test]
 fn background_esc_cancels_managed_tasks_and_cleans_before_ready_without_replay() {
     let protocol = "response";
@@ -118,15 +119,15 @@ fn background_esc_cancels_managed_tasks_and_cleans_before_ready_without_replay()
         let parent_before = std::fs::read(project.path().join("bg-esc-parent.pid")).unwrap();
         let child_before = std::fs::read(project.path().join("bg-esc-child.pid")).unwrap();
         pty.input("\x1b");
-        // 先验证后台父子 PID 与 scratch 已清理，再观察 Ready 与取消状态行。
+        // Verify the background parent and child PIDs plus scratch are cleaned before observing Ready and the cancel status line.
         cancel_wait_pid_dead(&project.path().join("bg-esc-parent.pid"));
         cancel_wait_pid_dead(&project.path().join("bg-esc-child.pid"));
         cancel_assert_no_scratch(project.path());
         cancel_wait_cancelled_ready(&mut pty);
         drop(held);
-        // 取消收尾不触发任何模型请求。
+        // Completing the cancel triggers no model request.
         cancel_assert_no_request(&fixture);
-        // 下一用户任务正常执行，且旧启动调用不重放。
+        // The next user task runs normally and the old start call is not replayed.
         pty.input("background esc next\r");
         let (request, body) = pty.request_at(&fixture, path);
         assert_eq!(
@@ -137,7 +138,7 @@ fn background_esc_cancels_managed_tasks_and_cleans_before_ready_without_replay()
         let replayed = background_paired_snapshot(&body, protocol, "bg-esc-start");
         assert_eq!(replayed["task_id"], task_id.as_str());
         let text = serde_json::to_string(&body).unwrap();
-        assert!(!text.contains("pp.cancelled"), "pp.cancelled 不得进入请求");
+        assert!(!text.contains("pp.cancelled"), "pp.cancelled must not reach the request");
         if protocol == "completion" {
             final_reply(request, "background esc recovered");
         } else {
@@ -148,7 +149,7 @@ fn background_esc_cancels_managed_tasks_and_cleans_before_ready_without_replay()
         pty.input("/quit\r");
         pty.finish();
         cancel_assert_no_request(&fixture);
-        // 旧工具从未被重放：PID marker 保持取消后的字节，进程保持停止，无新 scratch。
+        // The old tool was never replayed: the PID markers keep their cancelled bytes, the process stays stopped, no new scratch.
         assert_eq!(
             std::fs::read(project.path().join("bg-esc-parent.pid")).unwrap(),
             parent_before

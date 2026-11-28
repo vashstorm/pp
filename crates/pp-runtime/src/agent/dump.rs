@@ -1,5 +1,5 @@
-//! 会话与子 Agent 数据导出：支持导出主 transcript、原生 LLM 请求 JSON、
-//! 逐子 Agent JSONL 文件，以及主 Agent 最终结论 Markdown。
+//! Session and subagent data export: main transcript, native LLM request JSON,
+//! per-subagent JSONL files, and the main Agent's final conclusion as Markdown.
 
 use super::{Agent, persistence::SessionRef};
 use anyhow::{Context, Result, bail};
@@ -93,12 +93,12 @@ impl DumpOutput {
 }
 
 impl Agent {
-    /// 将当前会话数据或主 Agent 结论导出到 `/tmp`。
+    /// Export the current session data or the main Agent conclusion to `/tmp`.
     pub fn dump(&mut self, mode: DumpMode) -> Result<DumpOutput> {
         self.dump_to(mode, Path::new(DEFAULT_DUMP_DIR))
     }
 
-    /// 导出到指定目录（供生产 `/tmp` 与隔离测试共用）。
+    /// Export to the given directory (shared by production `/tmp` and isolated tests).
     pub fn dump_to(&mut self, mode: DumpMode, dir: &Path) -> Result<DumpOutput> {
         let id = match self.journal.id() {
             Some(id) => id.to_owned(),
@@ -124,7 +124,7 @@ impl Agent {
     fn dump_all(&mut self, id: &str, dir: &Path) -> Result<Vec<DumpFile>> {
         let mut files = Vec::new();
 
-        // 1. Main transcript (展开共享值表后的标准 JSONL)
+        // 1. Main transcript (standard JSONL after expanding the shared value table)
         let main_name = format!("pp-{id}-main.jsonl");
         let main_bytes = self.build_main_transcript_jsonl()?;
         let main_path = write_dump_file(dir, &main_name, &main_bytes)?;
@@ -151,7 +151,7 @@ impl Agent {
             self.ensure_subagents()?;
         }
         if let Some(binding) = self.subagents() {
-            // 导出前把流式缓冲落盘，保证 dump 带上最后一轮 delta。
+            // Flush the streaming buffers before export so the dump carries the last turn's deltas.
             binding.flush_observations();
             let snapshot = binding.hub_snapshot();
             let subagent_dir = binding.directory();
@@ -415,7 +415,7 @@ mod tests {
             append_turn(&mut agent, "Analyze repo", "## Summary\n\nAll good.");
             let session_id = agent.session_id().unwrap().to_owned();
 
-            // 构造两个子 Agent（registry + session.json + events.jsonl）
+            // Build two subagents (registry + session.json + events.jsonl)
             let sub_dir = agent
                 .journal
                 .directory()

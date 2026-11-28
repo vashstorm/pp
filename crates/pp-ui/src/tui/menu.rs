@@ -256,7 +256,7 @@ impl<T: Copy> SelectionMenu<T> {
             KeyCode::PageUp => selected.saturating_sub(self.page_size),
             KeyCode::PageDown => selected.saturating_add(self.page_size).min(last),
             KeyCode::Enter | KeyCode::Tab => {
-                // 按住确认键只处理首次按下，避免重复执行。
+                // A held confirmation key only processes the first press, preventing repeated execution.
                 if key.kind != KeyEventKind::Press {
                     return MenuEvent::Handled;
                 }
@@ -319,7 +319,7 @@ impl<T: Copy> SelectionMenu<T> {
         }
         self.page_size = usize::from(rows_area.height).max(1);
         if self.anchored_to_input {
-            // 终端变高后填满候选区域，避免旧滚动偏移在输入框上方留下空行。
+            // Fill the candidate area after the terminal grows so an old scroll offset cannot leave blank rows above the input box.
             let last_page_start = self.items.len().saturating_sub(self.page_size);
             let offset = self.selection.offset_mut();
             *offset = (*offset).min(last_page_start);
@@ -331,7 +331,7 @@ impl<T: Copy> SelectionMenu<T> {
             rows_area.width -= 1;
         }
         let selected = self.selected_index();
-        // 按名称的实际显示宽度对齐说明，宽终端不额外拉大两列间距。
+        // Align descriptions to the name's actual display width; wide terminals do not stretch the two-column gap.
         let label_width = if self.single_column {
             rows_area.width
         } else {
@@ -429,7 +429,7 @@ impl<T: Copy> SelectionMenu<T> {
         }
     }
 
-    /// ask 使用纵向文字布局，复用菜单焦点与滚动状态。
+    /// ask uses a vertical text layout and reuses the menu's focus and scroll state.
     pub(super) fn choices_height(&self, width: u16, editor_height: Option<u16>) -> u16 {
         let prefix_width = self.choice_prefix_width();
         self.items
@@ -457,7 +457,7 @@ impl<T: Copy> SelectionMenu<T> {
             .unwrap_or(0)
     }
 
-    /// 返回正在编辑的末项文字区域，供 ask 原位绘制输入框。
+    /// Return the text area of the last item being edited so ask can draw its input box in place.
     pub(super) fn draw_choices(
         &mut self,
         frame: &mut Frame,
@@ -535,7 +535,7 @@ impl<T: Copy> SelectionMenu<T> {
     }
 }
 
-// 为后缀保留显示列，按 UTF-8 字符边界截断名称。
+// Reserve display columns for the suffix and truncate the name on UTF-8 character boundaries.
 fn fit_label(text: &str, width: usize) -> &str {
     let mut used = 0;
     for (index, ch) in text.char_indices() {

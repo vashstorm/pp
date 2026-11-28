@@ -72,7 +72,7 @@ fn read_image_history_roundtrip_keeps_attachment_in_complete_exchange() {
     assert!(
         matches!(&parts[1], r::InputContent::InputImage(image) if image.image_url.as_deref() == Some("data:image/png;base64,AAAA"))
     );
-    // 序列化恢复后仍能转换，不重新读取任何路径。
+    // Still convertible after a serialization round-trip; no path is read again.
     let restored: Session =
         serde_json::from_str(&serde_json::to_string(&roundtrip).unwrap()).unwrap();
     assert!(

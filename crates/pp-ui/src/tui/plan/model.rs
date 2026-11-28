@@ -1,4 +1,4 @@
-//! 计划面板状态：文档／修订同步、操作可用性与讨论拼装。
+//! Plan panel state: document/revision sync, action availability and discussion assembly.
 
 use pp_core::plan::PlanDocument;
 use pp_core::plan::PlanReview;
@@ -25,7 +25,7 @@ impl Tab {
 }
 
 impl Panel {
-    /// 完整审阅面板：携带 ReviewToken，Draft/Ready 提供操作区。
+    /// Full review panel: carries a ReviewToken, Draft/Ready provide the action area.
     pub(in crate::tui) fn review(review: PlanReview) -> Self {
         let mut panel = Self::progress(review.document);
         panel.token = Some(review.token);
@@ -35,7 +35,7 @@ impl Panel {
         panel
     }
 
-    /// 只读进度视图（Execute 运行中查看 /plan view）：无 token、无操作区。
+    /// Read-only progress view (/plan view during Execute): no token, no action area.
     pub(in crate::tui) fn progress(document: PlanDocument) -> Self {
         Self {
             document,
@@ -64,8 +64,8 @@ impl Panel {
         !matches!(self.document.status, PlanStatus::Draft | PlanStatus::Ready)
     }
 
-    /// 审查成功但安全读取失败时的降级视图：展示最终报告，无 token、无操作区，
-    /// 旧执行 token 因此失效，直到下一次成功的安全读取（set_review）恢复。
+    /// Degraded view when the review succeeded but the safe read failed: shows the final report, with no token and no action area,
+    /// so the old execution token is invalid until the next successful safe read (set_review) restores it.
     pub(in crate::tui) fn degraded(document: PlanDocument, report: PlanReviewReport) -> Self {
         let mut panel = Self::progress(document);
         panel.report = Some(report);
@@ -73,7 +73,7 @@ impl Panel {
         panel
     }
 
-    /// 审查完成后的刷新：焦点落在正文 Review 标签；操作区保留当前选项。
+    /// Refresh after a completed review: focus lands on the body Review tab; the action area keeps its current option.
     pub(in crate::tui) fn focus_review_body(&mut self) {
         if self.report.is_some() {
             self.tab = Tab::Review;
@@ -81,7 +81,7 @@ impl Panel {
         self.focus = Focus::Body;
     }
 
-    /// 当前是否聚焦在有报告的正文 Review 标签上。
+    /// Whether focus is currently on a body Review tab that has a report.
     #[cfg(test)]
     pub(in crate::tui) fn on_review_body(&self) -> bool {
         self.report.is_some() && self.tab == Tab::Review && self.focus == Focus::Body
@@ -99,9 +99,9 @@ impl Panel {
         &self.document
     }
 
-    /// 同一份计划的最新 workflow 快照：更新状态/名称/位置，保留滚动与
-    /// 焦点；返回正文是否变化。名称/位置/状态变化只影响头部与操作区
-    /// 显示，不失效正文布局缓存。
+    /// Latest workflow snapshot for the same plan: updates status/name/location, keeping scroll and
+    /// focus; returns whether the body changed. Name/location/status changes only affect the header and action area
+    /// display and never invalidate the body layout cache.
     pub(in crate::tui) fn sync_document(&mut self, document: &PlanDocument) -> bool {
         if self.document.id != document.id {
             return false;
@@ -121,14 +121,14 @@ impl Panel {
         changed
     }
 
-    /// 进度事件/进度视图：内容变化即重置正文缓存与滚动位置。
+    /// Progress event/progress view: a content change resets the body cache and scroll position.
     pub(in crate::tui) fn set_progress(&mut self, document: &PlanDocument) {
         if self.sync_document(document) {
             self.scroll[Tab::Plan.index()] = 0;
         }
     }
 
-    /// 新一次 ReadPlan：修订变化重置正文滚动；报告变化重置报告排版缓存。
+    /// A new ReadPlan: a revision change resets the body scroll; a report change resets the report layout cache.
     pub(in crate::tui) fn set_review(&mut self, review: PlanReview) {
         let same_revision = self.token.as_ref().is_some_and(|token| {
             token.plan_id == review.document.id && token.revision == review.document.revision
@@ -169,7 +169,7 @@ impl Panel {
         }
     }
 
-    /// 只有绑定当前 plan_id 且针对当前修订的报告才作为辅助材料随讨论送回。
+    /// Only a report bound to the current plan_id and covering the current revision is sent back with the discussion as supporting material.
     pub(in crate::tui) fn compose_discussion(&self, text: String) -> String {
         let mut message = text;
         if let Some(report) = &self.report
@@ -236,7 +236,7 @@ mod tests {
         assert!(text.contains("report body"));
         assert!(text.contains("revision 1"));
 
-        // 过期报告不注入。
+        // A stale report is not injected.
         let mut stale = review_panel(PlanStatus::Ready);
         stale.document.revision = 2;
         stale.report = Some(PlanReviewReport {
@@ -279,7 +279,7 @@ mod tests {
             for index in 0..ACTIONS.len() {
                 assert!(!panel.action_enabled(index));
             }
-            // 成功的安全读取恢复 token 与操作区。
+            // A successful safe read restores the token and the action area.
             panel.set_review(PlanReview {
                 token: token(),
                 document: document(PlanStatus::Ready, "- [ ] step"),

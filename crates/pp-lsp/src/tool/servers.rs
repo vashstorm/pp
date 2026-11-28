@@ -1,4 +1,4 @@
-//! 服务器发现、路径解析与项目索引等待。
+//! Server discovery, path resolution and project index waiting.
 
 use crate::Registry;
 use crate::adapters;
@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use super::{Action, project_aware};
 
-/// 需要先等项目索引完成的导航动作。
+/// Navigation actions that must wait for the project index first.
 pub(super) const PROJECT_INDEXED_ACTIONS: &[&str] = &[
     "definition",
     "type_definition",
@@ -64,7 +64,7 @@ pub(super) fn all_real_servers(registry: &Registry) -> Vec<ServerDefinition> {
         .collect()
 }
 
-/// 项目根的 Rust 标记：只有存在 Cargo.toml/rust-analyzer.toml 祖先才等待索引。
+/// Rust markers of a project root: only wait for indexing when a Cargo.toml/rust-analyzer.toml ancestor exists.
 fn has_rust_workspace_ancestor(path: &Path) -> bool {
     let mut current = path.parent();
     while let Some(dir) = current {

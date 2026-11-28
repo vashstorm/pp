@@ -126,7 +126,7 @@ struct ModelsFile {
     providers: Vec<(String, ProviderEntry)>,
 }
 
-// 映射按文件顺序收集，避免改变默认模型和菜单顺序。
+// Collect mappings in file order so the default model and menu order never change.
 fn deserialize_named_entries<'de, D, T>(
     deserializer: D,
 ) -> std::result::Result<Vec<(String, T)>, D::Error>
@@ -310,10 +310,10 @@ impl ModelCost {
         .all(|rate| rate.is_finite() && rate >= 0.0)
     }
 
-    /// 与统计页面共享严格计价：未知缓存读量不能按零计费。
+    /// Shares strict pricing with the statistics page: unknown cache read volume must not be billed as zero.
     ///
-    /// 缓存写入量未知时，若写入价未配置或与输入价相同，则将这部分费用并入普通输入。
-    /// 写入价与输入价不同时，需要知道写入量才能计价。
+    /// When the cache write volume is unknown and the write rate is either unconfigured or equal to the input rate, that cost folds into regular input.
+    /// When the write rate differs from the input rate, the write volume is required to price the request.
     pub fn calculate(self, usage: pp_core::context::TokenUsage) -> Option<TokenCost> {
         let cached = usage.cached_tokens?;
         let written = match (usage.cache_write_tokens, self.cache_write) {
@@ -364,7 +364,7 @@ where
 static BUILTIN_PRICES: LazyLock<BTreeMap<String, ModelCost>> = LazyLock::new(|| {
     let prices: BTreeMap<String, ModelCost> =
         yaml::parse(include_str!("model-prices.yml"), "model prices")
-            .expect("内置模型价格表格式有效");
+            .expect("built-in model price table is well formed");
     assert!(
         !prices.is_empty()
             && prices.iter().all(|(name, rate)| {
@@ -374,12 +374,12 @@ static BUILTIN_PRICES: LazyLock<BTreeMap<String, ModelCost>> = LazyLock::new(|| 
                     })
                     && rate.valid()
             }),
-        "内置模型价格表包含无效名称或费率"
+        "built-in model price table contains an invalid name or rate"
     );
     prices
 });
 
-/// 配置引用的显式费率与按实际模型名匹配的内置费率。
+/// Explicit rates of configuration references plus built-in rates matched by the actual model name.
 #[derive(Clone, Default)]
 pub struct ModelPricing {
     pub(crate) overrides: Arc<BTreeMap<String, ModelCost>>,
@@ -411,8 +411,8 @@ impl ModelPricing {
     }
 }
 
-/// 主流 OpenAI 模型官方上下文窗口回退表：仅在 `models.yml` / 订阅发现均未显式声明
-/// `context_window` 时按精确模型名（忽略前缀路径与 ASCII 大小写）回退，绝不为未知模型猜测容量。
+/// Official context window fallback table for mainstream OpenAI models: it applies only when neither `models.yml` nor subscription discovery
+/// declares `context_window`, matching the exact model name (ignoring the prefix path and ASCII case), and never guessing capacity for unknown models.
 pub fn builtin_context_window(model: &str) -> Option<u64> {
     let name = model.rsplit('/').next()?.to_ascii_lowercase();
     match name.as_str() {
@@ -661,8 +661,10 @@ mod tests {
             cache_write: None,
             output: 8.0,
         };
-        // 无独立写入价时写入按输入价计入未缓存部分，写入量未知不改变总价。
-        let cost = free_write.calculate(usage).expect("写入价缺失仍可精确计价");
+        // Without a separate write rate, writes count toward the uncached part at the input rate, so an unknown write volume does not change the total.
+        let cost = free_write
+            .calculate(usage)
+            .expect("pricing stays exact without a write rate");
         assert!((cost.input - 0.0016).abs() < 1e-12);
         assert!((cost.cache_read - 0.00004).abs() < 1e-12);
         assert_eq!(cost.cache_write, 0.0);
@@ -672,7 +674,7 @@ mod tests {
                 cache_write_tokens: Some(0),
                 ..usage
             })
-            .expect("写入量为零同样可计价");
+            .expect("a zero write volume is priceable too");
         assert!((zero_write.total() - cost.total()).abs() < 1e-12);
         let priced_write = ModelCost {
             cache_write: Some(2.5),

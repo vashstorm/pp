@@ -1,4 +1,4 @@
-//! 卡片标题：着色、标题拆段与布局行的来源映射。
+//! Card titles: coloring, title segmentation and the mapping to layout lines.
 
 use super::*;
 
@@ -63,8 +63,8 @@ impl TranscriptEntry {
         ])
     }
 
-    /// MCP 卡片标题：图标与 `MCP` 前缀、服务名、工具名各用独立配色。
-    /// 标题被外部改写（例如按结果修正）时返回 `None`，退回通用的两段着色。
+    /// MCP card title: icon plus the `MCP` prefix, the server name and the tool name each use their own color.
+    /// Returns `None` when the title was rewritten externally (for example corrected from the result), falling back to the generic two-segment coloring.
     fn mcp_title(&self, text: &str) -> Option<Line<'static>> {
         let name = self.tool.as_deref()?;
         let (server, tool) = palette::mcp_display_parts(name)?;

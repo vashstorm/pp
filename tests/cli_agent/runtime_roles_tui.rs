@@ -10,7 +10,7 @@ fn runtime_role_save(pty: &mut Pty, role: usize, model: &str) {
     pty.input(&format!("{model}\r"));
     pty.text("Choose an effort for this role");
     pty.input("\r");
-    pty.wait_for("角色已保存且返回角色列表", |screen| {
+    pty.wait_for("role saved and back on the role list", |screen| {
         let text = screen.contents();
         text.contains("Model roles")
             && !text.contains("Choose an effort for this role")
@@ -59,7 +59,8 @@ fn tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
             }
         }
         runtime_role_save(&mut pty, 0, "three");
-        // 保存 DEFAULT 只改配置默认 `b`：不取消、不重启、也不切换正在运行的会话与子任务。
+        // Saving DEFAULT only changes the configuration default `b`: nothing is cancelled or restarted, and the running
+        // session and subagents are not switched.
         no_more(&fixture);
         runtime_role_save(&mut pty, 1, "two");
         no_more(&fixture);
@@ -88,7 +89,7 @@ fn tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
         pty.input("/agents\r");
         pty.text("parked");
         pty.input("e");
-        // 详情异步加载完成后才输入，避免把正文按键发送给 roster。
+        // Type only after the detail view finished loading asynchronously, so the body keys do not go to the roster.
         pty.text("fast / a1");
         pty.input("resume saved child\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
@@ -100,7 +101,7 @@ fn tui_runtime_role_changes_switch_children_at_their_own_committed_boundary() {
         assert_eq!(body["model"], "one");
         assert!(body.to_string().contains("child resumed safely"));
         ask_final_reply(request, protocol, "parent resumed safely");
-        // 详情现在是一层独立视图：Esc 先回 roster，再关闭 Hub。
+        // The detail view is now its own layer: Esc returns to the roster first, then closes the Hub.
         pty.input("\x1b");
         pty.text("Roster ·");
         pty.input("\x1b");

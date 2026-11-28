@@ -15,10 +15,10 @@ const METADATA_ORDER: &[&str] = &[
     "tool_limits",
 ];
 const REQUEST_SECTIONS: &[(&str, &str)] = &[
-    ("instructions", "系统指令"),
-    ("messages", "对话消息"),
-    ("input", "输入历史"),
-    ("tools", "工具定义"),
+    ("instructions", "System instructions"),
+    ("messages", "Conversation messages"),
+    ("input", "Input history"),
+    ("tools", "Tool definitions"),
 ];
 
 pub(super) fn format_record(record: &Value) -> io::Result<Vec<u8>> {
@@ -52,7 +52,7 @@ fn write_request(output: &mut Vec<u8>, request: &Value) -> io::Result<()> {
     let Some(fields) = request.as_object() else {
         return write_value(output, "request", request, 0);
     };
-    writeln!(output, "\n-- 请求参数 --")?;
+    writeln!(output, "\n-- Request parameters --")?;
     let section_keys: Vec<_> = REQUEST_SECTIONS.iter().map(|(name, _)| *name).collect();
     write_fields(output, fields, &section_keys, 0)?;
     for (name, title) in REQUEST_SECTIONS {
@@ -60,7 +60,7 @@ fn write_request(output: &mut Vec<u8>, request: &Value) -> io::Result<()> {
             continue;
         };
         if let Some(items) = value.as_array() {
-            writeln!(output, "\n-- {title} / {name} ({} 项) --", items.len())?;
+            writeln!(output, "\n-- {title} / {name} ({} items) --", items.len())?;
             if items.is_empty() {
                 writeln!(output, "{name}: []")?;
             }
@@ -97,7 +97,7 @@ fn write_fields(
     excluded: &[&str],
     depth: usize,
 ) -> io::Result<()> {
-    // 身份字段置前，正文和工具参数随后；未知字段仍完整保留。
+    // Identity fields first, body and tool arguments after; unknown fields are kept intact.
     const ORDER: &[&str] = &["id", "call_id", "tool_call_id", "role", "type", "name"];
     for name in ORDER {
         if !excluded.contains(name)
@@ -117,7 +117,7 @@ fn write_fields(
 fn write_value(output: &mut Vec<u8>, name: &str, value: &Value, depth: usize) -> io::Result<()> {
     write!(output, "{:width$}{name}:", "", width = depth * 2)?;
     match value {
-        // 工具 schema 使用标准 JSON，保留数组与类型的可辨识结构。
+        // Tool schemas use standard JSON so arrays and types stay legible.
         Value::Object(_) if name == "parameters" => {
             writeln!(output)?;
             let json = serde_json::to_string_pretty(value).map_err(io::Error::other)?;
@@ -150,7 +150,7 @@ fn write_value(output: &mut Vec<u8>, name: &str, value: &Value, depth: usize) ->
 }
 
 fn write_block(output: &mut Vec<u8>, text: &str, depth: usize) -> io::Result<()> {
-    // 不折行、不转义、不截断，保留代码缩进、空行和末尾换行。
+    // No wrapping, escaping or truncation: keep code indentation, blank lines and trailing newlines.
     for line in text.split('\n') {
         writeln!(output, "{:width$}{line}", "", width = depth * 2)?;
     }
@@ -188,10 +188,10 @@ mod tests {
         assert_eq!(
             sections,
             [
-                "-- 请求参数 --",
-                "-- 系统指令 / instructions --",
-                "-- 输入历史 / input (4 项) --",
-                "-- 工具定义 / tools (0 项) --",
+                "-- Request parameters --",
+                "-- System instructions / instructions --",
+                "-- Input history / input (4 items) --",
+                "-- Tool definitions / tools (0 items) --",
             ]
         );
         for block in [
@@ -209,12 +209,12 @@ mod tests {
             "tools: []",
             "future_field:\n  empty: \"\"\n  missing: null\n",
         ] {
-            assert!(text.contains(block), "缺少内容 {block:?}:\n{text}");
+            assert!(text.contains(block), "missing content {block:?}:\n{text}");
         }
-        // Responses 的简写文本输入也必须完整可读。
+        // The shorthand text input in Responses must also stay fully readable.
         let text =
             String::from_utf8(format_record(&json!({"request": {"input": "a\nb"}})).unwrap())
                 .unwrap();
-        assert!(text.contains("-- 输入历史 / input --\ninput: |\n  a\n  b\n"));
+        assert!(text.contains("-- Input history / input --\ninput: |\n  a\n  b\n"));
     }
 }

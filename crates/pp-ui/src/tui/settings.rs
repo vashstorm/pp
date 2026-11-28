@@ -1,4 +1,4 @@
-//! 统一 `/setting` TUI：四标签框架、`General` 分类编辑面板与后台配置 Worker。
+//! Unified `/setting` TUI: four-tab frame, the `General` category edit panel and the background config Worker.
 use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},

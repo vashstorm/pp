@@ -69,7 +69,7 @@ mod integration {
             let policy = test_sandbox(&repo, &home, SandboxMode::WorkspaceWrite, true);
             let backend = policy.backend();
 
-            // 1. cwd 内可写且 PP_SANDBOX 注入到解释器及外部子进程
+            // 1. Writable inside cwd, and PP_SANDBOX is injected into the interpreter and external child processes
             let ok = run_cmd(
         &repo,
         "printf \"%s|\" \"$PP_SANDBOX\" && /bin/sh -c 'echo ok > inside.txt && printf \"%s\" \"$PP_SANDBOX\"'",
@@ -83,7 +83,7 @@ mod integration {
                 "ok\n"
             );
 
-            // 2. .pp 与 .git/hooks 受保护不可写，返回 sandbox 元数据
+            // 2. .pp and .git/hooks are protected and not writable; sandbox metadata is returned
             let prot = run_cmd(&repo, "/bin/sh -c 'touch .pp/hooks.yml'", policy.clone()).unwrap();
             assert_eq!(prot["ok"], false, "{prot}");
             assert_eq!(prot["sandbox"]["blocked"], true, "{prot}");
@@ -97,7 +97,7 @@ mod integration {
             assert_eq!(git_hook["ok"], false, "{git_hook}");
             assert_eq!(git_hook["sandbox"]["blocked"], true, "{git_hook}");
 
-            // 3. denyRead 里的凭据路径不可读
+            // 3. Credential paths under denyRead are not readable
             let secret = run_cmd(
                 &repo,
                 &format!("/bin/cat {}", home.join(".ssh/id_ed25519").display()),
@@ -107,7 +107,8 @@ mod integration {
             assert_eq!(secret["ok"], false, "{secret}");
             assert_eq!(secret["sandbox"]["blocked"], true, "{secret}");
 
-            // 4. 在已有 git 仓库中，未批准时 .git 默认受沙盒写保护；显式批准 .git 后可完成 git add / git commit
+            // 4. In an existing git repository .git is sandbox write-protected by default until explicitly approved;
+            // after approving .git, git add / git commit work
             let init_status = std::process::Command::new("git")
                 .args(["init", "-q"])
                 .current_dir(&repo)
@@ -146,7 +147,7 @@ mod integration {
 
             let policy = test_sandbox(&repo, &home, SandboxMode::ReadOnly, true);
 
-            // 重定向写只读工作区（不触发外部命令）
+            // Redirected write into a read-only workspace (no external command involved)
             let write_redir = run_cmd(&repo, "echo bad > blocked.txt", policy.clone()).unwrap();
             assert_eq!(write_redir["ok"], false, "{write_redir}");
             assert_eq!(write_redir["sandbox"]["blocked"], true, "{write_redir}");
@@ -163,7 +164,7 @@ mod integration {
             assert_eq!(err_redir["ok"], false, "{err_redir}");
             assert_eq!(err_redir["sandbox"]["blocked"], true, "{err_redir}");
 
-            // 重定向读凭据路径
+            // Redirected read of a credential path
             let read_redir = run_cmd(
                 &repo,
                 &format!("read line < {}", key.display()),
@@ -173,7 +174,7 @@ mod integration {
             assert_eq!(read_redir["ok"], false, "{read_redir}");
             assert_eq!(read_redir["sandbox"]["blocked"], true, "{read_redir}");
 
-            // source 凭据路径
+            // source of a credential path
             let src_res = run_cmd(&repo, &format!("source {}", key.display()), policy).unwrap();
             assert_eq!(src_res["ok"], false, "{src_res}");
             assert_eq!(src_res["sandbox"]["blocked"], true, "{src_res}");
@@ -196,7 +197,7 @@ mod integration {
 
             let policy = test_sandbox(&repo, &home, SandboxMode::WorkspaceWrite, true);
 
-            // 管道与 exec 均受沙盒约束
+            // Pipelines and exec are both sandbox-constrained
             let pipe_res = run_cmd(
                 &repo,
                 "printf hi | /bin/sh -c 'cat >/dev/null && touch .pp/x'",
@@ -210,7 +211,7 @@ mod integration {
             assert_eq!(exec_res["ok"], false, "{exec_res}");
             assert_eq!(exec_res["sandbox"]["blocked"], true, "{exec_res}");
 
-            // 后台任务同样受沙盒约束
+            // Background tasks are sandbox-constrained too
             let manager = TaskManager::default();
             let store = PipeStore::new();
             let bg = manager
@@ -232,7 +233,7 @@ mod integration {
             assert_eq!(snap["status"], "failed", "{snap}");
             assert_eq!(snap["sandbox"]["blocked"], true, "{snap}");
 
-            // 取消被包装进程组可干净回收
+            // Cancelling a wrapped process group reclaims it cleanly
             let cancel = CancellationToken::new();
             let cancel_clone = cancel.clone();
             thread::spawn(move || {
@@ -267,8 +268,9 @@ mod integration {
             std::fs::create_dir_all(&repo).unwrap();
             std::fs::create_dir_all(&home).unwrap();
 
-            // 监听器只由测试进程持有、不 accept：macOS Seatbelt 下 loopback 建连成功、外部地址被拒；
-            // Linux Bubblewrap 下 `--unshare-net` 隔离网络命名空间，宿主 loopback 与外网均不可达。
+            // The listener is owned by the test process and never accepts: under macOS Seatbelt loopback connects
+            // successfully and external addresses are refused; under Linux Bubblewrap `--unshare-net` isolates the
+            // network namespace so both host loopback and the internet are unreachable.
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
 

@@ -1,4 +1,4 @@
-//! Plan 正文的安全读取、路径判定与执行进度回写。
+//! Safe reading of plan bodies, path checks and execution-progress write-back.
 use anyhow::{Result, ensure};
 use pp_core::plan;
 use pp_core::plan::PLAN_MAX_BYTES;
@@ -68,7 +68,7 @@ pub(in crate::tools) fn save_progress(
     );
     let bound_matches = match &document.file_name {
         Some(name) => name == &entry.file_name && document.location == entry.location,
-        // 旧记录缺文件名：接受登记 canonical 名称，位置必须一致。
+        // Legacy record without a file name: accept the registered canonical name, but the location must match.
         None => document.location == entry.location,
     };
     ensure!(bound_matches, "{MOVED_PLAN}");
@@ -98,7 +98,7 @@ mod tests {
         let document = plan_document(1, "Title", "- [ ] task\n");
         let path = document.path().unwrap();
 
-        // 未保存的 revision-0 绑定没有路径，明确报 No saved plan.。
+        // An unsaved revision-0 binding has no path, so it reports No saved plan. explicitly.
         let unsaved = plan_document(0, "", "");
         let error = read_plan(&workspace, &unsaved).unwrap_err();
         assert_eq!(error.to_string(), "No saved plan.");
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn is_plan_path_matches_only_the_exact_plan_file() {
-        // 保存层按 canonical 根校验绝对路径；临时父目录规范化后拼写一致。
+        // The save layer validates absolute paths against the canonical root; once the temp parent is canonicalized the spelling matches.
         let dir = tempfile::Builder::new()
             .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
             .unwrap();

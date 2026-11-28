@@ -1,9 +1,9 @@
-//! 生命周期 command hooks：配置编译、事件匹配、串行执行与决定合并。
+//! Lifecycle command hooks: config compilation, event matching, serial execution and decision merging.
 //!
-//! 配置来自用户级 `~/.pp/agent/hooks.yml` 与启动目录 `.pp/hooks.yml`。
-//! 只有 command handler；脚本通过 stdin 收到 JSON 信封，用 stdout JSON 与
-//! 退出码表达决定。任何无法确认回收的进程都升级为 `CleanupError`，调用方
-//! 必须停止任务。
+//! Configuration comes from the user-level `~/.pp/agent/hooks.yml` and the startup directory's `.pp/hooks.yml`.
+//! Only command handlers exist; a script receives a JSON envelope on stdin and expresses its decision
+//! through stdout JSON and the exit code. Any process whose reaping cannot be confirmed is escalated to
+//! `CleanupError`, and the caller must stop the task.
 
 mod exec;
 pub(crate) mod protocol;
@@ -22,17 +22,17 @@ use std::time::{Duration, Instant};
 
 use protocol::Output;
 
-/// 同一个事件内所有 handler 的结果合并。
+/// Merge of all handler results within one event.
 #[derive(Debug, Default)]
 pub(crate) struct HookEffect {
-    /// UserPromptSubmit／PreToolUse 的事件级拒绝；Stop 的续跑请求。
+    /// Event-level denial for UserPromptSubmit/PreToolUse; the continuation request for Stop.
     pub(crate) deny_reason: Option<String>,
-    /// PreToolUse 的单次强制审批理由（强于 allow，不能跳过原审批）。
+    /// One-off forced approval reason for PreToolUse (stronger than allow, cannot skip the original approval).
     pub(crate) ask_reason: Option<String>,
     pub(crate) updated_input: Option<Value>,
     pub(crate) updated_output: Option<Value>,
     pub(crate) additional_context: Vec<String>,
-    /// `continue:false`：停止当前任务，不伪装成用户取消。
+    /// `continue:false`: stop the current task without disguising it as a user cancellation.
     pub(crate) stop_reason: Option<String>,
 }
 
@@ -62,8 +62,8 @@ impl Matcher {
                 event.as_str()
             );
         }
-        // 仅由字母数字、`_`、`-`、空格、逗号、`|` 组成的 matcher 是名称列表；
-        // 其余一律当作 Rust regex（不支持 JS 的 look-around 与反向引用）。
+        // A matcher made up only of alphanumerics, `_`, `-`, spaces, commas and `|` is a name list;
+        // everything else is treated as a Rust regex (JS look-around and backreferences are unsupported).
         if matcher
             .chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | ' ' | ',' | '|'))
@@ -110,7 +110,7 @@ impl Runner {
         }
     }
 
-    /// 读取用户级与项目级 hooks 文件后编译；项目级组追加在用户级之后。
+    /// Compiles after reading the user-level and project-level hooks files; project-level groups are appended after user-level ones.
     pub(crate) fn load(user: &Path, project: &Path) -> Result<Self> {
         Self::compile(&pp_config::config::load_hooks(user, project)?)
     }
@@ -143,11 +143,11 @@ impl Runner {
         !self.events[event_index(event)].is_empty()
     }
 
-    /// 串行执行该事件的全部匹配 handler，并按事件规则合并决定。
+    /// Runs every matching handler for the event serially and merges decisions by event rules.
     ///
-    /// 返回 `Err` 表示该事件必须让任务失败（控制点默认 fail-closed、
-    /// `onFailure: block`，或无法确认回收的 `CleanupError`）；被取消时保留
-    /// `Cancelled` 类型。
+    /// An `Err` return means the event must fail the task (control points default to fail-closed,
+    /// `onFailure: block`, or a `CleanupError` whose reaping could not be confirmed); cancellation keeps
+    /// the `Cancelled` type.
     #[cfg(test)]
     pub(crate) fn run(
         &self,
@@ -178,7 +178,7 @@ impl Runner {
             .and_then(Value::as_str)
             .map(Path::new)
             .unwrap_or_else(|| Path::new("."));
-        // 每个 handler 看到的是前序改写后的信封：`updatedToolOutput` 要传给后续 handler。
+        // Each handler sees the envelope as rewritten by its predecessors: `updatedToolOutput` is passed on to later handlers.
         let mut envelope = input.clone();
         let mut encoded: Option<Vec<u8>> = None;
         for group in &self.events[event_index(event)] {
@@ -309,7 +309,7 @@ impl Runner {
                 }
                 merge(event, &mut effect, output);
                 if effect.stop_reason.is_some() {
-                    // 任务级停止优先：不再运行后续 handler，也不执行任何工具。
+                    // Task-level stop wins: run no further handlers and execute no tools.
                     return Ok(effect);
                 }
                 if effect.deny_reason.is_some() {
@@ -327,7 +327,7 @@ fn merge(event: HookEvent, effect: &mut HookEffect, output: Output) {
         return;
     }
     if event == HookEvent::Stop {
-        // Stop 的 deny／additionalContext 都是“再跑一轮”的请求。
+        // Both deny and additionalContext on Stop are "run another turn" requests.
         if let Some(reason) = output.deny {
             effect.deny_reason.get_or_insert(reason);
             return;

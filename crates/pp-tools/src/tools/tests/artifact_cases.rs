@@ -41,7 +41,7 @@ mod integration {
                 "rg",
                 json!({"path":uri,"pattern":"LINE-05000","-i":true,"output_mode":mode}),
             );
-            // 模型视图在 files_with_matches/count 模式下省略与 content 重复的 fileMatches。
+            // In files_with_matches/count modes the model view omits fileMatches, which duplicates content.
             assert!(found["details"].get("fileMatches").is_none());
             assert_eq!(found["details"]["scopePath"], uri);
             assert_eq!(found["artifact"]["uri"], uri);

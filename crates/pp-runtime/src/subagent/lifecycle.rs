@@ -1,4 +1,4 @@
-//! 运行取消、回收等待与关闭。
+//! Run cancellation, reap waits and shutdown.
 
 use anyhow::{Result, ensure};
 use std::time::{Duration, Instant};
@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use super::{Binding, lock};
 
 impl Binding {
-    /// 只取消当前 owner 明确选中的未完成 Run，空集合不代表全部。
+    /// Cancels only the unfinished Runs the current owner explicitly selected; an empty set never means all.
     pub(crate) fn cancel_runs(&self, ids: &[String]) -> Result<()> {
         let state = lock(&self.inner.state);
         for id in ids {
@@ -30,7 +30,7 @@ impl Binding {
         Ok(())
     }
 
-    /// 终态由真实执行路径发布；不得靠改 registry 状态假装已经回收。
+    /// The terminal state is published by the real execution path; changing registry state must never fake a completed reap.
     pub(crate) fn reap_runs(&self, ids: &[String]) -> Result<()> {
         let started = Instant::now();
         loop {

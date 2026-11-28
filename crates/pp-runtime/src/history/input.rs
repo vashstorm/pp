@@ -4,7 +4,7 @@ use std::path::Path;
 
 const BLANK_INPUT: &str = "History input text is blank.";
 
-/// 一条已接受的持久输入原文；`id` 为递增游标，供分页读取。
+/// One accepted persistent input body; `id` is an increasing cursor for paged reads.
 pub struct InputEntry {
     pub id: i64,
     pub text: String,
@@ -12,8 +12,8 @@ pub struct InputEntry {
 }
 
 impl Store {
-    /// 记录一条已接受的原始输入，返回其游标 `id`；空白文本拒绝，
-    /// 重复文本保留为独立事件（无 UNIQUE 约束、不去重）。
+    /// Records one accepted raw input and returns its cursor `id`; blank text is rejected and
+    /// repeated text is kept as a separate event (no UNIQUE constraint, no dedup).
     #[cfg(test)]
     pub(crate) fn append_input(
         &mut self,
@@ -47,8 +47,8 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// 按 `cwd` 读取一页输入。`before_id` 为上一页返回的最小 `id`（None 表示首页）；
-    /// 固定按 id DESC 取页，页内翻转为旧到新返回。调用方控制页大小（当前 100）。
+    /// Loads a page of inputs for `cwd`. `before_id` is the smallest `id` returned by the previous page (None means the first page);
+    /// pages are always taken by id DESC and flipped within the page to return oldest-to-newest. The caller controls page size (currently 100).
     pub fn load_inputs(
         &self,
         cwd: &Path,
@@ -119,7 +119,7 @@ mod tests {
             );
         }
 
-        // 首页：id DESC 取最新 limit 条，页内翻转为旧到新；重复文本保留为独立事件。
+        // First page: take the latest `limit` rows by id DESC and flip within the page to oldest-to-newest; repeated text stays as separate events.
         let page = store.load_inputs(&a, None, 3).unwrap();
         assert_eq!(
             page.iter().map(|entry| entry.id).collect::<Vec<_>>(),
@@ -132,7 +132,7 @@ mod tests {
             ["duplicate", "duplicate", "fifth"]
         );
 
-        // 全量读取按旧到新；两个 cwd 完全隔离。
+        // Full read is oldest-to-newest; the two cwds are fully isolated.
         let all = store.load_inputs(&a, None, 100).unwrap();
         assert_eq!(all.len(), 5);
         assert_eq!(
@@ -157,7 +157,7 @@ mod tests {
         let empty = cwd(root.path(), "project-c");
         assert!(store.load_inputs(&empty, None, 100).unwrap().is_empty());
 
-        // 游标分页：before_id 为上一页最小 id，返回其之前的一页（旧到新）。
+        // Cursor paging: before_id is the previous page's smallest id, returning the page before it (oldest to newest).
         let older = store.load_inputs(&a, Some(a_ids[3]), 2).unwrap();
         assert_eq!(
             older.iter().map(|entry| entry.id).collect::<Vec<_>>(),
@@ -167,7 +167,7 @@ mod tests {
         assert!(exhausted.is_empty());
         assert!(store.load_inputs(&a, None, 0).unwrap().is_empty());
 
-        // 超过一页：150 条输入分两页取完，内容按写入顺序还原。
+        // More than one page: 150 inputs are taken in two pages and restored in write order.
         let c = cwd(root.path(), "project-c-long");
         for index in 0..150 {
             store

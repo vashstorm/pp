@@ -15,14 +15,16 @@ use pp_core::plan::WorkMode;
 use pp_core::plan::WorkflowState;
 use pp_tools::plan_catalog;
 
-/// 生命周期搬迁的待清理端点：源/目标各自的 (文件名, 位置)。
+/// Endpoints awaiting cleanup for a lifecycle move: the (file name, location) of the source
+/// and the target.
 pub(super) type PlanMoveEndpoints = ((String, PlanLocation), (String, PlanLocation));
 
 impl Agent {
-    /// 审批后的 Drafts→Plans 交接：发布目标链接 → CAS 更新登记 → 提交
-    /// 绑定（纯路径变化，不递增 revision）→ 交接 journal 成功后由调用方
-    /// 移除源链接。已在 Plans 的计划只核对/更新登记，不重复搬迁。返回
-    /// 待清理的源/目标身份。
+    /// Drafts→Plans handoff after approval: publish the target link → CAS-update the
+    /// registration → commit the binding (a pure path change, no revision bump) → after the
+    /// journal handoff succeeds the caller removes the source link. A plan already in Plans
+    /// is only verified/updated in the registry and not moved again. Returns the source/target
+    /// identities awaiting cleanup.
     fn promote_approved_plan(&mut self, token: &ReviewToken) -> Result<Option<PlanMoveEndpoints>> {
         let document = self.workflow.plan.as_ref().expect("ready plan bound");
         if document.location == PlanLocation::Plans {
@@ -57,8 +59,9 @@ impl Agent {
         Ok(Some((source, target)))
     }
 
-    /// 交接 journal 提交成功后的源链接清理；失败不撤回已提交状态，残留
-    /// 源链接交给按 ID 协调做同 inode 确认清理，不冒报回滚。
+    /// Source link cleanup after the journal handoff commits; a failure does not revoke the
+    /// committed state, and the leftover source link is handed to ID reconciliation for a
+    /// same-inode confirmed cleanup, never reported as a rollback.
     fn finish_approved_move(&self, pending_move: Option<PlanMoveEndpoints>, token: &ReviewToken) {
         let Some((source, target)) = pending_move else {
             return;
@@ -74,9 +77,11 @@ impl Agent {
         }
     }
 
-    /// `/plan` toggle 的退出方向：回到 Execute 并解除当前计划/审阅绑定。
-    /// 已保存的草稿文件和登记原样保留（不再标记 Abandoned），旧稿经
-    /// /plan-list 继续。未首存草稿仅在用户确认放弃同一绑定后允许退出。
+    /// Exit direction of the `/plan` toggle: return to Execute and release the current
+    /// plan/review binding.
+    /// The saved draft file and registration are kept as-is (no longer marked Abandoned) and
+    /// the old draft continues through /plan-list. An unsaved draft may only be left after the
+    /// user confirms abandoning that same binding.
     pub fn leave_plan(
         &mut self,
         cancellation: &CancellationToken,
@@ -106,7 +111,7 @@ impl Agent {
         let model = self.default_execution_model()?;
         self.ensure_plan_mcp_access(cancellation)?;
         self.ensure_execute_mcp_access(cancellation)?;
-        // 解除绑定，保留磁盘上的计划和登记。
+        // Release the binding and keep the plan and registration on disk.
         let workflow = WorkflowState::default();
         let session = self.execution_session(&model, &workflow, true)?;
         let metadata = model.metadata(&self.tools, &self.base_system, self.prompt_source.as_ref());
@@ -124,9 +129,11 @@ impl Agent {
         })
     }
 
-    /// 批准已审阅计划并准备执行交接；可先在 Plan 权限下压缩上下文。
-    /// 提交前可取消地按执行权限补连 MCP，再校验 token；失败时保持
-    /// Plan/Ready，禁止从未完成的交接发起实施请求。
+    /// Approve the reviewed plan and prepare the execution handoff; the context may be
+    /// compacted first under Plan permissions.
+    /// Before committing, MCP services may be reconnected under execution permissions
+    /// cancellably, then the token is verified; on failure Plan/Ready is kept and an
+    /// implementation request must never be issued from an unfinished handoff.
     pub fn approve_plan(
         &mut self,
         token: ReviewToken,
@@ -137,9 +144,11 @@ impl Agent {
     ) -> Result<ExecutionPreparation> {
         cancellation::check(cancellation)?;
         ensure!(self.workflow.mode == WorkMode::Plan, "{NOT_CURRENT}");
-        // 审批访问前按 ID 协调实际路径；墓碑、搬迁与首次登记在此暴露。
+        // Reconcile the actual path by ID before approval access; tombstones, moves and first
+        // registrations surface here.
         self.reconcile_plan_location()?;
-        // 审批前先按 Plan 权限补连缺失服务，再触碰审批状态。
+        // Reconnect missing services under Plan permissions before approval, then touch the
+        // approval state.
         self.ensure_plan_mcp_access(cancellation)?;
         {
             let document = self
@@ -153,8 +162,9 @@ impl Agent {
         }
         self.check_plan_token_for_approval(&token, input)?;
         if context == ExecutionContext::Compact {
-            // 压缩保持 Plan 权限；失败或取消时不交接执行。后续再次核对
-            // token 与队列，拒绝压缩期间的外部修订及补充输入。
+            // Compaction keeps Plan permissions; on failure or cancellation there is no
+            // execution handoff. Recheck the token and queue afterwards to reject external
+            // revisions and supplemental input that arrived during compaction.
             let mut attempted = false;
             let outcome = self.compact(cancellation, &mut |event| {
                 attempted |= matches!(
@@ -186,7 +196,8 @@ impl Agent {
             let document = workflow.plan.as_mut().expect("ready plan bound");
             document.status = PlanStatus::Executed;
             document.location = PlanLocation::Plans;
-            // 从已审阅正文冻结任务文本及顺序，之后的进度导入保留该基线。
+            // Freeze the task text and order from the reviewed body; later progress imports keep
+            // that baseline.
             document.approved_tasks = Some(
                 plan::plan_tasks(&token.content)
                     .into_iter()
@@ -205,14 +216,15 @@ impl Agent {
             workflow.todo_plan_id = Some(document.id.clone());
             let mut session = self.execution_session(&model, &workflow, !fresh)?;
             turn::append_user_to(&mut session, &prompt);
-            // 准备原生请求后再核对输入队列与计划正文，之后才发布计划移动。
+            // Verify the input queue and plan body after preparing the native request, and only
+            // then publish the plan move.
             cancellation::check(cancellation)?;
             self.check_plan_token_for_approval(&token, input)?;
             Ok((workflow, session, prompt))
         })();
         let (workflow, session, prompt) = candidate?;
         let committed = (|| -> Result<_> {
-            // 按 PlanLease → 登记锁顺序持有到执行任务收尾。
+            // Held in PlanLease → registry lock order until the execution task finishes.
             self.ensure_task_plan_lease()?;
             let pending_move = self.promote_approved_plan(&token)?;
             let metadata =
@@ -221,7 +233,8 @@ impl Agent {
             let target = fork.as_mut().unwrap_or(&mut self.journal);
             target.commit_plan_handoff(&metadata, (&session).into(), &workflow, &prompt)?;
             if fresh {
-                // 源规划会话仍在 Plan，已批准的计划在源会话中只读。
+                // The source planning session stays in Plan; the approved plan is read-only in
+                // the source session.
                 let mut source = self.workflow.clone();
                 source.plan.clone_from(&workflow.plan);
                 self.journal.write_workflow(&source)?;

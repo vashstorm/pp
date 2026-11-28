@@ -1,5 +1,6 @@
 /**
- * Traces 详情组件：SummaryStrip、工具栏、虚拟化 Transcript、工具聚合与 Span 抽屉。
+ * Traces detail components: SummaryStrip, toolbar, virtualized Transcript, tool aggregation and span
+ * drawer.
  */
 
 import { compact, fixedCost, h, icon, number, ratioPercent } from "./format.js";
@@ -29,7 +30,7 @@ import { traceCenterOnSpan, traceDrawOverlays, traceTooltipHide } from "./traces
 /** @typedef {import("./traces-state.js").TraceViewModel} TraceViewModel */
 
 /**
- * 渲染 Traces 详情顶部摘要指标带（9 个紧凑指标）。
+ * Renders the summary strip of compact metrics at the top of the Traces detail (9 compact metrics).
  * @param {TraceViewModel} view
  * @returns {string}
  */
@@ -75,7 +76,7 @@ export function traceSummaryHTML(view) {
 }
 
 /**
- * 渲染时间线轴模式、空闲压缩开关、span 搜索框与图例。
+ * Renders the timeline axis mode, idle compression toggle, span search box and legend.
  * @param {TraceViewModel} view
  * @returns {string}
  */
@@ -128,7 +129,7 @@ export function traceToolbarHTML(view) {
 }
 
 /**
- * 渲染单会话工具耗时聚合卡片。
+ * Renders the per-session tool duration aggregation card.
  * @returns {string}
  */
 export function traceAggregatesHTML() {
@@ -365,7 +366,7 @@ export function traceRemoveDrawer() {
 }
 
 /**
- * 渲染或刷新 Span 抽屉。
+ * Renders or refreshes the Span drawer.
  * @param {TraceViewModel} view
  * @param {TraceState} state
  */
@@ -392,7 +393,7 @@ export function traceRenderDrawer(view, state) {
 }
 
 /**
- * 渲染虚拟滚动 Transcript 单行。
+ * Renders a single virtualized Transcript row.
  * @param {TraceTranscriptRow} row
  * @param {TraceViewModel} view
  * @param {TraceState} state
@@ -428,7 +429,7 @@ function traceTranscriptRow(row, view, state) {
 }
 
 /**
- * 渲染当前滚动窗口可见范围的 Transcript 行。
+ * Renders the Transcript rows visible in the current scroll window.
  * @param {TraceViewModel} view
  * @param {TraceState} state
  */
@@ -474,7 +475,8 @@ function traceUpdateTranscriptSelection(view, state) {
 }
 
 /**
- * 异步加载某条模型请求详情（供 span 抽屉展示 Raw request）。
+ * Asynchronously loads the detail of a model request (used by the span drawer to show the Raw
+ * request).
  * @param {number | null | undefined} id
  */
 export function traceLoadRequestDetail(id) {
@@ -499,7 +501,7 @@ export function traceLoadRequestDetail(id) {
 }
 
 /**
- * 选中指定 span 并控制右侧抽屉开合。
+ * Selects the given span and opens or closes the right-side drawer accordingly.
  * @param {TraceViewModel} view
  * @param {TraceState} state
  * @param {string | null} id

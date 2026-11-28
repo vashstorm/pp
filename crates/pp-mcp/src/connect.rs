@@ -1,4 +1,4 @@
-//! 配置加载、按 access 建连、工具发现与取消后的惰性重建。
+//! Config loading, connecting by access, tool discovery and lazy rebuild after cancellation.
 
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
@@ -22,17 +22,17 @@ use super::{
 use std::time::Instant;
 
 impl McpManager {
-    // 首次需要时加载配置；失败保持未加载，下一次调用重试。
+    // Load the config on first need; a failure leaves it unloaded so the next call retries.
     pub(super) fn ensure_loaded(&self) -> Result<()> {
         let Some(path) = self.config.clone() else {
-            // 内存实例已就绪：绝不读取 HOME 或写外部配置。
+            // The in-memory instance is ready: never read HOME or write external configuration.
             self.lock_state().loaded = true;
             return Ok(());
         };
         if self.lock_state().loaded {
             return Ok(());
         }
-        // 解析（生产实例还会读 HOME 下的外部来源）在 state 锁外完成。
+        // Parsing (production instances also read external sources under HOME) happens outside the state lock.
         let directory = config::Directory::load(&path, self.discover_user_sources)?;
         let mut state = self.lock_state();
         state.directory = directory;
@@ -41,16 +41,16 @@ impl McpManager {
     }
 
     pub fn connect_enabled(&self, token: &CancellationToken, access: Access) -> Result<()> {
-        // 启动期建连可能仍在进行：先等它结束，再补齐当前 access 缺的服务。
+        // Startup connecting may still be running: wait for it to finish, then fill in whatever the current access still needs.
         self.await_connect(token)?;
         let _control = self.lock_control();
         self.ensure_loaded()?;
         self.connect_enabled_locked(token, access)
     }
 
-    /// 启动期入口：登记后台建连并立即返回。重复调用只在上一轮结束后重新开始。
+    /// Startup entry point: registers the background connect and returns immediately. Repeated calls restart only after the previous round finished.
     pub fn start_connect(self: &Arc<Self>, access: Access) {
-        // 无配置文件的内存实例（测试与 mock）没有可连的服务，也不留空线程。
+        // An in-memory instance without a config file (tests and mocks) has nothing to connect and leaves no idle thread.
         if self.config.is_none() {
             return;
         }
@@ -60,7 +60,7 @@ impl McpManager {
             if state.closing || !state.connect.is_finished() {
                 return;
             }
-            // 先登记本轮进行中，再起线程：屏障与快照都不能看到“未开始”的空窗。
+            // Register this round as in progress before spawning the thread: neither the barrier nor a snapshot may observe an "not started" gap.
             state.connect.reserve();
             state.connect_token = Some(token.clone());
         }
@@ -74,7 +74,7 @@ impl McpManager {
                     .connect_thread
                     .lock()
                     .unwrap_or_else(|error| error.into_inner());
-                // 上一轮已 join 或在 stop_tracked 中取走；覆盖不会泄漏线程。
+                // The previous round was either joined or taken by stop_tracked; overwriting leaks no thread.
                 *slot = Some(thread);
             }
             Err(error) => {
@@ -86,23 +86,23 @@ impl McpManager {
         }
     }
 
-    /// 启动期建连的只读快照；UI 与 CLI 只读这个，不在绘制或事件循环里触网。
+    /// Read-only snapshot of the startup connect; the UI and CLI read only this and never touch the network while drawing or inside the event loop.
     pub fn connect_snapshot(&self) -> ConnectSnapshot {
         self.lock_state().connect.snapshot()
     }
 
-    /// 行模式一次性取走建连总状态：同一进程的后续任务不重复输出。
+    /// Line mode takes the overall connect status once: later tasks in the same process do not print it again.
     pub fn take_connect_report(&self) -> Option<String> {
         self.lock_state().connect.take_report()
     }
 
-    /// 行模式一次性领取尚未输出的已完成服务（按配置顺序连续）；重复调用与取消后重试
-    /// 都不会重复已输出过的服务。
+    /// Line mode claims finished servers not yet printed (contiguous in config order); repeated calls and retries after
+    /// cancellation never repeat servers already printed.
     pub fn take_connect_services(&self) -> Vec<ServerConnect> {
         self.lock_state().connect.take_claimed()
     }
 
-    /// 任务入口屏障：等启动期建连结束。未启动过的实例（测试、mock）立即返回。
+    /// Task entry barrier: waits for the startup connect to finish. Instances that never started (tests, mocks) return immediately.
     pub fn await_connect(&self, cancellation: &CancellationToken) -> Result<()> {
         loop {
             cancellation::check(cancellation)?;
@@ -113,7 +113,7 @@ impl McpManager {
         }
     }
 
-    // 后台线程主体：全程持 control，与 `/mcp` 变更和退出停止串行。
+    // Background thread body: holds control throughout, serialized against `/mcp` changes and shutdown.
     fn run_connect(self: Arc<Self>, token: CancellationToken, access: Access) {
         let _control = self.lock_control();
         let prepared = (|| -> Result<Vec<String>> {
@@ -139,7 +139,7 @@ impl McpManager {
         let names = match prepared {
             Ok(names) => names,
             Err(error) => {
-                // 配置不可用不是启动失败：提示行给出脱敏原因，首个任务照常进行。
+                // Unavailable configuration is not a startup failure: the tip line shows the redacted reason and the first task proceeds normally.
                 let mut state = self.lock_state();
                 state.connect.fail(&format!("{error:#}"));
                 state.connect_token = None;
@@ -152,7 +152,7 @@ impl McpManager {
             }
             self.lock_state().connect.connecting(&name);
             let started = Instant::now();
-            // 普通连接故障只落到条目状态；取消与回收失败结束本轮并记诊断。
+            // Ordinary connection failures only affect the entry status; cancellation and reaping failures end the round and log diagnostics.
             match self.connect_one_outcome(&name, &token) {
                 Ok(reason) => {
                     let connected = self
@@ -187,7 +187,7 @@ impl McpManager {
             }
         }
         let mut state = self.lock_state();
-        // 取消或退出时未建连的目标恢复为可重试状态，`/mcp reconnect` 不会误判。
+        // Targets not connected because of cancellation or shutdown return to a retryable state, so `/mcp reconnect` does not misjudge them.
         for name in state.connect.unfinished() {
             if let Some(entry) = state.directory.entries.get_mut(&name)
                 && entry.status == "connecting"
@@ -199,7 +199,7 @@ impl McpManager {
         state.connect_token = None;
     }
 
-    // 调用方必须已持有 control。
+    // The caller must already hold control.
     pub(super) fn connect_enabled_locked(
         &self,
         token: &CancellationToken,
@@ -240,7 +240,7 @@ impl McpManager {
             .is_some_and(|entry| Self::eligible_entry(entry, access))
     }
 
-    // 单服务连接：普通故障只落到条目状态，取消与清理失败才向上传播。
+    // Single-server connect: ordinary failures only affect the entry status; only cancellation and cleanup failures propagate.
     pub(super) fn connect_one(&self, name: &str, token: &CancellationToken) -> Result<()> {
         self.connect_one_outcome(name, token).map(|_| ())
     }
@@ -285,8 +285,8 @@ impl McpManager {
         }
     }
 
-    // 连接可被调用方的 token 取消：每次 spawn 前和 discovery 全程检查；
-    // 取消不自动重试，由调用方决定是否再次 connect。
+    // The connection can be cancelled by the caller's token: checked before every spawn and throughout discovery;
+    // cancellation does not retry automatically and the caller decides whether to connect again.
     #[cfg(test)]
     pub(crate) fn connect(
         configs: &BTreeMap<String, ServerConfig>,
@@ -324,18 +324,18 @@ impl McpManager {
             closing: false,
         }));
         {
-            // 先登记槽再 spawn，退出停止才能覆盖尚未完成的连接。
+            // Register the slot before spawning so shutdown stop can cover a connection that is not complete yet.
             let mut state = self.lock_state();
             ensure!(!state.closing, "MCP manager is shutting down");
             state.connections.push(process.clone());
         }
-        // spawn 与 discovery 都不持 state 锁。
+        // Neither spawn nor discovery holds the state lock.
         let mut client = Client::spawn(config, &self.cwd, process)?;
         let tools = match discover(&mut client, name, token) {
             Ok(tools) => tools,
             Err(error) => {
-                // 初始化失败不依赖 Drop 的尽力回收：显式停止；停止失败时合并
-                // 原始错误；任何停止失败均升级为 typed 清理错误。
+                // Initialization failure does not rely on Drop's best-effort reaping: stop explicitly; on stop failure merge
+                // the original error; any stop failure is upgraded to a typed cleanup error.
                 return Err(match client.stop() {
                     Ok(()) => error,
                     Err(stop_error) => CleanupError(
@@ -345,7 +345,7 @@ impl McpManager {
                 });
             }
         };
-        // 连接入口由 control 串行化，校验与提交分两次短临界区完成。
+        // The connect entry point is serialized by control; validation and commit happen in two short critical sections.
         let validation = {
             let state = self.lock_state();
             (|| -> Result<()> {
@@ -382,9 +382,9 @@ impl McpManager {
         Ok(())
     }
 
-    // 取消后的惰性重建：只有新任务真正调用该服务工具时执行一次。
-    // 在 server 锁内完成 spawn 与 discovery，用调用方在 state 锁下取得的快照
-    // 做定义完全一致校验，不重新获取 state。
+    // Lazy rebuild after cancellation: runs once, only when a new task actually calls a tool of this server.
+    // Spawn and discovery happen under the server lock, verifying that definitions match exactly the snapshot
+    // the caller took under the state lock, without re-acquiring state.
     pub(super) fn restart(
         server: &str,
         state: &mut ServerState,
@@ -411,8 +411,8 @@ impl McpManager {
                     return Err(error);
                 }
                 if error.is::<Cancelled>() {
-                    // 重建被取消：停止新进程并保留资格，下一次新任务可再尝试。
-                    // 停止失败升级为 typed 清理错误，不被固定文案吞掉。
+                    // The rebuild was cancelled: stop the new process and keep eligibility so the next new task can try again.
+                    // A failed stop is upgraded to a typed cleanup error and not swallowed by fixed text.
                     if let Err(stop_error) = client.stop() {
                         state.restart_after_cancel = false;
                         return Err(CleanupError(stop_error).into());
@@ -426,8 +426,8 @@ impl McpManager {
                 bail!("MCP restart failed; restart pp to reconnect.");
             }
         };
-        // 与快照完整比较：增删或 exposed/原始名/描述/参数任一变化都拒绝，
-        // 且校验通过前不发送新 tools/call、不更新全局工具表。
+        // Compare against the snapshot in full: any added/removed tool or any change to exposed/original name, description or parameters
+        // is rejected, and no new tools/call is sent and the global tool table is not updated until validation passes.
         let unchanged = discovered.len() == expected.len()
             && expected
                 .iter()
@@ -439,14 +439,14 @@ impl McpManager {
             }
             bail!("MCP tool definitions changed; restart pp to reconnect.");
         }
-        // 旧连接在取消时已停止，Drop 不会触碰稳定 slot 中的新进程。
+        // The old connection was stopped at cancellation, so Drop never touches the new process in the stable slot.
         state.client = client;
         state.restart_after_cancel = false;
         Ok(())
     }
 }
 
-// 握手与工具发现：初始连接与取消后的重建共用同一流程。
+// Handshake and tool discovery: the initial connection and the post-cancellation rebuild share this flow.
 fn discover(
     client: &mut Client,
     server: &str,
@@ -491,7 +491,7 @@ fn discover(
             for tool in tool_list {
                 ensure!(tools.len() < TOOL_LIMIT, "too many MCP tools (maximum 256)");
                 let original = tool["name"].as_str().context("invalid MCP tool name")?;
-                // 短名称原样保留，其他名称使用确定性编码，保证模型工具名合法。
+                // Short names are kept as-is; other names get a deterministic encoding so the model's tool name stays valid.
                 let exposed = exposed_name(server, original);
                 ensure!(
                     !original.is_empty() && original.len() <= 256,
@@ -575,7 +575,7 @@ mod integration {
                 .unwrap();
             assert!(error.downcast_ref::<Cancelled>().is_some());
             assert!(format!("{error:#}").contains("connecting MCP server never"));
-            // spawn 前已检查取消，fixture 进程从未启动。
+            // Cancellation was checked before spawn, so the fixture process never started.
             assert!(!marker.exists());
         }
         {
@@ -586,15 +586,15 @@ mod integration {
                 canceller.cancel();
             });
             let mut configs = BTreeMap::new();
-            // 超时远大于取消时机，确保失败来自取消而非请求超时。
+            // The timeout is far larger than the cancellation delay, so the failure comes from cancellation rather than a request timeout.
             let mut config = plan_server_config(&["-c", "sleep 30"]);
             config.timeout_seconds = 30;
             configs.insert("slow".into(), config);
             let error = McpManager::connect(&configs, Path::new("."), &cancellation)
                 .err()
                 .unwrap();
-            // discovery 取消且显式回收成功：错误保持 Cancelled，
-            // 若停止失败会被升级为 CleanupError 而非 Cancelled。
+            // Discovery was cancelled and explicit reaping succeeded: the error stays Cancelled;
+            // had the stop failed it would be upgraded to CleanupError instead of Cancelled.
             assert!(error.downcast_ref::<Cancelled>().is_some());
         }
     }
@@ -632,7 +632,7 @@ mod background_tests {
             let manager = Arc::new(McpManager::new_isolated(path, dir.path().to_path_buf()));
             let started = Instant::now();
             manager.start_connect(Access::Full);
-            // 启动不等握手：起线程与登记进度立即返回，工具表由后台补齐。
+            // Startup does not wait for the handshake: spawning the thread and registering progress return immediately and the background fills in the tool table.
             assert!(started.elapsed() < Duration::from_secs(1));
             manager.await_connect(&CancellationToken::new()).unwrap();
             let snapshot = manager.connect_snapshot();
@@ -641,14 +641,16 @@ mod background_tests {
             assert_eq!(snapshot.servers[0].name, "local");
             assert_eq!(snapshot.servers[0].phase, ConnectPhase::Connected);
             assert!(snapshot.servers[0].elapsed.is_some());
-            let tip = snapshot.tip().expect("已配置服务必须有总状态");
+            let tip = snapshot
+                .tip()
+                .expect("a configured server must have an overall status");
             assert!(
                 tip.starts_with("Connected to MCP servers: 1 succeeded ("),
                 "{tip}"
             );
             assert!(!tip.contains("failed"), "{tip}");
             assert!(tip.ends_with(')'), "{tip}");
-            // 首个任务前的屏障保证模型请求能看到 MCP 工具。
+            // The barrier before the first task guarantees the model request can see the MCP tools.
             assert!(
                 !manager.definitions(Access::Full).is_empty(),
                 "{}",

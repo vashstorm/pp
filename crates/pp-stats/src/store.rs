@@ -31,7 +31,7 @@ impl Store {
                 Some(Ok(cost)) if cost.total().is_finite() => {
                     result.usd = Some(result.usd.unwrap_or(0.0) + cost.total());
                 }
-                // NULL 或损坏的快照：只标记覆盖不完整，不臆造金额。
+                // A NULL or corrupt snapshot only marks the coverage incomplete; no amount is invented.
                 _ => result.incomplete = true,
             }
         }
@@ -84,8 +84,8 @@ impl Store {
             !dir_metadata.file_type().is_symlink(),
             "statistics directory must not be a symlink"
         );
-        // 权限（含 setuid／setgid／sticky 位）已经正确时不再 chmod：
-        // 稳态写入每次打开都省一次元数据写入。
+        // Skip chmod when the permissions (including setuid/setgid/sticky bits) are already correct:
+        // steady-state writes then save one metadata write per open.
         if dir_metadata.permissions().mode() & 0o7777 != 0o700 {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
         }
@@ -164,7 +164,8 @@ impl Store {
         )?;
         Ok(())
     }
-    /// 幂等写入一次工具执行：同一会话内同一个 call ID 只保留最后一次结果。
+    /// Idempotently writes one tool execution: only the last result for the same call ID of the same
+    /// session is kept.
     pub(crate) fn tool(&mut self, call: &ToolCall<'_>) -> Result<()> {
         self.conn.execute(
             "INSERT INTO tool_calls (request_key,session_file,call_id,tool,timestamp,status,error_message,duration_ms,result_chars)
@@ -297,7 +298,7 @@ mod tests {
             );
             assert!(detail.get("output_message").is_none());
             assert!(detail.get("session_entry").is_none());
-            // 重复键不再补写工具行；entry_id 不再由 link 写入。
+            // Duplicate keys no longer add tool rows; link no longer writes entry_id.
             assert_eq!(
                 store
                     .conn
@@ -377,11 +378,12 @@ mod tests {
                 .unwrap();
             tx.execute("UPDATE requests SET project='pending'", [])
                 .unwrap();
-            // 结构齐全时打开只做只读探测：不会进入 `BEGIN IMMEDIATE`，因此不会
-            // 因为别人的写事务而 busy_timeout 失败。
+            // Opening with a complete structure performs a read-only probe only: it never enters
+            // `BEGIN IMMEDIATE` and therefore never fails busy_timeout because of someone else's write
+            // transaction.
             open_store(&path).unwrap();
             drop(tx);
-            // 写锁仍然只能有一个：同一时刻的写入照旧受限。
+            // There can still be only one write lock: concurrent writes stay mutually exclusive.
             let tx = writer
                 .conn
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)

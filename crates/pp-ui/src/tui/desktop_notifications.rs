@@ -124,7 +124,7 @@ impl App {
         {
             send(Notice {
                 kind,
-                // 发送线程在取到排队通知时重新检查，避免提示已经结束的对话。
+                // The sender thread re-checks when it picks up a queued notification so a finished conversation is not announced.
                 dialog: Some(Arc::downgrade(&dialog.cancellation)),
             });
         }

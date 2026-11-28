@@ -1,28 +1,28 @@
-//! 子 Agent 详情的指标簇、标识裁剪与底栏。
+//! Metric cluster, badge clipping and bottom bar for the subagent detail view.
 
 use super::metric::{amount_field, field, join_fields, pair_field, speed_field};
 use super::*;
 
-/// 子 Agent 详情指标簇的输入：速度、上下文用量、token 总量回退、费用与耗时。
+/// Inputs for the subagent detail metric cluster: speed, context usage, total-token fallback, cost and elapsed time.
 pub(in crate::tui) struct SubagentUsage<'a> {
-    /// 当前请求的估速或最近一次成功请求的结算速度。
+    /// The estimated speed of the current request or the settled speed of the last successful one.
     pub speed: Option<f64>,
-    /// 有 `ContextUpdated` 时按主状态栏口径显示 ctx、io 与缓存。
+    /// With `ContextUpdated`, ctx, io and cache are shown the same way as the main status bar.
     pub usage: Option<&'a ContextUsage>,
-    /// 缺少上下文用量时退回单个 token 总量字段。
+    /// Falls back to a single total-token field when context usage is missing.
     pub tokens: Option<u64>,
-    /// 子 Agent 已结算的费用（USD）。
+    /// Settled cost of the subagent (USD).
     pub cost: Option<f64>,
-    /// 已计量费用的运行次数与总运行次数。
+    /// Runs with measured cost out of total runs.
     pub measured: usize,
     pub runs: usize,
-    /// `agent time` 毫秒数。
+    /// `agent time` in milliseconds.
     pub time_ms: Option<u64>,
 }
 
-/// 子 Agent 详情输入框顶边框的指标簇：簇首琥珀色 `subagent` 标识永不隐藏，
-/// 其余字段沿用主状态栏的构造与配色，宽度不足时按 cache → io → speed → 费用 → 耗时 → ctx
-/// 整组隐藏，任何宽度下返回行宽都不超过 `width`。
+/// Metric cluster on the top border of the subagent detail input box: the leading amber `subagent`
+/// badge never hides, the remaining fields reuse the main status bar's construction and palette, and
+/// under pressure they hide as a group in cache → io → speed → cost → elapsed → ctx order, never exceeding `width`.
 pub(in crate::tui) fn subagent_metrics(
     usage: SubagentUsage<'_>,
     display: &pp_config::config::CostDisplay,
@@ -42,7 +42,7 @@ pub(in crate::tui) fn subagent_metrics(
     if let Some(context) = usage.usage {
         let icons = super::super::themes::current_icons();
         let last = context.last_request;
-        // 与主状态栏一致：最近请求和会话累计都为空时右侧显示 —，而不是 0。
+        // Consistent with the main status bar: with neither a latest request nor a session total, show — on the right instead of 0.
         let output = (last.is_some() || context.session_output_tokens > 0)
             .then_some(context.session_output_tokens);
         fields[2] = Some(context_field(context));
@@ -59,8 +59,8 @@ pub(in crate::tui) fn subagent_metrics(
             (cache_read_color(), cache_write_color()),
         ));
     } else if let Some(tokens) = usage.tokens {
-        // 旧日志没有 ContextUpdated 时保留原先摘要里的 token 总量；它替代
-        // ctx/io/cache 三个字段，因此在降级顺序里与 ctx 同位（最后隐藏）。
+        // Old logs without ContextUpdated keep the total token count from the previous summary; it replaces
+        // the ctx/io/cache fields, so it shares ctx's position in the degradation order (hidden last).
         fields[2] = Some(token_total_field(tokens));
     }
     fields[5] = usage.cost.and_then(|usd| {
@@ -90,12 +90,12 @@ pub(in crate::tui) fn subagent_metrics(
     if line.width() <= width {
         line
     } else {
-        // 整行比标识还窄：只保留裁剪后的标识文本。
+        // The row is narrower than the badge itself: keep only the clipped badge text.
         clipped_subagent_badge(width)
     }
 }
 
-/// 指标簇首的固定标识，琥珀色粗体；作为整组参与降级的最后一道边界。
+/// Fixed leading badge of the metric cluster, bold amber; it is the last boundary of the group-wide degradation.
 fn subagent_badge() -> Line<'static> {
     let icons = super::super::themes::current_icons();
     Line::from(Span::styled(
@@ -106,7 +106,7 @@ fn subagent_badge() -> Line<'static> {
     ))
 }
 
-/// 极窄宽度下裁剪标识文本；`width` 为 0 时返回空行。
+/// Clip the badge text at very narrow widths; returns an empty row when `width` is 0.
 fn clipped_subagent_badge(width: usize) -> Line<'static> {
     let icons = super::super::themes::current_icons();
     let text = format!("{} subagent", subagent_one_icon(icons));
@@ -124,7 +124,7 @@ fn clipped_subagent_badge(width: usize) -> Line<'static> {
     ))
 }
 
-/// 没有上下文用量时的单个 token 总量字段：数字沿用输入色，单位保持暗色。
+/// Single total-token field without context usage: the number keeps the input color while the unit stays dim.
 fn token_total_field(tokens: u64) -> Line<'static> {
     Line::from(vec![
         Span::styled(
@@ -135,7 +135,7 @@ fn token_total_field(tokens: u64) -> Line<'static> {
     ])
 }
 
-/// 与子 Agent 旧摘要的数据源一致：`{s}s`、`{m}m{ss:02}s`、`{h}h{mm:02}m`。
+/// Matches the data source of the subagent's old summary: `{s}s`, `{m}m{ss:02}s`, `{h}h{mm:02}m`.
 fn duration_text(ms: u64) -> String {
     let seconds = ms / 1000;
     if seconds < 60 {
@@ -147,7 +147,7 @@ fn duration_text(ms: u64) -> String {
     }
 }
 
-/// 子 Agent 详情底栏：共用主状态栏的头部、配色与降级规则，不显示 git 与模式标签。
+/// Subagent detail bottom bar: reuses the main status bar's header, palette and degradation rules, without git or mode tags.
 pub(in crate::tui) fn subagent_status(
     model: &str,
     think: ThinkLevel,
@@ -158,7 +158,7 @@ pub(in crate::tui) fn subagent_status(
         workdir: workdir.to_owned(),
         git: None,
     };
-    // 与 primary 的 budget_total 同口径：扣除前导空白与纸飞机图标列。
+    // Same basis as primary's budget_total: subtract the leading blank and the paper-plane icon column.
     let budget = usize::from(width).saturating_sub(1 + ICON_WIDTH);
     status_line(model, think, None, None, &context, budget)
 }
@@ -169,7 +169,7 @@ mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
 
-    /// 把单行渲染到测试终端，返回每一列的符号与前景色。
+    /// Render one row into a test terminal, returning each column's symbol and foreground color.
     fn rendered(line: Line<'static>, width: u16) -> Vec<(String, Color)> {
         let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
         terminal
@@ -182,12 +182,12 @@ mod tests {
             .collect()
     }
 
-    /// `needle` 起始字符所在单元格的实际前景色。
+    /// Actual foreground color of the cell holding the first character of `needle`.
     fn fg_at(line: Line<'static>, width: u16, needle: &str) -> Color {
         fg_at_offset(line, width, needle, 0)
     }
 
-    /// `needle` 起始字符后第 `offset` 个字符所在单元格的实际前景色。
+    /// Actual foreground color of the cell holding the character `offset` positions after the start of `needle`.
     fn fg_at_offset(line: Line<'static>, width: u16, needle: &str, offset: usize) -> Color {
         let cells = rendered(line, width);
         let mut text = String::new();
@@ -200,7 +200,7 @@ mod tests {
         }
         let byte = text
             .find(needle)
-            .unwrap_or_else(|| panic!("{needle:?} 不在 {text:?} 中"));
+            .unwrap_or_else(|| panic!("{needle:?} is not in {text:?}"));
         let index = text[..byte].chars().count() + offset;
         cells[columns[index]].1
     }
@@ -226,13 +226,13 @@ mod tests {
             .unwrap();
         assert!(
             model.style.add_modifier.contains(Modifier::BOLD),
-            "模型引用与主状态栏同为粗体"
+            "model reference is bold like the main status bar"
         );
         assert_eq!(fg_at(line.clone(), 120, app), accent());
         assert_eq!(fg_at(line.clone(), 120, "fixture/primary"), model_color());
         assert_eq!(fg_at(line.clone(), 120, "med"), model_color());
         assert_eq!(fg_at(line, 120, "~/dev/pp"), directory_color());
-        // 每个思考档位都显示与主状态栏相同的图标和文案。
+        // Every thinking level shows the same icon and label as the main status bar.
         for (level, text) in [
             (ThinkLevel::None, "off"),
             (ThinkLevel::Low, "low"),
@@ -261,10 +261,10 @@ mod tests {
         let workdir = "~/dev/projects/pp";
         let think = ThinkLevel::Medium;
         let full = subagent_status(model, think, workdir, 120);
-        assert_eq!(full.width(), 52, "完整状态栏的渲染宽度");
+        assert_eq!(full.width(), 52, "rendered width of the full status bar");
         assert!(line_text(&full).ends_with(&format!("{dir_ic} {workdir}")));
 
-        // 1) 只缩短 cwd：模型与头部保留，目录以 … 开头保留尾部。
+        // 1) Shrink only the cwd: model and header remain, the directory keeps its tail and starts with ….
         let narrowed = line_text(&subagent_status(model, think, workdir, 52));
         assert!(narrowed.contains(app), "{narrowed}");
         assert!(narrowed.contains(model), "{narrowed}");
@@ -278,7 +278,7 @@ mod tests {
             "{narrowed}"
         );
 
-        // 2) 再缩短模型：模型字段以 … 结尾，目录仍存在。
+        // 2) Then shrink the model: the model field ends with … and the directory is still present.
         let narrowed = subagent_status(model, think, workdir, 43);
         let text = line_text(&narrowed);
         let shortened = narrowed
@@ -288,14 +288,14 @@ mod tests {
             .unwrap();
         assert!(
             shortened.content.ends_with('…'),
-            "模型应被缩短: {}",
+            "model should be shortened: {}",
             shortened.content
         );
         assert!(!text.contains(model), "{text}");
         assert!(text.contains(app), "{text}");
         assert!(text.contains(dir_ic), "{text}");
 
-        // 3) 最后只留模型前缀：头部、档位与目录都消失。
+        // 3) Finally only the model prefix remains: header, effort and directory are all gone.
         let prefix = line_text(&subagent_status(model, think, workdir, 17));
         assert_eq!(prefix, "fixture/prima…");
         let tiny = line_text(&subagent_status(model, think, workdir, 10));
@@ -392,7 +392,7 @@ mod tests {
                 .fg,
             Some(muted_color())
         );
-        // 已计量次数与总次数一致时不追加后缀。
+        // No suffix is appended when the measured count equals the total.
         let settled = subagent_metrics(
             SubagentUsage {
                 speed: Some(61.5),
@@ -408,7 +408,7 @@ mod tests {
         );
         assert!(!line_text(&settled).contains("measured"));
 
-        // 没有 ContextUpdated：用单个 token 总量字段替代 ctx/io/cache。
+        // No ContextUpdated: a single total-token field replaces ctx/io/cache.
         let fallback = subagent_metrics(
             SubagentUsage {
                 speed: Some(61.5),
@@ -472,24 +472,30 @@ mod tests {
             );
             let text = line_text(&line);
             if width == 0 {
-                assert!(text.is_empty(), "零宽度只返回空行");
+                assert!(text.is_empty(), "zero width returns only an empty row");
                 continue;
             }
             let missing = removal_order
                 .iter()
                 .take_while(|icon| !text.contains(**icon))
                 .count();
-            assert!(missing >= previous, "宽度下降不能恢复已隐藏的字段: {text}");
+            assert!(
+                missing >= previous,
+                "a narrower width must not bring back a hidden field: {text}"
+            );
             previous = missing;
             for icon in &removal_order[missing..] {
-                assert!(text.contains(icon), "不能跳过降级优先级: {text}");
+                assert!(
+                    text.contains(icon),
+                    "degradation priority must not be skipped: {text}"
+                );
             }
             assert!(
                 text.contains(sub_ic) || text.contains('…'),
-                "标识永不消失: {text}"
+                "the badge never disappears: {text}"
             );
         }
-        // 极窄宽度只剩裁剪后的标识，且不越界。
+        // At the narrowest widths only the clipped badge remains, and it never overflows.
         for width in [3u16, 1, 0] {
             let line = render(width);
             let text = line_text(&line);

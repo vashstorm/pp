@@ -8,7 +8,7 @@ fn layout_text(layout: &EntryLayout) -> String {
         .iter()
         .map(|line| match &line.content {
             LayoutContent::Styled(line) => line.to_string(),
-            _ => panic!("应为样式行"),
+            _ => panic!("expected a styled row"),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -50,7 +50,7 @@ fn layout_worker_plain_and_initial_tail() {
         .iter()
         .map(|line| match &line.content {
             LayoutContent::Styled(l) => l.to_string(),
-            _ => panic!("应为预览行"),
+            _ => panic!("expected a preview row"),
         })
         .collect::<Vec<_>>();
     assert!(
@@ -74,12 +74,12 @@ fn layout_worker_previews_latest_append_while_preserving_rendered_styles() {
     ticket.invalidate(false);
     ticket.layout("**first**\n\nsecond", 80, false, false);
     drop(first);
-    // 上一任务未回写前不排队：泵到回写被吸收、最新版本交给排版线程为止。
+    // No queueing before the previous job is written back: pump until the write-back is absorbed and the latest version reaches the layout thread.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while ticket.in_flight != Some(ticket.version) {
         assert!(
             std::time::Instant::now() < deadline,
-            "最新版本应交给排版线程"
+            "the latest version should be handed to the layout thread"
         );
         ticket.layout("**first**\n\nsecond", 80, false, false);
         std::thread::yield_now();
@@ -87,8 +87,9 @@ fn layout_worker_previews_latest_append_while_preserving_rendered_styles() {
     second.wait();
     let intermediate = ticket.layout("**first**\n\nsecond", 80, false, false);
     assert!(!ticket.exact);
-    let LayoutContent::Styled(line) = &intermediate.get(0).expect("预览首行").content else {
-        panic!("应为 Markdown 行");
+    let LayoutContent::Styled(line) = &intermediate.get(0).expect("first preview row").content
+    else {
+        panic!("expected a Markdown row");
     };
     assert_eq!(line.to_string(), "first");
     assert!(line.spans.iter().any(|span| {
@@ -104,12 +105,18 @@ fn layout_worker_previews_latest_append_while_preserving_rendered_styles() {
         if ticket.exact {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "应最终完成最新排版");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the latest layout should eventually complete"
+        );
         std::thread::yield_now();
     }
     let third = worker.pause();
     ticket.invalidate(false);
-    assert!(!ticket.exact, "追加后立即撤销最新版本资格");
+    assert!(
+        !ticket.exact,
+        "appending revokes latest-version eligibility immediately"
+    );
     let preview = ticket.layout("**first**\n\nsecond\n\nthird", 80, false, false);
     third.wait();
     assert_eq!(layout_text(&preview), "first\n\nsecond\n\nthird");
@@ -167,13 +174,13 @@ fn layout_worker_append_preview_matches_markdown_for_word_wrap_indents_and_newli
         );
         assert_eq!(
             preview.height, expected.layout.height,
-            "预览与后台高度必须一致：source={source:?}, suffix={suffix:?}"
+            "preview and background heights must match: source={source:?}, suffix={suffix:?}"
         );
     }
 
     let src_code = "```rust\nlet alpha = 1;\nlet beta = ";
     let res_code = rendered_from_markdown(src_code, 24, false, true);
-    let prefix_line = res_code.layout.get(1).expect("第一行代码");
+    let prefix_line = res_code.layout.get(1).expect("first code line");
     for suffix in ["2;", "2;\n", "2;\nlet gamma = 3;\n", "12345678901234567890"] {
         let full = format!("{src_code}{suffix}");
         let preview = append_preview(&res_code, &full, 24, false, true);
@@ -219,7 +226,7 @@ fn layout_worker_append_preview_matches_markdown_for_word_wrap_indents_and_newli
 
 #[test]
 fn layout_worker_oversized_active_block_fallback_preserves_word_wrap_indent_and_trailing_newline() {
-    // 构造超过 PREVIEW_MARKDOWN_LIMIT 的单个顶层列表项，验证回退路径仍保持词级换行、悬挂缩进与无尾空行。
+    // Build a single top-level list item larger than PREVIEW_MARKDOWN_LIMIT and verify the fallback path still keeps word wrapping, hanging indents and no trailing blank row.
     let source = format!("- {}", "word ".repeat(1700));
     assert!(source.len() > PREVIEW_MARKDOWN_LIMIT);
     let result = rendered_from_markdown(&source, 24, true, true);
@@ -234,21 +241,23 @@ fn layout_worker_oversized_active_block_fallback_preserves_word_wrap_indent_and_
         let expected = rendered_from_markdown(&full, 24, true, true);
         assert_eq!(
             preview.height, expected.layout.height,
-            "超大活跃块回退高度应与后台一致：suffix={suffix:?}"
+            "oversized active block fallback height must match the background: suffix={suffix:?}"
         );
         let tail_rows = |layout: &EntryLayout| -> Vec<String> {
             let start = layout.len().saturating_sub(3);
             (start..layout.len())
-                .map(|index| match &layout.get(index).expect("尾行").content {
-                    LayoutContent::Styled(line) => line.to_string(),
-                    _ => panic!("应为样式行"),
-                })
+                .map(
+                    |index| match &layout.get(index).expect("tail row").content {
+                        LayoutContent::Styled(line) => line.to_string(),
+                        _ => panic!("expected a styled row"),
+                    },
+                )
                 .collect()
         };
         assert_eq!(
             tail_rows(&preview),
             tail_rows(&expected.layout),
-            "超大活跃块回退尾行应与后台一致：suffix={suffix:?}"
+            "oversized active block fallback tail rows must match the background: suffix={suffix:?}"
         );
     }
 }

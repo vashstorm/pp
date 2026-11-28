@@ -1,4 +1,4 @@
-//! 文本行换行：普通块的样式化与按屏幕行访问。
+//! Text line wrapping: styling of plain blocks and access by screen line.
 
 use super::*;
 

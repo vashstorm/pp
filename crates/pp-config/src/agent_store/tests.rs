@@ -35,7 +35,7 @@ fn sqlite_defaults_corruption_and_concurrent_preferences() {
         let path = root.path().join("agent.db");
         let mut first = AgentStore::open(&path).unwrap();
         let mut second = AgentStore::open(&path).unwrap();
-        // 独立连接交错更新不同行：后提交者不得用陈旧快照覆盖先提交者。
+        // Independent connections update different rows interleaved: the later committer must not overwrite the earlier one with a stale snapshot.
         second.toggle_favorite("fixture/alpha").unwrap();
         first
             .set_default_model("fixture/beta", ModelThinking::default())

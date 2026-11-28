@@ -1,4 +1,4 @@
-//! 计划变更落地与 TODO／进度快照发布。
+//! Plan change commits plus TODO/progress snapshot publication.
 use super::*;
 
 /// Plan file tracked during execution: only an Execute-mode run with an

@@ -1,4 +1,4 @@
-//! symbols：单文件符号大纲与工作区符号搜索。
+//! symbols: single-file symbol outline and workspace symbol search.
 
 use crate::Registry;
 use crate::transport::Failure;
@@ -20,7 +20,7 @@ use super::{
     Action, Params, deny_service, done, failure_error, is_control, with_server, with_useless,
 };
 
-/// 工作区符号结果上限。
+/// Cap on workspace symbol results.
 const WORKSPACE_SYMBOL_LIMIT: usize = 200;
 
 pub(super) fn symbols(

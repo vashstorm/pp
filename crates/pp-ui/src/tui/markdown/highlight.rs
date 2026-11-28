@@ -1,8 +1,8 @@
-//! fenced code block 的 syntect 语法高亮。
+//! syntect syntax highlighting of fenced code blocks.
 //!
-//! 输入文本由调用方保证已 `display_text` 脱敏且 tab 已按四列展开；本模块只做
-//! token 解析、上限护栏与着色。完整行保存语法状态，追加时只重算变化的末行。
-//! 缓存按代码块隔离，采用数量与源文本字节双重上限。
+//! The caller guarantees the input text already went through `display_text` sanitization and that tabs are expanded to four columns; this module only does
+//! token parsing, the limit guardrails and coloring. A complete line keeps its syntax state, and an append only recomputes the changed last line.
+//! The cache is isolated per code block and capped both by entry count and by source text bytes.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -24,10 +24,10 @@ use crate::tui::transcript_style::{
     code_block, edit_number, edit_string, syntax_comment, syntax_keyword,
 };
 
-/// 行数与字节上限：超出直接回退纯色，保证流式 delta 与超大块成本有界。
+/// Line count and byte limits: going over falls back to solid color, keeping the cost of streaming deltas and oversized blocks bounded.
 const MAX_LINES: usize = 500;
 const MAX_BYTES: usize = 65_536;
-/// 进程级 LRU 缓存容量。
+/// Process-wide LRU cache capacity.
 const CACHE_CAPACITY: usize = 64;
 
 fn syntaxes() -> &'static SyntaxSet {
@@ -72,8 +72,8 @@ fn build_theme(active: UiTheme) -> Theme {
     }
 }
 
-/// 程序化构造的主题：scope 前缀匹配 + 长 scope 优先，未匹配文本使用
-/// `settings.foreground`（即 `code_block`）。不解析 .tmTheme。
+/// Programmatically built theme: scope prefix matching with longer scopes first; unmatched text uses
+/// `settings.foreground` (that is `code_block`). No .tmTheme parsing.
 fn theme_for(active: UiTheme) -> &'static Theme {
     static THEMES: [OnceLock<Theme>; UiTheme::ALL.len()] =
         [const { OnceLock::new() }; UiTheme::ALL.len()];
@@ -181,8 +181,8 @@ fn grapheme_spans(
         if start >= region_end {
             continue;
         }
-        // token 边界可能落在字素簇内部，完整字素簇沿用首字符的样式。
-        // 按整行划分，避免 wrap/Ratatui 丢弃跨 span 的零宽组合字符。
+        // A token boundary may fall inside a grapheme cluster; the whole cluster keeps the style of its first character.
+        // Work on whole lines so wrap/Ratatui does not drop zero-width combining characters across spans.
         let mut end = start;
         while let Some(&(offset, grapheme)) = graphemes.peek()
             && offset < region_end
@@ -203,8 +203,8 @@ fn grapheme_spans(
     spans
 }
 
-/// 按语言 token 高亮完整代码块，返回每行已合并相邻同 style 的 spans。
-/// 无语言、未知 token、超限或解析失败均返回 `None`（调用方回退纯色）。
+/// Highlight a whole code block by language token and return the spans of every line with adjacent equal styles merged.
+/// No language, unknown token, over-limit or parse failure all return `None` (the caller falls back to solid color).
 pub(super) fn highlight(lang: Option<&str>, code: &str) -> Option<Arc<HighlightedLines>> {
     let lang = lang.filter(|l| !l.is_empty())?;
     if code.len() > MAX_BYTES || code.split('\n').count() > MAX_LINES {

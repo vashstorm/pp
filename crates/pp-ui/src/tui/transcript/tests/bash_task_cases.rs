@@ -25,7 +25,7 @@ fn bash_task_polls_failure_recovery_and_process_separation() {
         snapshot(&mut transcript, "start", "bg-1", "running", "first\n");
         let text = screen(&render(&mut transcript, 100, 30));
         assert!(text.contains("Bash · running"), "{text}");
-        transcript.append("Assistant", "继续检查服务");
+        transcript.append("Assistant", "Continue checking the service");
         transcript.toggle_tool_output();
         for poll in 0..5 {
             let id = format!("poll-{poll}");
@@ -39,7 +39,7 @@ fn bash_task_polls_failure_recovery_and_process_separation() {
             assert_eq!(transcript.tool_index(&id), Some(0));
             assert!(
                 !transcript.entries[0].text.is_empty(),
-                "查询中保留上一份输出"
+                "the previous output is kept while polling"
             );
             let output = format!("first\nlatest-{poll}\n");
             transcript.progress(AgentEvent::ToolOutputSnapshot {

@@ -15,7 +15,7 @@ impl Agent {
             .tools
             .mcp
             .manage(action, token, self.tools.mcp_access());
-        // 部分成功、失败和取消均同步真实工具表；管理命令不追加用户历史。
+        // Partial success, failure and cancellation all sync the real tool table; management commands append no user history.
         self.session
             .set_tools(self.tools.all_definitions(self.workflow.mode));
         if !matches!(action, Action::Help | Action::List) {

@@ -43,7 +43,7 @@ fn fixture_script() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lsp_server.py")
 }
 
-/// 隔离的 fixture 注册表：只匹配 `.rs`，日志留在临时目录里供“是否启动”断言。
+/// Isolated fixture registry: matches only `.rs`, and logs stay in the temp directory for "was it started" assertions.
 fn fixture_registry(dir: &Path) -> Registry {
     fixture_registry_with(dir, &[])
 }
@@ -283,7 +283,7 @@ fn lsp_tool_gates_access_tiers_validation_and_targets() {
         assert!(resolve_column(text, 1, Some("value#3")).is_err());
         assert_eq!(resolve_column("😀 value\n", 1, Some("value")).unwrap(), 3);
         assert_eq!(resolve_column("  \n", 2, None).unwrap(), 0);
-        // 目标行未命中时，附带 ±5 行内按距离排序的候选行号。
+        // When the target line has no match, candidate line numbers within ±5 lines sorted by distance are included.
         let multiline = "fn alpha() {}\n// 2\n// 3\nfn target() {}\n// 5\nfn target() {}\n";
         let near_one = resolve_column(multiline, 2, Some("alpha"))
             .unwrap_err()

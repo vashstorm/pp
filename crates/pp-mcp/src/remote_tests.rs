@@ -274,7 +274,7 @@ mod integration {
                     .iter()
                     .any(|t| t.description.as_deref() == Some("changed"))
             );
-            // 退出路径覆盖 reload 之后新建的连接，并禁止旧槽复活。
+            // The exit path covers connections created after reload and forbids old slots from coming back.
             manager.shutdown().unwrap();
             assert_eq!(manager.test_connection_count(), 0);
             let before = server.log().len();
@@ -344,7 +344,7 @@ mod integration {
             ));
             manager.connect_enabled(&token, Access::Full).unwrap();
             assert_eq!(manager.definitions(Access::Full).len(), 4);
-            // Plan/Review 只按 access 过滤工具，不断开任何已连接的服务进程。
+            // Plan/Review only filter tools by access and never disconnect any connected server process.
             assert_eq!(manager.definitions(Access::ReadOnly).len(), 1);
             assert!(
                 manager
@@ -372,8 +372,8 @@ mod integration {
                     .unwrap()["result"]["content"][0]["text"],
                 "public"
             );
-            // 进程仍保持连接：Access::Full 立刻恢复完整工具表，且从未重新 initialize，
-            // 未授权服务也没有收到终止会话的 DELETE。
+            // The process stays connected: Access::Full immediately restores the full tool table and initialize was never re-run,
+            // nor did an unauthorized service receive a session-terminating DELETE.
             assert_eq!(manager.definitions(Access::Full).len(), 4);
             for (label, server) in [("remote", &remote), ("suspended", &suspended)] {
                 let log = server.log();
@@ -416,7 +416,7 @@ mod integration {
                 .remove("read_only_tools");
             std::fs::write(&path, config.to_string()).unwrap();
             manage(Action::Reload).unwrap();
-            // 去掉只读授权后，ReadOnly 的 Reload 不再连接任何服务。
+            // Once the read-only grant is removed, a ReadOnly Reload connects no server at all.
             assert!(manager.definitions(Access::Full).is_empty());
             assert_eq!(
                 suspended

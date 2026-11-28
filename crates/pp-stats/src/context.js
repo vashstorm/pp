@@ -1,5 +1,6 @@
 /**
- * 首请求上下文阅读器弹窗（Context / Tools / Skills 分类浏览、语法高亮与剪贴板复制）。
+ * First-request context reader dialog (browse by Context / Tools / Skills category, syntax highlighting
+ * and clipboard copy).
  */
 
 import { h, icon, number } from "./web/format.js";
@@ -32,7 +33,7 @@ import { hooks } from "./web/state.js";
 let contextReaderState = null;
 
 /**
- * 将首请求快照拆解为 Context / Tools / Skills 三类可阅读条目。
+ * Splits the first-request snapshot into readable Context / Tools / Skills entries.
  * @param {RequestContextSnapshot} snapshot
  * @returns {ContextItem[]}
  */
@@ -119,7 +120,8 @@ export function contextItems(snapshot) {
 }
 
 /**
- * 渲染打开上下文阅读器的入口按钮（仅首请求带快照时返回按钮）。
+ * Renders the button that opens the context reader (a button only when the first request carries a
+ * snapshot).
  * @param {RequestDetailResponse} detail
  * @returns {string}
  */
@@ -129,7 +131,7 @@ export function requestContextButton(detail) {
 }
 
 /**
- * 对 JSON 或 Markdown 文本做安全的语法高亮（全量内容经 `h()` 转义）。
+ * Safely highlights JSON or Markdown text (the whole content is escaped through `h()`).
  * @param {string} text
  * @param {boolean} json
  * @returns {string}
@@ -162,7 +164,7 @@ export function highlightContext(text, json) {
 }
 
 /**
- * 将上下文条目序列化为展示/复制文本。
+ * Serializes a context entry into text for display and copy.
  * @param {ContextItem} item
  * @returns {string}
  */
@@ -213,7 +215,7 @@ function renderContextDetail() {
 }
 
 /**
- * 打开首请求上下文阅读器弹窗。
+ * Opens the first-request context reader dialog.
  * @param {RequestDetailResponse | null} detail
  * @param {Element | null} [trigger]
  */
@@ -250,7 +252,8 @@ export function openContextReader(detail, trigger) {
 }
 
 /**
- * 关闭上下文阅读器并恢复触发前焦点与背景交互状态。
+ * Closes the context reader and restores the focus and background interaction state from before it
+ * opened.
  */
 export function closeContextReader() {
   const state = contextReaderState;
@@ -269,7 +272,7 @@ export function closeContextReader() {
 }
 
 /**
- * 处理上下文阅读器弹窗内的键盘焦点环与 Tab 切换。
+ * Handles the keyboard focus ring and Tab switching inside the context reader dialog.
  * @param {KeyboardEvent} event
  * @returns {boolean}
  */
@@ -318,7 +321,7 @@ export function contextReaderKeydown(event) {
 let contextBound = false;
 
 /**
- * 绑定上下文阅读器浮层点击与搜索过滤事件（幂等）。
+ * Binds the overlay click and search filtering events of the context reader (idempotent).
  */
 export function initContextReader() {
   if (contextBound) return;

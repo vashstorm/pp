@@ -1,4 +1,4 @@
-//! 粘贴、按键与滚轮输入；只推进面板状态并返回列表动作。
+//! Paste, key and wheel input; only advances panel state and returns list actions.
 
 use super::*;
 
@@ -38,13 +38,13 @@ impl Panel {
                     Action::None
                 };
             }
-            // 读取/打开/重命名/删除进行中：等待 worker 结果，不接收按键。
+            // While a read/open/rename/delete is in flight, wait for the worker result and accept no keys.
             Phase::Reading | Phase::Opening | Phase::Renaming | Phase::Deleting => {
                 return Action::None;
             }
             Phase::Ready => {}
         }
-        // 确认删除对话框优先：默认 Cancel，Tab/方向显式选择 Delete。
+        // The delete-confirmation dialog takes precedence: Cancel is the default and Tab/arrows explicitly select Delete.
         if let Some(mut confirm) = self.confirm.take() {
             match key.code {
                 KeyCode::Esc => {}
@@ -56,19 +56,19 @@ impl Panel {
                     if confirm.delete_selected {
                         return Action::Delete(confirm.id);
                     }
-                    // 默认 Cancel：关闭对话框，不删除。
+                    // Default Cancel: close the dialog without deleting.
                 }
                 _ => self.confirm = Some(confirm),
             }
             return Action::None;
         }
-        // 重命名单行输入：预填文件名，Enter 提交，Esc 取消。
+        // Single-line rename input: prefilled with the file name, Enter submits and Esc cancels.
         if self.rename.is_some() {
             return self.rename_key(key);
         }
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
-        // 搜索模式只接收查询字符/粘贴；r/d/n/c/e 不会成为搜索字符或触发动作。
+        // Search mode accepts only query characters/paste; r/d/n/c/e never become query characters or trigger actions.
         if self.searching {
             match key.code {
                 KeyCode::Esc => self.searching = false,
@@ -92,7 +92,7 @@ impl Panel {
             }
             return Action::None;
         }
-        // 快照选中项，避免动作分支中同时借用与修改面板状态。
+        // Snapshot the selected entry so action branches do not borrow and mutate panel state at once.
         let selected = self.selected_entry().map(|entry| {
             (
                 entry.id.clone(),
@@ -230,7 +230,7 @@ impl Panel {
                     .trim()
                     .to_owned();
                 if name.is_empty() || name == file_name {
-                    // 空名与同名都视为无操作：直接关闭编辑器。
+                    // An empty or unchanged name is a no-op: close the editor right away.
                     return Action::None;
                 }
                 return Action::Rename(id, name);

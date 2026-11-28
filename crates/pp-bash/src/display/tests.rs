@@ -34,7 +34,7 @@ fn text(trace: &Trace) -> Vec<String> {
 #[test]
 fn shell_display_rows_execution_identity_and_overflow() {
     {
-        // 预期值由本机 OMP 18.19.0 RunTrace.present 的默认 Pseudo 视图核对。
+        // Expected values were verified against the default Pseudo view of OMP 18.19.0 RunTrace.present on this host.
         for (source, expected) in [
             (
                 "ls -la && echo \"---\" && git log --oneline -5",
@@ -100,7 +100,7 @@ fn shell_display_rows_execution_identity_and_overflow() {
         let (trace, _, _) = parsed(&source);
         assert_eq!(text(&trace), vec![source]);
         trace.with(|model| assert!(model.nodes.len() <= MAX_NODES));
-        // 用语句节点构造真实语法嵌套；算术括号属于单条表达式。
+        // Statement nodes build real syntax nesting; arithmetic parentheses belong to a single expression.
         for (open, close) in [("if true; then ", "fi; "), ("{ ", "}; ")] {
             let source = format!(
                 "{}echo x;{}",
@@ -116,12 +116,12 @@ fn shell_display_rows_execution_identity_and_overflow() {
 #[test]
 fn shell_display_deep_test_quotes_and_constant_folding() {
     {
-        // 浅层扩展测试仍输出原语义（含 And 与括号包裹）。
+        // Shallow extended tests still render the original semantics (including And and parenthesized grouping).
         let (trace, _, _) = parsed("[[ -n x && -n y ]]");
         assert_eq!(text(&trace), vec!["\"x\" != \"\" and \"y\" != \"\""]);
         let (trace, _, _) = parsed("[[ ( -n x ) ]]");
         assert_eq!(text(&trace), vec!["(\"x\" != \"\")"]);
-        // 嵌套 AST 深度超过 MAX_DEPTH 的扩展测试逐字回退 source，节点有界。
+        // An extended test whose nested AST depth exceeds MAX_DEPTH falls back to the source verbatim and nodes stay bounded.
         let source = format!(
             "[[ {}-n x ]]",
             "-n x && ".repeat(usize::from(MAX_DEPTH) + 8)

@@ -94,7 +94,7 @@ mod integration {
         );
         let failed_id = failed["task_id"].as_str().unwrap();
         background_wait(&tools, failed_id, |r| r["status"] == "failed");
-        // 未知 ID 不能吞掉同次指定的有效结果。
+        // An unknown ID must not swallow the valid results named in the same call.
         assert_eq!(
             execute(&tools, "wait", json!({"task_ids":[failed_id,"missing"]}))["ok"],
             false

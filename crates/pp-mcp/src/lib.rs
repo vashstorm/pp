@@ -40,8 +40,8 @@ const TOOL_LIMIT: usize = 256;
 const POLL: Duration = Duration::from_millis(5);
 const VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
-// 不实现 Debug，避免输出命令参数和环境变量中的凭证。
-// PartialEq 只用于比较服务定义是否变化，不泄露字段内容。
+// No Debug impl, so credentials in command arguments and environment variables are never printed.
+// PartialEq only compares whether the server definition changed and never leaks field contents.
 #[derive(Clone, PartialEq)]
 pub(crate) struct ServerConfig {
     transport: TransportConfig,
@@ -130,35 +130,35 @@ impl Access {
     }
 }
 
-/// 进程级 MCP 管理器：根 `main` 构造唯一实例，经 `Arc` 注入 Agent、子 Agent 与 UI。
-/// 只保存配置路径与工作目录，首次使用时加载配置；`empty()` 为测试与 mock 的内存实例。
-// 进程级单例必须 `Send + Sync`：由 `Arc` 跨线程投递点强制（Agent、子 Agent、UI worker）。
+/// Process-level MCP manager: root `main` constructs the single instance and injects it into Agent, subagents and the UI via `Arc`.
+/// Stores only the config path and working directory and loads the config on first use; `empty()` is the in-memory instance for tests and mocks.
+// A process-level singleton must be `Send + Sync`: enforced by the `Arc` handed across threads (Agent, subagents, UI worker).
 pub struct McpManager {
-    // `None` 表示无配置文件的内存实例：绝不读取 HOME 下的 Claude/Codex 来源。
+    // `None` means the in-memory instance without a config file: never reads Claude/Codex sources under HOME.
     config: Option<PathBuf>,
-    // 是否发现 HOME 下的 Claude/Codex 用户级来源；隔离实例只读指定 pp 配置。
+    // Whether to discover user-level Claude/Codex sources under HOME; isolated instances read only the given pp config.
     discover_user_sources: bool,
     cwd: PathBuf,
-    // 串行化配置加载、连接集合变更与退出停止；单次工具调用不经过它。
+    // Serializes config loading, connection set changes and shutdown; a single tool call does not take it.
     control: Mutex<()>,
     state: Mutex<State>,
-    // 启动期后台建连线程：退出时先取消再回收，避免 shutdown 后重新拉起服务。
+    // Startup background connect thread: cancel it before reaping on exit so services are not started again after shutdown.
     connect_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-/// 内存态：临界区只做内存读写，绝不跨网络请求或进程 spawn 持锁。
+/// In-memory state: critical sections only touch memory and never hold a lock across network requests or process spawns.
 #[derive(Default)]
 pub(crate) struct State {
     directory: config::Directory,
     servers: BTreeMap<String, SharedServer>,
     tools: BTreeMap<String, RemoteTool>,
-    // 全部已知连接槽，包含发现失败或已从 `servers` 摘除的槽；退出停止按槽执行。
+    // Every known connection slot, including slots that failed discovery or were removed from `servers`; shutdown stops each slot.
     connections: Vec<SharedConnection>,
     loaded: bool,
     closing: bool,
-    // 启动期后台建连进度；快照读取不触网，`await_connect` 只轮询 `finished`。
+    // Startup background connect progress; snapshot reads never touch the network and `await_connect` only polls `finished`.
     connect: connect_status::Progress,
-    // 当前后台建连的取消句柄：退出与测试收尾用它尽快结束等待。
+    // Cancellation handle of the current background connect: shutdown and test teardown use it to end the wait promptly.
     connect_token: Option<CancellationToken>,
 }
 
@@ -190,30 +190,30 @@ impl std::ops::Deref for SharedServer {
         &self.state
     }
 }
-// 与 `SharedServer` 同可见性：`Deref::Target` 属于 `pub(crate)` 接口，不能泄漏更私有的类型。
+// Same visibility as `SharedServer`: `Deref::Target` is part of the `pub(crate)` interface and must not leak a more private type.
 pub(crate) struct ServerState {
     config: ServerConfig,
     cwd: PathBuf,
     client: Client,
-    // 仅因任务取消而停止的连接保留一次重建资格；普通故障不重连。
+    // A connection stopped only because of task cancellation keeps one rebuild chance; ordinary failures do not reconnect.
     restart_after_cancel: bool,
 }
 
 impl McpManager {
-    /// 唯一生产构造入口：只保存配置路径与工作目录，首次使用时加载配置。
+    /// The only production constructor: stores just the config path and working directory and loads the config on first use.
     pub fn new(config: PathBuf, cwd: PathBuf) -> Self {
         Self::with_optional_config(Some(config), cwd, true)
     }
 
-    /// 隔离实例：只读指定 pp 配置，不发现 HOME 下的 Claude/Codex 来源。
+    /// Isolated instance: reads only the given pp config and does not discover Claude/Codex sources under HOME.
     ///
-    /// 单元测试与内嵌场景专用：被测 crate 以依赖方式编译时 `cfg(test)` 不生效，
-    /// 不能再靠配置层判断测试态，必须由调用方显式关闭外部来源发现。
+    /// For unit tests and embedded scenarios only: `cfg(test)` is not set when the crate under test is compiled as a dependency,
+    /// so the test state cannot be detected in the config layer anymore and the caller must disable external source discovery explicitly.
     pub fn new_isolated(config: PathBuf, cwd: PathBuf) -> Self {
         Self::with_optional_config(Some(config), cwd, false)
     }
 
-    /// 无配置文件的内存实例：测试与 mock 专用，不读取 HOME 下的 Claude/Codex 来源。
+    /// In-memory instance without a config file: for tests and mocks only; does not read Claude/Codex sources under HOME.
     pub fn empty() -> Self {
         Self::with_optional_config(None, PathBuf::from("."), false)
     }
@@ -223,7 +223,7 @@ impl McpManager {
         cwd: PathBuf,
         discover_user_sources: bool,
     ) -> Self {
-        // 无配置文件的实例已就绪；带路径的实例等首次使用时加载，失败后可重试。
+        // An instance without a config file is ready immediately; an instance with a path loads on first use and can retry after a failure.
         let loaded = config.is_none();
         Self {
             config,
@@ -272,7 +272,7 @@ impl McpManager {
 
 impl Drop for McpManager {
     fn drop(&mut self) {
-        // panic 或提前返回的兜底：失败只记日志，退出码由根 main 的 `shutdown()` 决定。
+        // Fallback for panics or early returns: failures are only logged, and the exit code is decided by root main's `shutdown()`.
         if let Err(error) = self.stop_tracked() {
             tracing::error!("MCP cleanup failed during drop: {error:#}");
         }
@@ -410,11 +410,11 @@ mod integration {
             .unwrap();
             assert!(client.stop().is_err());
             assert!(!client.stopped);
-            // 停止失败保留未回收句柄，重试不假成功。
+            // A failed stop keeps the unreaped handle, so a retry cannot report success falsely.
             assert!(process.lock().unwrap().is_live());
             assert!(client.stop().is_err());
 
-            // 回收成功后 stopped 才置位，重复 stop 幂等成功。
+            // `stopped` is set only after reaping succeeds, so repeated stops are idempotent successes.
             process.lock().unwrap().child.take();
             client.stop().unwrap();
             assert!(client.stopped);

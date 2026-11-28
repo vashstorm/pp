@@ -1,4 +1,4 @@
-//! 系统指令来源快照、模板渲染和按块拼装。
+//! System instruction source snapshots, template rendering and block-wise assembly.
 use anyhow::{Context, Result, anyhow, ensure};
 use handlebars::Handlebars;
 use pp_config::config::EditMode;
@@ -9,11 +9,11 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 const RUNTIME: &str = include_str!("prompts/runtime.md");
-/// 已注册的模板名：base（用户模板）与 runtime 只在快照校验时注册一次。
+/// Registered template names: base (user template) and runtime are registered only once, when a snapshot is validated.
 const BASE_TEMPLATE: &str = "base";
 const RUNTIME_TEMPLATE: &str = "runtime";
 
-/// 用于区分不可降级的提示词启动错误和可交互修复的模型配置错误。
+/// Distinguishes a non-degradable prompt startup error from a model config error that interactive repair can fix.
 #[derive(Debug)]
 pub struct PromptFailure;
 impl std::fmt::Display for PromptFailure {
@@ -44,7 +44,7 @@ pub struct Snapshot {
     version: u32,
     base: Source,
     append: Option<Source>,
-    /// 校验时注册一次 base 与 runtime 模板；Clone 共享同一份，不重新解析。
+    /// Registers the base and runtime templates once at validation; a Clone shares the same instance without re-parsing.
     #[serde(skip)]
     renderer: OnceLock<Arc<Handlebars<'static>>>,
 }
@@ -64,7 +64,7 @@ impl Clone for Snapshot {
     }
 }
 
-/// 用户模板的第一版公开上下文，不包含自动生成的指令块。
+/// First public context of the user template; it does not include auto-generated instruction blocks.
 #[derive(Serialize)]
 pub(crate) struct RenderContext<'a> {
     pub cwd: String,
@@ -149,7 +149,7 @@ fn renderer() -> Handlebars<'static> {
     renderer
 }
 
-/// 模板错误只保留来源、位置与语法原因：库的完整错误会附带源码片段。
+/// Template errors keep only the origin, position and syntax reason: the full library error would include source snippets.
 fn template_error(origin: &str, error: handlebars::TemplateError) -> anyhow::Error {
     let reason = match error.reason() {
         handlebars::TemplateErrorReason::InvalidSyntax(_) => "invalid Handlebars syntax".to_owned(),
@@ -261,7 +261,7 @@ impl Snapshot {
             self.version == 1,
             "unsupported system prompt snapshot version"
         );
-        // 模板只在此处注册一次；`compose`／`inspect_parts` 之后只做渲染。
+        // Templates are registered only here; `compose`/`inspect_parts` only render afterwards.
         self.renderer()?;
         if let Some(append) = &self.append {
             ensure!(
@@ -273,12 +273,12 @@ impl Snapshot {
         Ok(())
     }
 
-    /// 已注册 base（若为模板）与 runtime 模板的渲染器：首次使用时构造并缓存。
+    /// Renderer with the base (when it is a template) and runtime templates registered: built and cached on first use.
     fn renderer(&self) -> Result<&Arc<Handlebars<'static>>> {
         if let Some(renderer) = self.renderer.get() {
             return Ok(renderer);
         }
-        // 并发下可能已有另一线程写入；两侧注册内容一致，取已有结果即可。
+        // Another thread may have written concurrently; both sides register identical content, so the existing result is fine.
         let _ = self.renderer.set(Arc::new(self.build_renderer()?));
         self.renderer
             .get()

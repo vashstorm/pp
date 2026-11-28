@@ -202,7 +202,8 @@ mod tests {
                 .tree
                 .replay(&journal.active.as_ref().unwrap().file, view.tree.leaf, true)
                 .unwrap();
-            // 终态快照只在提交／失败／取消时落盘，未提交的流式尾部不进入磁盘回放。
+            // Terminal snapshots are only written on commit/failure/cancellation; an
+            // uncommitted streaming tail never enters disk replay.
             assert!(!replay_pending.iter().any(|record| matches!(
                 record,
                 ReplayRecord::Event(AgentEvent::AssistantFinished { text })

@@ -1,4 +1,4 @@
-//! `rg` 结果的分组标题渲染。
+//! Grouped header rendering for `rg` results.
 
 pub(super) fn grouped_header(
     path: &str,

@@ -1,4 +1,5 @@
-//! 共享值展开后的逻辑记录；只有原生扩展用于恢复模型请求。
+//! Logical records after shared-value expansion; only native extensions are used to
+//! restore model requests.
 use super::{Metadata, Session, SessionRef};
 use async_openai::types::{chat as c, responses as r};
 use pp_config::config::EditMode;

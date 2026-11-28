@@ -1,4 +1,4 @@
-//! Hub 总览／Activity 专用轻量事件读取：流式跳过与合并高频 delta，避免把大量逐 token 碎片送往 UI。
+//! Lightweight event reads dedicated to the Hub overview/Activity: stream past and merge high-frequency deltas so bulk per-token fragments never reach the UI.
 
 use super::{Binding, EventCursor, ObservedEntry, ObservedRecord, lock};
 use anyhow::{Context, Result, ensure};
@@ -11,11 +11,11 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 
-/// 单页总览软读取上限（物理字节）。
+/// Soft read cap per overview page (physical bytes).
 const OVERVIEW_PAGE_BYTES: u64 = 4 * 1024 * 1024;
-/// 单页保留的关键条目上限；超出后交由下一页继续扫描。
+/// Cap on key entries kept per page; beyond it the next page continues scanning.
 const OVERVIEW_PAGE_ENTRIES: usize = 2048;
-/// 与 `projection::SUMMARY_SCALARS` 对齐的摘要标量上限。
+/// Summary scalar cap kept in step with `projection::SUMMARY_SCALARS`.
 const SUMMARY_SCALARS: usize = 512;
 
 #[derive(Debug, Default)]
@@ -32,7 +32,7 @@ pub struct OverviewPage {
 struct OverviewLine {
     #[serde(default)]
     root_id: Option<String>,
-    /// 瘦身新行缺省为空串；读取端按请求 agent id 补齐。
+    /// Slimmed new lines default to an empty string; the reader fills it in from the requested agent id.
     #[serde(default)]
     agent_id: String,
     #[serde(default)]
@@ -49,7 +49,7 @@ struct OverviewLine {
     hub: Option<super::HubEvent>,
 }
 
-/// 仅解码 Hub 总览／Activity 关心的事件字段，其余高频／大体积变体零分配跳过。
+/// Decodes only the event fields the Hub overview/Activity cares about; every other high-frequency or bulky variant is skipped with zero allocation.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum OverviewEvent {
@@ -175,11 +175,11 @@ impl PendingMeta {
 
 #[derive(Default)]
 struct RunCoalesce {
-    /// 同一轮连续 `ReasoningSummaryDelta` 合并前缀（用于填充 `work.draft`，保留首条锚点）。
+    /// Coalesced prefix of consecutive `ReasoningSummaryDelta` in the same round (fills `work.draft` and keeps the first anchor).
     reasoning_prefix: Option<(PendingMeta, String)>,
-    /// 同一轮最后一条 `ReasoningSummaryDelta`（独立保留以匹配逐条覆盖的摘要语义）。
+    /// Last `ReasoningSummaryDelta` of the same round (kept separately to match the per-entry override summary semantics).
     reasoning_last: Option<(PendingMeta, String)>,
-    /// 同一轮最后一条非空或尚未被覆盖的 `AssistantDelta` / `ThinkingDelta`。
+    /// Last non-empty or not-yet-overridden `AssistantDelta` / `ThinkingDelta` of the same round.
     delta: Option<(PendingMeta, String, bool)>,
 }
 
@@ -248,7 +248,7 @@ fn flush_run(
 }
 
 impl Binding {
-    /// 读取 Hub 总览／Activity 所需的增量关键记录，跳过高频流式输出并合并连续 delta。
+    /// Reads the incremental key records the Hub overview/Activity needs, skipping high-frequency streaming output and merging consecutive deltas.
     pub fn read_overview_events(
         &self,
         agent_id: &str,
@@ -258,7 +258,7 @@ impl Binding {
             lock(&self.inner.state).disk.agents.contains_key(agent_id),
             "unknown agent"
         );
-        // 观察轮询推进流式尾部：过期缓冲先落盘，再打开文件与计算游标。
+        // Observation polling advances the streaming tail: persist expired buffers, then open the file and compute the cursor.
         self.inner.flush_expired(agent_id);
         let directory = self.inner.directory();
         let root_id = directory
@@ -330,7 +330,7 @@ impl Binding {
                 }
                 let run_key = line.run_id.as_deref().unwrap_or("-").to_owned();
                 let mut line = line;
-                // 瘦身新行缺省身份按请求 agent 与目录名补齐；旧行显式值保持原样。
+                // Fill default identity of slimmed new lines from the requested agent and directory name; explicit values in legacy lines stay as is.
                 if line.agent_id.is_empty() {
                     line.agent_id = agent_id.to_owned();
                 }
@@ -382,7 +382,7 @@ impl Binding {
                             if text.trim().is_empty() {
                                 state.flush_all(&mut entries);
                             } else {
-                                // 非空 AssistantFinished 会直接填充/覆盖 Response 行。
+                                // A non-empty AssistantFinished fills/overrides the Response line directly.
                                 state.delta = None;
                             }
                         }

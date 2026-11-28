@@ -1,4 +1,4 @@
-//! 非交互 `--output-schema` 运行期约束注入与 `jsonschema` 校验重试状态。
+//! Non-interactive `--output-schema` runtime constraint injection and `jsonschema` validation retry state.
 
 use anyhow::Result;
 use serde_json::Value;

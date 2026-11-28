@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-/// 沙盒运行模式；默认 `Auto`（在 macOS 与 Linux 平台可用时开启 `workspace-write`，其余关闭）。
+/// Sandbox run mode; defaults to `Auto` (enables `workspace-write` where available on macOS and Linux, off elsewhere).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxMode {
@@ -45,8 +45,8 @@ impl FromStr for SandboxMode {
     }
 }
 
-/// 沙盒读范围策略：默认 `Workspace` 收紧 `$HOME` 下非工作区路径的读取；
-/// `Unrestricted` 保留全盘默认可读（仅黑名单凭据路径拒读）。
+/// Sandbox read scope policy: the default `Workspace` restricts reads of paths outside the workspace under `$HOME`;
+/// `Unrestricted` keeps everything readable by default (only credential paths on the denylist are denied).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxReadScope {
@@ -68,7 +68,7 @@ fn default_network() -> bool {
     false
 }
 
-/// settings.yml `tools.sandbox` 配置。
+/// The `tools.sandbox` configuration in settings.yml.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SandboxSettings {

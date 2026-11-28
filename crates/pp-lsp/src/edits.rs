@@ -1,4 +1,4 @@
-//! LSP 修改建议的只读验证与虚拟预览，不包含提交或回滚入口。
+//! Read-only validation and virtual preview of LSP edit suggestions, with no commit or rollback entry point.
 
 mod readonly;
 mod rename;
@@ -48,7 +48,7 @@ fn net_unchanged(before: &Original, after: Option<&[u8]>) -> bool {
     }
 }
 
-/// 查询时的磁盘基线与最终虚拟内容，仅用于建议和 diff。
+/// On-disk baseline at query time and the final virtual content, used only for suggestions and diffs.
 struct Record {
     before: Original,
     after: Option<Vec<u8>>,
@@ -61,7 +61,7 @@ struct Plan {
     warnings: Vec<String>,
 }
 
-/// 规范化路径与用于摘要/记录的相对路径。
+/// Normalized path plus the relative path used for summaries/records.
 struct Resolved {
     path: PathBuf,
     relative: PathBuf,
@@ -80,19 +80,19 @@ enum Kind {
     Missing,
 }
 
-/// 虚拟文件状态：`before` 是事务开始前的磁盘快照，`current` 是按声明顺序
-/// 推进后的内容。`before` 从不被后续操作覆盖，撤销基线因此保持稳定。
+/// Virtual file state: `before` is the on-disk snapshot from before the transaction started, `current` is the content
+/// advanced in declaration order. `before` is never overwritten by later operations, so the undo baseline stays stable.
 struct Virtual {
     relative: PathBuf,
     before: Original,
     current: Option<Vec<u8>>,
     permissions: Option<u32>,
     resource: bool,
-    /// 版本证明使用的原始内容：文本编辑只推进 `current`，`proof` 始终是
-    /// 该文件在事务开始前的磁盘字节（重命名目标沿用来源文件的证明）。
+    /// Original content used for the version proof: text edits only advance `current`, `proof` always remains
+    /// the file's on-disk bytes from before the transaction began (a rename target inherits the source file's proof).
     proof: Original,
-    /// 版本证明对应的客户端文档路径：事务内重命名后，新路径的文件仍由
-    /// 发起服务器打开的原路径文档证明，不能要求服务器已经打开新路径。
+    /// Client document path the version proof refers to: after a rename inside the transaction, the file at the new path is still
+    /// proven by the originating server's document at the old path, and the server must not be required to have opened the new path.
     origin: Option<PathBuf>,
 }
 
@@ -101,8 +101,8 @@ struct Planner<'a> {
     workspace: &'a Workspace,
     cancellation: &'a CancellationToken,
     files: BTreeMap<PathBuf, Virtual>,
-    /// 每个路径当前虚拟类型；文件删除/目录删除/重命名都通过它覆盖磁盘状态，
-    /// 因此虚拟目录遍历不会把本事务已删除或移走的磁盘节点算回来。
+    /// Current virtual type per path; file deletion/directory deletion/rename all override the on-disk state through it,
+    /// so a virtual directory walk never counts back disk nodes this transaction already deleted or moved away.
     kinds: BTreeMap<PathBuf, Kind>,
     summary: Vec<String>,
     warnings: Vec<String>,
@@ -153,7 +153,7 @@ impl<'a> Planner<'a> {
         })
     }
 
-    /// 只读判断当前（虚拟优先）节点状态。
+    /// Read-only determination of the current (virtual-first) node state.
     fn node(&self, path: &Path) -> Result<NodeState> {
         if let Some(kind) = self.kinds.get(path) {
             return match kind {
@@ -171,8 +171,8 @@ impl<'a> Planner<'a> {
                 Kind::Missing => Ok(NodeState::Missing),
             };
         }
-        // 祖先虚拟类型优先：被删除/移走的目录下的路径必须立即消失，不能被
-        // 磁盘上尚未提交的旧节点重新看见。
+        // Ancestor virtual types win: paths under a deleted/moved-away directory must disappear immediately, and must not be
+        // seen again through old nodes on disk that are not committed yet.
         let parts = self.workspace.components(path)?;
         let mut prefix = self.workspace.path.clone();
         for part in parts.iter().take(parts.len().saturating_sub(1)) {
@@ -215,7 +215,7 @@ impl<'a> Planner<'a> {
         }
     }
 
-    /// 首次接触某个文件时保存事务开始前的磁盘基线；之后只推进虚拟内容。
+    /// Record the on-disk baseline from before the transaction on first contact with a file; afterwards only the virtual content advances.
     fn ensure_file(&mut self, path: &Path, relative: &Path) -> Result<()> {
         if self.files.contains_key(path) {
             if matches!(self.kinds.get(path), Some(Kind::Directory { .. })) {
@@ -273,8 +273,8 @@ impl<'a> Planner<'a> {
         }
     }
 
-    /// 文件操作会隐式创建父目录：虚拟状态先登记为目录，提交时由
-    /// `resource_target_tracked` 真正创建并跟踪身份。
+    /// File operations implicitly create parent directories: the virtual state first records them as directories, and the commit
+    /// really creates and tracks their identity through `resource_target_tracked`.
     fn ensure_virtual_parents(&mut self, path: &Path) -> Result<()> {
         let parts = self.workspace.components(path)?;
         let mut prefix = self.workspace.path.clone();
@@ -287,8 +287,8 @@ impl<'a> Planner<'a> {
                 ),
                 Some(Kind::Directory { .. }) => continue,
                 Some(Kind::Missing) => {
-                    // 本事务先删除了该路径上的文件/目录，随后在旧路径下创建
-                    // 子节点：磁盘上的旧节点会先被删除，这里直接重建成目录。
+                    // This transaction first deleted the file/directory at this path and then created
+                    // children under the old path: the old disk node is deleted first, so rebuild it directly as a directory.
                     self.kinds
                         .insert(prefix.clone(), Kind::Directory { permissions: None });
                 }
@@ -354,7 +354,7 @@ impl<'a> Planner<'a> {
                 "rename" => {
                     let rename: RenameFile = serde_json::from_value(change.clone())
                         .context("invalid renameFile entry in workspace edit")?;
-                    // 先推进两端的虚拟文本，再模拟移动。
+                    // Advance the virtual text on both sides before simulating the move.
                     self.flush_subtree(&mut pending, &rename.old_uri)?;
                     self.flush_subtree(&mut pending, &rename.new_uri)?;
                     self.plan_rename(&rename)?;
@@ -437,9 +437,9 @@ impl<'a> Planner<'a> {
         Ok(())
     }
 
-    /// 虚拟目录快照：以磁盘目录为底，按声明顺序叠加文件内容、删除/移动类型
-    /// 与隐式创建的父目录。这样文本编辑、文件删除之后再重命名/递归删除同一
-    /// 棵树时，快照与此前的虚拟操作一致。
+    /// Virtual directory snapshot: the disk directory as the base, with file contents, delete/move types
+    /// and implicitly created parents layered on in declaration order. This way, renaming or recursively deleting the same
+    /// tree after text edits and file deletions keeps the snapshot consistent with the earlier virtual operations.
     fn walk_virtual(&self, path: &Path) -> Result<Vec<DirectoryEntry>> {
         check(self.cancellation)?;
         if !matches!(self.node(path)?, NodeState::Directory(_)) {
@@ -488,7 +488,7 @@ impl<'a> Planner<'a> {
                 }
             }
         }
-        // 被祖先 Missing/File 覆盖的节点不能从磁盘旧状态复活。
+        // Nodes covered by an ancestor Missing/File must not come back to life from stale disk state.
         let keys: Vec<PathBuf> = entries.keys().cloned().collect();
         for relative in keys {
             check(self.cancellation)?;
@@ -496,7 +496,7 @@ impl<'a> Planner<'a> {
                 entries.remove(&relative);
             }
         }
-        // 为嵌套文件/目录补齐父目录条目；磁盘已有的权限保持不变。
+        // Fill in parent directory entries for nested files/directories; existing disk permissions stay unchanged.
         let keys: Vec<PathBuf> = entries.keys().cloned().collect();
         for relative in keys {
             check(self.cancellation)?;
@@ -507,8 +507,8 @@ impl<'a> Planner<'a> {
                 entries.entry(prefix.clone()).or_insert((None, None));
             }
         }
-        // 上限只约束普通文件；目录本身不消耗文件额度。虚拟创建/覆盖/移动
-        // 叠加后重新校验总字节数与文件数，超限只拒绝该次建议。
+        // The limit only constrains regular files; directories consume no file allowance. After virtual creation/overwrite/move
+        // are combined, the total bytes and file count are re-validated, and exceeding a limit only rejects that suggestion.
         let files = entries
             .values()
             .filter(|(content, _)| content.is_some())

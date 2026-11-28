@@ -2,9 +2,10 @@ use pp_config::models::{ModelCost, ModelPricing};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// 一次请求在采集时记录的费用分量（USD），字段与 `pp_config::models::TokenCost` 一致。
+/// Cost components recorded for a request at collection time (USD); fields match
+/// `pp_config::models::TokenCost`.
 ///
-/// `requests.cost_json` 为 NULL 表示该请求未定价（旧记录或缺价格／usage）。
+/// A NULL `requests.cost_json` means the request is unpriced (old record or missing price/usage).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct CostSnapshot {
     pub input: f64,
@@ -19,7 +20,8 @@ impl CostSnapshot {
     }
 }
 
-/// 采集时匹配到的费率（USD／百万 token）；`cache_write` 缺失表示该费率没有独立写入价。
+/// Rate matched at collection time (USD per million tokens); a missing `cache_write` means the
+/// rate has no separate cache-write price.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RateSnapshot {
     pub input: f64,
@@ -28,9 +30,11 @@ pub(crate) struct RateSnapshot {
     pub output: f64,
 }
 
-/// 采集时的计价依据：请求结束时读一次 `models.yml` 与内置表，之后只写快照。
+/// Pricing basis at collection time: `models.yml` and the built-in table are read once when the
+/// request finishes, and only snapshots are written afterwards.
 ///
-/// `pricing` 为 `None` 表示模型配置无法解析：与旧行为一致，此时既不计价也不记录费率。
+/// `pricing` being `None` means the model config cannot be parsed: matching the previous behavior,
+/// nothing is priced and no rate is recorded.
 pub(crate) struct Rates {
     pricing: Option<ModelPricing>,
 }
@@ -39,7 +43,7 @@ impl Rates {
     pub fn load(models_path: &Path) -> Self {
         let pricing = match pp_config::models::load_models(models_path) {
             Ok(providers) => Some(ModelPricing::from_providers(&providers)),
-            // 没有 models.yml 时只保留内置价格表。
+            // Without models.yml only the built-in price table remains.
             Err(error)
                 if error
                     .downcast_ref::<std::io::Error>()
@@ -52,7 +56,8 @@ impl Rates {
         Self { pricing }
     }
 
-    /// 返回 `(费用, 费率)`：命中费率而 usage 不全时只记录费率，未命中费率时两者皆空。
+    /// Returns `(cost, rate)`: when a rate matches but usage is incomplete only the rate is
+    /// recorded; when no rate matches both are empty.
     pub fn snapshot(
         &self,
         reference: &str,
@@ -79,7 +84,8 @@ impl Rates {
     }
 }
 
-/// 与 `pp_config::models::ModelCost::calculate` 共享严格规则：未知缓存读不补零。
+/// Shares the strict rules of `pp_config::models::ModelCost::calculate`: unknown cache reads are not
+/// zero-filled.
 fn calculate(
     price: ModelCost,
     input: Option<i64>,
@@ -91,7 +97,7 @@ fn calculate(
         input_tokens: input?.try_into().ok()?,
         output_tokens: output?.try_into().ok()?,
         cached_tokens: Some(cached?.try_into().ok()?),
-        // 写入量未知时保留 None，由费率决定能否计价。
+        // Keep None when the write amount is unknown; the rate decides whether pricing is possible.
         cache_write_tokens: written.map(u64::try_from).transpose().ok()?,
         reasoning_tokens: None,
     };
@@ -148,7 +154,7 @@ mod tests {
                 serde_json::to_value(&snapshot).unwrap()
             );
             assert_eq!(old["request"]["status"], "failed");
-            // 会话关联只写 session_file，entry_id 不再由 link 写入。
+            // Session linking only writes session_file; link no longer writes entry_id.
             assert!(old["request"]["entry_id"].is_null());
             assert_eq!(old["request"]["session_file"], "/missing/session.jsonl");
             let errors = store.errors(Range::All, 2000, 50).unwrap();
@@ -248,7 +254,8 @@ mod tests {
             };
             assert!(snapshot(Some(10)).0.is_none());
             assert!(snapshot(Some(0)).0.is_some());
-            // 费率没有写入价时，写入量未知不影响总价，不能整条请求记为未定价。
+            // When the rate has no cache-write price, an unknown write amount does not affect the
+            // total, so the whole request must not be recorded as unpriced.
             assert!((snapshot(None).0.unwrap().total() - 0.000216).abs() < 1e-10);
             fs::write(
                 &path,
@@ -283,7 +290,7 @@ mod tests {
                     Some(0),
                 )
             };
-            // 没有 models.yml 时只保留内置价格表。
+            // Without models.yml only the built-in price table remains.
             let rates = Rates::load(&path);
             assert!(unpriced(&rates).0.is_none());
             assert!(unpriced(&rates).1.is_none());
@@ -298,7 +305,7 @@ mod tests {
             assert_eq!(rate.unwrap().input, 5.0);
             assert!((cost.unwrap().total() - 5.0).abs() < 1e-12);
 
-            // 配置无法解析时完全不计价，连内置价格表也不用。
+            // When the config cannot be parsed nothing is priced, not even with the built-in table.
             for invalid in [
                 models_with_cost(json!({"input":-1,"cacheRead":0,"output":1})),
                 models_with_cost(json!({"input":1,"output":1})),
@@ -338,7 +345,8 @@ mod tests {
             .unwrap();
             let rates = Rates::load(&path);
             assert_eq!(unpriced(&rates).0.unwrap().total(), 0.0);
-            // 缓存读超过输入、缓存读未知、输出未知都不能按零计价。
+            // A cache read larger than the input, an unknown cache read, or an unknown output must
+            // not be priced as zero.
             for (input, output, cached) in [
                 (Some(100), Some(20), Some(101)),
                 (Some(100), Some(20), None),

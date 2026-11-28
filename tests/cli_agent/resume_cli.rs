@@ -4,8 +4,8 @@
 
 use super::*;
 
-// `pp -r` 不带 SESSION_ID：非交互终端无法打开会话选择面板，必须明确拒绝，
-// 不能静默回退到最近会话或空会话。
+// `pp -r` without a SESSION_ID: a non-interactive terminal cannot open the session picker, so it must be refused
+// explicitly instead of silently falling back to the most recent or an empty session.
 #[test]
 fn resume_flag_without_id_requires_interactive_terminal() {
     let dir = tempfile::tempdir().unwrap();

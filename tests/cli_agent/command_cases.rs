@@ -36,7 +36,7 @@ fn slash_local_commands_and_unavailable_help_never_request_models() {
     ] {
         assert!(stderr.contains(value), "{stderr}");
     }
-    // 未知命令静默忽略，不写 stderr。
+    // Unknown commands are silently ignored and write nothing to stderr.
     assert!(!stderr.contains("unknown command"), "{stderr}");
     let listing = stderr.find("a/primary").unwrap();
     assert!(listing < stderr.find("gateway/team/secondary").unwrap());

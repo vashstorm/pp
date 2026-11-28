@@ -13,7 +13,7 @@ mod usage_cases;
 pub(super) fn database(home: &std::path::Path) -> Connection {
     Connection::open(home.join(".pp/stats/stats.db")).unwrap()
 }
-/// 每个请求一行：首个请求有快照时为 `{request, skills}`，其余请求为 null。
+/// One row per request: `{request, skills}` for the first request that has a snapshot, null for the others.
 pub(super) fn contexts(home: &std::path::Path) -> Vec<Value> {
     database(home)
         .prepare("SELECT c.request_json,c.skills_json FROM requests r LEFT JOIN request_contexts c ON c.request_id=r.id ORDER BY r.id")
@@ -34,7 +34,8 @@ pub(super) fn rows(home: &std::path::Path) -> Vec<Value> {
     database(home).prepare("SELECT id,status,input_tokens,output_tokens,cached_tokens,ttft_ms,purpose,session_file,error_message,cache_write_tokens FROM requests ORDER BY id").unwrap().query_map([],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"status":r.get::<_,String>(1)?,"input":r.get::<_,Option<i64>>(2)?,"output":r.get::<_,Option<i64>>(3)?,"cache":r.get::<_,Option<i64>>(4)?,"ttft":r.get::<_,Option<f64>>(5)?,"purpose":r.get::<_,String>(6)?,"session_file":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?,"cache_write":r.get::<_,Option<i64>>(9)?}))).unwrap().collect::<Result<_,_>>().unwrap()
 }
 
-/// 模型在每个请求边界发出的工具调用：`request_tools` 只保存工具名与参数字符数。
+/// Tool calls the model issued at each request boundary: `request_tools` stores only the tool name and the number
+/// of argument characters.
 pub(super) fn tools(home: &std::path::Path) -> Vec<Value> {
     database(home)
         .prepare("SELECT request_id,tool,args_chars FROM request_tools ORDER BY request_id,rowid")
@@ -59,11 +60,11 @@ fn http_with_origin(address: &str, path: &str, host: &str, origin: Option<&str>)
     let reply = raw_request(address, "GET", path, host, origin);
     (
         reply.status,
-        String::from_utf8(reply.body).expect("文本资源必须是 UTF-8"),
+        String::from_utf8(reply.body).expect("text resources must be UTF-8"),
     )
 }
 
-/// 原始回环响应：状态、headers 与未经解码的 body 字节。
+/// Raw loopback response: status, headers and the undecoded body bytes.
 struct RawReply {
     status: u16,
     headers: Vec<(String, String)>,
@@ -80,7 +81,7 @@ impl RawReply {
     }
 }
 
-/// 唯一的底层读取：文本 helper 与二进制／方法用例都走这里。
+/// The single low-level read: the text helpers and the binary/method cases all go through it.
 fn raw_request(
     address: &str,
     method: &str,
@@ -125,7 +126,7 @@ fn raw_request_body(
     let split = bytes
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
-        .expect("HTTP 响应必须带完整头部");
+        .expect("HTTP responses must carry complete headers");
     let head = String::from_utf8(bytes[..split].to_vec()).unwrap();
     let mut lines = head.split("\r\n");
     let status = lines.next().unwrap().split_whitespace().nth(1).unwrap();

@@ -109,7 +109,7 @@ fn test_client_with_rate_limit_budget(base_url: &str, budget_seconds: u64) -> Op
     test_client_at(base_url, budget_seconds, "fixture/primary")
 }
 
-/// 客户端自身持有临时目录，保证计数数据库路径在客户端存续期内有效。
+/// The client holds the temp dir itself so the usage-count database path stays valid for the client's lifetime.
 fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenAiClient {
     let dir = tempfile::tempdir().unwrap();
     let mut client = OpenAiClient::new(&Config {
@@ -160,7 +160,7 @@ fn test_client_at(base_url: &str, budget_seconds: u64, reference: &str) -> OpenA
     client
 }
 
-/// 读取客户端计数数据库中的使用次数。
+/// Read the usage count stored in the client's count database.
 fn usage_of(client: &OpenAiClient, reference: &str) -> u64 {
     let path = client.usage_dir.as_ref().unwrap().path().join("agent.db");
     pp_config::agent_store::AgentStore::open(&path)
@@ -399,7 +399,10 @@ mod integration {
                 api_error(503, None),
                 "fixture",
             )));
-            let delay = state.delay.take().expect("预算应支持完整的九次重试");
+            let delay = state
+                .delay
+                .take()
+                .expect("the budget should cover nine full retries");
             assert_eq!(delay, Duration::from_secs(seconds));
             state.waited += delay;
         }

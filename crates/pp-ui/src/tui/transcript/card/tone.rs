@@ -39,7 +39,7 @@ pub(in crate::tui) fn contrast_ratio(a: Color, b: Color) -> Option<f64> {
     Some((hi + 0.05) / (lo + 0.05))
 }
 
-/// 选择与 `bg` 对比度最高的候选色，保证反色徽章在暗色与浅色主题下均清晰可读。
+/// Pick the candidate color with the highest contrast against `bg` so the inverted badge stays clearly readable on dark and light themes alike.
 pub(super) fn contrast_fg(bg: Color, candidates: &[Color]) -> Color {
     candidates
         .iter()
@@ -60,14 +60,14 @@ pub(in crate::tui) fn slab_header_bg(p: &Palette, failed: bool) -> Color {
     if failed {
         p.tool_error_bg
     } else {
-        // 无论暗色或浅色主题，向文字主色微调都能拉开表头与正文的层次。
+        // On dark or light themes alike, nudging toward the primary text color separates the header row from the body.
         mix_rgb(slab_body_bg(p), p.text, 1, 14)
     }
 }
 
 pub(in crate::tui) fn badge_fg(bg: Color) -> Color {
     let p = palette();
-    // 优先使用与画布一致的主题色；若对比度未达 WCAG AA (4.5:1)，回退纯黑或纯白。
+    // Prefer the theme color that matches the canvas; fall back to pure black or white when the contrast misses WCAG AA (4.5:1).
     for candidate in [p.panel_bg, p.md_bg] {
         if contrast_ratio(bg, candidate).is_some_and(|r| r >= 4.5) {
             return candidate;

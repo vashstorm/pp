@@ -86,8 +86,8 @@ pub(super) enum Action {
     Pin(usize),
 }
 
-/// 全屏会话选择器。目录扫描与检索由独立 history worker 完成；面板只安装
-/// 与当前代次和最新请求对应的结果，绘制和按键从不读取数据库。
+/// Full-screen session picker. Directory scanning and searching belong to the dedicated history worker; the panel only installs
+/// results matching the current generation and latest request, and never reads the database while drawing or handling keys.
 pub(super) struct Panel {
     phase: Phase,
     sessions: Vec<SessionSummary>,
@@ -100,9 +100,9 @@ pub(super) struct Panel {
     page_size: usize,
     generation: u64,
     request_id: u64,
-    // 最新请求尚未回复：保留旧行仅在内存，UI 不展示也不允许对旧行操作。
+    // The latest request has not answered yet: old rows stay in memory only, neither displayed nor actionable.
     pending: bool,
-    // 查询/范围变化后安装结果时重置选中；删除后的同步保留选中并夹取。
+    // Installing results after a query/scope change resets the selection; a post-delete sync keeps and clamps it.
     reset_selection: bool,
     selected_id: Option<String>,
     dirty: bool,
@@ -149,20 +149,20 @@ impl Panel {
         (self.request_id, self.scope(), self.query.clone())
     }
 
-    /// 打开面板和删除成功后的同步：重新扫描会话目录并按空/当前查询检索。
+    /// Sync when the panel opens and after a successful delete: rescan the session directory and search by the empty/current query.
     pub(super) fn sync_request(&mut self) -> (u64, Option<PathBuf>, String) {
         self.dirty = false;
         self.issue()
     }
 
-    /// 删除成功后的刷新保留当前选中位置；旧行在结果返回前不可操作。
+    /// Refresh after a successful delete keeps the current selection; old rows are not actionable until results return.
     pub(super) fn refresh_request(&mut self) -> (u64, Option<PathBuf>, String) {
         self.reset_selection = false;
         self.dirty = false;
         self.issue()
     }
 
-    /// 查询或范围变化后待发送的 Search 请求；没有变化时返回 None。
+    /// Pending Search request after a query or scope change; returns None when nothing changed.
     pub(super) fn take_search(&mut self) -> Option<(u64, Option<PathBuf>, String)> {
         if !self.dirty {
             return None;
@@ -172,7 +172,7 @@ impl Panel {
         Some(self.issue())
     }
 
-    /// 只安装与最新请求匹配的结果；迟到的旧请求和旧面板代次由调用方丢弃。
+    /// Installs only results matching the latest request; stale requests and old panel generations are discarded by the caller.
     pub(super) fn install(&mut self, request_id: u64, listing: SessionListing) -> bool {
         if request_id != self.request_id {
             return false;
@@ -199,7 +199,7 @@ impl Panel {
         true
     }
 
-    /// 检索失败：清空旧行避免对过期结果执行恢复/删除，保留查询与 Esc。
+    /// Search failure: clear old rows so resume/delete cannot act on stale results, keeping the query and Esc.
     pub(super) fn fail(&mut self, request_id: u64, message: String) -> bool {
         if request_id != self.request_id {
             return false;
@@ -227,7 +227,7 @@ impl Panel {
         self.phase = Phase::Ready;
     }
 
-    /// 删除结束：成功时由调用方紧接一次同步；失败保留当前行与选中。
+    /// Delete finished: on success the caller immediately syncs; on failure the current rows and selection are kept.
     pub(super) fn delete_finished(&mut self, succeeded: bool) {
         self.phase = Phase::Ready;
         if succeeded {
@@ -250,7 +250,7 @@ impl Panel {
         Some((self.request_id, id, pinned))
     }
 
-    /// 写入成功后重新查询排序；写入失败时保留原行和原选择。
+    /// Re-query and re-sort after a successful write; on failure keep the original rows and selection.
     pub(super) fn pin_finished(&mut self, request_id: u64) -> bool {
         if request_id != self.request_id || !matches!(self.phase, Phase::Pinning) {
             return false;
@@ -388,7 +388,7 @@ impl Panel {
         if area.height < 3 {
             return;
         }
-        // 长查询保留尾部，光标始终留在可见输入区，按字符裁剪避免截断 UTF-8。
+        // A long query keeps its tail so the cursor stays in the visible input area, and clipping by character avoids splitting UTF-8.
         let mut query = self.query.as_str();
         let query_width = usize::from(area.width.saturating_sub(3));
         while Line::from(query).width() > query_width {
@@ -525,7 +525,7 @@ impl Panel {
                 Paragraph::new(lines).style(Style::default().fg(foreground).bg(background)),
                 row_area,
             );
-            // 宽字符的续列会被文本渲染重置，最后统一补齐整行背景。
+            // Continuation cells of wide characters get reset by text rendering, so the whole row background is filled in last.
             frame
                 .buffer_mut()
                 .set_style(row_area, Style::default().bg(background));
@@ -632,7 +632,7 @@ mod tests {
         ])
     }
 
-    /// 打开面板并安装服务端返回的首个结果（调用方负责检索）。
+    /// Open the panel and install the first result the worker returns (the caller performs the search).
     fn panel() -> Panel {
         let mut panel = Panel::new(1, Some("current".into()), "/project".into());
         let (request_id, cwd, query) = panel.sync_request();
@@ -694,7 +694,7 @@ mod tests {
             );
             assert_eq!(terminal.backend().cursor_position(), (2, 2).into());
 
-            // 范围切换只发送新检索；等待期间旧行不可见也不能选择。
+            // A scope switch only sends a new search; while waiting, old rows are invisible and cannot be selected.
             panel.key(key(KeyCode::Right));
             let (scope_request, cwd, query) = search(&mut panel);
             assert_eq!(cwd, None);
@@ -708,7 +708,7 @@ mod tests {
             assert!(panel.install(scope_request, all_listing()));
             assert!(render(&mut panel, 100, 30).0.contains("其他目录"));
 
-            // 服务端已过滤：粘贴换行转空格、检索词下发、结果直接安装。
+            // The worker already filtered: paste turns newlines into spaces, the term is sent down and results are installed directly.
             panel.paste("其他\n目录");
             let (paste_request, cwd, query) = search(&mut panel);
             assert_eq!(cwd, None);
@@ -778,7 +778,10 @@ mod tests {
             let (request_id, id, pinned) = panel.pin_request(1).unwrap();
             assert_eq!(id, "alpha");
             assert!(pinned);
-            assert!(!panel.sessions[1].pinned, "写入前不更新状态");
+            assert!(
+                !panel.sessions[1].pinned,
+                "state is not updated before the write"
+            );
             assert!(matches!(panel.key(pin), Action::None));
             assert!(matches!(panel.key(key(KeyCode::Enter)), Action::None));
             panel.paste("ignored");
@@ -805,14 +808,17 @@ mod tests {
             assert!(!pinned);
             assert!(panel.pin_finished(request_id));
             panel.set_feedback("Could not save session pin; please retry.".into());
-            assert!(panel.sessions[0].pinned, "写入失败保持原状态和选择");
+            assert!(
+                panel.sessions[0].pinned,
+                "a failed write keeps the previous state and selection"
+            );
             assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(0)));
 
             panel.paste("search");
             search(&mut panel);
             assert!(
                 matches!(panel.key(pin), Action::None),
-                "等待查询时禁止 pin 旧行"
+                "pinning stale rows is rejected while a query is pending"
             );
         }
 
@@ -827,7 +833,7 @@ mod tests {
                     summary("three", "/project", "第三行"),
                 ])
             ));
-            // TUI 输出完整帧；TestBackend 的差分快照会重置宽字符续列，不能替代实际帧。
+            // The TUI emits full frames; TestBackend's diffed snapshot resets wide-character continuation cells and cannot stand in for a real frame.
             let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
             let completed = terminal
                 .draw(|frame| panel.draw(frame, frame.area()))
@@ -854,7 +860,7 @@ mod tests {
             let (second, _, query) = search(&mut panel);
             assert_eq!(query, "ab");
             assert!(second > first);
-            // 迟到的旧请求结果被丢弃，包括失败回复。
+            // Late results from an old request are discarded, including failure replies.
             assert!(!panel.install(first, all_listing()));
             assert!(!panel.fail(first, "stale".into()));
             assert!(panel.error.is_none());
@@ -868,7 +874,10 @@ mod tests {
         {
             let mut panel = panel();
             panel.key(key(KeyCode::Delete));
-            assert!(matches!(panel.phase, Phase::Ready), "不能删除当前会话");
+            assert!(
+                matches!(panel.phase, Phase::Ready),
+                "the current session cannot be deleted"
+            );
             panel.key(key(KeyCode::Down));
             panel.set_feedback("Previous restore failed".into());
             assert!(
@@ -891,7 +900,7 @@ mod tests {
             panel.delete_finished(false);
             assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Resume(1)));
 
-            // 删除成功后同步刷新：旧行在回复前不可操作，失败时清空旧行。
+            // Sync refresh after a successful delete: old rows are not actionable before the reply, and a failure clears them.
             panel.delete_finished(true);
             let (request_id, _, _) = panel.refresh_request();
             assert!(

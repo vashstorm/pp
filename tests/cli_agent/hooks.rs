@@ -1,4 +1,5 @@
-//! 命令 hooks 的真实 CLI 表面：用户级与项目级来源、输入拒绝、参数改写与 stderr 诊断。
+//! The real CLI surface of command hooks: user-level and project-level sources, input rejection, argument rewriting
+//! and stderr diagnostics.
 
 use super::*;
 
@@ -17,13 +18,15 @@ fn hooks_cli_rewrites_arguments_and_reports_sanitized_diagnostics() {
     let server = server();
     let dir = tempfile::tempdir().unwrap();
     let written = dir.path().join("written.txt");
-    // 改写目标是工作区相对路径，避免临时目录在 macOS 上的符号链接拼写差异。
+    // The rewrite target is a workspace-relative path, avoiding symlink spelling differences of temporary directories
+    // on macOS.
     let rewrite = hook_script(
         dir.path(),
         "rewrite.sh",
         "cat > /dev/null\nprintf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{\"path\":\"written.txt\",\"content\":\"rewritten\"}}}'",
     );
-    // 诊断里带 ESC 序列：默认的 exit 码策略让任务继续，但必须净化显示。
+    // The diagnostics contain ESC sequences: the default exit-code policy lets the task continue, but the display must
+    // be sanitized.
     let notice = hook_script(
         dir.path(),
         "notice.sh",
@@ -98,7 +101,7 @@ printf '{"systemMessage":"hook\\u001b[2Jnotice"}'"#,
         response_result(&tool, "write-1")
     };
     assert_eq!(result["ok"], true, "{result}");
-    // 原生调用与磁盘都只看到改写后的目标。
+    // Both the native call and the disk see only the rewritten target.
     let native_arguments = if protocol == "completion" {
         tool["content"].as_str().unwrap().to_owned()
     } else {
@@ -122,6 +125,6 @@ printf '{"systemMessage":"hook\\u001b[2Jnotice"}'"#,
     assert!(stderr.contains("notice"), "{stderr}");
     assert!(
         !stderr.contains('\u{1b}'),
-        "hook 诊断不得输出原始终端转义：{stderr:?}"
+        "hook diagnostics must not emit raw terminal escapes: {stderr:?}"
     );
 }

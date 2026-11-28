@@ -5,7 +5,7 @@ use std::{
 
 const MAX_SYMLINK_DEPTH: usize = 16;
 
-// 测试用 `canonicalize` 计数按线程隔离，避免同进程的并行用例干扰断言。
+// The test-only `canonicalize` counter is thread-local so parallel cases in the same process cannot disturb the assertions.
 #[cfg(test)]
 thread_local! {
     static CANONICALIZE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -27,14 +27,14 @@ pub(crate) fn reset_canonicalize_calls() {
     CANONICALIZE_CALLS.with(|calls| calls.set(0));
 }
 
-/// 规范化路径：尽可能通过 `canonicalize` 折叠符号链接（如 `/tmp` → `/private/tmp`），
-/// 对尚不存在的后半段做词法折叠；遇到悬空符号链接时追踪其目标路径以防绕过。
+/// Normalizes a path: collapses symlinks through `canonicalize` where possible (e.g. `/tmp` → `/private/tmp`),
+/// folds the not-yet-existing tail lexically, and follows a dangling symlink's target to prevent bypass.
 pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     normalize_with_depth(path, 0)
 }
 
-/// 按平台大小写语义比较路径前缀：macOS 默认大小写不敏感 APFS 上对每个普通分量做大小写折叠，
-/// 防止通过大小写变体绕过 `protect`、词法快路径或 `deny_read`。
+/// Compares path prefixes under platform case semantics: on macOS's default case-insensitive APFS each
+/// normal component is case-folded so case variants cannot bypass `protect`, the lexical fast path or `deny_read`.
 pub(crate) fn path_starts_with(path: &Path, base: &Path) -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -104,9 +104,9 @@ pub(crate) fn lexically_outside_deny(target: &Path, deny_read: &[PathBuf]) -> bo
     !deny_read.iter().any(|denied| paths_overlap(target, denied))
 }
 
-/// 拒绝根在建策略时已经规范化；macOS 上 `/tmp`、`/var`、`/etc` 是指向
-/// `/private/...` 的符号链接，词法快路径需要把未规范化的系统别名同样视为
-/// “可能命中”，否则 `/tmp/x` 会绕过规范化为 `/private/tmp/x` 的拒绝根。
+/// Deny roots are already normalized when the policy is built; on macOS `/tmp`, `/var` and `/etc` are
+/// symlinks into `/private/...`, so the lexical fast path must treat the unnormalized system alias as
+/// "possibly matching" too, otherwise `/tmp/x` would bypass the deny root normalized to `/private/tmp/x`.
 pub(crate) fn lexical_aliases(root: &Path) -> Vec<PathBuf> {
     let Ok(rest) = root.strip_prefix("/private") else {
         return Vec::new();
@@ -203,7 +203,7 @@ pub(crate) fn is_safe_device_write(path: &Path) -> bool {
         || raw.starts_with("/dev/pty")
 }
 
-/// 匹配 macOS `confstr(_CS_DARWIN_USER_TEMP_DIR / CACHE_DIR)` 路径：
+/// Matches macOS `confstr(_CS_DARWIN_USER_TEMP_DIR / CACHE_DIR)` paths:
 /// `/private/var/folders/<2>/<hash>/{T,C}(/.*)?`
 pub(crate) fn is_macos_var_folder_temp(path: &Path) -> bool {
     fn next_normal<'a>(it: &mut std::path::Components<'a>) -> Option<&'a std::ffi::OsStr> {
@@ -347,8 +347,8 @@ pub(crate) fn check_write_path(
             ),
         ));
     }
-    // 在 ReadOnly 模式下，即使 cwd 自身位于 /tmp 或 /var/folders/.../T 下，
-    // 也只允许写入显式列出的子根（如 .pp-cache、本次 scratch），其余 cwd 子路径只读。
+    // In ReadOnly mode, even when cwd itself sits under /tmp or /var/folders/.../T,
+    // only the explicitly listed sub-roots (e.g. .pp-cache, this run's scratch) are writable; the rest of cwd is read-only.
     if mode == crate::EffectiveMode::ReadOnly && path_starts_with(target, cwd) {
         if writable.iter().any(|root| {
             path_starts_with(root, cwd)
@@ -472,7 +472,7 @@ mod tests {
                 ("/work", false),
                 ("work/repo/src", false),
                 ("/work/repo/../repo/src", false),
-                // `.` 由 `Path::components` 归一，不改变安全性
+                // `.` is normalized away by `Path::components`, so safety is unaffected
                 ("/work/./repo/src", true),
             ];
             for (path, outside) in cases {

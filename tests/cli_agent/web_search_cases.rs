@@ -109,7 +109,8 @@ fn web_search_roundtrip_both_protocols_and_sandbox_network_denial() {
         no_more(&search_server);
     }
 
-    // 在支持的平台上开启 network: false 沙盒时，外部引擎（duckduckgo）必须被拒绝。
+    // With the network: false sandbox enabled on a supported platform, an external engine (duckduckgo) must be
+    // rejected.
     let probe = pp_sandbox::Sandbox::new(
         pp_config::config::SandboxSettings {
             mode: pp_config::config::SandboxMode::ReadOnly,
@@ -224,7 +225,7 @@ fn test_web_search_command_runs_live_without_llm_in_configured_and_unavailable_m
         assert!(!config_path(&root, "sessions").exists());
     }
 
-    // 无参数 /test-web-search 依次探测 news.ycombinator.com 与 github.com 两条查询。
+    // Without arguments /test-web-search probes the news.ycombinator.com and github.com queries in turn.
     let probe_server = server();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -292,7 +293,7 @@ fn test_web_search_command_runs_live_without_llm_in_configured_and_unavailable_m
     assert_eq!(stderr.matches("tool web_search: ok").count(), 2, "{stderr}");
     no_more(&probe_server);
 
-    // webSearch.enabled: false 时立即报禁用错误，不发任何 HTTP 请求。
+    // With webSearch.enabled: false the disabled error is reported immediately and no HTTP request is sent.
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     write_settings(

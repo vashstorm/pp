@@ -1,4 +1,4 @@
-//! 后台进程的启动、查询和停止共用一张可更新卡片，原始工具事件保持不变。
+//! Start, query and stop of background processes share one updatable card; the raw tool events stay unchanged.
 
 use super::*;
 
@@ -78,7 +78,7 @@ impl Transcript {
                 result.as_object(),
             )
         {
-            // 查询失败也更新原框，保留此前累计输出和最后已知进程状态。
+            // A failed query still updates the original card, keeping the output accumulated so far and the last known process state.
             let mut merged = previous.clone();
             merged.extend(error.clone());
             *result = Value::Object(merged);

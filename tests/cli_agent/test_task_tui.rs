@@ -1,4 +1,4 @@
-// Debug 构建的 `/test-task` TUI 回归。
+// TUI regression for `/test-task` in debug builds.
 
 #[test]
 fn tui_mock_task_shows_subagent_activity_and_returns_three_lane_markers() {

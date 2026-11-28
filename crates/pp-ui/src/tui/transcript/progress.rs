@@ -1,4 +1,4 @@
-//! 活动行的阶段文案与 `AgentEvent` 分派；整块 match 保持原顺序与早退语义。
+//! Stage copy for activity lines and `AgentEvent` dispatch; the whole match keeps its original order and early-return semantics.
 
 use super::*;
 
@@ -9,7 +9,7 @@ impl Transcript {
                 AgentEvent::ModelAttemptFailed { .. } => activity.phase("Model attempt failed"),
                 AgentEvent::ModelRouteChanged { .. } => activity.phase("Switching model"),
                 AgentEvent::AssistantStarted => {
-                    // 新请求只重置分片解析；整轮任务继续沿用最近一次摘要。
+                    // A new request only resets chunk parsing; the whole turn keeps the most recent summary.
                     activity.summary_line.clear();
                     activity.summary_has_title = false;
                     activity.phase("Requesting model");
@@ -35,23 +35,23 @@ impl Transcript {
                 | AgentEvent::SubagentResultsInjected { .. }
                 | AgentEvent::FileChanged { .. }
                 | AgentEvent::LspDiagnostics { .. } => {}
-                // 后台自动加载不改变活动阶段，不伪装成模型工具执行。
+                // Background auto-loading does not change the activity stage and is not disguised as a model tool run.
                 AgentEvent::ProjectInstructionsLoaded { .. } => {}
                 AgentEvent::TodoSnapshot { .. } | AgentEvent::TodoStateUpdated { .. } => {}
-                // 提醒通知不改变活动阶段。
+                // Reminder notifications do not change the activity stage.
                 AgentEvent::TodoReminder { .. } => {}
-                // 运行时指标只服务状态栏，不改变对话阶段。
+                // Runtime metrics only serve the status bar and do not change the conversation stage.
                 AgentEvent::ModelRequestStarted
                 | AgentEvent::RequestRetrying { .. }
                 | AgentEvent::ModelOutputProgress { .. }
                 | AgentEvent::ModelRequestFinished { .. } => {}
-                // 运行时上下文管理：自动压缩开始切换阶段；用量更新不影响活动显示。
+                // Runtime context management: a compaction start switches the stage; usage updates do not affect the activity display.
                 AgentEvent::ContextUpdated { .. } | AgentEvent::PlanProgressUpdated { .. } => {}
                 AgentEvent::CompactionStarted { .. } => activity.phase("Compacting context"),
                 AgentEvent::CompactionFinished { .. } => {}
-                // 用户输入确认由 App 消费；不重置活动阶段、不产生重复卡片。
+                // User input acknowledgements are consumed by App; they do not reset the activity stage or produce duplicate cards.
                 AgentEvent::UserInputAccepted { .. } | AgentEvent::UserInputRejected { .. } => {}
-                // hook 诊断与 auto_review 只作阶段提示，不改变对话记录结构。
+                // Hook diagnostics and auto_review only hint the stage; they do not change the conversation record structure.
                 AgentEvent::HookDiagnostic { .. } => {}
                 AgentEvent::AutoReviewStarted { tool } => {
                     activity.phase(&format!("Reviewing {}", palette::tool_label(tool)));
@@ -77,7 +77,7 @@ impl Transcript {
             AgentEvent::ToolArgumentsDelta { tool, index, text } => {
                 self.preview_arguments(index, &tool, &text);
             }
-            // 用量更新不产生对话条目。
+            // Usage updates produce no conversation entry.
             AgentEvent::ContextUpdated { .. }
             | AgentEvent::PlanProgressUpdated { .. }
             | AgentEvent::AutoReviewStarted { .. }
@@ -93,24 +93,24 @@ impl Transcript {
                     }
                 }
             }
-            // 运行时指标只服务状态栏，不产生对话条目。
+            // Runtime metrics only serve the status bar and produce no conversation entry.
             AgentEvent::ModelRequestStarted
             | AgentEvent::RequestRetrying { .. }
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::ModelRequestFinished { .. } => {}
-            // 已接受的补充输入由 App 直接追加，不生成重复用户卡。
+            // Accepted follow-up input is appended directly by App without duplicating the user card.
             AgentEvent::UserInputAccepted { .. } => {}
-            // 被拒绝的补充输入由 App 追加拒绝卡，不进普通对话流。
+            // Rejected follow-up input is appended by App as a rejection card and never enters the normal conversation stream.
             AgentEvent::UserInputRejected { .. } => {}
-            // hook 诊断沿用 Note 样式：只展示，不进入模型上下文。
+            // Hook diagnostics reuse the Note style: display only, never entering the model context.
             AgentEvent::HookDiagnostic { event, message } => {
                 self.append("Note", &format!("{event} hook: {message}"));
             }
             AgentEvent::CompactionStarted { .. } => {}
-            // 完整任务只在固定区展示，旧日志的快照同样不生成历史卡片。
+            // The full task is only shown in the fixed area; snapshots from old logs likewise produce no history card.
             AgentEvent::TodoSnapshot { .. } | AgentEvent::TodoStateUpdated { .. } => {}
             AgentEvent::ProjectInstructionsLoaded { path, content } => {
-                // 自动加载的规则沿用普通 read 展示，不注册模型工具调用。
+                // Auto-loaded instructions reuse the normal read display and register no model tool call.
                 let mut entry = TranscriptEntry::new(
                     EntryKind::Data,
                     "read".into(),
@@ -128,7 +128,7 @@ impl Transcript {
                 before_tokens,
                 after_tokens,
             } => {
-                // 简短结果用现有 Note 样式追加，保留原对话。
+                // Brief results are appended with the existing Note style, preserving the original conversation.
                 self.append(
                     "Note",
                     &format!("Context compacted: ~{before_tokens} → ~{after_tokens} tokens"),
@@ -139,7 +139,7 @@ impl Transcript {
                 attempt,
                 max_attempts,
             } => {
-                // 现有 Note 通知列出未完成项；replay 只重放通知，不触发请求。
+                // The existing Note notification lists unfinished items; replay only replays the notification and triggers no request.
                 let open: Vec<&pp_core::todo::TodoItem> = todos
                     .iter()
                     .filter(|item| {
@@ -188,8 +188,8 @@ impl Transcript {
                 source,
                 ..
             } => {
-                // 切到备用模型意味着当前请求已失败或降级，必须显式告知；
-                // 其余来源（手动、默认、角色）的切换只记一行普通说明。
+                // Switching to the fallback model means the current request already failed or degraded, so it must be announced explicitly;
+                // switches from other sources (manual, default, role) only record one ordinary note.
                 if source.is_fallback() {
                     self.append_notice(
                         "Fallback",
@@ -344,7 +344,7 @@ impl Transcript {
                             .unwrap_or("unknown")
                     )
                 } else if name == "todo" {
-                    // 缺 op 时保持 Todo；完成后从结果修正推断操作。
+                    // Keep Todo when op is missing; infer the operation from the result correction once it completes.
                     match arguments.as_ref().and_then(|args| args["op"].as_str()) {
                         Some(op) => format!("Todo · {}", pp_core::text::display_text(op)),
                         None => "Todo".to_owned(),
@@ -430,8 +430,8 @@ impl Transcript {
                         entry.body = EntryBody::Diff(diff);
                         entry.layout = None;
                     } else if let EntryBody::Lsp(block) = &mut entry.body {
-                        // LSP 的 rename/资源操作会按路径依次通知；卡片累积全部
-                        // 文件，不能只保留最后一条 FileChanged。
+                        // LSP rename/resource operations notify per path in sequence; the card accumulates every
+                        // file rather than keeping only the last FileChanged.
                         block.record_change(path, diff);
                         entry.layout = None;
                         entry.display_title = None;
@@ -440,8 +440,8 @@ impl Transcript {
             }
             AgentEvent::LspDiagnostics { id, report } => {
                 if let Some(id) = id {
-                    // 内联报告属于当前工具调用（工具结果仍是模型权威）；
-                    // 这里只把同一份结构化报告附到卡片正文之后。
+                    // Inline reports belong to the current tool call (the tool result remains the model authority);
+                    // here the same structured report is only appended after the card body.
                     if let Some(index) = self.tool_index(&id) {
                         let entry = &mut self.entries[index];
                         if entry.tool.as_deref() == Some("lsp")
@@ -452,8 +452,8 @@ impl Transcript {
                         entry.set_diagnostic(report);
                     }
                 } else {
-                    // `id = None` 是保存后的迟到报告：追加独立卡片，不改写已冻结
-                    // 的历史卡片，也不启动新的模型请求。
+                    // `id = None` is a late report after saving: append a standalone card, do not rewrite the already frozen
+                    // history card, and do not start a new model request.
                     let mut entry = TranscriptEntry::new(
                         EntryKind::Lsp,
                         crate::tui::lsp::late_title(),
@@ -511,7 +511,7 @@ impl Transcript {
                     let entry = &mut self.entries[index];
                     entry.pipeline_preview = None;
                     if entry.kind == EntryKind::Bash && entry.result.is_some() {
-                        // 后台快照替换累计输出，不和上一轮正文重复拼接。
+                        // Background snapshots replace the accumulated output instead of appending a duplicate of the previous body.
                         entry.text.clear();
                     }
                     match stream {
@@ -574,7 +574,7 @@ impl Transcript {
                     if entry.tool.as_deref() == Some("todo")
                         && let Some(op) = result["op"].as_str()
                     {
-                        // 成功结果携带真实操作；修正开始时无法推断的标题。
+                        // Successful results carry the real operation; fix the title that could not be inferred when it started.
                         entry.title = format!(
                             "{} Todo · {}",
                             palette::tool_icon("todo"),
@@ -586,8 +586,8 @@ impl Transcript {
                     entry.stderr.clear();
                     entry.pipeline_preview = None;
                     if entry.tool.as_deref() == Some("lsp") {
-                        // 工具结果是内联权威；结构化 diagnostics 直接渲染，
-                        // 同一份内容的可读正文不再重复；其他动作展示 content。
+                        // The tool result is the inline authority; structured diagnostics render directly,
+                        // so the readable body of the same content is not repeated; other actions show content.
                         let reports = crate::tui::lsp::reports_from_result(&result);
                         let text = tool_result(entry.kind, "lsp", &result);
                         let content = reports
@@ -655,7 +655,7 @@ impl Transcript {
                     }
                     entry.result = Some(result);
                     if entry.kind == EntryKind::Bash {
-                        // 最终结果优先于运行中的瞬时快照；没有真实管道时清空入口。
+                        // The final result wins over in-flight snapshots; clear the entry when there is no real pipeline.
                         entry.sync_pipes_badge(self.replaying);
                         entry.update_bash_footer(
                             entry

@@ -1,9 +1,9 @@
-"""受隔离测试控制的 stdio LSP；barrier 使用 FIFO，不以 sleep 推测时序。
+"""Isolated stdio LSP server driven by the tests; barriers use FIFOs, never sleeps.
 
-默认行为保持最小、确定：navigation 由 CLI 修正后的同一 URI 位置回答，
-rename/references/codeAction/executeCommand 仍是 method-not-found。显式传入
-``--real-navigation`` 时才使用文档状态做真实跨文件语义；服务器主动
-``workspace/applyEdit`` 只在 ``--apply-edit-on`` 指定方法时发送。
+Default behavior stays minimal and deterministic: navigation answers at the same URI position the CLI
+normalized, and rename/references/codeAction/executeCommand remain method-not-found. Only with an
+explicit ``--real-navigation`` does it use document state for real cross-file semantics; the server
+sends ``workspace/applyEdit`` only when ``--apply-edit-on`` names the triggering method.
 """
 
 import argparse
@@ -214,7 +214,7 @@ class Server:
 
     @staticmethod
     def clean(text: str) -> str:
-        """确定性的“格式化”结果：去行尾空白，保留单个结尾换行。"""
+        """Deterministic "format" result: strip trailing whitespace, keep a single final newline."""
         lines = [line.rstrip() for line in text.split("\n")]
         return "\n".join(lines).rstrip("\n") + "\n"
 
@@ -259,8 +259,9 @@ class Server:
                 "params": {"label": "fixture callback", "edit": self.callback_edit()},
             }
         )
-        # 必须等客户端真正处理完回调再回答触发请求；否则客户端可能先收到
-        # 触发请求的响应并在结束 operation 时把回调统一拒绝。
+        # The triggering request may only be answered once the client has really finished the callback;
+        # otherwise the client can receive the triggering response first and reject the callback when the
+        # operation ends.
         self.wait_for_reply("fixture-apply-edit")
 
     def read_message(self) -> dict | None:
@@ -291,7 +292,7 @@ class Server:
         params = message.get("params") or {}
         request_id = message.get("id")
         if method is None:
-            # 服务器请求的响应；record() 已记录，无需回话。
+            # Response to a server request; record() already logged it, so nothing to answer.
             return True
         if (
             self.args.apply_edit_on
@@ -329,8 +330,8 @@ class Server:
                 capabilities["workspace"]["fileOperations"] = {"willRename": {"filters": [{"pattern": {"glob": "**/*"}}]}}
             result = {"capabilities": capabilities}
         elif method == "initialized":
-            # 服务器在 initialized 之后立刻查询配置/工作区根：这两项必须在握手
-            # 之前就已写入 transport，否则客户端会先回答 null/空列表。
+            # The server asks for configuration/workspace roots right after initialized: both entries must
+            # already be in the transport before the handshake, otherwise the client answers null/empty lists.
             if self.args.probe_initialized:
                 self.send(
                     {

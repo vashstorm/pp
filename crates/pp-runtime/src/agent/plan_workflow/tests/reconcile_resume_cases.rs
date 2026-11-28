@@ -14,7 +14,8 @@ fn plan_missing_archive_continuation_and_restore_detach() {
         let file_name = format!("{old_plan_id}.md");
         let archive_dir = dir.path().join(".pp/done");
         if already_reconciled {
-            // 已协调的旧会话也可能在两次请求之间丢失整个归档目录。
+            // An already reconciled legacy session may also lose its whole archive directory
+            // between two requests.
             document.status = PlanStatus::Completed;
             document.location = PlanLocation::Done;
             document.file_name = Some(file_name.clone());
@@ -98,7 +99,8 @@ fn plan_missing_archive_continuation_and_restore_detach() {
 
 #[test]
 fn plan_resume_adapts_mcp_and_reports_replay() {
-    // /resume 从全局目录读取会话，子进程使用隔离的 HOME。
+    // /resume reads sessions from a global directory and the child process uses an isolated
+    // HOME.
     const FIXTURE: &str = "PP_TEST_PLAN_RESUME";
     let Ok(root) = std::env::var(FIXTURE) else {
         let home = tempfile::tempdir().unwrap();
@@ -129,8 +131,9 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
         let plan_id = planner.workflow.plan.as_ref().unwrap().id.clone();
         drop(planner);
 
-        // 恢复协调按当前工作目录解析计划文件：resume 目标会话的目录
-        // 里也准备同一计划的文件（旧 Plans 绑定按迁移规则迁回 Drafts）。
+        // Restore reconciliation resolves the plan file against the current working directory:
+        // the resume target session's directory also gets a file for the same plan (a legacy
+        // Plans binding moves back to Drafts under the migration rules).
         let current_plan_dir = root.join("current/.pp/plans");
         std::fs::create_dir_all(&current_plan_dir).unwrap();
         std::fs::write(current_plan_dir.join(format!("{plan_id}.md")), PLAN_CONTENT).unwrap();
@@ -140,8 +143,8 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
         let execute_id = executor.session_id().unwrap().to_owned();
         drop(executor);
 
-        // 第二个普通会话：覆盖与 resolve 两条路径各自离开 Plan 时，
-        // 目标会话不能是当前仍持有锁的同一个。
+        // A second ordinary session: when the override and resolve paths each leave Plan, the
+        // target session cannot be the one that still holds the lock.
         let mut second = fixture_agent(&root.join("exec2"), &sessions, protocol);
         seed_session(&mut second, "second ordinary work");
         let second_execute_id = second.session_id().unwrap().to_owned();
@@ -179,7 +182,8 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
         }
         assert_eq!(native, planning_session);
 
-        // 在规划会话中使用独立模型（写入手动覆盖 `a`），恢复普通会话时必须保持。
+        // Using a separate model in the planning session (writing manual override `a`) must
+        // survive resuming an ordinary session.
         super::handoff_cases::install_distinct_plan_model(&mut agent, &global);
         agent.switch_model("planner/one").unwrap();
         agent.set_think_level(ThinkLevel::High).unwrap();
@@ -197,7 +201,8 @@ fn plan_resume_adapts_mcp_and_reports_replay() {
             agent.tools.all_definitions(WorkMode::Execute).len()
         );
 
-        // 清除覆盖后再从 Plan 恢复普通会话：模型回到 resolve()（`b` 的默认路由）。
+        // After clearing the override, resume an ordinary session from Plan again: the model
+        // returns to resolve() (the default route of `b`).
         agent.models().clear_override().unwrap();
         agent.enter_plan(&CancellationToken::new()).unwrap();
         let preparation = agent
@@ -222,8 +227,8 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
         let id = agent.workflow.plan.as_ref().unwrap().id.clone();
         let legacy_path = format!(".pp/plans/{id}.md");
 
-        // 旧 Draft+Plans 绑定首次登记：保留旧名迁回 Drafts，字节精确保留，
-        // 纯路径变化不递增 revision。
+        // First registration of a legacy Draft+Plans binding: keep the old name and move back to
+        // Drafts, preserving bytes exactly; a pure path change does not bump the revision.
         agent.reconcile_plan_location().unwrap();
         {
             let document = agent.workflow.plan.as_ref().unwrap();
@@ -245,8 +250,8 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
             (format!("{id}.md"), PlanLocation::Drafts)
         );
 
-        // 登记解析出的新路径使旧 path token 失效（重命名/移位后旧 token
-        // 不能继续授权）。
+        // The new path resolved from the registry invalidates the old path token (after a
+        // rename/move the old token can no longer authorize).
         agent.workflow.plan.as_mut().unwrap().status = PlanStatus::Ready;
         let stale = ReviewToken {
             session_id: agent.session_id().unwrap().to_owned(),
@@ -258,7 +263,8 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
         let error = err_message(agent.validate_plan_token(&stale, &InputQueue::default()));
         assert_eq!(error, NOT_CURRENT);
 
-        // 再次协调是幂等的：绑定与登记一致时不再写 journal。
+        // Reconciling again is idempotent: no journal write when the binding and registration
+        // already agree.
         let before = agent.workflow.clone();
         agent.reconcile_plan_location().unwrap();
         assert_eq!(agent.workflow, before);
@@ -271,12 +277,13 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
         agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Executed);
         let id = agent.workflow.plan.as_ref().unwrap().id.clone();
 
-        // 另一会话已把计划重命名/移位：登记优先，绑定采纳新身份。
+        // Another session already renamed/moved the plan: the registry wins and the binding
+        // adopts the new identity.
         let plans = dir.path().join(".pp/plans");
         std::fs::create_dir_all(&plans).unwrap();
         std::fs::write(plans.join("moved-name.md"), PLAN_CONTENT).unwrap();
         register_entry(&agent, &id, "moved-name.md", PlanLocation::Plans);
-        // 旧绑定路径 <id>.md 留下同 inode 残留链接。
+        // The old binding path <id>.md leaves a same-inode leftover link.
         std::fs::hard_link(plans.join("moved-name.md"), plans.join(format!("{id}.md"))).unwrap();
 
         agent.reconcile_plan_location().unwrap();
@@ -288,7 +295,7 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
             assert_eq!(document.content, PLAN_CONTENT);
             assert_eq!(document.revision, 1);
         }
-        // 同 inode 残留被清理；登记表条目保持原样。
+        // The same-inode leftover is cleaned up; the registry entry stays as-is.
         assert!(!plans.join(format!("{id}.md")).exists());
         assert_eq!(
             std::fs::read(plans.join("moved-name.md")).unwrap(),
@@ -305,7 +312,8 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
         seed_session(&mut agent, EXPLORATION);
 
-        // 旧 Executed 绑定仍在 Plans 原位登记，不搬迁、不改名。
+        // A legacy Executed binding is still registered in place under Plans and is neither
+        // moved nor renamed.
         agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Executed);
         write_plan_file(&agent, PLAN_CONTENT);
         let executed_id = agent.workflow.plan.as_ref().unwrap().id.clone();
@@ -330,7 +338,8 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
             (format!("{executed_id}.md"), PlanLocation::Plans)
         );
 
-        // 登记到 Done 的历史 Executed 只读同步 Completed，不重新授权。
+        // A historical Executed registered in Done syncs Completed read-only without
+        // re-authorizing.
         let done_dir = dir.path().join(".pp/done");
         std::fs::create_dir_all(&done_dir).unwrap();
         agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Executed);
@@ -352,7 +361,7 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
         agent.workflow.mode = WorkMode::Execute;
         agent.workflow.validate().unwrap();
 
-        // 旧 Abandoned 保留原位置只读登记。
+        // A legacy Abandoned is registered read-only in its original location.
         agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Abandoned);
         write_plan_file(&agent, PLAN_CONTENT);
         let abandoned_id = agent.workflow.plan.as_ref().unwrap().id.clone();
@@ -373,12 +382,12 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
         seed_session(&mut agent, EXPLORATION);
 
-        // revision-0 绑定直接通过，不建立登记文件。
+        // A revision-0 binding passes straight through without creating a registry file.
         agent.workflow = plan_workflow("", ORIGIN, PlanStatus::Draft);
         agent.reconcile_plan_location().unwrap();
         assert!(!dir.path().join(".pp/plan-index.json").exists());
 
-        // 墓碑：旧会话访问已删除的计划得到明确错误。
+        // Tombstone: a legacy session accessing a deleted plan gets an explicit error.
         agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Ready);
         write_plan_file(&agent, PLAN_CONTENT);
         let id = agent.workflow.plan.as_ref().unwrap().id.clone();
@@ -405,7 +414,8 @@ fn plan_reconcile_migrations_adoption_and_fail_closed() {
             "Plan was deleted; choose another plan from /plan-list."
         );
 
-        // 正文缺失：登记被拒绝，绑定与登记表保持原状，不从快照恢复。
+        // Missing body: the registration is rejected, the binding and registry stay as they
+        // were, and nothing is restored from a snapshot.
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
         seed_session(&mut agent, EXPLORATION);
         agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Ready);

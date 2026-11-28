@@ -1,4 +1,4 @@
-//! OMP 18.19 默认 Pseudo 规则的 brush AST 适配；不重新解释命令。
+//! brush AST adapter for the OMP 18.19 default Pseudo rules; the command is not reinterpreted.
 
 use super::{MAX_DEPTH, MAX_NODES, Model, Node, kind, row, words};
 use brush_core::parser::ast::{self, CommandPrefixOrSuffixItem as Item, SourceLocation};
@@ -39,7 +39,7 @@ impl<'a> Printer<'a> {
     }
 
     pub(super) fn program(&mut self, program: &ast::Program) {
-        // 只有平直程序中唯一、先赋值后引用的字面量才能内联。
+        // Only a literal that is unique in a flat program and referenced after assignment can be inlined.
         self.analyze(program);
         for list in &program.complete_commands {
             self.list(list, self.base);
@@ -115,7 +115,8 @@ impl<'a> Printer<'a> {
             }
         }
         if flat {
-            // 候选值暂存在表中；遍历到实际 setter 后才允许后续词引用。
+            // Candidate values are staged in the table; later words may reference them only once traversal reaches the
+            // actual setter.
             for (name, (count, value)) in candidates {
                 if count == 1 {
                     self.constants.insert(format!("\0{name}"), value);

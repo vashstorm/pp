@@ -97,7 +97,7 @@ impl Read for FileReader {
             !header[..n].contains(&0),
             "read requires text or a supported image"
         );
-        // 仅可安全编辑的本地文件签发标签；完整读取与分页共享同一份字节。
+        // Tags are issued only for local files that can be safely edited; the full read and paging share the same bytes.
         let mut snapshot_warning = None;
         if !allow_directory
             && !target.raw
@@ -114,8 +114,8 @@ impl Read for FileReader {
                             !source.contains('\0'),
                             "read requires text or a supported image"
                         );
-                        // 一次遍历同时得到行索引与标签：tail 范围直接复用行数，
-                        // 不再为 hash 或分页行数第二次扫描全文。
+                        // One traversal yields both the line index and the tag: a tail range reuses the line count
+                        // instead of rescanning the whole text for the hash or the page line count.
                         let (lines, tag) = crate::tools::hashline::scan_with_tag(source);
                         let ranges = target.resolved_ranges(|| Ok(lines.len()))?;
                         let mut value = page_text(
@@ -157,11 +157,11 @@ impl Read for FileReader {
                         )?;
                         let seen = value["ranges"]
                             .as_array()
-                            .expect("分页总是包含 ranges")
+                            .expect("paging always includes ranges")
                             .iter()
                             .map(|range| {
-                                range["start"].as_u64().expect("起始行") as usize
-                                    ..range["end"].as_u64().expect("结束行") as usize + 1
+                                range["start"].as_u64().expect("start line") as usize
+                                    ..range["end"].as_u64().expect("end line") as usize + 1
                             })
                             .collect();
                         let display = key.to_string_lossy();
@@ -195,7 +195,7 @@ impl Read for FileReader {
                 );
             }
         }
-        // 纯文本回退路径没有已知行数：只有 tail 选择器才需要重开文件统计行数。
+        // The plain-text fallback has no known line count: only a tail selector needs to reopen the file and count lines.
         let ranges = target.resolved_ranges(|| count_lines(BufReader::new(open_file()?)))?;
         let mut value = page_text(
             &target,
@@ -260,14 +260,14 @@ mod tests {
         )
         .unwrap()
         .value;
-        // 上游向量：file_hash("hello\n") == 5BF9。行索引与标签共用一次遍历，只算一次。
+        // Upstream vector: file_hash("hello\n") == 5BF9. The line index and tag share one traversal, so it is computed once.
         assert_eq!(
             value["content"].as_str().unwrap(),
             "[file#5BF9]\n1:hello\n",
             "{value}"
         );
         assert_eq!(hashline::take_tag_computations(), 1, "{value}");
-        // 快照正文就是磁盘当前字节。
+        // The snapshot body is the current bytes on disk.
         let shown = hashline::parse("[file#5BF9]\nCUT 1.=1").unwrap();
         assert!(
             store

@@ -133,7 +133,7 @@ fn todo_executed_plan_progress_and_duplicates() {
             assert_eq!(plan.revision, document.revision);
             assert!(plan.content.is_none());
             workflow.todos = change.phases;
-            // 实际文件投影也必须保留跨阶段的所有进行项。
+            // The on-disk file projection must also keep every in-progress item across phases.
             workflow.todos = todo::project_plan_todos(&document, &workflow.todos, true).unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), content.as_bytes());
         }

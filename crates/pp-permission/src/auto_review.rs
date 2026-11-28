@@ -1,14 +1,14 @@
-//! `auto_review`（Approve for me）独立安全审阅契约。
+//! Independent security review contract for `auto_review` (Approve for me).
 //!
-//! `pp-permission` 保持纯同步、无 LLM/网络依赖；运行时通过回调函数注入
-//! 基于 `ModelRole::Review` 的独立审阅器。
+//! `pp-permission` stays purely synchronous with no LLM/network dependency; at runtime a callback injects
+//! an independent reviewer backed by `ModelRole::Review`.
 
 use anyhow::Result;
 use pp_config::config::PermissionMode;
 use pp_core::cancellation::CancellationToken;
 use std::path::PathBuf;
 
-/// `REVIEW` 审阅器的二元判定结果。
+/// Binary verdict of the `REVIEW` reviewer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutoReviewDecision {
     Pass,
@@ -21,7 +21,7 @@ pub struct AutoReviewVerdict {
     pub reason: String,
 }
 
-/// 传递给 `REVIEW` 审阅器的最小脱敏请求载荷。
+/// Minimal redacted request payload passed to the `REVIEW` reviewer.
 #[derive(Clone, Debug)]
 pub struct AutoReviewRequest {
     pub tool: String,

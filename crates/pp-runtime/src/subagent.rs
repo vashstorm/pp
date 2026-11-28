@@ -1,4 +1,4 @@
-//! 子 Agent 的身份、调度、结果投递与持久生命周期。
+//! Subagent identity, scheduling, result delivery and persistent lifecycle.
 mod binding;
 pub(crate) mod catalog;
 mod dispatch;
@@ -75,9 +75,9 @@ pub struct Spec {
     pub cost: Option<pp_config::models::ModelCost>,
 }
 
-/// 读取注册表中持久化的费率。旧版本把缺省的 `cacheWrite` 序列化为 `null`，
-/// 配置文件对 `null` 严格拒绝，但已写入的 registry 必须仍可恢复：
-/// 这里只把 `cacheWrite: null` 视为省略，其余字段仍由 `ModelCost` 严格校验。
+/// Reads the rate persisted in the registry. Older versions serialized an omitted `cacheWrite` as `null`,
+/// which the config file strictly rejects, but registries already written must still be recoverable:
+/// only `cacheWrite: null` is treated as omitted here, and every other field is still strictly validated by `ModelCost`.
 fn persisted_cost<'de, D>(deserializer: D) -> Result<Option<pp_config::models::ModelCost>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -96,10 +96,10 @@ where
         .map_err(D::Error::custom)
 }
 
-/// 子 Agent 每次已结算请求累加到 run 费用上。
+/// Each settled subagent request is added to the run cost.
 ///
-/// 计价只走 [`pp_config::models::ModelCost::calculate`]：未知缓存、缺费率或非有限金额
-/// 一律让整段金额保持未知，不按零补齐。
+/// Pricing goes only through [`pp_config::models::ModelCost::calculate`]: an unknown cache, a missing rate or a
+/// non-finite amount keeps the whole segment unknown instead of filling in zero.
 fn accumulate_cost(
     total: Option<f64>,
     price: Option<pp_config::models::ModelCost>,
@@ -151,7 +151,7 @@ struct Live {
     sender: mpsc::Sender<Work>,
     input: InputQueue,
     cancellation: CancellationToken,
-    /// 该 worker 发布的记录代次；只有它才能移除自己的 Live 槽。
+    /// Record generation published by this worker; only it may remove its own Live slot.
     generation: u64,
 }
 struct State {
@@ -174,16 +174,16 @@ struct McpTools {
 }
 
 struct Inner {
-    // 进程内观察修订号：仅驱动 UI 增量刷新，不持久化。
+    // In-process observation revision: drives incremental UI refresh only, never persisted.
     revision: AtomicU64,
-    // 每个 agent 一条整行追加锁 + 可选待合并 delta 缓冲；worker 持有自己的 Arc。
+    // One whole-line append lock plus optional pending delta buffer per agent; the worker holds its own Arc.
     appends: Mutex<BTreeMap<String, Arc<Mutex<observe::AppendState>>>>,
     observe_errors: Mutex<BTreeMap<String, String>>,
-    /// 独立子 Registry 清理失败后保留可重试句柄，并向父 Agent 传播 typed error。
+    /// Retains retryable handles after an isolated child Registry cleanup fails and propagates a typed error to the parent agent.
     lsp_cleanup: Mutex<Vec<pp_lsp::Cleanup>>,
     cleanup_errors: Mutex<Vec<anyhow::Error>>,
     output_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
-    /// 管道阶段预览与主输出快照分开保留；种类之间不互相覆盖。
+    /// Pipeline stage previews are kept apart from the main output snapshot; kinds never overwrite each other.
     pipeline_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
     shell_previews: Mutex<BTreeMap<String, observe::ObservedRecord>>,
     model_progress: Mutex<BTreeMap<String, observe::ModelProgress>>,
@@ -220,7 +220,7 @@ struct Work {
     cancellation: CancellationToken,
 }
 
-/// 持久 worker 的空闲轮询周期：既检查空闲 TTL，也让迟到 LSP 诊断及时上报。
+/// Idle poll period of a persistent worker: it checks the idle TTL and also reports late LSP diagnostics promptly.
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 fn now() -> u64 {
@@ -241,7 +241,7 @@ pub(crate) fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     {
-        // Registry 在共享调度锁内保存，缓冲细碎 JSON 写入，避免阻塞 permit 与结果结算。
+        // The Registry is saved inside the shared scheduling lock, buffering small JSON writes so permits and result settlement are not blocked.
         let mut writer = BufWriter::new(&mut tmp);
         serde_json::to_writer(&mut writer, value)?;
         writer.flush()?;

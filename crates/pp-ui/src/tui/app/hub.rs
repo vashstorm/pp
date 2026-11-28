@@ -1,4 +1,5 @@
-//! App 与 Agent Hub 观察线程之间的桥：根 epoch、请求 id、child 草稿与控制 ACK。
+//! Bridge between App and the Agent Hub observer thread: root epoch, request ids, child
+//! drafts and control ACKs.
 
 use crate::tui::{App, Event, KeyEventKind, KeyModifiers, WorkerCommand, subagents};
 use crossterm::event::{Event as CrosstermEvent, KeyCode};
@@ -6,12 +7,14 @@ use pp_runtime::subagent::Binding;
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
-/// 没有任何根绑定时面板显示的固定提示：不是运行错误，而是当前会话不提供 task 能力。
+/// Fixed hint the panel shows when no root binding exists: not a runtime error, but the
+/// current session simply offers no task capability.
 const UNAVAILABLE: &str = "Subagents are unavailable in this session; no binding was granted.";
-/// 历史投影按回复让出主循环，使积压期间仍可绘制和处理按键。
+/// History projection yields the main loop per reply so drawing and key handling continue
+/// during a backlog.
 const REPLY_BUDGET: Duration = Duration::from_millis(4);
 
-/// 一次已发出的控制请求；成功后才清掉同一份草稿。
+/// A control request already sent; the same draft is cleared only after success.
 pub(in crate::tui) struct HubSend {
     agent: String,
     text: String,
@@ -39,7 +42,8 @@ impl App {
         }
     }
 
-    /// 打开 Hub；未获得 Binding 时先请 worker 重建，再决定空态还是 Roster。
+    /// Opens the Hub; without a Binding it first asks the worker to rebuild, then decides
+    /// between the empty state and the Roster.
     pub(in crate::tui) fn open_hub(&mut self) {
         self.menu = None;
         self.menu_dismissed = true;
@@ -69,8 +73,9 @@ impl App {
                     self.hub_attach(true);
                 }
             }
-            // `/resume`、`/tree`、`/new` 与计划交接会停掉旧根；
-            // 此时绑定为空并不代表会话没有历史子 Agent，交由 worker 用当前会话目录重建。
+            // `/resume`, `/tree`, `/new` and plan handoffs stop the old root; an empty binding
+            // at that point does not mean the session has no historical subagents, so the
+            // worker rebuilds it from the current session directory.
             None => {
                 self.ensure_hub_worker();
                 self.request_subagents();
@@ -78,7 +83,8 @@ impl App {
         }
     }
 
-    /// 请 worker 重建根绑定：成功直接写回共享 slot，失败只影响面板提示。
+    /// Asks the worker to rebuild the root binding: success writes straight back into the
+    /// shared slot, failure only affects the panel hint.
     fn request_subagents(&mut self) {
         let sent = self
             .commands
@@ -91,7 +97,8 @@ impl App {
         self.set_hub_error(UNAVAILABLE);
     }
 
-    /// worker 重建结果：成功按新根重新 attach，失败保留会话并只在面板报告。
+    /// Worker rebuild result: on success re-attach to the new root, on failure keep the
+    /// session and report only in the panel.
     pub(in crate::tui) fn subagents_ensured(&mut self, result: anyhow::Result<()>) {
         if self.subagent_panel.is_none() {
             return;
@@ -134,7 +141,8 @@ impl App {
         }
     }
 
-    /// 绑定并开始读取当前根；换根或首次附着时清空旧投影。
+    /// Binds to and starts reading the current root; the old projection is cleared on a root
+    /// switch or the first attach.
     fn hub_attach(&mut self, visible: bool) {
         let Some(binding) = self.hub_binding() else {
             return;
@@ -156,7 +164,8 @@ impl App {
         });
     }
 
-    /// 关闭 Hub：保留投影与游标以便重开复用，通知观察线程停止后台轮询。
+    /// Closes the Hub: the projection and cursor are kept for reuse on reopen, and the
+    /// observer thread is told to stop background polling.
     pub(in crate::tui) fn close_hub(&mut self) {
         if let Some(panel) = self.subagent_panel.take() {
             let view = panel.detail_view();
@@ -178,7 +187,8 @@ impl App {
         self.menu_dismissed = true;
     }
 
-    /// 根变化时清空旧草稿、投影缓存与详情状态；已有历史子 Agent 时静默预热。
+    /// Clears old drafts, projection cache and detail state when the root changes; silently
+    /// prewarms when the session already has historical subagents.
     pub(in crate::tui) fn hub_sync_root(&mut self) -> bool {
         let current = self.hub_binding();
         let same = match (&current, &self.hub_bound) {
@@ -215,7 +225,7 @@ impl App {
         true
     }
 
-    /// 把面板事件转成观察线程请求。
+    /// Turns a panel event into an observer-thread request.
     pub(in crate::tui) fn hub_handle(&mut self, event: Event) -> (bool, Vec<subagents::Command>) {
         let Some(panel) = &mut self.subagent_panel else {
             return (false, Vec::new());
@@ -304,7 +314,8 @@ impl App {
         }
     }
 
-    /// 收取观察线程回复；旧根/旧详情/关闭后的页面按 epoch 丢弃。
+    /// Receives observer-thread replies; pages from an old root, an old detail or a closed
+    /// panel are dropped by epoch.
     pub(in crate::tui) fn receive_hub(&mut self) -> bool {
         let mut changed = false;
         let started = Instant::now();
@@ -336,7 +347,8 @@ impl App {
     }
 
     fn apply_hub_reply(&mut self, reply: subagents::Reply) -> bool {
-        // 控制 ACK 只按根身份（request id 表在换根时清空）处理，不按详情 view 丢弃。
+        // Control ACKs are matched by root identity only (the request id table is cleared on
+        // a root switch) and are never dropped by the detail view.
         if let subagents::Reply::Control {
             request,
             agent,
@@ -348,7 +360,8 @@ impl App {
                 return false;
             };
             if result.is_ok() && send.submit {
-                // 成功才清掉同一份未修改的草稿，并唤醒父方投递。
+                // Only on success is the same unmodified draft cleared and the parent delivery
+                // woken.
                 self.child_drafts
                     .clear_if_unchanged(&send.agent, send.revision, &send.text);
                 self.subagent_autowake = true;
@@ -388,7 +401,8 @@ impl App {
             panel.apply(reply);
             return true;
         }
-        // Hub 未打开时在后台静默预热投影缓存；不触发主界面多余重绘。
+        // While the Hub is closed, prewarm the projection cache silently in the background
+        // without causing extra main-screen redraws.
         let clock = subagents::now();
         match reply {
             subagents::Reply::Snapshot { snapshot, .. } => {
@@ -427,7 +441,8 @@ impl App {
         false
     }
 
-    /// Alt+A 只在主视图与 Hub 接收，不被其他模态面板抢占。
+    /// Alt+A is accepted only in the main view and the Hub and is never taken by another
+    /// modal panel.
     pub(in crate::tui) fn hub_toggle_allowed(&self) -> bool {
         self.subagent_panel.is_none()
             && self.ask_panel.is_none()
@@ -444,7 +459,7 @@ impl App {
             && !self.history_browser
     }
 
-    /// 每轮 tick：时钟、每秒刷新与 worker 回复。
+    /// Per tick: clock, the once-per-second refresh and worker replies.
     pub(in crate::tui) fn hub_tick(&mut self) -> bool {
         let mut changed = self.receive_hub();
         let previous_count = self.subagent_status.map_or(0, |(_, count)| count);
@@ -465,7 +480,7 @@ impl App {
     }
 }
 
-/// 主循环事件里只有按下的 Alt+A 才切换 Hub。
+/// Among main-loop events only a pressed Alt+A toggles the Hub.
 pub(in crate::tui) fn is_hub_toggle(event: &CrosstermEvent) -> bool {
     matches!(event, CrosstermEvent::Key(key)
         if key.code == KeyCode::Char('a')

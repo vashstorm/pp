@@ -1,8 +1,8 @@
-//! `pipe://` 临时阶段流的只读入口。
+//! Read-only entry for temporary `pipe://` stage streams.
 //!
-//! 列表中列出 run/流的有界元数据；正文 URI 固定一次内存快照，复用普通 read
-//! 的 selector/`page_text`/`read_from` 分页管线。这里不落临时文件、不签发
-//! hashline；展示副本复用 `OutputSink` 的 `Normalizer`。
+//! Listings return bounded run/stream metadata; a body URI is pinned to one in-memory snapshot and reuses the ordinary read
+//! selector/`page_text`/`read_from` paging pipeline. Nothing here writes temp files or issues
+//! hashline; the display copy reuses the `OutputSink` `Normalizer`.
 
 use super::{
     ReadResult,
@@ -22,12 +22,12 @@ use std::path::Path;
 
 pub(crate) const SCHEME: &str = "pipe://";
 
-/// 只有 `pipe://` 前缀的路径进入本模块；普通文件名不会误入。
+/// Only paths with the `pipe://` prefix enter this module; ordinary file names never leak in.
 pub(crate) fn is_uri(path: &str) -> bool {
     path.starts_with(SCHEME)
 }
 
-/// 解析 `pipe://<run-id>[/<stream-id>]`，与 `streams::parse_uri` 保持一致。
+/// Parse `pipe://<run-id>[/<stream-id>]`, consistent with `streams::parse_uri`.
 fn parts(uri: &str) -> Option<(&str, Option<u64>)> {
     let rest = uri.strip_prefix(SCHEME)?;
     let rest = rest.strip_suffix('/').unwrap_or(rest);
@@ -45,7 +45,7 @@ fn parts(uri: &str) -> Option<(&str, Option<u64>)> {
     }
 }
 
-/// 读取 `pipe://` 列表或正文；`limits`/`mode` 与普通 read 完全一致。
+/// Read a `pipe://` listing or body; `limits`/`mode` behave exactly like an ordinary read.
 pub(crate) fn read(
     uri: &str,
     cwd: &Path,
@@ -56,7 +56,7 @@ pub(crate) fn read(
 ) -> Result<ReadResult> {
     ensure!(!uri.trim().is_empty(), "path must not be blank");
     cancellation::check(cancellation)?;
-    // 先经过 selector，让 `:20`、`:-30`、`:raw` 等普通语法直接复用。
+    // Run the selector first so ordinary syntax such as `:20`, `:-30` and `:raw` is reused directly.
     let target = Target::parse(uri, cwd)?;
     ensure!(
         is_uri(&target.source),
@@ -106,11 +106,11 @@ pub(crate) fn read(
     })
 }
 
-/// 展示副本：裁剪保留区间起始处的 UTF-8 残片，再复用 `OutputSink` 的
-/// `Normalizer` 处理 UTF-8 末尾残片、ANSI/控制串与 CR。
+/// Display copy: trims a UTF-8 fragment at the start of the kept range, then reuses the `OutputSink`
+/// `Normalizer` for a trailing UTF-8 fragment, ANSI/control sequences and CR.
 ///
-/// 转发出去的原字节不经过这里；`page_text` 的 `:raw` 只影响选择/锚点，
-/// 因此终端控制串不会因 `:raw` 泄漏到正文。
+/// Forwarded raw bytes do not pass through here; `:raw` on `page_text` only affects selection/anchors,
+/// so terminal control sequences never leak into the body because of `:raw`.
 fn display(bytes: &[u8], fragment: bool) -> String {
     let bytes = if fragment {
         let mut skip = 0;

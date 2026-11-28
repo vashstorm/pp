@@ -4,8 +4,8 @@ use serde_yaml::{Mapping, Value};
 use std::fmt::Write;
 
 pub fn parse<T: serde::de::DeserializeOwned>(text: &str, kind: &str) -> Result<T> {
-    // 先检查 YAML 的重复键，再按数据模型校验已知字段的结构和类型，
-    // 避免数字转字符串或 null 被当成空列表、空映射。
+    // Check YAML duplicate keys first, then validate the structure and types of known fields against the data model,
+    // so a number coerced to a string, or null, is never taken for an empty list or empty map.
     let value: Value = serde_yaml::from_str(text).map_err(|error| yaml_error(kind, &error))?;
     decode(value, text, kind)
 }
@@ -22,7 +22,7 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(
     }
     serde_path_to_error::deserialize(StrictValue(value)).map_err(|error| {
         let path = error.path();
-        // 宽松解析只在失败后用于定位，且仅在两次解析指向同一条目时采用坐标。
+        // Lenient parsing is used only to locate failures after the fact, and its location is accepted only when both parses point at the same entry.
         let location =
             serde_path_to_error::deserialize::<_, T>(serde_yaml::Deserializer::from_str(text))
                 .err()
@@ -32,8 +32,8 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(
     })
 }
 
-// 结构体必须来自映射，不能接受 Serde 默认支持的按位置填充数组。
-// 所有嵌套值使用相同规则，保留原配置的严格类型边界。
+// Structs must come from mappings and must not accept the positionally filled arrays Serde supports by default.
+// Every nested value follows the same rule, preserving the original configuration's strict type boundaries.
 struct StrictValue(Value);
 
 impl<'de> serde::de::IntoDeserializer<'de, serde_yaml::Error> for StrictValue {
@@ -113,7 +113,7 @@ impl<'de> serde::Deserializer<'de> for StrictValue {
     }
 }
 
-// 解析器原文可能包含凭据。语法错误只取位置，反序列化错误只取键路径和安全的原因。
+// Parser messages may contain credentials. Syntax errors keep only the location, and deserialization errors keep only the key path and a safe reason.
 fn yaml_error(kind: &str, error: &serde_yaml::Error) -> anyhow::Error {
     let message = error.to_string();
     let reason =
@@ -156,7 +156,7 @@ fn field_error(
     let mut field = if kind == "auth" {
         String::new()
     } else {
-        // 未知键也可能是误填的凭据。保留父路径，用源文件坐标定位该键。
+        // Unknown keys may also be mistyped credentials. Keep the parent path and locate the key with source file coordinates.
         let depth = path.iter().len().saturating_sub(usize::from(unknown_field));
         field_path(path.iter().take(depth))
     };
@@ -241,8 +241,8 @@ pub(crate) fn update_field(text: &str, name: &str, value: Value) -> Result<Strin
     let previous = expected.insert(key.clone(), value.clone());
     let replacement = serde_yaml::to_string(&Mapping::from_iter([(key.clone(), value)]))
         .context("Failed to serialize YAML setting")?;
-    // 常规块映射只替换目标字段；每个候选都重新解析并比较完整数据，
-    // 防止嵌套字段、块字符串或特殊 YAML 语法被误改。
+    // Regular block mappings only replace the target field; every candidate is re-parsed and compared against the full data,
+    // so nested fields, block strings and unusual YAML syntax are never corrupted.
     let mut start = 0;
     for line in text.split_inclusive('\n') {
         let indent = line.len() - line.trim_start().len();
@@ -254,7 +254,7 @@ pub(crate) fn update_field(text: &str, name: &str, value: Value) -> Result<Strin
                 .lines()
                 .map(|line| format!("{}{line}\n", " ".repeat(indent)))
                 .collect::<String>();
-            // 仅当前缀确实表示原值时才保留行尾注释，避免误认字符串中的 #。
+            // Keep the trailing comment only when the prefix really denotes the previous value, so `#` inside a string is not mistaken for a comment.
             for (offset, _) in line.match_indices(" #") {
                 if serde_yaml::from_str::<Mapping>(&line[..offset])
                     .ok()
@@ -281,7 +281,7 @@ pub(crate) fn update_field(text: &str, name: &str, value: Value) -> Result<Strin
         if serde_yaml::from_str::<Mapping>(&candidate).ok().as_ref() == Some(&expected) {
             return Ok(candidate);
         }
-        // 迁移后只剩注释和空映射时，新增第一项也保留原注释。
+        // When only comments and an empty mapping remain after migration, adding the first entry keeps the original comments.
         if expected.len() == 1 {
             for (offset, _) in text.match_indices("{}") {
                 let candidate = format!(
@@ -296,11 +296,11 @@ pub(crate) fn update_field(text: &str, name: &str, value: Value) -> Result<Strin
             }
         }
     }
-    // 流式映射等格式统一输出为块映射，字段值保持不变。
+    // Formats such as flow mappings are always written back as block mappings with unchanged field values.
     serde_yaml::to_string(&expected).context("Failed to serialize YAML settings")
 }
 
-/// 仅删除指定顶层字段；每个局部候选都与预期完整映射比较。
+/// Deletes only the named top-level fields; every partial candidate is compared against the full expected mapping.
 pub(crate) fn remove_fields(text: &str, names: &[&str]) -> Result<String> {
     let mut result = text.to_owned();
     for name in names {
@@ -374,8 +374,8 @@ mod tests {
 
     #[test]
     fn update_and_remove_preserve_comments_and_unrelated_values() {
-        // update：只替换目标字段，注释、字面块正文与其他字段保持原样。
-        let text = "# 配置说明\nthink_level: high # 思考等级\nmcp_servers:\n  local:\n    env:\n      TEXT: |-\n        think_level: high\n        # 字符串内容\n    command: python3\ndisabled_skills:\n- old\n# 结尾说明\n";
+        // update: replace only the target field; comments, literal block bodies and other fields stay untouched.
+        let text = "# config note\nthink_level: high # thinking level\nmcp_servers:\n  local:\n    env:\n      TEXT: |-\n        think_level: high\n        # string content\n    command: python3\ndisabled_skills:\n- old\n# trailing note\n";
         let updated = update_field(text, "think_level", Value::String("low".into())).unwrap();
         assert_eq!(
             updated,
@@ -387,29 +387,30 @@ mod tests {
             Value::Sequence(vec![Value::String("new".into())]),
         )
         .unwrap();
-        assert!(updated.contains("# 结尾说明"));
+        assert!(updated.contains("# trailing note"));
         let parsed: Mapping = parse(&updated, "settings").unwrap();
         assert_eq!(parsed["disabled_skills"][0], "new");
         let updated = update_field(&updated, "default_model", Value::String("a/b".into())).unwrap();
-        assert!(updated.contains("# 配置说明"));
+        assert!(updated.contains("# config note"));
         assert!(updated.contains("default_model: a/b"));
 
-        // remove 后再 update：只删除目标字段，注释与后续写入都保留。
-        let migrated = remove_fields("# 保留说明\nthink_level: high\n", &["think_level"]).unwrap();
+        // remove followed by update: delete only the target field; comments and later writes are both preserved.
+        let migrated =
+            remove_fields("# preserved note\nthink_level: high\n", &["think_level"]).unwrap();
         let updated = update_field(
             &migrated,
             "disabled_skills",
             Value::Sequence(vec![Value::String("keep".into())]),
         )
         .unwrap();
-        assert!(updated.starts_with("# 保留说明\n"));
+        assert!(updated.starts_with("# preserved note\n"));
         let parsed: Mapping = parse(&updated, "settings").unwrap();
         assert_eq!(parsed["disabled_skills"][0], "keep");
         assert!(!parsed.contains_key(Value::String("think_level".into())));
 
-        // remove：注释、字面块正文、流式映射与锚点之外的字段均原样保留。
+        // remove: comments, literal block bodies, flow mappings and everything outside the anchors stay untouched.
         for text in [
-            "# 保留说明\nthink_level: high\nmcp_servers:\n  local:\n    command: fixture\n    env:\n      BODY: |-\n        think_level: high\n        # 正文不是注释\ndisabled_skills: [keep]\n",
+            "# preserved note\nthink_level: high\nmcp_servers:\n  local:\n    command: fixture\n    env:\n      BODY: |-\n        think_level: high\n        # body is not a comment\ndisabled_skills: [keep]\n",
             "{think_level: high, mcp_servers: {local: {command: fixture}}, disabled_skills: [keep]}",
             "base: &base {nested: unchanged}\nthink_level: high\ncopy: *base\n",
         ] {

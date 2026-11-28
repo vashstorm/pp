@@ -1,4 +1,4 @@
-//! Responses 协议的模型／工具轮次。
+//! Model/tool turn for the Responses protocol.
 use super::super::hooks::{BatchCall, HookHalt, HookSession, PreparedBatch, prepare_batch};
 use super::batch::{batch_failure, not_executed};
 use super::plan_progress::{apply_plan_change, plan_file_touched, tracked_plan_path};
@@ -104,7 +104,7 @@ pub(in crate::agent) fn response_turn(
     let event = AgentEvent::AssistantFinished { text: text.clone() };
     journal.event(&event);
     emit(event);
-    // 先按短借用追加本轮输出，参数改写后再拿长借用执行。
+    // Append this turn's output under a short borrow first, then take the long borrow to execute after arguments are rewritten.
     let start = response_input(request).len();
     let appended: Vec<InputItem> = turn.output.into_iter().map(InputItem::from).collect();
     response_input(request).extend(appended);
@@ -117,9 +117,9 @@ pub(in crate::agent) fn response_turn(
         });
     }
     let end = response_input(request).len();
-    // Responses 在本轮调用段确定后、执行前准备参数；改写结果写回原生调用对象。
-    // 任何准备失败（含取消）都要回到 `start`：残留的 function_call 没有对应结果，
-    // 下一次任务的原生历史会被供应商拒绝。
+    // Responses prepares arguments after this turn's call segment is fixed and before execution; the rewritten result goes back into the native call object.
+    // Any preparation failure (including cancellation) must return to `start`: a leftover function_call without a matching result
+    // would make the vendor reject the native history of the next task.
     let hook_prep = (|| -> Result<(Option<HookSession>, Option<PreparedBatch>)> {
         let mut hook_session = None;
         let mut prepared = None;
@@ -249,10 +249,10 @@ pub(in crate::agent) fn response_turn(
                     },
                 )
             };
-            // 结果字符数取最终回填模型的文本：post hook 可能已改写正文。
+            // The result character count follows the text finally fed back to the model: the post hook may have rewritten the body.
             journal.record_tool_output(&call.call_id, &output.output);
             reminder.awaiting_progress = false;
-            // 前置 hook 的上下文已在工具执行器里随 `hook_context` 返回，不重复追加。
+            // Pre-hook context already comes back with `hook_context` from the tool executor and is not appended twice.
             hook_context.extend(output.hook_context);
             if hook_halt.is_none() {
                 hook_halt = output.hook_halt;

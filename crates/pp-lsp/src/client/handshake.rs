@@ -1,4 +1,4 @@
-//! initialize 握手、客户端能力声明与 `Failure` → anyhow 转换。
+//! initialize handshake, client capability declarations and `Failure` → anyhow conversion.
 
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
@@ -30,7 +30,7 @@ pub(super) fn convert(result: Result<Value, Failure>, what: &str) -> Result<Valu
     }
 }
 
-/// initialize 握手：协商 UTF-16、保存 initialized 与初始配置推送。
+/// initialize handshake: negotiate UTF-16, store initialized and push the initial configuration.
 pub(super) fn initialize_handshake(
     transport: &Transport,
     definition: &ServerDefinition,
@@ -64,9 +64,9 @@ pub(super) fn initialize_handshake(
         )
         .map_err(|failure| failure_to_error(failure, "initialize"))?;
     let raw_capabilities = result.get("capabilities").cloned().unwrap_or(Value::Null);
-    // 顶层解析（含 `diagnosticProvider`、`executeCommandProvider` 与
-    // `workspace.workspaceFolders.changeNotifications`）都在 ServerCapabilities::parse 里，
-    // 这里不再用 raw JSON 打补丁，避免两套能力约定。
+    // Top-level parsing (including `diagnosticProvider`, `executeCommandProvider` and
+    // `workspace.workspaceFolders.changeNotifications`) all lives in ServerCapabilities::parse;
+    // no patch-up from raw JSON happens here, avoiding two competing capability conventions.
     let capabilities = ServerCapabilities::parse(raw_capabilities);
     if let Some(encoding) = capabilities.position_encoding.as_deref()
         && !encoding.eq_ignore_ascii_case("utf-16")
@@ -101,8 +101,8 @@ fn failure_to_error(failure: Failure, what: &str) -> anyhow::Error {
     }
 }
 
-/// 初始化失败时的收尾：回收成功才返回原始错误；回收失败时保留
-/// `CleanupError`（registry 据此不写负缓存并可重试 slot），同时保留初始化原因文本。
+/// Teardown after a failed initialization: the original error is returned only when reaping succeeded; when reaping fails the
+/// `CleanupError` is kept (so the registry writes no negative cache and can retry the slot) together with the initialization reason text.
 pub(super) fn startup_failure(startup: anyhow::Error, cleanup: Result<()>) -> anyhow::Error {
     match cleanup {
         Ok(()) => startup,

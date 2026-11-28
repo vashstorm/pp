@@ -1,4 +1,4 @@
-//! `bash`／`bash_task` 分支：前台执行、后台托管与任务快照。
+//! `bash`/`bash_task` branch: foreground execution, background hosting and task snapshots.
 
 use super::*;
 

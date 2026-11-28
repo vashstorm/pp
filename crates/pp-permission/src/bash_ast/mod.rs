@@ -1,4 +1,4 @@
-//! 基于 Brush AST 的 Bash 命令静态分析，用于精确安全审计与命令级前缀授权。
+//! Brush AST based static analysis of Bash commands for precise security auditing and command-level prefix grants.
 
 mod classify;
 mod wrappers;
@@ -37,15 +37,15 @@ impl ArgToken {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LeafCommand {
-    /// 剥离环境赋值与透明包装器后的归一化词序列；首词已取 basename。
+    /// Normalized word sequence after stripping environment assignments and transparent wrappers; the first word is already basename'd.
     pub(crate) tokens: Vec<ArgToken>,
-    /// 保留词原文（供 `rm -r ~` 等检查 ~ 路径或绝对路径）。
+    /// Raw word text kept so checks like `rm -r ~` can inspect `~` or absolute paths.
     pub(super) raw_args: Vec<String>,
-    /// 是否存在指向非 `/dev/null` 的写文件重定向。
+    /// Whether a write file redirect targets something other than `/dev/null`.
     pub(crate) has_write_redirect: bool,
-    /// 命令名在当前脚本内被定义为 shell function，不按内置/只读工具信任。
+    /// The command name is defined as a shell function in the current script and is not trusted as a builtin/read-only tool.
     pub(crate) is_function_call: bool,
-    /// 存在无法静态剥离的动态执行（例如 `bash -c "$VAR"`、`eval` 或动态包装参数）。
+    /// Contains dynamic execution that cannot be stripped statically (e.g. `bash -c "$VAR"`, `eval` or dynamic wrapper arguments).
     pub(crate) dynamic_exec: bool,
 }
 
@@ -116,8 +116,8 @@ const READ_TARGET_PROGRAMS: &[&str] = &[
 ];
 
 impl ProgramAnalysis {
-    /// 当命令含多条未授权命令时提取去重后的建议精确规则（`Exact` 模式）；
-    /// 任一未授权叶子无法推导出安全规则时返回 `None`（仅可单次放行）。
+    /// Extracts suggested precise rules (`Exact` mode), deduplicated, when the command contains several unauthorized commands;
+    /// returns `None` when any unauthorized leaf cannot yield a safe rule (one-off approval only).
     pub(crate) fn suggested_rules<'a>(
         leaves: impl IntoIterator<Item = &'a LeafCommand>,
     ) -> Option<Vec<crate::rules::BashRule>> {
@@ -497,7 +497,7 @@ impl Analyzer {
         let has_write_redirect = self.visit_redirects_refs(&redirects, depth + 1);
 
         if raw_tokens.is_empty() {
-            // 纯环境变量赋值 + 写重定向（如 `FOO=1 > /etc/passwd`）必须产生叶子以阻止只读放行。
+            // Pure environment assignment + write redirect (e.g. `FOO=1 > /etc/passwd`) must still produce a leaf to block read-only bypass.
             if has_write_redirect {
                 self.analysis.leaves.push(LeafCommand {
                     tokens: Vec::new(),
@@ -540,7 +540,7 @@ impl Analyzer {
             self.set_critical(reason);
         }
 
-        // `find -exec` / `xargs` / `bash -c` 等嵌套执行提取
+        // Extract nested execution such as `find -exec` / `xargs` / `bash -c`
         self.visit_nested_exec(&leaf, depth + 1);
 
         self.analysis.leaves.push(leaf);

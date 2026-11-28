@@ -1,4 +1,4 @@
-//! rows.rs 的行为用例：Activity 行生成、legacy 合成幂等与 marker 短路。
+//! Behavioural cases for rows.rs: Activity row generation, legacy synthesis idempotence and the marker short circuit.
 
 use super::super::fixtures::*;
 use super::*;
@@ -64,7 +64,7 @@ fn response_tool_and_row_id_invariants_across_ingest() {
         assert_eq!(
             rows.iter().filter(|row| row.kind == Kind::Response).count(),
             1,
-            "一个 assistant turn 只产生一行"
+            "one assistant turn produces exactly one row"
         );
         let response = rows.iter().find(|row| row.kind == Kind::Response).unwrap();
         assert_eq!(response.summary, "hello world");
@@ -73,12 +73,12 @@ fn response_tool_and_row_id_invariants_across_ingest() {
             .iter()
             .filter(|row| row.kind == Kind::Tool)
             .collect::<Vec<_>>();
-        assert_eq!(tools.len(), 1, "ToolOutput 不产生新活动行");
+        assert_eq!(tools.len(), 1, "ToolOutput produces no new Activity row");
         assert_eq!(tools[0].status, RowStatus::Error);
         assert_eq!(tools[0].summary, "missing file");
         assert_eq!(projection.recent("a1", 1)[0].summary, "missing file");
         assert_eq!(projection.agents()[0].tools, 1);
-        // 新 Run 复用相同 call id 必须生成独立行。
+        // A new Run reusing the same call id must produce a separate row.
         let more = vec![entry(
             420,
             Some(20),
@@ -133,7 +133,7 @@ fn legacy_synthesis_idempotency_and_late_offsets() {
             ),
             1,
         );
-        // 旧日志：只有事件、无 timestamp、无 RunState。
+        // Legacy log: events only, no timestamp, no RunState.
         let entries = vec![
             entry(0, None, "r1", AgentEvent::AssistantStarted),
             entry(
@@ -151,26 +151,32 @@ fn legacy_synthesis_idempotency_and_late_offsets() {
         assert_eq!(
             rows.iter().filter(|row| row.title == "Task").count(),
             1,
-            "旧日志只合成一次 task 关联"
+            "a legacy log synthesizes the task association only once"
         );
         assert_eq!(
             rows.iter().filter(|row| row.title == "Run").count(),
             1,
-            "旧日志只合成一次终态"
+            "a legacy log synthesizes the terminal state only once"
         );
         let task = rows.iter().position(|row| row.title == "Task").unwrap();
         let first_event = rows
             .iter()
             .position(|row| row.kind == Kind::Response)
             .unwrap();
-        assert!(task < first_event, "task 关联排在 Run 第一条事件之前");
+        assert!(
+            task < first_event,
+            "the task association sorts before the first event of the Run"
+        );
         let terminal = rows.iter().find(|row| row.title == "Run").unwrap();
         assert_eq!(terminal.status, RowStatus::Error);
-        assert_eq!(terminal.timestamp, None, "合成行不带伪造时间");
+        assert_eq!(
+            terminal.timestamp, None,
+            "a synthesized row carries no forged time"
+        );
         let without = rows.iter().filter(|row| row.timestamp.is_none()).count();
         let with = rows.iter().filter(|row| row.timestamp.is_some()).count();
         assert!(with <= 1 && without >= 3);
-        // 无时间记录排在有时间记录之前。
+        // Rows without a time sort before rows with one.
         let first_ts = rows.iter().position(|row| row.timestamp.is_some());
         if let Some(first_ts) = first_ts {
             assert!(rows[..first_ts].iter().all(|row| row.timestamp.is_none()));
@@ -201,7 +207,7 @@ fn legacy_synthesis_idempotency_and_late_offsets() {
                             arguments: "{}".into(),
                         },
                     ),
-                    // delta 原位更新 Response 行，不推进其 offset。
+                    // A delta updates the Response row in place and does not advance its offset.
                     entry(120, None, "r1", delta("legacy body")),
                 ],
                 false,
@@ -217,18 +223,21 @@ fn legacy_synthesis_idempotency_and_late_offsets() {
             .rows()
             .iter()
             .find(|row| row.title == "Task")
-            .expect("首次扫描后应合成 Task 行");
+            .expect("a Task row must be synthesized after the first scan");
         let terminal = projection
             .rows()
             .iter()
             .find(|row| row.title == "Run")
-            .expect("首次扫描后应合成终态 Run 行");
-        assert_eq!(task.offset, 0, "Task 行插在现存 rows 的 min(offset)");
+            .expect("a terminal Run row must be synthesized after the first scan");
+        assert_eq!(
+            task.offset, 0,
+            "the Task row is inserted at min(offset) of the existing rows"
+        );
         assert_eq!(
             terminal.offset, 61,
-            "终态行插在现存 rows 的 max(offset) + 1，合成行自身不推进 bounds"
+            "the terminal row is inserted at max(offset) + 1 of the existing rows and the synthesized row never advances the bounds"
         );
-        // 同一 legacy snapshot 连续发布 3 次（心跳）：不新增行、不重排、不改 offset。
+        // The same legacy snapshot published three times in a row (heartbeat): no new rows, no re-sort, no offset change.
         for now_ms in 2..=4u64 {
             projection.apply_snapshot(legacy(), now_ms);
             let rows = projection.rows();
@@ -237,17 +246,17 @@ fn legacy_synthesis_idempotency_and_late_offsets() {
                     .map(|row| (row.id(), row.offset))
                     .collect::<Vec<_>>(),
                 baseline,
-                "重复快照不得新增、重排或推动任何行"
+                "a repeated snapshot must not add, re-sort or push any row"
             );
             assert_eq!(
                 rows.iter().filter(|row| row.title == "Task").count(),
                 1,
-                "重复快照只保留一条 Task 行"
+                "a repeated snapshot keeps a single Task row"
             );
             assert_eq!(
                 rows.iter().filter(|row| row.title == "Run").count(),
                 1,
-                "重复快照只保留一条终态 Run 行"
+                "a repeated snapshot keeps a single terminal Run row"
             );
         }
     }
@@ -285,13 +294,13 @@ fn legacy_synthesis_idempotency_and_late_offsets() {
             .rows()
             .iter()
             .find(|row| row.title == "Run")
-            .expect("终态合成后应存在 Run 行")
+            .expect("a Run row must exist after the terminal state is synthesized")
             .id();
         assert!(
             frozen.ends_with("|61"),
-            "终态行落在 max(offset)+1：{frozen}"
+            "the terminal row lands at max(offset)+1: {frozen}"
         );
-        // 合成后迟到一条更大 offset 的 legacy 行，已冻结的终态行不后移。
+        // A late legacy row with a larger offset arrives after synthesis; the frozen terminal row does not move back.
         projection.ingest(
             "a1",
             &page(
@@ -313,24 +322,24 @@ fn legacy_synthesis_idempotency_and_late_offsets() {
         let terminal = rows
             .iter()
             .find(|row| row.title == "Run")
-            .expect("迟到行不得移除终态行");
+            .expect("a late row must not remove the terminal row");
         assert_eq!(
             terminal.id(),
             frozen,
-            "迟到行不移动已冻结的终态行（key 含 offset，相等即 offset 未变）"
+            "a late row does not move the frozen terminal row (the key contains offset, so equality means the offset did not change)"
         );
         let offsets = rows.iter().map(|row| row.offset).collect::<Vec<_>>();
         let terminal_at = offsets
             .iter()
             .position(|offset| *offset == 61)
-            .expect("终态行 offset 仍为 61");
+            .expect("the terminal row offset is still 61");
         let late_at = offsets
             .iter()
             .position(|offset| *offset == 900)
-            .expect("迟到行应被摄入");
+            .expect("the late row must be ingested");
         assert!(
             terminal_at < late_at,
-            "冻结终态行仍排在迟到行之前，不被更大 offset 推到尾部"
+            "the frozen terminal row still sorts before the late row and is not pushed to the tail by a larger offset"
         );
     }
 }
@@ -345,7 +354,7 @@ fn run_state_markers_prevent_legacy_task_and_terminal_rows() {
         ),
         1,
     );
-    // 新日志：run 携带 hub.run_state marker，同时也有真实事件行。
+    // New log: the run carries a hub.run_state marker and also has real event rows.
     let mut marker = entry(0, Some(10), "r1", AgentEvent::AssistantStarted);
     marker.record.event = None;
     marker.record.hub = Some(HubEvent::RunState {
@@ -361,25 +370,29 @@ fn run_state_markers_prevent_legacy_task_and_terminal_rows() {
     assert_eq!(
         rows.iter().filter(|row| row.title == "Task").count(),
         0,
-        "带 marker 的 run 即使有 rows 也不合成 Task 行"
+        "a run with a marker synthesizes no Task row even when it has rows"
     );
     let run_rows = rows
         .iter()
         .filter(|row| row.title == "Run")
         .collect::<Vec<_>>();
-    assert_eq!(run_rows.len(), 1, "只保留 marker 生成的真实 Run 行");
+    assert_eq!(
+        run_rows.len(),
+        1,
+        "only the real Run row produced by the marker is kept"
+    );
     assert_eq!(
         run_rows[0].status,
         RowStatus::Success,
-        "marker 的真实终态直接生效"
+        "the real terminal state of the marker takes effect directly"
     );
     assert_eq!(
         run_rows[0].timestamp,
         Some(10),
-        "真实 Run 行来自 marker，不是无时间戳的合成行"
+        "the real Run row comes from the marker, not from a synthesized row without a timestamp"
     );
     assert!(
         rows.iter().any(|row| row.kind == Kind::Response),
-        "真实事件行仍被正常投影"
+        "real event rows are still projected normally"
     );
 }

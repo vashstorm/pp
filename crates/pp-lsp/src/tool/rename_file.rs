@@ -1,4 +1,4 @@
-//! rename_file：文件／目录移动建议的枚举与聚合。
+//! rename_file: enumeration and aggregation of file/directory move suggestions.
 
 use crate::Registry;
 use crate::edits;
@@ -14,7 +14,7 @@ use super::servers::{all_real_servers, real_servers_for, resolve_path};
 use super::suggestion::{parse_workspace_edit, suggestion_conflicts, suggestion_result};
 use super::{Action, LspToolHost, Params, deny_service, done, is_control};
 
-/// 一次目录重命名最多枚举的普通文件数。
+/// Maximum number of regular files enumerated for a single directory rename.
 const MAX_RENAME_PAIRS: usize = 1000;
 
 struct RenamePair {

@@ -118,7 +118,8 @@ impl Tool {
     }
 }
 
-/// 已采集的工具执行统计；`recorded == 0` 表示该范围内没有执行记录，不能当作零错误。
+/// Statistics of recorded tool executions; `recorded == 0` means the range has no execution records,
+/// which must not be treated as zero errors.
 #[derive(Default)]
 struct Execution {
     recorded: u64,
@@ -201,7 +202,8 @@ impl Store {
         let mut partial = 0u64;
         let mut requests_by_key = BTreeMap::<String, (String, String, String)>::new();
         let mut model_meta = BTreeMap::<String, (String, String)>::new();
-        // 同一请求的每个工具调用各占一行，且按 id 相邻排列；攒成一批后再按调用数均分 Token 与费用。
+        // Each tool call of the same request occupies its own row and is ordered adjacently by id; token
+        // and cost are split evenly by the call count once a batch is assembled.
         let mut push_request = |r: RequestRow, calls: &[(String, u64)]| -> Result<()> {
             let count = calls.len();
             requests += 1;

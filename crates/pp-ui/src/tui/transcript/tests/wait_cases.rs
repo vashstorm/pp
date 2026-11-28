@@ -51,7 +51,7 @@ fn wait_card_updates_caps_expands_and_freezes_only_final_summary() {
         assert!(text.contains(&format!("{clock} [bash] bg-0")), "{text}");
         assert!(text.contains("╭") && text.contains("╰"));
     }
-    // 较早完成目标的长耗时不能冻结其他运行目标的动画。
+    // The completion of a long-running job must not freeze the animations of the jobs still running.
     let mut mixed = wait_snapshot(10, 1080);
     mixed["jobs"][0]["status"] = json!("completed");
     mixed["jobs"][0]["duration_ms"] = json!(10_000_000);
@@ -177,7 +177,9 @@ fn wait_card_native_history_never_freezes_partial_running_state() {
     let mut result = wait_snapshot(3, 1000);
     result["jobs"][0]["type"] = json!("task");
     result["jobs"][0]["id"] = json!("r1");
-    result["jobs"][0]["label"] = json!("调查任务\n包含很长的多行说明，需要在窄窗口截断");
+    result["jobs"][0]["label"] = json!(
+        "Survey task\nwith a very long multi-line description that must be truncated in a narrow window"
+    );
     for settled in 0..=3 {
         for job in result["jobs"]
             .as_array_mut()
@@ -221,11 +223,11 @@ fn wait_card_native_history_never_freezes_partial_running_state() {
         narrow
             .lines()
             .any(|line| line.contains("[task] r1 · injected")
-                && line.contains("调查任务")
+                && line.contains("Survey")
                 && line.contains('…')),
         "{narrow}"
     );
-    assert!(!narrow.contains("截断"), "{narrow}");
+    assert!(!narrow.contains("truncated"), "{narrow}");
     let history = retire_native(&mut transcript, 100, 1, false);
     assert_eq!(history.matches("Wait ·").count(), 1, "{history}");
     assert!(
@@ -240,7 +242,7 @@ fn wait_card_native_history_never_freezes_partial_running_state() {
                 && line
                     .split_whitespace()
                     .collect::<String>()
-                    .contains("调查任务包含很长的多行说明")),
+                    .contains("Surveytaskwithaverylong")),
         "{history}"
     );
 }

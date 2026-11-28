@@ -1,4 +1,4 @@
-//! 工具输出事件的即时快照与流式 UTF-8 解码。
+//! Immediate snapshots of tool output events and streaming UTF-8 decoding.
 use pp_core::events::AgentEvent;
 use pp_core::events::OutputStream;
 use serde_json::Value;

@@ -64,7 +64,7 @@ fn edit_preview_tui_streams_before_commit_both_protocols_and_edit_modes() {
                 &arguments[..split],
                 true,
             );
-            pty.wait_for("完整参数到达前显示编辑预览", |screen| {
+            pty.wait_for("the edit preview shows before the arguments complete", |screen| {
                 let text = screen.contents();
                 text.contains("preview · not saved") && text.contains("typing-中") && !text.contains("READY")
             });
@@ -103,7 +103,7 @@ fn edit_preview_tui_streams_before_commit_both_protocols_and_edit_modes() {
             let (request, body) = pty.request_at(&provider, path);
             assert_eq!(diff_blocks_tool_result(&body, protocol, "stream-edit")["ok"], true);
             assert_eq!(std::fs::read_to_string(&target).unwrap(), "typing-中-READY\nkeep\n");
-            pty.wait_for("临时预览替换为唯一真实提交卡片", |screen| {
+            pty.wait_for("the transient preview becomes the single real committed card", |screen| {
                 let text = screen.contents();
                 text.contains("+1/-1") && !text.contains("not saved") && text.matches("Edit:").count() == 1
             });

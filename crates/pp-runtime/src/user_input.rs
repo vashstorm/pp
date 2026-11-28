@@ -1,4 +1,4 @@
-//! 主聊天输入的资源快照；协议层只接收已准备好的内容。
+//! Resource snapshot of the main chat input; the protocol layer receives only prepared content.
 use anyhow::{Context, Result, ensure};
 use pp_config::config::ToolLimits;
 use pp_core::cancellation::CancellationToken;
@@ -21,7 +21,7 @@ pub struct Image {
     pub marker: String,
     pub summary: String,
     pub data_url: std::sync::Arc<str>,
-    /// 草稿来源中的精确位置；旧记录没有该字段，继续按旧标记恢复。
+    /// Exact position in the draft source; legacy records lack this field and keep restoring by the old marker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_range: Option<std::ops::Range<usize>>,
 }
@@ -41,7 +41,7 @@ pub struct UserInput {
     pub source: String,
     pub display: String,
     pub parts: Vec<Part>,
-    /// 仅粘贴图片需要随输入回忆保存；@路径在再次发送时重新读取。
+    /// Only pasted images are saved along with the recalled input; @paths are read again when resent.
     pub images: Vec<Image>,
 }
 
@@ -55,11 +55,11 @@ impl UserInput {
 pub struct Reference {
     pub start: usize,
     pub end: usize,
-    /// None 表示转义的 @@，不访问文件系统。
+    /// None means an escaped @@ that never touches the filesystem.
     pub path: Option<String>,
 }
 
-/// 与补全共享引用边界；代码围栏和行内代码中的 @ 不触发读取。
+/// Shares reference boundaries with completion; @ inside code fences and inline code does not trigger a read.
 pub fn references(text: &str) -> Vec<Reference> {
     let mut refs = Vec::new();
     let mut fence: Option<(u8, usize)> = None;
@@ -85,7 +85,7 @@ pub fn references(text: &str) -> Vec<Reference> {
         let mut inline = 0;
         while cursor < line.len() {
             let rest = &line[cursor..];
-            let ch = rest.chars().next().expect("字符边界");
+            let ch = rest.chars().next().expect("char boundary");
             if ch == '`' {
                 let n = rest.bytes().take_while(|b| *b == b'`').count();
                 if inline == 0 {
@@ -121,7 +121,7 @@ pub fn references(text: &str) -> Vec<Reference> {
                 let mut escaped = false;
                 let mut closed = false;
                 while end < line.len() {
-                    let c = line[end..].chars().next().expect("字符边界");
+                    let c = line[end..].chars().next().expect("char boundary");
                     end += c.len_utf8();
                     if c == '"' && !escaped {
                         closed = true;
@@ -142,7 +142,11 @@ pub fn references(text: &str) -> Vec<Reference> {
                 cursor = end;
             } else {
                 while cursor < line.len() && !line[cursor..].starts_with(char::is_whitespace) {
-                    cursor += line[cursor..].chars().next().expect("字符边界").len_utf8();
+                    cursor += line[cursor..]
+                        .chars()
+                        .next()
+                        .expect("char boundary")
+                        .len_utf8();
                 }
                 if cursor > start + 1 {
                     refs.push(Reference {
@@ -161,11 +165,15 @@ pub fn references(text: &str) -> Vec<Reference> {
 pub fn resolve(path: &str, cwd: &Path) -> Result<PathBuf> {
     ensure!(
         !path.is_empty() && !path.chars().any(char::is_control),
-        "无效的本地引用路径"
+        "invalid local reference path"
     );
-    ensure!(!path.contains("://"), "第一版 @引用仅支持本地文件和目录");
+    ensure!(
+        !path.contains("://"),
+        "the first version of @references supports local files and directories only"
+    );
     let path = if let Some(rest) = path.strip_prefix("~/") {
-        PathBuf::from(std::env::var_os("HOME").context("无法定位用户目录")?).join(rest)
+        PathBuf::from(std::env::var_os("HOME").context("cannot locate the home directory")?)
+            .join(rest)
     } else {
         cwd.join(path)
     };
@@ -190,7 +198,7 @@ pub fn image_bytes(source: &str, bytes: &[u8]) -> Result<Image> {
             .images
             .into_iter()
             .next()
-            .context("图片编码结果为空")?
+            .context("image encoding produced no result")?
             .data_url
             .into(),
     })
@@ -204,7 +212,7 @@ pub fn image_extension(path: &Path) -> bool {
     })
 }
 
-/// 只判断粘贴是否可能是图片路径；不得在输入线程访问文件系统。
+/// Only decides whether a paste could be an image path; the input thread must never touch the filesystem.
 pub fn possible_image_paste(text: &str) -> bool {
     let trimmed = text.trim().trim_end_matches(['\'', '"']);
     let lower = trimmed.to_ascii_lowercase();
@@ -213,7 +221,7 @@ pub fn possible_image_paste(text: &str) -> bool {
         .any(|suffix| lower.ends_with(suffix))
 }
 
-/// 接受完整路径、引号路径、shell 转义路径和 file:// URI；任何混合正文均不附图。
+/// Accepts complete paths, quoted paths, shell-escaped paths and file:// URIs; no image is attached when body text is mixed in.
 pub fn pasted_paths(text: &str, cwd: &Path) -> Option<Vec<PathBuf>> {
     fn candidate(text: &str, cwd: &Path) -> Option<PathBuf> {
         let decoded;
@@ -308,7 +316,7 @@ pub fn prepare(
                 } else if let Some(offset) = text.find(&input.source) {
                     range.start.checked_add(offset)?
                 } else {
-                    // 模板展开后位置可能改变；只接受唯一的真实附件标记。
+                    // Template expansion may shift positions; accept only the single real attachment marker.
                     let mut matches = text.match_indices(&image.marker);
                     let (start, _) = matches.next()?;
                     if matches.next().is_some() {
@@ -327,7 +335,7 @@ pub fn prepare(
                     .flatten()
             });
         if let Some(start) = start {
-            // 代码中的图片占位仍对应真实附件；只信任草稿内部的关联。
+            // An image placeholder in code still maps to the real attachment; trust only links inside the draft.
             segments.retain(|(a, b, _, _)| *b <= start || *a >= start + image.marker.len());
             segments.push((start, start + image.marker.len(), None, Some(image)));
             input.images.push(image.clone());
@@ -354,13 +362,17 @@ pub fn prepare(
                 .push_str(&format!("\n{} {}", image.marker, image.summary));
         } else if let Some(path) = path {
             let local = resolve(&path, cwd)?;
-            // 不允许 selector 解释不存在的完整文件名。
-            let meta = std::fs::metadata(&local).with_context(|| format!("无法引用 {path}"))?;
-            ensure!(meta.is_file() || meta.is_dir(), "不能引用特殊文件：{path}");
+            // A selector must not be allowed to interpret a full filename that does not exist.
+            let meta =
+                std::fs::metadata(&local).with_context(|| format!("cannot reference {path}"))?;
+            ensure!(
+                meta.is_file() || meta.is_dir(),
+                "cannot reference a special file: {path}"
+            );
             let result = read::local_reference(&local, limits, cancellation)
-                .with_context(|| format!("无法引用 {path}"))?;
+                .with_context(|| format!("cannot reference {path}"))?;
             let content = result.value["content"].as_str().unwrap_or_default();
-            ensure!(!content.contains('\0'), "文件不是文本：{path}");
+            ensure!(!content.contains('\0'), "file is not text: {path}");
             push_text(
                 &mut input.parts,
                 &format!(
@@ -371,9 +383,9 @@ pub fn prepare(
             );
             if result.value["truncated"] == true {
                 let next = result.value["next_path"].as_str().unwrap_or(&path);
-                let note = format!("内容已截断；使用 read 继续读取：{next}");
+                let note = format!("content truncated; use read to continue: {next}");
                 push_text(&mut input.parts, &format!("{note}\n"));
-                input.display.push_str(&format!("\n@{path}：{note}"));
+                input.display.push_str(&format!("\n@{path}: {note}"));
             }
             for image in result.images {
                 let number = input
@@ -535,7 +547,7 @@ mod tests {
                 &CancellationToken::new(),
             )
             .unwrap();
-            assert!(input.display.contains("截断"));
+            assert!(input.display.contains("truncated"));
             assert!(joined(&input).contains("first"));
             assert!(!joined(&input).contains("second"));
             assert!(joined(&input).contains(":2"));

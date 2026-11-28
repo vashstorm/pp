@@ -99,7 +99,7 @@ pub(super) fn completion_boundaries(
             ChatCompletionRequestMessage::User(_) => {
                 ensure!(pending.is_empty(), UNSUPPORTED_HISTORY);
                 if super::tool_images::chat_id(message).is_some() {
-                    // 图片是上一完整工具批次的一部分，不能落在保留后缀之外。
+                    // An image is part of the previous complete tool batch and must not land outside the retained suffix.
                     let boundary = boundaries
                         .last_mut()
                         .ok_or_else(|| anyhow::anyhow!(UNSUPPORTED_HISTORY))?;
@@ -177,7 +177,7 @@ pub(super) fn response_boundaries(items: &[InputItem]) -> Result<Vec<usize>> {
                 }
                 _ => bail!(UNSUPPORTED_HISTORY),
             },
-            // 原生多模态用户消息与反序列化后的开发者消息可采用完整 Input 形态。
+            // Native multimodal user messages and deserialized developer messages may take the full Input shape.
             InputItem::Item(Item::Message(MessageItem::Input(message)))
                 if matches!(
                     message.role,
@@ -276,7 +276,7 @@ fn summary_instruction(summary_budget: u64) -> String {
         .replace("{summary_budget}", &summary_budget.to_string())
 }
 
-/// 收集位于保留后缀（`cutoff..`）中的动态 `[pp-project-instructions]` developer 文本。
+/// Collect dynamic `[pp-project-instructions]` developer text located in the retained suffix (`cutoff..`).
 fn suffix_project_instructions(session: &Session, cutoff: usize) -> Option<String> {
     let mut blocks = Vec::new();
     match session {
@@ -398,11 +398,11 @@ struct SummarySpec<'a> {
     automatic: bool,
     before_tokens: u64,
     summary_think_level: ThinkLevel,
-    /// 仅在极窄上下文窗口下携带完整 `system + tools` 会超窗时使用的无工具精简系统提示词。
+    /// Tool-less slim system prompt used only when carrying the full `system + tools` would overflow a very narrow context window.
     fallback_system_without_tools: Option<&'a str>,
 }
 
-/// 只在主摘要请求失败后复制已裁出的摘要前缀；保留后缀从不复制或转换。
+/// Copy the already cut summary prefix only after the main summary request fails; the retained suffix is never copied or converted.
 fn summarize_fallback(
     result: Result<String>,
     make_session: impl FnOnce() -> Session,
@@ -577,8 +577,8 @@ fn compact_completion(
     cancellation: &CancellationToken,
 ) -> Result<CompactionOutcome> {
     let mut suffix = request.messages.split_off(spec.cutoff);
-    // 保留主会话原样的 system 与 tools 定义以复用前缀缓存，仅通过 tool_choice=none 禁止工具调用，
-    // 并将推理档位临时降到允许的最低档以节省摘要思考输出 token。
+    // Keep the main session's system and tools definitions as is to reuse the prefix cache, forbid tool calls only via tool_choice=none,
+    // and temporarily drop the reasoning level to the lowest allowed to save summary thinking output tokens.
     let tool_choice = if request.tools.is_some() {
         request
             .tool_choice
@@ -729,8 +729,8 @@ fn compact_response(
     cancellation: &CancellationToken,
 ) -> Result<CompactionOutcome> {
     let mut suffix = response_input(request).split_off(spec.cutoff);
-    // 保留主会话原样的 instructions 与 tools 以复用前缀缓存，仅通过 tool_choice=none 禁止工具调用，
-    // 并将推理档位临时降至目标模型允许的最低档；若极窄窗口下携带 tools 会超窗，自动回退移除 tools。
+    // Keep the main session's instructions and tools as is to reuse the prefix cache, forbid tool calls only via tool_choice=none,
+    // and temporarily drop the reasoning level to the lowest the target model allows; if carrying tools would overflow a very narrow window, remove them automatically.
     let tool_choice = if request.tools.is_some() {
         request
             .tool_choice
@@ -927,15 +927,15 @@ impl Agent {
         let before_tokens = self.context_usage()?.estimated_tokens;
         let budget = summary_budget(self.current_model.context_window);
         let mut instruction = summary_instruction(budget);
-        // 若压缩前刚刷新到新变更的 AGENTS.md（已追加在保留后缀末尾），同时附在摘要指令末尾，
-        // 既保持 system+old_prefix 缓存命中，又确保摘要模型遵循最新项目规则。
+        // If new AGENTS.md changes were just refreshed before compaction (already appended at the end of the retained suffix), attach them to the end of
+        // the summary instruction too, keeping system+old_prefix cache hits while ensuring the summary model follows the latest project rules.
         if let Some(extra_rules) = suffix_project_instructions(&self.session, cutoff) {
             instruction.push_str("\n\n");
             instruction.push_str(&extra_rules);
         }
         let summary_think_level =
             super::lowest_think_level(&self.current_model.thinking, self.think_level);
-        // 仅在窄窗口下需要退回无工具精简 system 时才用到，大窗口直接复用原 system+tools 前缀缓存。
+        // Only needed when a narrow window has to fall back to the tool-less slim system; a large window reuses the original system+tools prefix cache.
         let fallback_system_without_tools =
             if self.prompt_source.is_some() && self.current_model.context_window.is_some() {
                 Some(self.compose_prompt(
@@ -948,7 +948,7 @@ impl Agent {
                 None
             };
         let fallback_used = std::cell::Cell::new(false);
-        // 备用摘要模型取当前角色的备用模型：主会话不再武装 DEFAULT 路由，不能只看 `role_route`。
+        // The fallback summary model comes from the active role's fallback: the main session no longer arms DEFAULT routes, so `role_route` alone is not enough.
         let fallback_target = self
             .role_fallback()
             .filter(|(primary, _)| primary == &self.current_model.reference)
@@ -1013,12 +1013,12 @@ impl Agent {
             } => (before_tokens, after_tokens),
             other => return Ok(other),
         };
-        // 压缩只是重写历史，不改变会话身份：会话累计输出保留。
+        // Compaction only rewrites history and does not change session identity: cumulative session output is kept.
         self.last_request = None;
         self.last_request_raw_tokens = None;
-        // 历史前缀已重建：清空会话 read 去重缓存，避免模型请求重读已被压缩的内容时命中旧桩。
+        // The history prefix was rebuilt: clear the session read dedup cache so a re-read of compacted content does not hit a stale stub.
         self.tools.invalidate_read_dedup();
-        // 下轮刷新将把当前全部活跃 AGENTS.md 合并回新的静态前缀。
+        // The next refresh merges all currently active AGENTS.md back into the new static prefix.
         self.static_project_prompt = None;
         self.delivered_project_docs.clear();
         let retained_turns = match &self.session {

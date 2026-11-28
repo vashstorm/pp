@@ -1,4 +1,5 @@
-//! 新格式验收使用冻结旧事件与真实 journal，覆盖物理分段和展示／原生历史隔离。
+//! New-format acceptance uses frozen legacy events and a real journal, covering physical
+//! segmentation and display/native history isolation.
 use super::format::StateRef;
 use super::*;
 use async_openai::types::chat::ChatCompletionRequestMessage;
@@ -82,7 +83,7 @@ fn frozen_legacy(dir: &Path, protocol: Protocol) -> String {
             json!({"protocol":"response","items":[native["request"]["input"].as_array().unwrap().last().unwrap()]})
         }
     };
-    // 旧格式直接冻结，不使用会被新 writer 过滤的 journal.event。
+    // Freeze the old format directly; do not use journal.event, which the new writer filters.
     let payloads = [
         json!({"type":"custom","customType":"pp.session_state","data":state}),
         json!({"type":"message","message":{"role":"user","content":"old question","timestamp":1}}),
@@ -383,7 +384,7 @@ fn slimming_thinking_optional_and_inherited_states() {
             serde_json::to_value(&session).unwrap()
         );
         drop(restored);
-        // 同长度但中间内容变化，replace_history 必须完整落盘。
+        // Same length but changed middle content: replace_history must persist it completely.
         let mut restored =
             load_test(dir.path(), &dir.path().join(".locks"), Some(&id), false).unwrap();
         let mut changed = serde_json::to_value(&session).unwrap();

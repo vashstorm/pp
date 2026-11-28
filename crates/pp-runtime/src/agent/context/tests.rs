@@ -265,20 +265,20 @@ fn context_chat_exchange_boundaries_and_summaries() {
 #[test]
 fn context_chat_rejected_shapes_and_developer_boundaries() {
     let shapes: Vec<Vec<ChatCompletionRequestMessage>> = vec![
-        // missing：批内缺少结果。
+        // missing: a result is missing within the batch.
         vec![
             chat_system("system"),
             chat_user("read both"),
             chat_assistant_calls(&["a", "b"]),
             chat_tool("a", "result a"),
         ],
-        // missing：尾部调用完全没有结果。
+        // missing: a tail call has no result at all.
         vec![
             chat_system("system"),
             chat_user("read"),
             chat_assistant_calls(&["a"]),
         ],
-        // duplicate：同一调用收到重复结果。
+        // duplicate: the same call receives a duplicate result.
         vec![
             chat_system("system"),
             chat_user("read"),
@@ -286,14 +286,14 @@ fn context_chat_rejected_shapes_and_developer_boundaries() {
             chat_tool("a", "result a"),
             chat_tool("a", "result a again"),
         ],
-        // orphan：结果没有对应的调用。
+        // orphan: a result has no matching call.
         vec![
             chat_system("system"),
             chat_user("question"),
             chat_assistant("answer"),
             chat_tool("unknown", "orphan"),
         ],
-        // orphan：批内多出不属于该批的结果。
+        // orphan: the batch contains an extra result that does not belong to it.
         vec![
             chat_system("system"),
             chat_user("read"),
@@ -452,29 +452,29 @@ fn context_responses_exchange_groups_and_summaries() {
 #[test]
 fn context_responses_rejected_shapes_and_developer_boundaries() {
     let shapes: Vec<Vec<r::InputItem>> = vec![
-        // missing：批内缺少结果。
+        // missing: a result is missing within the batch.
         vec![
             res_user("read both"),
             res_call("a"),
             res_call("b"),
             res_output("a", "result a"),
         ],
-        // missing：尾部调用完全没有结果。
+        // missing: a tail call has no result at all.
         vec![res_user("read"), res_call("a")],
-        // duplicate：同一调用收到重复结果。
+        // duplicate: the same call receives a duplicate result.
         vec![
             res_user("read"),
             res_call("a"),
             res_output("a", "result a"),
             res_output("a", "result a again"),
         ],
-        // orphan：结果没有对应的调用。
+        // orphan: a result has no matching call.
         vec![
             res_user("question"),
             res_assistant("msg-1", "answer"),
             res_output("unknown", "orphan"),
         ],
-        // orphan：批内多出不属于该批的结果。
+        // orphan: the batch contains an extra result that does not belong to it.
         vec![
             res_user("read"),
             res_call("a"),

@@ -1,8 +1,9 @@
-//! 分卷日志文件与命名空间。
+//! Rotating log files and namespaces.
 //!
-//! 构造只校验 `~/.pp/logs` 目录并打开跨进程 `.lock`，不读目录内容；当日最大
-//! 分卷号的扫描推迟到首次真正追加，仍然在 `.lock` 临界区内完成，因此长时间
-//! 使用后目录条目线性增长也不会拖慢启动。
+//! Construction only validates the `~/.pp/logs` directory and opens the cross-process `.lock`; it
+//! never reads directory entries. Scanning for the largest rotation number of the day is deferred to
+//! the first real append and still happens inside the `.lock` critical section, so a directory whose
+//! entry count grows linearly over a long run never slows startup.
 
 use std::{
     fs::{self, DirBuilder, File},
@@ -47,7 +48,8 @@ pub(super) struct RotatingFile {
 }
 
 impl RotatingFile {
-    /// 只建目录、校验目录类型并打开共享 `.lock`；分卷号的扫描推迟到首次追加。
+    /// Only create the directory, validate its type and open the shared `.lock`; the rotation-number
+    /// scan is deferred to the first append.
     pub(super) fn new(dir: PathBuf) -> io::Result<Self> {
         DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
         let metadata = fs::symlink_metadata(&dir)?;
@@ -190,7 +192,8 @@ pub(super) enum Namespace {
 }
 
 impl Namespace {
-    // gc 等按名字扫描的路径遍历全部 namespace，新增变体自动纳入。
+    // Name-scanning paths such as gc walk every namespace, so new variants are covered
+    // automatically.
     pub(super) const ALL: [Namespace; 2] = [Self::Pp, Self::Debug];
 
     pub(super) fn file_name(self, date: NaiveDate, number: u64) -> String {
@@ -335,12 +338,14 @@ mod tests {
             let logs = dir.path().join("logs");
             fs::create_dir(&logs).unwrap();
             let today = Local::now().date_naive();
-            // 日志不自动删除，长期使用后目录里已有大量历史分卷。
+            // Logs are never deleted automatically, so a long-running directory already holds many
+            // historical rotations.
             let old = NaiveDate::from_ymd_opt(2000, 1, 1).unwrap();
             for number in 1..=500 {
                 fs::write(logs.join(format!("pp.{old}.{number}.log")), b"{}\n").unwrap();
             }
-            // 构造阶段不打开当日分卷：不安全路径只在首次追加的扫描里被发现。
+            // Construction opens no rotation of the day: an unsafe path is only discovered by the
+            // scan on first append.
             let sentinel = dir.path().join("sentinel");
             fs::write(&sentinel, b"untouched").unwrap();
             let first = logs.join(format!("pp.{today}.1.log"));
@@ -349,7 +354,8 @@ mod tests {
             assert!(file.append_record(b"{\"lost\":true}\n").is_err());
             assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
 
-            // 首次成功追加才扫描，并落在当日分卷号：历史分卷与当日无关。
+            // Only a successful first append scans, and it lands on today's rotation number:
+            // historical rotations are irrelevant to today.
             fs::remove_file(&first).unwrap();
             file.append_record(b"{\"first\":true}\n").unwrap();
             assert_eq!(fs::read(&first).unwrap(), b"{\"first\":true}\n");
@@ -415,10 +421,11 @@ mod tests {
                     }
                     let mut file = RotatingFile::new(logs.clone());
                     if lock_path {
-                        // .lock 是构造阶段唯一打开的路径，不安全就立即失败。
+                        // `.lock` is the only path opened during construction, so an unsafe one fails
+                        // immediately.
                         assert!(file.is_err(), "{kind}");
                     } else {
-                        // 不安全的当日分卷延迟到首次追加才校验。
+                        // An unsafe rotation of the day is validated only on first append.
                         file.as_mut()
                             .unwrap_or_else(|error| panic!("{kind} construction: {error}"))
                             .append_record(b"{}\n")

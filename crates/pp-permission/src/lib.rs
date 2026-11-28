@@ -1,8 +1,8 @@
-//! 生效权限、工具门禁、自动审阅回调与用户授权。
+//! Effective permissions, tool gating, auto-review callbacks and user grants.
 //!
-//! 交互请求经 `PermissionHandler` 交给调用方，
-//! 无 handler 时拒绝调用。工具白名单先于权限检查；Execute 工具与
-//! Plan 中未标为只读的 MCP 工具经过本模块。
+//! Interactive requests go to the caller through `PermissionHandler`;
+//! without a handler the call is denied. The tool allowlist is checked before permissions; Execute tools and
+//! Plan MCP tools not marked read-only go through this module.
 
 use pp_config::config::{PermissionMode, PermissionPolicy, SandboxMode};
 use pp_sandbox::SandboxOverlay;
@@ -32,7 +32,7 @@ use pp_core::cancellation::CancellationToken;
 
 pub use pp_workspace::Tier;
 
-/// settings.yml `tools:` 小节的运行时形态；构造在权限门内部完成。
+/// Runtime shape of the settings.yml `tools:` section; constructed inside the permission gate.
 #[derive(Clone, Debug, Default)]
 struct PermissionConfig {
     policy: BTreeMap<String, PermissionPolicy>,
@@ -46,15 +46,15 @@ impl From<pp_config::config::ToolsSettings> for PermissionConfig {
     }
 }
 
-/// 权限请求：只携带工具名与脱敏 reason，不携带参数原文；
-/// 参数详情在 TUI 中经既有 ToolStarted / Ctrl+O 查看。
+/// Permission request: carries only the tool name and a redacted reason, never raw arguments;
+/// argument details are viewed in the TUI through the existing ToolStarted / Ctrl+O.
 #[derive(Clone, Debug)]
 pub struct PermissionRequest {
     pub tool: String,
     pub agent: Option<String>,
     pub reason: String,
-    /// 仅当本条 prompt 允许"本会话内放行"时为 true；强制 prompt
-    /// （关键命令、用户 `prompt` policy）每次都问，不提供该选项。
+    /// True only when this prompt allows "allow for this session"; forced prompts
+    /// (critical commands, user `prompt` policy) ask every time and do not offer the option.
     pub session_grant: bool,
     pub persistent_grant: bool,
 }
@@ -105,17 +105,17 @@ impl ModeState {
 #[derive(Clone)]
 pub struct Gate {
     default_mode: PermissionMode,
-    /// 常规工具的会话级授权。
+    /// Session-level grants for regular tools.
     grants: Arc<Mutex<HashSet<String>>>,
-    /// Bash 命令规则的会话级授权（精确到参数/文件）。
+    /// Session-level grants for Bash command rules (precise to arguments/files).
     bash_grants: Arc<Mutex<HashSet<BashRule>>>,
-    /// 具体文件路径的会话级写授权（用于 .git/.agents/工作区外/read-only）。
+    /// Session-level write grants for concrete file paths (for .git/.agents/outside the workspace/read-only).
     path_grants: Arc<Mutex<HashSet<PathBuf>>>,
-    /// 工作区外文件/目录和受保护会话路径的会话级只读授权。
+    /// Session-level read grants for files/directories outside the workspace and protected session paths.
     read_path_grants: Arc<Mutex<HashSet<PathBuf>>>,
-    /// 会话级互联网访问授权。
+    /// Session-level internet access grant.
     network_grant: Arc<Mutex<bool>>,
-    /// CLI `--allowed-tools` 赋予本次运行的工具预批准集合；不随会话重置清空。
+    /// Tool pre-approval set granted to this run by CLI `--allowed-tools`; not cleared by session resets.
     preapproved: Arc<Mutex<PreapprovedTools>>,
     handler: Option<Arc<PermissionCallback>>,
     auto_review: Arc<Mutex<Option<Arc<AutoReviewCallback>>>>,
@@ -186,13 +186,13 @@ impl Gate {
         self.snapshot_with_sandbox().1
     }
 
-    /// 原子读取当前生效权限档位及对应的沙盒预设，供单次工具调用入口使用。
+    /// Atomically reads the currently effective permission mode and its sandbox preset for a single tool call entry point.
     pub fn snapshot_with_sandbox(&self) -> (PermissionMode, Option<SandboxMode>) {
         let state = self.modes.lock().unwrap_or_else(|error| error.into_inner());
         (state.current(), state.sandbox_mode())
     }
 
-    /// 导出当前 `permission.toml` 激活 profile 的文件系统与网络叠加配置供沙盒同步。
+    /// Exports the filesystem and network overlay of the active `permission.toml` profile for sandbox synchronization.
     pub fn sandbox_overlay(&self, cwd: &Path) -> SandboxOverlay {
         let Some(store) = &self.store else {
             return SandboxOverlay::default();
@@ -245,7 +245,7 @@ impl Gate {
             .clear();
     }
 
-    /// 登记 CLI `--allowed-tools` 的进程级预批准工具与细粒度 Bash 命令规则集合。
+    /// Registers the process-level pre-approved tools and fine-grained Bash command rule set from CLI `--allowed-tools`.
     pub fn grant_allowed_tools(
         &self,
         exact: impl IntoIterator<Item = String>,
@@ -320,7 +320,7 @@ impl Gate {
             Ok(_) => None,
             Err(error) => {
                 let message = pp_core::logging::diagnostic_text(&format!("{error:#}"));
-                tracing::warn!(%message, "无法读取持久授权");
+                tracing::warn!(%message, "failed to read persistent permissions");
                 Some(message)
             }
         };
@@ -404,7 +404,7 @@ impl Gate {
             PermissionDecision::ApprovePersistently if persistent_grant => {
                 self.store
                     .as_ref()
-                    .expect("持久授权选项要求有规则存储")
+                    .expect("persistent grant option requires a rules store")
                     .save(grant)?;
                 pp_core::cancellation::check(cancellation)?;
                 Ok(())
@@ -445,7 +445,7 @@ impl Gate {
             .unwrap_or_else(|error| error.into_inner()) = Some(handler);
     }
 
-    /// 生效权限档位；只读查询，不另存状态。
+    /// Effective permission mode; read-only query that stores no extra state.
     pub fn effective_mode(&self) -> PermissionMode {
         self.snapshot()
     }
@@ -465,7 +465,7 @@ impl Gate {
             Ok(doc) => (doc, None),
             Err(error) => {
                 let message = pp_core::logging::diagnostic_text(&format!("{error:#}"));
-                tracing::warn!(%message, "无法读取持久授权");
+                tracing::warn!(%message, "failed to read persistent permissions");
                 (None, Some(message))
             }
         }
@@ -590,7 +590,10 @@ impl Gate {
                 Ok(())
             }
             PermissionDecision::ApprovePersistently if allow_persistent_grant => {
-                let store = self.store.as_ref().expect("持久授权选项要求有规则存储");
+                let store = self
+                    .store
+                    .as_ref()
+                    .expect("persistent grant option requires a rules store");
                 match target {
                     Some(GrantTarget::Tool(tool_name)) => {
                         store.save_tool(&tool_name, PermissionPolicy::Allow)?

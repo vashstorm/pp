@@ -1,4 +1,4 @@
-//! 表格布局：尾部行、网格排版与竖排回退。
+//! Table layout: trailing row, grid layout and vertical fallback.
 
 use super::*;
 
@@ -26,7 +26,7 @@ pub(super) fn layout_table(tb: &TableBlock, width: usize, out: &mut Vec<Line<'st
     if n == 0 {
         return;
     }
-    // 每列左右各留一格，列间与外框各占一格。
+    // Each column keeps one cell on either side, and every column separator and the outer frame take one more.
     let frame_width = 3 * n + 1;
     let mut widths = vec![CELL_MIN_WIDTH; n];
     for (i, cell) in tb.header.iter().enumerate().take(n) {
@@ -146,8 +146,8 @@ fn apply_align(spans: &mut Vec<Span<'static>>, width: usize, align: Alignment) {
     }
 }
 
-/// 连最小列宽、边距与完整外框都放不下时，按 `header: value` 竖排；
-/// 空表头使用 `Column N`。
+/// When even the minimum column widths, the margins and the full frame do not fit, fall back to `header: value` rows;
+/// an empty header uses `Column N`.
 fn table_vertical_fallback(tb: &TableBlock, n: usize, width: usize, out: &mut Vec<Line<'static>>) {
     let labels: Vec<String> = (0..n)
         .map(|i| {

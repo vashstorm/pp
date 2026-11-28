@@ -1,4 +1,4 @@
-//! 结果投递、等待与确认。
+//! Result delivery, waiting and acknowledgement.
 
 use anyhow::{Result, ensure};
 use pp_core::cancellation;
@@ -78,7 +78,12 @@ impl Binding {
         }
         if let Err(error) = self.inner.save(&state) {
             for (id, consumed) in previous {
-                state.disk.runs.get_mut(&id).expect("已校验的 Run").consumed = consumed;
+                state
+                    .disk
+                    .runs
+                    .get_mut(&id)
+                    .expect("validated Run")
+                    .consumed = consumed;
             }
             return Err(error);
         }

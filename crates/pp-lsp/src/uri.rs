@@ -1,12 +1,12 @@
-//! 路径 ↔ `file:` URI 换算：词法绝对化、按字节百分号编码与严格解码。
+//! Path ↔ `file:` URI conversion: lexical absolutization, byte-wise percent encoding and strict decoding.
 
 use std::path::{Component, Path, PathBuf};
 
-/// 路径 → `file:` URI，按字节百分号编码。
+/// Path → `file:` URI, percent-encoded byte by byte.
 ///
-/// 先做纯词法绝对化：`..` 弹出上一段，而不是被丢弃——`/a/../b` 必须是 `/b`。
-/// 不做 canonicalize：新文件可能还不存在，语义导航也允许工作区外路径；符号
-/// 链接保持调用方给出的字面路径。
+/// Absolutization is purely lexical: `..` pops the previous segment instead of being dropped — `/a/../b` must be `/b`.
+/// No canonicalize: a new file may not exist yet, and semantic navigation also allows paths outside the workspace; symlinks
+/// keep the literal path supplied by the caller.
 pub fn path_to_uri(path: &Path) -> String {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -57,10 +57,10 @@ pub(super) fn encode_segment(segment: &str) -> String {
     encoded
 }
 
-/// `file:` URI → 路径；非 file scheme、远端主机与非法编码都返回 `None`。
+/// `file:` URI → path; a non-file scheme, a remote host and invalid encoding all return `None`.
 ///
-/// 未转义的 `?`/`#` 是 URI 的 query/fragment，不属于文件名，必须拒绝；而
-/// `%3F`/`%23` 解码出的 `?`/`#` 是合法的文件名字符。解码后的 NUL 永远拒绝。
+/// An unescaped `?`/`#` is a URI query/fragment and not part of the file name, so it must be rejected; whereas
+/// `?`/`#` decoded from `%3F`/`%23` are legitimate file name characters. A decoded NUL is always rejected.
 pub(crate) fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     if rest.contains('?') || rest.contains('#') {
@@ -103,25 +103,25 @@ mod tests {
     #[test]
     fn lsp_client_uri_paths_roundtrip_boundaries() {
         let dir = tempfile::tempdir().unwrap();
-        // `..` 必须词法弹出上一段，不能被丢弃成 `/a/b`。
+        // `..` must lexically pop the previous segment, not be dropped into `/a/b`.
         let dotted = dir.path().join("a").join("..").join("b");
         assert_eq!(
             path_to_uri(&dotted),
             format!("file://{}", dir.path().join("b").display()),
             "`..` must pop the previous segment"
         );
-        // 新文件不需要存在，也不做 canonicalize。
+        // A new file need not exist, and no canonicalize is done.
         let missing = dir.path().join("new file?.rs");
         let uri = path_to_uri(&missing);
         assert!(uri.ends_with("new%20file%3F.rs"), "{uri}");
         assert_eq!(uri_to_path(&uri).as_deref(), Some(missing.as_path()));
 
-        // 百分号编码的 `?`/`#` 是合法文件名字符。
+        // Percent-encoded `?`/`#` are legitimate file name characters.
         assert_eq!(
             uri_to_path("file:///tmp/a%3Fb%23c"),
             Some(PathBuf::from("/tmp/a?b#c"))
         );
-        // 未转义的 query/fragment、NUL 与畸形百分号都拒绝。
+        // Unescaped query/fragment, NUL and malformed percent escapes are all rejected.
         assert!(uri_to_path("file:///tmp/a?x=1").is_none());
         assert!(uri_to_path("file:///tmp/a#frag").is_none());
         assert!(uri_to_path("file:///tmp/a%00b").is_none());

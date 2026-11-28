@@ -1,4 +1,4 @@
-//! 模型／档位选择器的过滤、进入与光标移动。
+//! Filtering, entry and cursor movement for the model/level picker.
 
 use super::*;
 
@@ -24,7 +24,7 @@ impl Panel {
             })
             .map(|(index, _)| index)
             .collect();
-        // 稳定排序：收藏模型优先，同组保持模型目录中的顺序。
+        // Stable sort: favorite models first, and each group keeps catalog order.
         indices.sort_by_key(|&index| !self.favorites.contains(&self.choices[index].reference));
         indices
     }

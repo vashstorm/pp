@@ -1,4 +1,4 @@
-//! 编译内嵌场景；每场使用独立的配置、会话、工具与临时工作区。
+//! Compiled-in scenarios; each run uses its own config, sessions, tools and temporary workspace.
 
 use std::{
     collections::BTreeMap,
@@ -112,23 +112,23 @@ pub struct MockTestReport {
 struct Scenario {
     prompt: String,
     edit_mode: EditMode,
-    /// 固定的 `/tmp` 工作区：供人工在另一个终端观察真实文件。缺省时每场用
-    /// 系统临时目录里的独立 workspace。
+    /// Fixed `/tmp` workspace so a human can watch the real files from another terminal. By default each
+    /// run uses a separate workspace inside the system temporary directory.
     #[serde(default)]
     workspace: Option<String>,
     files: BTreeMap<String, String>,
-    /// 覆盖场景的自动重试预算；缺省为 0（不重试）。只有需要演练失败路径的
-    /// 场景才开启，避免其他场景在失败时真实等待退避。
+    /// Overrides the scenario's automatic retry budget; defaults to 0 (no retries). Only scenarios that
+    /// exercise failure paths enable it, so other scenarios never really wait on backoff.
     #[serde(default)]
     retry_budget_seconds: u64,
     lanes: BTreeMap<String, Value>,
 }
 
-/// 越界写入若真的落盘，会出现在工作区父目录下的这个固定名字里。
+/// If an escaping write really reached the disk, it would show up under this fixed name in the workspace parent.
 const ESCAPE_FILE: &str = "pp-mock-escape.txt";
 
-/// 场景声明的固定工作区。只有本场新建时才在结束时删除，预先存在的目录原样
-/// 保留；删除失败只留下一个空临时目录，不升级为 `CleanupError`。
+/// Fixed workspace declared by the scenario. It is removed at the end only when this run created it;
+/// pre-existing directories are kept as is. A failed removal only leaves an empty temp directory and is not upgraded to `CleanupError`.
 struct FixedWorkspace {
     path: PathBuf,
     created: bool,
@@ -352,7 +352,7 @@ fn run_scenario(
             );
             scripts.insert(format!("mock-{lane}/primary"), Arc::new(script));
         }
-        // `Tools::new` 默认空 `McpManager`：mock 场景不读取真实用户 MCP 定义。
+        // `Tools::new` defaults to an empty `McpManager`: mock scenarios never read real user MCP definitions.
         let mut tools = Tools::new(workspace.clone(), scenario.edit_mode)?;
         tools.ask_handler = ask;
         let mut agent = Agent::new_mock(catalog, tools, sessions, locks, Arc::new(scripts))?;
@@ -475,7 +475,7 @@ mod tests {
             };
             let scenario = serde_json::from_value(json!({
                 "prompt":"Report the scripted usage.", "edit_mode":"replace", "files":{},
-                "lanes":{"root":[{"think":"用量", "content":"reported", "usage":usage}]}
+                "lanes":{"root":[{"think":"usage", "content":"reported", "usage":usage}]}
             }))
             .unwrap();
             let mut finished = None;

@@ -14,7 +14,7 @@ fn mcp_tip_renders_multiline_below_welcome_hints_without_reserving_input_row() {
         "Connected to MCP servers: 1 succeeded, 1 failed (1.8s)".into(),
     ];
     let with_tip_layout = app.main_layout(Rect::new(0, 0, 100, 32));
-    // 不再在输入框上方占用额外行，输入区与对话区几何保持不变。
+    // No extra row is taken above the input box, so the input and conversation geometry stays the same.
     assert_eq!(with_tip_layout.input, baseline_layout.input);
     assert_eq!(with_tip_layout.conversation, baseline_layout.conversation);
 
@@ -87,7 +87,7 @@ fn mcp_tip_renders_multiline_below_welcome_hints_without_reserving_input_row() {
         themes::palette().welcome_muted
     );
 
-    // 欢迎页关闭后不再渲染 MCP tip。
+    // Once the welcome page is gone the MCP tip is no longer rendered.
     app.show_welcome = false;
     let hidden = draw(&mut app, 100, 32);
     assert!(!hidden.contains("MCP: context7 connected"), "{hidden}");
@@ -109,7 +109,7 @@ fn mcp_tip_wraps_long_lines_within_welcome_column() {
 fn mcp_tip_tick_clears_the_lines_when_no_manager_is_attached() {
     let mut app = app();
     app.mcp_tip = vec!["MCP: exa connecting…".into()];
-    // 无 bootstrap（测试与 mock）时没有建连进度，提示行不残留。
+    // Without a bootstrap (tests and mock) there is no connect progress, so no hint row lingers.
     assert!(app.mcp_tip_tick());
     assert!(app.mcp_tip.is_empty());
     assert!(!app.mcp_tip_tick());

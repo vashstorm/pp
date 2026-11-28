@@ -6,8 +6,9 @@ use pp_core::plan::PlanReview;
 use pp_core::plan::ReviewToken;
 
 impl Agent {
-    /// 恢复协调入口：计划读写、审阅、审批、进度与恢复访问前按 ID 同步
-    /// 实际路径。revision-0/未绑定直接通过；已绑定文档不 clone 整篇正文。
+    /// Restore the coordination entry point: sync the actual path by ID before plan
+    /// read/write, review, approval, progress and restore access. revision-0/unbound passes
+    /// straight through; a bound document never clones its whole body.
     pub(crate) fn reconcile_plan_location(&mut self) -> Result<()> {
         reconcile_plan_state(
             self.tools.plan_workspace(),
@@ -28,10 +29,12 @@ impl Agent {
         import_plan_content(&mut self.journal, &mut self.workflow, content, new_title)
     }
 
-    /// 通过 NOFOLLOW 工作区句柄读取计划，导入外部修订并签发绑定当前
-    /// 会话、计划、路径及精确正文的审批 token。文件缺失或不可读时报错，
-    /// 不回退到日志快照，缺失归档会解除会话绑定。Executed/Abandoned 可刷新但不恢复执行授权；
-    /// Plan 仅同步正文，Execute 才刷新任务投影，已脱离的普通清单不被替换。
+    /// Read the plan through the NOFOLLOW workspace handle, import external revisions and issue
+    /// an approval token bound to the current session, plan, path and exact body. A missing or
+    /// unreadable file is an error and never falls back to a journal snapshot, while a missing
+    /// archive releases the session binding. Executed/Abandoned may refresh but never regain
+    /// execution authorization; Plan only syncs the body and only Execute refreshes the task
+    /// projection, so a detached plain list is not replaced.
     pub fn read_plan(&mut self) -> Result<PlanReview> {
         self.journal.check()?;
         let document = self
@@ -41,12 +44,13 @@ impl Agent {
             .ok_or_else(|| anyhow!("{NO_PLAN}"))?;
         let report = self.workflow.review.clone();
         if document.revision == 0 {
-            // revision-0 绑定尚未首存：没有可解析的文件路径，从不从
-            // 历史快照或猜测路径导入。
+            // A revision-0 binding is not saved yet: there is no resolvable file path, and
+            // nothing is ever imported from a historical snapshot or a guessed path.
             bail!("{NO_PLAN}");
         }
-        // 按 ID 协调登记路径并导入外部修订；Plan 不生成 TODO。
-        // 墓碑、搬迁与首次登记在此暴露。
+        // Reconcile the registered path by ID and import external revisions; Plan produces no
+        // TODO.
+        // Tombstones, moves and first registrations surface here.
         sync_plan_todos(
             &self.tools,
             &mut self.journal,

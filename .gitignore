@@ -8,24 +8,24 @@
 /docs/research/
 /Makefile.toml
 
-# 工具运行时生成的项目内缓存与临时文件
+# Project-local caches and scratch files created by tools at runtime
 /.pp-cache/
 /.pp-tmp-*/
 
-# agent 指南文件，本地维护
+# Agent guideline files, maintained locally
 /AGENTS.md
 /crates/*/AGENTS.md
 /tests/AGENTS.md
 
-# git worktree 目录
+# git worktree directories
 /.worktree/
 
-# Playwright MCP 运行时日志与页面快照
+# Playwright MCP runtime logs and page snapshots
 /.playwright-mcp/
 
-# zcode 本地插件配置
+# zcode local plugin configuration
 /.zcode/
 
-# pp-stats 前端开发期工具链产物
+# pp-stats frontend development toolchain artifacts
 /crates/pp-stats/node_modules/
 /crates/pp-stats/.playwright/

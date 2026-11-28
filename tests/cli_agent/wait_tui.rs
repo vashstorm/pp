@@ -1,4 +1,4 @@
-// 通过真实 PTY 验证等待刷新、Steering、取消和两种协议的结果回填。
+// Verified through a real PTY: wait refresh, Steering, cancellation and result write-back for both protocols.
 fn wait_tui_start(
     protocol: &str,
     fixture: &TestServer,
@@ -67,7 +67,7 @@ fn wait_tui_esc_reaps_subagent_background_process_before_restoring_input() {
         pty.input("\x1b");
         cancel_wait_pid_dead(&project.path().join("child-wait.pid"));
         cancel_wait_cancelled_ready(&mut pty);
-        pty.wait_for("子 Agent 真正收尾后显示取消终态", |screen| {
+        pty.wait_for("cancellation terminal state shown once the subagent really wraps up", |screen| {
             let text = screen.contents();
             text.contains("1/1 settled") && text.contains("[task] r1 · cancelled")
         });

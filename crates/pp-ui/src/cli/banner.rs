@@ -1,4 +1,5 @@
-//! 行模式启动与退出：stdin 逐行读取、LSP 报告、启动横幅与恢复提示。
+//! Line-mode startup and exit: line-by-line stdin reads, LSP reports, the startup
+//! banner and resume hints.
 
 use anyhow::{Context, Result};
 use crossterm::style::Stylize;
@@ -15,14 +16,16 @@ use pp_config::skills;
 use pp_core::cancellation;
 use pp_runtime::agent;
 
-/// 行模式 stdin 的逐行读取结果；专用线程只负责 I/O，命令仍在主线程分发。
+/// Result of a line read from line-mode stdin; the dedicated thread only does I/O,
+/// commands are still dispatched on the main thread.
 pub(crate) enum CliInput {
     Line(String),
     Eof,
     Error(io::Error),
 }
 
-/// 空闲轮询周期：既驱动迟到 LSP 诊断展示，也让主线程保持对输入的响应。
+/// Idle poll interval: drives late LSP diagnostic display and keeps the main thread
+/// responsive to input.
 pub(super) const CLI_IDLE_TICK: Duration = Duration::from_millis(50);
 
 pub(crate) fn cli_input_lines() -> Result<mpsc::Receiver<CliInput>> {
@@ -54,8 +57,9 @@ pub(crate) fn cli_input_lines() -> Result<mpsc::Receiver<CliInput>> {
     Ok(receiver)
 }
 
-/// CLI 各正常/错误退出边界显式回收子 Agent 与 language server；合并走 core 的共享清理结果，
-/// `CleanupError` 保持类型并保留原语义退出码，不能只依赖 Drop 兜底。
+/// Every CLI normal/error exit path explicitly reaps subagents and language servers;
+/// the results are merged through core's shared cleanup, `CleanupError` keeps its type
+/// and the original semantic exit code, so Drop alone is not enough.
 pub fn stop_cli_lsp(agent: Option<&agent::Agent>, result: Result<()>) -> Result<()> {
     let subagents = match agent {
         Some(agent) => agent.shutdown_subagents(),
@@ -69,7 +73,8 @@ pub fn stop_cli_lsp(agent: Option<&agent::Agent>, result: Result<()>) -> Result<
     cancellation::merge_cleanup_result(result, stop, "stopping language servers")
 }
 
-/// stderr 上的 LSP 报告；正文与助手输出分开，控制字符先经显示过滤。
+/// LSP report on stderr; the body is separate from assistant output and control
+/// characters are display-filtered first.
 pub(crate) fn cli_lsp_report(
     report: &pp_core::lsp_report::DiagnosticReport,
     late: bool,
@@ -91,7 +96,8 @@ pub(crate) fn cli_lsp_report(
     );
 }
 
-/// 非 TUI 启动横幅：使用提示、skills/command 诊断与恢复会话提示。
+/// Non-TUI startup banner: usage hints, skill/command diagnostics and the resumed
+/// session hint.
 pub fn prelude(
     skills: &skills::SharedSkills,
     file_commands: &commands::FileCommands,

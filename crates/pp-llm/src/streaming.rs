@@ -15,14 +15,14 @@ use pp_core::events::AgentEvent;
 use serde::{Deserialize, Deserializer, de::Error};
 use std::collections::BTreeMap;
 
-// 正常分片直接交给 SDK；仅在缺少可兼容字段时构造补齐所需的 JSON 树。
+// Normal chunks go straight to the SDK; only a missing compatible field forces the JSON tree needed to patch it in.
 pub(super) struct ResponseEvent(
     pub(super) ResponseStreamEvent,
     pub(super) Option<u64>,
     pub(super) String,
 );
 
-// 在 SDK 丢弃未知扩展前保留缓存写入量；不从输入余量推算。
+// Capture the cache-write amount before the SDK drops unknown extensions; never infer it from the input remainder.
 fn cache_write_tokens(usage: &serde_json::Value, details: &str) -> Option<u64> {
     usage[details]["cache_write_tokens"]
         .as_u64()
@@ -44,9 +44,9 @@ struct RawUsage<'a> {
 impl<'de> Deserialize<'de> for ResponseEvent {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
-        // usage 只随 response.* 生命周期事件出现；先用子串探测短路，
-        // 让占绝大多数的 delta 分片免去一次全文 JSON 扫描。
-        // 探测按带引号的字段名匹配，与空白写法无关；误报只多一次解析，结果不变。
+        // usage only appears with response.* lifecycle events; short-circuit with a substring probe first,
+        // so the overwhelmingly common delta chunks skip a full-text JSON scan.
+        // The probe matches a quoted field name regardless of whitespace; a false positive costs one extra parse and changes no result.
         let written = raw
             .get()
             .contains("\"response\"")
@@ -81,8 +81,8 @@ impl<'de> Deserialize<'de> for ResponseEvent {
             && item.get("type").and_then(serde_json::Value::as_str) == Some("function_call")
             && let Some(object) = item.as_object_mut()
         {
-            // 起始参数缺失或为 null 都表示尚未传输；只归一化起始占位值，
-            // 不修补参数正文，done/completed 仍须带完整的字符串参数。
+            // Missing or null starting arguments both mean nothing was transmitted yet; normalize only the starting placeholder,
+            // never patch the argument body: done/completed must still carry the complete string arguments.
             let arguments = object
                 .entry("arguments")
                 .or_insert_with(|| serde_json::Value::String(String::new()));
@@ -110,8 +110,8 @@ impl<'de> Deserialize<'de> for ResponseEvent {
     }
 }
 
-// Chat Completions 的 BYOT 事件：反序列化边界同时保留线上原文与解析后的值，
-// 失败现场不再对每个分片做第二次 JSON 序列化。
+// Chat Completions BYOT events: the deserialization boundary keeps both the raw wire text and the parsed value,
+// so the failure context needs no second JSON serialization per chunk.
 pub(super) struct ChatEvent {
     pub(super) value: serde_json::Value,
     pub(super) raw: String,
@@ -120,8 +120,8 @@ pub(super) struct ChatEvent {
 impl<'de> Deserialize<'de> for ChatEvent {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
-        // RawValue 只做语法层校验；Syntax／Eof 分类在 BYOT 边界原样保留，
-        // 极端数字等 RawValue 通过、Value 拒绝的输入经 custom 转换为 Data。
+        // RawValue validates syntax only; Syntax/Eof classifications survive the BYOT boundary unchanged,
+        // and inputs RawValue accepts but Value rejects (extreme numbers) become Data through a custom conversion.
         let value = serde_json::from_str(raw.get()).map_err(D::Error::custom)?;
         Ok(Self {
             value,
@@ -131,8 +131,8 @@ impl<'de> Deserialize<'de> for ChatEvent {
 }
 
 fn normalize_content_index(value: &mut serde_json::Value) {
-    // Command Code 的 DeepSeek 流把内容索引写成 summary_index。
-    // 仅兼容内容事件的有效索引别名，不覆盖标准字段，也不猜测缺失的索引。
+    // Command Code's DeepSeek stream writes the content index as summary_index.
+    // Accept only a valid index alias for content events; never override the standard field or guess a missing index.
     if !matches!(
         value.get("type").and_then(serde_json::Value::as_str),
         Some(
@@ -181,7 +181,7 @@ fn default_output_text_annotations(part: &mut serde_json::Value) {
     }
 }
 
-// 保留 SDK 的核心字段校验，在转换前识别兼容供应商的终止状态与思考扩展。
+// Keep the SDK's core field validation and detect compatible providers' termination states and thinking extensions before conversion.
 pub(super) struct ChatChunk {
     native: CreateChatCompletionStreamResponse,
     thinking: String,
@@ -230,12 +230,12 @@ impl ChatChunk {
                 if choice["index"] == 0 {
                     termination = Some(special);
                 }
-                // SDK 尚未定义这两种状态；保留原始语义，流汇总时独立校验。
+                // The SDK does not define these two states yet; keep their original meaning and validate them separately during aggregation.
                 choice["finish_reason"] = "stop".into();
             }
         }
-        // Copilot 的实际分片可能省略 object；这里只补固定的传输元数据，
-        // 不覆盖已有值，也不推断正文、工具参数、结束状态或用量。
+        // Copilot's real chunks may omit object; fill in fixed transport metadata only,
+        // never override existing values and never infer text, tool arguments, end state or usage.
         if let Some(object) = value.as_object_mut() {
             object
                 .entry("object")
@@ -251,7 +251,7 @@ impl ChatChunk {
     }
 }
 
-// 路径与缺失字段名也属于供应商输入；只输出协议中已知的静态名称。
+// Paths and missing field names are provider input too; emit only static names known to the protocol.
 fn chat_decode_error(error: serde_path_to_error::Error<serde_json::Error>) -> anyhow::Error {
     tracing::error!(
         event = "ai_decode_error",
@@ -335,7 +335,7 @@ fn chat_decode_error(error: serde_path_to_error::Error<serde_json::Error>) -> an
     anyhow::anyhow!("decoding Chat Completions response: {reason} at {path}")
 }
 
-/// 预览白名单：只接受字面量工具名，不把模型原始字符串带进事件与 UI。
+/// Preview allowlist: accept literal tool names only and never carry the model's raw string into events or the UI.
 fn preview_tool(name: &str) -> Option<&'static str> {
     match name {
         "edit" => Some("edit"),
@@ -461,7 +461,7 @@ impl ChatStream {
                         call.function.arguments.push_str(&arguments);
                     }
                 }
-                // 工具名未补齐前不预览；已发字节偏移保证分片只追加一次。
+                // No preview until the tool name is complete; the emitted byte offset guarantees each chunk is appended once.
                 if let Some(tool) = preview_tool(&call.function.name) {
                     let sent = self.preview_emitted.entry(delta.index).or_default();
                     let tail = &call.function.arguments[*sent..];
@@ -497,7 +497,7 @@ impl ChatStream {
                 self.calls.is_empty(),
                 "Chat Completions protocol: refusal cannot authorize tool calls"
             );
-            // Copilot 可把拒绝文本放在 content；转换为原有的拒绝答复语义。
+            // Copilot may put the refusal text in content; convert it to the existing refusal-answer semantics.
             let content = std::mem::take(&mut self.content);
             if !content.trim().is_empty() {
                 self.refusal = content;
@@ -507,8 +507,8 @@ impl ChatStream {
             self.finish_reason.is_some(),
             "Chat Completions protocol: stream ended before finish_reason"
         );
-        // Chat Completions 的响应默认属于助手；部分供应商整轮省略 role。
-        // 仅在汇总结束时补默认值，保留后续显式角色与冲突角色的校验。
+        // Chat Completions responses belong to the assistant by default; some providers omit role for a whole turn.
+        // Fill the default only when aggregation ends, keeping later validation of explicit and conflicting roles.
         let role = self.role.unwrap_or(Role::Assistant);
         // Feed the reconstructed batch through the existing complete-response validator.
         Ok(CreateChatCompletionResponse {
@@ -826,7 +826,7 @@ impl ResponsesStream {
                     });
                 }
             }
-            // 新增项和注释不能触发工具执行，也不计入输出字节。
+            // Added items and annotations cannot trigger tool execution and do not count toward output bytes.
             _ => {}
         }
         if bytes > 0 {
@@ -863,7 +863,7 @@ impl ResponsesStream {
         emit: &mut dyn FnMut(AgentEvent),
     ) {
         let sent = self.thinking.entry(key).or_default();
-        // done 与 completed 可能重复同一段，只显示尚未输出的后缀。
+        // done and completed may repeat the same segment; show only the suffix that has not been emitted yet.
         let tail = if done {
             text.strip_prefix(sent.as_str()).unwrap_or_default()
         } else {

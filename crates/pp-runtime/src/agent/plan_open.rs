@@ -1,12 +1,13 @@
-//! 从 `/plan-list` 打开既有计划：一律以“仅携带计划”的全新会话继续草稿
-//! 或进入执行前审阅。
+//! Open an existing plan from `/plan-list`: always continue a draft, or enter the pre-execution review,
+//! in a brand-new session that carries only the plan.
 //!
-//! 候选会话不复制原会话的任何消息、推理、摘要或 origin prompt：初始唯一
-//! 用户内容是本地选择动作、计划 ID、实际路径与完整 Markdown 快照。候选
-//! journal 完整提交后才替换当前会话；任何失败都保持原会话、模式、输入与
-//! 文件不变（候选会话文件可能留在会话列表，与 Fresh 批准的失败残留一致）。
-//! 打开动作从不调用模型：ContinueDraft 等待用户下一条输入，Execute 打开
-//! 后只进入本地审阅，执行仍必须经 `approve_plan` 显式批准。
+//! The candidate session copies no message, reasoning, summary or origin prompt from the original
+//! session: the initial sole user content is the local selection action, the plan ID, the real path and
+//! the full Markdown snapshot. The current session is replaced only after the candidate journal is fully
+//! committed; any failure keeps the original session, mode, input and files unchanged (the candidate
+//! session file may stay in the session list, matching the failure residue of a Fresh approval). Opening
+//! never calls the model: ContinueDraft waits for the user's next input, and Execute only enters local
+//! review, so execution still requires an explicit `approve_plan` approval.
 
 use super::{
     Agent, ExecutionPreparation, Session,
@@ -23,11 +24,12 @@ use pp_core::plan::PlanStatus;
 use pp_core::plan::WorkMode;
 use pp_core::plan::WorkflowState;
 
-/// 已提交任务但 revision-0 尚未首存的草稿不可被“另开会话”静默丢弃。
+/// A draft that already has committed tasks but whose revision-0 was never first-saved must not be
+/// silently dropped by "open another session".
 const UNSAVED_DRAFT: &str = "Leave the current Plan mode before opening another plan.";
 
-/// 初始唯一用户内容：本地选择动作 + 计划 ID + 实际路径 + 完整 Markdown
-/// 快照；绝不携带原会话聊天或推理。
+/// Initial sole user content: local selection action + plan ID + real path + full Markdown snapshot;
+/// it never carries the original session's chat or reasoning.
 fn selection_prompt(intent: PlanOpenIntent, id: &str, path: &str, content: &str) -> String {
     let action = match intent {
         PlanOpenIntent::ContinueDraft => "Continue planning the selected Markdown plan below.",
@@ -38,7 +40,7 @@ fn selection_prompt(intent: PlanOpenIntent, id: &str, path: &str, content: &str)
     )
 }
 
-/// 固定的 origin_prompt 文案；`<path>` 为登记表解析出的实际项目相对路径。
+/// Fixed origin_prompt copy; `<path>` is the real project-relative path resolved from the catalog.
 fn origin_prompt(intent: PlanOpenIntent, path: &str) -> String {
     match intent {
         PlanOpenIntent::ContinueDraft => {
@@ -51,15 +53,17 @@ fn origin_prompt(intent: PlanOpenIntent, path: &str) -> String {
 }
 
 impl Agent {
-    /// 从列表打开计划：ContinueDraft 建立 Plan/Draft 新会话继续草稿；
-    /// Execute 建立新会话打开六项操作菜单，有 TODO 为 Ready，否则为 Draft（执行仍需本地批准，
-    /// `validate` 显式允许 Plan+Ready+Plans 的预执行审阅状态）。
+    /// Open a plan from the list: ContinueDraft creates a new Plan/Draft session that continues the
+    /// draft; Execute creates a new session and opens the six-item action menu, Ready when a TODO exists
+    /// and Draft otherwise (execution still needs local approval, and `validate` explicitly allows the
+    /// Plan+Ready+Plans pre-execution review state).
     ///
-    /// 顺序：当前会话 journal.check 与当前草稿的 workflow/登记同步 → 取得
-    /// 计划 lease 并按 ID 重查登记、核对精确字节 → 候选会话/journal 完整
-    /// 提交 → Plan 模式 MCP shutdown 门禁 → 全部成功才替换当前会话并发布
-    /// `replay = Some(空)` 的 ExecutionPreparation。失败出口候选被丢弃，
-    /// 原会话/模式/输入/文件保持不变。
+    /// Order: journal.check on the current session plus workflow/registration sync of the current draft ->
+    /// take the plan lease and re-read the registration by ID, verifying the exact bytes -> fully commit
+    /// the candidate session/journal -> Plan-mode MCP shutdown gate -> only when everything succeeded is
+    /// the current session replaced and an ExecutionPreparation with `replay = Some(empty)` published.
+    /// On any failure path the candidate is dropped and the original session/mode/input/files stay
+    /// unchanged.
     pub fn open_listed_plan(
         &mut self,
         selection: &PlanSelection,
@@ -68,24 +72,27 @@ impl Agent {
     ) -> Result<ExecutionPreparation> {
         cancellation::check(cancellation)?;
         self.journal.check()?;
-        // 未落盘的 revision-0 草稿没有可保存的工作；先保存或放弃，避免
-        // “另开会话”被当作隐式丢弃。
+        // An unsaved revision-0 draft has no work to save; save or discard it first so that "open
+        // another session" cannot look like an implicit discard.
         if let Some(plan) = &self.workflow.plan
             && plan.revision == 0
             && !plan.origin_prompt.trim().is_empty()
         {
             bail!("{UNSAVED_DRAFT}");
         }
-        // 当前已保存草稿的 workflow/登记先同步成功，才准备候选。
+        // The workflow/registration of the already saved draft must sync successfully before a candidate
+        // is prepared.
         self.reconcile_plan_location()?;
-        // 释放当前任务持有的 lease，避免同一进程对同一锁文件的自冲突；
-        // 失败出口不恢复它（worker 只在任务间隙调用，按需重取）。
+        // Release the lease held by the current task so the same process cannot self-conflict on the same
+        // lock file; failure paths do not restore it (the worker only calls between tasks and re-takes it
+        // on demand).
         self.plan_lease = None;
-        // 取得 lease 并按 ID 重查登记、核对当前路径与精确字节；此后锁顺序
-        // 固定为 lease → 登记表锁。
+        // Take the lease, re-read the registration by ID and verify the current path and exact bytes;
+        // from here on the lock order is fixed as lease -> catalog lock.
         let verified = self.verify_selection(selection)?;
-        // 意图与生命周期位置匹配：继续仅限 Drafts（c 的约束），执行审阅
-        // 允许 Drafts/Plans；Done 只读，不能从列表继续或执行。
+        // Intent must match the lifecycle location: continuing is limited to Drafts (constraint c) while
+        // execution review allows Drafts/Plans; Done is read-only and cannot be continued or executed from
+        // the list.
         ensure!(
             match intent {
                 PlanOpenIntent::ContinueDraft => verified.location == PlanLocation::Drafts,
@@ -114,7 +121,8 @@ impl Agent {
             approved_tasks: None,
         };
         plan::validate_content(&document.content)?;
-        // 载入计划只建立规划会话；任务投影在本地批准执行后初始化。
+        // Loading a plan only creates a planning session; the task projection is initialized after local
+        // execution approval.
         let candidate_workflow = WorkflowState {
             mode: WorkMode::Plan,
             plan: Some(document),
@@ -158,8 +166,8 @@ impl Agent {
                 base_system: &self.base_system,
                 prompt_source: self.prompt_source.as_ref(),
             };
-            // 候选 journal 独立 fork：目标会话先完整提交，提交失败时原
-            // 会话的 journal 从未被替换。
+            // The candidate journal forks independently: the target session is fully committed first, so a
+            // commit failure leaves the original session's journal never replaced.
             let mut journal = self.journal.fork_empty();
             journal.commit_plan_handoff(
                 &metadata,
@@ -171,7 +179,8 @@ impl Agent {
         })();
         let (session, journal) = prepared?;
         self.ensure_plan_mcp_access(cancellation)?;
-        // 完整提交后才替换当前会话；只有真正切换才清除撤销内存资格。
+        // The current session is replaced only after the full commit; only a real switch clears the undo
+        // memory entitlement.
         self.catalog = catalog;
         self.role_route = role_route;
         self.session = session;
@@ -191,7 +200,8 @@ impl Agent {
         self.tools.permission.clear_session();
         self.journal = journal;
         self.tools.artifacts = Default::default();
-        // 打开既有计划会建立候选会话根；旧根的临时管道不随导航保留。
+        // Opening an existing plan creates a candidate session root; the old root's temporary pipes do not
+        // survive the navigation.
         self.tools.reset_pipe_store();
         if let Some(id) = self.journal.id() {
             let _ = self.tools.artifacts.bind(self.journal.directory(), id);
@@ -267,7 +277,8 @@ mod tests {
         }
     }
 
-    /// 与 plan_workflow 测试相同的原生用户文本提取，用于断言候选会话内容。
+    /// Native user-text extraction identical to the plan_workflow tests, used to assert candidate session
+    /// content.
     fn user_texts(agent: &Agent) -> Vec<String> {
         let native = serde_json::to_value(&agent.session).unwrap();
         let request = &native["request"];
@@ -318,7 +329,7 @@ mod tests {
                     &CancellationToken::new(),
                 )
                 .unwrap();
-            // 候选 workflow：Plan/Draft，同 ID/名称，revision=1，无批准冻结。
+            // Candidate workflow: Plan/Draft, same ID/name, revision=1, no frozen approval.
             let document = agent.workflow.plan.as_ref().unwrap();
             assert_eq!(agent.workflow.mode, WorkMode::Plan);
             assert_eq!(document.status, PlanStatus::Draft);
@@ -336,13 +347,14 @@ mod tests {
                     listed_path()
                 )
             );
-            // 发布产物：replay 为空、session_id 指向候选会话。
+            // Published product: empty replay, session_id pointing at the candidate session.
             assert!(matches!(&preparation.replay, Some(replay) if replay.is_empty()));
             assert_eq!(preparation.session_id.as_deref(), agent.journal.id());
             assert_ne!(preparation.session_id.as_deref(), None);
             assert_eq!(preparation.workflow, agent.workflow);
-            // 候选会话不含旧聊天：唯一用户消息携带选择动作、ID 与完整快照，
-            // 原会话的探索文本绝不出现；打开动作从未产生助手回复或请求。
+            // The candidate session holds no old chat: the single user message carries the selection
+            // action, the ID and the full snapshot, while the original session's exploration text never
+            // appears; opening never produced an assistant reply or a request.
             let texts = user_texts(&agent);
             assert_eq!(texts.len(), 1);
             assert!(texts[0].contains("Continue planning the selected Markdown plan below."));
@@ -354,7 +366,7 @@ mod tests {
                 native_entry_count(&agent),
                 if protocol == "completion" { 2 } else { 1 }
             );
-            // 原会话文件保留：候选 fork 产生第二个会话记录。
+            // The original session file stays: the candidate fork produces a second session record.
             let sessions = std::fs::read_dir(dir.path().join("sessions"))
                 .unwrap()
                 .count();
@@ -378,7 +390,7 @@ mod tests {
             assert!(agent.workflow.todos.is_empty());
             assert!(agent.workflow.todo_plan_id.is_none());
             assert!(preparation.todo_snapshot.is_none());
-            // Plan/Ready 预执行审阅状态：validate 显式允许；未批准、无报告。
+            // Plan/Ready pre-execution review state: validate explicitly allows it; unapproved, no report.
             let document = agent.workflow.plan.as_ref().unwrap();
             assert_eq!(document.content, selection.content);
             assert_eq!(agent.workflow.mode, WorkMode::Plan);
@@ -394,12 +406,13 @@ mod tests {
                 )
             );
             assert!(matches!(&preparation.replay, Some(replay) if replay.is_empty()));
-            // 审阅 token 由 read_plan 在新会话上补发，绑定候选会话 ID。
+            // read_plan re-issues the review token on the new session, bound to the candidate session ID.
             let review = agent.read_plan().unwrap();
             assert_eq!(review.token.session_id, agent.journal.id().unwrap());
             assert_eq!(review.token.plan_id, LISTED_ID);
             assert_eq!(review.token.content, LISTED_CONTENT);
-            // 无审批就没有执行：候选会话没有助手回复，也不连接 MCP。
+            // No approval means no execution: the candidate session has no assistant reply and connects no
+            // MCP.
             assert_eq!(user_texts(&agent).len(), 1);
             let request = serde_json::to_value(&agent.session).unwrap()["request"].clone();
             let tools = request["tools"].as_array().unwrap();
@@ -428,7 +441,7 @@ mod tests {
                 .canonicalize()
                 .unwrap()
                 .join("AGENTS.md")]);
-            // 项目规则读取拒绝 symlink：候选准备在任何写入前失败。
+            // Project-rule loading refuses symlinks: candidate preparation fails before any write.
             let target = dir.path().join("agents-source.md");
             std::fs::write(&target, "rules\n").unwrap();
             std::os::unix::fs::symlink(&target, dir.path().join("AGENTS.md")).unwrap();
@@ -438,7 +451,7 @@ mod tests {
                 &CancellationToken::new(),
             ));
             assert!(!error.is_empty());
-            // 原会话/模式/输入与计划文件全部保持不变。
+            // The original session/mode/input and the plan file all stay unchanged.
             assert_eq!(
                 serde_json::to_value(&agent.session).unwrap(),
                 previous_session
@@ -459,8 +472,9 @@ mod tests {
             let selection = selection();
             let previous_session = serde_json::to_value(&agent.session).unwrap();
             let previous_workflow = agent.workflow.clone();
-            // sessions 目录只读：候选 journal 首次建文件失败。特权环境可能
-            // 绕过权限位，此时跳过该失败注入。
+            // Read-only sessions directory: the candidate journal fails on its first file creation. A
+            // privileged environment can bypass permission bits, in which case this failure injection is
+            // skipped.
             let sessions = dir.path().join("sessions");
             let original = std::fs::metadata(&sessions).unwrap().permissions();
             std::fs::set_permissions(&sessions, std::fs::Permissions::from_mode(0o555)).unwrap();
@@ -508,7 +522,7 @@ mod tests {
                 ));
                 assert!(error.contains("cannot be opened"), "{error}");
             }
-            // 失败不产生任何会话或绑定变化。
+            // A failure produces no session or binding change.
             assert!(agent.workflow.plan.is_none());
             assert!(agent.journal.id().is_none());
         }
@@ -516,7 +530,8 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
-            // 无任务正文也可打开菜单，但保持 Draft，执行仍被审批门禁拒绝。
+            // The menu also opens without task prose, but the plan stays Draft and execution is still
+            // rejected by the approval gate.
             write_listed_file(&agent);
             std::fs::write(
                 dir.path().join(listed_path()),
@@ -541,7 +556,8 @@ mod tests {
                 PlanStatus::Draft
             );
             assert_eq!(preparation.workflow.mode, WorkMode::Plan);
-            // 未首存的 revision-0 草稿拒绝“另开会话”，避免静默丢弃。
+            // A never-saved revision-0 draft refuses "open another session" so it cannot be dropped
+            // silently.
             let mut document = PlanDocument::new().unwrap();
             document.origin_prompt = "pending first save".to_owned();
             agent.workflow = WorkflowState {
@@ -556,7 +572,7 @@ mod tests {
                 &CancellationToken::new(),
             ));
             assert_eq!(error, UNSAVED_DRAFT);
-            // 未登记的选择被拒绝：绝不按列表下标直接操作磁盘。
+            // Unregistered selections are rejected: never touch the disk by list index alone.
             agent.workflow = WorkflowState::default();
             let unregistered = PlanSelection {
                 id: "ffffffffffffffffffffffffffffffff".to_owned(),

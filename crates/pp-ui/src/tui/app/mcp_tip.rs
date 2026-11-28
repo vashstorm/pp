@@ -1,10 +1,13 @@
-//! 启动期 MCP 建连的多行提示状态：逐服务进度与最终总状态，由欢迎页渲染。
+//! Multi-line startup MCP connect hint state: per-server progress plus the final overall
+//! status, rendered by the welcome page.
 //!
-//! 建连由 runtime 在后台线程完成，这里只轮询内存快照：绘制与事件循环不触网。
+//! The runtime connects on a background thread; this only polls an in-memory snapshot, so
+//! drawing and the event loop never touch the network.
 use crate::tui::App;
 
 impl App {
-    /// 建连进度变化时返回 `true`，让主循环重绘；文案与耗时由 runtime 唯一提供。
+    /// Returns `true` when the connect progress changed so the main loop redraws; the wording
+    /// and timings come solely from the runtime.
     pub(in crate::tui) fn mcp_tip_tick(&mut self) -> bool {
         if self.mcp_tip_dismissed {
             if self.mcp_tip.is_empty() {
@@ -25,7 +28,8 @@ impl App {
         true
     }
 
-    /// 首个任务提交后让出：总状态只作为启动提示，不常驻占用界面。
+    /// Yields after the first task is submitted: the overall status is a startup hint only and
+    /// never occupies the interface permanently.
     pub(in crate::tui) fn dismiss_mcp_tip(&mut self) {
         self.mcp_tip_dismissed = true;
         self.mcp_tip.clear();

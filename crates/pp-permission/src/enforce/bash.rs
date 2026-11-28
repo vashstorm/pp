@@ -1,4 +1,4 @@
-//! Bash 命令专用 AST 安全门禁、`[[rules]]` 精确规则匹配与沙盒扩权派生。
+//! Bash-specific AST security gate, `[[rules]]` exact rule matching and sandbox expansion derivation.
 
 use super::{ApprovedBashScope, append_load_error, policy_severity, truncate_summary};
 use crate::auto_review::AutoReviewRequest;
@@ -14,8 +14,8 @@ const PROMPT_CMD_MAX_CHARS: usize = 2048;
 const AUTO_REVIEW_CMD_MAX_CHARS: usize = 4096;
 
 impl crate::Gate {
-    /// Bash 专用完整门禁：串联 AST 危险分类、细粒度 `[[rules]]`、`.git`/`.agents` 保护、
-    /// 会话/工作区外读取审批、出站网络需求、`auto_review` 审阅与 `[[sandbox]]` 作用域派生。
+    /// Full Bash-specific gate: chains AST hazard classification, fine-grained `[[rules]]`, `.git`/`.agents` protection,
+    /// session/outside-workspace read approval, outbound network needs, `auto_review` review and `[[sandbox]]` scope derivation.
     #[allow(clippy::too_many_arguments)]
     pub fn authorize_bash(
         &self,
@@ -204,7 +204,7 @@ impl crate::Gate {
             })
         });
 
-        // 筛选确实处于保护状态的写目标（如果在 permission.toml 中显式允许写则不拦截）
+        // Keep only write targets that are actually still protected (an explicit write allowance in permission.toml does not block)
         let mut protected_targets = analysis.protected_write_targets(cwd);
         protected_targets.retain(|path| {
             !matches!(
@@ -569,7 +569,7 @@ fn extract_bash_command(arguments: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// 同级严重度下 `exact` 匹配优先于 `prefix` 匹配；同为 `prefix` 时最长前缀优先。
+/// At equal severity `exact` matches outrank `prefix` matches; among `prefix` matches the longest prefix wins.
 fn matching_bash_rule<'a>(leaf: &LeafCommand, rules: &'a [BashRule]) -> Option<&'a BashRule> {
     rules
         .iter()

@@ -1,4 +1,4 @@
-//! `rg` 的工具 schema、参数结构、宽容归一化与筛选参数构造。
+//! `rg` tool schema, argument struct, tolerant normalization and filter argument construction.
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
 use pp_config::config::{EditMode, RgSettings};
@@ -80,7 +80,7 @@ pub(super) struct Args {
     case_sensitive: Option<bool>,
     #[serde(default, rename = "-i")]
     ignore_case: Option<bool>,
-    // 正文始终带行号，兼容按 ripgrep 习惯传入的参数。
+    // Bodies always carry line numbers; accepts the flag as ripgrep users pass it.
     #[serde(default, rename = "-n")]
     _line_number: bool,
     #[serde(default)]
@@ -105,7 +105,7 @@ pub(super) struct Args {
     pub(super) types: Option<Many>,
     #[serde(default, rename = "-g")]
     pub(super) globs: Option<Many>,
-    // `glob` 是 `-g` 的别名：常见调用方用不带短横线的名字传 override glob。
+    // `glob` is an alias for `-g`: callers commonly pass the override glob without the leading dash.
     #[serde(default)]
     pub(super) glob: Option<Many>,
     #[serde(default)]
@@ -114,12 +114,12 @@ pub(super) struct Args {
     pub(super) max_output_tokens: Option<u64>,
     #[serde(default)]
     pub(super) head_limit: Option<f64>,
-    /// 归一化时丢弃的未知参数名，结果里以提示返回给模型。
+    /// Unknown argument names dropped during normalization, returned to the model as a hint in the result.
     #[serde(skip)]
     pub(super) ignored: Vec<String>,
 }
 
-/// 规范参数名；不在此列表（也不是别名）的键会被忽略并提示。
+/// Canonical argument names; keys not in this list (and not aliases) are ignored with a hint.
 const KNOWN_KEYS: &[&str] = &[
     "pattern",
     "path",
@@ -142,7 +142,7 @@ const KNOWN_KEYS: &[&str] = &[
     "max_output_tokens",
     "head_limit",
 ];
-/// 模型常按 ripgrep CLI 或其他 Grep 工具的习惯起名：别名 → 规范名。
+/// Models often name arguments after the ripgrep CLI or another Grep tool: alias → canonical name.
 const KEY_ALIASES: &[(&str, &str)] = &[
     ("A", "-A"),
     ("B", "-B"),
@@ -165,7 +165,7 @@ const KEY_ALIASES: &[(&str, &str)] = &[
     ("max_lines", "head_limit"),
     ("max_results", "head_limit"),
 ];
-/// 布尔开关形式的输出模式：`-c` → count，`-l` → files_with_matches。
+/// Output modes expressed as boolean flags: `-c` → count, `-l` → files_with_matches.
 const MODE_FLAGS: &[(&str, &str)] = &[("-c", "count"), ("-l", "files_with_matches")];
 const BOOL_KEYS: &[&str] = &["case", "-i", "-n", "-F", "-w", "gitignore"];
 const NUMBER_KEYS: &[&str] = &[
@@ -179,7 +179,7 @@ const NUMBER_KEYS: &[&str] = &[
     "head_limit",
 ];
 
-/// 把字符串形式的布尔（`"true"`/`"false"`）还原为 JSON 布尔，其余值原样返回。
+/// Restore string booleans (`"true"`/`"false"`) to JSON booleans; other values pass through unchanged.
 fn coerce_bool(value: Value) -> Value {
     match &value {
         Value::String(text) if text.trim().eq_ignore_ascii_case("true") => Value::Bool(true),
@@ -187,7 +187,7 @@ fn coerce_bool(value: Value) -> Value {
         _ => value,
     }
 }
-/// 把数字字符串（`"40"`）还原为 JSON 数字，其余值原样返回，交给后续类型校验报错。
+/// Restore numeric strings (`"40"`) to JSON numbers; other values pass through for the later type check to reject.
 fn coerce_number(value: Value) -> Value {
     match &value {
         Value::String(text) => serde_json::from_str::<serde_json::Number>(text.trim())
@@ -196,7 +196,7 @@ fn coerce_number(value: Value) -> Value {
         _ => value,
     }
 }
-/// 可重复的 rg 参数：单个字符串或字符串数组。
+/// Repeatable rg argument: a single string or an array of strings.
 #[derive(Deserialize)]
 #[serde(untagged)]
 pub(super) enum Many {
@@ -212,8 +212,8 @@ impl Many {
     }
 }
 impl Args {
-    /// 执行与权限预检共用的唯一解析入口：先归一化模型常见的参数偏差
-    /// （null、别名、字符串化的布尔/数字、`-c`/`-l` 模式开关、未知键），再严格反序列化。
+    /// The single parse entry shared by execution and the permission pre-check: first normalize the deviations models
+    /// commonly send (null, aliases, stringified booleans/numbers, `-c`/`-l` mode flags, unknown keys), then deserialize strictly.
     pub(super) fn parse(arguments: &str) -> Result<Self> {
         let input: Value = serde_json::from_str(arguments).context("invalid rg arguments")?;
         let Value::Object(input) = input else {

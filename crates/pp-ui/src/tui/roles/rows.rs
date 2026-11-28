@@ -1,4 +1,4 @@
-//! 角色行枚举与当前行的读模型。
+//! Role-row enumeration and the read model of the current row.
 
 use super::*;
 
@@ -58,8 +58,8 @@ impl Panel {
     }
 
     pub(super) fn content_offset(&self) -> u16 {
-        // Roles 视图在角色行之前固定保留一行只读 Override 信息；
-        // 极矮终端无全宽顶栏时，body 首行额外承载视图说明标题。
+        // The Roles view always keeps one read-only Override row before the role rows;
+        // and when a very short terminal has no full-width top bar, the body's first row also carries the view caption.
         if self.has_top_bar { 1 } else { 2 }
     }
 

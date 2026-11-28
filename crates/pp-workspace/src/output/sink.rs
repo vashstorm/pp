@@ -1,4 +1,4 @@
-//! bash／工具输出的增量归一化、有界预览与资源落盘。
+//! Incremental normalization, bounded preview and resource spill for bash/tool output.
 use pp_config::config::OutputSettings;
 use pp_core::events::OutputStream;
 use serde_json::{Value, json};
@@ -100,7 +100,8 @@ impl OutputSink {
             }
             self.inline.append(inline.as_bytes());
         }
-        // 未溢出时只保留内存缓冲；首次溢出才创建资源文件并补写此前正文。
+        // Without overflow only the in-memory buffer is kept; the first overflow creates the
+        // resource file and backfills the earlier body.
         if self.capture.is_none()
             && !self.capture_error
             && (self.column_dropped

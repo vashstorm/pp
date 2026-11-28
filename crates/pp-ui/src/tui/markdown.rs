@@ -8,8 +8,8 @@
 //! splits a grapheme: a single grapheme wider than the available columns keeps
 //! its own physical line and is clipped by the viewport.
 //!
-//! 流式更新完整解析累计正文，保留后置引用、列表续行与 Setext 标题语义。
-//! 后台按语义块与宽度复用物理行，避免未变化块重复换行。
+//! Streaming updates fully re-parse the accumulated body, preserving reference links, list continuations and Setext headings.
+//! Physical lines are reused in the background by semantic block and width, so unchanged blocks are not re-wrapped.
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -77,27 +77,27 @@ enum CachedBlock {
 
 #[derive(Clone, Default)]
 pub(super) struct TailMeta {
-    /// 稳定前缀占用的物理行数（跨帧共享 Arc，绝不被预览改写）。
+    /// Physical lines taken by the stable prefix (the `Arc` is shared across frames and never rewritten by the preview).
     pub(super) stable_rows: usize,
-    /// 活跃尾块在 source 中的起始字节偏移。
+    /// Starting byte offset of the active tail block within source.
     pub(super) tail_source_start: usize,
-    /// 活跃尾块非空时，与稳定前缀之间是否需要插入一个空行。
+    /// Whether an empty line must be inserted between the active tail block and the stable prefix when the tail is non-empty.
     pub(super) needs_separator: bool,
-    /// 末块为未闭合代码块时的续行前缀（用于在预览期 O(delta) 续接并保留既有语法高亮）。
+    /// Continuation prefix when the last block is an unclosed code block (used to continue in O(delta) during the preview while keeping the existing highlighting).
     pub(super) open_code_prefix: Option<Vec<Span<'static>>>,
-    /// 末行的悬挂缩进前缀（超大活跃块超限回退时保留列表/引用缩进）。
+    /// Hanging indent prefix for the last line (keeps the list/quote indent when an oversized active block falls back).
     pub(super) fallback_prefix: Vec<Span<'static>>,
 }
 
 pub(super) struct MarkdownDocument {
     blocks: Vec<Block>,
-    /// 与 `blocks` 一一对应的顶层块行首字节偏移。
+    /// Starting byte offset of each top-level block, one-to-one with `blocks`.
     block_top_starts: Vec<usize>,
-    /// 最后一个顶层块是否为列表（列表受后续空行 tight→loose 规则影响，不提前封闭）。
+    /// Whether the last top-level block is a list (lists are affected by the following blank line's tight→loose rule, so they are not closed early).
     last_top_is_list: bool,
-    /// 源文本末尾是否包含空行（用于判断已封闭的顶层块）。
+    /// Whether the source text ends with a blank line (used to decide which top-level blocks are closed).
     ends_with_blank_line: bool,
-    /// 源文本末尾最后一个换行之后的位置（封闭切分点保留末尾水平缩进）。
+    /// Position after the last newline of the source text (the closed split point keeps the trailing horizontal indent).
     trailing_line_start: usize,
     cached: Vec<Option<CachedBlock>>,
     pub(super) table_tail_start: Option<usize>,
@@ -126,7 +126,7 @@ struct WrapLine {
 #[derive(PartialEq)]
 struct CodeBlock {
     lang: Option<String>,
-    /// 已着色的每行 spans（tab 已展开；高亮失败时为纯色单 span）。
+    /// Colored spans per line (tabs already expanded; a failed highlight falls back to a single solid span).
     lines: Arc<Vec<Arc<Vec<Span<'static>>>>>,
     closed: bool,
     first: Vec<Span<'static>>,
@@ -190,7 +190,7 @@ impl MarkdownDocument {
         matches!(self.blocks.last(), Some(Block::Table(_)))
     }
 
-    // 保留全篇语义解析，只复用语义相等块（或正在生长的同一代码块已定型行）的物理行。
+    // Keep the whole-document semantic parse and reuse physical lines only for semantically equal blocks (or the settled lines of the same code block still growing).
     pub(super) fn update(&mut self, source: &str, streaming: bool) {
         let mut next = parse_streaming(source, streaming);
         next.cached = next
@@ -376,7 +376,7 @@ impl MarkdownDocument {
         self.layout_blocks(width, |_, _| {})
     }
 
-    /// 目录锚点与正文共用同一轮排版，行号包含块间空行与实际换行。
+    /// Table anchors and the body share one layout round; line numbers include inter-block blank lines and actual wrapping.
     pub(super) fn layout_with_headings(
         &self,
         width: u16,

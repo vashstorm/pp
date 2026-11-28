@@ -31,7 +31,7 @@ mod integration {
             assert_eq!(text, "x".repeat(count));
             assert!(!truncated);
         }
-        // 管道层不再截断；跨越旧限额的字符也必须保持完整。
+        // The pipe layer no longer truncates; characters straddling the old cap must also stay intact.
         for prefix in [OUTPUT_LIMIT - 1, OUTPUT_LIMIT - 2, OUTPUT_LIMIT - 3] {
             let mut bytes = vec![b'a'; prefix];
             bytes.extend_from_slice("中😀".as_bytes());

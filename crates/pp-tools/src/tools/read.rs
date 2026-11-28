@@ -35,7 +35,7 @@ pub(super) fn dedup_probe(
     dedup::build_probe(&target, cwd, workspace, mode, limits)
 }
 
-/// 与实际读取共享选择器解析，资源 URI 不参与本地项目规则发现。
+/// Shares selector parsing with the actual read; resource URIs take no part in local project rule discovery.
 pub(super) fn local_path(path: &str, cwd: &Path) -> Result<Option<std::path::PathBuf>> {
     Ok(Target::parse(path, cwd)?.local_path(cwd))
 }
@@ -69,7 +69,7 @@ pub(super) fn agent_result(
     if !source["agent://".len()..].contains('/')
         && let Some(run_id) = metadata["published"]["id"].as_str()
     {
-        // 分页继续读取同一次 Run，避免后续发布替换正文。
+        // The paged continuation reads the same Run, so a later publish cannot replace the body.
         target.source = format!("{source}/{run_id}");
     }
     let bytes = content.as_bytes();
@@ -96,7 +96,8 @@ pub(super) fn artifact(
     let target = Target::parse(path, cwd)?;
     let snapshot = store.snapshot(&target.source, cancellation)?;
     let mut cache = WebCache::default();
-    let mut fetch = |_: &str, _: &CancellationToken| anyhow::bail!("artifact 不支持网络读取");
+    let mut fetch =
+        |_: &str, _: &CancellationToken| anyhow::bail!("artifact does not support network reads");
     let mut result = FileReader.read(
         FileInput {
             target,
@@ -138,7 +139,7 @@ pub(super) fn approved_session(
             limits,
             mode,
             cache: &mut WebCache::default(),
-            fetch: &mut |_, _| unreachable!("会话文件仅支持本地读取"),
+            fetch: &mut |_, _| unreachable!("session files support local reads only"),
             cancellation,
             snapshots: None,
         },
@@ -154,14 +155,14 @@ pub struct ReadResult {
     pub images: Vec<ToolImage>,
 }
 
-/// 同步读取接口；每种实现声明自己的输入类型，共享工具结果格式。
+/// Synchronous read interface; each implementation declares its own input type but shares the tool result format.
 trait Read {
     type Input;
 
     fn read(&self, input: Self::Input, context: &mut ReadContext<'_, '_>) -> Result<ReadResult>;
 }
 
-/// 每次调用借用运行环境，不持有独立的异步运行时或会话状态。
+/// Each call borrows the run environment and holds no separate async runtime or session state.
 struct ReadContext<'a, 'fetch> {
     limits: ToolLimits,
     mode: EditMode,
@@ -267,7 +268,7 @@ pub(super) fn run(
     )
 }
 
-/// 主聊天的显式本地引用：路径按字面处理，不启用 URL、技能和行段语法。
+/// Explicit local reference from the main chat: the path is literal, with URL, skill and line-range syntax disabled.
 pub fn local_reference(
     path: &Path,
     limits: ToolLimits,
@@ -288,20 +289,25 @@ pub fn local_reference(
             .iter()
             .any(|e| extension.eq_ignore_ascii_case(e));
         if !image_path && !image::is_image(&probe) {
-            anyhow::ensure!(!probe.contains(&0), "引用文件不是文本或受支持的图片");
+            anyhow::ensure!(
+                !probe.contains(&0),
+                "referenced file is not text or a supported image"
+            );
             if let Err(error) = std::str::from_utf8(&probe) {
                 anyhow::ensure!(
                     size > probe.len() as u64
                         && error.error_len().is_none()
                         && error.valid_up_to() >= probe.len().saturating_sub(3),
-                    "引用文本必须使用 UTF-8 编码"
+                    "referenced text must be UTF-8 encoded"
                 );
             }
         }
     }
     let target = Target::literal(path.to_string_lossy().into_owned());
     let mut cache = WebCache::default();
-    let mut fetch = |_: &str, _: &CancellationToken| anyhow::bail!("本地引用不支持网络读取");
+    let mut fetch = |_: &str, _: &CancellationToken| {
+        anyhow::bail!("local references do not support network reads")
+    };
     FileReader.read(
         FileInput {
             target,

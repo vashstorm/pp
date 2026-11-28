@@ -1,5 +1,5 @@
-//! 保存诊断的同步协调器：两个受管 worker、路径 mutation 取消与独立 owner inbox。
-//! worker 不接触 Agent、journal 或终端；显示和模型消费由调用线程分别确认。
+//! Synchronization coordinator for save diagnostics: two managed workers, path-mutation cancellation and a per-owner inbox.
+//! Workers never touch the agent, the journal or the terminal; display and model consumption are confirmed separately by the calling thread.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -51,7 +51,7 @@ struct Mutation {
     cancellation: CancellationToken,
 }
 
-/// 必须在等待 write_lock 或客户端 operation 之前取得。
+/// Must be acquired before waiting on write_lock or a client operation.
 #[derive(Clone)]
 pub struct Ticket {
     path: PathBuf,
@@ -103,7 +103,7 @@ struct OwnerState {
     ledger: HashMap<String, HashSet<String>>,
 }
 
-/// 冻结报告只展示一次；在 native history 提交前不能确认模型消费。
+/// A frozen report is displayed only once; model consumption cannot be confirmed before the native history commit.
 #[derive(Clone)]
 pub struct Delivery {
     pub id: u64,
@@ -154,7 +154,7 @@ impl Owner {
         state.ledger.clear();
     }
 
-    /// 只返回仍属于当前 owner/session、路径 mutation 与文档版本的报告。
+    /// Return only the reports that still belong to the current owner/session, path mutation and document version.
     pub fn pending(&self, registry: &Registry) -> Result<Vec<Delivery>> {
         if let Some(error) = registry
             .diagnostics()
@@ -305,7 +305,7 @@ impl Coordinator {
         }
         let workers = std::mem::take(&mut *self.workers.lock().unwrap_or_else(|e| e.into_inner()));
         for worker in workers {
-            // 最后一个 Registry 句柄也可能由本 worker 放下；不能 join 自己。
+            // The last Registry handle may also be dropped by this worker; it cannot join itself.
             if worker.thread().id() != std::thread::current().id() && worker.join().is_err() {
                 self.shared
                     .state
@@ -360,7 +360,7 @@ impl Coordinator {
         Ok(())
     }
 
-    /// 唯一的内联等待预算；超时后相同任务继续，不重发诊断请求。
+    /// The single inline wait budget; after a timeout the same job continues without re-sending the diagnostic request.
     pub fn collect_after_save(
         &self,
         registry: &Registry,
@@ -504,7 +504,7 @@ fn worker(shared: Arc<Shared>) {
                 state.active.remove(&job.ticket.path);
             }
         }
-        // 清理失败不受 mutation/session 过期丢弃规则影响，退出时仍必须上抛。
+        // Cleanup failures are exempt from the mutation/session expiry drop rules and must still surface on exit.
         if result
             .as_ref()
             .is_err_and(|error| error.is::<CleanupError>())
@@ -574,7 +574,7 @@ fn worker(shared: Arc<Shared>) {
 }
 
 fn deduplicate(state: &mut OwnerState, report: &mut DiagnosticReport, enabled: bool) {
-    // 未验证/部分失败不能清空旧问题；只有有效报告参与账本。
+    // Unverified/partial failures must not clear previous problems; only valid reports take part in the ledger.
     let verified = report.servers.iter().any(|server| {
         matches!(
             server.status,
@@ -622,7 +622,7 @@ fn deduplicate(state: &mut OwnerState, report: &mut DiagnosticReport, enabled: b
 }
 
 fn message_identity(message: &str) -> &str {
-    // CLI 诊断可能自带 `path:line:column: ` 前缀；位置改变不代表新问题。
+    // CLI diagnostics may carry their own `path:line:column: ` prefix; a changed position does not mean a new problem.
     if let Some((prefix, suffix)) = message.split_once(": ") {
         let mut positions = prefix.rsplit(':');
         if positions

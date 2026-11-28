@@ -116,7 +116,7 @@ fn permission_modes_tiers_policies_and_hooks() {
         }
     }
     {
-        // Full Access (yolo) 也不能绕过 hook 的 ask。
+        // Full Access (yolo) must not bypass the hook's ask either.
         let mut yolo = gate(PermissionMode::DangerFullAccess, &[]);
         yolo.set_handler(approve_handler());
         enforce_with_ask(&yolo, "write", "confirm the write").unwrap();
@@ -153,7 +153,9 @@ fn permission_modes_tiers_policies_and_hooks() {
         ] {
             for name in ["read", "write", "bash", "lsp", "mcp__local__tool"] {
                 let mut gate = self::gate(PermissionMode::DangerFullAccess, &[(name, policy)]);
-                gate.set_handler(Box::new(|_, _| panic!("YOLO 不应触发权限回调")));
+                gate.set_handler(Box::new(|_, _| {
+                    panic!("YOLO must not trigger the permission callback")
+                }));
                 enforce(&gate, name, &bash("rm -rf /")).unwrap();
             }
         }
@@ -257,7 +259,7 @@ fn critical_commands_mode_cycling_and_auto_review() {
         let gate = Gate::for_process(dir.path(), None, false);
         assert_eq!(gate.snapshot(), PermissionMode::WorkspaceWrite);
         assert_eq!(gate.sandbox_mode(), None);
-        // set_config 不得覆盖进程默认 Ask for approval 档位；未显式覆盖时不接管 auto 降级策略
+        // set_config must not override the process default Ask for approval mode; without an explicit override it does not take over auto degradation
         gate.set_config(ToolsSettings::default());
         assert_eq!(gate.snapshot(), PermissionMode::WorkspaceWrite);
         assert_eq!(gate.sandbox_mode(), None);
@@ -285,7 +287,7 @@ fn critical_commands_mode_cycling_and_auto_review() {
         let root = dir.path().canonicalize().unwrap();
         let token = CancellationToken::new();
 
-        // 1. REVIEW 返回 Pass -> 自动放行，不弹窗
+        // 1. REVIEW returns Pass -> allowed automatically, no prompt
         let mut pass_gate = Gate::for_process(&root, Some(PermissionMode::AutoReview), false);
         pass_gate.set_auto_review_handler(Arc::new(|req, _| {
             assert_eq!(req.mode, PermissionMode::AutoReview);
@@ -316,7 +318,7 @@ fn critical_commands_mode_cycling_and_auto_review() {
             .unwrap();
         assert_eq!(scope.allow_protected, vec![root.join(".git")]);
 
-        // 2. REVIEW 返回 Deny -> 回退人工弹窗并展示理由
+        // 2. REVIEW returns Deny -> fall back to the human prompt and show the reason
         let mut deny_gate = Gate::for_process(&root, Some(PermissionMode::AutoReview), false);
         deny_gate.set_auto_review_handler(Arc::new(|_, _| {
             Ok(AutoReviewVerdict {
@@ -358,7 +360,7 @@ fn critical_commands_mode_cycling_and_auto_review() {
             *seen_reason.lock().unwrap()
         );
 
-        // 3. REVIEW 失败（如超时/模型不可用） -> 非交互无 handler 拒绝，有 handler 回退弹窗
+        // 3. REVIEW fails (e.g. timeout/model unavailable) -> non-interactive without a handler denies, with a handler it falls back to the prompt
         let mut err_gate = Gate::for_process(&root, Some(PermissionMode::AutoReview), false);
         err_gate.set_auto_review_handler(Arc::new(|_, _| anyhow::bail!("review timeout")));
         assert!(
@@ -409,7 +411,7 @@ fn toml_persistence_sandbox_grants_and_fingerprint() {
         std::fs::create_dir_all(cwd.join(".agents")).unwrap();
         let token = CancellationToken::new();
 
-        // 1. 写入受保护目录 .agents/note.md -> 持久化写到 [default.filesystem.":workspace"]
+        // 1. Writing protected directory .agents/note.md -> persisted to [default.filesystem.":workspace"]
         let mut gate = Gate::for_process(&root, Some(PermissionMode::WorkspaceWrite), false);
         gate.set_handler(Box::new(|request, _| {
             assert!(request.session_grant);
@@ -434,7 +436,7 @@ fn toml_persistence_sandbox_grants_and_fingerprint() {
         assert!(text.contains(r#"".agents/note.md" = "write""#), "{text}");
         assert!(!text.contains("[permissions."), "{text}");
 
-        // 同目录另一文件 .agents/other.md 仍需审批！
+        // Another file in the same directory, .agents/other.md, still needs approval!
         let bare = Gate::for_process(&root, Some(PermissionMode::WorkspaceWrite), false);
         bare.authorize_path_write(
             PermissionMode::WorkspaceWrite,
@@ -457,7 +459,7 @@ fn toml_persistence_sandbox_grants_and_fingerprint() {
         )
         .unwrap_err();
 
-        // 2. 联网审批持久化为 [default.network] enabled = true
+        // 2. Network approval persists as [default.network] enabled = true
         let mut net_gate = Gate::for_process(&root, Some(PermissionMode::WorkspaceWrite), false);
         net_gate.set_handler(Box::new(|_, _| Ok(PermissionDecision::ApprovePersistently)));
         net_gate
@@ -487,7 +489,7 @@ fn toml_persistence_sandbox_grants_and_fingerprint() {
             .unwrap();
         assert_eq!(restarted.sandbox_overlay(&cwd).network, Some(true));
 
-        // 3. 忽略旧授权与额外字段，仍加载有效的网络与命令策略。
+        // 3. Legacy grants and extra fields are ignored while the valid network and command policies still load.
         use std::os::unix::fs::PermissionsExt;
         let path = root.join("permission.toml");
         std::fs::write(

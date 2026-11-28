@@ -56,11 +56,11 @@ fn plan_path(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
     dir.join(".pp/plans").join(format!("{id}.md"))
 }
 
-// --- 成功收尾自动归档（阶段三）---
+// --- Automatic archival after a successful finish (stage 3) ---
 const CANARY_FILE: &str = "create-canary.md";
 
-/// Execute + Executed + Plans 的归档夹具：AI 文件名已绑定、登记表已
-/// 注册 Plans 身份、磁盘上已有初始正文。
+/// Archive fixture for Execute + Executed + Plans: the AI file name is already bound, the
+/// registry already holds the Plans identity and the initial body is already on disk.
 fn archive_fixture(
     dir: &std::path::Path,
     protocol: &str,
@@ -106,7 +106,7 @@ fn archive_error(agent: &mut Agent, content: &str) -> String {
     err_message(agent.archive_completed_plan(&mut |_event| {}))
 }
 
-// --- 按 ID 协调（reconcile_plan_location）的定向回归 ---
+// --- Targeted regression for ID reconciliation (reconcile_plan_location) ---
 fn register_entry(agent: &Agent, id: &str, file_name: &str, location: PlanLocation) {
     let workspace = agent.tools.plan_workspace();
     let _lock = pp_tools::plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
@@ -132,7 +132,7 @@ fn registered_entry(agent: &Agent, id: &str) -> (String, PlanLocation) {
     (entry.file_name.clone(), entry.location)
 }
 
-// --- todo 生命周期同步（Step 4）---
+// --- todo lifecycle sync (Step 4) ---
 fn task_states(agent: &Agent) -> Vec<(String, pp_core::todo::TodoStatus, Option<String>)> {
     agent
         .workflow
@@ -143,9 +143,10 @@ fn task_states(agent: &Agent) -> Vec<(String, pp_core::todo::TodoStatus, Option<
         .collect()
 }
 
-/// Execute+Executed 双任务夹具：批准向量冻结、AI 文件名已登记、
-/// 运行态手工置入（第一项 active、第二项 blocked 带原因），磁盘为
-/// 未勾选正文。不播种会话：调用方按需（含 todo 字段裁剪）自行 seed。
+/// Execute+Executed two-task fixture: the approval vector is frozen, the AI file name is
+/// registered, runtime state is placed by hand (first active, second blocked with a reason)
+/// and the on-disk body is unchecked. The session is not seeded: callers seed it as needed
+/// (including trimming todo fields).
 fn executed_todo_fixture(dir: &std::path::Path, protocol: &str) -> (Agent, String, String) {
     const FIRST: &str = "Create hello.txt and read back hello.";
     const SECOND: &str = "Verify the failure boundary.";

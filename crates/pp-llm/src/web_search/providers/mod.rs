@@ -312,7 +312,7 @@ pub(crate) fn strip_html_tags(input: &str) -> String {
     decoded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// 从单个开始标签（`<tag ...>`）中按名称提取属性值，支持单引号、双引号与无引号值。
+/// Extract an attribute value by name from a single opening tag (`<tag ...>`), supporting single-quoted, double-quoted and unquoted values.
 pub(crate) fn extract_attr(tag: &str, name: &str) -> Option<String> {
     let lower = tag.to_ascii_lowercase();
     let bytes = lower.as_bytes();
@@ -361,7 +361,7 @@ pub(crate) fn has_class(tag: &str, class_name: &str) -> bool {
         .is_some_and(|classes| classes.split_ascii_whitespace().any(|c| c == class_name))
 }
 
-/// 查找所有匹配 `<tag ...>` 且包含指定 CSS class 的完整块（正确配对嵌套同名标签）。
+/// Find every complete block matching `<tag ...>` that contains the given CSS class (pairing nested same-name tags correctly).
 pub(crate) fn extract_tag_blocks_by_class<'a>(
     html: &'a str,
     tag_name: &str,
@@ -433,7 +433,7 @@ pub(crate) fn extract_tag_blocks_by_class<'a>(
     blocks
 }
 
-/// 在给定片段内提取首个满足条件的标签 `(open_tag, inner_html)`。
+/// Extract the first matching tag `(open_tag, inner_html)` within the given fragment.
 pub(crate) fn find_first_tag_with_class<'a>(
     fragment: &'a str,
     tag_names: &[&str],

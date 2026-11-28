@@ -1,4 +1,4 @@
-//! Ask 卡片的构造、结果收尾与正文布局。
+//! Construction, result finalization and body layout of the Ask card.
 
 use super::*;
 

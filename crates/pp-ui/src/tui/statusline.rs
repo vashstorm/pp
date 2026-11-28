@@ -31,19 +31,19 @@ pub(super) use workspace::{StatusContext, WorkspaceStatus, workdir_label};
 pub(super) fn accent() -> Color {
     themes::palette().status_accent
 }
-// Shell 模式：草稿以 `!` 开头时输入框上下边框的颜色，区分于普通输入。
+// Shell mode: input-box border color when the draft starts with `!`, distinguishing it from ordinary input.
 pub(super) fn shell_mode() -> Color {
     themes::palette().shell_mode
 }
-// 主输入框指标行背景的权威取值：主输入框与子 Agent 详情共用同一深色底。
+// Authoritative background for the main input box metric row: the main input box and subagent detail share one dark base.
 pub(super) fn input_status_bg() -> Color {
     themes::palette().input_status_bg
 }
-// Plan 模式标签：与 transcript 高亮一致的琥珀色。
+// Plan mode tag: amber, matching the transcript highlight.
 fn plan_mode() -> Color {
     themes::palette().plan_mode
 }
-// 模式标签之外仍需可容纳的最小字段空间（图标+至少一个字符）。
+// Minimum field space still needed beside the mode tag (icon plus at least one character).
 const MIN_AFTER_MODE: usize = FIELD_ICON_WIDTH + 1;
 fn model_color() -> Color {
     themes::palette().status_model
@@ -188,12 +188,12 @@ fn timer_icon(icons: IconMode) -> &'static str {
     }
 }
 const ICON_WIDTH: usize = 2;
-// 分隔符与图标列在宽度预算中的固定开销。
+// Fixed overhead of separator and icon columns in the width budget.
 const SEPARATOR_WIDTH: usize = 3;
 const FIELD_ICON_WIDTH: usize = ICON_WIDTH + 1;
-// 目录字段低于该宽度时先隐藏 git、再缩短模型，而不是把目录挤成空。
+// Below this width for the directory field, hide git first and then shorten the model rather than squeezing the directory to nothing.
 const MIN_DIRECTORY: usize = 8;
-// 速度图标分档阈值（tok/s）：达到中速档、达到高速档。
+// Speed icon thresholds (tok/s): reaching the medium tier, reaching the high tier.
 const SPEED_MEDIUM_RATE: f64 = 60.0;
 const SPEED_FAST_RATE: f64 = 120.0;
 
@@ -253,9 +253,9 @@ fn compact(text: &str, width: usize, keep_end: bool) -> String {
     }
 }
 
-// 放不下时依次降级：缩短 cwd → 隐藏 git → 缩短模型 → 仅显示模型前缀与权限／模式。
-// Plan 模式标签由调用方按预算决定：不足时先压缩其它字段，再缩为单字母，最后只留模式。
-// 模型字段只放配置引用：切换来源由内容栏的提示行交代，不挤占状态栏宽度。
+// When it does not fit, degrade in order: shorten cwd → hide git → shorten model → show only the model prefix with permission/mode.
+// The caller budgets the Plan mode tag: squeeze other fields first, then shorten it to one letter, and finally keep only the mode.
+// The model field carries only the configured reference: the switch source is explained by the notice row in the content column and does not take status bar width.
 pub(super) fn status_line(
     model: &str,
     think_level: ThinkLevel,
@@ -283,8 +283,8 @@ pub(super) fn status_line(
         ThinkLevel::Xhigh => "xhi",
         ThinkLevel::Max => "max",
     };
-    // 思考级别统一使用 Nerd Font 图标（none 到 xhigh 为 Material Design 圆环，max 为
-    // Font Awesome 火苗），ASCII 模式使用阶梯字符。
+    // Thinking levels uniformly use Nerd Font icons (none through xhigh are Material Design rings, max is the
+    // Font Awesome flame); ASCII mode uses ladder characters.
     let think_icon = palette::think_icon(think_level);
     let icon = |glyph, color| Span::styled(format!("{glyph} "), Style::default().fg(color));
     let think_width = Line::from(think).width();
@@ -305,7 +305,7 @@ pub(super) fn status_line(
             + workdir_full
             + git.as_deref().map_or(0, field_slot)
     {
-        // 1) 缩短 cwd（git 保留）。
+        // 1) Shorten the cwd (git is kept).
         let mut cwd_slot = width.saturating_sub(
             field_slot(&model_display)
                 + effort_width
@@ -313,19 +313,19 @@ pub(super) fn status_line(
                 + git.as_deref().map_or(0, field_slot),
         );
         if cwd_slot < MIN_DIRECTORY && git_text.is_some() {
-            // 2) 隐藏 git，把空间让给目录。
+            // 2) Hide git and give the space to the directory.
             git_text = None;
             cwd_slot = width.saturating_sub(field_slot(&model_display) + effort_width + dir_fixed);
         }
         if cwd_slot < MIN_DIRECTORY {
-            // 3) 缩短模型。
+            // 3) Shorten the model.
             model_text = compact(
                 &model_display,
                 (width / 4).max(12).saturating_sub(FIELD_ICON_WIDTH),
                 false,
             );
             if width < field_slot(&model_text) + effort_width + dir_fixed {
-                // 4) 仍不足：保留模型前缀、权限与模式。
+                // 4) Still too wide: keep the model prefix, permission and mode.
                 let mut spans = vec![Span::styled(
                     compact(&model_display, width, false),
                     Style::default()
@@ -366,7 +366,7 @@ pub(super) fn status_line(
     spans.push(icon(model_icon(icons), model_color()));
     spans.push(Span::styled(model_text, model_text_style));
     spans.push(separator());
-    // off 表示显式发送 none，请求关闭思考。
+    // off means explicitly sending none, asking for thinking to be disabled.
     spans.push(icon(think_icon, model_color()));
     spans.push(Span::styled(think, model_text_style));
     if let Some(permission) = permission {
@@ -410,7 +410,7 @@ fn permission_field(mode: pp_config::config::PermissionMode) -> Span<'static> {
     )
 }
 
-/// 主状态栏：先为权限和 Plan 预留列宽，再交给共享的字段装配与降级逻辑。
+/// Main status bar: reserve columns for permission and Plan first, then defer to the shared field assembly and degradation logic.
 pub(super) fn primary(
     model: Option<&ModelChoice>,
     think_level: ThinkLevel,
@@ -558,10 +558,13 @@ mod tests {
                 &StatusContext::default(),
                 100,
             ));
-            assert!(text.contains(reference), "状态栏应与模型列表使用同一引用");
+            assert!(
+                text.contains(reference),
+                "the status bar should use the same reference as the model list"
+            );
             assert!(
                 !text.contains(&choice.model),
-                "实际请求模型名不应替代配置引用"
+                "the actually requested model name must not replace the configured reference"
             );
         }
     }
@@ -584,9 +587,12 @@ mod tests {
             100,
         ));
         for word in ["override", "fallback", "role", "default"] {
-            assert!(!text.contains(word), "{word} 不应出现在状态栏: {text}");
+            assert!(
+                !text.contains(word),
+                "{word} must not appear in the status bar: {text}"
+            );
         }
-        // 窄屏仍守同一套宽度预算。
+        // Narrow screens still obey the same width budget.
         for width in [20, 32, 48] {
             let line = primary(
                 Some(&choice),

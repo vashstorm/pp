@@ -85,7 +85,7 @@ pub(super) fn draw(
     }
 
     let _guard = AppearanceGuard::push(appearance);
-    // 按可用高度由全到简筛选示例卡片，避免卡片被裁断。
+    // Pick the sample card from richest to simplest for the available height so no card gets clipped.
     let presets: [&[SampleCard]; 4] = [
         &[
             SampleCard::ReadGroup,

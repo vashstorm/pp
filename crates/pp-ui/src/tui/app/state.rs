@@ -5,7 +5,8 @@ use crate::tui::{
 };
 
 impl App {
-    /// 同一 Registry 重装只移交清理权；换 Registry 时旧 guard 在赋值时 Drop 回收。
+    /// Reinstalling for the same Registry only transfers cleanup ownership; when the
+    /// Registry changes, the old guard is dropped and reaped on assignment.
     pub(in crate::tui) fn install_lsp_cleanup(&mut self, cleanup: pp_lsp::Cleanup) {
         if let Some(previous) = &mut self.lsp_cleanup {
             previous.supersede(&cleanup);
@@ -22,7 +23,8 @@ impl App {
         if let Some(review) = &mut self.review_transcript {
             review.append_error(&message);
         }
-        // 全屏面板继续保留草稿和选择，只在已有提示区反馈失败。
+        // Full-screen panels keep their draft and selection; failures are reported only in
+        // the existing hint area.
         if let Some(panel) = &mut self.session_panel {
             panel.set_feedback(message.clone());
         }
@@ -54,7 +56,8 @@ impl App {
         self.conversation.append(label, text);
     }
 
-    /// 启动恢复时初始化模型字段，再接管可见对话。
+    /// Initializes the model fields when adopting a startup resume, then takes over the
+    /// visible conversation.
     pub(in crate::tui) fn adopt_session(
         &mut self,
         replay: Vec<pp_runtime::agent::persistence::ReplayRecord>,
@@ -83,7 +86,8 @@ impl App {
         self.history_browser = false;
         self.todo_panel.reset_view();
         self.conversation = self.conversation.fresh();
-        // 持久输入回忆与可见会话解耦：恢复/树导航不写入手记录，也不清空回忆。
+        // Persistent input recall is decoupled from the visible session: resume and tree
+        // navigation neither write input records nor clear recall.
         let error = self.conversation.replay(replay);
         self.resources.cancel();
         self.resources.set_images(Vec::new());
@@ -105,7 +109,8 @@ impl App {
         self.menu_dismissed = true;
         self.show_welcome = false;
         self.refresh_candidates(false);
-        // 换根/换历史后解绑旧观察 epoch；同一根的草稿与控制 ACK 保留。
+        // Unbind the old observation epoch after a root/history switch; drafts and control
+        // ACKs of the same root are kept.
         self.hub_sync_root();
         error
     }
@@ -122,7 +127,8 @@ impl App {
         let _ = self.input_queue.close();
         self.active_cancellation = None;
         self.secondary_status = None;
-        // 期望态不再有消费者：worker 已死，档位冻结在最后一次已应用值。
+        // The desired state has no consumer left: the worker is gone, so effort stays frozen
+        // at the last applied value.
         self.pending_think = None;
         self.commands = None;
         self.events = None;
@@ -141,14 +147,16 @@ impl App {
         self.review_transcript = None;
         self.plan_review_pending = None;
         self.escape_tap.reset();
-        // worker 已死时不再等待恢复回复，会话面板不能继续吞掉按键。
+        // With the worker dead there is no resume reply to wait for; the session panel must
+        // not keep swallowing keys.
         self.session_panel = None;
         self.close_model_panel();
         self.conversation.fail();
         self.notify(Level::Error, message.into());
     }
 
-    /// 应用 worker 发布的 workflow 快照；仅在正文变化时重算进度。
+    /// Applies a workflow snapshot published by the worker; progress is recomputed only
+    /// when the body changes.
     pub(in crate::tui) fn set_workflow(&mut self, workflow: WorkflowState) {
         if workflow.mode != WorkMode::Plan || workflow.plan.is_none() {
             self.reopen_plan_after_discussion = false;
@@ -167,8 +175,9 @@ impl App {
         }
     }
 
-    /// 进度 (completed, total) 只随正文变化重算；所有调用点都在把
-    /// `document` 写入 `self.workflow.plan` 之前，因此直接与当前绑定比较。
+    /// Progress (completed, total) is recomputed only when the body changes; every caller
+    /// runs before writing `document` into `self.workflow.plan`, so it compares directly
+    /// against the current binding.
     pub(in crate::tui) fn update_plan_progress_cache(
         &mut self,
         document: &pp_core::plan::PlanDocument,
@@ -183,9 +192,11 @@ impl App {
         }
     }
 
-    /// 执行期进度事件：更新匹配计划的快照与只读面板，不追加 Transcript。
-    /// 正文 revision/content 变化重算进度；旧事件缺省的名称/位置/状态
-    /// 字段保留接收端当前值，归档等纯状态变化在正文相同时也立即生效。
+    /// Execution-time progress event: updates the matching plan snapshot and the read-only
+    /// panel without appending to Transcript.
+    /// Body revision/content changes recompute progress; name/position/status fields missing
+    /// from an old event keep the receiver's current values, while pure state changes such as
+    /// archiving take effect immediately even when the body is unchanged.
     pub(in crate::tui) fn apply_plan_progress(
         &mut self,
         plan_id: &str,
@@ -230,7 +241,8 @@ impl App {
     }
 
     pub(in crate::tui) fn open_plan_panel(&mut self, review: PlanReview) {
-        // ReadPlan 的登记结果是权威快照；同步 workflow 中的文档与报告字段。
+        // ReadPlan's registry result is the authoritative snapshot; sync the document and
+        // report fields in the workflow.
         let PlanReview {
             token: _,
             document,
@@ -248,7 +260,8 @@ impl App {
         self.file_query = None;
     }
 
-    /// Execute 运行中的只读进度视图：使用 UI 已缓存的最后同步正文，不发 worker 命令。
+    /// Read-only progress view while Execute runs: uses the last synchronized body already
+    /// cached by the UI and sends no worker command.
     pub(in crate::tui) fn open_plan_progress_view(&mut self) {
         let Some(document) = self.workflow.plan.clone() else {
             self.notify(Level::Normal, "No saved plan.".into());
@@ -282,7 +295,8 @@ impl App {
         self.append("You", &text);
     }
 
-    /// 模式切换/审批仅允许 Ready、无 pending、无其它 modal；忙碌明确报错，不排队。
+    /// Mode switching/approval is allowed only in Ready with no pending work and no other
+    /// modal; while busy it reports an explicit error and does not queue.
     pub(in crate::tui) fn plan_transition_ready(&mut self, pending_message: &str) -> bool {
         if !matches!(self.state, State::Ready) {
             self.notify(
@@ -319,8 +333,8 @@ impl App {
         true
     }
 
-    /// 切换 Plan 模式的公共入口：发送成功后展示对应进度文案，
-    /// 具体文案由调用方按进入/退出方向传入。
+    /// Shared entry point for Plan mode switching: on a successful send it shows the
+    /// matching progress text, whose wording the caller supplies per enter/leave direction.
     pub(in crate::tui) fn start_plan_transition(
         &mut self,
         command: impl FnOnce(CancellationToken) -> WorkerCommand,
@@ -337,13 +351,15 @@ impl App {
     pub(in crate::tui) fn apply_plan_command(&mut self, command: PlanCommand<'_>) {
         const PENDING_MODE: &str = "Apply pending input before changing Plan mode.";
         match command {
-            // 裸 /plan 切换：Execute 进入 Plan 待命；已在 Plan 则退出并解除绑定。
+            // Bare /plan toggle: Execute enters Plan standby; already in Plan exits and
+            // unbinds.
             PlanCommand::Toggle => {
                 if !self.plan_transition_ready(PENDING_MODE) {
                     return;
                 }
                 if self.workflow.mode == WorkMode::Execute || self.plan_retry_enter {
-                    // Execute 进入 Plan，或上一次进入失败时重试进入。
+                    // Execute entering Plan, or retrying entry after the previous attempt
+                    // failed.
                     self.plan_after_enter = Some(PlanEnterAction::Standby);
                     self.start_plan_transition(
                         |cancellation| WorkerCommand::EnterPlan { cancellation },
@@ -370,7 +386,8 @@ impl App {
             }
             PlanCommand::View => {
                 if matches!(self.state, State::Running | State::Cancelling) {
-                    // 运行中特许：只读进度视图，不向执行中的 worker 发阻塞读取。
+                    // Special case while running: read-only progress view, no blocking read
+                    // sent to the executing worker.
                     self.open_plan_progress_view();
                     return;
                 }
@@ -386,7 +403,8 @@ impl App {
         }
     }
 
-    /// 未首存的规划需要显式放弃；确认只对当前绑定生效。
+    /// A plan that was never saved once must be abandoned explicitly; the confirmation
+    /// applies only to the current binding.
     pub(in crate::tui) fn request_plan_leave(&mut self, reenter: bool) {
         if let Some(document) = &self.workflow.plan
             && document.revision == 0
@@ -453,8 +471,9 @@ impl App {
         }
     }
 
-    /// 审批/审查共用的前置条件：Ready、无 pending、文档 Ready 且持 token，
-    /// 并开启输入队列；成功返回 token 与本次操作的取消令牌。
+    /// Precondition shared by approval/review: Ready, no pending work, document Ready and a
+    /// held token, with the input queue paused; on success returns the token and the
+    /// cancellation token for this operation.
     pub(in crate::tui) fn plan_action_guard(
         &mut self,
         action: &str,
@@ -489,7 +508,8 @@ impl App {
         Some((token, CancellationToken::new()))
     }
 
-    /// 审批动作：仅在 Ready、无 pending、文档 Ready 时发送；失败经 ReadPlan 安全刷新。
+    /// Approval action: sends only in Ready with no pending work and a Ready document;
+    /// failures are safely refreshed through ReadPlan.
     pub(in crate::tui) fn approve_plan(&mut self, context: ExecutionContext) {
         let Some((token, cancellation)) = self.plan_action_guard("executing", true) else {
             return;
@@ -530,16 +550,17 @@ impl App {
             State::ChangingPlan,
         ) {
             self.active_cancellation = Some(cancellation);
-            // 退出 Plan 需要安全收尾与文件落盘，期间给出可见进度；
-            // WorkflowChanged / ExecutionPrepared 分支负责清除该文案。
+            // Leaving Plan needs safe cleanup and flushing to disk, so show visible progress
+            // meanwhile; the WorkflowChanged / ExecutionPrepared branches clear it.
             self.secondary_status = Some("Saving plan...".into());
         } else {
             let _ = self.input_queue.close();
         }
     }
 
-    /// 第 4 项：独立上下文 reviewer。仅 Ready、无 pending、文档 Ready 时发送；
-    /// 进度只进独立 review transcript；完成或取消后经 ReadPlan 安全刷新回菜单。
+    /// Item 4: the standalone context reviewer. Sends only in Ready with no pending work and
+    /// a Ready document; progress goes only to the standalone review transcript, and on
+    /// completion or cancellation a safe ReadPlan refresh returns to the menu.
     pub(in crate::tui) fn review_plan(&mut self) {
         let Some((token, cancellation)) = self.plan_action_guard("reviewing", true) else {
             return;
@@ -553,7 +574,8 @@ impl App {
             State::ReviewingPlan,
         ) {
             self.active_cancellation = Some(cancellation);
-            // 独立审查页替代审阅面板；主草稿、历史与会话保持不变。
+            // The standalone review tab replaces the review panel; the main draft, history and
+            // session stay unchanged.
             self.plan_panel = None;
             self.plan_list_panel = None;
             self.plan_list_pending = None;
@@ -573,7 +595,8 @@ impl App {
             .is_some_and(|review| review.tick(now))
     }
 
-    /// 已登记至少一个修订的计划：/plan 打开审阅的前提条件。
+    /// A plan with at least one registered revision: the precondition for /plan to open
+    /// review.
     pub(in crate::tui) fn has_saved_plan(&self) -> bool {
         self.workflow
             .plan
@@ -581,7 +604,8 @@ impl App {
             .is_some_and(|plan| plan.revision >= 1)
     }
 
-    /// Plan/Ready：待审阅的计划会暂停自动派发，需要显式审阅或恢复队列后继续。
+    /// Plan/Ready: a plan awaiting review suspends automatic dispatch and needs an explicit
+    /// review or an unpaused queue to continue.
     pub(in crate::tui) fn plan_awaiting_review(&self) -> bool {
         self.workflow.mode == WorkMode::Plan
             && self
@@ -591,7 +615,8 @@ impl App {
                 .is_some_and(|plan| plan.status == PlanStatus::Ready)
     }
 
-    /// 当前显示的转录：独立审查页优先于主对话。
+    /// The currently displayed transcript: the standalone review tab wins over the main
+    /// conversation.
     pub(in crate::tui) fn needs_alternate(&self) -> bool {
         self.mcp_panel.is_some()
             || self.auth_panel.is_some()
@@ -605,7 +630,8 @@ impl App {
             || self.session_panel.is_some()
             || self.pipes_panel.is_some()
             || self.context_panel.is_some()
-            // 读取完成前保留主屏幕，空历史或读取失败时无需切换屏幕。
+            // Keep the main screen before the read completes; no screen switch is needed when
+            // the history is empty or the read failed.
             || self.tree_panel.as_ref().is_some_and(|panel| !panel.is_loading())
             || self.plan_list_panel.is_some()
             || self.plan_leave_confirmation.is_some()

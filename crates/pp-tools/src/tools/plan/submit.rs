@@ -1,4 +1,4 @@
-//! `plan_submit`：revision／任务清单校验与 steering 封闭边界。
+//! `plan_submit`: revision/task-list validation and the steering seal boundary.
 use anyhow::{Result, ensure};
 use pp_core::plan;
 use pp_core::plan::PlanDocument;
@@ -24,7 +24,7 @@ pub(super) fn submit(
         document.revision >= 1 && args.expected_revision == document.revision,
         "Plan revision changed; review the latest plan before writing."
     );
-    // 提交前同样要求磁盘字节与快照一致；句柄仅用于这次校验。
+    // A commit likewise requires the disk bytes to match the snapshot; the handle is only used for this check.
     let path = document
         .path()
         .ok_or_else(|| anyhow::anyhow!("No saved plan."))?;

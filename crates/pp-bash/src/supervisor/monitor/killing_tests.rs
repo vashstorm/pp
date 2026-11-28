@@ -1,7 +1,8 @@
-//! Killing 阶段单测：假 ProcessCell 与显式 deadline 驱动的可终止转移。
+//! Killing-phase unit tests: terminable transitions driven by fake `ProcessCell`s and explicit deadlines.
 //!
-//! 这些用例不创建真实子进程，直接构造 `State` 并调用 `advance_killing`，
-//! 验证 SIGKILL 后的回收等待有界、等待者被唤醒、记录保持真实状态。
+//! These cases create no real child process; they build `State` directly and call `advance_killing` to
+//! verify that reclamation after SIGKILL waits with a bound, that waiters are woken, and that records keep
+//! their real state.
 
 mod integration {
     use super::super::super::process::{CellInner, ProcessCell, ProcessRecord};
@@ -17,7 +18,7 @@ mod integration {
         time::Instant,
     };
 
-    /// 假 ProcessCell 的等待者：记录被唤醒次数，并可轮询最终结果。
+    /// Waiter of a fake `ProcessCell`: counts wakeups and can poll for the final result.
     struct WakeCounter(AtomicU64);
 
     impl std::task::Wake for WakeCounter {
@@ -63,8 +64,9 @@ mod integration {
         })
     }
 
-    /// 到期仍未清空的注册表必须放弃回收：等待者被唤醒、未完成 cell 拿到清理
-    /// 错误、记录保持真实未回收状态，monitor 可从 Killing 进入可终止的 Draining。
+    /// A registry still not empty at the deadline must abandon reclamation: waiters are woken, unfinished cells
+    /// get a cleanup error, records keep their real unreclaimed state, and the monitor can move from Killing to a
+    /// terminable Draining.
     #[test]
     fn supervisor_killing_deadline_window_and_missing_deadline() {
         {
@@ -73,7 +75,7 @@ mod integration {
             let waiter = Arc::new(WakeCounter(AtomicU64::new(0)));
             let waker = Waker::from(waiter.clone());
             let mut cx = Context::from_waker(&waker);
-            // 注册一个等待者：当前实现下 poll 必然 Pending。
+            // Register a waiter: under the current implementation poll is necessarily Pending.
             assert!(cell.poll(&mut cx).is_pending());
 
             let mut state = killing_state(pid, cell.clone(), Some(Instant::now() - GRACE));
@@ -85,7 +87,7 @@ mod integration {
                 "the kill window must be recorded as abandoned"
             );
             assert!(state.errors.contains(KILL_ABANDONED));
-            // 等待者被唤醒；未完成 cell 拿到清理错误而非伪造退出码。
+            // The waiter is woken; the unfinished cell receives a cleanup error instead of a fabricated exit code.
             assert!(
                 waiter.0.load(Ordering::Acquire) >= 1,
                 "the waiting waker must be woken"
@@ -100,26 +102,27 @@ mod integration {
                 message.contains("not reclaimed after SIGKILL"),
                 "unexpected cell error: {message}"
             );
-            // 记录保持真实状态：未标 reaped，也未被移出注册表。
+            // The record keeps its real state: not marked reaped, and not removed from the registry.
             let record = &state.procs[&pid];
             assert!(!record.reaped);
             assert!(!record.observed);
             assert!(state.groups.contains_key(&0));
 
-            // Draining 终态判定：解释器已结束且已放弃回收时可以立即收尾。
+            // Draining terminal-state decision: with the interpreter finished and reclamation abandoned the run can
+            // finish immediately.
             state.interpreter_done = true;
             assert!(draining_reaches_finished(&state));
         }
         {
             let pid = 2_000_000_000;
-            // 仍在本进程组外：对不存在的组发送信号只会得到 ESRCH，不会误报错误。
+            // Still outside this process group: signaling a nonexistent group only yields ESRCH, never a false error.
             let mut state = killing_state(pid, fake_cell(pid), Some(Instant::now() + GRACE));
             advance_killing(&mut state, Instant::now());
             assert_eq!(state.phase, Phase::Killing);
             assert!(!state.abandoned);
             assert!(state.errors.is_empty());
 
-            // 注册表清空后不再等待，进入 Draining。
+            // Once the registry is empty there is nothing left to wait for, so Draining follows.
             state.procs.clear();
             state.groups.clear();
             advance_killing(&mut state, Instant::now());
@@ -144,8 +147,9 @@ mod integration {
         }
     }
 
-    /// 到期时若所有注册进程都已观察为退出、且组内无存活成员，剩下的只是等待
-    /// 解释器释放组租约并回收 anchor：SIGKILL 已生效，不得判为回收失败。
+    /// When the deadline expires while every registered process has been observed as exited and the group has no
+    /// live members, what remains is only waiting for the interpreter to release the group lease and reclaim the
+    /// anchor: SIGKILL already took effect, so this must not be judged a reclamation failure.
     #[test]
     fn supervisor_killing_bookkeeping_group_alive_and_idempotency() {
         {
@@ -171,7 +175,8 @@ mod integration {
                 Some(now.checked_add(GRACE).unwrap_or(now)),
                 "the kill window must be refreshed for in-progress bookkeeping"
             );
-            // 解释器释放租约后注册表清空，正常进入 Draining 且不报清理错误。
+            // Once the interpreter releases the lease the registry empties, Draining is entered normally and no cleanup
+            // error is reported.
             state.procs.clear();
             state.groups.clear();
             advance_killing(&mut state, Instant::now());
@@ -187,7 +192,8 @@ mod integration {
             ));
             let mut state = killing_state(pid, cell, Some(Instant::now() - GRACE));
             state.procs.get_mut(&pid).expect("record").observed = true;
-            // 宿主进程组必然有存活成员，代表“组内仍有不可杀的成员”。
+            // The host process group necessarily has live members, standing in for "the group still has members that
+            // cannot be killed".
             state.groups.get_mut(&0).expect("group").pgid = super::super::host_pgid();
 
             advance_killing(&mut state, Instant::now());
@@ -209,7 +215,7 @@ mod integration {
             let waiter = Arc::new(WakeCounter(AtomicU64::new(0)));
             let waker = Waker::from(waiter.clone());
             let mut cx = Context::from_waker(&waker);
-            // 已完成 cell 不被清理错误覆盖：仍报告真实退出状态 0。
+            // A finished cell is not overwritten by the cleanup error: it still reports the real exit status 0.
             assert!(matches!(cell.poll(&mut cx), Poll::Ready(Ok(_))));
             assert_eq!(waiter.0.load(Ordering::Acquire), 0, "no waker to wake");
         }

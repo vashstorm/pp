@@ -1,7 +1,8 @@
-//! 按真实逻辑模型请求累计使用次数的端到端回归。
+//! End-to-end regression for accumulating usage counts on real logical model requests.
 //!
-//! 口径：实际尝试发送的逻辑模型 API 请求 +1，与 stats 写入无关，
-//! 建连重试不额外计数，发送前失败（授权校验）不计数，跨重启保留。
+//! Definition: a logical model API request that is actually attempted to be sent counts +1, regardless of stats
+//! writes; connection retries do not add counts, failures before sending (authorization checks) do not count,
+//! and the total survives restarts.
 
 use super::*;
 use rusqlite::Connection;
@@ -19,7 +20,8 @@ fn usage(home: &std::path::Path, reference: &str) -> Option<u64> {
 }
 
 fn retry_settings() -> String {
-    // 迁移已完成；default_model 已由 agent.db 权威，settings.yml 不再接受旧字段。
+    // Migration is already done; default_model is authoritative in agent.db and settings.yml no longer accepts the
+    // old fields.
     "{\"rate_limit_retry_budget_seconds\":30}\n".to_string()
 }
 
@@ -35,7 +37,7 @@ fn sqlite_model_usage_counts_logical_requests() {
         } else {
             fixture_models(&server)
         };
-        // 第一轮：工具续轮 + 最终答复 => 2 次逻辑请求。
+        // First round: tool continuation turn + final answer => 2 logical requests.
         let cli = Cli::start_with(
             dir.path(),
             Some("write then finish"),
@@ -82,7 +84,8 @@ fn sqlite_model_usage_counts_logical_requests() {
         assert_eq!(usage(dir.path(), "fixture/primary"), Some(2), "{protocol}");
         no_more(&server);
 
-        // 第二轮重启：429 一次后成功 => 逻辑请求恰好 +1（HTTP 请求两次），计数跨进程保留。
+        // Second restart: one 429 then success => exactly +1 logical request (two HTTP requests), and the count is
+        // kept across processes.
         std::fs::write(config_path(dir.path(), "settings.yml"), retry_settings()).unwrap();
         let cli = Cli::start_with_existing_files(dir.path(), Some("retry run"));
         let (first, first_body) = if responses {
@@ -116,7 +119,8 @@ fn sqlite_model_usage_counts_logical_requests() {
         assert_eq!(usage(dir.path(), "fixture/primary"), Some(3), "{protocol}");
         no_more(&server);
 
-        // 第三轮重启：发送后的永久失败也计一次；进程失败不丢已计数。
+        // Third restart: a permanent failure after sending also counts once; a failed process does not lose the
+        // already counted usage.
         std::fs::write(
             config_path(dir.path(), "settings.yml"),
             "{\"rate_limit_retry_budget_seconds\":0}\n",
@@ -142,13 +146,13 @@ fn sqlite_model_usage_counts_logical_requests() {
         assert!(!error.contains("private-error-body") && !error.contains("fixture-key"));
         assert_eq!(usage(dir.path(), "fixture/primary"), Some(4), "{protocol}");
         no_more(&server);
-        // stats/log GC 不承担使用次数权威，清理后累计值必须保持。
+        // stats/log GC is not the authority for usage counts, so the accumulated value must survive the cleanup.
         let output = Cli::spawn(dir.path(), &["gc", "1"], &[]).finish();
         assert!(output.status.success(), "{protocol}");
         assert_eq!(usage(dir.path(), "fixture/primary"), Some(4), "{protocol}");
     }
 
-    // stats 不可用时任务照常完成且计数照常累加。
+    // When stats is unavailable the task still completes and the count still accumulates.
     {
         let server = server();
         let dir = tempfile::tempdir().unwrap();
@@ -167,7 +171,7 @@ fn sqlite_model_usage_counts_logical_requests() {
         assert_eq!(usage(dir.path(), "fixture/primary"), Some(1));
     }
 
-    // 授权校验失败发生在发送前：不计数。
+    // An authorization check failure happens before sending: no count.
     {
         let server = server();
         let dir = tempfile::tempdir().unwrap();

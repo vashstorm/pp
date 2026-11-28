@@ -1,4 +1,4 @@
-//! `rg` 正则编译：Rust regex 优先、PCRE2 回退与括号／量词兼容。
+//! `rg` regex compilation: Rust regex first, PCRE2 fallback and bracket/quantifier compatibility.
 use anyhow::{Context, Result};
 
 pub(super) enum Compiled {
@@ -95,7 +95,7 @@ fn sanitize_braces(p: &str) -> String {
             }
         }
         if c == '}' {
-            // 有效量词的右括号已经由左括号处复制。
+            // The closing brace of a valid quantifier was already copied at the opening brace.
             out.push_str("\\}");
             continue;
         }

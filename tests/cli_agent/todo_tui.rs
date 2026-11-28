@@ -8,7 +8,8 @@ fn plan_todo_result(body: &Value, protocol: &str, id: &str) -> Value {
         .1
 }
 
-/// 固定区内内容的物理行号；用相对行号断言位置，避免一行树形布局就重算全部坐标。
+/// Physical row of content inside the fixed region; assertions use relative rows so that one tree
+/// layout line does not force every coordinate to be recomputed.
 fn hud_row(screen: &vt100::Screen, needle: &str) -> Option<usize> {
     screen
         .rows(0, screen.size().1)
@@ -43,7 +44,7 @@ fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
 
             if action == "new" {
                 pty.input("/new\r");
-                pty.wait_for("新会话已重置", |screen| {
+                pty.wait_for("new session has been reset", |screen| {
                     screen.contents().contains("▄▄▄██▀▀██") && input_is_ready(screen)
                 });
             } else {
@@ -57,7 +58,8 @@ fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
                 }
             }
 
-            // 再次请求工具并消费最终 workflow，验证旧清单没有仅在界面暂时隐藏。
+            // Request the tool again and consume the final workflow, proving the old list was not merely
+            // hidden in the interface.
             pty.input("inspect tasks after switching\r");
             let (request, _) = pty.request_at(&fixture, api_path(protocol));
             plan_calls(
@@ -80,8 +82,8 @@ fn tui_todo_new_and_mode_switches_keep_old_lists_cleared() {
         no_more(&fixture);
 }
 
-// 三种执行起点（新会话 / 保留上下文 / 压缩后）各自独立，均验证 todo 快照、
-// 完成提醒与归档字节一致。
+// The three execution origins (new session / kept context / after compaction) are independent, and each
+// verifies the todo snapshot, the completion reminder and the archived bytes.
 fn plan_todo_approval_case(context: usize) {
     let protocol = "response";
         let fixture = server();
@@ -280,9 +282,11 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             )]),
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        // 模型下一轮尚未结束时，已提交清单就应出现在固定位置。
-        // 收起状态也保留阶段行：标题下面是阶段头，再往下才是内缩的任务行。
-        pty.wait_for("任务区固定在输入框上方", |screen| {
+        // The committed list must already sit in the fixed region while the model's next turn is still
+        // running.
+        // The collapsed state also keeps the phase row: below the title comes the phase header, and only
+        // then the indented task rows.
+        pty.wait_for("task area is pinned above the input box", |screen| {
             hud_row(screen, "TODO · 0/12").is_some_and(|title| {
                 screen
                     .rows(0, 100)
@@ -295,7 +299,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             })
         });
         let toggle_hint = if cfg!(target_os = "macos") { "⌥ + T" } else { "Ctrl + T" };
-        let title = hud_row(pty.parser.screen(), "TODO · 0/12").expect("TODO 标题") as u16;
+        let title = hud_row(pty.parser.screen(), "TODO · 0/12").expect("TODO title") as u16;
         assert!(
             pty.parser
                 .screen()
@@ -339,14 +343,15 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             pty.parser.screen().cell(title + 3, 10).unwrap().fgcolor(),
             vt100::Color::Rgb(119, 125, 136)
         );
-        // 启动两个并行项；首项遇到依赖后，视口跟随最早的剩余进行项。
+        // Start two parallel items; once the first is blocked by a dependency the viewport follows the
+        // earliest remaining running item.
         plan_calls(request, protocol, json!([
             plan_call(protocol, "start-middle", "todo", json!({"op":"start","task":"PINNED_TASK_06"})),
             plan_call(protocol, "start-parallel", "todo", json!({"op":"start","task":"PINNED_TASK_07"})),
             plan_call(protocol, "block-first", "todo", json!({"op":"block","task":"PINNED_TASK_00","reason":"waiting on dependency"}))
         ]));
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        pty.wait_for("进行项在三项窗口中间", |screen| {
+        pty.wait_for("running items sit in the middle of the three-item window", |screen| {
             hud_row(screen, "TODO · 0/12").is_some_and(|title| {
                 ["PINNED_TASK_05", "PINNED_TASK_06", "PINNED_TASK_07"]
                     .iter()
@@ -359,7 +364,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                     })
             })
         });
-        let title = hud_row(pty.parser.screen(), "TODO · 0/12").expect("TODO 标题") as u16;
+        let title = hud_row(pty.parser.screen(), "TODO · 0/12").expect("TODO title") as u16;
         for offset in [3, 4] {
             assert_eq!(
                 pty.parser.screen().cell(title + offset, 10).unwrap().fgcolor(),
@@ -373,9 +378,11 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             + "\nCan you confirm?";
         streaming_delta(&mut stream, protocol, &answer);
         pty.text("pinned-stream-069");
+        // A four-wide-character CJK draft stays in the input row so the pinned HUD keeps its geometry
+        // with wide input.
         pty.input("中文草稿");
         pty.draft("中文草稿");
-        let title = hud_row(pty.parser.screen(), "TODO · 0/12").expect("TODO 标题");
+        let title = hud_row(pty.parser.screen(), "TODO · 0/12").expect("TODO title");
         assert!(
             pty.parser
                 .screen()
@@ -386,8 +393,9 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .is_empty()
         );
         pty.function_key('t');
-        // 展开后 HUD 向上生长，标题仍在主屏幕且当前进行项可见。
-        pty.wait_for("TODO 原位展开", |screen| {
+        // Once expanded the HUD grows upwards; the title stays on the main screen and the current running
+        // item is visible.
+        pty.wait_for("TODO expands in place", |screen| {
             hud_row(screen, "TODO · 0/12").is_some_and(|title| {
                 screen
                     .rows(0, 100)
@@ -396,7 +404,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             }) && screen.contents().contains("PINNED_TASK_06")
         });
         let screen = pty.parser.screen();
-        let title = hud_row(screen, "TODO · 0/12").expect("TODO 标题") as u16;
+        let title = hud_row(screen, "TODO · 0/12").expect("TODO title") as u16;
         assert!(
             screen
                 .rows(0, 100)
@@ -408,7 +416,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         assert_eq!(screen.cell(title + 1, 3).unwrap().contents(), "├");
         assert!(!pty.parser.screen().alternate_screen());
         pty.resize(24, 60);
-        pty.wait_for("缩放后的 TODO 高度上限", |screen| {
+        pty.wait_for("TODO height cap after resize", |screen| {
             let Some(title) = hud_row(screen, "TODO · 0/12") else {
                 return false;
             };
@@ -422,8 +430,9 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .take(input.saturating_sub(title))
                 .filter(|row| row.contains("TODO ·") || row.contains("PINNED_TASK_"))
                 .count();
-            // 高度上限为终端高度的三分之一（24 / 3 = 8）；标题与输入框之间
-            // 还隔着活动区上方的一行空白分隔行、活动行和状态行各一行。
+            // The height cap is a third of the terminal height (24 / 3 = 8); between the title and the
+            // input box there is still one blank separator row above the activity area plus one activity
+            // row and one status row.
             title < input
                 && hud_rows <= 8
                 && input - title <= 11
@@ -434,7 +443,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
         });
         pty.draft("中文草稿");
         pty.function_key('t');
-        pty.wait_for("TODO 收回五行树形摘要", |screen| {
+        pty.wait_for("TODO collapses back to a five-row tree summary", |screen| {
             hud_row(screen, "TODO · 0/12").is_some_and(|title| {
                 screen
                     .rows(0, 60)
@@ -460,7 +469,8 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                 .iter()
                 .any(|entry| entry["data"]["event"]["todo_state_updated"].is_object())
         );
-        // native_history 包含当前屏幕；这里只检查真正进入滚动历史的行。
+        // native_history includes the current screen; only rows that really entered the scrollback are
+        // checked here.
         let mut screen = pty.parser.screen().clone();
         screen.set_scrollback(usize::MAX);
         let history = (1..=screen.scrollback())
@@ -473,20 +483,20 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             .join("\n");
         assert!(
             !history.contains("PINNED_TASK_"),
-            "固定区进入原生历史：{history}"
+            "the fixed region entered native history: {history}"
         );
         let history = pty.native_history().0;
         assert_eq!(history.matches("pinned-stream-000").count(), 1);
         assert_eq!(history.matches("PINNED_TASK_05").count(), 1);
         let before_exit = pty.raw.len();
         pty.input("\x03");
-        pty.wait_for("退出恢复终端", |screen| !screen.bracketed_paste());
+        pty.wait_for("exit restores the terminal", |screen| !screen.bracketed_paste());
         assert!(!String::from_utf8_lossy(&pty.raw[before_exit..]).contains("pinned-stream-000"));
         pty.finish();
         no_more(&fixture);
 
         let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
-        pty.wait_for("恢复最终清单并默认收起", |screen| {
+        pty.wait_for("final list is restored and collapsed by default", |screen| {
             hud_row(screen, "TODO · 0/12").is_some_and(|title| {
                 screen
                     .rows(0, 100)
@@ -509,7 +519,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             )]),
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        pty.wait_for("完成后保留三项绿色任务", |screen| {
+        pty.wait_for("three green tasks are kept after completion", |screen| {
             hud_row(screen, "TODO · 12/12").is_some_and(|title| {
                 screen
                     .rows(0, 100)
@@ -525,11 +535,11 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
                     })
             })
         });
-        let title = hud_row(pty.parser.screen(), "TODO · 12/12").expect("TODO 标题") as u16;
+        let title = hud_row(pty.parser.screen(), "TODO · 12/12").expect("TODO title") as u16;
         let screen = pty.parser.screen();
         assert_eq!(screen.cell(title, 0).unwrap().contents(), "\u{f00c}");
         assert_eq!(screen.cell(title, 0).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
-        // 阶段头与最后一个任务行都使用右结尾树枝。
+        // Both the phase header and the last task row use a right-ended branch.
         assert_eq!(screen.cell(title + 1, 0).unwrap().contents(), "├");
         assert_eq!(screen.cell(title + 4, 3).unwrap().contents(), "└");
         assert_eq!(screen.cell(title + 4, 10).unwrap().fgcolor(), vt100::Color::Rgb(137, 210, 129));
@@ -548,7 +558,7 @@ fn tui_todo_fixed_hud_streams_resizes_restores_and_clears_both_protocols() {
             )]),
         );
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
-        pty.wait_for("空清单不占位置", |screen| {
+        pty.wait_for("empty list takes no space", |screen| {
             !screen.contents().contains("TODO ·")
         });
         plan_final(request, protocol, "Fixed list cleared.");

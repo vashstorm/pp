@@ -10,7 +10,8 @@ impl App {
     #[cfg(test)]
     pub(in crate::tui) fn new(agent: Result<Agent>) -> Result<Self> {
         let skills = pp_config::skills::Skills::default().shared();
-        // 每个 App 独立 history.db：不读取真实 HOME，也不共享临时库。
+        // Every App gets its own history.db: the real HOME is never read and temporary
+        // stores are never shared.
         let dir = tempfile::tempdir()?;
         let history_path = dir.path().join("history.db");
         let mut app = Self::new_with_skills(
@@ -191,7 +192,8 @@ impl App {
             review_transcript: None,
             plan_review_pending: None,
         };
-        // 恢复历史会重建 Transcript，启动诊断须在安装完成后追加。
+        // Resuming history rebuilds Transcript, so startup diagnostics must be appended after
+        // installation finishes.
         let history_error = app.start_history(history_path);
         pp_core::logging::perf::mark("history_started");
         match agent {
@@ -224,7 +226,8 @@ impl App {
         self.pending_think = None;
         self.conversation
             .set_bash_timeout(agent.bash_timeout_seconds());
-        // 取 replay、模型字段与 MCP 视图必须发生在 agent move 进 worker 之前。
+        // The replay, model fields and MCP view must be read before the agent moves into the
+        // worker.
         let session_id = agent.session_id().map(str::to_owned);
         let replay = agent.take_replay();
         let current_model = agent.current_model().clone();
@@ -232,13 +235,14 @@ impl App {
         let default_think_level = agent.default_think_level();
         let model_source = agent.model_source();
         let override_selection = agent.models().override_selection();
-        // LSP 清理句柄与 Registry 必须在 Agent move 进 worker 前取得；
-        // Registry clone 只共享客户端，不取得停止所有权。
+        // The LSP cleanup handle and Registry must be obtained before the Agent moves into
+        // the worker; the Registry clone only shares clients and takes no stop ownership.
         let lsp_cleanup = agent.lsp_cleanup();
         let lsp_registry = agent.lsp_registry();
         self.mcp_view = agent.mcp_view();
-        // 后台建连失败由欢迎页多行 MCP tip 统一展示，不因竞态弹窗覆盖欢迎页；
-        // 配置诊断（如非法条目）仍作为启动错误提示。
+        // Background connect failures are shown uniformly by the multi-line MCP tip on the
+        // welcome page, so a race never pops a dialog over it; configuration diagnostics
+        // (for example invalid entries) are still reported as startup errors.
         let mut startup_errors = self.mcp_view.diagnostics.clone();
         if let Some(warning) = agent.sandbox_status().warning() {
             tracing::warn!(event = "sandbox_unavailable", %warning);
@@ -250,7 +254,8 @@ impl App {
         self.background_cleanup = Some(agent.background_cleanup());
         self.choices = agent.model_choices();
         self.favorite_models = agent.favorite_models();
-        // 首次安装没有旧快照可保留；读取失败保留空缓存并单独提示，不阻断模型任务。
+        // The first install has no old snapshot to keep; a read failure keeps an empty cache
+        // and reports separately without blocking model tasks.
         match agent.model_usage() {
             Ok(usage) => self.model_usage = usage,
             Err(error) => startup_errors.push(format!("Could not load model usage: {error:#}")),
@@ -259,7 +264,8 @@ impl App {
         self.default_model_reference = Some(agent.default_model_reference());
         let (commands, receiver) = mpsc::channel();
         let (sender, events) = mpsc::sync_channel(256);
-        // 启动绑定：先于任何任务发布根 registry，面板可在运行中打开。
+        // Startup binding: publish the root registry before any task so the panel can open while
+        // running.
         let _ = sender.send(WorkerEvent::PipeStoreBound {
             store: agent.pipe_store(),
         });
@@ -284,8 +290,9 @@ impl App {
         }));
         agent.ensure_subagents()?;
         let usage = agent.context_usage().ok();
-        // 经 set_workflow 走统一入口：恢复的计划正文必须同步种子进度缓存，
-        // 否则 /plan view 正文未变时不重算，标题停留 0/0。
+        // Go through set_workflow's single entry point: a resumed plan body must seed the
+        // progress cache, otherwise an unchanged body is not recomputed for /plan view and
+        // the title stays at 0/0.
         self.set_workflow(agent.workflow().clone());
         let task_status_view = self.task_status_view.clone();
         // Deliberately detached: quitting must not wait for HTTP or foreground tools.
@@ -294,8 +301,9 @@ impl App {
             .spawn(move || {
                 agent.enable_task_status(task_status_view.clone());
                 agent.publish_context_snapshot();
-                // 空闲时以 50ms 超时轮询迟到诊断：只发布 Progress，不续跑
-                // 模型、不把 Ready 改成 Running，也不伪造工具调用。
+                // While idle, poll for late diagnostics on a 50ms timeout: publish Progress
+                // only, never resume the model, never turn Ready into Running and never fake a
+                // tool call.
                 let mut last_poll_error: Option<String> = None;
                 loop {
                     let command = match receiver.recv_timeout(std::time::Duration::from_millis(50))
@@ -323,7 +331,8 @@ impl App {
                     let mut emit = |event| {
                         let _ = sender.send(WorkerEvent::Progress(event));
                     };
-                    // 状态切换成功后紧随一份新用量快照，与动作保持 FIFO 顺序。
+                    // A successful state switch is followed by a fresh usage snapshot to keep
+                    // FIFO order with the action.
                     let mut snapshots: Vec<WorkerEvent> = Vec::new();
                     let event = match command {
                         WorkerCommand::Mcp {
@@ -414,7 +423,8 @@ impl App {
                         } => {
                             let outcome =
                                 agent.run(&prompt, &cancellation, Some(&input), &mut emit);
-                            // 计划工具可能修改 workflow；终态后同步一份快照。
+                            // Plan tools may modify the workflow; sync a snapshot after the
+                            // terminal state.
                             push_workflow_snapshot(&agent, &mut snapshots);
                             WorkerEvent::completed(started, outcome)
                         }
@@ -429,8 +439,9 @@ impl App {
                         }
                         WorkerCommand::Compact { cancellation } => {
                             let result = agent.compact(&cancellation, &mut emit);
-                            // 终态事件之前先发布最终用量快照；
-                            // 成功、失败、取消、未变化都会刷新状态栏。
+                            // Publish the final usage snapshot before the terminal event;
+                            // success, failure, cancellation and no-change all refresh the
+                            // status line.
                             push_runtime_snapshot(&agent, &mut snapshots);
                             WorkerEvent::Compacted(result)
                         }
@@ -496,15 +507,17 @@ impl App {
                             push_runtime_snapshot(&agent, &mut snapshots);
                             WorkerEvent::Reset
                         }
-                        // 绑定写入 agent 与 UI 共享的 slot；成功无需额外事件载荷。
+                        // The binding writes into the slot shared by agent and UI; success needs
+                        // no extra event payload.
                         WorkerCommand::EnsureSubagents => {
                             WorkerEvent::SubagentsEnsured(agent.ensure_subagents())
                         }
                         WorkerCommand::SaveDefaultThinkLevel(level) => {
                             let result = agent.save_default_think_level(level).map(|()| level);
                             if result.is_ok() {
-                                // 偏好已提交；快照读取失败经 ModelsReloaded 单独报错，
-                                // 不把保存伪装成失败。
+                                // The preference is committed; snapshot read failures are reported
+                                // separately through ModelsReloaded rather than disguising a save
+                                // as a failure.
                                 snapshots.push(WorkerEvent::ModelsReloaded(
                                     crate::tui::ModelListing::from_agent(&agent),
                                 ));
@@ -580,7 +593,8 @@ impl App {
                                             "failed to preload subagent root after resume"
                                         );
                                     }
-                                    // 恢复已是新会话根：先重绑临时管道，再交接执行快照。
+                                    // Resume is already the new session root: rebind the temp pipes
+                                    // first, then hand over the execution snapshot.
                                     if !publish_pipe_store(&sender, &agent) {
                                         break;
                                     }
@@ -606,7 +620,8 @@ impl App {
                                     snapshots.push(event);
                                 }
                             } else {
-                                // 转换失败也可能已持久化 Plan；发布真实模式避免假 EXEC。
+                                // A failed transition may still have persisted Plan; publish the
+                                // real mode so a fake EXEC is never shown.
                                 publish_transition_failure(&agent, &mut snapshots);
                             }
                             WorkerEvent::WorkflowChanged(result)
@@ -663,7 +678,8 @@ impl App {
                             };
                             match result {
                                 Ok(preparation) => {
-                                    // Keep 不改 store（同实例幂等）；Fresh 换根后立即发布。
+                                    // Keep does not touch the store (idempotent for the same
+                                    // instance); Fresh publishes immediately after switching roots.
                                     if !publish_pipe_store(&sender, &agent) {
                                         break;
                                     }
@@ -702,8 +718,9 @@ impl App {
                                 &mut emit,
                             ) {
                                 Ok(preparation) => {
-                                    // Fresh 批准的交接已换 store；下一次任务（继续执行）
-                                    // 开始前必须先让 UI 重绑，Keep 由同实例判定跳过。
+                                    // A Fresh-approved handoff already swapped the store; the next
+                                    // task (continue execution) requires the UI to rebind first,
+                                    // while Keep is skipped by the same-instance check.
                                     if !publish_pipe_store(&sender, &agent) {
                                         break;
                                     }
@@ -713,7 +730,7 @@ impl App {
                                         preparation,
                                         &cancellation,
                                     ) {
-                                        // UI 确认后才启动模型执行。
+                                        // Model execution starts only after the UI acknowledges.
                                         Ok(()) => WorkerEvent::completed(
                                             started,
                                             agent.continue_session(
@@ -729,7 +746,8 @@ impl App {
                                     }
                                 }
                                 Err(error) => {
-                                    // 审批失败可能已在 worker 内导入新修订（计划变更）。
+                                    // An approval failure may already have imported new revisions
+                                    // inside the worker (plan change).
                                     publish_transition_failure(&agent, &mut snapshots);
                                     WorkerEvent::WorkflowChanged(Err(error))
                                 }
@@ -740,14 +758,16 @@ impl App {
                             cancellation,
                             input,
                         } => {
-                            // 审查进度走独立事件流；不发布普通 Progress/用量快照。
+                            // Review progress uses its own event stream; no regular Progress or
+                            // usage snapshot is published.
                             let mut review_emit = |event| {
                                 let _ = sender.send(WorkerEvent::ReviewProgress(event));
                             };
                             let result =
                                 agent.review_plan(token, &input, &cancellation, &mut review_emit);
-                            // 成功时报告已由 write_workflow 登记；
-                            // 失败/取消保留旧报告。快照纠正显示不引入新权限。
+                            // On success the report is already registered by write_workflow;
+                            // failure/cancellation keeps the old report. Snapshot correction of
+                            // the display grants no new permission.
                             push_workflow_snapshot(&agent, &mut snapshots);
                             WorkerEvent::PlanReviewed(result)
                         }
@@ -778,7 +798,8 @@ impl App {
         if let Some(cleanup) = lsp_cleanup {
             self.install_lsp_cleanup(cleanup);
         }
-        // lazy=false 时在 LSP 清理句柄与退出链路安装完成后后台预热；UI 不等待。
+        // With lazy=false, prewarm in the background after the LSP cleanup handle and the
+        // exit path are installed; the UI does not wait.
         prewarm_lsp(lsp_registry, warm_events);
         self.usage = usage;
         if let Some(id) = session_id {
@@ -809,8 +830,9 @@ impl App {
     }
 }
 
-/// `lazy=false` 时的后台预热：只启动已发现的真实 language server，
-/// 不运行 CLI adapter/工作区 checker，也不阻塞 UI 或模型任务。
+/// Background prewarm when `lazy=false`: starts only the real language servers already
+/// discovered, runs no CLI adapters or workspace checkers, and blocks neither the UI nor
+/// model tasks.
 fn prewarm_lsp(registry: Option<pp_lsp::Registry>, events: mpsc::SyncSender<WorkerEvent>) {
     let Some(registry) = registry else { return };
     if !registry.enabled() || registry.is_lazy() {

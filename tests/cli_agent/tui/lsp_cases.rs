@@ -1,6 +1,7 @@
-// LSP 终端展示的真实 PTY 回归：迟到诊断卡、severity/unverified、Ctrl+O
-// 展开、AI 原文提交 diff、恢复时冻结重放。模型 provider 与 LSP 都用隔离
-// 夹具；测试只通过屏幕内容与磁盘结果推进，不以 sleep 猜测时序。
+// Real-PTY regression for LSP terminal display: late diagnostic card, severity/unverified, Ctrl+O
+// expansion, the AI's original text committed as a diff, and frozen replay on resume. Both the model
+// provider and LSP use isolated fixtures; the test advances only on screen content and on-disk results,
+// never guessing timing with sleep.
 
 use super::*;
 use std::io::Write;
@@ -16,7 +17,7 @@ fn lsp_tui_settings(home: &Path, enabled: bool) {
     std::fs::write(config_path(home, "settings.yml"), text).unwrap();
 }
 
-/// 写入隔离 HOME 的模型/LSP 配置和项目根标记；返回 (FIFO 目录, 服务器日志)。
+/// Write the model/LSP config and project root markers into an isolated HOME; returns (FIFO directory, server log).
 fn lsp_tui_fixture(
     home: &Path,
     cwd: &Path,
@@ -124,13 +125,13 @@ fn lsp_tui_late_card_is_independent_and_does_not_request_model_again() {
     assert!(!before.contains("LSP diagnostics (late)"));
     lsp_tui_wait_log(&log, "tui-late");
     lsp_tui_release(&fifo);
-    pty.wait_for("迟到诊断独立卡片", |screen| {
+    pty.wait_for("a separate card for the late diagnostic", |screen| {
         let text = screen.contents();
         text.contains("LSP diagnostics (late)")
             && text.contains("[error]")
             && text.contains("fixture wrong line 2")
     });
-    // 后台报告只投递展示，不产生新的模型请求。
+    // A background report is display-only and creates no new model request.
     no_more(&provider);
     let text = pty.contents();
     assert!(!text.contains("\"ok\""), "{text}");

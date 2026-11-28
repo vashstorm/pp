@@ -1,4 +1,4 @@
-//! 受监督子进程的 poll 单元与注册记录。
+//! Poll cell and registration record for a supervised child process.
 
 use brush_core::ManagedProcess;
 use std::{

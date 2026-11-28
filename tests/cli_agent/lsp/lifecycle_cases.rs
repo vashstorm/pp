@@ -1,7 +1,7 @@
-/// 只读子 Agent 与 Plan 同源：execution 层强制 ReadOnly，共享同一个真实
-/// 服务器进程，拒绝全部 mutating 动作且不启动任何 checker。
-/// 行模式：慢诊断跨过内联 500ms 窗口后，空闲时显示迟到报告但不触发模型
-/// 请求；下一次用户任务的首个请求恰好包含一次该报告，native 配对不拆。
+/// The read-only subagent shares its origin with Plan: the execution layer forces ReadOnly, shares the same real
+/// server process, rejects every mutating action and starts no checker.
+/// Line mode: once a slow diagnostic crosses the inline 500ms window, idle shows the late report without triggering a model
+/// request; the next user task's first request contains that report exactly once and native pairing does not split.
 #[test]
 fn lsp_roundtrip_writethrough_late_line_idle_and_next_request() {
     let protocol = "response";
@@ -52,8 +52,8 @@ fn lsp_roundtrip_writethrough_late_line_idle_and_next_request() {
         assert!(write.get("diagnostics").is_none(), "{write}");
         lsp_final(request, protocol, "late task first pass");
 
-        // final reply 之后没有任何新输入：先确认没有 provider 请求，再释放
-        // FIFO，让后台诊断在空闲轮询中被展示。
+        // No new input since the final reply: confirm there is no provider request before releasing the
+        // FIFO so the background diagnostics surface during an idle poll.
         no_more(&provider);
         lsp_release_fifo(&barrier.join("diagnostics"));
         cli.wait_for(super::streaming::Pipe::Stderr, "LSP diagnostics (late)");

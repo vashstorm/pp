@@ -1,4 +1,4 @@
-//! 带图片附件的用户消息排版：高亮正文内联标记，并将尾部原始元数据收拢为紧凑附件条。
+//! Layout of user messages with image attachments: highlights inline body markers and collects the trailing raw metadata into compact attachment rows.
 
 use super::*;
 use pp_config::config::IconMode;
@@ -11,13 +11,13 @@ const MAX_ALIGNED_NAME_SPREAD: usize = 20;
 
 #[derive(Debug, PartialEq, Eq)]
 struct UserImage<'a> {
-    /// 正文中可能出现的原始标记（如 `"\u{f03e} #1"`、`"[图片 1]"` 或 `"@shot.png"`）。
+    /// Raw marker that may appear in the body (for example `"\u{f03e} #1"`, `"[图片 1]"` or `"@shot.png"`).
     inline_marker: &'a str,
-    /// 提取的附件序号（纯数字）。
+    /// Extracted attachment number (digits only).
     number: Option<&'a str>,
-    /// 原始 `Image: <source>` 文本。
+    /// Raw `Image: <source>` text.
     source: &'a str,
-    /// `@path` 直接引用时保留原始引用路径。
+    /// Original reference path kept for a direct `@path` reference.
     reference_path: Option<&'a str>,
     mime: &'a str,
     dimensions: (u32, u32),
@@ -27,11 +27,11 @@ struct UserImage<'a> {
 }
 
 impl TranscriptEntry {
-    /// 若用户消息尾部包含结构化图片附件元数据，返回重排版后的行；普通纯文本返回 `None`。
+    /// Return the re-laid-out lines when the user message tail carries structured image attachment metadata; plain text returns `None`.
     pub(super) fn user_body_lines(&self, width: u16) -> Option<Vec<LayoutLine>> {
         let (body, images) = parse_user_images(self.visible_text())?;
         let icons = crate::tui::themes::current_icons();
-        // `render.rs` 左侧已有 2 列 inset；宽屏时右侧也留出 2 列对称余白。
+        // `render.rs` already insets 2 columns on the left; wide screens also leave 2 symmetric columns on the right.
         let inner = if width > 6 { width - 2 } else { width.max(1) };
         let mut rows = Vec::new();
         let has_body = !is_markers_only(body, &images);
@@ -59,7 +59,7 @@ impl TranscriptEntry {
     }
 }
 
-/// 从用户消息尾部贪心解析连续的图片元数据块；若不存在完整块则返回 `None`。
+/// Greedily parse consecutive image metadata blocks from the tail of the user message; returns `None` when no complete block exists.
 fn parse_user_images(text: &str) -> Option<(&str, Vec<UserImage<'_>>)> {
     let mut lines: Vec<(usize, &str)> = Vec::new();
     let mut offset = 0;
@@ -124,7 +124,7 @@ fn parse_trailing_image<'a>(lines: &[(usize, &'a str)]) -> Option<(usize, UserIm
     let header_idx = idx - 4;
     let header = lines[header_idx].1;
 
-    // 形态 1：`[图片引用 N] @path` 后跟 `Image: <source>`。
+    // Shape 1: `[图片引用 N] @path` followed by `Image: <source>`.
     if let Some(source) = header.strip_prefix("Image: ")
         && !source.is_empty()
         && header_idx > 0
@@ -147,7 +147,7 @@ fn parse_trailing_image<'a>(lines: &[(usize, &'a str)]) -> Option<(usize, UserIm
         ));
     }
 
-    // 形态 2：`<marker> Image: <source>`（标准附件与旧 `[图片 N]` 历史）。
+    // Shape 2: `<marker> Image: <source>` (standard attachments and legacy `[图片 N]` history).
     let (marker, source) = header.split_once(" Image: ")?;
     if marker.is_empty() || source.is_empty() {
         return None;
@@ -224,7 +224,7 @@ fn badge_label(image: &UserImage<'_>, icons: IconMode) -> String {
     }
 }
 
-/// 若正文除去已绑定的附件标记与空白后为空，则不重复渲染纯标记行。
+/// Do not render a marker-only line when the body is empty after removing the bound attachment markers and whitespace.
 fn is_markers_only(body: &str, images: &[UserImage<'_>]) -> bool {
     let mut cursor = 0;
     while cursor < body.len() {
@@ -281,7 +281,7 @@ fn style_user_body_line(logical: &str, images: &[UserImage<'_>], icons: IconMode
     Line::from(spans)
 }
 
-/// 匹配最长的内联附件标记；以数字结尾的标记后不能紧跟 ASCII 数字，避免 `#1` 误切 `#10`。
+/// Match the longest inline attachment marker; a marker ending in a digit must not be followed by an ASCII digit, so `#1` does not split `#10`.
 fn match_inline_marker<'a>(
     rest: &str,
     images: &'a [UserImage<'a>],
@@ -298,7 +298,7 @@ fn match_inline_marker<'a>(
                 best = Some((marker.len(), image));
             }
         }
-        // `@"path with spaces.png"` 形式也视为匹配该图片引用。
+        // The `@"path with spaces.png"` form also counts as a match for that image reference.
         if let Some(ref_path) = image.reference_path
             && let Some(after_at) = rest.strip_prefix("@\"")
             && let Some(after_path) = after_at.strip_prefix(ref_path)
@@ -386,7 +386,7 @@ fn format_attachment_rows(
             continue;
         }
 
-        // 宽度不足时先拆成「编号 + 文件名」与「规格元信息」两段，避免把尺寸和体积劈断。
+        // When the width is too small, split into "number + file name" and "spec metadata" first so dimensions and size are not cut in half.
         let first_line = Line::from(vec![
             Span::styled(badge.clone(), badge_style),
             Span::raw(badge_pad),
@@ -441,7 +441,7 @@ fn meta_spans(image: &UserImage<'_>, icons: IconMode) -> Vec<Span<'static>> {
     spans
 }
 
-/// 生成易读来源名：项目内显示相对路径，项目外提取文件名；同名外部文件补充一级父目录消歧。
+/// Build a readable source name: a relative path inside the project, the file name outside it; same-named external files get one parent directory to disambiguate.
 fn display_sources(images: &[UserImage<'_>], cwd: Option<&Path>) -> Vec<String> {
     let base: Vec<(String, bool)> = images
         .iter()

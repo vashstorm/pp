@@ -15,8 +15,9 @@ include!("diff_blocks_tui.rs");
 include!("transcript_blocks_tui.rs");
 include!("ask_tui.rs");
 include!("subagents_tui.rs");
-// `/test-task` 与 `/test-*` 工具套件只在 debug assertions 构建中注册，PTY 用例随同一
-// profile 边界编译；`test_task_tui_child` 同时被普通角色用例使用，保留在共享夹具中。
+// `/test-task` and the `/test-*` tool suites are registered only in debug-assertions builds, and the
+// PTY cases compile under the same profile boundary; `test_task_tui_child` is also used by ordinary
+// role cases, so it stays in the shared fixture.
 #[cfg(debug_assertions)]
 include!("test_task_tui.rs");
 #[cfg(debug_assertions)]
@@ -38,7 +39,8 @@ include!("native_tui.rs");
 include!("sqlite_tui.rs");
 include!("initial_command_tui.rs");
 include!("permission_tui.rs");
-// 行模式 `/stats` 需要 stdout 是真实 PTY、stdin 不是，因此由本模块的 PTY 夹具引入。
+// Line-mode `/stats` needs stdout to be a real PTY while stdin is not, so this module's PTY fixture
+// pulls it in.
 include!("stats_line_mode_tui.rs");
 use portable_pty::{CommandBuilder, MasterPty, PtySize, SlavePty, native_pty_system};
 use std::{
@@ -47,7 +49,8 @@ use std::{
     sync::mpsc::{self, Receiver},
 };
 
-// 子 Agent 请求的判定：system／instructions 含内置子 Agent 抬头，与 profile 无关。
+// Detection of a subagent request: system/instructions contain the built-in subagent header,
+// regardless of profile.
 fn test_task_tui_child(protocol: &str, body: &Value) -> bool {
     let system = if protocol == "completion" {
         body["messages"][0].to_string()
@@ -57,11 +60,13 @@ fn test_task_tui_child(protocol: &str, body: &Value) -> bool {
     system.contains("You are subagent")
 }
 
-// 仅 TUI 夹具自动处理旁路标题；CLI 仍严格拒绝任何额外请求。
+// Only the TUI fixture answers the side-channel title requests automatically; the CLI still strictly
+// rejects any extra request.
 fn receive(server: &TestServer) -> (CapturedRequest, Value) {
     receive_at(server, "/v1/chat/completions")
 }
-/// 并行档会同时启动多个真实 PTY；总预算覆盖标题应答后继续等待主请求的时间。
+/// The parallel profile starts several real PTYs at once; the overall budget covers answering title
+/// requests and then waiting for the main request.
 fn receive_at(server: &TestServer, path: &str) -> (CapturedRequest, Value) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -71,8 +76,9 @@ fn receive_at(server: &TestServer, path: &str) -> (CapturedRequest, Value) {
             assert_eq!(request.target(), path);
             return (request, body);
         }
-        // 旁路标题请求在 /tree 回退、取消或进程退出时可能已被客户端中止，
-        // 只吞掉传输已关闭的 BrokenPipe，继续等待主请求。
+        // A side-channel title request may already have been aborted by the client on a /tree rewind,
+        // a cancellation or process exit, so only swallow the BrokenPipe of a closed transport and keep
+        // waiting for the main request.
         let outcome = if request.target().ends_with("responses") {
             try_response_reply(
                 request,
@@ -171,7 +177,7 @@ impl Pty {
         Self::start_with_args(cwd, cwd, &[])
     }
 
-    /// 未就绪启动：用例需要在终端能力探测窗口内回送回复。
+    /// Not-ready start: the case needs to send a reply inside the terminal capability probe window.
     pub(super) fn start_with_existing_files_raw(cwd: &Path) -> Self {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
         command.cwd(cwd);
@@ -189,8 +195,8 @@ impl Pty {
         Self::spawn(command)
     }
 
-    /// `pp -r` 等启动即进入备用屏幕面板的入口：跳过主屏幕就绪栅栏，
-    /// 由用例自行等待面板可见。
+    /// Entries such as `pp -r` that go straight into an alternate-screen panel: skip the main-screen
+    /// readiness barrier and let the case wait for the panel itself.
     pub(super) fn start_with_args_in_alt_screen(cwd: &Path, home: &Path, args: &[&str]) -> Self {
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pp"));
         command.cwd(cwd);
@@ -201,7 +207,8 @@ impl Pty {
         Self::spawn_raw(command)
     }
 
-    // 持久化写失败：bash 的 ulimit -f 以 1024 字节为单位，忽略 SIGXFSZ 后写入返回 EFBIG。
+    // Persistence write failure: bash's ulimit -f counts 1024-byte blocks, and writes return EFBIG after
+    // SIGXFSZ is ignored.
     fn start_with_file_limit(cwd: &Path, home: &Path, blocks: u64, args: &[&str]) -> Self {
         let mut command = CommandBuilder::new("bash");
         command.cwd(cwd);
@@ -218,12 +225,15 @@ impl Pty {
 
     fn spawn(command: CommandBuilder) -> Self {
         let mut pty = Self::spawn_raw(command);
-        pty.wait_for("主屏幕、括号粘贴和 SGR 鼠标模式", |screen| {
-            !screen.alternate_screen()
-                && screen.bracketed_paste()
-                && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
-                && screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr
-        });
+        pty.wait_for(
+            "main screen, bracketed paste and SGR mouse mode",
+            |screen| {
+                !screen.alternate_screen()
+                    && screen.bracketed_paste()
+                    && screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+                    && screen.mouse_protocol_encoding() == vt100::MouseProtocolEncoding::Sgr
+            },
+        );
         assert_ne!(
             terminal_flags(pty.master.as_ref()),
             pty.original_flags,
@@ -287,7 +297,7 @@ impl Pty {
         writer.flush().unwrap();
     }
 
-    /// P/S/Q/R/T 按平台发送 Option 或 Ctrl；O 始终使用 Ctrl。
+    /// P/S/Q/R/T send Option or Ctrl depending on the platform; O always uses Ctrl.
     pub(super) fn function_key(&mut self, character: char) {
         let bytes: &str = if cfg!(target_os = "macos") {
             match character {
@@ -314,7 +324,7 @@ impl Pty {
     }
 
     fn resize(&mut self, rows: u16, cols: u16) {
-        self.wait_for("resize 前的完整绘制帧", |_| true);
+        self.wait_for("complete painted frame before resize", |_| true);
         let previous_output = self.raw.len();
         self.master
             .resize(PtySize {
@@ -342,17 +352,18 @@ impl Pty {
 
     fn draft(&mut self, expected: &str) {
         self.wait_for(&format!("preserved input draft {expected:?}"), |screen| {
-            // 输入框按物理行定位；contents() 会合并软换行，resize 后
-            // 可能把正文与提示符拼在同一逻辑行，造成假超时。
+            // Locate the input box by physical row; contents() merges soft wraps, so after a resize the
+            // body and the prompt may be joined into one logical row and fake a timeout.
             let lines: Vec<_> = screen.rows(0, screen.size().1).collect();
-            // 主输入框的空白不能误判为搜索面板已关闭，须等待焦点恢复。
+            // Blank in the main input box must not be mistaken for a closed search panel; wait for the
+            // focus to be restored.
             if lines
                 .get(usize::from(screen.cursor_position().0))
                 .is_some_and(|line| line.starts_with(''))
             {
                 return false;
             }
-            // 上方菜单也使用箭头，最后一个提示符才是主输入框。
+            // The menu above also uses the arrow, so only the last prompt belongs to the main input box.
             let Some(start) = lines.iter().rposition(|line| line.starts_with('❯')) else {
                 return false;
             };
@@ -364,7 +375,7 @@ impl Pty {
     }
 
     fn model_search(&mut self, expected: &str) {
-        self.wait_for("独立模型搜索框内容和焦点", |screen| {
+        self.wait_for("standalone model search box content and focus", |screen| {
             let text = screen.contents();
             let (row, _) = screen.cursor_position();
             !screen.hide_cursor()
@@ -377,7 +388,7 @@ impl Pty {
     }
 
     pub(super) fn ready_model(&mut self, expected: &str) {
-        self.wait_for("空闲输入框和所选模型", |screen| {
+        self.wait_for("idle input box and the selected model", |screen| {
             let text = screen.contents();
             input_is_ready(screen)
                 && text
@@ -388,7 +399,7 @@ impl Pty {
     }
 
     pub(super) fn ready(&mut self) {
-        self.wait_for("空闲输入框", |screen| {
+        self.wait_for("idle input box", |screen| {
             let text = screen.contents();
             input_is_ready(screen)
                 && live_activity_labels(&text).next().is_none()
@@ -404,15 +415,19 @@ impl Pty {
         });
     }
 
-    /// 等待本轮回答后面的提交标记，避免把旧轮次的 Completed 当成空闲栅栏。
+    /// Wait for the commit marker after this round's answer, so an earlier round's Completed is not
+    /// mistaken for the idle barrier.
     pub(super) fn completed_after(&mut self, marker: &str) {
-        self.wait_for("本轮回答与完成标记均已提交", |screen| {
-            let text = screen.contents();
-            input_is_ready(screen)
-                && text
-                    .rfind("✻ Completed")
-                    .is_some_and(|end| text[..end].contains(marker))
-        });
+        self.wait_for(
+            "this round's answer and commit marker are both committed",
+            |screen| {
+                let text = screen.contents();
+                input_is_ready(screen)
+                    && text
+                        .rfind("✻ Completed")
+                        .is_some_and(|end| text[..end].contains(marker))
+            },
+        );
     }
 
     fn ready_effort(&mut self, expected: &str) {
@@ -423,9 +438,9 @@ impl Pty {
             "high" => ("\u{f0aa3}", "hig"),
             "xhigh" => ("\u{f0aa5}", "xhi"),
             "max" => ("\u{f06d}", "max"),
-            _ => panic!("未知的思考级别：{expected}"),
+            _ => panic!("unknown thinking level: {expected}"),
         };
-        self.wait_for("空闲输入框和思考级别", |screen| {
+        self.wait_for("idle input box and the thinking level", |screen| {
             input_is_ready(screen)
                 && screen
                     .contents()
@@ -439,7 +454,8 @@ impl Pty {
         while let Ok(bytes) = self.output.try_recv() {
             self.raw.extend_from_slice(&bytes);
             self.parse_pending.extend_from_slice(&bytes);
-            // vt100 0.16 不实现 ED3；在测试适配层补上原生历史清理语义。
+            // vt100 0.16 does not implement ED3; the test adapter layer supplies the native
+            // scrollback-purge semantics.
             let purge = b"\x1b[3J";
             while let Some(index) = self
                 .parse_pending
@@ -535,14 +551,16 @@ impl Pty {
         self.wait_for(text, |screen| screen.contents().contains(text));
     }
 
-    /// 当前可见屏幕文本（先排空已到达的输出）。
+    /// The currently visible screen text (after draining output that already arrived).
     pub(super) fn contents(&mut self) -> String {
         self.drain();
         self.parser.screen().contents()
     }
 
-    /// 按终端顺序回送图片能力探测的回复；查询由子进程自己写出。
-    /// 每条之间留一点间隔：真实终端与 tmux 会分批送达，不能把它们聚成一次读。
+    /// Answer the image capability probe replies in terminal order; the child process writes the query
+    /// itself.
+    /// Leave a small gap between them: real terminals and tmux deliver them in batches, so they must not
+    /// be coalesced into a single read.
     pub(super) fn answer_terminal_probe(&mut self, replies: &[&str]) {
         self.wait_for_raw(b"\x1b_Gi=31");
         for reply in replies {
@@ -551,7 +569,7 @@ impl Pty {
         }
     }
 
-    /// 主输入框当前文本：最后一条提示符行的内容。
+    /// Current text of the main input box: the content of the last prompt row.
     pub(super) fn prompt(&mut self) -> String {
         self.drain();
         let (_, columns) = self.parser.screen().size();
@@ -579,7 +597,7 @@ impl Pty {
             }
             assert!(
                 Instant::now() < deadline,
-                "等待终端控制序列 {:?} 超时\n{}",
+                "timed out waiting for terminal control sequence {:?}\n{}",
                 String::from_utf8_lossy(expected),
                 self.diagnostics()
             );
@@ -716,7 +734,7 @@ fn tui_session_is_locked(home: &Path, id: &str) -> bool {
     match rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
         Ok(()) => false,
         Err(error) if error == rustix::io::Errno::WOULDBLOCK => true,
-        Err(error) => panic!("检查会话锁失败：{error}"),
+        Err(error) => panic!("failed to check the session lock: {error}"),
     }
 }
 
@@ -850,7 +868,7 @@ fn saved_session_id(home: &Path) -> String {
     ids.pop().unwrap()
 }
 
-// 驱动一个带 bash+read 工具批次与会话，退出后返回保存的 session ID。
+// Drive one session with a bash+read tool batch and return the saved session ID after exiting.
 fn create_tool_session(server: &TestServer, home: &Path, protocol: &str) -> String {
     std::fs::write(config_path(home, "settings.yml"), fixture_settings()).unwrap();
     std::fs::write(
@@ -889,14 +907,17 @@ fn create_tool_session(server: &TestServer, home: &Path, protocol: &str) -> Stri
     }
     pty.text("tui-remembered");
     pty.ready();
-    // 会话标识不再产生常规提醒。
+    // The session identity no longer produces a regular reminder.
     assert!(!pty.parser.screen().contents().contains("Session:"));
     pty.input("/quit\r");
-    pty.wait_for("会话提示不进入退出后的终端历史", |screen| {
-        !screen.alternate_screen()
-            && screen.contents().contains("tui-remembered")
-            && !screen.contents().contains("Session:")
-    });
+    pty.wait_for(
+        "the session hint does not enter terminal history after exit",
+        |screen| {
+            !screen.alternate_screen()
+                && screen.contents().contains("tui-remembered")
+                && !screen.contents().contains("Session:")
+        },
+    );
     pty.finish();
     no_more(server);
     saved_session_id(home)

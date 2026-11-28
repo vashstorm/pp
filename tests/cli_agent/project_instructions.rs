@@ -21,7 +21,8 @@ pub(super) fn system_prefix<'a>(body: &'a Value, protocol: &str) -> &'a str {
     }
 }
 
-/// 返回最新送达模型的项目规则块（有动态 `[pp-project-instructions]` developer 增量时取最新一条，否则取静态 system）。
+/// Return the project rules block most recently delivered to the model (the latest dynamic `[pp-project-instructions]`
+/// developer increment if there is one, otherwise the static system message).
 pub(super) fn latest_instructions<'a>(body: &'a Value, protocol: &str) -> &'a str {
     history(body, protocol)
         .iter()
@@ -353,7 +354,8 @@ fn agents_refreshes_after_tool_create_edit_and_delete_both_protocols() {
         .iter()
         .filter(|record| record["customType"] == "pp.instructions")
         .collect();
-    // 已有历史后的创建/更新/删除均走尾部 developer 消息增量送达，不改写首条 system 前缀。
+    // Creates/updates/deletes after history exists all travel as trailing developer-message increments and never
+    // rewrite the leading system prefix.
     assert!(changes.is_empty(), "{changes:?}");
     let append_key = if protocol == "completion" {
         "messages"

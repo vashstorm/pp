@@ -1,4 +1,4 @@
-//! `auto_review`（Approve for me）独立审阅器：使用 `REVIEW` 角色执行单轮无工具安全判定。
+//! `auto_review` (Approve for me) standalone reviewer: runs a single tool-less safety decision with the `REVIEW` role.
 
 use super::{Agent, Session, fallback, turn::append_user_to};
 use anyhow::{Context, Result, bail};
@@ -24,7 +24,7 @@ struct RawVerdict {
     reason: String,
 }
 
-/// 主 Agent 与子 Agent 共享的 `auto_review` 运行期上下文，随用户意图、会话文件与模型切换刷新。
+/// `auto_review` runtime context shared by the main Agent and subagents, refreshed on user intent, session file and model switches.
 pub(in crate::agent) struct AutoReviewState {
     models: Arc<ModelState>,
     cwd: PathBuf,
@@ -209,7 +209,7 @@ impl AutoReviewState {
                         && !review_token.is_cancelled()
                         && fallback.is_some() =>
                 {
-                    let target = fallback.take().expect("备用模型存在");
+                    let target = fallback.take().expect("fallback model exists");
                     fallback::switch_scratch_model(
                         &mut client,
                         &mut session,

@@ -1,4 +1,4 @@
-//! Bash 有界输出、会话资源及运行中快照。
+//! Bounded Bash output, session resources and in-flight snapshots.
 use std::sync::{Mutex, MutexGuard};
 
 mod normalize;

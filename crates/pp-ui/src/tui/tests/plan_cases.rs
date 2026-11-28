@@ -147,7 +147,7 @@ fn plan_prompt_standby_toggle_and_readonly_progress_guards() {
     for workflow in [WorkflowState::default(), ready_plan_workflow()] {
         let (mut app, requests, _events) = plan_app();
         app.workflow = workflow;
-        app.input.insert_str("/plan 调研登录流程");
+        app.input.insert_str("/plan research login flow");
         app.submit(PendingKind::Steering);
         assert!(matches!(
             requests.try_recv(),
@@ -156,20 +156,23 @@ fn plan_prompt_standby_toggle_and_readonly_progress_guards() {
         assert!(requests.try_recv().is_err());
         assert!(matches!(app.state, State::ChangingPlan));
         assert!(app.input.is_empty());
-        assert_eq!(app.input_history.last().unwrap(), "/plan 调研登录流程");
-        app.input.insert_str("新草稿");
+        assert_eq!(
+            app.input_history.last().unwrap(),
+            "/plan research login flow"
+        );
+        app.input.insert_str("new draft");
         app.receive_event_for_test(WorkerEvent::WorkflowChanged(Ok(ready_plan_workflow())));
         assert!(
             matches!(requests.try_recv(), Ok(WorkerCommand::Run { prompt, .. })
-                if prompt == "调研登录流程")
+                if prompt == "research login flow")
         );
         assert!(requests.try_recv().is_err());
         assert!(matches!(app.state, State::Running));
         assert!(app.plan_panel.is_none() && app.plan_after_enter.is_none());
-        assert_eq!(app.input.lines(), &["新草稿"]);
+        assert_eq!(app.input.lines(), &["new draft"]);
     }
 
-    for draft in ["", "新草稿"] {
+    for draft in ["", "new draft"] {
         let (mut app, requests, _events) = plan_app();
         app.input.insert_str("/plan research");
         app.submit(PendingKind::Steering);
@@ -179,7 +182,7 @@ fn plan_prompt_standby_toggle_and_readonly_progress_guards() {
         ));
         app.input.insert_str(draft);
         app.receive_event_for_test(WorkerEvent::WorkflowChanged(Err(anyhow::anyhow!(
-            "清理失败"
+            "cleanup failed"
         ))));
         assert!(requests.try_recv().is_err());
         assert!(app.plan_retry_enter && app.plan_after_enter.is_none());
@@ -233,7 +236,7 @@ fn plan_prompt_standby_toggle_and_readonly_progress_guards() {
         for index in 0..4 {
             assert!(!panel.action_enabled(index));
         }
-        // Esc 只关闭面板，不取消任务。
+        // Esc only closes the panel and does not cancel the task.
         app.handle(key(KeyCode::Esc), &mut false);
         assert!(app.plan_panel.is_none());
         assert!(matches!(app.state, State::Running));
@@ -241,7 +244,7 @@ fn plan_prompt_standby_toggle_and_readonly_progress_guards() {
 
     {
         let (mut app, requests, _events) = plan_app();
-        // Execute：裸 /plan 进入 Plan 待命（Plan+None，不打开审阅）。
+        // Execute: a bare /plan enters Plan standby (Plan+None, no review opened).
         app.input.insert_str("/plan");
         app.submit(PendingKind::Steering);
         assert!(matches!(
@@ -261,7 +264,7 @@ fn plan_prompt_standby_toggle_and_readonly_progress_guards() {
         assert!(!app.plan_retry_enter);
         assert!(app.plan_panel.is_none());
 
-        // 空待命可直接退出：裸 /plan 直接发送 LeavePlan，无确认框。
+        // Empty standby can leave directly: a bare /plan sends LeavePlan with no confirmation dialog.
         app.input.insert_str("/plan");
         app.submit(PendingKind::Steering);
         assert!(matches!(
@@ -323,7 +326,7 @@ fn plan_ready_execute_keep_focus_discussion_and_context_usage() {
             let buffer = draw_buffer(&mut focus, 100, 30);
             let actions_y = (0..30).find(|&y| buffer[(0, y)].symbol() == "╭").unwrap();
             for (y, color) in [0, actions_y, 26].into_iter().zip(colors) {
-                assert_eq!(buffer[(99, y)].fg, color, "边框所在行：{y}");
+                assert_eq!(buffer[(99, y)].fg, color, "border row: {y}");
             }
             let rows: Vec<String> = (actions_y + 1..actions_y + 6)
                 .map(|y| (1..99).map(|x| buffer[(x, y)].symbol()).collect())
@@ -399,12 +402,12 @@ fn plan_ready_execute_keep_focus_discussion_and_context_usage() {
             Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
             &mut false,
         );
-        usage_app.handle(Event::Paste("继续讨论".into()), &mut false);
-        assert_eq!(usage_app.input.lines(), &["q", "继续讨论"]);
+        usage_app.handle(Event::Paste("continue discussion".into()), &mut false);
+        assert_eq!(usage_app.input.lines(), &["q", "continue discussion"]);
         usage_app.handle(key(KeyCode::Enter), &mut false);
         assert!(matches!(
             requests.try_recv(),
-            Ok(WorkerCommand::Run { prompt, .. }) if prompt == "q\n继续讨论"
+            Ok(WorkerCommand::Run { prompt, .. }) if prompt == "q\ncontinue discussion"
         ));
         assert!(requests.try_recv().is_err());
         assert!(usage_app.plan_panel.is_none() && usage_app.input.is_empty());
@@ -432,17 +435,17 @@ fn plan_leave_discard_confirmation_and_subcommand_guards() {
     assert!(screen.contains("Cancel,keepplanning"));
     assert!(screen.contains("Discardchangesandexit"));
     assert!(app.needs_alternate());
-    app.input.insert_str("保留输入");
+    app.input.insert_str("keep input");
     app.handle(key(KeyCode::Enter), &mut false);
     assert!(app.plan_leave_confirmation.is_none() && requests.try_recv().is_err());
-    assert_eq!(app.input.lines(), &["保留输入"]);
+    assert_eq!(app.input.lines(), &["keep input"]);
     assert_eq!(app.workflow.plan.as_ref().unwrap().id, id);
 
     app.apply_plan_command(PlanCommand::Toggle);
-    app.handle(Event::Paste("不能插入".into()), &mut false);
+    app.handle(Event::Paste("cannot insert".into()), &mut false);
     app.handle(function_key('p'), &mut false);
     app.handle(key(KeyCode::F(1)), &mut false);
-    assert_eq!(app.input.lines(), &["保留输入"]);
+    assert_eq!(app.input.lines(), &["keep input"]);
     assert!(requests.try_recv().is_err());
     app.handle(key(KeyCode::Esc), &mut false);
     assert!(app.plan_leave_confirmation.is_none() && app.workflow.mode == WorkMode::Plan);
@@ -461,7 +464,7 @@ fn plan_leave_discard_confirmation_and_subcommand_guards() {
         matches!(requests.try_recv(), Ok(WorkerCommand::LeavePlan { discard_plan_id: Some(token), .. }) if token == id)
     );
     assert!(requests.try_recv().is_err());
-    assert_eq!(app.input.lines(), &["保留输入"]);
+    assert_eq!(app.input.lines(), &["keep input"]);
 
     let (mut stale, req_stale, _) = plan_app();
     let mut stale_plan = pp_core::plan::PlanDocument::new().unwrap();
@@ -518,7 +521,7 @@ fn plan_leave_discard_confirmation_and_subcommand_guards() {
         Ok(WorkerCommand::LeavePlan { .. })
     ));
     retry_leave.receive_event_for_test(WorkerEvent::WorkflowChanged(Err(anyhow::anyhow!(
-        "退出失败"
+        "exit failed"
     ))));
     assert!(!retry_leave.plan_retry_enter);
     retry_leave.input.insert_str("/plan");

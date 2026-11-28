@@ -66,11 +66,11 @@ fn killed_subagent_stale_settle_keeps_aborted_status_and_blocks_idle_event() {
         );
     }
 
-    // kill 将状态设为 aborted 并将 generation 递增到 2。
+    // kill sets the status to aborted and advances the generation to 2.
     binding.control(&agent_id, "kill", None).unwrap();
     assert!(token.is_cancelled());
 
-    // 模拟旧 generation=1 worker 迟到退出调用 settle(..., Some(1))。
+    // Simulates the late exit of an old generation=1 worker calling settle(..., Some(1)).
     binding
         .settle(
             &run_id,
@@ -87,7 +87,7 @@ fn killed_subagent_stale_settle_keeps_aborted_status_and_blocks_idle_event() {
     assert_eq!(state.disk.runs[&run_id].status, "cancelled");
     drop(state);
 
-    // 观察日志末尾不得出现将 status 改回 idle 的事件。
+    // No event that sets the status back to idle may appear at the end of the observation log.
     let snap = binding.hub_snapshot();
     let agent = snap
         .agents

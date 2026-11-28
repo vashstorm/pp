@@ -65,7 +65,7 @@ pub struct Config {
     pub protocol: models::Protocol,
     pub api_key: String,
     pub model: String,
-    // 完整 provider/model 配置引用；与供应商实际 wire model 名（model 字段）不同。
+    // Full provider/model configuration reference; differs from the provider's actual wire model name (the model field).
     pub model_reference: String,
     pub context_window: Option<u64>,
     pub prompt_cache_key: bool,
@@ -81,8 +81,8 @@ pub struct ModelCatalog {
     settings: Settings,
     settings_path: PathBuf,
     agent_db_path: PathBuf,
-    /// 构造时打开的 agent.db 连接：`model_usage` 这类只读访问复用它，不再逐次重开；
-    /// 写入仍各自打开独立连接与事务，跨线程读由 `Mutex` 串行化。
+    /// The agent.db connection opened at construction: read-only access such as `model_usage` reuses it instead of reopening per call;
+    /// writes still open their own connection and transaction, and the `Mutex` serializes reads across threads.
     agent_store: Arc<Mutex<crate::agent_store::AgentStore>>,
     providers: Vec<models::ValidatedProvider>,
     pricing: models::ModelPricing,
@@ -100,7 +100,7 @@ pub struct ModelChoice {
     pub context_window: Option<u64>,
 }
 
-/// `--model` 解析结果：完整引用 + 已解析到具体档位。
+/// `--model` resolution result: the full reference plus the resolved concrete effort level.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelSelection {
     pub reference: String,
@@ -129,7 +129,7 @@ fn default_notification_timeout_seconds() -> u64 {
     10
 }
 
-/// 默认/收藏/Role/effort 的持久化权威，本批自 settings.yml 四字段迁入 agent.db。
+/// Persistence authority for the default, favorites, roles and effort; migrated from the four settings.yml fields into agent.db.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelPreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,7 +143,7 @@ pub struct ModelPreferences {
 }
 
 impl ModelPreferences {
-    /// 沿用 settings.yml 四字段的既有校验规则；可用性由 ModelCatalog 在入口校验。
+    /// Keeps the existing validation rules of the four settings.yml fields; availability is validated at the ModelCatalog entry points.
     pub(crate) fn validate(&self) -> Result<()> {
         for assignment in self.model_roles.values() {
             assignment.validate()?;
@@ -200,11 +200,11 @@ pub struct Settings {
     pub web_search: WebSearchSettings,
     #[serde(default)]
     pub debug: bool,
-    /// 已弃用：仅为旧配置保留类型校验，不再控制 TUI 显示。
+    /// Deprecated: kept only for type validation of old configurations; no longer controls TUI display.
     #[allow(dead_code)]
     #[serde(default = "default_notification_show_countdown")]
     pub notification_show_countdown: bool,
-    /// 已弃用：沿用旧值校验，错误卡片不再自动消失。
+    /// Deprecated: keeps the old value validation; error cards no longer disappear automatically.
     #[serde(default = "default_notification_timeout_seconds")]
     pub notification_timeout_seconds: u64,
     #[serde(default = "default_skill_dirs")]
@@ -215,10 +215,10 @@ pub struct Settings {
     pub disabled_skills: Vec<String>,
     #[serde(default)]
     pub edit: EditMode,
-    // 模型建连及连续无数据的闲置超时，不限制整轮生成的总耗时。
+    // Idle timeout for connecting to the model and for consecutive runs without data; it does not limit the total time of a whole generation.
     #[serde(default = "default_request_timeout_seconds")]
     pub request_timeout_seconds: u64,
-    // 每模型的累计重试等待预算，0 表示不重试。
+    // Cumulative retry wait budget per model request; 0 means no retry.
     #[serde(default = "default_rate_limit_retry_budget_seconds")]
     pub rate_limit_retry_budget_seconds: u64,
     #[serde(default = "default_read_max_bytes")]
@@ -335,7 +335,7 @@ impl Settings {
     }
 }
 
-/// 权限 policy 允许的内置工具名；MCP 工具只接受 `mcp__` 前缀防拼写错误。
+/// Built-in tool names allowed by the permission policy; MCP tools are accepted only through the `mcp__` prefix to catch typos.
 const PERMISSION_TOOL_NAMES: &[&str] = &[
     "read",
     "rg",
@@ -448,10 +448,10 @@ impl ModelCatalog {
         self.settings_path.with_file_name("mcp.json")
     }
 
-    /// 用户级 LSP 服务器定义与 settings.yml 放在同一配置目录。
+    /// User-level LSP server definitions live in the same configuration directory as settings.yml.
     ///
-    /// Agent 安装 Registry 时显式传入此路径，Registry 本身不再读取 HOME，
-    /// 因而测试可用临时目录完整隔离。
+    /// The Agent passes this path explicitly when installing the Registry, and the Registry itself no longer reads HOME,
+    /// so tests can isolate it completely with a temporary directory.
     pub fn lsp_path(&self) -> PathBuf {
         self.settings_path.with_file_name("lsp.json")
     }
@@ -472,7 +472,7 @@ impl ModelCatalog {
         &self.settings.web_search
     }
 
-    /// 用户级 hooks 配置与 settings.yml 放在同一配置目录。
+    /// User-level hooks configuration lives in the same configuration directory as settings.yml.
     pub fn hooks_path(&self) -> PathBuf {
         self.settings_path.with_file_name("hooks.yml")
     }
@@ -484,11 +484,11 @@ impl ModelCatalog {
         Self::load(settings_path, models_path, false)
     }
 
-    /// 启动期入口：调用方已完成一次性迁移并解析、校验过 `settings.yml`。
+    /// Startup entry point: the caller has already completed the one-time migration and parsed and validated `settings.yml`.
     ///
-    /// 与 [`Self::from_files`] 的区别只有两步已在调用方完成的工作：不再重读
-    /// `settings.yml`，也不再打开 agent.db 做第二遍迁移检查。agent.db 只在这里打开一次，
-    /// 随后由 [`Self::model_usage`] 复用同一连接。
+    /// It differs from [`Self::from_files`] only in the two steps the caller already did: it neither re-reads
+    /// `settings.yml` nor opens agent.db for a second migration check. agent.db is opened exactly once here,
+    /// and [`Self::model_usage`] then reuses the same connection.
     pub fn from_migrated_settings(
         settings: Settings,
         settings_path: &Path,
@@ -497,7 +497,7 @@ impl ModelCatalog {
         Self::with_settings(settings, settings_path, models_path, false, None)
     }
 
-    /// 复用启动期迁移检查时已打开的 `AgentStore` 连接，避免重复开关 WAL 与 `-shm`。
+    /// Reuses the `AgentStore` connection already opened by the startup migration check, avoiding repeated WAL and `-shm` churn.
     pub fn from_migrated_settings_with_store(
         settings: Settings,
         settings_path: &Path,
@@ -514,8 +514,8 @@ impl ModelCatalog {
     }
 
     fn load(settings_path: &Path, models_path: &Path, allow_empty: bool) -> Result<Self> {
-        // 一次性迁移先于任何 settings.yml 解析：旧四字段由迁移导入 agent.db 并从文件剥离。
-        // 启动期已由 `main::run` 完成迁移的路径改走 [`Self::from_migrated_settings_with_store`]。
+        // The one-time migration runs before any settings.yml parsing: the four legacy fields are imported into agent.db and stripped from the file.
+        // Paths where `main::run` already migrated at startup use [`Self::from_migrated_settings_with_store`] instead.
         let dir = settings_path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -680,16 +680,16 @@ impl ModelCatalog {
             .collect()
     }
 
-    /// 模糊选择：`[provider/]model[:effort]`；provider 可省略，effort 省略时用模型默认档。
+    /// Fuzzy selection: `[provider/]model[:effort]`; the provider may be omitted, and an omitted effort uses the model's default level.
     ///
-    /// 文本匹配按“完全相等 → 前缀 → 子串 → 子序列”分档（不区分大小写），同档内收藏优先，
-    /// 其余保持 catalog 顺序。这里只读取现有目录与偏好，不写入 agent.db。
+    /// Text matching tiers as exact → prefix → substring → subsequence (case-insensitive); within a tier favorites win,
+    /// the rest keep catalog order. This only reads the existing catalog and preferences and never writes agent.db.
     pub fn select(&self, query: &str) -> Result<ModelSelection> {
-        // 错误文本回显用户原输入，因此先保留未 trim 的串。
+        // Error text echoes the user's original input, so keep the untrimmed string first.
         let raw = query;
         let query = query.trim();
         ensure!(!query.is_empty(), "model must not be empty");
-        // 显式档位后缀；`default` 不作为档位，避免与模型 id 混淆。
+        // Explicit effort suffix; `default` is not an effort level, so it never collides with a model id.
         let (query, effort) = match query.rsplit_once(':') {
             Some((head, tail)) if !head.is_empty() => match explicit_effort(tail.trim()) {
                 Some(level) => (head, Some(level)),
@@ -697,7 +697,7 @@ impl ModelCatalog {
             },
             _ => (query, None),
         };
-        // provider 前缀只在左侧与已配置 provider 同名时生效；模型 id 本身允许含 `/`。
+        // The provider prefix applies only when its left part names a configured provider; model ids themselves may contain `/`.
         let (provider, query) = match query.split_once('/') {
             Some((provider, model))
                 if self
@@ -727,7 +727,7 @@ impl ModelCatalog {
                     continue;
                 }
             }
-            // reference 形如 `provider/model_id`，首个 `/` 之后的全部字符都属于模型 id。
+            // The reference looks like `provider/model_id`; everything after the first `/` belongs to the model id.
             let model_id = choice
                 .reference
                 .split_once('/')
@@ -772,7 +772,7 @@ impl ModelCatalog {
     }
 
     pub fn reload_models(&mut self) -> Result<()> {
-        // 模型目录刷新不改变运行参数；偏好一律从 agent.db 读取，全部验证成功后才替换内存状态。
+        // Catalog refresh leaves runtime parameters untouched; preferences always come from agent.db, and the in-memory state is replaced only after everything validates.
         let next = Self::with_settings(
             self.settings.clone(),
             &self.settings_path,
@@ -788,7 +788,7 @@ impl ModelCatalog {
         Ok(())
     }
 
-    /// 安装事务提交后返回的完整偏好快照，并按精确优先级重算默认引用。
+    /// Installs the full preference snapshot returned once the transaction commits and recomputes the default reference by the exact priority.
     fn install(&mut self, preferences: ModelPreferences) {
         self.default_reference = default_reference(&self.providers, &preferences);
         self.preferences = preferences;
@@ -839,7 +839,7 @@ impl ModelCatalog {
             prompt_cache_key: model.prompt_cache_key,
             prompt_cache_retention: model.prompt_cache_retention,
             base_url: match provider.auth {
-                Some(auth) => Url::parse(auth.base_url()).expect("内置供应商 URL 有效"),
+                Some(auth) => Url::parse(auth.base_url()).expect("built-in provider URL is valid"),
                 None => models::openai_base_url(provider.base_url.clone()),
             },
             agent_db_path: self.agent_db_path.clone(),
@@ -847,9 +847,9 @@ impl ModelCatalog {
         })
     }
 
-    /// 读取按逻辑请求累计的使用次数；读取失败仍是固定脱敏错误。
+    /// Reads the accumulated usage count per logical request; a read failure still yields the fixed redacted error.
     ///
-    /// 复用构造时打开的连接，模型面板刷新不会再打开一次 agent.db。
+    /// Reuses the connection opened at construction, so refreshing the model panel never opens agent.db again.
     pub fn model_usage(&self) -> Result<std::collections::BTreeMap<String, u64>> {
         self.agent_store
             .lock()
@@ -858,14 +858,14 @@ impl ModelCatalog {
     }
 }
 
-/// 显式档位后缀：只接受六个档位名（不区分大小写），`default` 留给模型 id。
+/// Explicit effort suffix: only the six level names are accepted (case-insensitive); `default` is reserved for the model id.
 fn explicit_effort(value: &str) -> Option<ThinkLevel> {
     ThinkLevel::ALL
         .into_iter()
         .find(|level| level.as_str().eq_ignore_ascii_case(value))
 }
 
-/// 文本匹配档位：`0` 完全相等、`1` 前缀、`2` 子串、`3` 子序列；不匹配返回 `None`。
+/// Text match tier: `0` exact, `1` prefix, `2` substring, `3` subsequence; returns `None` when nothing matches.
 fn match_tier(needle: &str, haystack: &str) -> Option<u8> {
     let haystack = haystack.to_lowercase();
     if haystack == needle {
@@ -881,7 +881,7 @@ fn match_tier(needle: &str, haystack: &str) -> Option<u8> {
     }
 }
 
-/// `needle` 的每个字符按顺序出现在 `haystack` 中；两者均已小写。
+/// Every character of `needle` appears in order in `haystack`; both are already lowercase.
 fn is_subsequence(needle: &str, haystack: &str) -> bool {
     let mut haystack = haystack.chars();
     needle
@@ -889,8 +889,8 @@ fn is_subsequence(needle: &str, haystack: &str) -> bool {
         .all(|needle| haystack.any(|candidate| candidate == needle))
 }
 
-/// 默认引用优先级：启用的 Default Role → default_model → 第一个可用模型；
-/// 不可用的普通默认引用回退到第一个可用模型。
+/// Default reference priority: the enabled Default Role → default_model → the first available model;
+/// an unavailable plain default reference falls back to the first available model.
 fn default_reference(
     providers: &[models::ValidatedProvider],
     preferences: &ModelPreferences,

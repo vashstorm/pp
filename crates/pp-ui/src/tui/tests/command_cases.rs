@@ -69,7 +69,7 @@ fn bang_shell_input_history_exits_and_cleanup_failure() {
     assert_eq!(app.input.lines(), &["! false"]);
     app.handle(key(KeyCode::Enter), &mut dirty);
     let WorkerCommand::Shell { command, .. } = requests.try_recv().unwrap() else {
-        panic!("应提交本地 shell 命令");
+        panic!("should submit a local shell command");
     };
     assert_eq!(command, "! false");
     assert_eq!(app.input_history, ["!! false"]);
@@ -574,7 +574,7 @@ fn initial_commands_file_shell_and_parse_errors() {
     let (mut app, requests) = file_commands_app(review_files());
     assert!(!app.submit_initial_command("/review src/main.rs"));
     let WorkerCommand::Run { prompt, .. } = requests.try_recv().unwrap() else {
-        panic!("启动文件命令应下发 WorkerCommand::Run");
+        panic!("a startup file command should dispatch WorkerCommand::Run");
     };
     assert_eq!(prompt, "Review src/main.rs now.");
     assert_eq!(app.input.lines(), &[""]);
@@ -591,7 +591,7 @@ fn initial_commands_file_shell_and_parse_errors() {
     let (mut sh_app, sh_req) = file_commands_app(review_files());
     assert!(!sh_app.submit_initial_command("!echo hi"));
     let WorkerCommand::Shell { command, .. } = sh_req.try_recv().unwrap() else {
-        panic!("启动 shell 命令应下发 WorkerCommand::Shell");
+        panic!("a startup shell command should dispatch WorkerCommand::Shell");
     };
     assert_eq!(command, "echo hi");
     assert_eq!(sh_app.input.lines(), &[""]);
@@ -608,7 +608,7 @@ fn permission_switches_independently_across_states_queues_and_panels() {
     app.permission_mode = Some(gate.snapshot());
     app.input.insert_str("保留草稿");
 
-    // 1. 运行中、取消中、Plan 审查中、不可用状态均可使用 F6 / Alt+Shift+A 循环切换且保留草稿。
+    // 1. While running, cancelling, reviewing a Plan or unavailable, F6 / Alt+Shift+A cycle the level and keep the draft.
     for (state, key_event, expected) in [
         (
             State::Running,
@@ -645,7 +645,7 @@ fn permission_switches_independently_across_states_queues_and_panels() {
         ));
     }
 
-    // 2. 存在待处理输入队列且处于问询弹窗 / 面板中时，快捷键依然生效且不关闭弹窗。
+    // 2. With a queued input and an ask dialog / panel open, the shortcut still works and does not close the dialog.
     app.state = State::Running;
     app.input_queue
         .enqueue(PendingKind::Steering, "queued".into(), None, true)
@@ -665,7 +665,7 @@ fn permission_switches_independently_across_states_queues_and_panels() {
     app.ask_id = None;
     app.ask_cancellation = None;
 
-    // 3. Plan 审查与待处理队列期间提交 `/permissions` 命令也立即生效。
+    // 3. Submitting `/permissions` during a Plan review or with a queued input also takes effect immediately.
     app.state = State::ReviewingPlan;
     app.clear_input();
     app.insert_input("/permissions yolo".into());
@@ -731,7 +731,7 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
         let start = row.find(description).expect(&screen);
         description_columns.push(row[..start].chars().count());
     }
-    // 各选项说明列按最长标签对齐。
+    // The description column of each option aligns to the longest label.
     assert!(
         description_columns
             .windows(2)
@@ -752,7 +752,7 @@ fn permission_dialog_shows_details_and_submits_global_scope_at_compact_height() 
     let short = draw(&mut app, 48, 10);
     assert!(short.contains("MCP remote Echo"), "{short}");
     assert!(!short.contains("workspace sandbox"), "{short}");
-    // 说明列整卡同显同隐，窄卡不出现参差。
+    // The description column shows or hides as a whole card, so narrow cards have no ragged edges.
     assert!(!short.contains("this request only"), "{short}");
     app.handle(key(KeyCode::PageDown), &mut dirty);
     let scrolled = draw(&mut app, 48, 10);
@@ -800,7 +800,7 @@ fn unavailable_model_binds_permissions_and_modal_overlay_accepts_real_keys() {
         assert_eq!(app.permission_mode, Some(PermissionMode::WorkspaceWrite));
         assert_eq!(app.permission.snapshot(), PermissionMode::WorkspaceWrite);
 
-        // 第一次按 F6 应从默认 WorkspaceWrite 切到 AutoReview。
+        // The first F6 press should go from the default WorkspaceWrite to AutoReview.
         app.handle(key(KeyCode::F(6)), &mut false);
         assert_eq!(app.permission_mode, Some(PermissionMode::AutoReview));
         assert_eq!(app.permission.snapshot(), PermissionMode::AutoReview);
@@ -828,7 +828,7 @@ fn unavailable_model_binds_permissions_and_modal_overlay_accepts_real_keys() {
             }
         };
 
-        // 1. 权限确认弹窗打开时，通过真实按键 F7 -> 输入 `yolo` -> Enter 直接切换档位，不关闭底层弹窗。
+        // 1. With the permission dialog open, real keys F7 -> type `yolo` -> Enter switch the level directly without closing the dialog underneath.
         let (_answers, _token) = ask_fixture(&mut app);
         app.handle(key(KeyCode::F(7)), &mut false);
         assert!(app.permission_overlay.is_some());
@@ -852,7 +852,7 @@ fn unavailable_model_binds_permissions_and_modal_overlay_accepts_real_keys() {
         app.ask_id = None;
         app.ask_cancellation = None;
 
-        // 2. 在全屏模态面板（context_panel）打开时，同样可通过 F7 -> Enter 查看详情并切档。
+        // 2. With a full-screen modal panel (context_panel) open, F7 -> Enter still shows details and switches the level.
         app.context_panel = Some(crate::tui::context_panel::Panel::new());
         app.handle(key(KeyCode::F(7)), &mut false);
         app.handle(key(KeyCode::Enter), &mut false);
@@ -864,7 +864,7 @@ fn unavailable_model_binds_permissions_and_modal_overlay_accepts_real_keys() {
         assert_eq!(gate.snapshot(), PermissionMode::AutoReview);
         assert!(app.context_panel.is_some());
 
-        // 3. 另一句柄持排他锁占用 permission.lock 时，`/permissions revoke` 交给独立 worker，不阻塞事件循环。
+        // 3. While another handle holds an exclusive lock on permission.lock, `/permissions revoke` goes to a dedicated worker and does not block the event loop.
         use std::os::fd::AsRawFd;
         let lock_file = std::fs::OpenOptions::new()
             .read(true)
@@ -878,7 +878,7 @@ fn unavailable_model_binds_permissions_and_modal_overlay_accepts_real_keys() {
             std::fs::Permissions::from_mode(0o600),
         )
         .unwrap();
-        // SAFETY: `lock_file` 在此处及后续持锁期间保持打开，fd 有效。
+        // SAFETY: `lock_file` stays open here and while the lock is held, so the fd is valid.
         assert_eq!(
             unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) },
             0
@@ -887,14 +887,14 @@ fn unavailable_model_binds_permissions_and_modal_overlay_accepts_real_keys() {
         type_text(&mut app, "revoke write");
         app.handle(key(KeyCode::Enter), &mut false);
         assert!(draw(&mut app, 100, 30).contains("Revoking saved permission rule..."));
-        // 持锁期间事件循环未被阻塞：立即按 F6 仍可实时切换内存权限档位。
+        // The event loop is not blocked while the lock is held: pressing F6 immediately still switches the in-memory permission level.
         app.handle(key(KeyCode::F(6)), &mut false);
         assert_eq!(gate.snapshot(), PermissionMode::DangerFullAccess);
         assert!(
             draw(&mut app, 100, 30).contains("Permission mode: Full Access (danger-full-access)")
         );
 
-        // 释放锁后后台 worker 完成撤销并回传结果。
+        // After the lock is released the background worker finishes the revoke and reports the result.
         drop(lock_file);
         let deadline = Instant::now() + Duration::from_secs(5);
         while !draw(&mut app, 100, 30).contains("Saved permission revoked.") {
@@ -904,7 +904,7 @@ fn unavailable_model_binds_permissions_and_modal_overlay_accepts_real_keys() {
         }
         assert_eq!(gate.list_rules().unwrap(), "No saved permission rules.");
 
-        // 4. 通过浮层 `/permissions allow cargo test` 添加命令级前缀规则并按 `bash:cargo test` 撤销。
+        // 4. Add a command-level prefix rule through the overlay `/permissions allow cargo test` and revoke it as `bash:cargo test`.
         type_text(&mut app, "allow cargo test");
         app.handle(key(KeyCode::Enter), &mut false);
         let deadline = Instant::now() + Duration::from_secs(5);

@@ -58,12 +58,13 @@ fn plan_progress_refresh_and_archive_completion() {
         assert_eq!(document.location, PlanLocation::Done);
         assert_eq!(document.revision, 2);
         assert_eq!(document.file_name.as_deref(), Some(CANARY_FILE));
-        // 进度导入不覆盖批准时冻结的任务集合。
+        // The progress import does not overwrite the task set frozen at approval.
         assert_eq!(
             document.approved_tasks.as_deref(),
             Some(approved.as_slice())
         );
-        // 正文同步事件 + 纯状态归档事件；归档不递增正文 revision。
+        // Body sync event + pure status archival event; archival does not bump the body
+        // revision.
         assert!(matches!(
             published.as_slice(),
             [
@@ -82,7 +83,7 @@ fn plan_progress_refresh_and_archive_completion() {
                 },
             ] if name == CANARY_FILE
         ));
-        // 登记表指向 Done；重复归档无害。
+        // The registry points at Done; a repeated archival is harmless.
         {
             let workspace = agent.tools.plan_workspace();
             let _lock = plan_catalog::PlanCatalogLock::acquire(workspace).unwrap();
@@ -98,7 +99,8 @@ fn plan_progress_refresh_and_archive_completion() {
         assert!(done.exists());
     }
 
-    // 正文已在之前的进度刷新中同步：归档不需要正文再次变化。
+    // The body was already synced by the earlier progress refresh: archival does not need the
+    // body to change again.
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let approved = vec![plan::plan_tasks(PLAN_CONTENT).remove(0).text];
@@ -120,9 +122,10 @@ fn plan_progress_refresh_and_archive_completion() {
         assert_eq!(
             agent.workflow.plan.as_ref().unwrap().revision,
             2,
-            "归档不递增正文 revision"
+            "archival does not bump the body revision"
         );
-        // 进度刷新已同步、无新变化：只有归档的纯状态事件。
+        // The progress refresh has already synced and nothing else changed: only archival's
+        // pure status event.
         assert!(matches!(
             published.as_slice(),
             [pp_core::events::AgentEvent::PlanProgressUpdated {
@@ -142,7 +145,7 @@ fn plan_archive_drift_rejections_and_legacy_baselines() {
     let approved = || vec![FIRST.to_owned(), SECOND.to_owned()];
 
     for protocol in ["completion", "response"] {
-        // 未全部勾选：保留 Executed/Plans，不搬迁。
+        // Not everything is checked: keep Executed/Plans and do not move.
         let dir = tempfile::tempdir().unwrap();
         let mut agent = archive_fixture(dir.path(), protocol, &two_tasks, Some(approved()));
         let (plans, done) = archive_paths(dir.path());
@@ -158,8 +161,9 @@ fn plan_archive_drift_rejections_and_legacy_baselines() {
             PlanLocation::Plans
         );
 
-        // 零任务：任务数量与批准向量不同即漂移，同步拒绝安装并按
-        // 合同报错（不是静默跳过）；文件与 Executed/Plans 保持不变。
+        // Zero tasks: a task count differing from the approval vector is drift, so the sync
+        // refuses to install it and fails per contract (not a silent skip); the file and
+        // Executed/Plans stay unchanged.
         assert!(
             archive_error(&mut agent, "# Create hello\n\nNo tasks here.\n").contains(TASKS_CHANGED)
         );
@@ -169,11 +173,12 @@ fn plan_archive_drift_rejections_and_legacy_baselines() {
             PlanStatus::Executed
         );
 
-        // 删除任务后勾选剩余项：任务集合不匹配，合同错误。
+        // After deleting a task and checking the remaining one: the task set does not match, so
+        // it is a contract error.
         let error = archive_error(&mut agent, &format!("- [x] {FIRST}\n"));
         assert!(error.contains(TASKS_CHANGED), "{error}");
 
-        // 增项：批准集合之外的新任务。
+        // Added task: a new task outside the approved set.
         let error = archive_error(
             &mut agent,
             &format!(
@@ -183,12 +188,13 @@ fn plan_archive_drift_rejections_and_legacy_baselines() {
         );
         assert!(error.contains(TASKS_CHANGED), "{error}");
 
-        // 改写任务正文：要求重新规划。
+        // Rewritten task body: re-planning is required.
         let replaced = two_tasks.replace(FIRST, "Create hello2.txt and read back hello.");
         let error = archive_error(&mut agent, &replaced.replace("- [ ]", "- [x]"));
         assert!(error.contains(TASKS_CHANGED), "{error}");
 
-        // 重排：独立夹具；集合内容相同但顺序不同也不算完成。
+        // Reordering: a separate fixture; the same set contents in a different order does not
+        // count as complete.
         let dir = tempfile::tempdir().unwrap();
         let mut agent = archive_fixture(dir.path(), protocol, &two_tasks, Some(approved()));
         let (plans, done) = archive_paths(dir.path());
@@ -202,9 +208,9 @@ fn plan_archive_drift_rejections_and_legacy_baselines() {
         );
     }
 
-    // 旧 Executed 记录缺 approved_tasks：先以当前已登记正文建立一次
-    // 迁移基线并持久化，再读取新的磁盘进度；磁盘勾选状态与后续普通
-    // 说明变化不覆盖基线。
+    // A legacy Executed record missing approved_tasks: first establish and persist a migration
+    // baseline from the currently registered body, then read the new on-disk progress; on-disk
+    // check state and later ordinary note changes do not overwrite the baseline.
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = archive_fixture(dir.path(), protocol, PLAN_CONTENT, None);
@@ -227,10 +233,10 @@ fn plan_archive_drift_rejections_and_legacy_baselines() {
             persisted.approved_tasks.as_deref(),
             Some(approved.as_slice())
         );
-        // 普通说明变化 + 勾选状态：基线保持不变。
+        // Ordinary note change + check state: the baseline stays the same.
         let with_notes = progress.replace(
             "Create hello.txt and read back hello.",
-            "Create hello.txt and read back hello.\n\n  说明：验收已人工复核。",
+            "Create hello.txt and read back hello.\n\n  Notes: acceptance reviewed manually.",
         );
         write_plan_file(&agent, &with_notes);
         agent
@@ -246,7 +252,7 @@ fn plan_archive_drift_rejections_and_legacy_baselines() {
                 .as_deref(),
             Some(approved.as_slice())
         );
-        // 基线建立后可正常归档。
+        // Archival proceeds normally once the baseline exists.
         let archived = agent
             .archive_completed_plan(&mut |event| published.push(event))
             .unwrap();
@@ -260,9 +266,9 @@ fn plan_archive_drift_rejections_and_legacy_baselines() {
         );
     }
 
-    // 旧记录：无 file_name、缺 approved_tasks、走 <id>.md 兜底路径。
-    // 首次进度刷新先按 ID 首次登记，再以登记正文建立迁移基线，随后
-    // 正常归档到 done/<id>.md。
+    // Legacy record: no file_name, no approved_tasks, falling back to the <id>.md path.
+    // The first progress refresh registers it by ID for the first time, establishes the
+    // migration baseline from the registered body and then archives normally to done/<id>.md.
     for protocol in ["completion", "response"] {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");

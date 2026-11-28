@@ -1,13 +1,13 @@
-//! 跨进程 `settings.yml` 保存的确定性交错回归。
+//! Deterministic interleaving regression for cross-process `settings.yml` saves.
 //!
-//! `update_settings_fields_returning` 的“先读后写”窗口曾只靠提交前比较防并发：
-//! 两个写者可以基于同一份旧文本先后通过比较，后 persist 者把先写者的字段整个覆盖。
-//! 修复后所有保存入口在首次读取之前取得同目录 `settings.lock`，持锁覆盖解析、更新、
-//! 临时文件写入、比较与 persist；比较降级为防御外部意外修改的第二道防线。
+//! The read-then-write window of `update_settings_fields_returning` once relied only on a pre-commit comparison against concurrency:
+//! two writers could both pass the comparison on the same stale text, and the later persist overwrote the earlier writer's fields entirely.
+//! After the fix every save path acquires the sibling `settings.lock` before the first read and holds it across parsing, updating,
+//! temporary file writes, comparison and persist; the comparison degrades to a second line of defense against unexpected external edits.
 //!
-//! 交错编排不依赖 sleep：写线程在 persist 前停到本模块的握手控制点，
-//! 主线程以非阻塞 flock 探测 `settings.lock` 是否被持锁来区分两种实现——
-//! 新实现下停在控制点的写者必持锁，旧实现无锁文件可停。
+//! The interleaving needs no sleep: the writer thread stops at this module's handshake control point before persist, and the main
+//! thread probes with a non-blocking flock whether `settings.lock` is held, which distinguishes the two implementations:
+//! under the new implementation a writer stopped at the control point always holds the lock, while the old one has no lock file to stop on.
 
 use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
@@ -21,10 +21,10 @@ use crate::config::{
     EditMode, Settings, read_settings, update_settings, update_settings_fields_returning,
 };
 
-/// 握手等待上限：远大于锁获取的 30 秒等待，只在实现倒退时触发。
+/// Handshake wait bound: far above the 30 second lock acquisition wait, so it only fires if the implementation regresses.
 const HANDSHAKE: Duration = Duration::from_secs(60);
 
-/// 注册在写线程 thread-local 中的握手：persist 前通知主线程并等待放行。
+/// Handshake registered in the writer thread's thread-local: notify the main thread before persist and wait for release.
 struct Handshake {
     ready: Sender<()>,
     go: Receiver<()>,
@@ -34,19 +34,19 @@ thread_local! {
     static HANDSHAKE_SLOT: RefCell<Option<Handshake>> = const { RefCell::new(None) };
 }
 
-/// `update_settings_fields_returning` 的测试控制点：注册过握手的写线程在
-/// persist 前停下等主线程放行；未注册线程（生产路径与主线程）直通。
+/// Test control point of `update_settings_fields_returning`: a writer thread with a registered handshake
+/// stops before persist and waits for the main thread to release it; unregistered threads (production paths and the main thread) pass through.
 pub(crate) fn pre_commit() {
     HANDSHAKE_SLOT.with(|slot| {
         if let Some(handshake) = slot.borrow_mut().as_mut() {
             handshake.ready.send(()).ok();
-            // 主线程放行前停在临界区内；通道关闭时直接继续，避免收尾悬挂。
+            // Stay inside the critical section until the main thread releases; continue immediately when the channel closes so teardown never hangs.
             handshake.go.recv().ok();
         }
     });
 }
 
-/// 在独立线程内注册握手并执行一次设置保存。
+/// Registers the handshake in a separate thread and performs one settings save.
 struct Staged {
     handle: std::thread::JoinHandle<Result<()>>,
     ready: Receiver<()>,
@@ -78,8 +78,8 @@ fn staged_update(
     }
 }
 
-/// 以非阻塞 flock 探测同目录 `settings.lock` 是否被某个写者持有。
-/// 锁文件不存在（旧实现或尚未保存过）视为无人持锁。
+/// Probes with a non-blocking flock whether some writer holds the sibling `settings.lock`.
+/// A missing lock file (old implementation or nothing saved yet) counts as unheld.
 fn lock_is_held(path: &Path) -> bool {
     let Ok(file) = OpenOptions::new().read(true).write(true).open(
         path.parent()
@@ -104,19 +104,19 @@ fn lock_is_held(path: &Path) -> bool {
 fn settings_lock_serializes_concurrent_field_updates() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.yml");
-    fs::write(&path, "# 保留注释\nedit: hashline\n").unwrap();
+    fs::write(&path, "# preserved comment\nedit: hashline\n").unwrap();
 
-    // 写者 A 停在 persist 前：旧实现无锁照样可停；新实现此时持有 settings.lock。
+    // Writer A stops before persist: the old implementation still stops without any lock; the new one holds settings.lock here.
     let first = staged_update(&path, |_| {
         Ok(vec![("debug", serde_yaml::Value::Bool(true))])
     });
     first
         .ready
         .recv_timeout(HANDSHAKE)
-        .expect("写者 A 到达提交前控制点");
+        .expect("writer A reaches the pre-commit control point");
 
-    // 写者 B 与 A 并发启动：旧实现越过读取与比较直接停到控制点；
-    // 新实现先在 settings.lock 上等待，A 释放前不会读取文件。
+    // Writer B starts concurrently with A: the old implementation skips the read and comparison and stops at the control point directly;
+    // the new one first waits on settings.lock and does not read the file until A releases it.
     let second = staged_update(&path, |_| {
         Ok(vec![(
             "auto_compact_threshold_percent",
@@ -125,53 +125,68 @@ fn settings_lock_serializes_concurrent_field_updates() {
     });
 
     if lock_is_held(&path) {
-        // 新实现：A 持锁提交并释放后，B 才读取到含 debug 的最新文本。
-        first.go.send(()).expect("写者 A 仍在等待放行");
+        // New implementation: only after A commits while holding the lock and releases it does B read the latest text containing debug.
+        first
+            .go
+            .send(())
+            .expect("writer A is still waiting for release");
         second
             .ready
             .recv_timeout(HANDSHAKE)
-            .expect("写者 B 在锁释放后到达控制点");
-        second.go.send(()).expect("写者 B 仍在等待放行");
+            .expect("writer B reaches the control point after the lock is released");
+        second
+            .go
+            .send(())
+            .expect("writer B is still waiting for release");
     } else {
-        // 旧实现：B 已基于同一份旧文本通过比较；两个 persist 无论先后，
-        // 后提交者都覆盖先写字段。
+        // Old implementation: B already passed the comparison on the same stale text, so whichever persist runs later
+        // overwrites the earlier writer's fields.
         second
             .ready
             .recv_timeout(HANDSHAKE)
-            .expect("写者 B 到达提交前控制点");
-        first.go.send(()).expect("写者 A 仍在等待放行");
-        second.go.send(()).expect("写者 B 仍在等待放行");
+            .expect("writer B reaches the pre-commit control point");
+        first
+            .go
+            .send(())
+            .expect("writer A is still waiting for release");
+        second
+            .go
+            .send(())
+            .expect("writer B is still waiting for release");
     }
     first.handle.join().unwrap().unwrap();
     second.handle.join().unwrap().unwrap();
 
-    // 无论哪个写者后提交，两个顶层字段都必须保留，注释与既有字段原样。
+    // Whichever writer commits later, both top-level fields must survive and the comments and existing fields stay untouched.
     let settings = read_settings(&path).unwrap();
     assert!(settings.debug);
     assert_eq!(settings.auto_compact_threshold_percent, 42);
     assert_eq!(settings.edit, EditMode::Hashline);
     let text = fs::read_to_string(&path).unwrap();
-    assert!(text.contains("# 保留注释"), "{text}");
+    assert!(text.contains("# preserved comment"), "{text}");
 }
 
 #[test]
 fn settings_lock_releases_after_write_and_failure_keeps_file_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.yml");
-    fs::write(&path, "# 保留注释\ndebug: false\n").unwrap();
+    fs::write(&path, "# preserved comment\ndebug: false\n").unwrap();
 
-    // 写者走完整个临界区：锁随作用域释放，下一写入不必等待。
+    // The writer walks the whole critical section: the lock is released with the scope, so the next write need not wait.
     let writer = staged_update(&path, |_| {
         Ok(vec![("debug", serde_yaml::Value::Bool(true))])
     });
     writer
         .ready
         .recv_timeout(HANDSHAKE)
-        .expect("写者到达提交前控制点");
-    writer.go.send(()).expect("写者仍在等待放行");
+        .expect("writer reaches the pre-commit control point");
+    writer
+        .go
+        .send(())
+        .expect("writer is still waiting for release");
     writer.handle.join().unwrap().unwrap();
 
-    // 锁已释放：同线程的下一保存立即成功，并保留先写字段与注释。
+    // The lock is released: the next save on the same thread succeeds immediately and keeps the earlier fields and comments.
     update_settings(&path, |_| {
         Ok(("read_max_lines", serde_yaml::Value::Number(33.into())))
     })
@@ -180,7 +195,7 @@ fn settings_lock_releases_after_write_and_failure_keeps_file_unchanged() {
     assert!(settings.debug);
     assert_eq!(settings.read_max_lines, 33);
 
-    // 严格校验失败不提交：文件保持原样，且失败路径同样释放锁。
+    // A strict validation failure commits nothing: the file stays as-is and the failing path releases the lock too.
     let before = fs::read_to_string(&path).unwrap();
     let error = update_settings(&path, |_| {
         Ok((
@@ -199,12 +214,16 @@ fn settings_lock_releases_after_write_and_failure_keeps_file_unchanged() {
         80
     );
 
-    // 失败后的下一保存可继续。
+    // The save after the failure can continue.
     update_settings(&path, |_| {
         Ok(("read_max_bytes", serde_yaml::Value::Number(17.into())))
     })
     .unwrap();
     let settings = read_settings(&path).unwrap();
     assert_eq!(settings.read_max_bytes, 17);
-    assert!(fs::read_to_string(&path).unwrap().contains("# 保留注释"));
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("# preserved comment")
+    );
 }

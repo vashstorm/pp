@@ -1,6 +1,6 @@
-//! 行模式 `/pipes`：有界的 run／流列表与补读 URI，不输出阶段正文。
+//! Line-mode `/pipes`: bounded run/stream listing plus follow-up URIs, no stage body.
 
-/// 行模式 `/pipes`：有界的 run/流列表与补读 URI，不输出阶段正文。
+/// Line-mode `/pipes`: bounded run/stream listing plus follow-up URIs, no stage body.
 pub(crate) fn cli_pipes_list(store: &pp_bash::PipeStore, run: Option<&str>) -> String {
     const MAX_RUNS: usize = 8;
     const MAX_STREAMS: usize = 8;

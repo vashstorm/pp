@@ -15,7 +15,7 @@ fn preview_rows(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// 生成指定行数的 JSON 参数，每行一个可定位的标记。
+/// Build JSON arguments with the given number of lines, one locatable marker per line.
 fn numbered_lines(count: usize, key: &str) -> String {
     let lines = (1..=count)
         .map(|index| format!("line-{index:02}"))
@@ -272,7 +272,7 @@ fn edit_preview_omits_protocol_rows_and_matches_committed_diff_height() {
             let text = entry_text(entry, width);
             let preview_height = entry.layout.as_ref().unwrap().height;
             if width == 100 {
-                // 标题和底边框各占一行，短正文不补齐到上限。
+                // The title and the bottom border take one line each; a short body is not padded to the cap.
                 assert_eq!(preview_height, if count <= 16 { count } else { 17 } + 2);
             }
             assert!(!text.contains("PUT ") && !text.contains("ABCD"), "{text}");
@@ -341,7 +341,7 @@ fn write_arguments_preview_streams_path_and_content_without_byte_limit() {
     }
     assert!(transcript.next_native_batch(100, 1, false).is_none());
     assert!(transcript.next_native_batch(100, 1, true).is_none());
-    // `write` 预览不设字节上限：超过 `edit` 的 64 KiB 也不截断、不显示上限提示。
+    // The `write` preview has no byte limit: it is neither truncated nor marked when it exceeds the 64 KiB of `edit`.
     arguments(
         &mut transcript,
         "write",
@@ -362,7 +362,7 @@ fn write_arguments_preview_streams_path_and_content_without_byte_limit() {
     let text = screen(&render(&mut transcript, 100, 60));
     assert!(!text.contains("preview limit reached"), "{text}");
     assert!(text.contains("Ctrl + O to expand"), "{text}");
-    // 路径保留在标题中，正文仍完整持有。
+    // The path stays in the title and the body is still held in full.
     assert!(text.contains("big.txt"), "{text}");
     assert!(
         transcript.entries[index]

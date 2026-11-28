@@ -1,4 +1,4 @@
-// Debug 构建的 `/test-fail`：真实 TUI 中的自动重试固定信息框与恢复。
+// `/test-fail` in debug builds: the fixed automatic-retry info box and its recovery in the real TUI.
 
 #[test]
 fn tui_run_test_fail_reports_retries_in_a_fixed_box_and_recovers() {
@@ -13,7 +13,7 @@ fn tui_run_test_fail_reports_retries_in_a_fixed_box_and_recovers() {
             && text.contains("attempt 1 failed: HTTP status 503")
             && text.contains("Esc cancels")
     });
-    // 固定信息框不进入对话：界面上只有一处 `Retrying`。
+    // The fixed info box does not enter the conversation: only one `Retrying` appears on screen.
     assert_eq!(pty.contents().matches("Retrying").count(), 1);
     pty.wait_for("second attempt reports the rate limit", |screen| {
         screen.contents().contains("attempt 2 failed: rate limited")

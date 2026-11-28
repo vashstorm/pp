@@ -1,4 +1,4 @@
-//! Shell 展示快照；不携带执行器或终端布局。
+//! Shell display snapshot; carries neither the executor nor terminal layout.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,7 @@ pub struct ShellSegment {
     pub node: Option<u32>,
     #[serde(default)]
     pub state: ShellState,
-    /// 嵌入程序的语言标签，仅用于语法着色。
+    /// Language tag of the embedded program, used only for syntax highlighting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
 }

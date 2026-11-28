@@ -39,14 +39,14 @@ impl RequestUpdate<'_> {
     }
 }
 
-// 两种协议在一次模型／工具轮次中使用相同的同步依赖。
+// Both protocols share the same synchronous dependencies within one model/tool turn.
 pub(super) struct TurnResources<'a> {
     pub(super) skills: &'a [pp_config::skills::SkillHeader],
     pub(super) client: &'a mut OpenAiClient,
     pub(super) last_request: &'a mut Option<TokenUsage>,
-    /// 会话累计 output tokens，与 `last_request` 同步更新。
+    /// Cumulative session output tokens, updated in lockstep with `last_request`.
     pub(super) session_output_tokens: &'a mut u64,
-    /// 当前会话已提交轮次的思考/推理记录。
+    /// Thinking/reasoning records of the already committed turns of this session.
     pub(super) thinking_history: &'a mut Vec<super::context_diagnosis::ThinkingEntry>,
     pub(super) tools: &'a Tools,
     pub(super) journal: &'a mut SessionJournal,
@@ -79,7 +79,7 @@ pub(super) enum TurnOutcome {
     Continue,
     Completed {
         awaiting_user_answer: bool,
-        /// 本次最终助手文本；Stop hook 的 `last_assistant_message` 直接用它。
+        /// Final assistant text of this turn; the Stop hook's `last_assistant_message` uses it directly.
         text: String,
     },
     PlanSubmitted,

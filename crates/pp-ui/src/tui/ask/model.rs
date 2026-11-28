@@ -1,9 +1,10 @@
-//! 答案收集、菜单重建与文本／图标辅助。
+//! Answer collection, menu rebuilding and text/icon helpers.
 
 use super::*;
 
 impl Panel {
-    /// 按问题原顺序构造答案；多选 label 按原选项顺序，custom 保留原文。
+    /// Builds the answers in the original question order; multi-select labels follow the
+    /// original option order and custom answers keep their raw text.
     pub(super) fn collect_answers(&self) -> Vec<AskAnswer> {
         self.questions
             .questions
@@ -47,7 +48,8 @@ impl Panel {
     }
 }
 
-/// 选项列表：原选项加推荐徽标，末尾固定追加自定义回答入口。
+/// Option list: the original options plus the recommended badge, with the custom-answer
+/// entry always appended last.
 pub(super) fn insert_custom_text(editor: &mut TextArea<'static>, text: &str) {
     // TextArea::insert_str strips one CR before every LF and at EOF. Duplicate
     // only those CRs in its input so the stored editor text remains byte-exact.
@@ -138,7 +140,8 @@ pub(in crate::tui) fn selection_icon(multi: bool, selected: bool) -> &'static st
             (false, false) => "( )",
         };
     }
-    // 使用同系列的大轮廓配对字形，避免选中后因字体回退而缩小。
+    // Use large outlined glyphs from the same family so the icon does not shrink through
+    // font fallback once selected.
     match (multi, selected) {
         (true, true) => "󰄲",
         (true, false) => "󰄱",

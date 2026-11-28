@@ -154,9 +154,9 @@ impl Skills {
         skills
     }
 
-    /// 启动期入口：复用调用方已解析并校验的 `settings.yml` 快照发现技能。
+    /// Startup entry point: discovers skills reusing the `settings.yml` snapshot the caller already parsed and validated.
     ///
-    /// 发现逻辑与 [`Self::from_dir`] 完全一致，区别只在于不再重复读取、解析同一份配置。
+    /// Discovery is identical to [`Self::from_dir`]; the only difference is that it does not read and parse the same configuration again.
     pub fn from_settings(settings: &config::Settings, dir: &Path) -> Self {
         Self::rooted(dir).discover(settings)
     }
@@ -494,7 +494,7 @@ mod tests {
     fn skill(root: &Path, folder: &str, name: &str, body: &str) -> PathBuf {
         let path = root.join(folder).join("SKILL.md");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, format!("---\nname: {name}\ndescription: >\n  用于测试\n  YAML 多行说明\nextra: [one, two]\n---\n{body}\n")).unwrap();
+        fs::write(&path, format!("---\nname: {name}\ndescription: >\n  used for tests\n  YAML multiline description\nextra: [one, two]\n---\n{body}\n")).unwrap();
         path
     }
     #[test]
@@ -599,7 +599,11 @@ mod tests {
             assert_eq!(skills.entries.len(), 1);
             assert_eq!(skills.entries[0].name, "rust");
             assert!(skills.entries[0].enabled);
-            assert!(skills.entries[0].description.contains("YAML 多行说明"));
+            assert!(
+                skills.entries[0]
+                    .description
+                    .contains("YAML multiline description")
+            );
             assert_eq!(skills.diagnostics.len(), 2);
             assert!(!skills.summary().contains("private full instructions"));
             assert_eq!(
@@ -685,7 +689,7 @@ mod tests {
             let path = dir.join("settings.yml");
             fs::write(
                 &path,
-                "# 保留注释\ndebug: true\ndisabled_skills: [not-installed]\n",
+                "# preserved comment\ndebug: true\ndisabled_skills: [not-installed]\n",
             )
             .unwrap();
             let mut skills = Skills::from_dir(&dir);
@@ -709,7 +713,7 @@ mod tests {
             assert!(!fs::read_to_string(&path).unwrap().contains("skill_sources"));
             skills.save_management(&selection).unwrap();
             let persisted = fs::read_to_string(&path).unwrap();
-            assert!(persisted.contains("# 保留注释"));
+            assert!(persisted.contains("# preserved comment"));
             assert!(persisted.contains("debug: true"));
             assert!(persisted.contains("not-installed"));
             let mut restored = Skills::from_dir(&dir);
@@ -755,7 +759,7 @@ mod tests {
             let path = dir.join("settings.yml");
             fs::write(
                 &path,
-                "# 保留此注释\ndebug: true\ndisabled_skills: [not-installed] # 保留行尾注释\n",
+                "# keep this comment\ndebug: true\ndisabled_skills: [not-installed] # keep trailing comment\n",
             )
             .unwrap();
             #[cfg(unix)]
@@ -774,8 +778,8 @@ mod tests {
                 );
             }
             let text = fs::read_to_string(&path).unwrap();
-            assert!(text.contains("# 保留此注释"));
-            assert!(text.contains("# 保留行尾注释"));
+            assert!(text.contains("# keep this comment"));
+            assert!(text.contains("# keep trailing comment"));
             assert!(text.contains("debug: true"));
             let settings = config::read_settings(&path).unwrap();
             assert_eq!(settings.disabled_skills, ["not-installed", "rust"]);
@@ -808,7 +812,7 @@ mod tests {
             let (_home, dir) = fixture();
             skill(&dir.join("skills"), "a", "rust", "body");
             let path = dir.join("settings.yml");
-            fs::write(&path, "{} # 原始配置\n").unwrap();
+            fs::write(&path, "{} # original config\n").unwrap();
             let mut skills = Skills::from_dir(&dir);
             let permissions = fs::metadata(&dir).unwrap().permissions();
             fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
@@ -822,7 +826,7 @@ mod tests {
             assert!(management_result.is_err());
             assert!(skills.sources.is_empty());
             assert!(skills.entries[0].enabled);
-            assert_eq!(fs::read_to_string(path).unwrap(), "{} # 原始配置\n");
+            assert_eq!(fs::read_to_string(path).unwrap(), "{} # original config\n");
             assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
         }
     }

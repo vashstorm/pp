@@ -1,4 +1,4 @@
-//! 简单命令、内置与扩展测试子句的语句级渲染。
+//! Statement-level rendering of simple commands, builtins and extended test clauses.
 
 use brush_core::parser::ast::{self, CommandPrefixOrSuffixItem as Item, SourceLocation};
 use pp_core::shell_display::{ShellSegment, ShellStyle as S};
@@ -27,7 +27,8 @@ impl<'a> Printer<'a> {
                     Vec::new()
                 };
                 if shadowed {
-                    self.functions.insert(name.clone().expect("有函数名称"));
+                    self.functions
+                        .insert(name.clone().expect("function name present"));
                 }
                 let converted = self.simple(simple, node, true);
                 if let Some(node) = node {
@@ -254,7 +255,7 @@ impl<'a> Printer<'a> {
                             || value.starts_with("localhost")
                     })
                 })
-                .expect("已检查 URL");
+                .expect("URL already checked");
             output.push(segment("http_status(", S::Command, node));
             output.push(segment(
                 words::render(url, true, &self.constants),
@@ -373,7 +374,7 @@ impl<'a> Printer<'a> {
 
     fn extended(&mut self, expression: &ast::ExtendedTestExpr, depth: u16) -> Option<String> {
         if depth > MAX_DEPTH {
-            // 展示转换是可丢弃的；超深表达式由 Trace::parsed 回退原始命令。
+            // Display conversion is discardable; over-deep expressions fall back to the raw command in Trace::parsed.
             self.overflow = true;
             return None;
         }

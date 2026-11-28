@@ -1,4 +1,4 @@
-//! `General` 设置页的分类、字段元数据与校验/步进规则单源定义。
+//! Single-source definition of the `General` settings page categories, field metadata and validation/step rules.
 use anyhow::{Context, Result, ensure};
 use pp_config::config::{
     CostDisplay, EditMode, SandboxMode, SettingPatch, Settings, StatsStyle, WebSearchProvider,

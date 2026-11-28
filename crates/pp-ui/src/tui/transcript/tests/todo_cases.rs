@@ -29,7 +29,7 @@ fn tui_todo_snapshots_and_tool_results_avoid_duplicate_cards() {
         let mut transcript = Transcript::new();
         tool(&mut transcript, "todo-1", "todo", json!({"task":"A"}));
         assert!(entry_text(&mut transcript.entries[0], 100).is_empty());
-        // 开始时无法推断 op，标题保持 Todo。
+        // The op cannot be inferred at start, so the title stays Todo.
         transcript.progress(AgentEvent::ToolFinished {
                 id: "todo-1".into(),
                 result: json!({
@@ -40,7 +40,7 @@ fn tui_todo_snapshots_and_tool_results_avoid_duplicate_cards() {
                     "phases": todo_phases(),
                 }),
             });
-        // 标题从结果修正为真实操作。
+        // The title is corrected to the real operation from the result.
         assert_eq!(
             transcript.entries[0].title,
             format!("{} Todo · done", palette::tool_icon("todo"))
@@ -53,7 +53,7 @@ fn tui_todo_snapshots_and_tool_results_avoid_duplicate_cards() {
 
     {
         let mut transcript = Transcript::new();
-        // 空清单与旧格式成功结果均不在历史中展示正文。
+        // Neither an empty checklist nor a success result in the legacy format shows a body in history.
         tool(&mut transcript, "todo-1", "todo", json!({"op":"view"}));
         assert!(entry_text(&mut transcript.entries[0], 100).is_empty());
         transcript.progress(AgentEvent::ToolFinished {
@@ -63,7 +63,7 @@ fn tui_todo_snapshots_and_tool_results_avoid_duplicate_cards() {
         let text = entry_text(&mut transcript.entries[0], 100);
         assert!(text.is_empty(), "{text}");
 
-        // 旧格式缺 phases 也不能把历史正文当作当前权威。
+        // A legacy format without phases must not treat the history body as the current authority.
         tool(&mut transcript, "todo-2", "todo", json!({"op":"view"}));
         transcript.progress(AgentEvent::ToolFinished {
             id: "todo-2".into(),
@@ -77,7 +77,7 @@ fn tui_todo_snapshots_and_tool_results_avoid_duplicate_cards() {
         assert!(screen(&render(&mut transcript, 100, 20)).trim().is_empty());
         assert_eq!(transcript.total, 0);
 
-        // 完全缺失 content：退回 error 诊断。
+        // content is entirely missing: fall back to the error diagnostic.
         tool(&mut transcript, "todo-3", "todo", json!({"op":"done"}));
         transcript.progress(AgentEvent::ToolFinished {
             id: "todo-3".into(),

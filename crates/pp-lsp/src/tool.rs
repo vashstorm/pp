@@ -1,11 +1,11 @@
-//! `lsp` 工具：14 个动作的严格解析、动作级门禁与同步执行。
+//! `lsp` tool: strict parsing of 14 actions, per-action gating and synchronous execution.
 //!
-//! 门禁分两层且彼此独立：工具定义按 `Access` 裁剪（只读会话只暴露只读动作），
-//! `validate_access` 与 [`run`] 在参数解析后再次校验，隐藏 schema 永远不是
-//! 授权边界。`run` 返回 pp 工具结果（`ok`/`content`/`details`）；取消与清理
-//! 失败保留 typed error 向上传播，普通动作失败用 `ok:false` 的完整结果说明。
+//! Gating has two independent layers: the tool definition is trimmed by `Access` (a read-only session only sees read-only actions), and
+//! `validate_access` and [`run`] check again after argument parsing, so hiding schema is never an
+//! authorization boundary. `run` returns a pp tool result (`ok`/`content`/`details`); cancellation and cleanup
+//! failures keep their typed error and propagate, while ordinary action failures are described by a full `ok:false` result.
 //!
-//! 所有编辑仅用于建议；服务器 applyEdit 一律拒绝，工具从不提交文件修改。
+//! Every edit is a suggestion only; server applyEdit is always rejected, and the tool never commits file modifications.
 
 mod code_actions;
 mod diagnostics;
@@ -36,7 +36,7 @@ use crate::transport::UNAUTHORIZED_EDIT;
 use pp_workspace::Tier;
 use pp_workspace::save::Workspace;
 
-/// `lsp` 工具与宿主之间的窄端口，由工具集合实现。
+/// Narrow port between the `lsp` tool and the host, implemented by the tool collection.
 pub trait LspToolHost {
     fn lsp_registry(&self) -> Option<&Registry>;
     fn lsp_owner_id(&self) -> &str;
@@ -57,7 +57,7 @@ use rename_file::rename_file;
 use suggestion::format_suggestions;
 use symbols::symbols;
 
-/// 只读会话（Plan/Review、只读子 Agent）允许的动作全集。
+/// The full set of actions allowed in a read-only session (Plan/Review, read-only subagents).
 const READONLY_ACTIONS: &[&str] = &[
     "diagnostics",
     "definition",
@@ -74,10 +74,10 @@ const READONLY_ACTIONS: &[&str] = &[
     "format",
 ];
 
-/// 无显式 `timeout` 时的调用预算下限。
+/// Lower bound of the call budget when no explicit `timeout` is given.
 const MIN_CALL_BUDGET: u64 = 20;
 
-/// 工具的动作级访问模式；`ReadOnly` 在定义与执行两层同时生效。
+/// Per-action access mode of the tool; `ReadOnly` applies at both the definition and execution layers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
     Execute,
@@ -147,7 +147,7 @@ impl Action {
     }
 }
 
-/// 严格的工具参数；未知字段拒绝，`line`/`timeout` 在解析阶段校验。
+/// Strict tool parameters; unknown fields are rejected and `line`/`timeout` are validated at parse time.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawParams {
@@ -225,7 +225,7 @@ impl Params {
     }
 }
 
-/// `lsp` 工具定义。只读会话只暴露允许的动作，运行时门禁仍然独立生效。
+/// `lsp` tool definition. A read-only session only sees the allowed actions, while the runtime gate still applies independently.
 pub fn definition(read_only: bool) -> FunctionObject {
     let actions: Vec<&str> = if read_only {
         READONLY_ACTIONS.to_vec()
@@ -299,8 +299,8 @@ pub fn definition(read_only: bool) -> FunctionObject {
     }
 }
 
-/// 预解析 `lsp` 动作将访问的本地目标路径，供调用方在启动或请求外部语言服务器前
-/// 执行沙盒读边界检查与路径审批。`status`/`reload`/`capabilities` 无具体文件或 `file == "*"` 返回空集合。
+/// Pre-resolve the local target paths an `lsp` action will touch, so the caller can run sandbox read-boundary checks and path approval
+/// before starting or querying an external language server. `status`/`reload`/`capabilities` have no concrete file, and `file == "*"` returns an empty set.
 pub fn resolve_read_targets(
     cwd: &Path,
     arguments: &str,
@@ -382,7 +382,7 @@ pub fn resolve_read_targets(
     Ok(targets)
 }
 
-/// 执行层访问门禁：只读会话必须能证明动作只读，否则在解析后立即拒绝。
+/// Execution-layer access gate: a read-only session must be able to prove the action is read-only, otherwise it is rejected right after parsing.
 pub fn validate_access(arguments: &str, access: Access) -> Result<()> {
     if access == Access::Execute {
         return Ok(());
@@ -391,7 +391,7 @@ pub fn validate_access(arguments: &str, access: Access) -> Result<()> {
     enforce_access(&params, access)
 }
 
-/// 权限分档：只读动作 Read；写动作（含预览）Write；工作区诊断与无效参数保守处理。
+/// Permission tiering: read-only actions are Read; write actions (including previews) are Write; workspace diagnostics and invalid arguments are handled conservatively.
 pub fn permission_tier(arguments: &str) -> Tier {
     let Ok(params) = Params::parse(arguments) else {
         return Tier::Write;
@@ -424,7 +424,7 @@ fn enforce_access(params: &Params, access: Access) -> Result<()> {
     Ok(())
 }
 
-/// 执行一个 `lsp` 调用，返回 pp 工具结果 JSON。
+/// Execute one `lsp` call and return the pp tool result JSON.
 pub fn run(
     host: &dyn LspToolHost,
     arguments: &str,
@@ -441,7 +441,7 @@ pub fn run(
         .context("LSP support is not enabled for this session.")?;
     ensure!(registry.enabled(), "LSP support is disabled.");
     if !matches!(params.action, Action::Status | Action::Reload) {
-        // 配置错误是显式调用必须看到的原因；status 把它作为状态展示。
+        // A configuration error is a reason explicit calls must see; status displays it as part of the status.
         let _ = registry.config()?;
     }
     let deadline = call_deadline(registry, params.timeout);
@@ -513,7 +513,7 @@ fn failure_error(failure: Failure, what: &str) -> anyhow::Error {
     }
 }
 
-/// 显式诊断报告的本 Agent owner：子 Agent 各自持有，不共享 inbox。
+/// Owning agent of explicit diagnostic reports: each subagent has its own, and no inbox is shared.
 fn owner(host: &dyn LspToolHost) -> &str {
     host.lsp_owner_id()
 }
@@ -525,7 +525,7 @@ fn deny_edit(request: ServerRequest) {
     }));
 }
 
-/// 只读作用域的 server 回调：一律拒绝 `workspace/applyEdit`。
+/// Server callback for the read-only scope: `workspace/applyEdit` is always rejected.
 fn deny_service() -> impl FnMut(ServerRequest) {
     |request: ServerRequest| deny_edit(request)
 }

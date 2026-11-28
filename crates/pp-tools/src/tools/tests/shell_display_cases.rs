@@ -46,7 +46,7 @@ fn find<'a>(snapshot: &'a ShellPresentation, needle: &str) -> &'a ShellRow {
                 .collect::<String>()
                 .contains(needle)
         })
-        .unwrap_or_else(|| panic!("未找到 {needle}: {snapshot:?}"))
+        .unwrap_or_else(|| panic!("did not find {needle}: {snapshot:?}"))
 }
 
 #[test]
@@ -64,7 +64,10 @@ fn shell_display_execution_pipelines_and_function_overrides() {
             &Default::default(),
             &mut |_| {},
         );
-        assert!(model.get("shell").is_none(), "展示不能进入模型上下文");
+        assert!(
+            model.get("shell").is_none(),
+            "display must not enter the model context"
+        );
         assert_eq!(model["ok"], true);
         assert_eq!(model["output"], "okabcyes\n");
         let snapshot = shell(&result);
@@ -76,7 +79,7 @@ fn shell_display_execution_pipelines_and_function_overrides() {
         assert_eq!(
             find(&snapshot, "is_file").state,
             ShellState::Ok,
-            "条件的 false 不冒充执行错误"
+            "a conditional false must not masquerade as an execution error"
         );
     }
 
@@ -177,7 +180,10 @@ fn shell_display_cancel_timeout_and_nested_scripts() {
                 }
             },
         );
-        assert!(observed, "取消必须由实际运行中快照触发");
+        assert!(
+            observed,
+            "cancellation must be triggered by an actually running snapshot"
+        );
         assert_eq!(result["cancelled"], true);
         let snapshot = shell(&result);
         assert_eq!(find(&snapshot, "sleep 60").state, ShellState::Interrupted);
@@ -193,7 +199,7 @@ fn shell_display_cancel_timeout_and_nested_scripts() {
         assert_eq!(
             find(&snapshot, "nested").node,
             None,
-            "外部脚本内部没有执行身份"
+            "an external script has no execution identity inside"
         );
         assert_eq!(find(&snapshot, "nested").state, ShellState::Pending);
     }
@@ -268,7 +274,10 @@ fn shell_display_background_snapshot_updates_and_freezes() {
         {
             break;
         }
-        assert!(Instant::now() < deadline, "后台命令未启动：{result}");
+        assert!(
+            Instant::now() < deadline,
+            "background command did not start: {result}"
+        );
         std::thread::yield_now();
     }
     let (_, result) = execute_shell(

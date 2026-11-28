@@ -1,4 +1,4 @@
-//! 单个语言服务器的受管理客户端：初始化握手、文档状态、诊断缓存与操作串行化。
+//! Managed client for one language server: initialization handshake, document state, diagnostic cache and operation serialization.
 
 mod diagnostics;
 mod document;
@@ -15,22 +15,22 @@ pub(crate) use lifecycle::Client;
 pub(crate) use operation::Op;
 
 pub(super) const POLL: Duration = Duration::from_millis(20);
-/// 未版本化报告的稳定窗口。
+/// Settle window for unversioned reports.
 pub(super) const SETTLE: Duration = Duration::from_millis(250);
-/// 冷启动/重开后的未版本化空报告在这个窗口内不算干净。
+/// After a cold start/reopen, an unversioned empty report is not considered clean within this window.
 pub(super) const COLD_WINDOW: Duration = Duration::from_secs(12);
 pub(super) const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const DEFAULT_READY_POLL: Duration = Duration::from_millis(100);
 pub(super) const DEFAULT_READY_SETTLE: Duration = Duration::from_secs(2);
 pub(super) const DEFAULT_STATUS_TIMEOUT: Duration = Duration::from_millis(1000);
 const PROJECT_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
-/// 正常 shutdown RPC 的等待上限。
+/// Upper bound for waiting on the normal shutdown RPC.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-/// shutdown 之后等待进程自己退出的宽限。
+/// Grace period after shutdown for the process to exit on its own.
 const EXIT_GRACE: Duration = Duration::from_secs(1);
-/// initialize 失败后回收进程的宽限。
+/// Grace period for reaping the process after a failed initialize.
 const HANDSHAKE_GRACE: Duration = Duration::from_millis(500);
-/// 放弃待写 overlay 时 best-effort 通知的预算；与调用方取消/已过期 deadline 解耦。
+/// Budget for the best-effort notification when abandoning a pending-write overlay; decoupled from caller cancellation and an expired deadline.
 #[cfg(test)]
 const ABORT_BUDGET: Duration = Duration::from_secs(2);
 
@@ -49,7 +49,7 @@ mod fixtures {
 
     use super::handshake::unauthorized_edit;
 
-    /// 用受控 stdio fixture 启动一个独立客户端；不读取真实 HOME，也不经 registry。
+    /// Start an isolated client on the controlled stdio fixture; it reads no real HOME and bypasses the registry.
     pub(super) fn fixture_client(pull: &[&str]) -> (TempDir, Arc<Client>) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".pp")).unwrap();
@@ -100,7 +100,7 @@ mod fixtures {
             .collect()
     }
 
-    /// 服务器在自己的进程里写日志；有界轮询等待目标事件真正被处理。
+    /// The server logs into its own process; poll with a bound until the target event has actually been handled.
     pub(super) fn wait_logged(
         dir: &TempDir,
         deadline: Instant,

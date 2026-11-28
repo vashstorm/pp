@@ -1,7 +1,7 @@
-// Debug 构建的内嵌 Mock AI Server 与全部 `/test-*` 命令的端到端回归。
+// End-to-end regression for the embedded Mock AI Server of debug builds and all `/test-*` commands.
 //
-// 每个用例都在独立临时 HOME/工作目录中启动真实 pp 二进制，只通过子进程环境
-// 注入代理变量；不会读取开发者 HOME，也不会访问真实供应商。
+// Every case starts the real pp binary in its own temporary HOME/working directory and only injects the proxy
+// variable through the child environment; the developer's HOME is never read and no real provider is contacted.
 
 use super::streaming::LiveCli;
 use super::*;
@@ -314,7 +314,8 @@ fn mock_test_normal_agent_session_roles_and_stats_survive_each_scenario() {
     no_more(&server);
 }
 
-// 手工 Responses 客户端：直接读取 chunked SSE，直到终止块，不依赖连接关闭。
+// Hand-rolled Responses client: reads the chunked SSE directly until the terminating chunk, without relying on the
+// connection being closed.
 struct HttpResponse {
     status: u16,
     body: String,
@@ -334,8 +335,9 @@ fn http_request(port: u16, method: &str, path: &str, body: &[u8]) -> HttpRespons
     stream.write_all(request.as_bytes()).unwrap();
     stream.write_all(body).unwrap();
     stream.flush().unwrap();
-    // 请求已按 Content-Length 完整发送；不回写半关闭（Hyper 的 h1 默认不支持
-    // 对端 half-close 后继续响应）。响应按 framing 读到终止块，不依赖连接关闭。
+    // The request has been fully sent per Content-Length; the half-close is not echoed back (Hyper's h1 does not
+    // support continuing the response after the peer half-closes). The response is read by framing until the
+    // terminating chunk, without relying on the connection being closed.
 
     let mut reader = BufReader::new(stream);
     let mut status_line = String::new();
@@ -435,7 +437,8 @@ fn wait_for_log_port(home: &Path) -> u16 {
     }
 }
 
-// lsof 存在时核对实际监听地址；缺失 lsof 的平台退回启动日志与实际连接。
+// Check the actual listen address when lsof exists; platforms without lsof fall back to the startup log and a real
+// connection.
 fn lsof_listeners(pid: u32) -> Option<Vec<(String, u16)>> {
     let output = Command::new("lsof")
         .args([
@@ -526,7 +529,7 @@ fn mock_test_manual_server_posts_until_reload_and_closes_with_the_owner() {
     wait_for_listener(first.pid(), first_port);
     wait_for_listener(second.pid(), second_port);
 
-    // 非 POST 与未命中路由不推进任何队列。
+    // Non-POST requests and unmatched routes do not advance any queue.
     assert_eq!(
         http_request(first_port, "GET", "/v1/responses", b"").status,
         405
@@ -555,7 +558,8 @@ fn mock_test_manual_server_posts_until_reload_and_closes_with_the_owner() {
     );
     assert!(response.body.contains("\"model\":\"pp-mock-root\""));
 
-    // 队列未耗尽时完全不解析请求体：任意非 JSON 字节也只推进到下一条。
+    // While the queue is not exhausted the request body is not parsed at all: even arbitrary non-JSON bytes only
+    // advance to the next entry.
     let response = http_request(first_port, "POST", "/v1/responses", b"not json at all");
     assert_eq!(response.status, 200, "{}", response.body);
     assert!(
@@ -569,7 +573,8 @@ fn mock_test_manual_server_posts_until_reload_and_closes_with_the_owner() {
         response.body
     );
 
-    // 耗尽后缺少新数组：400 且不伪造完成文本；随后重新上传数组即可恢复。
+    // Once exhausted and without a new array: 400 and no fabricated completion text; uploading an array again then
+    // recovers.
     let response = http_request(
         first_port,
         "POST",

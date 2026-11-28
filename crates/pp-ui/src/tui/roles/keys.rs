@@ -1,4 +1,4 @@
-//! 键鼠事件路由：/roles 面板的唯一输入入口。
+//! Key and mouse event routing: the single input entry point of the /roles panel.
 
 use super::*;
 
@@ -96,7 +96,7 @@ impl Panel {
                         key.code == KeyCode::PageDown,
                         usize::from(self.body.height.saturating_sub(3)).max(1),
                     ),
-                    // Effort 视图内 Tab/←/→ 只滚动档位，不切换最外层侧栏页签。
+                    // Inside the Effort view, Tab/←/→ only cycle levels and never switch the outermost sidebar tab.
                     KeyCode::BackTab if self.view == View::Effort => {
                         self.move_selection(false, 1);
                     }

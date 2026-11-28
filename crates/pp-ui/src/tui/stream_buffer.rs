@@ -1,4 +1,4 @@
-//! 只合并显示层的相邻文本；控制事件由调用方先刷新缓冲。
+//! Merges only adjacent text at the display layer; control events make the caller flush the buffer first.
 use pp_core::events::AgentEvent;
 const LIMIT: usize = 64 * 1024;
 #[derive(Default)]
@@ -25,7 +25,10 @@ impl StreamBuffer {
         ) || matches!((&self.pending, &event),
                 (Some(AgentEvent::AssistantDelta { refusal: a, .. }), AgentEvent::AssistantDelta { refusal: b, .. }) if a == b);
         if compatible {
-            let pending = self.pending.as_mut().expect("已有同类型文本");
+            let pending = self
+                .pending
+                .as_mut()
+                .expect("there is already text of the same kind");
             match (pending, event) {
                 (AgentEvent::ThinkingDelta { text: a }, AgentEvent::ThinkingDelta { text: b })
                 | (

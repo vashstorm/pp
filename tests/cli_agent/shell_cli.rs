@@ -1,6 +1,7 @@
-// `!command` 行模式回归:本地执行不触碰模型上下文与持久化、双管道流式输出、
-// 空命令/失败/超时/工作目录边界,以及 `-p` 与无配置场景绝不执行 bang 输入。
-// 复用父模块回环 fixture;等待只用有界轮询、输出与文件栅栏。
+// `!command` line-mode regression: local execution touches neither the model context nor persistence,
+// dual-pipe streaming output, empty command/failure/timeout/working-directory boundaries, and `-p` plus
+// the unconfigured scenario never executing bang input.
+// Reuses the parent module's loopback fixture; waits use only bounded polling, output and file barriers.
 
 use super::streaming::{LiveCli, Pipe};
 use super::*;
@@ -12,7 +13,8 @@ enum Protocol {
     Responses,
 }
 
-// 只有本地 shell 会产生的字样:任何协议的模型请求与会话记录都不得包含。
+// Markers only the local shell produces: no model request or session record of either protocol may
+// contain them.
 const FORBIDDEN_MARKERS: [&str; 5] = [
     "out-first",
     "err-first",
@@ -55,8 +57,8 @@ impl Protocol {
         }
     }
 
-    // 第一条模型任务必须只携带键入的 prompt:没有工具 exchange,也没有任何
-    // shell 命令文本或输出混入原生 messages/input。
+    // The first model task must carry only the typed prompt: no tool exchange and no shell command text
+    // or output mixed into the native messages/input.
     fn assert_isolated_prompt(self, body: &Value, prompt: &str) {
         match self {
             Self::Chat => {
@@ -100,16 +102,22 @@ fn session_files(home: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 fn assert_no_session(home: &std::path::Path) {
     let files = session_files(home);
-    assert!(files.is_empty(), "shell-only 交互创建了会话:{files:?}");
+    assert!(
+        files.is_empty(),
+        "shell-only interaction created a session: {files:?}"
+    );
 }
 
-// 有界轮询直到模型任务把 expected 写进会话 JSONL:文件创建与内容落盘都以
-// 可观察结果为栅栏,不用固定 sleep。
+// Bounded polling until the model task writes expected into the session JSONL: file creation and flushed
+// content are the observable barriers, not a fixed sleep.
 fn wait_for_session_record(home: &std::path::Path, expected: &str) -> String {
     let deadline = Instant::now() + PROCESS_DEADLINE;
     loop {
         let files = session_files(home);
-        assert!(files.len() <= 1, "shell 与模型任务各自建了会话:{files:?}");
+        assert!(
+            files.len() <= 1,
+            "the shell and the model task each created a session: {files:?}"
+        );
         if files.len() == 1
             && let Ok(text) = std::fs::read_to_string(&files[0])
             && text.contains(expected)
@@ -118,7 +126,7 @@ fn wait_for_session_record(home: &std::path::Path, expected: &str) -> String {
         }
         assert!(
             Instant::now() < deadline,
-            "会话始终未记录 {expected:?}:{:?}",
+            "the session never recorded {expected:?}: {:?}",
             session_files(home)
         );
         thread::sleep(Duration::from_millis(10));
@@ -129,28 +137,28 @@ fn assert_no_shell_leak(text: &str, scope: &str) {
     for marker in FORBIDDEN_MARKERS {
         assert!(
             !text.contains(marker),
-            "{scope} 泄漏了本地 shell 内容 {marker}:{text}"
+            "{scope} leaked local shell content {marker}: {text}"
         );
     }
 }
 
-// shell-only 交互不产生 Session 通知,也不出现上下文/用量行。
+// A shell-only interaction sends no Session notification and shows no context/usage lines.
 fn assert_no_task_notifications(stderr: &str) {
     for line in ["Session: ", "Context: "] {
         assert!(
             !stderr.contains(line),
-            "shell-only 交互产生了 {line:?} 行:{stderr}"
+            "shell-only interaction produced a {line:?} line: {stderr}"
         );
     }
 }
 
-// 命令仍卡在 release 栅栏前:两流已各自可见,受控结束状态与被门控的输出都
-// 尚未出现,stdout 保持为空。
+// The command is still stuck before the release barrier: both streams are already visible, while the
+// controlled exit status and the gated output have not appeared and stdout stays empty.
 fn assert_shell_gated(cli: &LiveCli) {
     let stderr = cli.text(Pipe::Stderr);
     assert!(
         !stderr.contains("out-last"),
-        "release 未创建就输出了 out-last:{stderr}"
+        "out-last was printed before release was created: {stderr}"
     );
     for status in [
         "shell: exit",
@@ -158,9 +166,15 @@ fn assert_shell_gated(cli: &LiveCli) {
         "shell: cancelled",
         "shell: timed out",
     ] {
-        assert!(!stderr.contains(status), "shell 提前结束:{stderr}");
+        assert!(
+            !stderr.contains(status),
+            "the shell finished early: {stderr}"
+        );
     }
-    assert!(cli.text(Pipe::Stdout).is_empty(), "shell 内容写入了 stdout");
+    assert!(
+        cli.text(Pipe::Stdout).is_empty(),
+        "shell content was written to stdout"
+    );
     assert_no_task_notifications(&stderr);
 }
 
@@ -172,16 +186,16 @@ fn bang_shell_cli_is_local_and_streams() {
     let mut cli = protocol.start(&server, dir.path());
     assert_no_session(dir.path());
     cli.input("!printf out-first; printf err-first >&2; while [[ ! -e release ]]; do sleep 0.01; done; printf out-last\n");
-    // 主输出是 stdout/stderr 合并的有界预览：同一批次内两路字节的相对顺序
-    // 由 reader 竞争决定，因此这里只要求两段内容都及时出现。
+    // The main output is a bounded preview merging stdout/stderr: within one batch the relative order of
+    // the two streams' bytes depends on the reader race, so only timely appearance of both is required.
     cli.wait_for(Pipe::Stderr, "out-first");
     cli.wait_for(Pipe::Stderr, "err-first");
-    // 栅栏仍未释放:给“提前完成”留出一个有界观察窗口。
+    // The barrier is still held: give "finished early" a bounded observation window.
     thread::sleep(Duration::from_millis(200));
     assert_shell_gated(&cli);
     assert!(
         server.try_recv().unwrap().is_none(),
-        "shell 执行期间发出了模型请求"
+        "a model request was sent while the shell was running"
     );
     assert_no_session(dir.path());
 
@@ -192,12 +206,12 @@ fn bang_shell_cli_is_local_and_streams() {
     assert_no_task_notifications(&finished);
     assert!(
         server.try_recv().unwrap().is_none(),
-        "shell 结束触发了模型请求"
+        "shell completion triggered a model request"
     );
     assert_no_session(dir.path());
     assert!(
         cli.text(Pipe::Stdout).is_empty(),
-        "shell-only 期间的 stdout 不为空"
+        "stdout is not empty during the shell-only interaction"
     );
 
     cli.input("ordinary task\n");
@@ -206,7 +220,7 @@ fn bang_shell_cli_is_local_and_streams() {
     protocol.final_reply(request, "ordinary-complete");
     cli.wait_for(Pipe::Stdout, "ordinary-complete");
     let recorded = wait_for_session_record(dir.path(), "ordinary task");
-    assert_no_shell_leak(&recorded, "会话记录");
+    assert_no_shell_leak(&recorded, "session records");
 
     cli.input("/quit\n");
     let output = cli.finish();
@@ -235,6 +249,6 @@ fn bang_shell_cli_is_local_and_streams() {
     let saved = std::fs::read_to_string(&files[0]).unwrap();
     assert!(saved.contains("ordinary task"), "{protocol:?}: {saved}");
     assert!(saved.contains("ordinary-complete"), "{protocol:?}: {saved}");
-    assert_no_shell_leak(&saved, "会话记录");
+    assert_no_shell_leak(&saved, "session records");
     no_more(&server);
 }

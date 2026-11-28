@@ -9,8 +9,8 @@ use pp_workspace::save::Workspace;
 use std::path::Path;
 
 impl Agent {
-    /// 安全读取列表选中的计划正文，作为后续操作的 selection 令牌；只读，
-    /// 不发审批 token，不进入模型历史。
+    /// Safely read the body of the plan selected from the list as the selection token for later
+    /// operations; read-only, issues no approval token and does not enter model history.
     pub fn read_listed_plan(&mut self, id: &str) -> Result<PlanSelection> {
         ensure!(valid_id(id), "Invalid plan id.");
         let workspace = self.tools.plan_workspace();
@@ -24,8 +24,9 @@ impl Agent {
             .ok_or_else(|| anyhow!("{NOT_FOUND}"))?;
         let path = path_for(&entry.file_name, entry.location);
         if entry.deleted {
-            // 只允许读取同 inode 的删除残留，供再次确认删除；进入/重命名
-            // 仍经 resolve_active 拒绝墓碑，不恢复旧身份或执行权限。
+            // Only a same-inode deletion leftover may be read, so the deletion can be confirmed
+            // again; entering/renaming still go through resolve_active, which rejects tombstones,
+            // and neither the old identity nor execution permission is restored.
             let expected = entry
                 .deleted_file_identity
                 .ok_or_else(|| anyhow!("{DELETED_PLAN}"))?;
@@ -42,10 +43,11 @@ impl Agent {
         })
     }
 
-    /// 操作令牌核验：先非阻塞取得计划 lease（占用即 busy），再在登记表锁内
-    /// 按 ID 解析 canonical 名称/位置（墓碑报已删除），最后安全读取并核对
-    /// 精确字节。锁顺序固定 lease → 登记表锁；`publish_plan_move` 等登记
-    /// 事务由调用方持有的 lease 保证互斥。不触碰 workflow/journal。
+    /// Operation-token verification: acquire the plan lease non-blocking first (busy means taken),
+    /// then resolve the canonical name/location by ID under the registry lock (a tombstone reports
+    /// deleted), and finally read and verify the exact bytes safely. Lock order is fixed at
+    /// lease → registry lock; registration transactions such as `publish_plan_move` are kept
+    /// mutually exclusive by the caller's lease. workflow/journal are not touched.
     pub(crate) fn verify_selection(
         &mut self,
         selection: &PlanSelection,
@@ -69,7 +71,8 @@ impl Agent {
     }
 }
 
-/// 按 ID 解析登记表中的活动条目；墓碑与缺失分别报错，绝不按猜测路径操作。
+/// Resolve an active registry entry by ID; a tombstone and a missing entry each error out, and
+/// nothing is ever operated on via a guessed path.
 fn resolve_active(workspace: &Workspace, id: &str) -> Result<(String, PlanLocation)> {
     let _lock = PlanCatalogLock::acquire(workspace)?;
     let snapshot = plan_catalog::load_catalog(workspace)?;
@@ -114,12 +117,12 @@ mod tests {
         assert!(selection.content.contains("# Verify"));
         assert!(agent.verify_selection(&selection).is_ok());
 
-        // 精确字节不匹配：拒绝操作，不沿用旧正文。
+        // Exact bytes do not match: the operation is rejected and the old body is not reused.
         let mut stale = selection.clone();
         stale.content = "# Stale\n".to_owned();
         assert!(err_message(agent.verify_selection(&stale)).contains("Plan changed"));
 
-        // 墓碑：verify/read 都拒绝，绝不复活。
+        // Tombstone: both verify and read reject it; it is never revived.
         let workspace = agent.tools.plan_workspace();
         {
             let _lock = PlanCatalogLock::acquire(workspace).unwrap();

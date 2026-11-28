@@ -1,4 +1,4 @@
-//! `Tools` 的 LSP 接线与保存联动。
+//! LSP wiring and save linkage for `Tools`.
 use anyhow::Result;
 use async_openai::types::chat::FunctionObject;
 use pp_core::cancellation::CancellationToken;
@@ -31,8 +31,8 @@ impl Tools {
         self.lsp.as_ref()
     }
 
-    /// 根/独立 owner 安装 Registry：保留退出清理权。`enabled=false` 时既
-    /// 不暴露工具也不持有清理，完全跳过发现与投递。
+    /// The root/standalone owner installs the Registry and keeps the exit cleanup right. With `enabled=false`
+    /// it neither exposes the tool nor holds cleanup, skipping discovery and delivery entirely.
     pub fn install_lsp(&mut self, registry: pp_lsp::Registry) {
         if !registry.enabled() {
             self.lsp = None;
@@ -40,8 +40,8 @@ impl Tools {
             return;
         }
         let cleanup = registry.cleanup();
-        // 同一 Registry 重装（Plan↔Execute 保留客户端）只移交清理权；
-        // 换成另一个 Registry 时旧句柄在离开作用域时回收旧进程。
+        // Reinstalling the same Registry (Plan↔Execute keeps clients) only transfers the cleanup right;
+        // with a different Registry the old handle reclaims the old process when it leaves scope.
         if let Some(mut previous) = self.lsp_cleanup.take() {
             previous.supersede(&cleanup);
         }
@@ -49,8 +49,8 @@ impl Tools {
         self.lsp = Some(registry);
     }
 
-    /// 子 Agent 借用父 Registry：共享同一批客户端，但永不取得停止父进程的
-    /// 清理权，Drop 也不会回收父服务器。
+    /// A subagent borrows the parent Registry: it shares the same clients but never obtains the right
+    /// to stop the parent process, and Drop does not reclaim the parent server.
     pub fn install_shared_lsp(&mut self, registry: pp_lsp::Registry) {
         debug_assert!(
             self.lsp_cleanup.is_none(),
@@ -59,8 +59,8 @@ impl Tools {
         self.lsp = registry.enabled().then_some(registry);
     }
 
-    /// 向 TUI 等外部持有者发放新的清理句柄；只有 owner 安装后才能取得。
-    /// 同一 Registry 的多个句柄由 `Cleanup::supersede` 移交，不会重复回收。
+    /// Hands a new cleanup handle to an external holder such as the TUI; it exists only after the owner installs.
+    /// Multiple handles for one Registry are handed over via `Cleanup::supersede`, so cleanup never runs twice.
     pub fn lsp_cleanup(&self) -> Option<pp_lsp::Cleanup> {
         self.lsp_cleanup.as_ref()?;
         self.lsp.as_ref().map(pp_lsp::Registry::cleanup)
@@ -70,22 +70,22 @@ impl Tools {
         self.lsp_readonly = readonly;
     }
 
-    /// LSP 工具 schema：只有已安装 Registry 时才出现；受限模式同时裁掉
-    /// schema 与执行层动作，隐藏 schema 从不作为授权边界。
+    /// LSP tool schema: present only once a Registry is installed; restricted modes trim both the
+    /// schema and the execution-layer actions, so a hidden schema is never an authorization boundary.
     pub(super) fn lsp_definition(&self, read_only: bool) -> Option<FunctionObject> {
         self.lsp
             .as_ref()
             .map(|_| pp_lsp::tool::definition(read_only))
     }
 
-    /// 本会话可自动联动的 LSP Registry：禁用与只读 session 都不介入普通写入。
+    /// The LSP Registry this session can auto-link: neither a disabled nor a read-only session takes part in ordinary writes.
     pub(super) fn lsp_save_registry(&self) -> Option<&pp_lsp::Registry> {
         self.lsp
             .as_ref()
             .filter(|registry| registry.enabled() && !self.lsp_readonly)
     }
 
-    /// 提交之后同步已启动客户端：只更新 overlay/通知，失败只作为警告。
+    /// Sync already-started clients after a commit: overlay/notification updates only, and failures are warnings only.
     fn sync_after_save(
         &self,
         path: &Path,
@@ -104,9 +104,9 @@ impl Tools {
         )
     }
 
-    /// 最终提交且 diff 已发布之后：同步客户端并按设置采集内联诊断。
+    /// After the final commit and once the diff is published: sync clients and collect inline diagnostics per settings.
     ///
-    /// 返回普通警告；`Cancelled`/`CleanupError` 仍保留类型向上传播。
+    /// Returns ordinary warnings; `Cancelled`/`CleanupError` still propagate upward with their types.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_lsp_save(
         &self,
@@ -137,7 +137,7 @@ impl Tools {
             formatter,
         ) {
             Ok(Some(report)) => {
-                // diff 已在上一步发布；内联诊断事件只负责展示同一份报告。
+                // The diff was already published in the previous step; the inline diagnostics event only displays that same report.
                 emit(AgentEvent::LspDiagnostics {
                     id: Some(call_id.to_owned()),
                     report: report.clone(),
@@ -159,7 +159,7 @@ impl Tools {
     }
 }
 
-/// 控制流错误必须保留类型；普通诊断失败只作为状态说明。
+/// Control-flow errors must keep their type; ordinary diagnostic failures are only status notes.
 fn is_control_lsp_error(error: &anyhow::Error) -> bool {
     error
         .chain()

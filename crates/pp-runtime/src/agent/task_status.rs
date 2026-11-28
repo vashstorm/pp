@@ -1,4 +1,4 @@
-//! TUI 会话费用与任务标题；子 Agent 继承根会话的计费句柄。
+//! TUI session cost and task title; subagents inherit the root session's accounting handle.
 use super::*;
 use std::{
     sync::{Arc, atomic::AtomicBool},
@@ -79,7 +79,8 @@ impl Agent {
         };
         let ledger = view.begin(&self.catalog);
         self.set_task_accounting(Some(ledger.clone()));
-        // 选模、客户端构造和请求都在后台；失败不影响主任务。
+        // Model selection, client construction and the request all run in the background;
+        // failure does not affect the main task.
         let catalog = self.catalog.clone();
         let model = self.current_model.reference.clone();
         let effort = self.think_level;
@@ -96,9 +97,11 @@ impl Agent {
                 .id()
                 .map(|id| self.journal.directory().join(format!("{id}.jsonl"))),
             unlinked_requests: self.journal.unlinked_stats(),
-            // 标题不采集原生上下文，更不能消费主请求的首次采集标记。
+            // The title does not capture native context and must not consume the main
+            // request's first-capture flag.
             first_request: Arc::new(AtomicBool::new(false)),
-            // 标题请求同样复用本次会话的统计库句柄，测试时落在临时工作区。
+            // Title requests reuse this session's stats database handle, so tests land in
+            // a temporary workspace.
             database: self.journal.stats_handle().clone(),
             skills: Vec::new(),
         };
@@ -165,10 +168,11 @@ impl Agent {
                                     &mut client,
                                     &mut session,
                                     &catalog,
-                                    &fallback.take().expect("备用模型存在"),
+                                    &fallback.take().expect("fallback model is present"),
                                     edit,
                                 )?;
-                                // 跨协议转换重新构造了请求，必须再次移除默认工具。
+                                // The cross-protocol conversion rebuilt the request, so the
+                                // default tools must be removed again.
                                 match &mut session {
                                     Session::Completion(request) => {
                                         request.tools = None;
@@ -220,7 +224,8 @@ impl Agent {
 fn normalize_title(text: &str) -> String {
     let clean = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let clean: String = clean.chars().filter(|ch| !ch.is_control()).collect();
-    // 供应商可能把 DSML 工具调用作为正文返回，截断前检查完整回复。
+    // A provider may return a DSML tool call as content, so check the full reply
+    // before truncating.
     if ["<｜DSML｜", "</｜DSML｜", "<|DSML|", "</|DSML|"]
         .iter()
         .any(|marker| clean.contains(marker))
@@ -242,7 +247,10 @@ mod tests {
     use super::*;
     #[test]
     fn task_title_normalizes_control_characters_and_unicode_display_columns() {
-        assert_eq!(normalize_title("  \"修复\n 会话历史\"  "), "修复 会话历史");
+        assert_eq!(
+            normalize_title("  \"fix\n session history\"  "),
+            "fix session history"
+        );
         let title = normalize_title(&"中🙂".repeat(40));
         assert_eq!(title.width(), 32);
         assert_eq!(normalize_title("a\u{1b}b\r\nc"), "ab c");
@@ -258,6 +266,6 @@ mod tests {
         ] {
             assert_eq!(normalize_title(reply), "", "{reply:?}");
         }
-        assert_eq!(normalize_title("修复 DSML 解析"), "修复 DSML 解析");
+        assert_eq!(normalize_title("Fix DSML parsing"), "Fix DSML parsing");
     }
 }

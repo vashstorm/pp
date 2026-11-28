@@ -7,7 +7,7 @@ mod integration {
         time::{Duration, Instant},
     };
 
-    /// 回环响应的增量读取器：先解开 HTTP chunked framing，再按空行切出 SSE 事件。
+    /// Incremental reader for a loopback response: unwrap HTTP chunked framing first, then split SSE events on blank lines.
     struct Reply {
         status: u16,
         chunked: bool,
@@ -54,7 +54,7 @@ mod integration {
             self.reader.get_ref().set_read_timeout(Some(timeout))
         }
 
-        /// 解码并追加更多 body 字节；`false` 表示已到 EOF。
+        /// Decode and append more body bytes; `false` means EOF was reached.
         fn fill(&mut self) -> std::io::Result<bool> {
             if self.finished {
                 return Ok(false);
@@ -90,7 +90,7 @@ mod integration {
             Ok(true)
         }
 
-        /// 下一个完整 SSE 事件（不含结束空行）；EOF 返回 `None`。
+        /// The next complete SSE event (without the closing blank line); returns `None` at EOF.
         fn event(&mut self) -> std::io::Result<Option<String>> {
             loop {
                 if let Some(index) = self.body.windows(2).position(|window| window == b"\n\n") {
@@ -105,7 +105,7 @@ mod integration {
             }
         }
 
-        /// 解码剩余字节，供错误响应正文断言使用。
+        /// Decode the remaining bytes for error response body assertions.
         fn text(&mut self) -> std::io::Result<String> {
             while self.fill()? {}
             let text = String::from_utf8_lossy(&self.body).into_owned();
@@ -131,12 +131,12 @@ mod integration {
         (status, frames, body)
     }
 
-    /// 取出 SSE 事件的 `data` 负载，先按协议校验再解析。
+    /// Extract the `data` payload of an SSE event, validating it against the protocol before parsing.
     fn data(event: &str) -> Value {
         let raw = event
             .lines()
             .find_map(|line| line.strip_prefix("data: "))
-            .unwrap_or_else(|| panic!("SSE 事件必须带 data 行: {event}"));
+            .unwrap_or_else(|| panic!("SSE event must carry a data line: {event}"));
         serde_json::from_str::<async_openai::types::responses::ResponseStreamEvent>(raw)
             .unwrap_or_else(|error| panic!("invalid Responses event: {error}: {raw}"));
         serde_json::from_str(raw).unwrap()
@@ -240,7 +240,7 @@ mod integration {
         {
             let server = MockServer::start().unwrap();
             let endpoint = server.endpoint();
-            // query、百分号编码与尾斜杠都不被正规化成合法路由。
+            // Query strings, percent encoding and trailing slashes are not normalized into a valid route.
             for path in [
                 "/mock/run/root/v1/responses?stream=true",
                 "/mock/run%2Froot/v1/responses",
@@ -249,7 +249,7 @@ mod integration {
             ] {
                 assert_eq!(post(&endpoint, path, "[]").0, 404, "{path}");
             }
-            // 路由先于方法：合法路径的非 POST 是空 405，未知路径任何方法都是 404。
+            // Route resolution precedes the method: a non-POST on a valid path is an empty 405, an unknown path is 404 for any method.
             assert_eq!(collect(open(&endpoint, "GET", "/v1/responses", "")).0, 405);
             assert_eq!(
                 collect(open(&endpoint, "GET", "/mock/run/root/v1/responses", "")).0,
@@ -269,7 +269,7 @@ mod integration {
             .to_string();
             let (status, frames, _) = post(&endpoint, "/mock/large/root/v1/responses", &body);
             assert_eq!(status, 200);
-            // 只回显脚本结果，不把请求正文拼进响应。
+            // Only the script result is echoed; the request body is never spliced into the response.
             assert_eq!(text(&frames), "large");
             let output = frames.last().unwrap().1["response"]["output"]
                 .as_array()
@@ -307,7 +307,10 @@ mod integration {
                 r#"[{"content":["first","later"],"tokens_per_second":0.1},{"content":"next"}]"#,
             );
             loop {
-                let event = slow.event().unwrap().expect("慢流必须发送首个 token");
+                let event = slow
+                    .event()
+                    .unwrap()
+                    .expect("slow stream must send the first token");
                 if data(&event)["delta"] == "first" {
                     break;
                 }
@@ -411,7 +414,7 @@ mod integration {
                 r#"[{"content":["first","tail"],"tokens_per_second":1},{"content":"next"}]"#,
             );
             loop {
-                let event = stream.event().unwrap().expect("首个 delta 必须到达");
+                let event = stream.event().unwrap().expect("first delta must arrive");
                 if data(&event)["delta"] == "first" {
                     break;
                 }
@@ -434,7 +437,7 @@ mod integration {
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            // 首请求只发 headers：handler 已在 busy 内等待正文。
+            // The first request sends headers only: the handler is already inside busy waiting for the body.
             write!(
         stream,
         "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n",
@@ -450,7 +453,7 @@ mod integration {
             reader.read_line(&mut line).unwrap();
             assert_eq!(line, "\r\n");
 
-            // 同一 lane 的上传窗口内立即 409，其他 lane 不受影响。
+            // Inside the upload window of the same lane it is an immediate 409; other lanes are unaffected.
             assert_eq!(post(&endpoint, path, "[]").0, 409);
             assert_eq!(
                 text(
@@ -482,7 +485,7 @@ mod integration {
             );
             let mut seen = String::new();
             loop {
-                let event = reply.event().unwrap().expect("首个 delta 必须到达");
+                let event = reply.event().unwrap().expect("first delta must arrive");
                 seen.push_str(&event);
                 if data(&event)["type"] == "response.output_text.delta" {
                     break;
@@ -496,7 +499,7 @@ mod integration {
                 match reply.event() {
                     Ok(Some(event)) => completed |= data(&event)["type"] == "response.completed",
                     Ok(None) => break,
-                    Err(error) => panic!("连接未在 2s 内关闭: {error}"),
+                    Err(error) => panic!("connection did not close within 2s: {error}"),
                 }
             }
             assert!(Instant::now() <= deadline);

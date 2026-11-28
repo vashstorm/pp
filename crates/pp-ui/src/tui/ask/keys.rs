@@ -1,4 +1,4 @@
-//! 键盘、粘贴与滚轮路由：只推进交互状态，不绘制。
+//! Keyboard, paste and wheel routing: advances interaction state only, never draws.
 
 use super::*;
 
@@ -39,7 +39,8 @@ impl Panel {
         Action::None
     }
 
-    /// 仅当滚轮命中面板 overlay 时导航选项列表；否则交还主界面滚动。
+    /// Navigates the option list only when the wheel hits the panel overlay; otherwise
+    /// the main screen keeps the scroll.
     pub(in crate::tui) fn wheel(&mut self, up: bool, column: u16, row: u16) -> bool {
         let Some(area) = self.overlay else {
             return false;
@@ -69,12 +70,12 @@ impl Panel {
         true
     }
 
-    // ---- 键盘路由 ----
+    // ---- Keyboard routing ----
 
     fn editor_key(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
-                // Esc 只丢弃本次编辑，回到 picker。
+                // Esc discards only this edit and returns to the picker.
                 self.editor = None;
                 self.error = None;
                 Action::None
@@ -221,7 +222,7 @@ impl Panel {
             return Action::None;
         }
         if self.questions.questions[index].multi {
-            // 多选 Enter 只前进，不额外勾选焦点项。
+            // In multi-select, Enter only advances and does not toggle the focused option.
             self.error = None;
             return self.advance(index);
         }

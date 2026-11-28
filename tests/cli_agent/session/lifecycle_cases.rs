@@ -203,7 +203,7 @@ fn session_lazy_creation_persist_and_unique_ids_for_both_apis() {
             let home = tempfile::tempdir().unwrap();
             let first = tempfile::tempdir().unwrap();
             let second = tempfile::tempdir().unwrap();
-            // 先完成共享配置库初始化，本场只验证并行会话的 ID 与持久化隔离。
+            // Finish the shared config store initialization first; this scenario only covers parallel sessions' ID and persistence isolation.
             configure(home.path(), fixture_settings(), &api.models(&server));
             pp_config::agent_store::initialize(
                 &home.path().join(".pp/agent"),
@@ -555,7 +555,7 @@ fn session_resume_prompt_conflicts_and_reset_boundaries() {
     let server = server();
 
     // clap rejects -p over -c and -r together with -c; neither may silently
-    // drop the resume arguments. 裸 -r 的拒绝由 resume_cli 的用例覆盖。
+    // drop the resume arguments. Bare -r rejection is covered by the resume_cli cases.
     {
         let home = tempfile::tempdir().unwrap();
         let cwd = tempfile::tempdir().unwrap();

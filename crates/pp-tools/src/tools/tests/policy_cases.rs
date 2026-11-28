@@ -230,7 +230,7 @@ fn policy_gates_cancel_review_plan_and_execute() {
 #[test]
 fn plan_tools_change_reporting_and_path_isolation() {
     {
-        // 保存层按 canonical 根校验绝对参数；临时父目录规范化后拼写一致。
+        // The save layer validates absolute arguments against the canonical root; once the temp parent is canonicalized the spelling matches.
         let dir = tempfile::Builder::new()
             .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
             .unwrap();
@@ -239,7 +239,7 @@ fn plan_tools_change_reporting_and_path_isolation() {
         let mut document = plan_document();
         let plan_path = ".pp/drafts/create-canary.md".to_owned();
 
-        // 首次 write 登记当前计划并回传 Written，不加入普通文件撤销记录。
+        // The first write registers the current plan and returns Written, without joining the ordinary file undo records.
         let execution = tools.execute(
             "write",
             &json!({"path":".pp/drafts/create-canary.md","content":content}).to_string(),
@@ -266,17 +266,17 @@ fn plan_tools_change_reporting_and_path_isolation() {
         );
 
         let Some(PlanChange::Written { title, .. }) = &execution.plan_change else {
-            panic!("计划写入必须返回 Written");
+            panic!("a plan write must return Written");
         };
         assert_eq!(title, "create-canary");
 
-        // 模拟调用方将写入结果提交到工作流快照。
+        // Simulate the caller committing the write result into the workflow snapshot.
         document.revision = 1;
         document.title = "create-canary".into();
         document.file_name = Some("create-canary.md".into());
         document.content = content.to_owned();
 
-        // 相同正文不产生变更，也不增加修订号。
+        // An identical body produces no change and does not bump the revision.
         let execution = tools.execute(
             "write",
             &json!({"path":dir.path().join(".pp/drafts/./create-canary.md"),"content":content})
@@ -366,7 +366,7 @@ fn plan_tools_change_reporting_and_path_isolation() {
         assert_eq!(tools.read_plan(&document).unwrap(), "- [ ] task\n");
         // Only the exact plan path is ever touched by plan IO.
         std::fs::write(dir.path().join("canary.txt"), b"unchanged\n").unwrap();
-        // 未保存的 revision-0 绑定没有路径。
+        // An unsaved revision-0 binding has no path.
         let error = tools.read_plan(&plan_document()).unwrap_err();
         assert_eq!(error.to_string(), "No saved plan.");
         assert_eq!(

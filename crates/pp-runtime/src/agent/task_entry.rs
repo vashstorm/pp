@@ -1,4 +1,4 @@
-//! 任务入口：计划租约、运行编排与任务收尾边界。
+//! Task entry: plan lease, run orchestration and task teardown boundaries.
 use super::{
     Agent,
     input::InputQueue,
@@ -58,8 +58,8 @@ impl Agent {
             self.tools.plan_workspace(),
             &document.id,
         )?);
-        // 取得 lease 后按 ID 协调（锁顺序 lease → 登记表锁）：登记表
-        // 重命名/移位/首次登记在任务与计划写工具访问前同步到绑定。
+        // After the lease is taken, coordinate by ID (lock order lease → registry lock): registry renames,
+        // moves and first registrations are synced to the binding before the task and plan write tools touch it.
         self.reconcile_plan_location()
     }
 
@@ -68,7 +68,7 @@ impl Agent {
             return Ok(());
         }
         self.journal.check()?;
-        // 裸 /plan 只待命：首条非空任务才分配文档并绑定 origin。
+        // A bare /plan only stands by: the first non-empty task allocates the document and binds the origin.
         let created = self.workflow.plan.is_none() && !prompt.trim().is_empty();
         let before_creation = created.then(|| self.workflow.clone());
         if created {
@@ -85,8 +85,8 @@ impl Agent {
             ),
             "This plan has already been handed off; use /plan to toggle."
         );
-        // 列表打开的 Plans 也可继续讨论；接受讨论后统一降为 Draft，
-        // 只开放规划工具，重新提交并明确批准前不得实施。
+        // A Plan opened from the list can also be discussed further; once a discussion is accepted it drops to Draft uniformly,
+        // opening only the planning tools and forbidding execution until it is resubmitted and explicitly approved.
         let old_status = plan.status;
         let set_origin = plan.origin_prompt.is_empty() && !prompt.trim().is_empty();
         let persist = created || set_origin || old_status == pp_core::plan::PlanStatus::Ready;
@@ -118,8 +118,8 @@ impl Agent {
         self.run_user(prompt, None, cancellation, input, emit)
     }
 
-    /// UserPromptSubmit 的结论：拒绝或 `continue:false` 直接失败，允许时返回
-    /// 待注入的上下文。子 Agent 的任务文本不是人类输入，不经过这里。
+    /// Outcome of UserPromptSubmit: a denial or `continue:false` fails outright; otherwise the context
+    /// to inject is returned. Subagent task text is not human input and does not pass through here.
     fn user_prompt_hook(
         &mut self,
         prompt: &str,
@@ -172,12 +172,12 @@ impl Agent {
                 bail!("{error}");
             }
             ensure!(!prompt.trim().is_empty(), "prompt must not be blank");
-            // 启动期后台建连的收口：任务真正开始时才等，界面与提示行先渲染。
-            // 等待期间被取消不在这里上报：交给下面的取消边界保存已接受输入。
+            // Closing the startup background connect: wait only when the task really starts, so the UI and tip line render first.
+            // Cancellation while waiting is not reported here: it is left to the cancellation boundary below to save accepted input.
             pp_core::logging::perf::mark("mcp_wait_start");
             let _ = self.tools.mcp.await_connect(cancellation);
             pp_core::logging::perf::mark("mcp_wait_end");
-            // 先检查后提交：拒绝或故障时不追加 user、不准备计划、不请求模型。
+            // Check before commit: on a denial or failure, append no user message, prepare no plan and request no model.
             let hook_context = self.user_prompt_hook(prompt, cancellation, emit)?;
             self.connect_pending_plan_mcp(cancellation, self.tools.mcp_access())?;
             self.apply_runtime_models()?;
@@ -199,7 +199,7 @@ impl Agent {
                 self.append_user(prompt);
             }
             if !hook_context.is_empty() {
-                // 上下文跟随这条输入一起提交，恢复时只重放已保存的历史。
+                // The context is committed together with this input, so a restore replays only saved history.
                 turn::append_developer_to(&mut self.session, hook_context.join("\n\n"));
             }
             self.run_loop(Some(prompt), input, cancellation, emit)
@@ -224,8 +224,8 @@ impl Agent {
             if let Some(error) = &self.plan_cleanup_error {
                 bail!("{error}");
             }
-            // 续跑同样走任务入口屏障：启动期后台建连未完成时先等它结束；
-            // 等待期间取消交给轮次循环的取消边界处理。
+            // A resumed run goes through the same task entry barrier: wait for the startup background connect to finish if it has not;
+            // cancellation while waiting is handled by the turn loop's cancellation boundary.
             pp_core::logging::perf::mark("mcp_wait_start");
             let _ = self.tools.mcp.await_connect(cancellation);
             pp_core::logging::perf::mark("mcp_wait_end");
@@ -240,8 +240,8 @@ impl Agent {
         self.finish_task("continue", started, result, cancellation, input, emit)
     }
 
-    // run 与 continue_session 共用的任务收尾：关闭输入队列；上下文发布失败
-    // 不得掩盖取消或真实任务错误。
+    // Task teardown shared by run and continue_session: close the input queue; a context publish failure
+    // must not mask cancellation or a real task error.
     pub(in crate::agent) fn finish_task(
         &mut self,
         operation: &str,
@@ -276,10 +276,10 @@ impl Agent {
             self.journal.error(&format!("{error:#}"));
             result = Err(error);
         }
-        // 成功边界自动归档：仅当 close_queue、finish_run（含后台清理）与
-        // 进度同步全部成功、结果确为 Completed 且取消未置位时尝试；计划
-        // 未全部勾选或零任务时静默跳过（保留 Executed/Plans），任务集合
-        // 与批准集合不一致及真实 IO/登记/journal 失败把结果转为错误。
+        // Automatic archiving at the success boundary: attempted only when close_queue, finish_run (including background cleanup) and
+        // progress sync all succeeded, the result really is Completed and cancellation is not set; silently skipped when the plan
+        // is not fully checked off or has zero tasks (keeping Executed/Plans), while a task set that does not match the approved set
+        // and real IO/registry/journal failures turn the result into an error.
         if matches!(&result, Ok(RunOutcome::Completed))
             && !cancellation.is_cancelled()
             && let Err(error) = self.archive_completed_plan(emit)
@@ -296,7 +296,7 @@ impl Agent {
         result
     }
 
-    // 每条退出路径都关闭队列；关闭失败只在任务本身成功时成为主错误。
+    // Every exit path closes the queue; a close failure becomes the primary error only when the task itself succeeded.
     fn close_queue(
         &self,
         input: Option<&InputQueue>,

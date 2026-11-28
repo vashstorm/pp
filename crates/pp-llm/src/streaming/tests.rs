@@ -84,8 +84,8 @@ fn arguments_delta(item_id: &str, output_index: u32, value: &str) -> ResponseStr
 fn streaming_file_argument_previews_and_argument_progress() {
     let mut stream = ChatStream::default();
     let mut events = Vec::new();
-    // 工具名分片、参数先于工具名补齐，均只发布尚未显示的参数；
-    // 非文件工具（bash）不在预览白名单内。
+    // Split tool names and arguments that arrive before the name is complete publish only the not-yet-shown arguments;
+    // non-file tools (bash) are not on the preview allowlist.
     for delta in [
         json!({"tool_calls":[{"index":2,"id":"edit-call","type":"function","function":{"name":"ed","arguments":"{\"path\":"}}]}),
         json!({"tool_calls":[{"index":2,"function":{"name":"it","arguments":"\"demo\""}}]}),
@@ -135,7 +135,7 @@ fn streaming_file_argument_previews_and_argument_progress() {
                 .is_none()
         );
     }
-    // write 与 edit 共用同一预览事件，index 取 output_index。
+    // write and edit share the same preview event and take output_index as the index.
     let item = json!({"type":"function_call","id":"fc-write","call_id":"write-call","name":"write","arguments":""});
     stream.push(event(json!({"type":"response.output_item.added","sequence_number":0,"output_index":1,"item":item})), &mut |event| events.push(event)).unwrap();
     for text in [r#"{"path":"demo.txt","#, r#""content":"hi"}"#] {
@@ -145,7 +145,7 @@ fn streaming_file_argument_previews_and_argument_progress() {
             })
             .unwrap();
     }
-    // 非文件工具（bash）不在预览白名单内：added 与 delta 都不发布预览。
+    // Non-file tools (bash) are not on the preview allowlist: neither added nor delta publishes a preview.
     let item = json!({"type":"function_call","id":"fc-bash","call_id":"bash-call","name":"bash","arguments":"{\"command\":\"true\"}"});
     stream.push(event(json!({"type":"response.output_item.added","sequence_number":0,"output_index":2,"item":item})), &mut |event| events.push(event)).unwrap();
     stream
@@ -154,7 +154,7 @@ fn streaming_file_argument_previews_and_argument_progress() {
             &mut |event| events.push(event),
         )
         .unwrap();
-    // done 是重复副本，不再次发布参数。
+    // done is a duplicate copy and does not publish the arguments again.
     stream.push(event(json!({"type":"response.function_call_arguments.done","sequence_number":2,"item_id":"fc","output_index":0,"arguments":"{}","name":"edit"})), &mut |event| events.push(event)).unwrap();
     let previews: Vec<_> = events
         .iter()
@@ -271,7 +271,10 @@ fn streaming_responses_decode_aliases_and_pending_arguments() {
             .extend(payload.as_object().unwrap().clone());
         let raw = value.to_string();
         let decoded: ResponseEvent = serde_json::from_str(&raw).unwrap();
-        assert_eq!(decoded.2, raw, "诊断快照必须保留原始字段");
+        assert_eq!(
+            decoded.2, raw,
+            "the diagnostic snapshot must keep the original fields"
+        );
         assert_eq!(serde_json::to_value(decoded.0).unwrap()["content_index"], 2);
 
         value["content_index"] = json!(1);
@@ -346,7 +349,10 @@ fn streaming_responses_decode_aliases_and_pending_arguments() {
             "output_index":0, "item":item})
         .to_string();
         let event: ResponseEvent = serde_json::from_str(&raw).unwrap();
-        assert_eq!(event.2, raw, "诊断快照应保留原始事件");
+        assert_eq!(
+            event.2, raw,
+            "the diagnostic snapshot should keep the original event"
+        );
         let mut stream = ResponsesStream::default();
         let mut events = Vec::new();
         assert!(
@@ -355,7 +361,10 @@ fn streaming_responses_decode_aliases_and_pending_arguments() {
                 .unwrap()
                 .is_none()
         );
-        assert!(events.is_empty(), "起始参数不应触发问答或错误展示");
+        assert!(
+            events.is_empty(),
+            "starting arguments should not trigger a question or error display"
+        );
     }
     for stage in ["done", "completed"] {
         let item = json!({"type":"function_call", "id":"fc", "call_id":"call",
@@ -371,7 +380,7 @@ fn streaming_responses_decode_aliases_and_pending_arguments() {
         };
         assert!(
             serde_json::from_str::<ResponseEvent>(&value.to_string()).is_err(),
-            "完成事件仍须校验参数类型"
+            "completion events must still validate the argument type"
         );
     }
 }
@@ -453,7 +462,7 @@ fn streaming_text_progress_and_thinking_extensions() {
         };
         stream
             .push(
-                chat(json!({"role":"assistant",field:"inspect 中"}), None),
+                chat(json!({"role":"assistant",field:"inspect more"}), None),
                 &mut emit,
             )
             .unwrap();
@@ -464,7 +473,7 @@ fn streaming_text_progress_and_thinking_extensions() {
             )
             .unwrap();
         let turn = into_completion_turn(stream.finish().unwrap()).unwrap();
-        assert_eq!(thinking, "inspect 中 then answer");
+        assert_eq!(thinking, "inspect more then answer");
         assert_eq!(answer, "done");
         assert_eq!(
             turn.message.content,
@@ -519,11 +528,11 @@ fn streaming_text_progress_and_thinking_extensions() {
             "content_index"
         };
         stream.push(event(json!({"type":format!("{kind}.delta"),"sequence_number":1,"item_id":"r","output_index":0,index:0,"delta":"inspect"})), &mut emit).unwrap();
-        stream.push(event(json!({"type":format!("{kind}.done"),"sequence_number":2,"item_id":"r","output_index":0,index:0,"text":"inspect 中"})), &mut emit).unwrap();
+        stream.push(event(json!({"type":format!("{kind}.done"),"sequence_number":2,"item_id":"r","output_index":0,index:0,"text":"inspect more"})), &mut emit).unwrap();
         let reasoning = if summary {
-            json!({"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"inspect 中"}],"encrypted_content":"opaque-never-display"})
+            json!({"type":"reasoning","id":"r","status":"completed","summary":[{"type":"summary_text","text":"inspect more"}],"encrypted_content":"opaque-never-display"})
         } else {
-            json!({"type":"reasoning","id":"r","status":"completed","summary":[],"content":[{"type":"reasoning_text","text":"inspect 中"}],"encrypted_content":"opaque-never-display"})
+            json!({"type":"reasoning","id":"r","status":"completed","summary":[],"content":[{"type":"reasoning_text","text":"inspect more"}],"encrypted_content":"opaque-never-display"})
         };
         stream.push(event(json!({"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":reasoning})), &mut emit).unwrap();
         let turn = stream
@@ -533,7 +542,7 @@ fn streaming_text_progress_and_thinking_extensions() {
             )
             .unwrap()
             .unwrap();
-        assert_eq!(thinking, "inspect 中");
+        assert_eq!(thinking, "inspect more");
         assert_eq!(turn.text, "answer");
     }
 }

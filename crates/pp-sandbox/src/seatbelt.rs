@@ -58,8 +58,8 @@ pub(crate) struct SeatbeltSpec<'a> {
     pub network: bool,
 }
 
-/// 组装 `(sandbox-exec 路径, 前缀 args)`，末尾以 `--` 结束；
-/// 路径全部通过 `-D K=V` 传递，SBPL 源码只含静态字面量与 `(param "K")`。
+/// Builds `(sandbox-exec path, prefix args)`, terminated by a trailing `--`;
+/// all paths are passed through `-D K=V` so the SBPL source holds only static literals and `(param "K")`.
 pub(crate) fn build_wrapper_prefix(spec: &SeatbeltSpec<'_>) -> Result<(String, Vec<OsString>)> {
     let (profile, params) = compile_profile(spec)?;
     let mut args = Vec::with_capacity(2 + params.len() * 2 + 1);
@@ -217,7 +217,7 @@ pub(crate) fn compile_profile(
         sb.push_str(")\n");
     }
 
-    // `ls -la` 会查询 `..`，只开放父目录自身的元数据，保留目录内容的拒读规则。
+    // `ls -la` queries `..`, so expose only the parent directory's own metadata and keep the deny rule for its contents.
     if !spec.allow_read_metadata.is_empty() {
         sb.push_str("(allow file-read-metadata\n");
         for (idx, path) in spec.allow_read_metadata.iter().enumerate() {
@@ -366,8 +366,8 @@ mod tests {
         std::fs::create_dir_all(&secret).unwrap();
         std::fs::write(secret.join("key"), b"top-secret").unwrap();
 
-        // 注意：tempdir 在 macOS /var/folders/.../T 下，会被 var_folder 正则放行；
-        // 用 /Users 下的路径测试真正的“工作区外写入失败”，或者用 protect 测试只读！
+        // Note: a tempdir lives under macOS /var/folders/.../T, which the var_folder regex allows;
+        // use a path under /Users to test a real "write outside the workspace fails", or use protect to test read-only!
         let protected = workspace.join(".pp");
         std::fs::create_dir_all(&protected).unwrap();
 

@@ -16,14 +16,14 @@ use pp_config::config::{SandboxMode, SandboxReadScope, SandboxSettings};
 
 pub use policy::{DenialMetadata, Policy, ReadAccessCheck, SandboxOverlay, WriteAccessCheck};
 
-/// 本进程级平台的沙盒探测结果。
+/// Result of probing this platform for a sandbox in this process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeResult {
     Available,
     Unavailable { reason: String },
 }
 
-/// 实际执行层的有效模式。
+/// Effective mode at the actual execution layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EffectiveMode {
     WorkspaceWrite,
@@ -41,7 +41,7 @@ impl EffectiveMode {
     }
 }
 
-/// 当前平台支持的沙盒后端名称。
+/// Name of the sandbox backend supported by the current platform.
 pub fn platform_backend() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -76,7 +76,7 @@ fn platform_probe(network: bool) -> ProbeResult {
     }
 }
 
-/// 沙盒当前状态快照，供 `/sandbox`、降级提示和诊断使用。
+/// Snapshot of the current sandbox state, used by `/sandbox`, degradation notices and diagnostics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxStatus {
     pub configured: SandboxMode,
@@ -144,7 +144,7 @@ impl SandboxStatus {
     }
 }
 
-/// 进程级沙盒安装槽，由 `main::run` 构造并在 `Bootstrap` / `Agent` 间共享。
+/// Process-level sandbox install slot, constructed by `main::run` and shared between `Bootstrap` / `Agent`.
 #[derive(Clone, Debug, Default)]
 pub struct SharedSandbox {
     inner: Arc<std::sync::Mutex<Option<Arc<Sandbox>>>>,
@@ -186,7 +186,7 @@ pub(crate) struct SandboxState {
     pub(crate) tmpdir: Option<PathBuf>,
     pub(crate) xdg_cache_home: Option<PathBuf>,
     pub(crate) xdg_runtime_dir: Option<PathBuf>,
-    /// 平台探测结果；`None` 表示以 `off` 起步、从未探测过，切到需要沙盒的模式时补测。
+    /// Platform probe result; `None` means started in `off` and never probed, so a mode that needs the sandbox triggers a late probe.
     pub(crate) probe: Option<ProbeResult>,
     cached_workspace_write: Option<Arc<Policy>>,
     cached_read_only: Option<Arc<Policy>>,
@@ -219,7 +219,7 @@ impl SandboxState {
         self.overlay.network.unwrap_or(self.settings.network)
     }
 
-    /// 切到需要沙盒的模式后补一次探测；`off` 保持未探测，避免白起一次沙盒探针子进程。
+    /// Probe once after switching to a mode that needs the sandbox; `off` stays unprobed so no probe child process is spawned needlessly.
     fn ensure_probe(&mut self, mode: SandboxMode) {
         if self.probe.is_none() && mode != SandboxMode::Off {
             self.probe = Some(platform_probe(self.effective_network()));
@@ -233,7 +233,7 @@ struct ModeSource {
     override_mode: Option<SandboxMode>,
 }
 
-/// 进程级沙盒句柄，由 `main::run` 构造并向下传递给 `Bootstrap` / `Tools`。
+/// Process-level sandbox handle, constructed by `main::run` and passed down to `Bootstrap` / `Tools`.
 #[derive(Debug)]
 pub struct Sandbox {
     state: RwLock<SandboxState>,
@@ -241,8 +241,9 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
-    /// `mode: off` 不探测平台能力：关闭模式下不会读取探测结果，也省掉启动期一次
-    /// 沙盒探针子进程；之后切到启用模式时才补测。
+    /// `mode: off` does not probe platform capability: no probe result is read in off mode,
+    /// which also saves one sandbox probe child process at startup; a late probe happens once an
+    /// enabled mode is selected.
     pub fn new(settings: SandboxSettings, cwd: &Path) -> Self {
         let network = settings.network;
         Self::build_with_probe(settings, cwd, move || platform_probe(network))
@@ -339,7 +340,7 @@ impl Sandbox {
         }
     }
 
-    /// 合并来自 `permission.toml` 激活 profile 的文件系统与网络覆盖，并刷新策略缓存。
+    /// Merges the filesystem and network overrides of the active `permission.toml` profile and invalidates the policy cache.
     pub fn set_permission_overlay(&self, overlay: SandboxOverlay) {
         let mut state = self.state.write().expect("sandbox state lock poisoned");
         if state.overlay != overlay {
@@ -491,7 +492,7 @@ impl Sandbox {
         state.get_or_build_policy(mode)
     }
 
-    /// 取得当前生效策略；显式开启但平台不可用时 fail-closed 返回错误。
+    /// Returns the currently effective policy; fails closed with an error when explicitly enabled but unavailable on this platform.
     pub fn policy(&self) -> Result<Option<Arc<Policy>>> {
         self.view(None).policy()
     }
@@ -522,18 +523,18 @@ impl Sandbox {
         match self.policy() {
             Ok(Some(policy)) => policy.is_read_denied(path),
             Ok(None) => false,
-            // fail-closed：显式开启却不可用时不悄悄暴露敏感目录
+            // fail-closed: do not silently expose sensitive directories when explicitly enabled but unavailable
             Err(_) => true,
         }
     }
 
-    /// 精确判定：总会先规范化（含 symlink 解析）。遍历剪枝只对 symlink entry
-    /// 使用；普通 entry 走 `is_read_denied` 的词法快路径。
+    /// Precise check: always normalizes first (including symlink resolution). Walk pruning only
+    /// uses this for symlink entries; regular entries take the lexical fast path of `is_read_denied`.
     pub fn is_read_denied_resolved(&self, path: &Path) -> bool {
         match self.policy() {
             Ok(Some(policy)) => policy.is_read_denied_resolved(path),
             Ok(None) => false,
-            // fail-closed：无法取得策略时与 `is_read_denied` 保持一致
+            // fail-closed: stay consistent with `is_read_denied` when no policy is available
             Err(_) => true,
         }
     }
@@ -565,7 +566,7 @@ fn resolve_effective(
     }
 }
 
-/// 每次调用解析一次配置，后续检查沿用同一个沙盒模式。
+/// Resolves configuration once per call so later checks reuse the same sandbox mode.
 #[derive(Clone, Copy)]
 pub struct SandboxView<'a> {
     sandbox: &'a Sandbox,

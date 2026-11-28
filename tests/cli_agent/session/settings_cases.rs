@@ -48,9 +48,9 @@ fn session_settings_persist_across_model_switch_and_restore() {
     let mut cli = start(home.path(), launch.path(), &["-r", &id]);
     cli.wait_for(Pipe::Err, &format!("Resumed session: {id}"));
     no_more(&server);
-    // 新设计：手动覆盖 a 只在内存，重启后回到配置默认 b（settings 的 a/primary）；
-    // checkpoint 的 modelReference 只作审计，恢复时按实际生效模型补一条审计记录，
-    // 已保存的原生历史保持不变。
+    // New design: a manual override of a lives only in memory, so a restart falls back to the configured default b (settings' a/primary);
+    // the checkpoint's modelReference is audit-only, and a restore appends one audit record with the actually effective model while
+    // the saved native history stays unchanged.
     let resumed = records(&path);
     assert_eq!(&resumed[..same_protocol.len()], same_protocol.as_slice());
     let audit = &resumed[same_protocol.len()..];
@@ -119,7 +119,7 @@ fn session_settings_persist_across_model_switch_and_restore() {
             .collect::<Vec<_>>(),
         ["a-one", "a-two", "b-one"]
     );
-    // 审计轨迹：首次默认、手动切换、恢复回 b、再次手动切换。
+    // Audit trail: first default, manual switch, restore back to b, another manual switch.
     assert_eq!(
         saved
             .iter()
@@ -139,8 +139,8 @@ fn session_settings_persist_across_model_switch_and_restore() {
         4
     );
 
-    // 再次重启仍回到 b（a/primary），保存的 Responses checkpoint 被转换回
-    // completion 原生历史；模型与档位来自 resolve()，不再沿用上次手动切换。
+    // A further restart still falls back to b (a/primary) and the saved Responses checkpoint is converted back to
+    // completion native history; model and effort come from resolve() instead of the previous manual switch.
     let cli = start(
         home.path(),
         launch.path(),
@@ -171,7 +171,7 @@ fn session_settings_persist_across_model_switch_and_restore() {
     let restored = records(&path);
     assert_session_contract(&restored, &id, project.path());
     assert_eq!(&restored[..saved.len()], saved.as_slice());
-    // 恢复先补审计 checkpoint（当前生效模型），再追加本次新消息。
+    // Restore first appends the audit checkpoint (the currently effective model) and then this run's new messages.
     let audit = &restored[saved.len()..];
     assert_eq!(audit[0]["type"], "model_change");
     assert_eq!(audit[0]["model"], "a/primary");

@@ -24,13 +24,13 @@ fn tui_slash_resume_mcp_servers_reap_after_cross_session_exit() {
         resume_boundary_open(&mut pty);
         pty.text("mcp project marker");
         pty.input("\r");
-        pty.wait_for("跨目录恢复保存会话", |screen| {
+        pty.wait_for("a cross-directory resume loads the saved session", |screen| {
             input_is_ready(screen) && !screen.contents().contains("Resume session (")
                 && screen.contents().contains("mcp project marker")
                 && screen.contents().contains("mcp project answer")
         });
         pty.ready();
-        // `/resume` 只切换会话：启动目录的 MCP 连接保持原进程，不重新握手。
+        // `/resume` only switches sessions: the launch directory's MCP connections stay in the same process and re-handshake is skipped.
         resume_boundary_assert_mcp_reused(launch.path());
 
         let mut pending = None;
@@ -49,7 +49,7 @@ fn tui_slash_resume_mcp_servers_reap_after_cross_session_exit() {
         }
         pty.input("\u{3}");
         pty.finish();
-        // 恢复沿用当前目录的 MCP 连接，退出后进程全部回收。
+        // Resume keeps the current directory's MCP connections; every process is reaped after exit.
         super::mcp::assert_stopped(project.path());
         super::mcp::assert_stopped(launch.path());
         drop(pending);

@@ -76,7 +76,7 @@ fn context_manual_compact_summarizes_old_prefix_and_keeps_native_suffix() {
         )
         .unwrap();
     assert_eq!(summaries, 1);
-    // 摘要请求不是会话首次请求，也不再保存正文与会话条目。
+    // A summary request is not the session's first request, and it also stores no body or session entry.
     let snapshots: i64 = statistics
             .query_row(
                 "SELECT COUNT(*) FROM requests r JOIN request_contexts c ON c.request_id=r.id WHERE r.purpose='compact'",

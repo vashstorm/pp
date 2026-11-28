@@ -9,17 +9,17 @@ fn tui_setting_tabs_persist_general_and_revert_unsaved_theme() {
     pty.ready();
     let settings_path = config_path(home.path(), "settings.yml");
 
-    // 1. `/setting` 打开 General，切换 `edit: replace -> hashline` 并持久化到 settings.yml。
+    // 1. `/setting` opens General, switches `edit: replace -> hashline` and persists it to settings.yml.
     pty.input("/setting\r");
     pty.text("General —");
     pty.text("Editing & Tools");
     pty.text("edit");
     pty.input(" ");
-    pty.wait_for("edit 更新为 hashline 并写入磁盘", |_| {
+    pty.wait_for("edit switches to hashline and is written to disk", |_| {
         read_settings(&settings_path).is_ok_and(|settings| settings.edit == EditMode::Hashline)
     });
 
-    // 2. 按 `→` 依次切到 Roles、Themes 并预览 ASCII（未保存），`←` 切回 General 后主题预览自动回滚。
+    // 2. Press `→` to move through Roles and Themes and preview ASCII (unsaved); after `←` returns to General the theme preview rolls back.
     pty.input("\x1b[C");
     pty.text("Model roles");
     pty.input("\x1b[C");
@@ -36,7 +36,7 @@ fn tui_setting_tabs_persist_general_and_revert_unsaved_theme() {
         (Theme::Default, IconMode::Nerd)
     );
 
-    // 3. 按 `←` 循环到 Skills，按 `Esc` 关闭统一 Setting 面板，再用 `/config` 别名验证重启后配置保留。
+    // 3. Press `←` to cycle to Skills, `Esc` to close the unified Setting panel, then use the `/config` alias to verify the config survived a restart.
     pty.input("\x1b[D");
     pty.text("Skills —");
     pty.input("\x1b");

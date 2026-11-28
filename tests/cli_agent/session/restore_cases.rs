@@ -62,7 +62,7 @@ fn session_failures_keep_executed_tool_results_and_display_only_fragments() {
         let id = only_session_id(home.path());
         let path = sessions_dir(home.path()).join(format!("{id}.jsonl"));
         let file_text = fs::read_to_string(&path).unwrap();
-        // 失败前缀仅写展示快照，不进入后续原生请求。
+        // The failure prefix only writes the display snapshot and never enters later native requests.
         assert!(file_text.contains("partial fragment"));
         let saved = records(&path);
         assert_session_contract(&saved, &id, project.path());

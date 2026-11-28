@@ -1,5 +1,5 @@
-// Debug 构建的 `/test-ui`、`/test-read` 与 `/test-ask` PTY 回归：
-// 真实 TUI 渲染内嵌 Responses SSE，Unavailable 启动也能运行，取消后保留草稿。
+// PTY regression for `/test-ui`, `/test-read` and `/test-ask` in debug builds:
+// the real TUI renders the embedded Responses SSE, an Unavailable start still runs, and cancelling keeps the draft.
 
 fn mock_tui_empty_start(home: &Path, project: &Path) -> Pty {
     let mut pty = Pty::start_with_args(project, home, &[]);

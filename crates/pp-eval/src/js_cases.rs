@@ -57,7 +57,7 @@ mod integration {
             fs::create_dir_all(&empty_home).unwrap();
             fs::create_dir_all(&bin_dir).unwrap();
 
-            // 1. 空 PATH 与空 HOME 时探测失败并给出提示。
+            // 1. With an empty PATH and empty HOME, the probe fails and reports a hint.
             let mut empty_env = BTreeMap::new();
             empty_env.insert("HOME".to_owned(), empty_home.to_string_lossy().into_owned());
             empty_env.insert("PATH".to_owned(), String::new());
@@ -79,7 +79,7 @@ mod integration {
                 symlink(&real_node, link_dir.join("node")).unwrap();
                 symlink(&real_node, node_only_dir.join("node")).unwrap();
 
-                // 2. 同时存在 bun 与 node（即使 node 目录排在 PATH 前面）时，默认优先 Bun。
+                // 2. When both bun and node exist (even with the node directory earlier on PATH), Bun wins by default.
                 let mut both_env = BTreeMap::new();
                 both_env.insert("HOME".to_owned(), empty_home.to_string_lossy().into_owned());
                 both_env.insert(
@@ -89,11 +89,11 @@ mod integration {
                 let picked = probe_js_with_env(cwd, None, both_env.clone(), false).unwrap();
                 assert_eq!(picked.kind, JsRuntimeKind::Bun);
 
-                // 3. 显式 override="node" 可强制选用 Node.js。
+                // 3. An explicit override="node" forces Node.js.
                 let forced = probe_js_with_env(cwd, Some("node"), both_env, false).unwrap();
                 assert_eq!(forced.kind, JsRuntimeKind::Node);
 
-                // 4. 仅存在 node 时回退到 Node.js；坏掉的 bun 候选应自动跳过并回退到 node。
+                // 4. With only node present, fall back to Node.js; a broken bun candidate is skipped automatically.
                 let broken_bun_dir = cwd.join("broken-bun");
                 fs::create_dir_all(&broken_bun_dir).unwrap();
                 write_exec_script(&broken_bun_dir.join("bun"), "#!/bin/sh\nexit 1\n");
@@ -106,7 +106,7 @@ mod integration {
                 let fallback = probe_js_with_env(cwd, None, fallback_env, false).unwrap();
                 assert_eq!(fallback.kind, JsRuntimeKind::Node);
 
-                // 5. $BUN_INSTALL/bin/bun 优先于 PATH 中的 node。
+                // 5. $BUN_INSTALL/bin/bun wins over node on PATH.
                 let bun_install = cwd.join("bun-install");
                 fs::create_dir_all(bun_install.join("bin")).unwrap();
                 symlink(&real_bun, bun_install.join("bin/bun")).unwrap();
@@ -157,7 +157,7 @@ mod integration {
                 assert_eq!(first.value["execution_count"], 1);
                 assert_eq!(first.value["output"], "42\n");
 
-                // const / class 跨 cell 重复声明不报错，且复用前一 cell 的变量。
+                // Redeclaring const / class across cells is not an error, and the previous cell's variables are reused.
                 let second = h.run_with_lang(
             Language::JavaScript,
             Some(&exe),
@@ -329,7 +329,7 @@ console.log(a.content, b.matches, caught);
                 let h = Harness::new(65_536);
 
                 let start = Instant::now();
-                // 同步子进程 sleep 会阻塞 JS 主线程无法响应 breakOnSigint，触发升级强杀进程组。
+                // A synchronous child-process sleep blocks the JS main thread so breakOnSigint cannot be handled, forcing the kill escalation.
                 let timed = h.run_with_lang(
                     Language::JavaScript,
                     Some(&exe),
@@ -474,7 +474,7 @@ while (true) {}
             );
             assert_eq!(js1.value["output"], "20\n");
 
-            // 只重置 JS 内核，Python 内核变量不受影响。
+            // Only the JS kernel is reset; Python kernel variables are unaffected.
             let js_reset = h.run_with_lang(
                 Language::JavaScript,
                 None,

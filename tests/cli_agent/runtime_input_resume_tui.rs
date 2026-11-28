@@ -1,19 +1,23 @@
-// 运行中输入的恢复与压缩边界（计划验证项 6、7）：真实 pp 二进制 PTY 场景。
-// 场景 6：已应用 Steering + 真实 write 副作用的任务完成后，再产生已暂停的未应用
-// 队列与未提交草稿并退出；-r 恢复只回放已应用历史各一份，不恢复内存队列，
-// 新任务请求恰好包含旧 Steering 一次且不含未应用消息与草稿，旧 write 副作用
-// 不重做（请求只回放旧工具结果）。场景 7：显式 context_window 的自动摘要被
-// 服务端握住时排入 Steering；摘要请求不含它，摘要后的普通请求包含它且工具
-// 批次继续完整，write 副作用真实落盘。全部用真实终端、loopback HTTP 与文件
-// marker 作栅栏，不用 sleep 猜测阶段；辅助命名沿用 runtime_input_ 前缀且与
-// 兄弟文件不冲突。
+// Restore and compaction boundaries for input submitted while running (plan verification items 6, 7): real
+// pp binary PTY scenarios.
+// Scenario 6: after a task that applied Steering plus a real write side effect, produce a paused queue of
+// unapplied messages and an uncommitted draft, then exit; -r restores only the applied history, one copy
+// each, without restoring the in-memory queue, and the new task's request contains the old Steering exactly
+// once without the unapplied messages or the draft, while the old write side effect is not repeated (the
+// request only replays the old tool results). Scenario 7: Steering is queued while the server holds the
+// automatic summary for an explicit context_window; the summary request does not contain it, while the
+// ordinary request after the summary does and the tool batch still completes fully, with the write side
+// effect really landing on disk. Everything uses the real terminal, loopback HTTP and file markers as
+// barriers, never sleep to guess stages; helper names keep the runtime_input_ prefix and do not clash with
+// sibling files.
 
 #[test]
 fn tui_runtime_input_resume_replays_applied_history_once_both_protocols() {
     let protocol = "response";
         let fixture = server();
         let (home, mut pty) = runtime_input_start(&fixture, protocol, "");
-        // 任务 1：U 运行中排入 S，结束后 S 与 U 同请求，模型调用 write 落盘。
+        // Task 1: queue S while U is running; after it finishes, S and U share one request and the model's write
+        // lands on disk.
         let stream = runtime_input_live(&mut pty, &fixture, protocol, "resume-live-prompt");
         pty.input("resume-steer\r");
         runtime_input_counts(&mut pty, 1, 0, false);
@@ -44,7 +48,8 @@ fn tui_runtime_input_resume_replays_applied_history_once_both_protocols() {
             std::fs::read_to_string(home.path().join("resume-proof.txt")).unwrap(),
             "resume-ok\n"
         );
-        // 任务 2：运行中 Alt+Enter 排入未应用 Q1，Esc 取消后队列暂停，保留草稿退出。
+        // Task 2: Alt+Enter queues unapplied Q1 while running; after the Esc cancellation the queue is paused,
+        // so exit with the draft kept.
         let stream = runtime_input_live(&mut pty, &fixture, protocol, "resume-cancel-prompt");
         pty.input("resume-queued\x1b\r");
         runtime_input_counts(&mut pty, 0, 1, false);
@@ -64,7 +69,8 @@ fn tui_runtime_input_resume_replays_applied_history_once_both_protocols() {
             "must-not-be-overwritten\n",
         )
         .unwrap();
-        // -r 恢复：只回放已应用历史，不发请求，也不恢复内存队列与草稿。
+        // -r restore: replay only the applied history, send no request, and do not restore the in-memory queue or
+        // the draft.
         let id = saved_session_id(home.path());
         let mut resumed = Pty::start_with_args(home.path(), home.path(), &["-r", &id]);
         resume_history_wait_resumed(&mut resumed, &id, &[]);
@@ -93,8 +99,9 @@ fn tui_runtime_input_resume_replays_applied_history_once_both_protocols() {
         assert!(!visible.contains("Steering:"), "{visible}");
         no_more(&fixture);
 
-        // 显式新任务：原生历史 S 恰好一次，未应用消息与草稿不出现；
-        // 旧 write 结果只被回放，副作用不重做，文件内容保持原样。
+        // An explicit new task: native history contains S exactly once and neither the unapplied message nor the
+        // draft appears; the old write result is only replayed, its side effect is not repeated and the file content
+        // stays unchanged.
         resumed.input("resume-final-prompt\r");
         let (request, body) = resumed.request_at(&fixture, api_path(protocol));
         assert_eq!(

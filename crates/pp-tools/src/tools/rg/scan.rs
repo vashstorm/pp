@@ -1,4 +1,4 @@
-//! `rg` 单文件搜索：收集器、受限读取与结果折叠。
+//! `rg` single-file search: collector, bounded reads and result folding.
 use anyhow::{Context, Result, ensure};
 use grep_matcher::Matcher;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkMatch};
@@ -133,13 +133,13 @@ impl<M: Matcher> Sink for Collector<'_, M> {
         if self.token.is_cancelled() || Instant::now() >= self.deadline {
             return Ok(false);
         }
-        // 停在 max_count 之后：上一条匹配的 after-context 已在此前送达。
+        // Stop after max_count: the after-context of the previous match was already delivered.
         if self.capped() {
             return Ok(false);
         }
         let n = m.line_number().unwrap_or(1) as usize;
         if self.multiline && self.output_mode != OutputMode::Content {
-            // 多行回调可能合并多个匹配；按每次匹配的起始行判断范围。
+            // A multiline callback can merge several matches; the range is derived from each match's start line.
             let range = m.bytes_range_in_buffer();
             let mut offset = range.start;
             let mut number = n;

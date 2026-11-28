@@ -10,7 +10,8 @@ use std::{
     time::SystemTime,
 };
 
-/// 文件描述符随会话保留，关闭时由操作系统释放锁；不删除锁文件。
+/// The file descriptor is kept for the session lifetime; the OS releases the lock on close
+/// and the lock file is never removed.
 pub(super) struct SessionLock {
     _file: File,
 }
@@ -63,7 +64,8 @@ impl SessionLock {
             if !try_lock(&file)? {
                 return Ok(None);
             }
-            // GC 可能在 open 与 flock 之间删除旧 inode，必须重开才能与路径上的锁互斥。
+            // GC may delete the old inode between open and flock, so the file must be
+            // reopened to stay mutually exclusive with the lock at that path.
             match fs::symlink_metadata(&path) {
                 Ok(current)
                     if current.dev() == metadata.dev() && current.ino() == metadata.ino() =>
@@ -86,7 +88,7 @@ fn try_lock(file: &File) -> Result<bool> {
     }
 }
 
-/// 只统计合法 session ID 对应的普通锁文件，不创建缺失的存储。
+/// Only counts regular lock files for valid session IDs and never creates missing storage.
 pub(super) fn gc(
     dir: &Path,
     cutoff: SystemTime,
@@ -244,7 +246,8 @@ mod tests {
         }
         let held = SessionLock::acquire(&dir, &id(3)).unwrap();
         modified(&paths[3], old);
-        // 最近重新使用的旧锁文件刷新时间，释放后也不应被本次 GC 删除。
+        // A recently reused old lock file has a fresh timestamp, so it must survive this
+        // GC even after release.
         drop(SessionLock::acquire(&dir, &id(4)).unwrap());
         let foreign = dir.join("unrelated.lock");
         fs::write(&foreign, b"keep").unwrap();

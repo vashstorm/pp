@@ -1,4 +1,5 @@
-//! 进程级统计库句柄：一次打开连接，按请求复用，并缓存采集时的计价快照。
+//! Process-wide stats database handle: opens one connection, reuses it per request and caches the
+//! pricing snapshot taken at collection time.
 
 use super::{Rates, Store};
 use anyhow::Result;
@@ -9,30 +10,35 @@ use std::{
     time::SystemTime,
 };
 
-/// 进程内复用的统计库句柄；`Clone` 只共享同一份连接与计价快照。
+/// Stats database handle reused within the process; `Clone` only shares the same connection and
+/// pricing snapshot.
 ///
-/// [`Database::new`] 不做任何 I/O：句柄在首次写入时打开 `stats.db` 并幂等补齐
-/// schema，之后每次请求、工具执行与 hook 记录都复用同一连接。`Store::open`
-/// 失败不会被缓存，下一次写入重新尝试；跨进程并发仍由 SQLite `busy_timeout`
-/// 约束，`pp stats` 服务端继续独占自己的连接。
+/// [`Database::new`] performs no I/O: on the first write the handle opens `stats.db` and
+/// idempotently brings the schema up to date, and every later request, tool execution and hook
+/// record reuses that connection. A failed `Store::open` is not cached, so the next write retries;
+/// cross-process concurrency is still governed by SQLite `busy_timeout`, and the `pp stats` server
+/// keeps its own exclusive connection.
 #[derive(Clone)]
 pub struct Database {
     path: PathBuf,
     state: Arc<Mutex<State>>,
-    /// 测试观测：本句柄成功建立连接的次数（每次 `Store::open` 恰好执行一次
-    /// `ensure_schema`），只用于断言“重复写入不重复建连”。
+    /// Test observation: how many times this handle has established a connection (each
+    /// `Store::open` runs `ensure_schema` exactly once); used only to assert "repeated writes do not
+    /// reconnect".
     #[cfg(test)]
     opens: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Default)]
 struct State {
-    /// 已打开的连接；`None` 表示尚未打开或上次打开失败（失败不缓存以便重试）。
+    /// Open connection; `None` means it is not open yet or the last open failed (failures are not
+    /// cached so they can be retried).
     store: Option<Store>,
     rates: Option<RatesCache>,
 }
 
-/// 采集时计价快照的缓存键：`models.yml` 的 `(mtime, len)`；`None` 表示文件不存在。
+/// Cache key of the pricing snapshot taken at collection time: `(mtime, len)` of `models.yml`; `None`
+/// means the file does not exist.
 type Fingerprint = Option<(SystemTime, u64)>;
 
 struct RatesCache {
@@ -41,7 +47,8 @@ struct RatesCache {
 }
 
 impl Database {
-    /// 零 I/O 构造：路径只用于首次写入时打开连接或读取计价表。
+    /// Zero-I/O construction: the path is only used to open the connection or read the pricing table
+    /// on the first write.
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
@@ -51,7 +58,8 @@ impl Database {
         }
     }
 
-    /// 统计库路径；只读查询（`session_usage`／`session_cost`）与 `pp gc` 仍按路径使用。
+    /// Stats database path; read-only queries (`session_usage`/`session_cost`) and `pp gc` still take
+    /// the path.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -68,7 +76,7 @@ impl Database {
         Ok(store)
     }
 
-    /// 复用连接执行一次写入；打开失败不缓存，下一次调用重新尝试。
+    /// Reuses the connection for one write; a failed open is not cached and the next call retries.
     pub(crate) fn with_store<T>(&self, write: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
         let mut state = self.lock();
         if state.store.is_none() {
@@ -77,7 +85,8 @@ impl Database {
         write(state.store.as_mut().expect("statistics store opened"))
     }
 
-    /// 仅在统计库已打开或磁盘文件已存在时执行操作，绝不为此创建空库。
+    /// Runs the action only when the stats database is already open or the file exists on disk, and
+    /// never creates an empty database for it.
     pub(crate) fn with_existing_store<T>(
         &self,
         action: impl FnOnce(&mut Store) -> Result<T>,
@@ -96,7 +105,8 @@ impl Database {
         action(state.store.as_mut().expect("statistics store opened")).map(Some)
     }
 
-    /// 请求级写入：连接与采集时的计价快照都复用，快照随 `models.yml` 指纹失效。
+    /// Request-level write: both the connection and the pricing snapshot taken at collection time are
+    /// reused, and the snapshot expires with the `models.yml` fingerprint.
     pub(crate) fn with_store_and_rates<T>(
         &self,
         write: impl FnOnce(&mut Store, &Rates) -> Result<T>,
@@ -122,7 +132,7 @@ impl From<PathBuf> for Database {
     }
 }
 
-/// 句柄按统计库路径比较；连接与缓存状态不参与相等判断。
+/// Handles compare by stats database path; connection and cache state do not take part in equality.
 impl PartialEq for Database {
     fn eq(&self, other: &Self) -> bool {
         self.path == other.path
@@ -143,8 +153,9 @@ impl fmt::Debug for Database {
     }
 }
 
-/// 只在 `models.yml` 的 `(mtime, len)` 变化时重建计价快照；
-/// `NotFound` 仍由 [`Rates::load`] 落到内置价目表，解析失败仍表示未知费率。
+/// Rebuilds the pricing snapshot only when the `(mtime, len)` of `models.yml` changes; `NotFound`
+/// still falls back to the built-in price table through [`Rates::load`], and a parse failure still
+/// means an unknown rate.
 fn cached_rates<'a>(models_path: &Path, cache: &'a mut Option<RatesCache>) -> &'a Rates {
     let fingerprint = fingerprint(models_path);
     if cache
@@ -170,7 +181,8 @@ mod tests {
     use crate::fixtures::*;
     use serde_json::{Value, json};
 
-    /// 句柄构造不做 I/O；重复写入只建立一条连接，`ensure_schema` 随之只执行一次。
+    /// Handle construction does no I/O; repeated writes establish a single connection, so
+    /// `ensure_schema` runs only once.
     #[test]
     fn stats_database_connection_reuse_retry_and_rates_fingerprint() {
         {
@@ -186,7 +198,7 @@ mod tests {
                     .with_store(|store| store.insert(&fixture(key, 1000), &Value::Null))
                     .unwrap();
             }
-            // Clone 共享同一份连接状态。
+            // Clone shares the same connection state.
             database
                 .clone()
                 .with_store(|store| store.insert(&fixture("three", 1000), &Value::Null))
@@ -229,7 +241,7 @@ mod tests {
                     Some(0),
                 )
             };
-            // 没有 models.yml：只保留内置价格表，fixture 模型不在其中。
+            // No models.yml: only the built-in price table remains, and the fixture model is not in it.
             assert_eq!(snapshot(&mut cache), (None, None));
             assert_eq!(
                 cached_rates(&models, &mut cache)
@@ -252,14 +264,15 @@ mod tests {
             )
             .unwrap();
             assert!(((snapshot(&mut cache).0.unwrap().total()) - 0.000216).abs() < 1e-10);
-            // 文件变化（字节数不同，因而指纹必然不同）后重新加载。
+            // Reload after the file changes (different byte length, so the fingerprint necessarily
+            // differs).
             std::fs::write(
                 &models,
                 models_with_cost(json!({"input":12.5,"cacheRead":0.25,"output":8.5})),
             )
             .unwrap();
             assert_eq!(snapshot(&mut cache).1.unwrap().input, 12.5);
-            // 解析失败：未知费率，连内置价格表也不用。
+            // Parse failure: unknown rate, not even the built-in price table is used.
             std::fs::write(&models, "invalid secret-marker").unwrap();
             assert_eq!(snapshot(&mut cache), (None, None));
             std::fs::write(

@@ -63,10 +63,10 @@ pub mod web_search;
 #[cfg(test)]
 const OUTPUT_LIMIT: usize = 65_536;
 
-/// 提交后同步已启动客户端的单次预算：与内联诊断等待同一上限；自动诊断开启时
-/// 受管 worker 会用后台预算再次同步，自动诊断关闭时这里就是唯一的有界同步。
+/// Per-call budget for syncing already-started clients after a commit: same cap as the inline
+/// diagnostics wait; with auto diagnostics on the managed worker re-syncs with the background budget, otherwise this is the only bounded sync.
 const POST_SAVE_SYNC: Duration = Duration::from_millis(500);
-/// `write` 的目标在读取基线之后被外部创建：拒绝覆盖而不是无条件替换。
+/// The `write` target was created externally after the baseline read: refuse the write instead of replacing it unconditionally.
 const WRITE_NEW_CONFLICT: &str = "File appeared after the write started; write refused instead of overwriting it. Read the file and use edit.";
 
 pub struct Tools {
@@ -74,17 +74,17 @@ pub struct Tools {
     pub ask_handler: Option<pp_core::interaction::SharedAskHandler>,
     pub permission: permission::Gate,
     pub mcp: std::sync::Arc<pp_mcp::McpManager>,
-    /// 子 Agent 共享父级 manager：分发走代理调用，父连接不因子 Agent 取消而中断。
+    /// Subagents share the parent manager: dispatch goes through proxy calls, so the parent connection survives a subagent cancel.
     pub mcp_shared: bool,
     pub mcp_readonly: bool,
     mcp_settings: pp_config::config::McpSettings,
     pub lsp: Option<pp_lsp::Registry>,
-    /// 仅根/独立 Registry 的 owner 持有；借用父 Registry 的子 Agent 保持 `None`，
-    /// Drop 时不会停止父进程。
+    /// Held only by the owner of the root/standalone Registry; a subagent borrowing the parent Registry keeps `None`
+    /// and does not stop the parent process on Drop.
     lsp_cleanup: Option<pp_lsp::Cleanup>,
-    /// 强制只读：readonly 子 Agent 只拿到受限动作表，执行层同样拒绝写动作。
+    /// Forced read-only: a readonly subagent only gets the restricted action table, and the execution layer rejects write actions too.
     pub lsp_readonly: bool,
-    /// 保存联动与迟到诊断的本 Agent owner；子 Agent 必须各自新建，不共享 inbox。
+    /// Per-Agent owner for save-linked and late diagnostics; subagents must create their own and never share the inbox.
     pub lsp_owner: pp_lsp::writethrough::Owner,
     pub subagent: Option<std::sync::Arc<dyn SubagentHost>>,
     pub allowed_tools: Option<crate::AllowedTools>,
@@ -123,9 +123,9 @@ pub struct ToolExecution {
     /// Outcome of the dedicated plan tools for this single call; the caller
     /// applies it to the shared workflow state at the batch commit boundary.
     pub plan_change: Option<PlanChange>,
-    /// 该调用收集到的 hook 上下文，按产生顺序进入批次末尾的 developer 消息。
+    /// Hook context collected by this call, appended to the batch's trailing developer message in production order.
     pub hook_context: Vec<String>,
-    /// pre 的拒绝已用完这块上下文；post 决定让整批停止或失败时不再执行后续调用。
+    /// A pre denial already consumed this context; once post stops or fails the batch, no further call runs.
     pub hook_halt: Option<HookHalt>,
     /// Outcome of one todo call (standalone list or plan projection); the
     /// caller installs it on the workflow at the batch commit boundary via
@@ -177,10 +177,10 @@ struct WriteArgs {
     content: String,
 }
 
-/// `write` 的提交基线：只有目标确实可读时才允许精确比较后提交。
+/// Commit baseline for `write`: only an actually readable target allows an exact comparison before commit.
 ///
-/// 不可读的目标（权限、竞态替换）没有可比较的基线：沿用既有的原子替换边界，
-/// diff 如实标记为 `Unavailable`，绝不伪造一份空内容当作基线。
+/// An unreadable target (permissions, racing replacement) has no comparable baseline: keep the existing
+/// atomic-replace boundary and mark the diff as `Unavailable`, never fabricating empty content as a baseline.
 enum WriteBaseline {
     Existing(Vec<u8>),
     Missing,
@@ -248,7 +248,7 @@ struct EvalArgs {
     reset: bool,
 }
 impl EvalArgs {
-    /// 归一化 `eval` 参数：忽略 `null`、还原字符串化数字/布尔，其余字段仍严格校验。
+    /// Normalize `eval` arguments: ignore `null`, restore stringified numbers/booleans, still validate every other field strictly.
     fn parse(arguments: &str) -> Result<Self> {
         let input: Value = serde_json::from_str(arguments).context("invalid eval arguments")?;
         let Value::Object(input) = input else {
@@ -655,7 +655,7 @@ impl Tools {
         }
         let mut definitions = match mode {
             WorkMode::Execute => base,
-            // Plan 和 Review 共用只读搜索工具。
+            // Plan and Review share the read-only search tools.
             WorkMode::Plan => base
                 .into_iter()
                 .filter(|definition| {
@@ -876,7 +876,7 @@ impl Tools {
         Option<PlanChange>,
         Option<todo::TodoChange>,
     ) {
-        // hook deny 在进入审批门与参数解析之前生效，YOLO 也不能绕过。
+        // A hook deny takes effect before the approval gate and argument parsing; even YOLO cannot bypass it.
         let denied_by_hook = hook.and_then(|hook| hook.deny_reason());
         let hook_ask = hook.and_then(|hook| hook.ask_reason());
         if call.cancellation.is_cancelled() {

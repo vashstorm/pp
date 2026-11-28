@@ -49,14 +49,14 @@ pub struct RoleAssignment {
     pub fallback: Option<RoleModel>,
 }
 
-/// 单个模型及其独立思考档位；空主模型在数据库中表示为 NULL。
+/// A single model plus its own thinking level; an empty primary model is stored as NULL in the database.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleModel {
     pub model: String,
     pub effort: ThinkLevel,
 }
 
-/// 记录角色来源与任务开始时的主备选择，不能由实际模型名称反推。
+/// Records the role source and the primary/fallback choice made when the task started; it cannot be inferred from the actual model name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleRoute {
@@ -93,7 +93,7 @@ fn role_enabled_by_default() -> bool {
 pub type ModelRoles = BTreeMap<ModelRole, RoleAssignment>;
 
 impl ModelCatalog {
-    /// 子 Agent 的默认路由来自全局默认配置，不继承主会话的临时模型。
+    /// Subagent default routing comes from the global default configuration and never inherits the main session's temporary model.
     pub fn subagent_roles(&self) -> ModelRoles {
         let mut roles = self.model_roles().clone();
         if !roles.contains_key(&ModelRole::Default)
@@ -133,7 +133,7 @@ impl ModelCatalog {
         &self.preferences.model_roles
     }
 
-    /// 未配置或未选中的角色保持调用方模型；显式配置不可用时不能悄悄换模型。
+    /// Unconfigured or unselected roles keep the caller's model; an unavailable explicit configuration must not silently switch models.
     pub fn role_selection(
         &self,
         role: ModelRole,
@@ -209,7 +209,7 @@ mod tests {
         .unwrap();
         fs::write(
             dir.path().join("settings.yml"),
-            "# 保留其他设置\ndefault_model: fixture/one\nedit: hashline\n",
+            "# keep other settings\ndefault_model: fixture/one\nedit: hashline\n",
         )
         .unwrap();
         let catalog = ModelCatalog::from_files(
@@ -296,7 +296,7 @@ mod tests {
             );
             assert!(restored.model_roles().contains_key(&ModelRole::Review));
             let text = fs::read_to_string(dir.path().join("settings.yml")).unwrap();
-            assert!(text.contains("# 保留其他设置") && text.contains("edit: hashline"));
+            assert!(text.contains("# keep other settings") && text.contains("edit: hashline"));
         }
 
         {

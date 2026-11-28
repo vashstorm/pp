@@ -1,4 +1,4 @@
-//! 列表、搜索行与确认框的绘制，以及路径／分类／时间格式化。
+//! Drawing of the list, search row and confirmation dialog, plus path/category/time formatting.
 
 use super::*;
 
@@ -23,7 +23,7 @@ impl Panel {
         }
         let mut y = area.y + 1;
         let bottom = area.bottom();
-        // 分类标签行：All / Drafts / Plans / Done。
+        // Category tab row: All / Drafts / Plans / Done.
         if y < bottom {
             let mut spans = Vec::with_capacity(8);
             for tab in [Tab::All, Tab::Drafts, Tab::Plans, Tab::Done] {
@@ -42,7 +42,7 @@ impl Panel {
             frame.render_widget(Line::from(spans), Rect::new(area.x, y, area.width, 1));
             y += 1;
         }
-        // 输入行：重命名编辑器优先，其余状态始终展示搜索入口。
+        // Input row: the rename editor takes precedence, every other state shows the search entry.
         let mut cursor = None;
         if y < bottom.saturating_sub(1) {
             if let Some(name) = &self.rename {
@@ -82,7 +82,7 @@ impl Panel {
             }
             y += 1;
         }
-        // 错误行：保留旧列表与输入，仅展示可见提示。
+        // Error row: keep the old list and input, showing only a visible notice.
         if y < bottom
             && let Some(error) = &self.error
         {
@@ -92,7 +92,7 @@ impl Panel {
             );
             y += 1;
         }
-        // 底部提示与诊断；诊断最多占两行，超出截断。
+        // Bottom hints and diagnostics; diagnostics take at most two rows and are truncated beyond that.
         let diagnostics = self.listing.diagnostics.len().min(2) as u16;
         let hint_y = bottom.saturating_sub(1 + diagnostics);
         let list_bottom = hint_y;
@@ -136,7 +136,7 @@ impl Panel {
 
     fn draw_search(&self, frame: &mut Frame, area: Rect) -> Option<(u16, u16)> {
         let prefix = "Search: ";
-        // 编辑时至少为光标留一列；窄窗口优先截短前缀。
+        // While editing, leave at least one column for the cursor; narrow windows shorten the prefix first.
         let prefix_width =
             (prefix.len() as u16).min(area.width.saturating_sub(u16::from(self.searching)));
         frame.render_widget(
@@ -154,7 +154,7 @@ impl Panel {
         let available = usize::from(input.width.saturating_sub(u16::from(self.searching)));
         let mut start = self.query.len();
         let mut width = 0;
-        // 按完整字素和屏幕列截取尾部，避免拆开中文、组合字符或 emoji。
+        // Clip the tail by whole graphemes and screen columns so CJK, combining characters or emoji are never split.
         for (index, grapheme) in self.query.grapheme_indices(true).rev() {
             let next_width = width + Span::raw(grapheme).width();
             if next_width > available {
@@ -170,8 +170,8 @@ impl Panel {
         self.searching.then_some((input.x + width as u16, input.y))
     }
 
-    /// 居中确认删除框：先清空框内区域再画边框，避免背后的列表行透出；
-    /// 内容为完整相对路径、固定提示与默认 Cancel 按钮行。
+    /// Centered delete-confirmation box: clear the interior before drawing the border so list rows behind it do not show through;
+    /// the content is the full relative path, a fixed hint and a button row defaulting to Cancel.
     fn draw_confirmation(&mut self, frame: &mut Frame, area: Rect) {
         if area.width < 28 || area.height < 9 {
             return;
@@ -184,8 +184,8 @@ impl Panel {
             width,
             height,
         };
-        // 列表行在同一帧中先绘制，Block 只画边框、正文只占实际列宽，
-        // 不先清理会让行内容透到框内空白行与正文尾部。
+        // List rows are drawn first in the same frame, Block only draws the border and the body spans just its actual columns,
+        // so not clearing first would let row content leak into blank interior rows and past the body's end.
         frame.render_widget(Clear, area);
         let block = Block::default()
             .borders(Borders::ALL)
@@ -222,7 +222,7 @@ impl Panel {
                 );
             }
         }
-        // 说明可能折行；按钮行固定在框底，空间不足时优先保证可见。
+        // The description may wrap; the button row is pinned to the bottom of the box and visibility wins when space runs out.
         let button = |label: &str, selected: bool| {
             Span::styled(
                 format!(" {label} "),
@@ -302,7 +302,7 @@ impl Panel {
                     alternate_row_bg()
                 })
             };
-            // 选中行统一使用深色文字，保证时间、标题与状态在浅蓝底上清晰可读。
+            // Selected rows use dark text throughout so time, title and status stay legible on the light blue background.
             let text_style = |color| {
                 if selected {
                     Style::default()

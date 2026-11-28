@@ -3,16 +3,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportStatus {
-    /// 服务器报告了问题。
+    /// The server reported issues.
     ReportedIssues,
-    /// 服务器提供了新鲜报告且没有问题。
+    /// The server supplied a fresh report with no issues.
     ReportedClean,
-    /// 未收到足够新的报告。
+    /// No sufficiently recent report was received.
     #[default]
     Unreported,
-    /// 请求或解析失败。
+    /// The request or parsing failed.
     Failed,
-    /// 服务器没有该能力。
+    /// The server lacks this capability.
     Unsupported,
 }
 
@@ -34,7 +34,7 @@ pub struct ReportDiagnostic {
     pub column: u32,
     pub end_line: u32,
     pub end_column: u32,
-    /// 1..=4（error/warning/info/hint）。
+    /// 1..=4 (error/warning/info/hint).
     pub severity: u8,
     pub message: String,
     pub code: Option<String>,
@@ -61,7 +61,7 @@ pub struct FormatterStatus {
     pub note: Option<String>,
 }
 
-/// 一次保存/编辑后的诊断报告，供工具结果、journal 与 TUI 共用。
+/// Diagnostic report for one save/edit, shared by tool results, the journal and the TUI.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DiagnosticReport {
     pub path: String,
@@ -73,7 +73,8 @@ pub struct DiagnosticReport {
     pub formatter: Option<FormatterStatus>,
     #[serde(default)]
     pub deduplicated: usize,
-    /// 自动报告超过消息展示上限的数量；总问题数不能因截断变成零。
+    /// Number of automatic reports beyond the message display limit; the total issue count must not
+    /// drop to zero because of truncation.
     #[serde(default)]
     pub omitted: usize,
     #[serde(default)]

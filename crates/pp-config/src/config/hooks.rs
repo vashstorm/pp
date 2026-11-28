@@ -1,19 +1,19 @@
-//! 生命周期 command hooks 的值类型：用户级 `~/.pp/agent/hooks.yml` 与
-//! 项目级 `<启动目录>/.pp/hooks.yml` 共用同一形状。
+//! Value types for lifecycle command hooks: the user-level `~/.pp/agent/hooks.yml` and
+//! the project-level `<startup directory>/.pp/hooks.yml` share one shape.
 //!
-//! 只描述配置形状与结构校验；正则编译、事件匹配与进程执行都在 runtime。
-//! 严格解析：未知事件名、未知 handler 字段一律拒绝，不为了兼容 Claude
-//! 配置而静默忽略。
+//! Only the configuration shape and structural validation live here; regex compilation, event matching and process execution are in runtime.
+//! Strict parsing: unknown event names and unknown handler fields are always rejected instead of being
+//! silently ignored for Claude configuration compatibility.
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-/// hooks 允许的超时上限（秒）；超过按配置错误拒绝。
+/// Maximum hook timeout in seconds; anything larger is rejected as a configuration error.
 pub const MAX_HOOK_TIMEOUT_SECONDS: u64 = 3600;
-/// `timeout` 缺省值：30 秒。
+/// Default `timeout`: 30 seconds.
 pub const DEFAULT_HOOK_TIMEOUT_SECONDS: u64 = 30;
 
-/// 五个支持的生命周期事件；wire 名称就是枚举名。
+/// The five supported lifecycle events; the wire name is the enum name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum HookEvent {
     UserPromptSubmit,
@@ -24,7 +24,7 @@ pub enum HookEvent {
 }
 
 impl HookEvent {
-    /// 全部事件的固定顺序；runtime 用它建立索引表。
+    /// Fixed order of all events; runtime uses it to build its index table.
     pub const ALL: [Self; 5] = [
         Self::UserPromptSubmit,
         Self::PreToolUse,
@@ -43,7 +43,7 @@ impl HookEvent {
         }
     }
 
-    /// 工具事件按 pp 原生工具名匹配；其余事件不匹配工具名。
+    /// Tool events match pp native tool names; other events never match a tool name.
     pub fn is_tool_event(self) -> bool {
         matches!(
             self,
@@ -51,20 +51,20 @@ impl HookEvent {
         )
     }
 
-    /// 控制点：内部故障默认 fail-closed；post 事件默认放行并告警。
+    /// Control points: internal failures are fail-closed by default; post events allow by default and warn.
     pub fn is_control_point(self) -> bool {
         !matches!(self, Self::PostToolUse | Self::PostToolUseFailure)
     }
 }
 
-/// 唯一支持的 handler 类型：外部命令。
+/// The only supported handler type: an external command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HookHandlerType {
     Command,
 }
 
-/// handler 内部故障时的显式策略；缺省由事件默认策略决定。
+/// Explicit policy for handler-internal failures; when omitted, the event's default policy applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HookFailurePolicy {
@@ -96,7 +96,7 @@ pub struct HookMatcherGroup {
     pub hooks: Vec<CommandHook>,
 }
 
-/// `hooks:` 的五个事件数组；缺省全部为空。
+/// The five event arrays of `hooks:`; all are empty by default.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HooksSettings {
@@ -133,7 +133,7 @@ impl HooksSettings {
         }
     }
 
-    /// 追加另一个来源的组：项目级组接在用户级组之后，同一事件内按添加顺序匹配。
+    /// Appends groups from another source: project-level groups follow user-level ones, and matching within an event follows insertion order.
     pub fn extend(&mut self, other: &Self) {
         for event in HookEvent::ALL {
             self.groups_mut(event)
@@ -147,8 +147,8 @@ impl HooksSettings {
             .all(|event| self.groups(*event).is_empty())
     }
 
-    /// 结构校验：命令、超时范围与不匹配工具名的事件 matcher。
-    /// 正则编译留给 runtime，错误消息只带事件名与下标。
+    /// Structural validation: commands, timeout ranges, and matchers on events that never match a tool name.
+    /// Regex compilation is left to runtime, and error messages carry only the event name and index.
     pub fn validate(&self) -> Result<()> {
         for event in HookEvent::ALL {
             for (group_index, group) in self.groups(event).iter().enumerate() {

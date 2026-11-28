@@ -6,7 +6,7 @@ fn tree_blocks_preserve_markdown_tool_batch_and_geometry_when_selection_moves() 
     let mut blocks = Vec::new();
     for records in [
         answer(
-            "## Markdown\n\nA long **formatted** sentence with 中文 and emoji 😀 that wraps across several physical rows.",
+            "## Markdown\n\nA long **formatted** sentence with words and emoji 😀 that wraps across several physical rows.",
         ),
         answer("ordinary reply"),
         vec![
@@ -76,7 +76,7 @@ fn tree_blocks_preserve_markdown_tool_batch_and_geometry_when_selection_moves() 
         }
     }
     let text = screen(&second);
-    // 只统计外围候选框；edit 卡片有自己的内嵌边框。
+    // Count only the outer candidate frame; the edit card has its own inner border.
     assert_eq!(
         (0..60).filter(|&y| second[(0, y)].symbol() == "╭").count(),
         1,

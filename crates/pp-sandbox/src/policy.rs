@@ -14,7 +14,7 @@ use crate::seatbelt;
 use crate::{EffectiveMode, SandboxState, guard, platform_backend};
 use pp_config::config::SandboxReadScope;
 
-/// 来自 `permission.toml` 激活 profile 的文件系统与网络叠加配置。
+/// Filesystem and network overlay from the active `permission.toml` profile.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SandboxOverlay {
     pub writable: Vec<PathBuf>,
@@ -23,7 +23,7 @@ pub struct SandboxOverlay {
     pub network: Option<bool>,
 }
 
-/// 写访问判定分类：区分硬不可绕过的系统/凭据路径与可经审批放行的受保护/工作区外路径。
+/// Write access classification: separates hard, non-bypassable system/credential paths from protected or outside-workspace paths that approval can open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteAccessCheck {
     Allowed,
@@ -33,7 +33,7 @@ pub enum WriteAccessCheck {
     NeedsReadOnlyApproval(PathBuf),
 }
 
-/// 读访问判定分类：区分硬不可绕过的凭据路径、仅限单次人工确认的会话路径与可审批放行的工作区外路径。
+/// Read access classification: separates hard, non-bypassable credential paths, session paths that need one-off human approval, and outside-workspace paths approval can open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadAccessCheck {
     Allowed,
@@ -42,7 +42,7 @@ pub enum ReadAccessCheck {
     NeedsOutsideApproval(PathBuf),
 }
 
-/// 命中沙盒拦截时附加给工具结果的提示信息。
+/// Hint attached to a tool result when the sandbox denies an operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DenialMetadata {
     pub mode: &'static str,
@@ -51,7 +51,7 @@ pub struct DenialMetadata {
     pub hint: String,
 }
 
-/// 不可变的策略快照：在单次命令或 tool 调度前取出，运行中切模式不影响已启动进程。
+/// Immutable policy snapshot: taken before a single command or tool dispatch, so switching modes mid-run does not affect already started processes.
 #[derive(Clone, Debug)]
 pub struct Policy {
     pub(crate) mode: EffectiveMode,
@@ -66,8 +66,8 @@ pub struct Policy {
     pub(crate) home_deny_root_lexical: Vec<PathBuf>,
     pub(crate) home_allow_read: Vec<PathBuf>,
     pub(crate) deny_read: Vec<PathBuf>,
-    /// 词法快路径的“可能命中”集合：拒绝根本身加系统别名（如 macOS 的
-    /// `/tmp` 与 `/private/tmp`），避免未规范化的别名被误判为不相交。
+    /// "Possibly matching" set for the lexical fast path: the deny roots themselves plus their system aliases
+    /// (e.g. macOS `/tmp` and `/private/tmp`), so unnormalized aliases are not wrongly judged disjoint.
     pub(crate) deny_read_lexical: Vec<PathBuf>,
     pub(crate) allow_read: Vec<PathBuf>,
     session_read_root: Option<PathBuf>,
@@ -100,8 +100,8 @@ impl Policy {
         &self.cwd
     }
 
-    /// 供 `DangerFullAccess`（Full Access / YOLO）下的内置只读工具解除 `$HOME` 外读限制，
-    /// 同时完整保留 `deny_read` 凭据黑名单。
+    /// Lets built-in read-only tools under `DangerFullAccess` (Full Access / YOLO) lift the outside-`$HOME` read
+    /// restriction while keeping the `deny_read` credential blacklist fully in force.
     pub fn without_home_restriction(&self) -> Arc<Self> {
         let mut next = self.clone();
         next.read_scope = SandboxReadScope::Unrestricted;
@@ -111,7 +111,7 @@ impl Policy {
         Arc::new(next)
     }
 
-    /// 计算策略安全生效字段的稳定指纹，供持久内核（如 `pp-eval`）检测策略变更并重启。
+    /// Computes a stable fingerprint of the policy's security-relevant fields so persistent kernels (e.g. `pp-eval`) can detect policy changes and restart.
     pub fn fingerprint(&self) -> u64 {
         let mut h = 0xcbf2_9ce4_8422_2325_u64;
         let mix_bytes = |h: &mut u64, bytes: &[u8]| {
@@ -152,7 +152,7 @@ impl Policy {
         h
     }
 
-    /// 为单次运行（如 `read-only` 下的本次 scratch 目录）附加额外可写路径。
+    /// Adds extra writable paths for a single run (e.g. this run's scratch directory under `read-only`).
     pub fn with_extra_writable(&self, path: &Path) -> Arc<Self> {
         let mut next = self.clone();
         let normalized = guard::normalize_path(path);
@@ -162,8 +162,8 @@ impl Policy {
         Arc::new(next)
     }
 
-    /// 为单次工具调用附加已批准的精确作用域（额外可写目录、单个放行文件、受保护路径豁免与网络）。
-    /// 硬不可豁免路径（`permission.toml`、`deny_read` 凭据路径）绝不在此放行。
+    /// Attaches an approved precise scope to a single tool call (extra writable directories, individual allowed files, protected-path exemptions and network).
+    /// Hard, non-exemptable paths (`permission.toml`, `deny_read` credential paths) are never opened here.
     pub fn with_approved_scope(
         &self,
         writable: &[PathBuf],
@@ -228,7 +228,7 @@ impl Policy {
                 .any(|denied| guard::paths_overlap(normalized, denied))
     }
 
-    /// 从当前命令的策略快照派生更窄的、显式批准过的额外权限。
+    /// Derives narrower, explicitly approved extra permissions from the current command's policy snapshot.
     pub fn resolve_extra_writable(&self, paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
         let mut resolved = Vec::with_capacity(paths.len());
         for path in paths {
@@ -282,7 +282,7 @@ impl Policy {
         )
     }
 
-    /// 精确分类读路径的沙盒权限，区分凭据硬拒绝、受保护会话与工作区外 `$HOME` 读审批。
+    /// Precisely classifies a read path's sandbox permission, separating hard credential denial, protected sessions and outside-workspace `$HOME` read approval.
     pub fn classify_read(&self, path: &Path) -> ReadAccessCheck {
         let abs = self.absolutize(path);
         if self
@@ -317,7 +317,7 @@ impl Policy {
         ReadAccessCheck::Allowed
     }
 
-    /// 解析 `bash` 的 `sandbox_permissions.read` 申请列表，返回待审批的 `(session_reads, outside_reads)`。
+    /// Resolves `bash`'s `sandbox_permissions.read` request list, returning the `(session_reads, outside_reads)` awaiting approval.
     pub fn resolve_extra_readable(
         &self,
         paths: &[PathBuf],
@@ -346,7 +346,7 @@ impl Policy {
         Ok((session_reads, outside_reads))
     }
 
-    /// 只有默认的 Agent 目录拒读规则可以为具体会话路径开审批例外。
+    /// Only the default agent-directory deny rule can grant an approval exception for a concrete session path.
     pub fn session_read_target(&self, path: &Path) -> Option<PathBuf> {
         let root = self.session_read_root.as_deref()?;
         if !guard::path_starts_with(path, root) {
@@ -366,7 +366,7 @@ impl Policy {
         .then_some(target)
     }
 
-    /// 将批准的读取范围（会话路径与工作区外只读路径）加到当次策略，并继续禁止写入与保护凭据。
+    /// Adds the approved read scopes (session paths and outside-workspace read-only paths) to this call's policy while still denying writes and protecting credentials.
     pub fn with_approved_reads(
         &self,
         session_reads: &[PathBuf],
@@ -413,13 +413,13 @@ impl Policy {
         Ok(Arc::new(next))
     }
 
-    /// 将批准的读取范围加到当次策略，并继续禁止写入这些路径。
+    /// Adds the approved read scopes to this call's policy while still denying writes to those paths.
     pub fn with_approved_session_reads(&self, paths: &[PathBuf]) -> Result<Arc<Self>> {
         self.with_approved_reads(paths, &[])
     }
 
-    /// 遍历剪枝判定：绝对且与拒绝根不相交（或位于已允许的工作区边界内）的路径直接放行，
-    /// 其余情况规范化后判定。
+    /// Walk-pruning check: a path that is absolute and disjoint from every deny root (or inside an allowed
+    /// workspace boundary) is passed through directly; everything else is normalized before deciding.
     pub fn is_read_denied(&self, path: &Path) -> bool {
         let joined = self.join_cwd(path);
         if guard::lexically_normal_abs(&joined)
@@ -493,7 +493,7 @@ impl Policy {
         )
     }
 
-    /// 精确分类写路径被沙盒拦截的原因，供权限门决定硬拒绝还是发起审批。
+    /// Precisely classifies why the sandbox blocks a write path, so the permission gate can choose between a hard denial and an approval prompt.
     pub fn classify_write(&self, path: &Path) -> WriteAccessCheck {
         let abs = self.absolutize(path);
         if guard::is_safe_device_write(&abs) {
@@ -657,8 +657,8 @@ impl Policy {
     }
 }
 
-/// 若工作区 `.git` 是 git worktree/submodule 的指针文件（`gitdir: ...`），
-/// 解析并返回规范化的外部 gitdir 路径以纳入只读保护。
+/// When the workspace `.git` is a git worktree/submodule pointer file (`gitdir: ...`),
+/// resolves and returns the normalized external gitdir path so it is covered by read-only protection.
 fn resolve_worktree_gitdir(cwd: &Path) -> Option<PathBuf> {
     let dot_git = cwd.join(".git");
     let meta = std::fs::symlink_metadata(&dot_git).ok()?;
@@ -757,7 +757,7 @@ pub(crate) fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy 
     for path in &state.overlay.read_only {
         push_unique(&mut protect, guard::normalize_path(path));
     }
-    // permission.toml 中显式把某个受保护路径（如 `.git` 或 `.agents`）设为 `"write"` 时，解除默认只读保护。
+    // An explicit `"write"` for a protected path (e.g. `.git` or `.agents`) in permission.toml lifts the default read-only protection.
     if mode == EffectiveMode::WorkspaceWrite {
         protect.retain(|prot| {
             !state
@@ -901,8 +901,8 @@ pub(crate) fn build_policy(state: &SandboxState, mode: EffectiveMode) -> Policy 
         for alias in guard::lexical_aliases(home) {
             push_unique(&mut home_deny_root_lexical, alias);
         }
-        // 仅收录严格位于 $HOME 之内的路径；像 TMPDIR 这样包裹测试 $HOME 的祖先目录
-        // 不得进入 home_allow_read，避免把整棵 $HOME 意外放开。
+        // Only collect paths strictly inside $HOME; ancestor directories that wrap the test $HOME, like TMPDIR,
+        // must not enter home_allow_read, which would otherwise open the whole $HOME tree by accident.
         let mut push_home_allow = |path: PathBuf| {
             if guard::path_starts_with(&path, home) && !guard::path_eq_platform(&path, home) {
                 push_unique(&mut home_allow_read, path);

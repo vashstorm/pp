@@ -1,4 +1,4 @@
-//! status / capabilities / reload：服务器状态查询与重连。
+//! status / capabilities / reload: server status queries and reconnection.
 
 use crate::Registry;
 use anyhow::Result;

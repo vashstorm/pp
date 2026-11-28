@@ -116,7 +116,7 @@ fn eval_card_distinguishes_python_javascript_and_fallback_from_bash() {
 
         assert_eq!(transcript.entries[0].kind, EntryKind::Eval);
 
-        // Nerd Font 模式下验证顶栏标签、语言图标/颜色与语法高亮。
+        // Verify the header label, language icon/color and syntax highlighting in Nerd Font mode.
         let prev = crate::tui::themes::current();
         crate::tui::themes::set_active(prev.0, pp_config::config::IconMode::Nerd);
         transcript.invalidate_theme();
@@ -144,7 +144,7 @@ fn eval_card_distinguishes_python_javascript_and_fallback_from_bash() {
             assert_eq!(buffer[(kw_col, kw_row)].bg, eval_background());
         }
 
-        // ASCII 模式下切换为单字符语言标记 P / J / E。
+        // In ASCII mode the language marker switches to the single characters P / J / E.
         crate::tui::themes::set_active(prev.0, pp_config::config::IconMode::Ascii);
         transcript.invalidate_theme();
         let ascii_text = screen(&render(&mut transcript, 90, 14));
@@ -159,7 +159,7 @@ fn eval_card_distinguishes_python_javascript_and_fallback_from_bash() {
 
 #[test]
 fn eval_card_lifecycle_hides_empty_output_and_renders_repl_footer_and_errors() {
-    // 1) 运行中与静默完成：运行期展示 Output 区，无输出完成时省略空 Output 区并展示 Cell 序号与 reset。
+    // 1) Running and silent success: the Output area shows while running; a silent success omits the empty Output area and shows the cell number and reset.
     let mut transcript = Transcript::new();
     tool(
         &mut transcript,
@@ -185,7 +185,7 @@ fn eval_card_lifecycle_hides_empty_output_and_renders_repl_footer_and_errors() {
     assert!(silent_text.contains("reset"), "{silent_text}");
     assert!(silent_text.contains("Wall:"), "{silent_text}");
 
-    // 2) 失败、traceback 去重、Kernel restarted 警告与 Artifact 页脚。
+    // 2) Failure, traceback deduplication, the Kernel restarted warning and the Artifact footer.
     let mut failed = Transcript::new();
     tool(
         &mut failed,
@@ -223,7 +223,7 @@ fn eval_card_lifecycle_hides_empty_output_and_renders_repl_footer_and_errors() {
     let (warn_col, warn_row) = col_of(&fail_text, "Kernel restarted");
     assert_eq!(fail_buf[(warn_col, warn_row)].fg, palette::accent());
 
-    // 3) output 未包含 error 摘要时，error 以红色 stderr 呈现。
+    // 3) When output carries no error summary, the error is shown as red stderr.
     let mut err_only = Transcript::new();
     tool(
         &mut err_only,

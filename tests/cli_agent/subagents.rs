@@ -96,7 +96,10 @@ fn subagent_batch_runs_in_parallel_without_parent_history_and_returns_both_resul
                 assert!(body.to_string().contains("shared-context-marker"));
                 children.push(request);
             } else {
-                assert!(!acked, "父会话不应在 child 完成前重复请求");
+                assert!(
+                    !acked,
+                    "the parent session must not send a repeated request before the child completes"
+                );
                 acked = true;
                 sub_final(request, protocol, "Waiting for child results.");
             }

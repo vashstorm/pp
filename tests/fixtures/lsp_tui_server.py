@@ -1,7 +1,8 @@
-"""TUI 专用 stdio LSP 夹具：可控的迟到诊断与格式化。
+"""TUI-only stdio LSP fixture: controllable late diagnostics and formatting.
 
-诊断 pull 在 ``tui-late`` FIFO 上阻塞，测试释放后才返回，从而真实经过
-Agent 的 500ms 内联等待与后台迟到投递。没有该 FIFO 时立即返回。
+The diagnostics pull blocks on the ``tui-late`` FIFO and returns only once the test releases it, so it
+really passes through the agent's 500ms inline wait and background late delivery. Without that FIFO it
+returns immediately.
 """
 
 import argparse

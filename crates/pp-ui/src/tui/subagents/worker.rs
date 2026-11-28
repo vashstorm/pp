@@ -1,7 +1,7 @@
-//! Hub 观察线程：把 registry 读取与事件分页从 UI 主循环和 supervisor 中隔离。
+//! Hub observer thread: keeps registry reads and event paging out of the UI main loop and the supervisor.
 //!
-//! 线程只持有 [`Binding`] 的快照与游标，不做任何任务控制以外的写入。请求与
-//! 回复都带根 epoch；详情页另带 view epoch，旧根/旧详情的迟到回复由 UI 丢弃。
+//! The thread only holds the [`Binding`] snapshot and cursors and performs no writes beyond task control. Requests and
+//! replies both carry the root epoch; the detail page adds a view epoch, and late replies for an old root/detail are dropped by the UI.
 
 use pp_runtime::subagent::Binding;
 use pp_runtime::subagent::EventCursor;
@@ -16,18 +16,18 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Hub 可见时的修订轮询间隔。
+/// Revision polling interval while the Hub is visible.
 const POLL: Duration = Duration::from_millis(250);
-/// 回复拥塞时短暂让出 CPU，期间仍可立即接收控制请求。
+/// Briefly yield the CPU when replies are congested; control requests can still be received immediately.
 const REPLY_RETRY: Duration = Duration::from_millis(5);
-/// 快照合并窗口：流式事件只按此频率重建类型化快照。
+/// Snapshot merge window: streaming events only rebuild the typed snapshot at this rate.
 const COALESCE: Duration = Duration::from_millis(200);
-/// 总览批量扫描的每轮时间预算，之后回到请求队列检查控制或退让通道。
+/// Time budget per round of the batched overview scan, after which the thread returns to the request queue to check control or yield the channel.
 const OVERVIEW_BATCH_BUDGET: Duration = Duration::from_millis(25);
-/// 回复通道容量；满时保留未发送页与游标，绝不丢有序事件。
+/// Reply channel capacity; when full, unsent pages and cursors are kept and ordered events are never dropped.
 const REPLY_CAPACITY: usize = 4;
 
-/// 固定的控制动作；worker 内部再调用既有 `Binding::control`。
+/// Fixed control actions; the worker calls the existing `Binding::control` internally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::tui) enum Action {
     Send,
@@ -87,26 +87,26 @@ pub(in crate::tui) enum Reply {
         epoch: u64,
         snapshot: Box<HubSnapshot>,
     },
-    /// 无详情索引的 Activity 尾部（单页测试与兼容入口）。
+    /// Activity tail without a detail index (single-page tests and the compatibility entry point).
     #[cfg_attr(not(test), allow(dead_code))]
     Activity {
         epoch: u64,
         agent: String,
         page: EventPage,
     },
-    /// 总览批量聚合后的全量／增量页面。
+    /// Full or incremental page after the batched overview aggregation.
     ActivityBatch {
         epoch: u64,
         pages: Vec<(String, OverviewPage)>,
     },
-    /// 详情从头导入的完整历史。
+    /// Full history imported for the detail from the beginning.
     Detail {
         epoch: u64,
         view: u64,
         agent: String,
         history: DetailHistory,
     },
-    /// 该 agent 的旧投影与锚点已失效，需要只重建这一路。
+    /// The old projection and anchor of that agent are stale and only that lane must be rebuilt.
     Reset { epoch: u64, agent: String },
     Control {
         epoch: u64,
@@ -121,7 +121,7 @@ pub(in crate::tui) enum Reply {
     },
 }
 
-/// 详情正文与元数据共用一次读页边界；快照补齐只能使用读页前已完成的 Run。
+/// The detail body and its metadata share one read-page boundary; snapshot completion may only use Runs finished before the read.
 pub(in crate::tui) struct DetailHistory {
     pub page: EventPage,
     pub runs: Vec<Run>,
@@ -135,7 +135,7 @@ pub(in crate::tui) struct Worker {
 }
 
 impl Worker {
-    /// 首次打开 Hub 或角色定义页时启动；不阻塞 UI。
+    /// Started on the first opening of the Hub or a role definition page; never blocks the UI.
     pub(in crate::tui) fn start() -> Self {
         let (requests, receiver) = mpsc::channel();
         let (sender, replies) = mpsc::sync_channel(REPLY_CAPACITY);
@@ -151,7 +151,7 @@ impl Worker {
     }
 
     pub(in crate::tui) fn send(&self, request: Request) {
-        // 线程已退出时静默丢弃：UI 会在下一次回复超时/断链时显示 notice。
+        // Dropped silently once the thread has exited: the UI shows a notice on the next reply timeout/broken link.
         let _ = self.requests.send(request);
     }
 
@@ -184,14 +184,14 @@ struct State {
     force: bool,
     pending_snapshot: bool,
     last_snapshot: Instant,
-    /// 上一次强制重读观察日志的时间；驱动 250ms 过期缓冲冲刷。
+    /// Time of the last forced re-read of the observation log; drives the 250ms expired-buffer flush.
     last_read: Instant,
     order: Vec<String>,
-    /// 每个 agent 的 Activity 游标。
+    /// Activity cursor per agent.
     cursors: BTreeMap<String, Option<EventCursor>>,
-    /// 该 agent 还有未读完整页。
+    /// Whether that agent still has an unread full page.
     more: BTreeMap<String, bool>,
-    /// 已完成首次历史扫描到 EOF 的 agent；首次扫完前暂存分段而不把半成品推给 UI。
+    /// Agents whose first history scan has reached EOF; before that, segments are staged instead of pushing a half-finished result to the UI.
     primed: BTreeSet<String>,
     staged: BTreeMap<String, OverviewPage>,
     turn: usize,
@@ -308,9 +308,9 @@ impl State {
 
     fn step(&mut self) {
         self.refresh();
-        // 运行时把连续流式片段留在内存缓冲，读取前才冲刷过期部分；
-        // 修订号只在片段入缓冲时变化，因此可见时还要按轮询周期重读一次，
-        // 否则安静下来的最后一段要等下一轮模型事件才可见。
+        // The runtime keeps consecutive streaming fragments in memory and only flushes the expired part before a read;
+        // the revision only changes when a fragment enters the buffer, so a visible Hub must re-read once per poll
+        // interval, otherwise the last segment after the stream goes quiet is only visible on the next model event.
         if self.visible && self.last_read.elapsed() >= POLL {
             self.last_read = Instant::now();
             for more in self.more.values_mut() {
@@ -320,7 +320,7 @@ impl State {
                 detail.more = true;
             }
         }
-        // 当前详情优先（每轮至多读 1 页以保证控制响应）。
+        // The current detail takes priority (at most one page per round so control stays responsive).
         let detail = self
             .detail
             .as_ref()
@@ -462,7 +462,7 @@ impl State {
             .map(|run| run.id.clone())
             .collect();
         let page = self.read(agent, cursor)?;
-        // 读页期间可能刚登记新 Run；只补它的元数据，不扩展此前冻结的终态集合。
+        // A new Run may have been registered while the page was being read; only its metadata is added, without extending the previously frozen terminal set.
         if page
             .entries
             .iter()
@@ -583,7 +583,7 @@ fn run(requests: Receiver<Request>, replies: SyncSender<Reply>) {
                 if let Some(reply) = reply
                     && let Some(state) = &mut state
                 {
-                    // 控制回复优先于分页，避免状态提示排队在历史之后。
+                    // Control replies take priority over paging so status notices do not queue behind history.
                     state.pending.push_front(reply);
                     state.force = true;
                     state.pending_snapshot = true;
@@ -608,7 +608,7 @@ fn run(requests: Receiver<Request>, replies: SyncSender<Reply>) {
         }
         if let Some(state) = &mut state {
             state.flush(&replies);
-            // 通道满时保留本轮已读的页，等它们入队后再推进任一游标。
+            // When the channel is full, keep the pages read this round and do not advance any cursor until they are queued.
             if !state.has_unsent_replies() {
                 state.step();
                 state.flush(&replies);
@@ -657,7 +657,7 @@ mod tests {
         });
         std::fs::write(dir.path().join("registry.json"), registry.to_string()).unwrap();
 
-        // 超过 OVERVIEW_PAGE_ENTRIES(2048)，强制分页读取，但对未 primed 历史只合并成一次交付。
+        // Beyond OVERVIEW_PAGE_ENTRIES(2048) paging is forced, but a history that was never primed is still merged into a single delivery.
         {
             let mut log = std::fs::File::create(dir.path().join("a1.events.jsonl")).unwrap();
             for index in 0..2200u64 {
@@ -702,13 +702,13 @@ mod tests {
         assert_eq!(
             batches.len(),
             1,
-            "首次历史必须合并为单次 ActivityBatch 交付"
+            "the first history must be merged into a single ActivityBatch delivery"
         );
         assert_eq!(batches[0].len(), 1);
         assert!(!batches[0][0].1.has_more);
         assert_eq!(batches[0][0].1.entries.len(), 2200);
 
-        // 追加一条后续记录（模拟 /resume 后继续对话），并在可见时触发增量读取。
+        // Append a later record (simulating continued conversation after /resume) and trigger an incremental read while visible.
         {
             let mut log = std::fs::OpenOptions::new()
                 .append(true)

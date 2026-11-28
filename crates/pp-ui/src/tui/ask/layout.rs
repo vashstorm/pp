@@ -1,4 +1,4 @@
-//! 页签／高度计算与标题、选中摘要等纯布局辅助。
+//! Pure layout helpers: tab/height computation, the title and the selection summary.
 
 use super::*;
 use crate::tui::transcript_style::tool_icon;
@@ -55,7 +55,7 @@ impl Panel {
         }
     }
 
-    // ---- 布局与绘制 ----
+    // ---- Layout and drawing ----
 
     pub(super) fn draw_separator(&self, frame: &mut Frame, y: u16) {
         if let Some(area) = self.overlay {
@@ -75,7 +75,8 @@ impl Panel {
         }
         let padding = if available.width > 6 { 4 } else { 2 };
         let content_height = self.max_content_height(available.width.saturating_sub(padding));
-        // 边框两行、底部分隔线和快捷键各一行，多个页签时再占一行。
+        // Two border rows, one row each for the bottom separator and the shortcut hints,
+        // plus one more row when there are several tabs.
         let need = content_height
             .saturating_add(4 + u16::from(self.has_tabs()))
             .saturating_add(u16::from(self.error.is_some()));
@@ -83,10 +84,12 @@ impl Panel {
         need.min(cap).min(available.height).max(1)
     }
 
-    /// 所有页签共用最高页的高度，只切换页签时面板不改变尺寸。
+    /// Every tab shares the height of the tallest page, so switching tabs alone never
+    /// resizes the panel.
     ///
-    /// 自定义编辑器只属于当前页，其行数计入该页；多行输入因此仍会撑高面板，
-    /// 但任何一页都不会因为别的页更矮而收缩。
+    /// The custom editor belongs to the current page only and its rows count toward that
+    /// page; multi-line input therefore still grows the panel, but no page shrinks just
+    /// because another page is shorter.
     fn max_content_height(&mut self, width: u16) -> u16 {
         let mut height = 0;
         for index in 0..self.questions.questions.len() {
@@ -148,7 +151,8 @@ impl Panel {
             Page::Review => labels.len() - 1,
         };
         let mut start = 0;
-        // 窄屏从左侧移出较早的页签，始终让当前页签可见。
+        // On a narrow screen, drop earlier tabs from the left so the active tab stays
+        // visible.
         while start < active
             && labels[start..=active]
                 .iter()
@@ -167,7 +171,8 @@ impl Panel {
                 if remaining < width + 1 {
                     break;
                 }
-                // 页签自身左右各留一格，中间的一格使用面板背景。
+                // Each tab keeps one cell on either side; the single cell in between uses
+                // the panel background.
                 spans.push(Span::raw(" "));
                 remaining -= 1;
             }

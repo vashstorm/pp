@@ -465,7 +465,7 @@ fn fragmented_calls(protocol: Protocol, stream: &mut SseWriter, invalid: bool) -
                 );
                 item["status"] = json!("in_progress");
                 item["arguments"] = json!("");
-                // Ark 的起始调用可能省略参数；另一项仍覆盖标准空字符串。
+                // Ark's opening call may omit the arguments; the other item still covers the standard empty string.
                 if index == 0 {
                     item.as_object_mut().unwrap().remove("arguments");
                 }
@@ -585,7 +585,7 @@ fn pending_write(protocol: Protocol, stream: &mut SseWriter) {
     }
 }
 
-// 文件版本头直接复制真实 read 结果，测试不自行计算 TAG。
+// The file version header copies a real read result verbatim, so the test never computes the TAG itself.
 fn hashline_header(content: &str) -> &str {
     let header = content.lines().next().unwrap();
     assert!(
@@ -606,7 +606,7 @@ fn hashline_anchors(content: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-// 两种协议均验证进程内搜索和工具结果回填。
+// Both protocols verify in-process search and tool result write-back.
 
 // PID marker files and the scratch directories under the task cwd are the
 // deterministic process-level barriers for background tasks; the model wire

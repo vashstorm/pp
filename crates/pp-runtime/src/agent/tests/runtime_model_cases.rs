@@ -40,7 +40,7 @@ mod integration {
         })
     }
 
-    /// 一次显式选择：完整模型引用 + 已解析档位。
+    /// One explicit selection: full model reference + resolved effort level.
     fn selection(reference: &str, effort: ThinkLevel) -> Selection {
         Selection {
             reference: reference.into(),
@@ -48,7 +48,7 @@ mod integration {
         }
     }
 
-    /// 用进程级 `ModelState` 把用户输入解析成一次选择。
+    /// Resolve user input into one selection with the process-wide `ModelState`.
     fn choose(agent: &Agent, reference: &str) -> Selection {
         agent
             .models()
@@ -56,12 +56,12 @@ mod integration {
             .unwrap_or_else(|error| panic!("resolving {reference}: {error:#}"))
     }
 
-    /// 当前 Agent 的进程级模型状态启动唯一写者。
+    /// Start the sole writer for this Agent's process-wide model state.
     fn control(agent: &Agent) -> Service {
         Service::start(agent.models()).unwrap()
     }
 
-    /// 请求体里的思考档位；两种协议的字段位置不同。
+    /// Thinking effort in the request body; the field sits in different places for the two protocols.
     fn request_effort<'a>(protocol: &str, body: &'a Value) -> &'a Value {
         match protocol {
             "completion" => &body["reasoning_effort"],
@@ -69,8 +69,8 @@ mod integration {
         }
     }
 
-    /// 把 session 快照里唯一允许变化的顶层思考字段恢复成 before 的形态，于是整体比较
-    /// 等价于逐字节比较 `messages`/`input`、`tools`、`instructions`。
+    /// Restore the only top-level thinking field allowed to change in the session snapshot back to its `before` form, so a whole-value
+    /// comparison equals a byte-for-byte comparison of `messages`/`input`, `tools` and `instructions`.
     fn restore_effort(protocol: &str, after: &mut Value, before: &Value) {
         let key = match protocol {
             "completion" => "reasoning_effort",
@@ -86,7 +86,7 @@ mod integration {
         }
     }
 
-    /// 与 `fixture` provider 同协议、同回环服务的另一个 provider，避免历史协议转换干扰。
+    /// Another provider on the same protocol and loopback server as the `fixture` provider, so history protocol conversion does not interfere.
     fn add_other_provider(dir: &std::path::Path, protocol: &str, address: &str) {
         let path = dir.join("models.yml");
         let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -99,8 +99,8 @@ mod integration {
         std::fs::write(path, models.to_string()).unwrap();
     }
 
-    /// 启动期模型选择夹具：`fixture/one` 只支持 low/high、默认 low；当前模型先停在
-    /// `other/two`，让引用断言能区分“选中了哪个模型”。尚未发出任何请求。
+    /// Startup model selection fixture: `fixture/one` supports only low/high with low as default; the current model first sits on
+    /// `other/two` so reference assertions can tell "which model was selected". No request has been sent yet.
     fn select_model_agent(dir: &std::path::Path) -> Agent {
         let mut agent = runtime_input_agent(dir, "completion", "127.0.0.1:1", "");
         let path = dir.join("models.yml");
@@ -127,7 +127,7 @@ mod integration {
         assert_eq!(agent.current_model().reference, "other/two");
         assert_eq!(agent.model_source(), ModelSource::Override);
 
-        // 启动期尚未发出请求：选择模型不创建会话文件。
+        // No request has been sent at startup yet: selecting a model creates no session file.
         let selection = agent.select_model("one:high").unwrap();
         assert_eq!(selection.reference, "fixture/one");
         assert_eq!(selection.effort, ThinkLevel::High);
@@ -140,7 +140,7 @@ mod integration {
             "startup model selection must not create session files"
         );
 
-        // 不支持的档位在 catalog 层失败：模型与档位都保持原值。
+        // An unsupported effort fails in the catalog layer: both model and effort keep their values.
         let error = agent.select_model("one:medium").unwrap_err().to_string();
         assert!(error.contains("does not support effort medium"), "{error}");
         assert!(error.contains("low, high"), "{error}");
@@ -148,14 +148,14 @@ mod integration {
         assert_eq!(agent.think_level(), ThinkLevel::High);
         assert_eq!(agent.model_source(), ModelSource::Override);
 
-        // 省略档位时用模型显式默认档，而不是沿用“保留当前档位”的语义。
+        // An omitted effort uses the model's explicit default instead of the "keep the current level" semantics.
         let selection = agent.select_model("one").unwrap();
         assert_eq!(selection.reference, "fixture/one");
         assert_eq!(selection.effort, ThinkLevel::Low);
         assert_eq!(agent.current_model().reference, "fixture/one");
         assert_eq!(agent.think_level(), ThinkLevel::Low);
         assert!(agent.session_id().is_none());
-        // 选中结果与配置默认 `b` 完全一致：不保留覆盖，来源回到 Default。
+        // The selection equals the configured default `b` exactly: no override is kept and the source returns to Default.
         assert_eq!(agent.model_source(), ModelSource::Default);
         assert!(agent.models().override_selection().is_none());
     }
@@ -166,7 +166,7 @@ mod integration {
         let mut agent = select_model_agent(dir.path());
         assert_eq!(agent.model_source(), ModelSource::Override);
 
-        // 直接写与 `b` 相同的选择：不记录覆盖。
+        // Write a selection equal to `b` directly: no override is recorded.
         let default = agent
             .models()
             .resolve_reference("fixture/one", Some(ThinkLevel::Low))
@@ -175,7 +175,7 @@ mod integration {
         assert_eq!(agent.models().source(), ModelSource::Default);
         assert!(agent.models().override_selection().is_none());
 
-        // 会话侧再切到同一选择：当前模型落到 `b`，来源保持 Default。
+        // Switching to the same selection on the session side: the current model lands on `b` and the source stays Default.
         agent.switch_model("fixture/one").unwrap();
         assert_eq!(agent.current_model.reference, "fixture/one");
         assert_eq!(agent.think_level, ThinkLevel::Low);
@@ -187,7 +187,7 @@ mod integration {
     fn runtime_save_default_keeps_override_and_resolve_follows_default() {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = fixture(dir.path(), "completion");
-        // 增加一个可切换的配置默认模型。
+        // Add a switchable configured default model.
         let path = dir.path().join("models.yml");
         let mut models: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         models["providers"]["fixture"]["models"]["spare"] = json!({"model": "spare"});
@@ -196,7 +196,7 @@ mod integration {
         let service = control(&agent);
         agent.runtime_models = Some(Binding::main(service.registry.clone()));
 
-        // 无覆盖：保存默认只改 `b`，运行中的会话不主动切换，但 resolve() 跟随。
+        // No override: saving the default only changes `b`, the running session does not switch actively, but resolve() follows.
         assert!(service.submit(Change::SaveDefault("fixture/spare".into())));
         service.flush();
         service.registry.reports();
@@ -208,7 +208,7 @@ mod integration {
         );
         assert_eq!(agent.models().resolve().unwrap().reference, "fixture/spare");
 
-        // 覆盖会话：SaveDefault 与 DEFAULT 角色保存都不改变当前模型。
+        // Session with an override: neither SaveDefault nor a DEFAULT role save changes the current model.
         assert!(service.submit(Change::Override(choose(&agent, "other/two"))));
         service.flush();
         agent.apply_runtime_models().unwrap();
@@ -231,7 +231,7 @@ mod integration {
         assert_eq!(agent.model_source(), ModelSource::Override);
         assert_eq!(agent.models().resolve().unwrap(), override_selection);
 
-        // 清除覆盖后按新的 `b` 生效。
+        // After clearing the override the new `b` takes effect.
         assert!(service.submit(Change::ClearOverride));
         service.flush();
         agent.apply_runtime_models().unwrap();
@@ -239,7 +239,7 @@ mod integration {
         assert_eq!(agent.think_level, ThinkLevel::High);
         assert_eq!(agent.model_source(), ModelSource::Default);
 
-        // 没有覆盖时 `b` 再变化：resolve() 立即跟随，运行中的会话等下个决议点。
+        // Without an override `b` changes again: resolve() follows immediately, the running session waits for the next decision point.
         assert!(service.submit(Change::Role(ModelRole::Default, None)));
         service.flush();
         agent.apply_runtime_models().unwrap();
@@ -271,7 +271,7 @@ mod integration {
                     .child(Some(ModelRole::Fast), "a3".into()),
             );
 
-            // DEFAULT 角色只写配置默认 `b`：不向主会话或子 Agent 发布模型目标。
+            // The DEFAULT role only writes the configured default `b`: no model target is published to the main session or subagents.
             assert!(service.submit(Change::Role(ModelRole::Default, role())));
             service.flush();
             for agent in [&mut main, &mut child, &mut inherited, &mut nested] {
@@ -279,11 +279,11 @@ mod integration {
                 assert_eq!(agent.current_model.reference, "fixture/one");
                 assert_eq!(agent.model_source(), ModelSource::Default);
             }
-            // `b` 已变化（下一次决议使用 other/two），但运行中的会话模型不变。
+            // `b` has changed (the next decision uses other/two) but the running session's model is unchanged.
             assert_eq!(main.models().resolve().unwrap().reference, "other/two");
             assert_eq!(main.current_model.reference, "fixture/one");
 
-            // FAST 角色的目标只到达 FAST 子 Agent（含其嵌套子 Agent）。
+            // A FAST role target reaches only FAST subagents (including their nested subagents).
             assert!(service.submit(Change::Role(ModelRole::Fast, role())));
             service.flush();
             child.apply_runtime_models().unwrap();
@@ -305,7 +305,7 @@ mod integration {
                 );
             }
 
-            // 删除 FAST 角色只移除待应用槽：运行中的子 Agent 保持当前模型。
+            // Removing the FAST role only drops the pending slot: running subagents keep their current model.
             assert!(service.submit(Change::Role(ModelRole::Fast, None)));
             service.flush();
             child.apply_runtime_models().unwrap();
@@ -337,7 +337,7 @@ mod integration {
         assert_eq!(agent.think_level, ThinkLevel::High);
         assert_eq!(agent.model_source(), ModelSource::Override);
 
-        // 应用失败（journal 只读）时保留当前模型与原生历史，并上报一次 Failed。
+        // On an application failure (read-only journal) the current model and native history are kept and one Failed is reported.
         let snapshot = serde_json::to_value(&agent.session).unwrap();
         let path = dir
             .path()
@@ -365,7 +365,7 @@ mod integration {
             .any(|report| matches!(report, Report::Failed { revision: failed, .. } if *failed == revision)),
         "the failed revision is reported with its own revision"
     );
-        // 失败的 revision 已被领取，不重试也不重复上报。
+        // The failed revision was already claimed: no retry and no duplicate report.
         agent.apply_runtime_models().unwrap();
         assert!(service.registry.reports().is_empty());
     }
@@ -377,7 +377,7 @@ mod integration {
         let mut agent = fixture(dir.path(), "response");
         if let Session::Response(request) = &mut agent.session {
             let r::InputParam::Items(input) = &mut request.input else {
-                panic!("原生历史应为条目列表")
+                panic!("native history should be an item list")
             };
             input.push(r::InputItem::EasyMessage(r::EasyInputMessage {
                 role: r::Role::User,
@@ -433,7 +433,7 @@ mod integration {
     fn runtime_override_survives_plan_enter_leave_and_restore() {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = fixture(dir.path(), "completion");
-        // 覆盖经运行控制通道（`Change::Override`）应用到主会话。
+        // The override is applied to the main session through the runtime control channel (`Change::Override`).
         let service = control(&agent);
         agent.runtime_models = Some(Binding::main(service.registry.clone()));
         assert!(service.submit(Change::Override(choose(&agent, "other/two"))));
@@ -444,19 +444,19 @@ mod integration {
         let expected_level = agent.think_level;
         let models = agent.models();
 
-        // 进入 Plan：手动覆盖优先，不套用 PLAN 角色。
+        // Entering Plan: the manual override wins and no PLAN role is applied.
         agent.enter_plan(&CancellationToken::new()).unwrap();
         assert_eq!(agent.current_model.reference, expected);
         assert_eq!(agent.think_level, expected_level);
         assert_eq!(agent.model_source(), ModelSource::Override);
-        // 退出 Plan：按 resolve() 交接，仍是同一个覆盖模型。
+        // Leaving Plan: hand off by resolve(), still the same override model.
         agent.leave_plan(&CancellationToken::new(), None).unwrap();
         assert_eq!(agent.current_model.reference, expected);
         assert_eq!(agent.think_level, expected_level);
         assert_eq!(agent.model_source(), ModelSource::Override);
         assert!(agent.role_route.is_none());
 
-        // Agent::restore 也回到 resolve()：进程级覆盖在同一个 ModelState 上仍是原模型。
+        // Agent::restore also returns to resolve(): the process-wide override on the same ModelState still points at the original model.
         let id = agent.session_id().unwrap().to_owned();
         drop(agent);
         let sessions = dir.path().join("sessions");
@@ -517,10 +517,10 @@ mod integration {
                 ..
             } if model == "other/two"
         )));
-        // 已处于 fallback：不再重复切换。
+        // Already on the fallback: no second switch.
         assert!(!agent.activate_fallback(&mut |_| {}).unwrap());
 
-        // 任务结束回到 resolve()（`b` = DEFAULT 角色 fixture/one / low）。
+        // Task end returns to resolve() (`b` = DEFAULT role fixture/one / low).
         agent.restore_resolved(&mut |_| {}).unwrap();
         assert_eq!(agent.current_model.reference, "fixture/one");
         assert_eq!(agent.think_level, ThinkLevel::Low);
@@ -532,7 +532,7 @@ mod integration {
     fn runtime_restore_uses_resolved_model_and_drops_checkpoint_route() {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = fixture(dir.path(), "completion");
-        // 旧 checkpoint 的角色路由只作审计：恢复后的模型由 resolve() 决定。
+        // The old checkpoint's role route is audit-only: the restored model is decided by resolve().
         agent.role_route = Some(pp_config::config::RoleRoute {
             role: ModelRole::Default,
             primary: RoleModel {
@@ -564,11 +564,17 @@ mod integration {
         .unwrap();
         assert_eq!(restored.current_model.reference, "fixture/one");
         assert_eq!(restored.model_source(), ModelSource::Default);
-        assert!(restored.role_route.is_none(), "恢复不还原 checkpoint 路由");
+        assert!(
+            restored.role_route.is_none(),
+            "a restore does not reinstate the checkpoint route"
+        );
         drop(restored);
 
         let saved = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
-        assert!(saved.checkpoint.role_route.is_none(), "恢复后清理旧路由");
+        assert!(
+            saved.checkpoint.role_route.is_none(),
+            "the old route is cleaned up after restore"
+        );
     }
 
     #[test]
@@ -608,7 +614,7 @@ mod integration {
         let service = control(&agent);
         let registry = service.registry.clone();
 
-        // `Change::Override` 只写 main 槽：主 Agent 拿到手动选择，子 Agent 一无所获。
+        // `Change::Override` writes only the main slot: the main Agent gets the manual selection, subagents get nothing.
         assert!(service.submit(Change::Override(selection("other/two", ThinkLevel::None))));
         service.flush();
         let mut main = Binding::main(registry.clone());
@@ -624,13 +630,13 @@ mod integration {
         assert_eq!(target.source, ModelSource::Override);
         assert!(think.is_none());
 
-        // 每个断言用独立 Binding：seen 是每 Binding 独立的；子 Agent 只消费自己的角色槽。
+        // Each assertion uses its own Binding: `seen` is per Binding, and a subagent consumes only its own role slot.
         let mut default_child = main.child(Some(ModelRole::Default), "child-default".into());
         let mut fast_child = main.child(Some(ModelRole::Fast), "child-fast".into());
         let mut custom_child = main.child(None, "child-custom".into());
         assert!(
             default_child.take_targets(false).0.is_none(),
-            "DEFAULT 不再是子 Agent 角色槽，也不继承手动覆盖"
+            "DEFAULT is no longer a subagent role slot and does not inherit the manual override"
         );
         assert!(
             fast_child.take_targets(false).0.is_none(),
@@ -638,7 +644,7 @@ mod integration {
         );
         assert!(custom_child.take_targets(false).0.is_none());
 
-        // FAST 角色目标只写 roles[Fast]：主 Agent 与其它 child 都看不到。
+        // A FAST role target writes only roles[Fast]: neither the main Agent nor other children see it.
         assert!(service.submit(Change::Role(
             ModelRole::Fast,
             role_with("other/two", ThinkLevel::Medium)
@@ -657,20 +663,20 @@ mod integration {
         assert!(default_child.take_targets(false).0.is_none());
         assert!(custom_child.take_targets(false).0.is_none());
 
-        // DEFAULT 角色即配置默认 `b`：只保存配置，不发布任何模型目标。
+        // The DEFAULT role is the configured default `b`: it only saves config and publishes no model target.
         assert!(service.submit(Change::Role(
             ModelRole::Default,
             role_with("fixture/one", ThinkLevel::High)
         )));
         service.flush();
-        // 用同一个 main Binding：新建 Binding 会重新看到此前尚未过期的手动目标。
+        // Reuse the same main Binding: a new Binding would see the previous manual target that has not expired yet.
         assert!(
             main.take_targets(false).0.is_none(),
             "DEFAULT role only writes b; it must not publish a main target"
         );
         assert!(fast_child.take_targets(false).0.is_none());
 
-        // think 目标只有主 Binding 拿到，且不会冒充 model 目标让 `pending()` 变真。
+        // Only the main Binding gets the think target, and it does not masquerade as a model target that would make `pending()` true.
         assert!(service.submit(Change::Think(ThinkLevel::High)));
         service.flush();
         let (target, think) = main.take_targets(false);
@@ -685,7 +691,7 @@ mod integration {
         let (target, think) = default_child.take_targets(false);
         assert!(target.is_none() && think.is_none());
 
-        // `apply_think_target` 不得让 `pending()` 变真：只登记 think 槽时它仍为 false。
+        // `apply_think_target` must not make `pending()` true: with only the think slot registered it stays false.
         let think_dir = tempfile::tempdir().unwrap();
         let think_agent = fixture(think_dir.path(), "completion");
         let think_only = control(&think_agent);
@@ -696,10 +702,10 @@ mod integration {
         let (target, think) = probe.take_targets(false);
         assert!(target.is_none());
         assert_eq!(think.expect("think target").effort, ThinkLevel::High);
-        // 同一 revision 不被重复领取。
+        // The same revision is not claimed twice.
         assert!(probe.take_targets(false).1.is_none());
 
-        // 应用侧：主 Agent 不消费角色槽；覆盖目标切换后来源保持 Override。
+        // Application side: the main Agent consumes no role slot; the source stays Override after the override target switches.
         let route_dir = tempfile::tempdir().unwrap();
         let mut agent = fixture(route_dir.path(), "completion");
         let routes = control(&agent);
@@ -719,7 +725,7 @@ mod integration {
         assert_eq!(agent.current_model.reference, "other/two");
         assert_eq!(agent.model_source(), ModelSource::Override);
 
-        // 同批领取时按 revision 顺序应用：model 较早、think 较晚，高 revision 的 effort 胜出。
+        // Claimed in the same batch, applied in revision order: model is older, think is newer, so the higher revision's effort wins.
         assert!(routes.submit(Change::Override(selection("fixture/one", ThinkLevel::Low))));
         assert!(routes.submit(Change::Think(ThinkLevel::High)));
         routes.flush();
@@ -727,7 +733,7 @@ mod integration {
         assert_eq!(agent.current_model.reference, "fixture/one");
         assert_eq!(agent.think_level, ThinkLevel::High);
 
-        // think 较早、角色目标较晚：角色目标不进主槽，手动档位仍然生效。
+        // think is older and the role target newer: the role target does not enter the main slot, so the manual level still applies.
         assert!(routes.submit(Change::Think(ThinkLevel::Low)));
         assert!(routes.submit(Change::Role(
             ModelRole::Fast,
@@ -747,7 +753,7 @@ mod integration {
             let server = Arc::new(TestServer::start().unwrap());
             let mut agent =
                 runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
-            // 先发布一次配置写：`Change::Think` 的待应用 revision 来自 ModelState。
+            // Publish one config write first: the pending revision of `Change::Think` comes from ModelState.
             agent.reload_models().unwrap();
             let (tx, rx) = std::sync::mpsc::channel::<Value>();
             let serving = protocol.to_owned();
@@ -777,7 +783,7 @@ mod integration {
                     &CancellationToken::new(),
                     None,
                     &mut |event| {
-                        // 边界轮询已经过去：这次提交只能在下一请求前生效。
+                        // The boundary poll has already passed: this commit can only take effect before the next request.
                         if matches!(event, AgentEvent::ModelRequestStarted) && !submitted {
                             submitted = true;
                             assert!(service.submit(Change::Think(ThinkLevel::High)));
@@ -830,7 +836,7 @@ mod integration {
                 .execute("task", &arguments, true, &Default::default())
                 .unwrap();
 
-            // 第一轮：旧 model + 旧 effort；先提交角色更新再回工具调用，避免竞态。
+            // First turn: old model + old effort; commit the role update before replying with a tool call to avoid races.
             let request = server
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap()
@@ -842,7 +848,7 @@ mod integration {
             service.flush();
             tool_call_for(protocol, request, "read", r#"{"path":"marker.txt"}"#);
 
-            // 第二轮：同一次运行里同时切到新 model 与新 effort。
+            // Second turn: switch to the new model and new effort within the same run.
             let request = server
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap()
@@ -881,7 +887,7 @@ mod integration {
     #[test]
     fn runtime_effort_prefix_and_think_failure_report_once() {
         for protocol in ["completion", "response"] {
-            // 路径一：手动档位槽（`Change::Think`）。
+            // Path one: the manual effort slot (`Change::Think`).
             let dir = tempfile::tempdir().unwrap();
             let mut agent = fixture(dir.path(), protocol);
             let service = control(&agent);
@@ -893,7 +899,7 @@ mod integration {
             agent.apply_runtime_models().unwrap();
             assert_eq!(agent.think_level, ThinkLevel::High);
             let mut after = serde_json::to_value(&agent.session).unwrap();
-            // 会话快照是 `{protocol, request}`；前缀就是 `request` 内部的字段。
+            // The session snapshot is `{protocol, request}`; the prefix is the field inside `request`.
             assert_eq!(request_effort(protocol, &after["request"]), &json!("high"));
             restore_effort(protocol, &mut after["request"], &before["request"]);
             assert_eq!(
@@ -901,7 +907,7 @@ mod integration {
                 "a manual effort change must not rewrite the request prefix"
             );
 
-            // 路径二：角色只改 effort（model 不变），子 Agent 绑定 FAST。
+            // Path two: the role changes only effort (model unchanged) and the subagent binds FAST.
             let dir = tempfile::tempdir().unwrap();
             let mut agent = fixture(dir.path(), protocol);
             let service = control(&agent);
@@ -951,7 +957,7 @@ mod integration {
             )
             .unwrap();
             assert_eq!(agent.think_level, ThinkLevel::Low);
-            // 先发布一次配置写：`Change::Think` 的待应用 revision 来自 ModelState。
+            // Publish one config write first: the pending revision of `Change::Think` comes from ModelState.
             agent.reload_models().unwrap();
             let service = control(&agent);
             agent.runtime_models = Some(Binding::main(service.registry.clone()));
@@ -978,7 +984,7 @@ mod integration {
                     ..
                 }
             )));
-            // 失败的 revision 已被领取，不重试也不重复上报。
+            // The failed revision was already claimed: no retry and no duplicate report.
             agent.apply_runtime_models().unwrap();
             assert!(service.registry.reports().is_empty());
         }

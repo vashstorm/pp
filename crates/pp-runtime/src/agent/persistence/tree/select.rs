@@ -30,9 +30,9 @@ impl Tree {
     }
 }
 
-/// 目标 cursor 之前的会话快照，以及折叠自最后一条 State/Workflow 记录的
-/// 历史 todo 投影。每条 State 携带完整 workflow 快照，随后的 Workflow
-/// 记录是运行态增量，因此只保留最后一份。
+/// Session snapshot before the target cursor, plus the historical todo projection folded
+/// from the last State/Workflow record. Every State carries a full workflow snapshot and the
+/// Workflow records that follow are runtime increments, so only the last one is kept.
 fn session_at(
     file: &File,
     cursor: Cursor,
@@ -383,7 +383,7 @@ mod tests {
             let mut session =
                 Session::new("model".into(), protocol, "system".into(), EditMode::Replace);
 
-            // 第一轮请求携带普通清单（无计划来源）。
+            // The first turn's request carries a plain list (no plan source).
             let ordinary = WorkflowState {
                 todos: vec![TodoPhase {
                     name: "Tasks".into(),
@@ -412,7 +412,8 @@ mod tests {
             let user_a = tree.nodes[0].id.clone();
             let answer_a = tree.nodes[1].id.clone();
 
-            // 用户 before cursor 与助手 native cursor 都折叠出 checkpoint 里的普通清单。
+            // Both the user cursor before and the assistant native cursor fold to the plain
+            // list from the checkpoint.
             let Prepared {
                 todos,
                 todo_plan_id,
@@ -428,7 +429,8 @@ mod tests {
             assert_eq!(todos, ordinary.todos);
             assert_eq!(todo_plan_id, None);
 
-            // 第二轮：执行中经 pp.workflow 记录把清单切换到计划投影。
+            // Second turn: the pp.workflow record switches the list to the plan projection during
+            // execution.
             let planned = WorkflowState {
                 mode: WorkMode::Execute,
                 review: None,
@@ -471,7 +473,8 @@ mod tests {
             let user_b = tree.nodes[2].id.clone();
             let answer_b = tree.nodes[3].id.clone();
 
-            // 导航到 B 的用户消息之前：最后一 State/Workflow 记录仍是普通清单。
+            // Navigating to before B's user message: the last State/Workflow record is still the
+            // plain list.
             let Prepared {
                 todos,
                 todo_plan_id,
@@ -480,7 +483,8 @@ mod tests {
             assert_eq!(todos, ordinary.todos);
             assert_eq!(todo_plan_id, None);
 
-            // 助手节点：同轮 pp.workflow 增量成为最新投影来源。
+            // Assistant node: the same turn's pp.workflow increment becomes the latest projection
+            // source.
             let Prepared {
                 todos,
                 todo_plan_id,

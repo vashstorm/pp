@@ -1,4 +1,4 @@
-//! 工作目录标签、后台 git 状态刷新与解析。
+//! Working-directory label, background git status refresh and parsing.
 
 use super::*;
 
@@ -8,7 +8,7 @@ pub(in crate::tui) struct StatusContext {
     pub(in crate::tui) git: Option<GitInfo>,
 }
 
-/// 工作目录显示名：HOME 内折叠为 `~` 或 `~/…`，其余路径原样显示。
+/// Display name of the working directory: folded to `~` or `~/…` under HOME, other paths shown as-is.
 pub(in crate::tui) fn workdir_label(cwd: &Path) -> String {
     std::env::var_os("HOME")
         .and_then(|home| cwd.strip_prefix(home).ok().map(|path| path.to_owned()))
@@ -121,7 +121,7 @@ impl GitInfo {
                     Some(b'1' | b'u') => info.changed += 1,
                     Some(b'2') => {
                         info.changed += 1;
-                        // 重命名记录后面紧跟原路径，不能把它当作另一条状态记录。
+                        // A rename record is followed immediately by the original path, which must not be taken as another status record.
                         records.next();
                     }
                     Some(b'?') => info.untracked += 1,
@@ -177,8 +177,8 @@ mod tests {
 
     #[test]
     fn git_status_reads_disposable_repository_and_detects_changes() {
-        // TMPDIR 可能指向工作树内部（pp 的 bash 工具把命令临时目录设在项目里），
-        // 那样临时目录会成为仓库子目录；用系统临时目录保持“非仓库目录”前提。
+        // TMPDIR may point inside the work tree (pp's bash tool puts command temp dirs in the project),
+        // which would make the temp dir a repository subdirectory; use the system temp dir to keep the "not a repository" premise.
         let dir = tempfile::Builder::new()
             .prefix("pp-git-")
             .tempdir_in("/tmp")

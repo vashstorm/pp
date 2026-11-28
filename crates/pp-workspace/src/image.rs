@@ -4,15 +4,15 @@ use base64::Engine;
 use serde_json::{Value, json};
 use std::io::Cursor;
 
-/// 图片编码单次输入体积上限（与 `pp_llm::http::MAX_INPUT_BYTES` 保持一致）。
+/// Per-input byte limit for image encoding (kept in sync with `pp_llm::http::MAX_INPUT_BYTES`).
 pub const MAX_IMAGE_INPUT_BYTES: usize = 20 * 1024 * 1024;
 
-/// 供应商按单边像素拒绝图片：DeepSeek 超过 8192 直接返回 400，Anthropic 上限 8000。
-/// 保留为硬安全红线常量，任何调用都不得放宽超过此值。
+/// Providers reject images by per-side pixels: DeepSeek returns 400 above 8192, Anthropic caps at 8000.
+/// Kept as a hard safety red line; no call site may relax it beyond this value.
 pub const MAX_IMAGE_SIDE: u32 = 8000;
 
-/// 视觉模型最优输入边长上限：超过 1568 px 的 2K/4K/Retina 截图会显著膨胀 vision token
-/// 与 base64 体积却不提升可读性，默认等比缩小到该边长以内。
+/// Optimal input side limit for vision models: 2K/4K/Retina screenshots above 1568 px bloat vision tokens
+/// and base64 size without improving readability, so they are downscaled proportionally to this side by default.
 pub const VISION_MAX_IMAGE_SIDE: u32 = 1568;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,7 +80,7 @@ pub fn decode_image(source: &str, bytes: &[u8]) -> Result<DecodedImage> {
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(data)
     );
-    // 模型看到的尺寸才是可用尺寸，同时说明原图大小，避免误判分辨率。
+    // The size the model sees is the usable size; also report the original size so resolution is not misread.
     let resized = if sent == (width, height) {
         String::new()
     } else {
@@ -108,8 +108,8 @@ pub fn decode_image(source: &str, bytes: &[u8]) -> Result<DecodedImage> {
     })
 }
 
-/// 缩放后含透明通道保留无损 PNG；无透明通道时对比 PNG 与 JPEG 体积择小者，
-/// 既保持纯色截图清晰又大幅压缩照片类大图体积，同时确保不超过输入体积上限。
+/// After scaling, keep lossless PNG when alpha is present; otherwise compare PNG and JPEG sizes and take the smaller one,
+/// keeping flat screenshots crisp while shrinking large photo-like images, without exceeding the input byte limit.
 fn encode_image(image: &DynamicImage) -> Result<(Vec<u8>, &'static str)> {
     let mut png_buf = Cursor::new(Vec::new());
     image

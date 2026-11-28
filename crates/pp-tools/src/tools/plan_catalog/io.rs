@@ -1,4 +1,4 @@
-//! 登记表的安全读写：缺失即空表、损坏显式拒绝、基线对比提交。
+//! Safe registry I/O: missing means empty, corruption is rejected explicitly, commits compare baselines.
 use anyhow::{Context, Result, ensure};
 use rustix::io::Errno;
 use std::path::Path;
@@ -8,9 +8,9 @@ use pp_workspace::save::Workspace;
 
 const INDEX_PATH: &str = ".pp/plan-index.json";
 
-/// 读取登记表；调用方必须已持有 `PlanCatalogLock`。
-/// `.pp` 或登记文件缺失表示尚未登记，返回空目录且 `raw` 为 `None`；
-/// 损坏、超限或非法字段返回明确错误，绝不返回可覆盖的“空表”假象。
+/// Read the registry; the caller must already hold `PlanCatalogLock`.
+/// A missing `.pp` or registry file means nothing is registered yet, returning an empty catalog with `raw = None`;
+/// corruption, oversized content or invalid fields return an explicit error, never a fake "empty table" that could be overwritten.
 pub fn load_catalog(workspace: &Workspace) -> Result<CatalogSnapshot> {
     let target = match workspace.target(Path::new(INDEX_PATH), false) {
         Ok(target) => target,
@@ -47,10 +47,10 @@ pub fn load_catalog(workspace: &Workspace) -> Result<CatalogSnapshot> {
     })
 }
 
-/// 以 `previous` 提供的精确字节为基线提交登记表；调用方必须已持有
-/// `PlanCatalogLock`。`previous` 为 `None` 表示登记文件尚未存在，用排他
-/// 创建发布；并发创建或基线变化都会显式失败，不自动重试。返回值为父目录
-/// 同步警告（成功提交后可能出现，不代表失败）。
+/// Commit the registry against the exact bytes provided by `previous`; the caller must already hold
+/// `PlanCatalogLock`. `previous = None` means the registry file does not exist yet, so it is published with an exclusive
+/// create; concurrent creation or a changed baseline both fail explicitly, never retried automatically. The return value is a parent-directory
+/// sync warning (it can appear after a successful commit and does not mean failure).
 pub fn save_catalog(
     workspace: &Workspace,
     previous: Option<&[u8]>,
@@ -81,15 +81,15 @@ pub fn save_catalog(
 
 fn parse_catalog(raw: &[u8]) -> Result<PlanCatalog> {
     let catalog: PlanCatalog = serde_json::from_slice(raw).map_err(|_| {
-        // 不透出 serde/parser 细节，避免把内部格式当作可依赖的诊断。
+        // Do not leak serde/parser details, so the internal format never becomes a dependable diagnostic.
         anyhow::anyhow!("Plan index is corrupted; refusing to load or overwrite it.")
     })?;
     validate_catalog(&catalog)?;
     Ok(catalog)
 }
 
-/// 判断错误链中是否只是“路径不存在”；目录或文件缺失表示尚未登记。
-/// 其他错误（例如 `.pp` 被替换成普通文件）必须暴露，不能当空表。
+/// Whether the error chain is only "path does not exist"; a missing directory or file means nothing is registered yet.
+/// Other errors (for example `.pp` replaced by a regular file) must surface and never pass as an empty table.
 fn is_missing(error: &anyhow::Error) -> bool {
     error
         .chain()
@@ -119,7 +119,7 @@ mod tests {
         assert!(again.raw.is_some());
         assert_eq!(again.catalog.entries.len(), 0);
 
-        // 已存在的登记文件不能再以 None 基线排他创建。
+        // An existing registry file cannot be exclusively created again from a None baseline.
         let error = save_catalog(&ws, None, &again.catalog).unwrap_err();
         assert!(
             format!("{error:#}")
@@ -167,7 +167,7 @@ mod tests {
             PlanLocation::Plans,
             false,
         ));
-        // 另一个写者先提交，使 snapshot.raw 成为过期基线。
+        // Another writer commits first, making snapshot.raw a stale baseline.
         let mut other = snapshot.catalog.clone();
         other.entries.push(entry(
             &sample_id(3),
@@ -181,7 +181,7 @@ mod tests {
             format!("{error:#}")
                 .contains("Plan index changed concurrently; reload it before saving.")
         );
-        // 拒绝不覆盖磁盘：旧内容原样保留。
+        // Rejection does not overwrite the disk: the old content is kept as is.
         assert_eq!(load_catalog(&ws).unwrap().catalog, other);
 
         let fresh = load_catalog(&ws).unwrap();
@@ -210,7 +210,7 @@ mod tests {
             let error = load_catalog(&ws).unwrap_err();
             let message = error.to_string();
             assert!(message.contains("refusing"), "{broken:?} => {message}");
-            // 登记失败也不覆盖既有坏文件。
+            // A failed registration likewise does not overwrite the existing broken file.
             assert!(save_catalog(&ws, None, &PlanCatalog::empty()).is_err());
             last = broken.as_bytes().to_vec();
         }

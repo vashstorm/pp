@@ -1,8 +1,9 @@
-// Headless ask 契约（计划 Verification「headless 契约」行）：-p 与管道行模式、
-// 两种协议的请求都不得携带 ask schema；fixture 仍返回 ask 调用时得到固定的
-// `ask requires interactive TUI mode` 工具错误，结果按原 call id 成对进入历史，
-// 不挂住、不把 stdin 下一行当答案消费。全部通过真实子进程、loopback HTTP 与
-// HTTP 栅栏观察，不用 sleep 猜阶段。辅助项均以 `ask_` 前缀命名。
+// Headless ask contract (the plan's verification "headless contract" row): `-p` and piped line mode, and the
+// requests of both protocols, must not carry the ask schema; when the fixture still returns an ask call the
+// fixed `ask requires interactive TUI mode` tool error comes back, the result enters history paired with its
+// original call id, nothing hangs and the next stdin line is not consumed as an answer. Everything is observed
+// through the real child process, loopback HTTP and HTTP barriers, never sleep to guess stages. Helpers are all
+// named with the `ask_` prefix.
 
 use super::streaming::{LiveCli, Pipe};
 use super::*;
@@ -18,7 +19,7 @@ fn ask_receive(server: &TestServer, protocol: &str) -> (CapturedRequest, Value) 
     )
 }
 
-// ask schema 是否出现在请求 tools 中（Chat 在 tools[].function，Responses 在 tools[]）。
+// Whether the ask schema appears in the request tools (Chat under tools[].function, Responses under tools[]).
 fn ask_schema_offered(body: &Value) -> bool {
     body["tools"].as_array().is_some_and(|tools| {
         tools
@@ -33,7 +34,7 @@ fn ask_base_tools_offered(body: &Value) -> bool {
         .is_some_and(|tools| !tools.is_empty())
 }
 
-// 按 history 顺序返回 (call_id, 结果 JSON)，覆盖两种协议的成对工具结果。
+// Return (call_id, result JSON) in history order, covering the paired tool results of both protocols.
 fn ask_tool_outputs(body: &Value, protocol: &str) -> Vec<(String, Value)> {
     let items = body[if protocol == "completion" {
         "messages"
@@ -97,7 +98,8 @@ fn ask_final(request: CapturedRequest, protocol: &str, text: &str) {
     }
 }
 
-// 参数本身完全合法：错误只能来自缺少交互 handler，而不是参数解析。
+// The arguments themselves are fully valid: the error can only come from the missing interactive handler, not
+// from argument parsing.
 fn ask_headless_arguments() -> Value {
     json!({"questions":[{"id":"storage","question":"Which database?","options":[{"label":"SQLite"},{"label":"Postgres"}],"recommended":0}]})
 }
@@ -120,12 +122,12 @@ fn ask_headless_omits_schema_and_answers_fixed_error_without_consuming_stdin() {
             &models,
         ));
         if mode == "lines" {
-            // 两行任务一次性写好：若 ask 处理消费了下一行，第二个任务就不会
-            // 以独立的用户消息出现。
+            // Both task lines are written at once: if ask handling consumed the next line, the second task would not
+            // show up as its own user message.
             cli.input("headless ask task one\nheadless ask task two\n");
         }
 
-        // 第一个请求：工具列表存在但不含 ask。
+        // First request: the tool list exists but does not contain ask.
         let (request, body) = ask_receive(&server, protocol);
         assert_eq!(
             ask_user_texts(&body, protocol),
@@ -146,7 +148,7 @@ fn ask_headless_omits_schema_and_answers_fixed_error_without_consuming_stdin() {
             json!([ask_call(protocol, "headless-ask", ask_headless_arguments())]),
         );
 
-        // 错误结果按原 call id 成对回传，模型得以继续。
+        // The error result travels back paired with its original call id, so the model can continue.
         let (request, body) = ask_receive(&server, protocol);
         assert!(
             !ask_schema_offered(&body),
@@ -172,7 +174,7 @@ fn ask_headless_omits_schema_and_answers_fixed_error_without_consuming_stdin() {
                 "stdout must not contain tool errors: {stdout}"
             );
         } else {
-            // 第一个任务正常收尾，缓冲的下一行立即成为独立任务。
+            // The first task wraps up normally and the buffered next line immediately becomes its own task.
             cli.wait_for(Pipe::Stderr, "Session:");
             let (request, body) = ask_receive(&server, protocol);
             assert_eq!(

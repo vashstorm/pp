@@ -391,7 +391,7 @@ fn input_wrapping_height_and_native_cursor() {
                 .conversation
                 .height,
             13 - rows,
-            "输入框应按折行后的行数增长：{text:?}"
+            "the input box should grow by the number of wrapped rows: {text:?}"
         );
         assert_eq!(a.input.cursor(), cursor);
         assert_eq!(a.input_text(), text);

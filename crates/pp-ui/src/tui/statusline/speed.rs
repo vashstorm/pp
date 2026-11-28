@@ -1,18 +1,18 @@
-//! 流式请求的 token 速度采样与显示快照。
+//! Token speed sampling and display snapshot for streaming requests.
 
 use super::*;
 
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
 const SPEED_WINDOW: Duration = Duration::from_secs(2);
 
-/// 当前流式请求的输出速度：生成中按已观测字节估算，完成后用服务端 usage 校正。
+/// Output speed of the current streaming request: estimated from observed bytes while generating, corrected from server usage when done.
 #[derive(Debug, Default)]
 pub(in crate::tui) struct TokenSpeed {
     started_at: Option<Instant>,
     output_bytes: u64,
-    /// 显示快照只在采样或请求完成时更新，重绘不重新计算。
+    /// The display snapshot updates only on a sample or request completion; repainting does not recompute.
     displayed_rate: Option<(f64, bool)>,
-    /// 按刷新节奏保存累计字节基线，避免每个 delta 分配样本。
+    /// Keep the accumulated-byte baseline at the refresh cadence so no sample is allocated per delta.
     samples: VecDeque<(Instant, u64)>,
     last_tick: Option<Instant>,
 }
@@ -21,17 +21,17 @@ impl TokenSpeed {
     pub(in crate::tui) fn start(&mut self, now: Instant) {
         *self = Self {
             started_at: Some(now),
-            // 等待下一轮和工具执行期间保留上一笔速度，直到有新的有效采样。
+            // Keep the previous speed while waiting for the next turn or tool execution, until a new valid sample arrives.
             displayed_rate: self.displayed_rate,
             ..Self::default()
         };
     }
 
-    /// 本次请求截至当前的累计输出字节数。
+    /// Accumulated output bytes for this request so far.
     pub(in crate::tui) fn progress(&mut self, output_bytes: u64, now: Instant) {
         if self.started_at.is_some() && output_bytes > self.output_bytes {
             if self.samples.is_empty() {
-                // 从首个输出开始计时，排除建连、排队和限流等待。
+                // Start timing at the first output, excluding connect, queueing and rate-limit waits.
                 self.samples.push_back((now, 0));
                 self.last_tick = Some(now);
             }
@@ -39,7 +39,7 @@ impl TokenSpeed {
         }
     }
 
-    /// 结束计时：成功且有服务端结果时显示权威速率，否则保留或丢弃估算。
+    /// Finish timing: show the authoritative rate on success with a server result, otherwise keep or drop the estimate.
     pub(in crate::tui) fn finish(
         &mut self,
         elapsed_ms: u64,
@@ -65,7 +65,7 @@ impl TokenSpeed {
         *self = Self::default();
     }
 
-    /// 每 250ms 更新约两秒窗口内的估速，采样数量与 delta 频率无关。
+    /// Update the estimate over a roughly two-second window every 250ms; the sample count does not depend on delta frequency.
     pub(in crate::tui) fn tick(&mut self, now: Instant) -> bool {
         if self.started_at.is_none() || self.output_bytes == 0 {
             return false;
@@ -92,13 +92,13 @@ impl TokenSpeed {
         }
     }
 
-    /// 返回缓存速率；`bool` 表示是否为估算值。
+    /// Return the cached rate; `bool` says whether it is an estimate.
     pub(in crate::tui) fn value(&self) -> Option<(f64, bool)> {
         self.displayed_rate
     }
 
-    /// 生成中按项目统一的 `/3` 字节启发式估算本次请求的输出 token；
-    /// 请求结束后返回 `None`，交给服务端 usage 校正。
+    /// While generating, estimate this request's output tokens with the project-wide `/3` byte heuristic;
+    /// once the request ends it returns `None`, leaving correction to the server usage.
     pub(in crate::tui) fn live_output_tokens(&self) -> Option<u64> {
         (self.started_at.is_some() && self.output_bytes > 0).then(|| self.output_bytes.div_ceil(3))
     }
@@ -108,7 +108,7 @@ impl TokenSpeed {
     }
 }
 
-/// 沿用项目 `/3` 的字节启发式；首个 token 等待时间计入分母。
+/// Uses the project's `/3` byte heuristic; time-to-first-token counts toward the denominator.
 fn estimate_rate(output_bytes: u64, elapsed_secs: f64) -> Option<f64> {
     if output_bytes == 0 || elapsed_secs <= 0.0 {
         return None;
@@ -133,7 +133,11 @@ mod tests {
         speed.progress(75, first);
         assert!(!speed.tick(first + Duration::from_millis(249)));
         assert!(speed.tick(first + TICK_INTERVAL));
-        assert_eq!(speed.value(), Some((100.0, true)), "不计首字节等待");
+        assert_eq!(
+            speed.value(),
+            Some((100.0, true)),
+            "first-byte wait is not counted"
+        );
         speed.progress(150, first + Duration::from_millis(300));
         speed.progress(90, first + Duration::from_millis(310));
         assert_eq!(speed.value(), Some((100.0, true)));

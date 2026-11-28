@@ -1,4 +1,5 @@
-//! 计划类事件：/plan-list 管理、审批转换、审阅终态与执行准备交接。
+//! Plan-family events: /plan-list management, approval transitions, review terminal
+//! states and the execution-preparation handoff.
 
 use crate::tui::{
     App, Level, PlanEnterAction, PlanLocation, PlanOpenIntent, State, WorkMode, WorkerCommand,
@@ -6,7 +7,8 @@ use crate::tui::{
 };
 
 impl App {
-    /// 计划事件族；采纳快照与 ACK 的顺序决定 worker 何时继续。
+    /// Plan event family; the order of snapshot adoption and ACK decides when the worker
+    /// continues.
     pub(super) fn on_plan_event(&mut self, event: WorkerEvent) -> bool {
         let mut changed = false;
         match event {
@@ -18,7 +20,7 @@ impl App {
                         Err(error) => panel.set_error(format!("{error:#}")),
                     }
                 }
-                // 面板在加载中关闭：迟到的列表回复直接丢弃。
+                // The panel closed while loading: drop the late list reply immediately.
                 changed = true;
             }
             WorkerEvent::ListedPlanRead(result) => {
@@ -28,7 +30,8 @@ impl App {
                     (Ok(selection), Some(plan_list::PendingOp::Preview))
                         if self.plan_list_panel.is_some() =>
                     {
-                        // 复位面板阶段：预览关闭后列表必须继续接收按键。
+                        // Panel phase reset: once the preview closes, the list must keep
+                        // receiving keys.
                         if let Some(panel) = &mut self.plan_list_panel {
                             panel.set_phase(plan_list::Phase::Ready);
                         }
@@ -68,7 +71,8 @@ impl App {
                             panel.set_phase(plan_list::Phase::Deleting);
                         }
                     }
-                    // 面板在读取中关闭：丢弃迟到的 selection，不继续任何操作。
+                    // The panel closed while reading: drop the late selection and continue
+                    // no operation.
                     (Ok(_), _) => {}
                     (Err(error), _) => {
                         if let Some(panel) = &mut self.plan_list_panel {
@@ -89,7 +93,8 @@ impl App {
                 );
                 match result {
                     Ok(preparation) => {
-                        // 采纳 workflow/replay/todo 快照后展示；不自动请求模型。
+                        // Displayed after adopting the workflow/replay/todo snapshots; the model
+                        // is never requested automatically.
                         let path = preparation
                             .workflow
                             .plan
@@ -102,8 +107,9 @@ impl App {
                         if let Some(records) = preparation.replay {
                             note = self.adopt_history(records);
                         }
-                        // 清单已由 workflow 安装到固定区；旧显示事件只消费，
-                        // 不在新会话的对话流中重复生成 Preview 卡片。
+                        // The checklist is already installed in its fixed area by the workflow;
+                        // the legacy display event is only consumed and does not generate a
+                        // duplicate Preview card in the new session's conversation.
                         if let Some(snapshot) = preparation.todo_snapshot {
                             self.conversation.progress(snapshot);
                         }
@@ -112,15 +118,15 @@ impl App {
                         self.task_status = self.task_status_view.snapshot();
                         self.token_speed.clear();
                         if execute_review {
-                            // 执行前审阅：重新安全读取并签发 token；
-                            // 列表保持打开，以便关闭菜单时返回列表。
-                            // 先复位面板阶段，否则 Opening 会吞掉后续按键。
+                            // Pre-execution review: re-read safely and issue a token; the list
+                            // stays open so closing the menu returns to it. Reset the panel
+                            // phase first, otherwise Opening swallows later keys.
                             if let Some(panel) = &mut self.plan_list_panel {
                                 panel.set_phase(plan_list::Phase::Ready);
                             }
                             self.request_plan_read();
                         } else {
-                            // 继续规划：关闭列表，提示继续输入。
+                            // Continue planning: close the list and hint for more input.
                             self.plan_list_panel = None;
                             self.plan_list_pending = None;
                             if let Some(error) = note {
@@ -161,7 +167,8 @@ impl App {
                         Err(error) => panel.set_error(format!("{error:#}")),
                     }
                 }
-                // 随后的 Workflow 快照统一同步绑定、进度与 TODO。
+                // The following Workflow snapshot synchronizes binding, progress and TODO at
+                // once.
                 changed = true;
             }
 
@@ -174,16 +181,17 @@ impl App {
                     self.secondary_status = None;
                 }
                 let after_enter = self.plan_after_enter.take();
-                // 进入转换会携带 after_enter；退出转换保持 None，
-                // 据此区分进入失败（重试进入）与退出失败（保持退出方向）。
+                // An enter transition carries after_enter; an exit transition keeps it None,
+                // which is how an enter failure (retry entering) is told apart from an exit
+                // failure (keep the leave direction).
                 let was_enter = after_enter.is_some();
                 self.state = State::Ready;
                 match result {
                     Ok(workflow) => {
                         self.plan_retry_enter = false;
                         self.set_workflow(workflow);
-                        // `n` 在 Plan 模式下解除绑定后的重进：离开成功立即
-                        // 重新进入 Plan 待命，不发送模型请求。
+                        // Re-entry after `n` unbinds in Plan mode: once leaving succeeds,
+                        // re-enter Plan standby immediately without sending a model request.
                         let reentered =
                             self.plan_reenter_standby && self.workflow.mode == WorkMode::Execute;
                         if reentered {
@@ -197,7 +205,8 @@ impl App {
                         }
                         if !reentered {
                             match after_enter {
-                                // 进入成功只提示待命；首条用户任务才会建立绑定。
+                                // A successful enter only hints standby; the first user task is
+                                // what establishes the binding.
                                 Some(PlanEnterAction::Standby) => self.notify(
                                     Level::Normal,
                                     "Plan mode is active. Describe the task to research and plan."
@@ -231,14 +240,16 @@ impl App {
                             self.resources.bind_text(&self.raw_input_text());
                             self.refresh_candidates(true);
                         }
-                        // 失败也可能已持久化 Plan（随后的 Workflow 快照纠正显示）；
-                        // 仅进入失败时下一次 /plan 优先重试进入；退出失败保持离开方向，
-                        // 不把重试误导成再次进入。
+                        // A failure may still have persisted Plan (the following Workflow
+                        // snapshot corrects the display); only an enter failure makes the next
+                        // /plan retry entering first, while an exit failure keeps the leave
+                        // direction so the retry is not mistaken for another enter.
                         if from_enter && was_enter {
                             self.plan_retry_enter = true;
                         }
                         if from_approval || (from_enter && self.plan_panel.is_some()) {
-                            // 审批或保存退出失败均安全刷新正文与新 token。
+                            // Approval or save-and-exit failures safely refresh the body and the
+                            // new token.
                             self.request_plan_read();
                         }
                     }
@@ -252,16 +263,18 @@ impl App {
                     Ok(review) => {
                         let reviewed = self.plan_review_pending.take().is_some();
                         self.open_plan_panel(review);
-                        // 审查完成后的刷新：焦点落在正文 Review 标签；
-                        // 外部修订则面板标注旧版报告。绝不自动启动执行。
+                        // Refresh after the review completes: focus lands on the Review tab of
+                        // the body; for an external revision the panel marks the report stale.
+                        // Execution is never started automatically.
                         if reviewed && let Some(panel) = &mut self.plan_panel {
                             panel.focus_review_body();
                         }
                     }
                     Err(error) => {
                         if let Some(report) = self.plan_review_pending.take() {
-                            // 报告已生成但安全读取失败：展示最终报告与错误；
-                            // 无 token 的只读面板禁用旧执行 token，直到再次安全读取成功。
+                            // The report exists but the safe read failed: show the final report
+                            // plus the error; a token-less read-only panel disables the stale
+                            // execution token until a safe read succeeds again.
                             if let Some(document) = self.workflow.plan.clone() {
                                 self.plan_panel =
                                     Some(crate::tui::plan::Panel::degraded(document, report));
@@ -274,8 +287,9 @@ impl App {
             }
 
             WorkerEvent::PlanReviewed(result) => {
-                // 审查终态：无论成败都保持 Plan/Ready 并回五项菜单；
-                // 报告只在成功时替换，失败/取消保留上次完整报告。
+                // Review terminal state: keep Plan/Ready and return to the five-item menu
+                // whether it succeeded or failed; the report is replaced only on success,
+                // while failures/cancellation keep the last complete report.
                 self.state = State::Ready;
                 self.active_cancellation = None;
                 self.secondary_status = None;
@@ -283,7 +297,8 @@ impl App {
                 let _ = self.input_queue.close();
                 match result {
                     Ok(report) => {
-                        // 报告先入 UI 快照，随后 ReadPlan 安全刷新正文/token/报告绑定。
+                        // The report enters the UI snapshot first, then ReadPlan safely refreshes
+                        // the body/token/report binding.
                         self.workflow.review = Some(report.clone());
                         self.plan_review_pending = Some(report);
                         self.request_plan_read();
@@ -308,17 +323,20 @@ impl App {
                 todo_snapshot,
                 reply,
             } => {
-                // 一次性交接：先采纳 workflow/replay/todo 快照并更新会话，再 ACK；
-                // ACK 后 worker 才允许 continue_session。
+                // One-shot handoff: adopt the workflow/replay/todo snapshots and update the
+                // session first, then ACK; only after the ACK may the worker continue_session.
                 self.plan_panel = None;
                 self.set_workflow(workflow);
                 let mut note = None;
                 if let Some(records) = replay {
-                    // None：Keep/off 不重绘；Some(空)：Fresh 新会话；Some(records)：恢复。
+                    // None: Keep/off does not redraw; Some(empty): Fresh new session;
+                    // Some(records): resume.
                     note = self.adopt_history(records);
                 }
-                // 清单在替换 workflow 时已安装到固定区；旧显示快照不再
-                // 生成对话卡片，ACK 前仍完成事件消费以保留交接顺序。
+                // The checklist was installed in its fixed area when the workflow was
+                // replaced; the legacy display snapshot no longer generates conversation
+                // cards, and the event is still consumed before the ACK to keep the handoff
+                // order.
                 if let Some(snapshot) = todo_snapshot {
                     self.conversation.progress(snapshot);
                 }
@@ -333,7 +351,8 @@ impl App {
                         self.state = State::Running;
                         self.conversation.begin_run();
                         self.append_execution_echo();
-                        // 列表审批进入执行：关闭列表与待处理操作。
+                        // List approval enters execution: close the list and the pending
+                        // operation.
                         self.plan_list_panel = None;
                         self.plan_list_pending = None;
                     }

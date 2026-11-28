@@ -88,11 +88,13 @@ fn runtime_input_end_live(mut stream: SseWriter, protocol: &str) {
     stream.finish();
 }
 
-// bash 等 gate 的命令：先落 waiting marker（进入等待阶段的文件栅栏），
-// 再轮询 gate 文件，释放后落 released marker（整批结束的文件栅栏）。
+// A command whose bash waits on a gate: first drops the waiting marker (the file barrier for entering the
+// waiting phase), then polls the gate file and drops the released marker once it is released (the file barrier
+// for the whole batch finishing).
 const RUNTIME_INPUT_GATE_COMMAND: &str = "printf waiting > bash-waiting; while [ ! -f gate.txt ]; do sleep 0.05; done; printf released > bash-released";
 
-// 排队成功且流仍可见时，待处理计数出现在状态栏，且输入行已清空（❯ 行为空）。
+// Once queueing succeeds while the stream is still visible, the pending count shows in the status line and the
+// input row is cleared (the ❯ row is empty).
 fn runtime_input_wait_queued_with_empty_draft(pty: &mut Pty, visible_marker: &str) {
     pty.wait_for("queued steering shown once with cleared draft", |screen| {
         let text = screen.contents();
@@ -104,7 +106,7 @@ fn runtime_input_wait_queued_with_empty_draft(pty: &mut Pty, visible_marker: &st
     });
 }
 
-// 断言 user 文本恰好出现一次，且位于全部指定 call_id 的 tool result 之后。
+// Assert the user text appears exactly once and sits after the tool results of all the given call_ids.
 fn runtime_input_assert_user_after_outputs(body: &Value, protocol: &str, text: &str, ids: &[&str]) {
     let items = body[if protocol == "completion" {
         "messages"
@@ -143,8 +145,8 @@ fn runtime_input_assert_user_after_outputs(body: &Value, protocol: &str, text: &
     );
 }
 
-// 场景 2：write A → bash 等 gate → write B 批次执行中提交 steering，
-// 新请求只能在整批结果之后携带 user S；A/B 文件字节真实正确。
+// Scenario 2: write A → bash waits on the gate → write B, submitting steering while the batch runs; the new
+// request may carry user S only after the whole batch's results, and the A/B file bytes are really correct.
 #[test]
 fn tui_runtime_input_tool_batch_steers_only_after_full_results_both_protocols() {
     for protocol in ["completion", "response"] {
@@ -170,12 +172,13 @@ fn tui_runtime_input_tool_batch_steers_only_after_full_results_both_protocols() 
                 ("batch-b", "write", json!({"path":"b.txt","content":"b"})),
             ],
         );
-        // bash 进入等待阶段的文件栅栏：此刻提交 steering，不得触发任何新请求。
+        // File barrier for bash entering its waiting phase: submitting steering now must not trigger any new request.
         cancel_wait_pid_files(home.path(), &["bash-waiting"]);
         pty.input("S\r");
         runtime_input_counts(&mut pty, 1, 0, false);
         cancel_assert_no_request(&fixture);
-        // 释放 gate：整批工具结束后才允许下一请求，S 排在全部结果之后。
+        // Release the gate: the next request is allowed only after the whole tool batch finishes, with S after all
+        // results.
         std::fs::write(home.path().join("gate.txt"), "go").unwrap();
         cancel_wait_pid_files(home.path(), &["bash-released"]);
         let (request, body) = pty.request_at(&fixture, path);

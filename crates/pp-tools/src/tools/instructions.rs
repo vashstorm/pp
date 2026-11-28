@@ -1,4 +1,4 @@
-//! 项目规则的工具接入；复用保存层路径校验，不扩展任何读写权限。
+//! Tool wiring for project rules; reuses save-layer path validation and grants no extra read/write permission.
 use super::*;
 use crate::project_instructions::{Document, InspectedDocument, State};
 use std::sync::Arc;
@@ -21,7 +21,7 @@ impl Tools {
         *self.project_instructions.borrow_mut() = Some(state);
     }
 
-    /// 当前规则快照；未变化时共享上一份，不复制正文。
+    /// Current rule snapshot; shared with the previous one while unchanged, without copying bodies.
     pub fn project_documents(&self) -> Result<Arc<[Document]>> {
         let mut state = self.project_instructions.borrow_mut();
         state
@@ -29,7 +29,7 @@ impl Tools {
             .refresh_shared()
     }
 
-    /// 只读读取指定历史路径的活跃 `AGENTS.md` 链与范围摘要，不改变当前工具状态。
+    /// Read the active `AGENTS.md` chain and scope summary for a given historical path, without changing the current tool state.
     pub fn preview_project_documents(
         &self,
         paths: impl IntoIterator<Item = PathBuf>,
@@ -88,7 +88,7 @@ impl Tools {
             {
                 continue;
             }
-            // 非法参数、越界和符号链接仍由原工具返回原错误；预检不创建目录。
+            // Invalid arguments, escapes and symlinks still return the original tool's error; the pre-check creates no directories.
             let Ok(Some(path)) = self.mutation_path(name, arguments) else {
                 continue;
             };
@@ -120,7 +120,7 @@ impl Tools {
             self.workspace.resource_target(Path::new(&path), false)?;
             return Ok(Some(self.cwd.join(key)));
         }
-        // 工作区与 /tmp 之外的绝对路径没有项目级 AGENTS.md 规则链；工作区相对逃逸仍拒绝。
+        // Absolute paths outside the workspace and /tmp have no project-level AGENTS.md rule chain; workspace-relative escapes are still rejected.
         if Path::new(&path).is_absolute() {
             return Ok(None);
         }
@@ -272,7 +272,7 @@ mod tests {
         assert!(text.contains("main-rule") && text.contains("external-rule"));
         assert!(!text.contains("unrelated-rule"));
         tools.project_request_sent();
-        // 相对路径不能通过逃逸启动目录获得临时根的写权限。
+        // A relative path must not gain temp-root write access by escaping the startup directory.
         let output = execute(
             &tools,
             "write",

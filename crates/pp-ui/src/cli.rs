@@ -1,4 +1,5 @@
-//! 行模式 CLI：stdin 逐行读取、事件 → stdout/stderr 输出、`/command` 分发与退出收尾。
+//! Line-mode CLI: line-by-line stdin reads, event -> stdout/stderr output,
+//! `/command` dispatch and shutdown cleanup.
 
 mod banner;
 mod events;
@@ -39,10 +40,13 @@ use pp_core::cancellation;
 use pp_core::events as core_events;
 use pp_runtime::agent;
 
-/// 行模式交互循环：逐行读取 stdin、分发 `/command` 并输出结果。
+/// Line-mode interaction loop: reads stdin line by line, dispatches `/command` and
+/// prints the results.
 ///
-/// `initial_command` 是 CLI 位置参数给出的启动命令：只合成一行、不打印提示符；
-/// 未知命令或解析错误使本次运行失败（脚本可见非零退出码），真实 stdin 行保持原有语义。
+/// `initial_command` is the startup command given as a CLI positional argument: it
+/// synthesizes a single line and prints no prompt; an unknown command or a parse error
+/// fails this run (scripts see a non-zero exit code), while real stdin lines keep their
+/// existing semantics.
 pub fn run_line_mode(
     mut agent: Result<agent::Agent>,
     skills: skills::SharedSkills,
@@ -67,7 +71,8 @@ pub fn run_line_mode(
     let mut stats: Option<crate::stats::Worker> = None;
     let mut prompt_shown = false;
     loop {
-        // 启动命令只合成一行：不打印提示符，执行后继续等待真实 stdin。
+        // The startup command synthesizes a single line: print no prompt and keep
+        // waiting for real stdin afterwards.
         let initial_line = initial.take();
         let synthetic = initial_line.is_some();
         if synthetic {
@@ -89,7 +94,8 @@ pub fn run_line_mode(
                     return stop_cli_lsp(agent.as_ref().ok(), Err(error).context("reading stdin"));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // 空闲时只展示迟到诊断，不续跑模型、不自动继续会话。
+                    // While idle, only surface late diagnostics; never resume the model or
+                    // continue the session automatically.
                     let polled = match agent.as_mut() {
                         Ok(active) => {
                             let mut reports = Vec::new();
@@ -152,7 +158,8 @@ pub fn run_line_mode(
                 continue;
             }
         };
-        // 未知命令静默忽略，与 TUI 一致；显式启动命令例外，必须给出非零退出码。
+        // Unknown commands are silently ignored, same as the TUI; an explicit startup
+        // command is the exception and must produce a non-zero exit code.
         if matches!(command, Some(commands::Command::Unknown)) {
             if synthetic {
                 return stop_cli_lsp(
@@ -300,7 +307,8 @@ pub fn run_line_mode(
                 continue;
             }
             Some(commands::Command::Stats(arguments)) => {
-                // 浏览器 warning 与 launcher 回复分属两个通道：各自排空，互不丢行。
+                // Browser warnings and launcher replies travel on two channels: drain
+                // each independently so no line is lost.
                 if let Some(worker) = stats.as_ref() {
                     worker.drain_warnings(&mut stderr);
                 }
@@ -324,7 +332,7 @@ pub fn run_line_mode(
                 }
                 continue;
             }
-            // 行模式没有会话选择界面；按 ID 恢复仍用启动参数。
+            // Line mode has no session picker; resuming by ID still uses startup flags.
             Some(commands::Command::Resume) => {
                 writeln!(
                     stderr,
@@ -382,7 +390,8 @@ pub fn run_line_mode(
             }
             continue;
         }
-        // `/test-*` 不依赖真实配置：启动失败时仍使用内嵌 mock server。
+        // `/test-*` needs no real configuration: the embedded mock server is used even
+        // when startup failed.
         #[cfg(debug_assertions)]
         if let Some(commands::Command::MockTest(test)) = &command {
             if let Err(error) = run_cli_mock_test(*test, &mut stdout, &mut stderr) {

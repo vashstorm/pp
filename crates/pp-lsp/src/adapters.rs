@@ -1,4 +1,4 @@
-//! 识别旧 CLI adapter 配置；LSP 不再启动这些命令。
+//! Recognizes legacy CLI adapter configuration; LSP no longer starts these commands.
 pub(crate) fn is_adapter(name: &str) -> bool {
     matches!(name, "biome" | "swiftlint")
 }

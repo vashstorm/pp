@@ -1,5 +1,5 @@
-//! Hub 的纯数据投影：只从类型化 registry 与观察记录计算列表、inspector 和
-//! Activity，不调用模型、不读取任意 artifact 正文、不改变 result consumed。
+//! Pure data projection of the Hub: it derives the list, the inspector and the
+//! Activity only from the typed registry and observation records; it never calls the model, reads arbitrary artifact bodies or changes result consumed.
 
 use pp_core::context::ContextUsage;
 use pp_core::events::AgentEvent;
@@ -20,7 +20,7 @@ mod window;
 pub(in crate::tui) use text::now_ms;
 pub(super) use text::truncate;
 
-/// Activity 摘要保留的 Unicode 标量上限；完整输出只在详情里。
+/// Unicode scalar cap kept for an Activity summary; the full output lives only in the detail.
 const SUMMARY_SCALARS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -127,10 +127,10 @@ impl Scope {
     }
 }
 
-/// 一条 Activity 行；`offset` 是详情定位用的源行起始偏移。
+/// One Activity line; `offset` is the starting source line offset used to position the detail.
 #[derive(Clone, Debug)]
 pub(super) struct ActivityRow {
-    /// 稳定行键；跨重排、暂停 follow 与详情锚点都用它。
+    /// Stable row key; used across re-sorts, paused follow and detail anchors.
     key: String,
     pub agent: String,
     pub run: Option<String>,
@@ -142,7 +142,7 @@ pub(super) struct ActivityRow {
     pub title: String,
     pub summary: String,
     brief: Option<String>,
-    /// 旧日志合成行的排序阶段：task=0、事件=1、终态=2。
+    /// Sort phase of rows synthesized from old logs: task=0, event=1, terminal=2.
     phase: u8,
 }
 
@@ -169,14 +169,14 @@ pub(super) struct AgentView {
     pub registered_ms: Option<u64>,
     pub parent: String,
     pub model: String,
-    /// 子 Agent 的工作目录；isolated Agent 由 runtime 已改写为 worktree 路径。
+    /// Working directory of the subagent; for an isolated Agent the runtime already rewrote it to the worktree path.
     pub cwd: PathBuf,
     pub thinking: String,
     pub model_change: Option<String>,
     pub status: AgentStatus,
-    /// 强制停止后，Run 仍可能正在收尾。
+    /// After a forced stop the Run may still be wrapping up.
     pub has_active_run: bool,
-    /// 已完成任务仍可同时属于已停泊的 Agent。
+    /// A finished task may still belong to a parked Agent at the same time.
     pub parked: bool,
     pub task: Option<String>,
     pub current: Option<String>,
@@ -189,7 +189,7 @@ pub(super) struct AgentView {
     pub time_ms: Option<u64>,
     pub active_ms: Option<u64>,
     pub span_ms: Option<u64>,
-    /// 全历史扫描未完成时指标标 loading。
+    /// Metrics show loading while the full history scan is incomplete.
     pub loading: bool,
     pub context: Option<ContextUsage>,
     pub readonly: bool,
@@ -199,12 +199,12 @@ pub(super) struct AgentView {
     pub last_activity: Option<u64>,
 }
 
-/// 树形或扁平列表中的一行；`prefix` 已包含分支符。
+/// A row in the tree or flat list; `prefix` already contains the branch glyphs.
 #[derive(Clone, Debug)]
 pub(super) struct TreeRow {
     pub agent: usize,
     pub prefix: String,
-    /// 只为 lineage 保留的祖先行。
+    /// Ancestor row kept only for lineage.
     pub muted: bool,
 }
 
@@ -226,13 +226,13 @@ impl WorkSummary {
 
 #[derive(Default)]
 struct Stream {
-    /// `agent|run` -> 当前 assistant turn 计数。
+    /// `agent|run` -> current assistant turn count.
     turns: BTreeMap<String, u64>,
-    /// 该 run 是否出现过 RunState 标记。
+    /// Whether that run ever saw a RunState marker.
     markers: BTreeSet<String>,
     legacy_task: BTreeSet<String>,
     legacy_terminal: BTreeSet<String>,
-    /// run -> 真实 running 状态的时间戳（毫秒）。
+    /// run -> timestamp (milliseconds) of the real running state.
     started: BTreeMap<String, u64>,
     ended: BTreeMap<String, u64>,
     work: BTreeMap<String, WorkSummary>,
@@ -249,13 +249,13 @@ pub(in crate::tui) struct Projection {
     snapshot: Option<HubSnapshot>,
     agents: Vec<AgentView>,
     index: BTreeMap<String, usize>,
-    /// (id, generation) -> 冻结排序权重，越大越靠前。
+    /// (id, generation) -> frozen sort weight; a larger weight comes first.
     ranks: BTreeMap<(String, u64), u64>,
     next_rank: u64,
     rows: Vec<ActivityRow>,
     keys: BTreeMap<String, usize>,
     streams: BTreeMap<String, Stream>,
-    /// 全历史扫描完成的 agent。
+    /// Agents whose full history scan finished.
     scanned: BTreeSet<String>,
     sorted: bool,
     needs_finalize: bool,
@@ -283,12 +283,12 @@ impl Projection {
         &self.rows
     }
 
-    /// 首次快照前视为加载中，不能先闪空状态。
+    /// Treated as loading before the first snapshot; the empty state must not flash first.
     pub(super) fn loading(&self) -> bool {
         self.snapshot.is_none()
     }
 
-    /// 该 agent 的旧投影与详情锚点失效：只清空这一路。
+    /// The old projection and detail anchor of that agent are stale: only clear that lane.
     pub(in crate::tui) fn reset(&mut self, agent: &str) {
         self.rows.retain(|row| row.agent != agent);
         self.streams.remove(agent);
@@ -297,7 +297,7 @@ impl Projection {
         self.sorted = false;
     }
 
-    /// 每秒时钟刷新：重新计算 age 与活动 Run 的 elapsed。
+    /// Once-per-second clock refresh: recompute age and the elapsed time of active Runs.
     pub(super) fn refresh(&mut self, now_ms: u64) {
         if self.snapshot.is_some() {
             self.rebuild(now_ms);
@@ -310,7 +310,7 @@ impl Projection {
         self.rebuild(now_ms);
     }
 
-    /// 摄入一页观察记录；`page.has_more == false` 表示该 agent 历史已读完。
+    /// Ingest one page of observation records; `page.has_more == false` means that agent's history is fully read.
     pub(in crate::tui) fn ingest(&mut self, agent: &str, page: &EventPage, now_ms: u64) {
         for entry in &page.entries {
             self.consume(agent, entry);
@@ -322,7 +322,7 @@ impl Projection {
         self.rebuild(now_ms);
     }
 
-    /// 批量摄入总览／Activity 聚合页，全部消费完只执行一次投影重建。
+    /// Ingest a batched overview/Activity aggregation page; projection is rebuilt exactly once after the whole page is consumed.
     pub(in crate::tui) fn ingest_overview_batch(
         &mut self,
         pages: &[(String, OverviewPage)],

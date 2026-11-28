@@ -1,6 +1,8 @@
-// /resume 集成回归：两种协议的推理与工具回放、原生历史续写、持久输入记忆不被
-// replay 改写，以及跨目录加载历史时保留当前目录、状态栏、文件候选、模型和思考级别。
-// 日志原地追加，旧工具不重复执行；通过真实终端、HTTP 和文件系统观察行为。
+// /resume integration regression: reasoning and tool replay for both protocols, native history continuation,
+// persistent input memory not being rewritten by replay, and keeping the current directory, status line, file
+// candidates, model and thinking level when loading history from another directory.
+// The log is appended in place and old tools are not re-executed; behavior is observed through the real
+// terminal, HTTP and the file system.
 
 fn resume_history_journal_dir(home: &Path) -> std::path::PathBuf {
     home.join(".pp/agent/sessions")
@@ -94,10 +96,10 @@ fn resume_history_collect_order(pty: &mut Pty, markers: &[&str]) -> Vec<String> 
     found.into_iter().map(|(marker, _, _, _)| marker).collect()
 }
 
-// 恢复成功以对话可见、欢迎页关闭和输入就绪为栅栏。
+// A successful restore is confirmed by the visible conversation, the closed welcome page and a ready input.
 fn resume_history_wait_resumed(pty: &mut Pty, _id: &str, replayed: &[&str]) {
     pty.wait_for(
-        "恢复的对话可见且没有常规提示",
+        "the restored conversation is visible without a regular hint",
         |screen| {
             let text = screen.contents();
             input_is_ready(screen)
@@ -109,10 +111,10 @@ fn resume_history_wait_resumed(pty: &mut Pty, _id: &str, replayed: &[&str]) {
     );
 }
 
-// 退出后读取运行时已提交的原生历史与最后保留的主屏幕。
+// Read the native history the runtime already committed after exiting, plus the last retained main screen.
 fn resume_history_exit_scrollback(pty: &mut Pty, last_answer: &str) -> String {
     pty.input("\x03");
-    pty.wait_for("退出后恢复输入模式", |screen| !screen.bracketed_paste());
+    pty.wait_for("input mode is restored after exit", |screen| !screen.bracketed_paste());
     let (contents, _) = pty.native_history();
     assert!(contents.contains(last_answer), "{contents}");
     contents
@@ -282,8 +284,9 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
             "resume-history evidence\n"
         );
 
-        // 恢复只替换可见 transcript；replay 不再写入输入回忆，因此这里不断言
-        // ↑ 能取回旧会话的 prompt（持久回忆由独立输入历史回归覆盖）。
+        // Restore only replaces the visible transcript; replay no longer writes input recall, so ↑ bringing
+        // back the old session's prompt is not asserted here (persistent recall is covered by the standalone
+        // input history regression).
 
         pty.wait_for("resume notification fades before scrolling", |screen| {
             !screen.contents().contains("Resumed session:")
@@ -306,7 +309,7 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
             "replayed turns are out of order for {protocol}"
         );
 
-        // 工具输出恢复为折叠状态；Ctrl+O 全局展开和折叠，保留输入。
+        // Tool output is restored folded; Ctrl+O expands and collapses globally while keeping the input.
         for _ in 0..80 {
             pty.drain();
             if pty.parser.screen().contents().contains("print(\"resume-history evidence") {
@@ -327,7 +330,8 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
         );
         pty.input("\x0f");
 
-        // 展开会增加卡片高度；先浏览到开头，不依赖展开后的 viewport 位置。
+        // Expanding increases the card height; browse to the start first instead of relying on the viewport
+        // position after expansion.
         for _ in 0..80 {
             pty.drain();
             if pty.parser.screen().contents().contains("resume-history-bash-001") {
@@ -465,7 +469,7 @@ for i in {1..60}; do printf 'resume-history-bash-%03d\\n' \"$i\"; done";
         );
 }
 
-// 跨协议恢复的四种组合各自独立：保存协议 × 当前协议。
+// The four cross-protocol restore combinations are independent: saved protocol × current protocol.
 fn resume_history_model_case(saved_protocol: &str, current_protocol: &str) {
     let server = server();
             let home = tempfile::tempdir().unwrap();
@@ -479,7 +483,7 @@ fn resume_history_model_case(saved_protocol: &str, current_protocol: &str) {
                 json!({"primary": {"model":"vendor-old"}})
             )}}).to_string()).unwrap();
 
-            // 保存含工具调用和推理输出的历史，随后删除旧模型配置。
+            // Save history containing tool calls and reasoning output, then delete the old model configuration.
             let mut saved = Pty::start_with_args(project.path(), home.path(), &[]);
             saved.ready_model("fixture/primary");
             saved.input("matrix old prompt\r");
@@ -518,7 +522,8 @@ fn resume_history_model_case(saved_protocol: &str, current_protocol: &str) {
             pty.ready_model("fixture/selected");
             pty.input("/effort low\r");
             pty.ready_effort("low");
-            // 恢复不读取磁盘配置，也不能把手动选择的模型改回默认模型。
+            // Restore does not read the on-disk configuration and must not revert the manually selected model to
+            // the default one.
             std::fs::write(&models, "invalid configuration").unwrap();
             pty.input("/resume\r");
             pty.text("matrix old prompt");
@@ -552,8 +557,10 @@ fn resume_history_model_case(saved_protocol: &str, current_protocol: &str) {
             pty.input("/quit\r");
             pty.finish();
 
-            // 重启后再次加载，验证转换后的完整状态和后续追加没有协议或游标错位。
-            // 手动选择只存在内存（a 槽），重启即丢弃；恢复后的模型回到配置默认（b 槽）。
+            // Load it again after a restart to verify the converted full state and later appends have no protocol
+            // or cursor misalignment.
+            // The manual selection lives only in memory (slot a) and is dropped on restart; the restored model
+            // returns to the configuration default (slot b).
             std::fs::write(&models, &current_models).unwrap();
             let mut reloaded = Pty::start_with_args(project.path(), home.path(), &["--resume", &id]);
             reloaded.ready_model("fixture/primary");

@@ -158,8 +158,8 @@ fn opposite_function_key(character: char) -> Event {
     Event::Key(KeyEvent::new(KeyCode::Char(character), modifiers))
 }
 
-/// 真实 `model_control` 控制线程 + 主 Agent 绑定：临时目录里单 provider 单模型，
-/// 未写 `thinking` 因此允许全部档位。夹具只用于 `Change::Think`，不重载模型文件。
+/// Real `model_control` control thread plus main Agent binding: one provider and one model in a temp directory,
+/// with no `thinking` declared so every level is allowed. The fixture is only for `Change::Think` and does not reload model files.
 fn model_control() -> (
     pp_runtime::model_control::Service,
     pp_runtime::model_control::Binding,
@@ -170,11 +170,11 @@ fn model_control() -> (
     (control, binding)
 }
 
-/// 与 [`model_control`] 相同，但由调用方给出 `models.yml` 正文，并返回目录快照。
+/// Same as [`model_control`] but with caller-supplied `models.yml` content, returning the catalog snapshot.
 ///
-/// 夹具预置一个与配置默认不同的手动档位：新的 `ModelState` 中 `Change::Think`
-/// 只修改已有的 `a` 槽，未登记覆盖时不会发布新 revision。测试关注提交/确认链路，
-/// 因此这里先建立与真实使用一致的前提。
+/// The fixture pre-sets a manual level different from the configured default: in a fresh `ModelState`, `Change::Think`
+/// only updates an existing `a` slot and publishes no new revision when no override is registered. The test targets the submit/confirm path,
+/// so it first establishes the same premise real usage has.
 fn model_control_with(
     models: &str,
 ) -> (
@@ -202,7 +202,7 @@ fn model_control_with(
     (control, binding, choices)
 }
 
-/// 轮询 UI 直到真实控制线程发布手动覆盖目标；返回已登记的 `a` 快照。
+/// Poll the UI until the real control thread publishes a manual override target; returns the registered `a` snapshot.
 fn wait_for_override(app: &mut App, reference: &str) -> pp_config::model_state::Selection {
     for _ in 0..400 {
         app.receive();
@@ -218,7 +218,7 @@ fn wait_for_override(app: &mut App, reference: &str) -> pp_config::model_state::
     panic!("model control published no override for {reference}");
 }
 
-/// 先等到 `ThinkQueued` 再注入结果，避免异步控制线程与测试注入交错。
+/// Wait for `ThinkQueued` before injecting the result so the async control thread and the test injection do not interleave.
 fn wait_for_queued_think(app: &mut App, level: ThinkLevel) -> u64 {
     for _ in 0..400 {
         app.receive();
@@ -233,7 +233,7 @@ fn wait_for_queued_think(app: &mut App, level: ThinkLevel) -> u64 {
     panic!("model control published no queued effort");
 }
 
-/// 夹具目录里的唯一模型：未写 `thinking` 因此允许全部档位。
+/// The only model in the fixture directory: no `thinking` declared, so every level is allowed.
 fn all_levels_choice() -> ModelChoice {
     ModelChoice {
         reference: "fixture/one".into(),
@@ -343,7 +343,7 @@ fn plan_review_fixture(status: PlanStatus) -> PlanReview {
     }
 }
 
-/// 打开审阅面板并通过操作区第 4 项启动独立 reviewer；返回 ReviewPlan 命令。
+/// Open the review panel and start the standalone reviewer from action 4; returns the ReviewPlan command.
 fn start_review(app: &mut App, requests: &mpsc::Receiver<WorkerCommand>) -> WorkerCommand {
     let mut review = plan_review_fixture(PlanStatus::Ready);
     review.report = app.workflow.review.clone();

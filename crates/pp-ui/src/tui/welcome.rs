@@ -10,7 +10,7 @@ use ratatui::{
 
 pub(super) struct WelcomeContext<'a> {
     pub(super) mcp_tips: &'a [String],
-    /// 对话区已有正文时为真：此时不再占用顶部留白，优先把行让给正文。
+    /// True when the conversation already has content: the top padding is dropped and rows go to the body first.
     pub(super) reserve_trailing: bool,
 }
 
@@ -96,7 +96,7 @@ const WORDMARK: [&str; 5] = [
 ];
 const TAGLINE: &str = "Paper Plane";
 const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
-/// 欢迎页顶部留白行数：仅在内容之外还有富余行时生效。
+/// Number of top padding rows on the welcome page: applies only when rows remain beyond the content.
 const TOP_PADDING: u16 = 2;
 const LOGO: [(&str, &str); 7] = [
     ("             ▄▄", "▄█"),
@@ -164,8 +164,8 @@ fn two_column_card_lines(card_width: u16, inset: u16) -> Vec<Line<'static>> {
     let rule_style = Style::default().fg(separator());
     let pad = " ".repeat(usize::from(inset));
     let inner = usize::from(card_width.saturating_sub(inset * 2));
-    // 中间竖线占用 3 列：" │ "；宽屏平分左右列使竖线居于卡片正中（对齐顶部 logo 与 PP 间隙），
-    // 极窄双栏则优先保留右列 38 列防止快捷键描述折行。
+    // The middle divider takes 3 columns: " │ "; wide screens split the two columns so the divider is centered in the card (aligning with the gap between the logo and PP),
+    // and a very narrow two-column layout keeps the right column at 38 columns so shortcut descriptions do not wrap.
     let left_col = if inner >= 79 {
         (inner - 3) / 2
     } else {
@@ -360,7 +360,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
         .centered()
         .wrap(Wrap { trim: false });
     let mut brand_height = brand.line_count(area.width);
-    // 完整标识放不下全部提示时，尝试用较矮的标识为提示腾出空间。
+    // When the full logo leaves no room for every hint, try a shorter logo to free space for them.
     if !compact && brand_height + usize::from(full_tips_height) > usize::from(area.height) {
         let smaller_brand = Paragraph::new(brand_lines(true))
             .centered()
@@ -412,8 +412,8 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
 
     let total_height =
         brand_height + body_card_height + footer_gap + body_footer_height + mcp_gap + mcp_height;
-    // 欢迎页上对齐：标准版在确有富余行时保留 2 行顶部留白；紧凑版、矮窗口与
-    // 对话区已有正文时贴住首行，避免裁切下方正文。
+    // Welcome page top alignment: the standard layout keeps 2 padding rows only when rows really remain; the compact layout, short windows and
+    // a conversation that already has content stick to the first row so body content below is not clipped.
     let top = if compact || ctx.reserve_trailing {
         0
     } else {
@@ -453,7 +453,7 @@ pub(super) fn draw(frame: &mut Frame, area: Rect, ctx: WelcomeContext<'_>) -> Re
         );
     }
 
-    // 欢迎内容下方仍可显示重置提示，输入区始终由主布局固定在底部。
+    // A reset hint may still appear below the welcome content, and the main layout always pins the input area to the bottom.
     let used = (top + total_height + 1).min(area.height);
     Rect::new(area.x, area.y + used, area.width, area.height - used)
 }

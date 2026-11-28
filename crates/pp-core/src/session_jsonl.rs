@@ -1,4 +1,5 @@
-//! 单个会话的共享值表。每个 JSON 值只定义一次，记录引用已有的值。
+//! Shared value table for a single session. Each JSON value is defined once and records reference
+//! existing values.
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
@@ -24,7 +25,8 @@ struct Record {
     root: usize,
 }
 
-/// 编码视图：直接借用刚插入的节点，不再为每条记录克隆整段值表。
+/// Encoding view: borrows the node just inserted instead of cloning the whole value table per
+/// record.
 #[derive(Serialize)]
 struct RecordRef<'a> {
     values: &'a [Node],
@@ -77,7 +79,8 @@ impl Storage {
         self.insert(node)
     }
 
-    /// 唯一写入口：直接 intern 已构造的值，返回本条记录（不含换行）。
+    /// Sole write entry point: interns the value already built and returns this record (without the
+    /// trailing newline).
     pub fn encode(&mut self, value: &Value) -> io::Result<Vec<u8>> {
         let first = self.nodes.len();
         let root = self.intern(value);
@@ -142,7 +145,8 @@ impl Storage {
     }
 }
 
-/// 返回物理字节数，调用方的文件游标不受解码后的行长度影响。
+/// Returns the physical byte count so the caller's file cursor is unaffected by the decoded line
+/// length.
 pub struct Reader<R> {
     reader: R,
     storage: Storage,

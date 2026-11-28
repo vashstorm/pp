@@ -1,4 +1,4 @@
-//! 主题调色板、图标模式（Nerd Font / ASCII）激活态与 `/themes` 独立分类设置面板。
+//! Theme palettes, the active icon mode (Nerd Font / ASCII) and the `/themes` per-category settings panel.
 use std::{
     cell::Cell,
     path::PathBuf,

@@ -125,7 +125,7 @@ pub(super) fn clip_spans(
     out
 }
 
-/// 唯一头部合成器：右列贴右边缘，空间不足时左侧收缩并加省略号，确保状态列不消失。
+/// The single header compositor: the right column hugs the right edge, and when space runs out the left side shrinks and gains an ellipsis so the status column never disappears.
 pub(in crate::tui) fn compose_header(
     left: Vec<Span<'static>>,
     right: Vec<Span<'static>>,
@@ -243,7 +243,7 @@ pub(super) fn footer_spans(
     spans
 }
 
-/// 合成带有标题与可选项的正文主体与右侧元数据文本。
+/// Compose a body with a title and optional items, plus right-side metadata text.
 pub(super) fn subject_and_meta(
     entry: &TranscriptEntry,
     icons: IconMode,
@@ -513,7 +513,7 @@ pub(super) fn subject_and_meta(
         );
     }
 
-    // 通用工具标题：剥离图标与标签前缀后的剩余描述作为 subject。
+    // Generic tool title: the remaining description after stripping the icon and label prefix becomes the subject.
     let icon = tool_glyph(entry, icons);
     let trimmed = entry
         .title

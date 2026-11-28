@@ -116,7 +116,7 @@ impl Transcript {
     }
 
     fn native_frontier(&self, exiting: bool) -> usize {
-        // 临时参数预览在退出时也不能冻结进原生历史。
+        // Temporary argument previews must not be frozen into native history on exit either.
         let mut frontier = self
             .argument_previews
             .values()
@@ -146,12 +146,12 @@ impl Transcript {
             .iter()
             .chain(self.thinking.iter())
             .chain(self.running_tools.iter().map(|(_, index)| index))
-            // 后台进程结束后仍可能被再次查询；当前任务收尾前不冻结原框。
+            // A background process may still be queried after it finishes; the original card is not frozen before the current turn wraps up.
             .chain(self.background_bash.values())
         {
             frontier = frontier.min(*index);
         }
-        // 相邻 read 还可能合并成同一摘要，整组关闭前不能冻结组首。
+        // Consecutive reads may also merge into one summary, so the group head cannot be frozen before the whole group closes.
         if self.has_live_activity() {
             if let Some(offset) =
                 self.entries
@@ -173,7 +173,7 @@ impl Transcript {
         frontier
     }
 
-    /// 每次最多准备 64 行；调用者必须在终端输出成功后确认，才推进源游标。
+    /// Prepare at most 64 lines at a time; the caller must acknowledge after the terminal output succeeds before the source cursor advances.
     pub(in crate::tui) fn next_native_batch(
         &mut self,
         width: u16,
@@ -206,7 +206,7 @@ impl Transcript {
                 .as_ref()
                 .expect("layout initialized")
                 .height;
-            // 无正文的分组成员不产生分隔行。
+            // Group members without a body produce no separator line.
             let span = if entry_height == 0 {
                 0
             } else {
@@ -255,9 +255,12 @@ impl Transcript {
     pub(in crate::tui) fn acknowledge_native_batch(&mut self, batch: NativeBatch) {
         assert_eq!(
             batch.generation, self.native_generation,
-            "历史批次来自其他会话"
+            "history batch belongs to another session"
         );
-        assert_eq!(batch.revision, self.native.revision, "历史批次已过期");
+        assert_eq!(
+            batch.revision, self.native.revision,
+            "history batch is stale"
+        );
         self.native = batch.next;
         self.native.revision += 1;
         self.native_preview = None;

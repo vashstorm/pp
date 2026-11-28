@@ -1,4 +1,4 @@
-//! 执行器与协议边界：真实短命进程、有界 I/O、进程组回收与决策解析。
+//! Executor and protocol boundaries: real short-lived processes, bounded I/O, process-group reaping and decision parsing.
 
 use super::*;
 use pp_config::config::{CommandHook, HookHandlerType, HookMatcherGroup};
@@ -41,7 +41,7 @@ fn command(path: &Path, timeout: u64) -> CommandHook {
     }
 }
 
-/// 输入信封带 cwd，执行器把它当作子进程工作目录。
+/// The input envelope carries cwd, which the executor uses as the child process working directory.
 fn envelope(dir: &Path) -> serde_json::Value {
     json!({
         "session_id": "s-1",
@@ -152,7 +152,7 @@ fn alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// 已回收的进程可能短暂处于僵尸状态：有界轮询而不是一次采样。
+/// A reaped process may stay a zombie briefly: bounded polling rather than a single sample.
 fn assert_reaped(pid: u32) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while alive(pid) {
@@ -182,7 +182,7 @@ fn hooks_exec_process_group_reaping_on_timeout_exit_and_cancel() {
             exec::Request {
                 command: path.to_str().unwrap(),
                 args: None,
-                // 宽限足够让 bash 在满载并行的机器上先落 marker，再被超时回收。
+                // The grace period is enough for bash to drop the marker on a heavily loaded machine before being reaped by the timeout.
                 timeout: Duration::from_secs(5),
                 cwd: dir.path(),
                 input: b"{}",
@@ -286,7 +286,7 @@ fn hooks_matcher_compile_and_protocol_validation() {
             .unwrap()
             .matches(Some("bash"))
     );
-    // `mcp__` 只含名称字符：按精确名称匹配，不做前缀匹配。
+    // `mcp__` contains only name characters: exact-name matching, no prefix matching.
     assert!(
         !Matcher::compile(HookEvent::PreToolUse, Some("mcp__"), 0)
             .unwrap()
@@ -310,7 +310,7 @@ fn hooks_matcher_compile_and_protocol_validation() {
     let error = Matcher::compile(HookEvent::PreToolUse, Some("(?<=x)y"), 0).unwrap_err();
     let text = error.to_string();
     assert!(text.contains("PreToolUse[0]"), "{text}");
-    // 错误不回显模式原文。
+    // The error does not echo the pattern source.
     assert!(!text.contains("(?<=x)"), "{text}");
 
     let link = settings(
@@ -387,12 +387,12 @@ fn hooks_matcher_compile_and_protocol_validation() {
             b"{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":[]}}",
         ),
         (HookEvent::PreToolUse, b"{\"hookSpecificOutput\":{}}"),
-        // 前置用 permissionDecision，不允许顶层 decision／reason。
+        // Pre-use uses permissionDecision; top-level decision/reason is not allowed.
         (
             HookEvent::PreToolUse,
             b"{\"decision\":\"block\",\"reason\":\"no\"}",
         ),
-        // 后置失败只接受 additionalContext。
+        // Post-failure accepts additionalContext only.
         (
             HookEvent::PostToolUseFailure,
             b"{\"decision\":\"block\",\"reason\":\"no\"}",
@@ -413,7 +413,7 @@ fn hooks_matcher_compile_and_protocol_validation() {
             "{event:?} {stdout:?} must be rejected"
         );
     }
-    // 尾部非空文本不是合法 JSON。
+    // Trailing non-empty text is not valid JSON.
     assert!(
         protocol::parse(
             HookEvent::PreToolUse,
@@ -480,7 +480,7 @@ fn hooks_protocol_status_image_stop_truncation_and_redaction() {
     assert_eq!(output.stop.as_deref(), Some("stop now"));
     assert!(output.deny.is_none());
 
-    // 原结果没有 `cancelled` 时，改写也不能凭空新增该状态。
+    // When the original result has no `cancelled`, a rewrite cannot invent that state either.
     let success = json!({"ok": true, "content": "original"});
     let error = protocol::parse(
         HookEvent::PostToolUse,
@@ -492,7 +492,7 @@ fn hooks_protocol_status_image_stop_truncation_and_redaction() {
     .unwrap_err();
     assert!(error.to_string().contains("cancelled"), "{error:#}");
 
-    // 省略原有状态字段是允许的：缺失的原值由解析器补回。
+    // Omitting an existing status field is allowed: the parser restores the missing original value.
     let output = protocol::parse(
         HookEvent::PostToolUse,
         Some(0),
@@ -511,7 +511,7 @@ fn hooks_protocol_status_image_stop_truncation_and_redaction() {
         "content": "Image: fixture.png",
         "mime_type": "image/png"
     });
-    // 省略 `kind`：由解析器补回，模型正文仍可被过滤。
+    // `kind` omitted: the parser restores it, and the model body can still be filtered.
     let output = protocol::parse(
         HookEvent::PostToolUse,
         Some(0),
@@ -524,7 +524,7 @@ fn hooks_protocol_status_image_stop_truncation_and_redaction() {
     assert_eq!(updated["content"], json!("filtered"));
     assert_eq!(updated["kind"], json!("image"));
 
-    // 改成其它值会破坏附件关联，必须拒绝。
+    // Changing it to another value would break the attachment link and must be rejected.
     let error = protocol::parse(
         HookEvent::PostToolUse,
         Some(0),
@@ -535,7 +535,7 @@ fn hooks_protocol_status_image_stop_truncation_and_redaction() {
     .unwrap_err();
     assert!(error.to_string().contains("kind"), "{error:#}");
 
-    // `stopReason` 是停止理由，不能独立触发停止。
+    // `stopReason` is a stop reason and cannot trigger a stop on its own.
     for stdout in [
         &br#"{"continue":true,"stopReason":"note"}"#[..],
         br#"{"continue":true,"stopReason":""}"#,
@@ -586,7 +586,7 @@ fn hooks_protocol_status_image_stop_truncation_and_redaction() {
     .unwrap();
     assert!(!output.deny.unwrap().contains('\u{1b}'));
 
-    // 缺 reason 的 block 不能静默放行：输入、Stop 与后置反馈都拿到默认理由。
+    // A block without reason must not be silently allowed: input, Stop and post feedback all get the default reason.
     for (event, stdout) in [
         (
             HookEvent::UserPromptSubmit,
@@ -691,7 +691,7 @@ fn hooks_runner_order_policies_matching_stdin_and_stop() {
                 &mut |_| {},
             )
             .unwrap();
-        // 普通文本不提供决定，两个 allow 的上下文按顺序保留；deny 短路。
+        // Plain text provides no decision; the context of both allows is kept in order and deny short-circuits.
         assert_eq!(effect.additional_context, vec!["ctx-2".to_owned()]);
         assert_eq!(effect.deny_reason.as_deref(), Some("blocked"));
     }
@@ -905,7 +905,7 @@ fn hooks_runner_order_policies_matching_stdin_and_stop() {
     {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing-hook.sh");
-        // 直接 exec（不经 bash）才能让进程创建本身失败，覆盖启动错误路径。
+        // Only a direct exec (no bash) can make process creation itself fail, covering the startup error path.
         let mut hook = command(&missing, 30);
         hook.args = Some(Vec::new());
         let runner = Runner::compile(&settings(HookEvent::PreToolUse, None, vec![hook])).unwrap();

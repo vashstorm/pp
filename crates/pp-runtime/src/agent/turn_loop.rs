@@ -1,4 +1,4 @@
-//! 轮次循环与提交边界上的补充输入应用／归还。
+//! Supplementary input application/return at the turn loop and commit boundaries.
 use super::{
     Agent, Session, debug,
     input::{InputQueue, PendingInput},
@@ -15,7 +15,7 @@ use pp_core::cancellation::{self, CancellationToken, Cancelled, RunOutcome};
 use pp_core::events::AgentEvent;
 use std::collections::VecDeque;
 
-/// 每次 `run_loop` 最多 8 次 hook 续跑；工具调用与 steering 不清零。
+/// At most 8 hook continuations per `run_loop`; tool calls and steering do not reset the count.
 const STOP_HOOK_LIMIT: u8 = 8;
 
 impl Agent {
@@ -34,7 +34,7 @@ impl Agent {
         let mut resource_budget_warned = false;
         let mut claim_boundary = true;
         let mut reminder = todo::TodoReminderState::default();
-        // 只借用 `hooks` 字段；identity 与资格在进入循环时固定。
+        // Only the `hooks` field is borrowed; identity and eligibility are fixed on loop entry.
         let hooks = super::hooks::scope(
             &self.hooks,
             self.subagent.as_ref(),
@@ -47,7 +47,7 @@ impl Agent {
         let mut pruned_since_progress = false;
         let mut overflow_stage = 0u8;
         let mut cached_usage: Option<pp_core::context::ContextUsage> = None;
-        // 本次任务运行的增量用量记账：只有新增消息会被序列化，整段替换历史时显式失效。
+        // Incremental usage accounting for this task run: only new messages are serialized, and wholesale history replacement invalidates it explicitly.
         let mut estimate = SessionEstimate::default();
         if let Some(schema) = &mut self.output_schema {
             schema.reset_retries();
@@ -68,7 +68,7 @@ impl Agent {
             }
             if self.apply_runtime_models_changed()? {
                 cached_usage = None;
-                // 切模型可能跨协议重建历史，旧的手工累计不再对应原生请求。
+                // A model switch may rebuild history across protocols, so the old manual accumulation no longer matches the native request.
                 estimate.invalidate();
             }
             plan_sync::sync_plan_todos(
@@ -80,13 +80,13 @@ impl Agent {
             )?;
             if self.refresh_instructions_changed()? {
                 cached_usage = None;
-                // 系统提示词就地重写首条消息，字节数必须重新累计。
+                // The system prompt rewrites the first message in place, so the byte count must be accumulated again.
                 estimate.invalidate();
             }
             if self.receive_lsp_diagnostics(emit)? {
                 cached_usage = None;
             }
-            // 补充边界：仅首次普通请求前，以及上一轮完整回复/整批工具结果成功提交之后。
+            // Supplementary boundary: only before the first normal request, and after the previous turn's full reply/tool batch was committed successfully.
             let claimed = match (input, claim_boundary) {
                 (Some(queue), true) => queue.claim_steering(false)?,
                 _ => VecDeque::new(),
@@ -128,10 +128,10 @@ impl Agent {
                 // quota checks can fail. Never journal the temporary summary.
                 self.persist_pending_input(user.take())?;
                 self.compact_impl(true, cancellation, emit)?;
-                // 压缩整段替换历史，下一次估算必须全量重算。
+                // Compaction replaces the whole history, so the next estimate must recompute fully.
                 estimate.invalidate();
                 cancellation::check(cancellation)?;
-                // 摘要期间文件也可能被修改；重新加载、估算并检查阈值后再发普通请求。
+                // Files may also change during summarization; reload, re-estimate and re-check thresholds before sending the normal request.
                 continue;
             }
             let metadata = Metadata {
@@ -152,7 +152,7 @@ impl Agent {
                 debug::DebugState::warn_unavailable();
                 self.debug = None;
             }
-            // 本轮请求前的用量已在本轮入口算好，诊断发布直接复用，避免重复全量估算。
+            // The pre-request usage was computed at this turn's entry, so context publishing reuses it and avoids a second full estimate.
             let mut published_usage = Some(usage);
             if let Some(binding) = &self.subagent
                 && binding.depth > 0
@@ -179,7 +179,7 @@ impl Agent {
                 }
                 if budget > 0 && request_count == budget {
                     append_developer_to(&mut self.session,"Request budget reached. Finish your current work and return the partial findings now.".into());
-                    // 历史在用量估算之后变化，发布路径必须重新估算。
+                    // History changed after the usage estimate, so the publishing path must re-estimate.
                     published_usage = None;
                 }
                 if !resource_budget_warned
@@ -300,7 +300,7 @@ impl Agent {
                         claim_boundary = false;
                         continue;
                     }
-                    // 应急裁剪与压缩均未释放足够空间，走原有模型失败/fallback 路径。
+                    // Emergency pruning and compaction freed no space, so take the existing model failure/fallback path.
                     if !self.model_source.is_fallback()
                         && let Some(limit) = self.max_turns
                         && request_count >= limit
@@ -317,9 +317,9 @@ impl Agent {
                 }
                 Err(error) if pp_llm::retry::model_request_failed(&error) => {
                     cancellation::check(cancellation)?;
-                    // 主模型失败的请求同样占用 --max-turns 额度：轮次已满时直接以上限
-                    // 终止，不先激活备用模型或发出额外请求；备用自身的失败维持原有
-                    // 语义，直接把模型错误上浮。
+                    // A failed main-model request still consumes the --max-turns budget: once turns are exhausted,
+                    // terminate at the limit instead of activating the fallback model or issuing extra requests;
+                    // a fallback's own failure keeps the existing semantics and surfaces the model error directly.
                     if !self.model_source.is_fallback()
                         && let Some(limit) = self.max_turns
                         && request_count >= limit
@@ -329,7 +329,7 @@ impl Agent {
                     self.pending_instructions = None;
                     if self.activate_fallback(emit)? {
                         claim_boundary = false;
-                        // 备用模型可能换协议并重建历史。
+                        // The fallback model may switch protocols and rebuild history.
                         estimate.invalidate();
                         continue;
                     }
@@ -344,7 +344,7 @@ impl Agent {
                 self.receive_subagents(emit)?;
             }
             if self.apply_runtime_models_changed()? {
-                // 与循环入口相同：切模型后历史可能已被跨协议重建。
+                // Same as at loop entry: after a model switch the history may already be rebuilt across protocols.
                 estimate.invalidate();
             }
             if plan_dirty {
@@ -407,17 +407,17 @@ impl Agent {
                     );
                 }
                 let remind = todo::eligible(&self.workflow, &reminder, awaiting_user_answer);
-                // 待用户答复、错误的完成候选都不跑 Stop；只有根 Execute 有资格。
+                // A completion candidate awaiting the user or holding an error never runs Stop; only root Execute is eligible.
                 let stop_hooks =
                     !awaiting_user_answer && hooks.enabled(pp_config::config::HookEvent::Stop);
-                // 原子“领取或关闭”：最终回复与新补充仅在这个短锁内仲裁。
-                // 有 Stop handler 时先不关闭队列，脚本执行期间用户仍可补输入。
+                // Atomic "claim or close": the final reply and new supplementary input are arbitrated only inside this short lock.
+                // With a Stop handler the queue stays open so the user can still supply input while the script runs.
                 if let Some(queue) = input {
                     let batch = queue.claim_steering(!remind && !stop_hooks)?;
                     if !batch.is_empty()
                         && self.apply_pending(batch, input, &mut user, cancellation, emit)? > 0
                     {
-                        // 本边界只消费固定批次；确认期间新到达的消息等下一边界。
+                        // This boundary only consumes a fixed batch; messages arriving during confirmation wait for the next boundary.
                         claim_boundary = false;
                         continue;
                     }
@@ -459,11 +459,11 @@ impl Agent {
                     bail!("output does not match --output-schema: {reason}");
                 }
                 if stop_hooks {
-                    // 脚本执行期间不持队列锁；返回后重新仲裁停止决定与输入。
+                    // The queue lock is not held while the script runs; on return, re-arbitrate the stop decision and input.
                     let effect = self.hook_stop(&text, stop_hook_active, cancellation, emit)?;
                     cancellation::check(cancellation)?;
-                    // `continue:false` 是任务级停止：先于补充输入生效，
-                    // 队列保持原样，待处理项留给下一次 run 处理。
+                    // `continue:false` is a task-level stop: it applies before supplementary input,
+                    // the queue stays as is, and pending items are left for the next run.
                     if let Some(effect) = &effect
                         && let Some(reason) = &effect.stop_reason
                     {
@@ -486,13 +486,13 @@ impl Agent {
                         }
                         stop_continues += 1;
                         stop_hook_active = true;
-                        // 反馈走原生 developer 历史：恢复后不重跑脚本。
+                        // Feedback goes into native developer history: a restore never re-runs the script.
                         append_developer_to(&mut self.session, reason);
                         self.journal.commit((&self.session).into())?;
                         continue;
                     }
                 }
-                // 最终仲裁：原子领取或关闭队列；晚到的批次仍会在下一边界被应用。
+                // Final arbitration: atomically claim or close the queue; late batches are still applied at the next boundary.
                 if let Some(queue) = input {
                     let batch = queue.claim_steering(true)?;
                     if !batch.is_empty()
@@ -508,10 +508,11 @@ impl Agent {
         }
     }
 
-    // 在提交边界应用一批补充：先记账尚未持久化的初始输入，再逐条 append、
-    // 持久化并确认。已确认项永不归还；取消或持久化失败时归还未应用项——
-    // 归还只在唯一出口执行，失败路径不必各自维护 push_front 配对。
-    // 返回实际接受的条数：全被 hook 拒绝时调用方不能当作有新输入继续请求模型。
+    // Apply one supplementary batch at the commit boundary: first account for the initial input that is
+    // not yet persisted, then append, persist and confirm item by item. Confirmed items are never returned;
+    // on cancellation or a persistence failure the unapplied items go back—the return happens at a single
+    // exit, so failure paths need not maintain matching push_front calls.
+    // Returns how many items were accepted: when hooks reject them all the caller must not treat that as new input to the model.
     pub(in crate::agent) fn apply_pending(
         &mut self,
         mut batch: VecDeque<PendingInput>,
@@ -532,7 +533,7 @@ impl Agent {
                     return Err(Cancelled.into());
                 }
                 let item = batch.front().expect("batch is non-empty");
-                // 补充分同样要先过 UserPromptSubmit：拒绝只丢这一项，故障才停任务。
+                // Supplementary input also passes UserPromptSubmit first: a rejection drops only this item, a failure stops the task.
                 let effect = self.hook_user_input(item.prompt(), cancellation, emit)?;
                 if let Some(effect) = &effect {
                     if let Some(reason) = &effect.deny_reason {
@@ -593,7 +594,7 @@ impl Agent {
         super::persistence::SessionRef::from(&self.session).len()
     }
 
-    // 回退尚未持久化的内存 user/developer append。
+    // Roll back the in-memory user/developer appends that are not persisted yet.
     fn truncate_session(&mut self, len: usize) {
         match &mut self.session {
             Session::Completion(request) => request.messages.truncate(len),

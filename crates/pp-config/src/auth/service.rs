@@ -19,7 +19,7 @@ pub struct Update {
 }
 
 pub fn list(dir: &Path) -> Result<Vec<Provider>> {
-    // list 没有外部取消令牌；初始化仅读取迁移状态，用独立令牌即可。
+    // list has no external cancellation token; initialization only reads migration state, so an independent token is enough.
     crate::agent_store::initialize(dir, &CancellationToken::new())?;
     let store = Store::load(&dir.join("agent.db"))?;
     Ok(Provider::ALL
@@ -73,11 +73,11 @@ pub fn commit_login(
 ) -> Result<()> {
     credential.validate(provider)?;
     let path = dir.join("agent.db");
-    // 在取得授权锁之前完成一次性迁移；Store::load 不再读旧文件，锁内不触发迁移。
+    // Complete the one-time migration before acquiring the auth lock; Store::load no longer reads the old file, so no migration happens under the lock.
     crate::agent_store::initialize(dir, cancellation)?;
     let _lock = StoreLock::acquire(&path, cancellation)?;
     let mut store = Store::load(&path)?;
-    // 只有能确认身份相同才沿用缓存；未知身份按新授权处理。
+    // Reuse the cached generation only when identity provably matches; unknown identities are treated as a new authorization.
     credential.generation = match store.credentials.get(&provider) {
         Some(old)
             if (old.account_id.is_some() && old.account_id == credential.account_id
@@ -101,7 +101,7 @@ pub fn discover(
 ) -> Result<Update> {
     progress(Progress::Discovering);
     let path = dir.join("agent.db");
-    // 网络发现之外的所有存储步骤都走 agent.db；初始化必须在取锁前完成。
+    // Every storage step outside the network discovery goes through agent.db; initialization must finish before taking the lock.
     crate::agent_store::initialize(dir, cancellation)?;
     let result = (|| {
         let http = crate::auth::http::Http::new()?;
@@ -121,11 +121,14 @@ pub fn discover(
                 .is_some_and(|expiry| expiry <= super::now().saturating_add(60))
             {
                 credential = http.renew(provider, &credential, cancellation)?;
-                // 刷新令牌与原授权共享同一目录版本。
+                // The refreshed token shares the same directory generation as the original authorization.
                 store.credentials.insert(provider, credential);
                 check(cancellation)?;
                 store.save(&path)?;
-                store.credentials.remove(&provider).expect("刚保存的授权")
+                store
+                    .credentials
+                    .remove(&provider)
+                    .expect("just-saved authorization")
             } else {
                 credential
             }
@@ -156,7 +159,7 @@ pub fn discover(
         catalog.save(&models_path)?;
         Ok(count)
     })();
-    // 授权提交之后发现失败也必须显示已保存状态；不把失败伪装成发现成功。
+    // A discovery failure after the authorization commits must still show the saved state; failures are never disguised as successful discovery.
     let message = match result {
         Ok(count) => format!("Logged in. Discovered {count} models. Use /model to select a model."),
         Err(error) => format!(
@@ -171,7 +174,7 @@ pub fn discover(
 
 pub fn logout(dir: &Path, provider: Provider, cancellation: &CancellationToken) -> Result<Update> {
     let path = dir.join("agent.db");
-    // 在取得授权锁之前完成一次性迁移；锁内不再读旧 auth.yml。
+    // Complete the one-time migration before acquiring the auth lock; the old auth.yml is no longer read under the lock.
     crate::agent_store::initialize(dir, cancellation)?;
     let _lock = StoreLock::acquire(&path, cancellation)?;
     let mut store = Store::load(&path)?;

@@ -1,16 +1,20 @@
-// TUI 任务级取消回归（计划验证项 1、2、4）：两协议 headers 前/SSE 空闲取消
-// 与真实连接关闭、工具批次取消停止真实进程组、取消终态持久化与重启恢复合法性，
-// 以及取消收尾持久化失败优先显示 persisting session。全部通过真实 PTY、本地
-// loopback HTTP、原始 TCP fixture、进程/文件 marker 作栅栏观察行为，不用 sleep
-// 猜测阶段。辅助项均以 `cancel_` 前缀命名，不新增 use 声明，避免与兄弟 include
-// 文件冲突。文件后半为 `background_` 前缀的后台任务 PTY 场景：Esc 取消清理、
-// Ctrl-C 退出闭环与 status/stop 生命周期展示。
+// TUI task-level cancellation regression (plan verification items 1, 2, 4): cancelling before the
+// headers / while the SSE stream is idle for both protocols, together with the real connection close;
+// tool-batch cancellation stopping the real process group; persistence of the cancelled terminal
+// state and the legality of restart recovery; and a persistence failure during cancellation cleanup
+// surfacing "persisting session" first. Everything observes behavior through the real PTY, local
+// loopback HTTP, a raw TCP fixture and process/file markers as barriers, never by guessing stages with
+// sleep. Helpers are all named with the `cancel_` prefix and no use declaration is added, to avoid
+// clashing with sibling include files. The second half holds `background_`-prefixed background task
+// PTY scenarios: Esc cancellation cleanup, the Ctrl-C exit loop and status/stop lifecycle rendering.
 
-// 取消收尾唯一可见的状态行；取消不再向对话追加提示块。
+// The only visible status line of cancellation cleanup; cancelling no longer appends a hint block to
+// the conversation.
 const CANCEL_DONE: &str = "✻ Cancelled ·";
 const CANCEL_SETTINGS: &str = "{\"default_model\":\"fixture/primary\",\"request_timeout_seconds\":120,\"notification_timeout_seconds\":2}";
-// 显式外部 sh 提供独立 shell PID（内嵌 shell 不伪造 $$）；父 sh 忽略 TERM，
-// 证明取消路径用 grace 后的 KILL 回收整个进程组。
+// An explicit external sh supplies a standalone shell PID (the embedded shell does not fake $$); the
+// parent sh ignores TERM, proving the cancellation path reclaims the whole process group with KILL
+// after the grace period.
 const CANCEL_BATCH_COMMAND: &str = "sh -c 'trap \"\" TERM; printf \"cancel-ready\\n\"; printf \"%s\" \"$$\" > bash.pid; sleep 30 & child=$!; printf \"%s\" \"$child\" > bash-child.pid; wait \"$child\"'";
 
 fn cancel_normalize(screen: &vt100::Screen) -> String {
@@ -23,8 +27,8 @@ fn cancel_count_normalized(screen: &vt100::Screen, needle: &str) -> usize {
         .count()
 }
 
-// 取消收尾的最终帧栅栏：过渡帧可以先写出取消状态行，只有原生光标回到输入行
-// 才代表这一帧真正画完。
+// Final-frame barrier for cancellation cleanup: a transition frame may already write the cancelled
+// status line, and only the native cursor returning to the input row means the frame is really painted.
 fn cancel_cursor_on_input_row(screen: &vt100::Screen) -> bool {
     let Some(row) = screen
         .contents()
@@ -37,10 +41,10 @@ fn cancel_cursor_on_input_row(screen: &vt100::Screen) -> bool {
     !screen.hide_cursor() && usize::from(cursor_row) == row
 }
 
-// 取消完成后：5 秒内回到 Ready、仍在主屏幕、恰好一条取消完成状态行，
-// 且光标已回到输入行（最终帧）。
+// After cancellation completes: back to Ready within 5 seconds, still on the main screen, exactly one
+// cancellation status line and the cursor back on the input row (final frame).
 fn cancel_wait_cancelled_ready(pty: &mut Pty) {
-    pty.wait_for("取消后回到 Ready 且仅一条取消状态行", |screen| {
+    pty.wait_for("Ready is restored after cancelling with exactly one cancellation status line", |screen| {
         input_is_ready(screen)
             && !screen.alternate_screen()
             && cancel_cursor_on_input_row(screen)
@@ -79,7 +83,7 @@ fn cancel_assistant_texts(body: &Value, protocol: &str) -> Vec<String> {
         .collect()
 }
 
-// 按 history 顺序返回 (call_id, result JSON)，覆盖两种协议的成对工具结果。
+// Return (call_id, result JSON) in history order, covering the paired tool results of both protocols.
 fn cancel_tool_outputs(body: &Value, protocol: &str) -> Vec<(String, Value)> {
     let items = body[if protocol == "completion" {
         "messages"
@@ -110,7 +114,7 @@ fn cancel_called_ids(body: &Value, protocol: &str) -> Vec<String> {
             .as_array()
             .unwrap()
             .iter()
-            // 只统计带 tool_calls 的 assistant；纯文本回复没有调用。
+            // Count only assistants with tool_calls; plain text replies contain no calls.
             .filter(|item| item["role"] == "assistant" && item["tool_calls"].is_array())
             .flat_map(|item| item["tool_calls"].as_array().unwrap().iter())
             .map(|call| call["id"].as_str().unwrap().to_owned())
@@ -135,14 +139,15 @@ fn cancel_assert_no_request(fixture: &TestServer) {
         let body = request.json().unwrap();
         assert!(
             is_task_title(&body),
-            "取消后出现了多余的模型请求: {body}"
+            "unexpected extra model request after cancelling: {body}"
         );
-        // 标题旁路可能晚于主任务终态到达；关闭响应通道，避免客户端等待到超时。
+        // The title side channel may arrive after the main task's terminal state; close the response so
+        // the client does not wait until the timeout.
         let _ = request.respond(Response::builder().status(204).body(Body::empty()).unwrap());
     }
 }
 
-// 驱动 write→bash→write 批次并等到 bash 进入等待阶段。
+// Drive a write→bash→write batch and wait until bash enters its waiting phase.
 fn cancel_drive_batch(
     pty: &mut Pty,
     fixture: &TestServer,
@@ -188,13 +193,13 @@ fn cancel_drive_batch(
             ),
         );
     }
-    // 文件 marker 是进入 bash 执行阶段的栅栏，不用 sleep 猜测。
+    // The file marker is the barrier for entering the bash execution phase; no sleep guessing.
     cancel_wait_pid_files(project, &["bash.pid", "bash-child.pid"]);
     pty.text("Timeout: 60s");
 }
 
-// 批次取消后的真实副作用：保留的文件不变、跳过的文件不存在、两个 PID 停止、
-// scratch 清理。
+// Real side effects after the batch is cancelled: kept files unchanged, skipped files absent, both
+// PIDs stopped, scratch cleaned up.
 fn cancel_assert_batch_stopped(project: &Path) {
     assert_eq!(
         std::fs::read_to_string(project.join("kept.txt")).unwrap(),
@@ -214,7 +219,7 @@ fn cancel_assert_paired_results(body: &Value, protocol: &str) {
             .map(|(id, _)| id.as_str())
             .collect::<Vec<_>>(),
         ["batch-kept", "batch-bash", "batch-skip"],
-        "三个 tool result 必须与原 call_id 按序配对"
+        "the three tool results must pair with their original call_id in order"
     );
     assert_eq!(
         cancel_called_ids(body, protocol),
@@ -234,8 +239,8 @@ fn cancel_assert_paired_results(body: &Value, protocol: &str) {
     assert_eq!(skipped["error"], "Not executed: task cancelled.");
 }
 
-// —— 验证项 1 的原始 TCP fixture：这里读完整 Content-Length 请求并可检测
-// peer EOF/reset，共享测试传输无法观察对端关闭。 ——
+// --- Raw TCP fixture for verification item 1: it reads the full Content-Length request and can detect
+// peer EOF/reset, which the shared test transport cannot observe. ---
 
 enum CancelRawEvent {
     Request { path: String, body: Value },
@@ -296,27 +301,27 @@ impl CancelRawModel {
         match self.events.recv_timeout(DEADLINE) {
             Ok(CancelRawEvent::Request { path, body }) => (path, body),
             Ok(CancelRawEvent::Closed) => {
-                panic!("模型连接在请求到达前就被关闭")
+                panic!("the model connection was closed before the request arrived")
             }
-            Err(_) => panic!("等待原始 fixture 上的模型请求超时"),
+            Err(_) => panic!("timed out waiting for a model request on the raw fixture"),
         }
     }
 
-    // 旧连接的 EOF/reset 必须在提交下一任务之前就能观察到。
+    // The old connection's EOF/reset must be observable before the next task is submitted.
     fn expect_close(&self) {
         match self.events.recv_timeout(DEADLINE) {
             Ok(CancelRawEvent::Closed) => {}
             Ok(CancelRawEvent::Request { .. }) => {
-                panic!("等待连接关闭时收到了多余的模型请求")
+                panic!("received an extra model request while waiting for the connection to close")
             }
-            Err(_) => panic!("被取消的模型连接在截止时间内没有关闭"),
+            Err(_) => panic!("the cancelled model connection did not close within the deadline"),
         }
     }
 
     fn hold(&self) {
         self.control
             .send(CancelRawCommand::Hold)
-            .expect("raw fixture 线程存活");
+            .expect("raw fixture thread is alive");
     }
 
     fn delta(&self, protocol: &'static str, text: &str) {
@@ -325,7 +330,7 @@ impl CancelRawModel {
                 protocol,
                 text: text.to_owned(),
             })
-            .expect("raw fixture 线程存活");
+            .expect("raw fixture thread is alive");
     }
 
     fn final_answer(&self, protocol: &'static str, text: &str) {
@@ -334,7 +339,7 @@ impl CancelRawModel {
                 protocol,
                 text: text.to_owned(),
             })
-            .expect("raw fixture 线程存活");
+            .expect("raw fixture thread is alive");
     }
 
     fn assert_silent(&self) {
@@ -342,7 +347,7 @@ impl CancelRawModel {
             self.events
                 .recv_timeout(Duration::from_millis(300))
                 .is_err(),
-            "取消后原始 fixture 上出现了多余的模型流量"
+            "extra model traffic appeared on the raw fixture after cancelling"
         );
     }
 }
@@ -397,7 +402,8 @@ fn cancel_raw_serve(
     }
 }
 
-// 读取完整 Content-Length 请求；header 之后不再消费对端数据，只用于检测关闭。
+// Read the complete Content-Length request; after the headers the peer is no longer consumed, so this
+// only serves to detect a close.
 fn cancel_raw_read_request(stream: &mut std::net::TcpStream) -> Option<(String, Value)> {
     stream.set_nonblocking(false).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
@@ -418,14 +424,14 @@ fn cancel_raw_read_request(stream: &mut std::net::TcpStream) -> Option<(String, 
         .split("\r\n")
         .next()
         .and_then(|line| line.split(' ').nth(1))
-        .expect("HTTP 请求行包含路径")
+        .expect("HTTP request line contains a path")
         .to_owned();
     let length: usize = head
         .split("\r\n")
         .find(|line| line.to_ascii_lowercase().starts_with("content-length:"))
         .and_then(|line| line.rsplit(':').next())
         .and_then(|value| value.trim().parse().ok())
-        .expect("模型请求必须携带 Content-Length");
+        .expect("model requests must carry Content-Length");
     let body_start = header_end + 4;
     while buffer.len() < body_start + length {
         let read = stream.read(&mut chunk).ok()?;
@@ -435,7 +441,7 @@ fn cancel_raw_read_request(stream: &mut std::net::TcpStream) -> Option<(String, 
         buffer.extend_from_slice(&chunk[..read]);
     }
     let body = String::from_utf8(buffer[body_start..body_start + length].to_vec()).ok()?;
-    let body: Value = serde_json::from_str(&body).expect("模型请求体是合法 JSON");
+    let body: Value = serde_json::from_str(&body).expect("model request body is valid JSON");
     Some((path, body))
 }
 
@@ -470,7 +476,7 @@ impl CancelRawStream {
         self.stream.flush().unwrap();
     }
 
-    // 与现有 streaming_delta 相同的字节格式。
+    // Same byte format as the existing streaming_delta.
     fn delta(&mut self, protocol: &str, text: &str) {
         self.open();
         if protocol == "completion" {
@@ -487,7 +493,7 @@ impl CancelRawStream {
         }
     }
 
-    // 与现有 streaming_complete 相同的字节格式。
+    // Same byte format as the existing streaming_complete.
     fn final_reply(&mut self, protocol: &str, text: &str) {
         self.open();
         if protocol == "completion" {

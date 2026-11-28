@@ -1,11 +1,13 @@
-// Markdown 块级渲染 PTY 回归：真实 PTY + 本地 SSE fixture 覆盖计划中 Markdown
-// 验证行 —— 两协议分段流式的中间态屏幕与 vt100 样式断言（先观察屏幕再发下一段）、
-// 未闭合 delimiter 与最终权威正文不重复、refusal 替换/refusal-only/空正文边界、
-// bash/read 字面输出不被 Markdown 解释、Unicode 表格与 >8192 grapheme 长行在
-// 100↔24 列缩放下的内容不丢失、运行中 PgUp 保持视口并在回到底部后恢复跟随、
-// 以及退出 scrollback 的完整样式回放。辅助函数以 `markdown_blocks_` 前缀命名，
-// 测试函数以 `transcript_blocks_markdown_` 前缀命名，不新增 use 声明以免与
-// 兄弟 include 文件冲突。
+// PTY regression for Markdown block rendering: a real PTY plus the local SSE fixture cover the Markdown
+// verification rows of the plan — the intermediate screens and vt100 style assertions of fragmented
+// streaming for both protocols (observe the screen before sending the next chunk), unclosed delimiters
+// not duplicating the final authoritative body, refusal replacement/refusal-only/empty-body boundaries,
+// bash/read literal output not being interpreted as Markdown, the content of Unicode tables and >8192
+// grapheme long lines surviving a resize between 100 and 24 columns, PgUp keeping the viewport while
+// running and following resuming after returning to the bottom, and full style replay in the exit
+// scrollback. Helpers are named with the `markdown_blocks_` prefix and test functions with the
+// `transcript_blocks_markdown_` prefix, and no use declaration is added to avoid clashing with sibling
+// include files.
 
 const MARKDOWN_BLOCKS_ERROR: vt100::Color = vt100::Color::Rgb(224, 108, 117);
 
@@ -19,8 +21,8 @@ fn markdown_blocks_start(fixture: &TestServer, protocol: &str, home: &Path, proj
     Pty::start_with_args(project, home, &[])
 }
 
-// 在屏幕上定位 needle：返回 (row, col)。所有参与取色的 needle 前面只有单列
-// 字符（ASCII/框线/制表符），因此字符序号即列号。
+// Locate needle on the screen: returns (row, col). Every needle used for color sampling has only
+// single-column characters before it (ASCII/box drawing/tab), so the character index equals the column.
 fn markdown_blocks_find(screen: &vt100::Screen, needle: &str) -> Option<(u16, u16)> {
     let (rows, cols) = screen.size();
     for row in 0..rows {
@@ -48,8 +50,9 @@ fn markdown_blocks_bold(screen: &vt100::Screen, needle: &str) -> bool {
     screen.cell(row, column).unwrap().bold()
 }
 
-// completion：refusal delta 走 chat chunk 的 refusal 字段；response：refusal
-// 占 (0,0) 部分并立即补 content_part.done，让流位置推进到下一列。
+// completion: the refusal delta goes through the chat chunk's refusal field; response: the refusal
+// occupies the (0,0) part and content_part.done follows immediately so the stream position advances to
+// the next column.
 fn markdown_blocks_refusal_delta(stream: &mut SseWriter, protocol: &str, text: &str) {
     if protocol == "completion" {
         stream.event(&chat_chunk(json!({"role":"assistant","refusal":text}), None)).unwrap();
@@ -67,8 +70,8 @@ fn markdown_blocks_refusal_delta(stream: &mut SseWriter, protocol: &str, text: &
     }
 }
 
-// response 协议的正文与 refusal 属于不同 content part，正文 delta 必须落在
-// (0,1)；completion 仍复用既有 streaming_delta。
+// On the response protocol the body and the refusal belong to different content parts, so a body delta
+// must land on (0,1); completion still reuses the existing streaming_delta.
 fn markdown_blocks_content_delta(stream: &mut SseWriter, protocol: &str, text: &str) {
     if protocol == "completion" {
         streaming_delta(stream, protocol, text);
@@ -159,14 +162,15 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
             }
             match index {
                 0 => {
-                    pty.wait_for("思考标题样式已就绪", |screen| screen.contents().contains("**bold") && markdown_blocks_find(screen, "Reasoning title").is_some() && markdown_blocks_bold(screen, "Reasoning title"));
+                    pty.wait_for("thinking title style is ready", |screen| screen.contents().contains("**bold") && markdown_blocks_find(screen, "Reasoning title").is_some() && markdown_blocks_bold(screen, "Reasoning title"));
                     assert!(markdown_blocks_bold(pty.parser.screen(), "Reasoning title"));
                     assert!(!markdown_blocks_bold(pty.parser.screen(), "**bold"));
                 }
                 1 => {
                     let keyword_color = vt100::Color::Rgb(197, 134, 192);
-                    // 预览会先显示代码文本，语法高亮由后台排版补齐。
-                    pty.wait_for("思考流补齐加粗和代码块", |s| {
+                    // The preview shows the code text first and background typesetting fills in the syntax
+                    // highlighting.
+                    pty.wait_for("thinking stream fills in bold and the code block", |s| {
                         markdown_blocks_find(s, "let x = 1;")
                             .and_then(|(row, col)| s.cell(row, col))
                             .map(vt100::Cell::fgcolor)
@@ -179,14 +183,14 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
                         markdown_blocks_fg(screen, "bold word", 0),
                         vt100::Color::Rgb(174, 72, 182)
                     );
-                    // 默认主题用绿色区分行内代码和紫色粗体。
+                    // The default theme distinguishes inline code in green from bold in purple.
                     assert_eq!(
                         markdown_blocks_fg(screen, "inline code", 0),
                         vt100::Color::Rgb(55, 165, 98)
                     );
                 }
                 _ => {
-                    pty.wait_for("思考流显示表格、列表和引用", |s| {
+                    pty.wait_for("thinking stream shows the table, list and quote", |s| {
                         let text = s.contents();
                         text.contains("cell bold") && text.contains("• list item")
                             && text.contains("quoted text") && text.contains("─┼─")
@@ -219,10 +223,10 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
         stream.finish();
         pty.text("Final answer");
         pty.ready();
-        // 缩放触发重新布局，思考的语义样式仍应保留。
+        // A resize triggers a new layout, and the semantic styles of thinking must survive it.
         for cols in [60, 100] {
             pty.resize(40, cols);
-            pty.wait_for("缩放后的思考语义排版已就绪", |screen| {
+            pty.wait_for("semantic thinking typesetting is ready after resize", |screen| {
                 screen.contents().contains("plain thinking")
                     && markdown_blocks_find(screen, "bold word").is_some()
                     && markdown_blocks_bold(screen, "bold word")
@@ -238,8 +242,9 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
             assert!(!screen.contents().contains("```"));
         }
         pty.input("/quit\r");
-        pty.wait_for("退出并恢复终端模式", |s| !s.hide_cursor() && !s.bracketed_paste());
-        // 退出后的终端原生历史也应保留高亮，且没有重复的思考正文。
+        pty.wait_for("quit restores the terminal mode", |s| !s.hide_cursor() && !s.bracketed_paste());
+        // The terminal's native scrollback after exiting must also keep the highlighting, without duplicating
+        // the thinking body.
         let screen = pty.parser.screen();
         assert_eq!(screen.contents().matches("plain thinking").count(), 1);
         assert!(markdown_blocks_bold(screen, "bold word"));

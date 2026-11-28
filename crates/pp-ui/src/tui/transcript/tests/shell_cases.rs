@@ -86,7 +86,7 @@ fn shell_display_tui_live_final_and_replay_share_command_layout() {
     assert_eq!(
         restored.matches('×').count(),
         1,
-        "一个执行节点只能标记一次失败：{restored}"
+        "a single execution node must only be marked as failed once: {restored}"
     );
     let position = restored
         .lines()
@@ -132,7 +132,7 @@ fn shell_display_tui_wrapping_unicode_and_control_sequences_are_safe() {
             );
             assert!(
                 !rows[0].to_string().trim().is_empty(),
-                "长词不能挤出空白首行"
+                "a long token must not push out the first line and leave it blank"
             );
         }
     }

@@ -1,4 +1,4 @@
-//! 后台 Bash 与子 Agent 共用的等待屏障；进度只发布展示快照。
+//! Wait barrier shared by background Bash and subagents; progress only publishes display snapshots.
 use super::*;
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -15,7 +15,7 @@ struct Args {
     run_ids: Vec<String>,
     #[serde(default)]
     task_ids: Vec<String>,
-    // 兼容旧调用；时限固定，模型不能通过此参数缩短等待。
+    // Kept for old callers; the time limit is fixed, so the model cannot shorten the wait through this argument.
     #[serde(default, rename = "timeout_ms")]
     _timeout_ms: u64,
 }
@@ -24,7 +24,7 @@ pub type Job = pp_workspace::WaitJob;
 
 #[derive(Default)]
 pub(super) struct State {
-    // 保留由 blocking task 工具直接返回的结果，避免同批 wait 再选中它们。
+    // Results returned directly by the blocking task tool are kept so a wait in the same batch does not select them again.
     blocking_runs: BTreeSet<String>,
     tasks: BTreeSet<String>,
     delivered_tasks: BTreeSet<String>,
@@ -100,7 +100,7 @@ impl Tools {
         state.tasks.clear();
     }
 
-    /// 只在原生工具批次成功同步后确认；写盘失败时预留记录仍然可重试。
+    /// Confirm only after the native tool batch synced successfully; when the disk write fails the reservation stays retryable.
     pub fn commit_wait_results(&self) -> Result<()> {
         let mut state = self.wait_state.borrow_mut();
         if !state.blocking_runs.is_empty()
@@ -148,7 +148,7 @@ impl Tools {
         self.run_wait_with_elapsed(arguments, call_id, token, emit, || started.elapsed())
     }
 
-    // 独立时间源让超时回归无需真实等待 120 分钟；生产入口始终使用单调时钟。
+    // A separate time source lets timeout regressions avoid a real 120-minute wait; production always uses the monotonic clock.
     pub fn run_wait_with_elapsed(
         &self,
         arguments: &str,
@@ -167,7 +167,7 @@ impl Tools {
             "wait IDs must not be blank. {TARGET_GUIDANCE}"
         );
         let explicit = !args.run_ids.is_empty() || !args.task_ids.is_empty();
-        // 所有 ID 在任何结果预留之前统一校验。
+        // All IDs are validated uniformly before any result reservation.
         let selected = self
             .wait_jobs(
                 (!explicit || !args.run_ids.is_empty()).then_some(args.run_ids.as_slice()),
@@ -217,19 +217,22 @@ impl Tools {
                 {
                     result["background_results"]
                         .as_array_mut()
-                        .expect("结果数组")
+                        .expect("result array")
                         .push(self.background_tasks.status(&job.id)?);
                 }
-                // 取消只发布最终展示，不消费结果；恢复后仍可交付已完成结果。
+                // Cancellation publishes the final display only and consumes no results; finished results can still be delivered after recovery.
                 if cancelled {
                     result["error"] = json!("Wait cancelled; owned work stopped.");
                     return Ok(result);
                 }
-                // 先完成所有可能失败的快照，再整体预留，避免部分成功吞掉结果。
-                for entry in result["background_results"].as_array().expect("结果数组") {
+                // Complete every snapshot that can fail before reserving as a whole, so a partial success never swallows results.
+                for entry in result["background_results"]
+                    .as_array()
+                    .expect("result array")
+                {
                     state
                         .tasks
-                        .insert(entry["task_id"].as_str().expect("后台 ID").into());
+                        .insert(entry["task_id"].as_str().expect("background ID").into());
                 }
                 return Ok(result);
             }
@@ -244,7 +247,7 @@ impl Tools {
         }
     }
 
-    /// 先通知子 Agent，再回收 Bash；即使其中一路失败，也继续尝试其余清理。
+    /// Notify subagents first, then reclaim Bash; even when one path fails, the remaining cleanup is still attempted.
     fn stop_wait_jobs(&self, jobs: &[Job]) -> Result<()> {
         let runs = jobs
             .iter()
@@ -348,7 +351,7 @@ mod integration {
                 &json!({"task_ids":[finished_id,selected_id],"timeout_ms":u64::MAX}).to_string(),
                 "timeout",
                 &Default::default(),
-                &mut |_| panic!("超时后不能继续发布运行快照"),
+                &mut |_| panic!("no run snapshot may be published after a timeout"),
                 || TIMEOUT,
             )
             .unwrap();
@@ -374,7 +377,7 @@ mod integration {
             .find(|r| r["task_id"] == selected_id)
             .unwrap();
         assert_eq!(selected_result["status"], "stopped");
-        // 合并的输出还可能包含停止解释器时写入 stderr 的诊断。
+        // The merged output may also contain diagnostics written to stderr when the interpreter was stopped.
         assert!(
             selected_result["output"]
                 .as_str()

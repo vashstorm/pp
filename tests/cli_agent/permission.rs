@@ -14,7 +14,7 @@ fn permission_cli_defaults_to_workspace_write_and_supports_yolo_flag() {
     )
     .unwrap();
 
-    // 1. 默认启动为 Ask for approval (workspace-write)，且不持久化旧 preset。
+    // 1. The default start is Ask for approval (workspace-write) and does not persist the old preset.
     let default_out = Cli::spawn(home.path(), &["/permissions"], &[]).finish();
     assert!(default_out.status.success(), "{default_out:?}");
     let default_err = String::from_utf8_lossy(&default_out.stderr);
@@ -28,7 +28,8 @@ fn permission_cli_defaults_to_workspace_write_and_supports_yolo_flag() {
         "{default_err}"
     );
 
-    // 2. `--yolo` 与 `--permission-mode danger-full-access` 均切到 Full Access (danger-full-access) 并关闭沙盒。
+    // 2. Both `--yolo` and `--permission-mode danger-full-access` switch to Full Access (danger-full-access) and
+    // disable the sandbox.
     for args in [
         vec!["--yolo", "/permissions"],
         vec!["--permission-mode", "danger-full-access", "/permissions"],

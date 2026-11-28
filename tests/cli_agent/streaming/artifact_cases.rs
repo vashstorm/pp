@@ -5,7 +5,7 @@ fn artifact_failed_command_roundtrip_in_both_protocols() {
     let protocol = Protocol::Responses;
     let server = server();
     let dir = tempfile::tempdir().unwrap();
-    // 样本应显著大于有界预览及会话元数据，避免工具 schema 增长触及比较边界。
+    // The sample must be clearly larger than the bounded preview plus the session metadata so growth in the tool schema cannot reach the comparison boundary.
     let text = (1..=12000)
         .map(|i| format!("record-{i:05}: test diagnostic\n"))
         .collect::<String>();

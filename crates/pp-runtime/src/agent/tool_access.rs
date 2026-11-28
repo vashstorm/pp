@@ -1,4 +1,4 @@
-//! 工具侧运行时句柄（LSP、后台清理、临时管道）与用户 shell 入口。
+//! Tool-side runtime handles (LSP, background cleanup, temporary pipes) and the user shell entry point.
 use super::Agent;
 use anyhow::{Result, ensure};
 use pp_core::cancellation::CancellationToken;
@@ -66,21 +66,21 @@ impl Agent {
         self.catalog.read_tool_result_preview()
     }
 
-    /// TUI 后台预热使用的 Registry 克隆；`enabled=false` 时为 `None`。
-    /// 克隆共享同一批受管理进程，不转移任何清理权。
+    /// Registry clone used by the TUI background warm-up; `None` when `enabled=false`.
+    /// Clones share the same managed processes and transfer no cleanup rights.
     pub fn lsp_registry(&self) -> Option<pp_lsp::Registry> {
         self.tools.lsp_registry().cloned()
     }
 
-    /// TUI/CLI 可持有的共享清理句柄；每次调用返回新的 armed 句柄，
-    /// supersede 只能解除同一 Registry 的旧句柄。
+    /// Shared cleanup handle the TUI/CLI can hold; each call returns a newly armed handle, and
+    /// supersede can only disarm older handles of the same Registry.
     pub fn lsp_cleanup(&self) -> Option<pp_lsp::Cleanup> {
         self.tools.lsp_cleanup()
     }
 
-    /// 显式回收全部 language server；仅 Registry owner 生效，借用父 Registry
-    /// 的子 Agent 不会停掉父进程。错误保留 `CleanupError` 类型，调用方必须
-    /// 合并进退出错误而不能降级为普通工具失败。
+    /// Explicitly recycle every language server; effective only for the Registry owner, a subagent that
+    /// borrows the parent Registry never stops the parent's processes. Errors keep the `CleanupError` type and
+    /// callers must merge them into the exit error instead of degrading them to an ordinary tool failure.
     pub fn stop_lsp(&self) -> Result<()> {
         match self.tools.lsp_cleanup() {
             Some(mut cleanup) => cleanup.stop(),
@@ -92,7 +92,7 @@ impl Agent {
         self.tools.background_cleanup()
     }
 
-    /// 根会话临时管道 registry；子 Agent 共享同一实例。
+    /// Temporary pipe registry of the root session; subagents share the same instance.
     pub fn pipe_store(&self) -> pp_bash::PipeStore {
         self.tools.pipe_store()
     }
@@ -101,7 +101,7 @@ impl Agent {
         &self.workflow
     }
 
-    /// 进程级 MCP 单例的只读句柄：UI 只看建连进度与 `/mcp` 快照，不拥有回收权。
+    /// Read-only handle to the process-wide MCP singleton: the UI only sees connect progress and `/mcp` snapshots and owns no cleanup right.
     pub fn mcp(&self) -> std::sync::Arc<pp_mcp::McpManager> {
         std::sync::Arc::clone(&self.tools.mcp)
     }
@@ -125,7 +125,7 @@ impl Agent {
             pp_tools::ToolPolicy::Execute {
                 workflow: &self.workflow,
             },
-            // 人工 shell 不是模型工具调用，永不触发 hook。
+            // The manual shell is not a model tool call and never triggers hooks.
             None,
             cancellation,
             emit,
@@ -137,7 +137,7 @@ impl Agent {
         }
     }
 
-    /// 开发构建专用：不经过大模型直接以当前运行时配置执行一次 `web_search` 诊断。
+    /// Development builds only: run one `web_search` diagnostic directly with the current runtime config, without the model.
     #[cfg(debug_assertions)]
     pub fn run_web_search(
         &mut self,
@@ -159,7 +159,7 @@ impl Agent {
     }
 }
 
-/// 开发构建专用：在无模型配置（`Unavailable`）时按 `settings.yml` 直接运行一次 `web_search`。
+/// Development builds only: run one `web_search` directly from `settings.yml` when no model is configured (`Unavailable`).
 #[cfg(debug_assertions)]
 pub fn run_web_search_standalone(
     cwd: &std::path::Path,

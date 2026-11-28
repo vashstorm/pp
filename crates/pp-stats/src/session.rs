@@ -4,17 +4,20 @@ use pp_core::context::TokenUsage;
 use std::fs;
 use std::path::Path;
 
-/// 根会话最近一次普通请求的服务端 Token 用量与会话累计输出。
+/// Server-side token usage of the latest ordinary request of a root session plus the accumulated
+/// session output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionUsage {
     pub last_request: Option<TokenUsage>,
     pub session_output_tokens: u64,
 }
 
-/// 从指定统计库恢复根会话最近一次普通请求用量与会话累计输出。
+/// Restores the latest ordinary request usage of a root session and the accumulated session output
+/// from the given stats database.
 ///
-/// 只统计 `session_file = session` 且 `purpose = 'task'`、`status = 'ok'` 的记录，
-/// 排除 `task_title`、`plan_review` 与子 Agent 请求。库文件不存在时不建空库。
+/// Only rows with `session_file = session`, `purpose = 'task'` and `status = 'ok'` are counted,
+/// excluding `task_title`, `plan_review` and subagent requests. No empty database is created when the
+/// file is missing.
 pub fn session_usage(database: &Path, session: &Path) -> Result<SessionUsage> {
     match fs::symlink_metadata(database) {
         Ok(metadata) => ensure!(metadata.is_file(), "statistics database must be a file"),
@@ -24,10 +27,11 @@ pub fn session_usage(database: &Path, session: &Path) -> Result<SessionUsage> {
     Store::open(database)?.session_usage(session)
 }
 
-/// 汇总已关联到根会话及其子 Agent 的请求所记录的费用。
+/// Sums the recorded cost of the requests already linked to the root session and its subagents.
 ///
-/// 缺费用快照的旧记录只把 [`pp_config::task_status::HistoricalCost::incomplete`] 置真，
-/// 不按当前配置回算。旧库不存在时不建库。
+/// A legacy record without a cost snapshot only sets
+/// [`pp_config::task_status::HistoricalCost::incomplete`] true; nothing is recomputed from the current
+/// config. No database is created when the legacy database is missing.
 pub fn session_cost(session: &Path) -> Result<pp_config::task_status::HistoricalCost> {
     let path = database_path()?;
     match fs::symlink_metadata(&path) {
@@ -38,10 +42,11 @@ pub fn session_cost(session: &Path) -> Result<pp_config::task_status::Historical
     Store::open(&path)?.session_cost(session)
 }
 
-/// 根会话与其专属子 Agent 目录的索引范围。
+/// Index range of a root session and its dedicated subagent directory.
 ///
-/// `upper` 是 `prefix` 的字典序上界（取末字符加一个码点），因此 `[prefix, upper)` 恰好覆盖
-/// `<root>.subagents/sessions/` 下的文件，而 `sessions-other/` 等相邻目录不在区间内。
+/// `upper` is the lexicographic upper bound of `prefix` (last character plus one code point), so
+/// `[prefix, upper)` covers exactly the files under `<root>.subagents/sessions/`, while sibling
+/// directories such as `sessions-other/` stay out of the range.
 pub(crate) struct SessionScope {
     pub root: String,
     pub prefix: String,
@@ -80,7 +85,8 @@ impl SessionScope {
     }
 }
 
-/// 根会话与子 Agent 目录的两段 `UNION ALL`；参数固定为 `?1`=root、`?2`=prefix、`?3`=upper。
+/// Two `UNION ALL` branches for the root session and the subagent directory; parameters are fixed as
+/// `?1`=root, `?2`=prefix, `?3`=upper.
 pub(crate) fn session_requests_sql(columns: &str) -> String {
     format!(
         "SELECT {columns} FROM requests WHERE session_file=?1 \
@@ -116,12 +122,14 @@ mod tests {
             assert!(record.cost.is_some());
             store.insert(&record, &Value::Null).unwrap();
         }
-        // root 与 child 各 20 未缓存输入 + 80 缓存读 + 20 输出；sessions-other 不计入。
+        // root and child each have 20 uncached input + 80 cache read + 20 output; sessions-other is not
+        // counted.
         let history = store.session_cost(&root).unwrap();
         assert!(!history.incomplete);
         assert!((history.usd.unwrap() - 0.000432).abs() < 1e-12);
 
-        // 没有费用快照的旧记录只标记覆盖不完整，金额不变。
+        // A legacy record without a cost snapshot only marks the coverage incomplete; the amount stays
+        // the same.
         let mut legacy = fixture("legacy", 1001);
         legacy.session_file = Some(root.to_string_lossy().into_owned());
         store.insert(&legacy, &Value::Null).unwrap();
@@ -129,7 +137,7 @@ mod tests {
         assert!(history.incomplete);
         assert!((history.usd.unwrap() - 0.000432).abs() < 1e-12);
 
-        // 改写 models.yml 不重算历史金额。
+        // Rewriting models.yml does not recompute historical amounts.
         fs::write(
             &store.models_path,
             models_with_cost(json!({"input":0,"cacheRead":0,"output":0})),
@@ -166,7 +174,8 @@ mod tests {
         r1.cache_write_tokens = Some(100);
         store.insert(&r1, &Value::Null).unwrap();
 
-        // 非 task / 非 ok / 子 Agent 请求不计入根会话普通请求用量。
+        // Non-task, non-ok and subagent requests do not count toward the root session's ordinary request
+        // usage.
         let mut title = fixture("title", 1001);
         title.session_file = Some(root.to_string_lossy().into_owned());
         title.purpose = "task_title".into();

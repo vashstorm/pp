@@ -66,7 +66,7 @@ mod integration {
             fs::read_to_string(dir.path().join("file")).unwrap(),
             "one\nedited\nthree\n"
         );
-        // 兼容模型常见的 offset/limit/ranges（及字符串数字与 null），折算为 path selector。
+        // Accepts the model's usual offset/limit/ranges (plus numeric strings and null) and folds them into a path selector.
         let by_offset_limit = execute(
             &tools,
             "read",
@@ -163,8 +163,8 @@ mod integration {
     #[test]
     #[cfg(target_os = "macos")]
     fn temp_directory_is_writable_through_both_spellings() {
-        // 启动目录外也能写 `/tmp` 与 `/private/tmp`：两种拼写命中同一个文件，
-        // hashline 模式用同一个真实绝对路径作为快照键：读完再改同一个文件。
+        // `/tmp` and `/private/tmp` are writable even outside the startup directory: both spellings hit the same file,
+        // and hashline mode uses the same real absolute path as the snapshot key: read it, then modify the same file.
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
         let temp = tempfile::tempdir_in("/tmp").unwrap();
@@ -191,7 +191,7 @@ mod integration {
             true
         );
         assert_eq!(fs::read_to_string(&real).unwrap(), "three\n");
-        // hashline 模式用同一个真实绝对路径作为快照键：读完再改同一个文件。
+        // Hashline mode uses the same real absolute path as the snapshot key: read it, then modify the same file.
         let tools = Tools::new(dir.path().into(), EditMode::Hashline).unwrap();
         assert_eq!(
             execute(

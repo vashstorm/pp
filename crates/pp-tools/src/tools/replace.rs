@@ -135,7 +135,7 @@ fn line_number_at(text: &str, byte_offset: usize) -> usize {
         + 1
 }
 
-/// 当 `oldText` 整段未命中时，用首条有区分度的非空行定位原文附近行号，帮助模型缩小重读范围。
+/// When `oldText` misses entirely, locate the nearby line in the original from the first distinctive non-empty line, helping the model narrow the re-read.
 fn missing_edit_hint(original: &str, old: &str) -> Option<String> {
     let anchor = old.lines().map(str::trim).find(|line| line.len() >= 6)?;
     let multiline = old.contains('\n');
@@ -238,7 +238,7 @@ fn splice(
     output.push_str(&source[cursor..block.end]);
 }
 
-/// 归一化只用于定位；按 Unicode 字素保留到原文的字节映射。
+/// Normalization is only for locating; it keeps a byte mapping back to the original per Unicode grapheme.
 struct Mapping {
     normalized: Range<usize>,
     original: Range<usize>,

@@ -1,6 +1,6 @@
-//! 缓存友好延迟批量裁剪层：在达到上下文水位阈值或遭遇 `ContextOverflow` 时，
-//! 一次性清理早期冗长工具输出、历史图片载荷与已结束轮次的 Responses 推理项，
-//! 平时保持历史严格 append-only 以保护 Prompt Cache。
+//! Cache-friendly deferred batch pruning layer: when the context watermark threshold is reached or a `ContextOverflow`
+//! occurs, drop early verbose tool output, historical image payloads and Responses reasoning items of finished turns in
+//! one pass, while keeping history strictly append-only the rest of the time to protect the prompt cache.
 
 use super::{
     Agent, Session,
@@ -14,17 +14,17 @@ use async_openai::types::{chat as c, responses as r};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-/// 常规水位触发时保留的最近完整 exchange 数。
+/// Number of recent complete exchanges kept on a regular watermark trigger.
 const PRUNE_KEEP_EXCHANGES: usize = 6;
-/// 超窗应急裁剪时保留的最近完整 exchange 数。
+/// Number of recent complete exchanges kept during emergency over-window pruning.
 const AGGRESSIVE_KEEP_EXCHANGES: usize = 2;
-/// 历史图片保留的最近完整 exchange 数（早于此的旧图替换为占位符）。
+/// Number of recent complete exchanges whose historical images are kept (older images become placeholders).
 const IMAGE_KEEP_EXCHANGES: usize = 2;
-/// 仅裁剪超过该字节数的旧工具输出，小输出直接保留以免得不偿失。
+/// Only old tool output above this byte count is pruned; small output stays as is so the trade is not a loss.
 const MIN_PRUNE_OUTPUT_BYTES: usize = 2048;
-/// 幂等标记：已裁剪桩不再重复处理。
+/// Idempotency marker: an already pruned stub is not processed again.
 const PRUNED_OUTPUT_MARKER: &str = "[Pruned tool output:";
-/// 旧图片移除后的文本占位提示。
+/// Text placeholder left after an old image is removed.
 const IMAGE_OMITTED_PLACEHOLDER: &str = "[Image omitted; re-read if needed]";
 
 struct CallHint {
@@ -57,7 +57,7 @@ fn boundary_cutoff(boundaries: &[usize], keep_exchanges: usize) -> usize {
     }
 }
 
-/// 将超大旧工具输出压缩为轻量桩，保留 `ok`、工具名、路径/命令与 `artifact://` 引用。
+/// Compress oversized old tool output into a lightweight stub, keeping `ok`, the tool name, the path/command and the `artifact://` reference.
 fn prune_tool_output_text(raw: &str, hint: Option<&CallHint>) -> Option<String> {
     if raw.len() < MIN_PRUNE_OUTPUT_BYTES || raw.contains(PRUNED_OUTPUT_MARKER) {
         return None;
@@ -324,8 +324,8 @@ fn prune_response(request: &mut r::CreateResponse, aggressive: bool) -> Result<b
 }
 
 impl Agent {
-    /// 批量轻量裁剪历史上下文：不调用模型、事务性提交到 journal，失败完整回滚。
-    /// 返回 `Ok(Some((before_tokens, after_tokens)))` 表示成功释放了上下文空间。
+    /// Batch-prune the historical context cheaply: no model call, committed transactionally to the journal, fully rolled back on failure.
+    /// Returning `Ok(Some((before_tokens, after_tokens)))` means context space was freed successfully.
     pub(in crate::agent) fn prune_history(
         &mut self,
         aggressive: bool,
@@ -339,7 +339,7 @@ impl Agent {
         let changed = match changed {
             Ok(changed) => changed,
             Err(_) => {
-                // 不支持的畸形历史保持原样，交由既有压缩/错误路径处理。
+                // Unsupported malformed history stays untouched and is left to the existing compaction/error path.
                 self.session = backup;
                 return Ok(None);
             }
@@ -506,7 +506,7 @@ mod tests {
         assert!(prune_response(&mut req, false).unwrap());
 
         let items = response_input(&mut req);
-        // 裁剪后历史边界与跨协议转换仍然完全合法。
+        // The post-prune history boundary and cross-protocol conversion are still fully valid.
         assert!(response_boundaries(items).is_ok());
         assert!(
             history::convert(
@@ -519,7 +519,7 @@ mod tests {
         );
 
         let items = response_input(&mut req);
-        // 最早 2 个 exchange 的 reasoning 已被清理，最近 6 个保留。
+        // Reasoning of the earliest 2 exchanges has been pruned; the most recent 6 are kept.
         let reasoning_ids: Vec<&str> = items
             .iter()
             .filter_map(|item| match item {
@@ -532,7 +532,7 @@ mod tests {
             vec!["rs_2", "rs_3", "rs_4", "rs_5", "rs_6", "rs_7"]
         );
 
-        // call_3 位于 image_cutoff 之前、tool_cutoff 之后：旧图替换为文本占位，文字保留。
+        // call_3 sits before image_cutoff and after tool_cutoff: the old image becomes a text placeholder, the text is kept.
         let call_3_out = items
             .iter()
             .find_map(|item| match item {
@@ -582,7 +582,7 @@ mod tests {
             .unwrap();
         assert!(matches!(call_7_out, r::FunctionCallOutput::Content(_)));
 
-        // 幂等：立刻再跑一次常规裁剪不再改动历史。
+        // Idempotent: running the regular prune again immediately leaves history unchanged.
         assert!(!prune_response(&mut req, false).unwrap());
     }
 
@@ -645,7 +645,7 @@ mod tests {
             }
         }
         assert!(prune_completion(&mut req, false).unwrap());
-        // 校验边界与图片附件完整性仍通过。
+        // Boundary checks and image attachment integrity still pass.
         assert!(completion_boundaries(&req.messages).is_ok());
         assert!(
             req.messages
@@ -653,7 +653,7 @@ mod tests {
                 .all(|m| tool_images::chat_id(m).is_none()),
             "old image attachment should be removed"
         );
-        // 跨协议转换仍然完全合法。
+        // Cross-protocol conversion is still fully valid.
         assert!(
             history::convert(
                 &Session::Completion(req.clone()),
@@ -663,7 +663,7 @@ mod tests {
             )
             .is_ok()
         );
-        // 幂等。
+        // Idempotent.
         assert!(!prune_completion(&mut req, false).unwrap());
     }
 }

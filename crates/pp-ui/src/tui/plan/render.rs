@@ -1,4 +1,4 @@
-//! 计划面板绘制：正文／目录／操作区布局与提示行。
+//! Plan panel drawing: body/outline/action-area layout and the hint row.
 
 use pp_core::context::ContextUsage;
 use pp_core::plan::PlanStatus;
@@ -16,7 +16,7 @@ use crate::tui::transcript_style::{accent, dim, error_border, muted};
 
 use super::{ACTIONS, BodyLayout, Focus, HINT, Panel, READONLY_HINT, Tab};
 
-/// 按字符数截断纯显示文本，超宽时以省略号结尾。
+/// Truncate display-only text by character count, ending with an ellipsis when over-wide.
 /// Highlighted choice/tab chip shared by the plan panel tabs.
 fn choice_span(label: &str, selected: bool) -> Span<'static> {
     Span::styled(
@@ -77,7 +77,7 @@ impl Panel {
                 headings,
             });
         }
-        slot.as_ref().expect("正文布局已初始化")
+        slot.as_ref().expect("body layout is initialized")
     }
 
     fn status_label(&self) -> (&'static str, Color) {
@@ -119,7 +119,7 @@ impl Panel {
             area.width,
             actions_height,
         );
-        // 左侧固定列宽，窄窗口收起目录，确保正文仍有可用空间。
+        // The left column has a fixed width; narrow windows collapse the outline so the body still has usable space.
         let toc_width = if area.width >= 60 {
             26.min(area.width / 3)
         } else {
@@ -155,8 +155,8 @@ impl Panel {
         let mut body = block.inner(preview);
         frame.render_widget(block, preview);
 
-        // 头部：Plan 标签显示相对路径 + 状态；Review 标签显示报告修订与
-        // 模型来源，旧修订报告明确标注 outdated（宽度不足时截断模型引用）。
+        // Header: the Plan tab shows the relative path + status; the Review tab shows the report revision and
+        // model source, and a stale revision report is marked outdated explicitly (the model reference is truncated when narrow).
         if body.height > 0 {
             let (label, color) = self.status_label();
             let mut spans = Vec::new();
@@ -181,7 +181,7 @@ impl Panel {
                     }
                 }
                 _ => {
-                    // 未保存的新绑定不显示假路径。
+                    // A new unsaved binding shows no fake path.
                     let path = self
                         .document
                         .path()
@@ -203,7 +203,7 @@ impl Panel {
             body.height -= 1;
         }
 
-        // 报告标签行；没有报告时不占用行高。
+        // Report tab row; takes no height when there is no report.
         if self.report.is_some() && body.height > 0 {
             frame.render_widget(
                 Line::from(vec![
@@ -216,7 +216,7 @@ impl Panel {
             body.height -= 1;
         }
 
-        // 只读提示留在预览内部；五项操作在独立外框中绘制。
+        // The read-only hint stays inside the preview; the five actions are drawn in a separate frame.
         let footer_height = u16::from(!has_actions).min(body.height);
         let footer = Rect::new(
             body.x,
@@ -226,7 +226,7 @@ impl Panel {
         );
         body.height -= footer_height;
 
-        // 正文：markdown 布局缓存 + 滚动。
+        // Body: markdown layout cache + scrolling.
         let viewport = body.height as usize;
         self.viewport = viewport;
         let tab = self.tab;
@@ -250,7 +250,7 @@ impl Panel {
                 }
             }
         }
-        // 布局借用结束后再落滚动位置，下一帧继续从此处显示。
+        // Store the scroll position only after the layout borrow ends so the next frame continues from there.
         self.scroll[tab.index()] = scroll;
         if toc_width > 0 {
             self.draw_toc(frame, toc_area);
@@ -346,7 +346,7 @@ impl Panel {
         frame.render_widget(block, area);
         let show_hint = inner.height > ACTIONS.len() as u16;
         let visible = usize::from(inner.height.saturating_sub(u16::from(show_hint)));
-        // 短窗口只显示部分操作时，仍保证当前选项处于可见范围。
+        // When a short window shows only some actions, the current option is still kept visible.
         let first = self.action.saturating_add(1).saturating_sub(visible);
         for (row, (index, label)) in ACTIONS
             .iter()

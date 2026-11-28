@@ -1,5 +1,5 @@
-//! `/context` 上下文诊断独立 TUI 面板：
-//! 顶部三行容量摘要 + 左侧 25×16 网格 + 右侧 12 行分类/容量列表，支持原地展开与收起内部条目。
+//! Standalone `/context` context-diagnostics TUI panel:
+//! a three-row capacity summary on top, a 25x16 grid on the left and a 12-row category/capacity list on the right, with in-place expand/collapse of inner entries.
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,

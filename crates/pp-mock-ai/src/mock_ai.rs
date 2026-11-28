@@ -1,4 +1,4 @@
-//! 仅开发构建提供的本地 Responses 服务。
+//! Local Responses service available only in development builds.
 
 mod fixtures;
 pub use fixtures::{MockTest, MockTestEvent, MockTestReport, MockTestSnapshot, run_test};
@@ -26,7 +26,7 @@ use pp_core::cancellation::CancellationToken;
 
 static ENDPOINT: OnceLock<MockEndpoint> = OnceLock::new();
 
-/// 可共享的服务地址与取消状态；不延长监听器的生命周期。
+/// Shareable service address and cancellation state; does not extend the listener's lifetime.
 #[derive(Clone)]
 pub struct MockEndpoint {
     port: u16,
@@ -65,7 +65,7 @@ pub fn current_endpoint() -> Result<MockEndpoint> {
         .context("mock AI endpoint is not installed")
 }
 
-/// 监听器与 HTTP 服务线程的唯一 owner；Drop 立即取消，不等待连接排空。
+/// Sole owner of the listener and the HTTP service thread; Drop cancels immediately without draining connections.
 pub struct MockServer {
     endpoint: MockEndpoint,
     thread: Option<JoinHandle<()>>,
@@ -123,7 +123,7 @@ impl Drop for MockServer {
     }
 }
 
-/// 单线程 runtime 承载 `axum::serve`；就绪后才回报启动结果。
+/// A single-threaded runtime carries `axum::serve`; the start result is reported only once ready.
 fn serve(
     listener: TcpListener,
     endpoint: MockEndpoint,
@@ -158,7 +158,7 @@ fn serve(
             _ = endpoint.shutdown.cancelled() => {}
         }
     });
-    // 已开始的纯解析任务不再持有业务状态，退出时不必等待它们。
+    // Parse-only tasks that already started hold no business state; there is no need to wait for them on exit.
     runtime.shutdown_background();
 }
 

@@ -131,7 +131,7 @@ fn pagination_cursor_utf8_and_broken_lines() {
                 .to_string(),
             );
         }
-        // 合并后的单条记录远超 4 KiB：下一个换行落在旧的固定探测窗口之外。
+        // The coalesced single record far exceeds 4 KiB: the next newline falls outside the old fixed probe window.
         append(
             &binding,
             "a1",
@@ -176,7 +176,7 @@ fn pagination_cursor_utf8_and_broken_lines() {
         assert!(!first.reset);
         assert!(!first.has_more);
         let cursor = first.cursor.unwrap();
-        // 半行：写入推进游标但不产生条目，也不报告 has_more。
+        // Partial line: writing advances the cursor without producing an entry and without reporting has_more.
         {
             use std::io::Write;
             let mut file = fs::OpenOptions::new()
@@ -206,7 +206,7 @@ fn pagination_cursor_utf8_and_broken_lines() {
             .unwrap();
         assert_eq!(completed.entries.len(), 1);
         assert_eq!(completed.entries[0].start_offset, cursor.offset);
-        // 再读一次不会重复。
+        // Reading once more does not duplicate anything.
         let again = binding
             .read_events("a1", Some(completed.cursor.as_ref().unwrap()))
             .unwrap();
@@ -230,7 +230,7 @@ fn pagination_cursor_utf8_and_broken_lines() {
         let entries = read_all(&binding, "a1");
         assert_eq!(entries.len(), 200);
         assert_eq!(entries[0].start_offset, 0);
-        // 大记录跨越软预算仍被完整读出。
+        // A large record spanning the soft budget is still read completely.
         let AgentEvent::AssistantDelta { text: first, .. } =
             entries[0].record.event.clone().unwrap()
         else {
@@ -279,7 +279,7 @@ fn replacement_truncation_missing_file_and_flat_snapshots() {
         );
         let cursor = binding.read_events("a1", None).unwrap().cursor.unwrap();
         let path = binding.directory().join("a1.events.jsonl");
-        // 替换文件：inode 变化必须 reset。
+        // Replacing the file: an inode change must reset.
         let replacement = binding.directory().join("replacement.jsonl");
         fs::write(&replacement, "").unwrap();
         fs::rename(&replacement, &path).unwrap();
@@ -291,7 +291,7 @@ fn replacement_truncation_missing_file_and_flat_snapshots() {
         let page = binding.read_events("a1", Some(&cursor)).unwrap();
         assert!(page.reset);
         assert_eq!(page.entries.len(), 1);
-        // 截断到游标之前同样 reset。
+        // Truncating below the cursor also resets.
         let cursor = page.cursor.unwrap();
         fs::write(&path, "").unwrap();
         let page = binding.read_events("a1", Some(&cursor)).unwrap();
@@ -368,7 +368,7 @@ fn progress_scoping_and_artifact_previews() {
                 }),
                 None,
             );
-            // 非 delta 边界先冲刷待合并缓冲，sequence 跳号仍合法。
+            // A non-delta boundary flushes the pending coalesce buffer first; gaps in sequence remain legal.
             binding.inner.observe(
                 "a1",
                 Some("r1"),
@@ -495,7 +495,7 @@ fn progress_scoping_and_artifact_previews() {
         assert!(
             matches!(&snapshot.output_previews[0].event, Some(AgentEvent::ToolOutputSnapshot { output, .. }) if output == "current-19")
         );
-        // 阶段预览独立保留，不覆盖主输出预览。
+        // Stage previews are kept independently and never overwrite the main output preview.
         assert_eq!(snapshot.pipeline_previews.len(), 1);
         assert!(matches!(
             &snapshot.pipeline_previews[0].event,
@@ -570,7 +570,7 @@ fn overview_events_coalescing_and_slim_backfill() {
         assert!(!page.has_more);
         assert_eq!(page.last_activity_ms, Some(140));
         assert!(page.warnings.is_empty());
-        // ToolOutput 与 ModelRequestStarted 被跳过；非空 AssistantFinished 前的 AssistantDelta 被丢弃。
+        // ToolOutput and ModelRequestStarted are skipped; the AssistantDelta before a non-empty AssistantFinished is discarded.
         assert!(page.entries.iter().all(|entry| !matches!(
             entry.record.event,
             Some(AgentEvent::ToolOutput { .. } | AgentEvent::ModelRequestStarted)
@@ -594,7 +594,7 @@ fn overview_events_coalescing_and_slim_backfill() {
             2
         );
 
-        // 游标从末尾继续追平新增事件，包括末尾半行和 file replacement reset。
+        // The cursor catches up with newly appended events from the tail, including a trailing partial line and a file replacement reset.
         let cursor = page.cursor.unwrap();
         {
             use std::io::Write;
@@ -680,7 +680,7 @@ fn overview_events_coalescing_and_slim_backfill() {
         let raw = fs::read_to_string(binding.directory().join("a1.events.jsonl")).unwrap();
         assert!(!raw.contains("\"agent_id\""), "{raw}");
         assert!(!raw.contains("\"root_id\""), "{raw}");
-        // 同文件里的旧行显式身份保持原样，缺省身份按请求 agent 与目录名补齐。
+        // Explicit identity in legacy lines of the same file stays as is; missing identity is filled from the requested agent and directory name.
         append(
             &binding,
             "a1",
@@ -753,10 +753,10 @@ fn delta_coalescing_boundaries_flush_and_failure_bounds() {
         );
         let entries = read_all(&binding, "a1");
         assert_eq!(entries.len(), 2);
-        // 文本直接拼接、不加分隔符；合并记录保留首片序号。
+        // Text is concatenated directly without separators; the merged record keeps the first fragment's sequence.
         assert_eq!(delta_text(&entries[0]), "思考片段继续");
         assert_eq!(entries[0].record.sequence, Some(10));
-        // 合并记录沿用首片时间，而非末片时间（两段间隔后仍明显早于边界记录）。
+        // The merged record keeps the first fragment's time, not the last (still clearly earlier than the boundary record after the gap).
         let merged_ms = entries[0].record.timestamp_ms.unwrap();
         let finished_ms = entries[1].record.timestamp_ms.unwrap();
         assert!(
@@ -834,12 +834,12 @@ fn delta_coalescing_boundaries_flush_and_failure_bounds() {
                 },
             );
         }
-        // 第 3 片拼接后达到 8 KiB 上限立即落盘，第 4 片仍在内存缓冲里。
+        // After the third fragment the 8 KiB cap is reached and it is flushed at once, while the fourth stays in the in-memory buffer.
         let entries = read_all(&binding, "a1");
         assert_eq!(entries.len(), 1);
         assert_eq!(delta_text(&entries[0]), chunk.repeat(3));
         assert_eq!(entries[0].record.sequence, Some(1));
-        // 超过上限的单片段完整写出，不拆分也不并入缓冲。
+        // A single fragment above the cap is written whole without splitting or joining the buffer.
         let big = "y".repeat(8197);
         observe(
             &binding,
@@ -871,7 +871,7 @@ fn delta_coalescing_boundaries_flush_and_failure_bounds() {
             },
         );
         std::thread::sleep(COALESCE_DELAY + std::time::Duration::from_millis(80));
-        // 只靠观察轮询（读取前冲刷）推进流式尾部，不依赖下一轮模型事件。
+        // The streaming tail advances purely through observation polling (flush before read), not via the next model event.
         let entries = read_all(&binding, "a1");
         assert_eq!(entries.len(), 1);
         assert_eq!(delta_text(&entries[0]), "tail");
@@ -968,7 +968,7 @@ fn delta_coalescing_boundaries_flush_and_failure_bounds() {
         ));
         assert!(entries[3].record.hub.is_some());
 
-        // 追加持续失败只保留脱敏健康提示，失败缓冲不会无界累积。
+        // Persistently failing appends keep only a redacted health hint, and the failed buffer never accumulates without bound.
         let blocked = binding.directory().join("a2.events.jsonl");
         fs::create_dir(&blocked).unwrap();
         let chunk = "z".repeat(500);
@@ -1000,7 +1000,7 @@ fn delta_coalescing_boundaries_flush_and_failure_bounds() {
             .as_ref()
             .map_or(0, |pending| pending.text.len());
         assert!(buffered < COALESCE_BYTES * 2, "buffered {buffered}");
-        // 恢复后一次成功追加清掉健康提示。
+        // One successful append after recovery clears the health hint.
         fs::remove_dir(&blocked).unwrap();
         observe(&binding, "a2", "r1", 1, 41, AgentEvent::AssistantStarted);
         assert!(binding.hub_snapshot().warnings.is_empty());

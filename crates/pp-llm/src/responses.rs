@@ -1,4 +1,4 @@
-//! Responses 协议的单次请求、流式收集与重试循环。
+//! Single-request, streaming collection and retry loop for the Responses protocol.
 
 use anyhow::{Result, bail, ensure};
 use async_openai::types::responses::{CreateResponse, OutputItem, Status};
@@ -15,7 +15,7 @@ use super::streaming::{ResponseEvent, ResponsesStream};
 use super::{EMPTY_SUMMARY, OpenAiClient, ResponseTurn, elapsed_duration, elapsed_millis};
 use pp_config::auth::http as auth;
 
-/// 借用原始 wire 请求拼入初始 mock 脚本，不复制第二棵 JSON 树。
+/// Borrow the raw wire request into the initial mock script instead of copying a second JSON tree.
 #[cfg(debug_assertions)]
 #[derive(serde::Serialize)]
 struct MockWire<'a, W> {
@@ -141,7 +141,7 @@ impl OpenAiClient {
                 .as_ref()
                 .err()
                 .and_then(|e| e.downcast_ref::<ModelFailure>())
-                .expect("重试只接受模型错误")
+                .expect("retry only accepts model errors")
                 .reason;
             tracing::warn!(event = "ai_request_retry", pid = std::process::id(), attempt = attempts.attempt, wait_ms = elapsed_duration(delay), reason = %reason);
             emit(AgentEvent::RequestRetrying {
@@ -153,7 +153,7 @@ impl OpenAiClient {
             let waited = self
                 .runtime
                 .as_ref()
-                .expect("请求已初始化 runtime")
+                .expect("request initialized the runtime")
                 .block_on(async {
                     cancellation
                         .run_until_cancelled(tokio::time::sleep(delay))
@@ -184,7 +184,7 @@ impl OpenAiClient {
         let wire = auth::wire_request(request, self.auth.as_ref().map(|auth| auth.provider))?;
         let (initiator, has_images) = auth::request_metadata(&wire);
         self.prepare_auth(cancellation, initiator, has_images)?;
-        // pending 只消费一次；首次请求携带脚本，之后原生工具续轮与重试都不再附加。
+        // pending is consumed once; the first request carries the script and later native-tool continuation turns and retries attach none.
         #[cfg(debug_assertions)]
         let mock_script = self.take_mock_script()?;
         let new_request = attempts.attempt == 1 || !attempts.pending_open;
@@ -206,7 +206,7 @@ impl OpenAiClient {
         if new_request {
             emit(AgentEvent::ModelRequestStarted);
         }
-        // 与 Chat Completions 相同：估算只用于生成中的实时费用显示。
+        // Same as Chat Completions: the estimate only drives the live cost display during generation.
         let accounting = self.task_accounting.clone();
         let accounting_id = attempts.accounting_id;
         let accounting_rate = attempts.accounting_rate;
@@ -288,7 +288,7 @@ impl OpenAiClient {
                     Some(Some(event)) => {
                         let ResponseEvent(event, written, raw) =
                             event.map_err(|error| provider_failure(error, "Responses"))?;
-                        // 线上原文所有权直接移交失败现场，不再额外克隆。
+                        // Wire text ownership goes straight to the failure context with no extra clone.
                         failure_context.push(raw);
                         if record || self.task_accounting.is_some() {
                             use async_openai::types::responses::ResponseStreamEvent;
@@ -388,7 +388,7 @@ impl OpenAiClient {
         }
         let save_attempt = stream_opened || attempts.delay.is_none();
         attempts.pending_open = (attempted || had_pending) && !save_attempt;
-        // 与 complete 相同的逻辑请求级计数边界；必须在 stats 保存之前。
+        // Same logical-request-level count boundary as complete; it must run before stats persistence.
         if attempted && save_attempt {
             self.record_model_usage();
         }

@@ -1,4 +1,4 @@
-//! 两种编辑模式的纯暂存入口；磁盘提交由 Tools 负责。
+//! Pure staging entry for both edit modes; disk commits are owned by Tools.
 use super::{hashline, replace};
 use anyhow::{Context, Result, ensure};
 use pp_config::config::EditMode;
@@ -21,8 +21,8 @@ struct ReplaceArgs {
     new_text: Option<String>,
 }
 
-/// 解析 Replace 模式参数：兼容顶层扁平 `{path, oldText, newText}` 与批量 `{path, edits: [...]}`；
-/// 当模型把合法 JSON 数组包成字符串传入 `edits` 时安全还原，损坏字符串则给出简洁提示。
+/// Parse Replace mode arguments: accepts both the flat top-level `{path, oldText, newText}` and the batch `{path, edits: [...]}`;
+/// when the model wraps a valid JSON array in a string for `edits`, restore it safely and give a concise hint for a broken string.
 fn parse_replace_args(arguments: &str) -> Result<(String, Vec<replace::Edit>)> {
     let mut value: serde_json::Value =
         serde_json::from_str(arguments).context("invalid edit arguments")?;

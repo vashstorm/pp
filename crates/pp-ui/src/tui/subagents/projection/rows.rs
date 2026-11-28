@@ -1,4 +1,4 @@
-//! 观察记录摄入：Activity 行的生成、合并与旧日志合成。
+//! Observation record ingestion: creation, merging and legacy-log synthesis of Activity rows.
 
 use super::text::summarize_arguments;
 use super::*;
@@ -150,7 +150,7 @@ impl Projection {
                         .entry(run.unwrap_or_default().into())
                         .or_default();
                     if !work.draft.trim().is_empty() {
-                        // 工具在 AssistantFinished 后启动，保留本轮摘要供整批工具使用。
+                        // The tool started after AssistantFinished, so this turn's summary is kept for the whole tool batch.
                         work.latest.clone_from(&work.draft);
                     }
                     let turn = stream.turns.entry(run_key).or_insert(1);
@@ -159,7 +159,7 @@ impl Projection {
                     }
                     *turn
                 };
-                // 纯工具调用的 turn 没有正文，不保留空 response 行。
+                // A pure tool-call turn has no body, so no empty response row is kept.
                 let key = format!("{agent}|{}|response|{turn}", run.unwrap_or("-"));
                 if text.trim().is_empty()
                     && self
@@ -250,7 +250,7 @@ impl Projection {
                         key,
                     );
                 } else {
-                    // 旧日志缺 ToolStarted：补一条终态行，不伪造开始位置。
+                    // Legacy log without ToolStarted: add a terminal row instead of forging a start position.
                     self.upsert(
                         ActivityRow {
                             key: String::new(),
@@ -377,7 +377,7 @@ impl Projection {
             }
             AgentEvent::ModelRequestStarted => {}
             AgentEvent::LspDiagnostics { id, report } => {
-                // 投影按 agent/run 流隔离：只显示该子 Agent owner 的报告。
+                // The projection is isolated per agent/run stream: only the reports owned by that subagent are shown.
                 let total = report.total();
                 let summary = format!(
                     "{} · {} {}",
@@ -419,14 +419,14 @@ impl Projection {
             | AgentEvent::ModelOutputProgress { .. }
             | AgentEvent::SubagentResultsInjected { .. }
             | AgentEvent::ProjectInstructionsLoaded { .. }
-            // 瞬时 hook 诊断与输入拒绝不进入子 Agent 事件流；这里保持无行。
+            // Transient hook diagnostics and input rejections never enter the subagent event stream; no row is kept here.
             | AgentEvent::HookDiagnostic { .. }
             | AgentEvent::UserInputRejected { .. }
             | AgentEvent::FileChanged { .. } => {}
         }
     }
 
-    /// 一个 assistant turn 一条 response；delta 原位更新同一短摘要。
+    /// One response per assistant turn; deltas update the same short summary in place.
     #[allow(clippy::too_many_arguments)]
     fn response_row(
         &mut self,
@@ -499,8 +499,8 @@ impl Projection {
 
     fn upsert(&mut self, mut row: ActivityRow, key: String) {
         if let Some(index) = self.keys.get(&key).copied() {
-            // 更新分支只改 status/summary/brief（非排序字段），不置脏；
-            // 任何路径若改写 offset/timestamp/phase/agent 等排序字段，必须置 `sorted = false`。
+            // The update branch only changes status/summary/brief (non-sort fields) and never marks the table dirty;
+            // any path that rewrites a sort field such as offset/timestamp/phase/agent must set `sorted = false`.
             let target = &mut self.rows[index];
             target.status = row.status;
             if !row.summary.is_empty() {
@@ -513,7 +513,7 @@ impl Projection {
         }
         row.key = key.clone();
         self.keys.insert(key, self.rows.len());
-        // 不变量：新行插入必须置脏，排序键含 offset，缺失重排会破坏行序。
+        // Invariant: inserting a row must mark the table dirty, the sort key contains offset, and a missing re-sort breaks row order.
         self.rows.push(row);
         self.sorted = false;
     }
@@ -521,7 +521,7 @@ impl Projection {
     fn drop_row(&mut self, key: &str) {
         if let Some(index) = self.keys.remove(key) {
             self.rows.remove(index);
-            // 不变量：offset 变更必须置脏——删除移动后续行索引，重排前先重建 keys。
+            // Invariant: changing offset must mark the table dirty - removal shifts the indexes of later rows, so keys are rebuilt before the re-sort.
             self.reindex();
             self.sorted = false;
         }
@@ -536,8 +536,8 @@ impl Projection {
             .collect();
     }
 
-    /// 合成旧日志缺失的 task 关联与终态 lifecycle；新日志有标记不重复。
-    /// 幂等：两端都不缺时跳过 rows 扫描，也不触发整表重排。
+    /// Synthesize the task association and terminal lifecycle missing from old logs; a new log with markers is not duplicated.
+    /// Idempotent: when neither end is missing the rows scan is skipped and no full-table re-sort is triggered.
     pub(super) fn finalize(&mut self) {
         if !self.needs_finalize {
             return;
@@ -546,7 +546,7 @@ impl Projection {
         let Some(snapshot) = &self.snapshot else {
             return;
         };
-        // 不可变预筛：不整包深拷贝快照，只收集确实要合成的 run 小字段。
+        // Immutable pre-filter: no deep copy of the whole snapshot, only the small run fields that really need synthesis.
         let mut pending = Vec::new();
         for run in &snapshot.runs {
             let Some(stream) = self.streams.get(&run.agent_id) else {
@@ -555,19 +555,19 @@ impl Projection {
             if !self.scanned.contains(&run.agent_id) {
                 continue;
             }
-            // 第一判据：新日志的 run 出现过 RunState 标记，真实行已存在。
+            // First criterion: the run in the new log saw a RunState marker, so the real row already exists.
             if stream.markers.contains(&run.id) {
                 continue;
             }
-            // 第二判据：幂等检查，两者都不缺时不计算任何 bounds。
+            // Second criterion: idempotence check, no bounds are computed when neither end is missing.
             let needs_task = !stream.legacy_task.contains(&run.id);
             let terminal =
                 terminal_of(&run.status).filter(|_| !stream.legacy_terminal.contains(&run.id));
             if !needs_task && terminal.is_none() {
                 continue;
             }
-            // 只对缺失的一端计算端点；first/last 严格等于现存 rows 的
-            // min/max，合成行自身不推进 bounds。
+            // Only the missing end gets its endpoints computed; first/last are exactly the
+            // min/max of the existing rows, and the synthesized row never advances the bounds itself.
             let mut first = u64::MAX;
             let mut last = 0;
             let mut seen = false;
@@ -595,7 +595,7 @@ impl Projection {
                 last,
             });
         }
-        // 释放快照借用后再插入；插入经 upsert 置脏，无插入则不重排。
+        // Insert after releasing the snapshot borrow; insertions go through upsert and mark the table dirty, while no insertion means no re-sort.
         for item in &pending {
             if item.needs_task {
                 self.insert_lifecycle(
@@ -635,20 +635,20 @@ impl Projection {
     }
 }
 
-/// legacy 合成的单 run 待办：预筛阶段只复制小字段，避免整包克隆快照。
+/// Pending single-run synthesis for legacy logs: the pre-filter copies only small fields so the snapshot is not cloned wholesale.
 struct LegacyRun {
     agent: String,
     run: String,
     task: String,
-    /// 仍缺 task 关联行：插在现存 rows 的 min(offset)。
+    /// The task association row is still missing: inserted at min(offset) of the existing rows.
     needs_task: bool,
-    /// 终态行（含状态与文案）；Some 才合成，插在现存 rows 的 max(offset) + 1。
+    /// Terminal row (with status and label); only synthesized when Some, inserted at max(offset) + 1 of the existing rows.
     terminal: Option<(RowStatus, &'static str)>,
     first: u64,
     last: u64,
 }
 
-/// legacy run 状态到终态行的映射；非终态不合成 Run 行。
+/// Mapping from a legacy run status to a terminal row; a non-terminal status synthesizes no Run row.
 fn terminal_of(status: &str) -> Option<(RowStatus, &'static str)> {
     match status {
         "completed" => Some((RowStatus::Success, "completed")),

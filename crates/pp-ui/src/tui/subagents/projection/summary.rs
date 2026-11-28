@@ -1,10 +1,10 @@
-//! Agent 视图重建：排序权重、指标与耗时。
+//! Agent view rebuild: sort weight, metrics and elapsed time.
 
 use super::*;
 use pp_runtime::subagent::Record;
 
 impl Projection {
-    /// 冻结首次出现的 (id, generation) 排序权重；新批次整体插到前面。
+    /// Freeze the sort weight of the first appearance (id, generation); a new batch is inserted in front as a whole.
     pub(super) fn freeze_ranks(&mut self, snapshot: &HubSnapshot) {
         let mut fresh = snapshot
             .agents
@@ -286,10 +286,16 @@ mod tests {
         );
         projection.ingest("a1", &page(Vec::new(), false), 10);
         let view = &projection.agents()[0];
-        assert_eq!(view.cost, None, "未知 cost 不能补零");
-        assert_eq!(view.tokens, None, "0 tokens 且无 usage 证据显示未知");
+        assert_eq!(
+            view.cost, None,
+            "an unknown cost must not be padded with zero"
+        );
+        assert_eq!(
+            view.tokens, None,
+            "0 tokens without usage evidence is shown as unknown"
+        );
         assert_eq!(view.time_ms, Some(0));
-        // 旧版只有 Run.tokens 时按总量展示。
+        // In the legacy format only Run.tokens exists, so it is shown as the total.
         let mut legacy = Projection::default();
         let mut completed = run("r1", "a1", "completed", "work");
         completed.tokens = 5_000;

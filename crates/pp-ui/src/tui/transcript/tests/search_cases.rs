@@ -73,7 +73,7 @@ fn rg_reference_layout_output_modes_groups_and_replay() {
             }
             assert_eq!(transcript.entries[0].result, Some(result.clone()));
             for width in [1, 8, 40, 100] {
-                // 窄宽度按字符折行，宽度 1 只剩边框列。
+                // Narrow widths wrap per character; at width 1 only the border column remains.
                 let buffer = render(&mut transcript, width, 100);
                 if width > 1 {
                     let text = screen(&buffer);

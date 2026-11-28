@@ -1,4 +1,4 @@
-//! 持久 Python / JavaScript 内核子进程、进程组监督与 NDJSON 双工帧循环。
+//! Persistent Python / JavaScript kernel child processes, process-group supervision and the NDJSON duplex frame loop.
 
 use crate::js_runtime::probe_js;
 use crate::runtime::{PythonRuntime, probe_python};
@@ -282,8 +282,8 @@ fn append_stderr_tail(stderr_tail: &Arc<Mutex<Vec<u8>>>, chunk: &[u8]) {
     }
 }
 
-/// 从非阻塞 raw fd 排空所有立即可读字节，在活跃 cell 期间发送对应帧。
-/// 返回 `false` 表示通道接收端已断开或写入失败；`eof` 为 true 时该 fd 已达 EOF。
+/// Drain all immediately readable bytes from a non-blocking raw fd, sending the matching frames while a cell is active.
+/// Returns `false` when the channel receiver is gone or a write failed; `eof` is true once the fd reached EOF.
 fn drain_raw_fd(
     file: &mut File,
     is_stderr: bool,
@@ -357,7 +357,7 @@ impl RunningKernel {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // 子进程运行在独立进程组，确保超时/强杀时连同派生的外部子进程一并回收。
+            // The child runs in its own process group so a timeout/kill also reaps any external children it spawned.
             .process_group(0);
         if let Some(policy) = sandbox {
             cmd.env("PP_SANDBOX", policy.backend());
@@ -484,8 +484,8 @@ impl RunningKernel {
             cmd.env("PP_SANDBOX", policy.backend());
         }
 
-        // 将控制管道子端安全映射到 fd 3 (CTRL_IN) 与 fd 4 (CTRL_OUT) 且清除 FD_CLOEXEC，
-        // 避免与标准 stdio 混用，使 fs.writeSync(1/2) 与子进程输出永不污染 NDJSON 控制帧。
+        // Map the child end of the control pipes to fd 3 (CTRL_IN) and fd 4 (CTRL_OUT) and clear FD_CLOEXEC,
+        // keeping them out of standard stdio so fs.writeSync(1/2) and child output never pollute NDJSON control frames.
         unsafe {
             cmd.pre_exec(move || {
                 let mut src_in = in_r_fd;
@@ -563,8 +563,8 @@ impl RunningKernel {
         let stderr_buf = Arc::clone(&stderr_tail);
         let (reader_done_tx, reader_done_rx) = mpsc::channel::<()>();
 
-        // 单一 poll 线程复用控制通道与 raw fd 1/2：每次读取/发送控制帧前先排空 raw 管道，
-        // 保证 `fs.writeSync(1, ...)` 等底层写入与 `done` 帧之间严格保序、零竞态。
+        // A single poll thread multiplexes the control channel and raw fd 1/2: drain the raw pipes before every control-frame read/send,
+        // guaranteeing strict ordering and zero races between low-level writes such as `fs.writeSync(1, ...)` and the `done` frame.
         let reader_handle = thread::Builder::new()
             .name("pp-eval-js-io".to_owned())
             .spawn(move || {
@@ -629,7 +629,7 @@ impl RunningKernel {
                                 continue;
                             }
                             if let Some(frame) = parse_frame(trimmed) {
-                                // 控制帧即将进入 channel 前，再排空一次内核缓冲区中的 raw fd 输出。
+                                // Drain any raw fd output still buffered in the kernel once more before the control frame enters the channel.
                                 if matches!(
                                     frame,
                                     KernelFrame::ToolCall { .. }
@@ -742,8 +742,8 @@ impl RunningKernel {
         })
     }
 
-    /// 非破坏性检测主进程是否已退出（不回收 zombie），保证 `shutdown()` 执行
-    /// `killpg` 之前 `pgid` 仍由当前子进程锚定，防止 PID 复用误杀。
+    /// Non-destructive check whether the main process already exited (without reaping the zombie), so `pgid` is still
+    /// anchored by the current child when `shutdown()` calls `killpg`, preventing a misdirected kill after PID reuse.
     fn leader_exited_nonreap(&self) -> bool {
         let pid = self.child.id() as libc::id_t;
         if pid == 0 {
@@ -790,7 +790,7 @@ impl RunningKernel {
 
     fn send_signal_group(&mut self, sig: libc::c_int) {
         if self.pgid > 0 {
-            // 仅在尚未调用 `wait`/`try_wait` 回收 leader 前向进程组发信号，避免 PID 复用。
+            // Signal the process group only while the leader has not been reaped via `wait`/`try_wait`, avoiding PID reuse.
             unsafe {
                 libc::killpg(self.pgid, sig);
             }
@@ -832,7 +832,7 @@ impl RunningKernel {
         self.cell_active.store(false, Ordering::Release);
         let _ = self.send_line(&json!({ "type": "exit" }));
         self.ctrl_in.take();
-        // 先丢弃接收端，避免通道已满时 reader 线程永久阻塞在 sync_channel::send 上造成自死锁。
+        // Drop the receiver first so a reader thread blocked in sync_channel::send on a full channel cannot self-deadlock.
         self.frames.take();
         if !self.wait_exit(SHUTDOWN_GRACE) {
             self.send_signal_group(libc::SIGTERM);
@@ -848,8 +848,8 @@ impl RunningKernel {
                 }
             }
         }
-        // Leader 已退出（或崩溃）但尚未回收前，清扫同进程组内可能残留的 fork/Popen 后代，
-        // 随后再回收 leader 释放 PID。
+        // While the leader has exited (or crashed) but is not yet reaped, sweep any fork/Popen descendants left in the group,
+        // then reap the leader to release the PID.
         self.send_signal_group(libc::SIGKILL);
         let _ = self.child.wait();
         join_bounded(self.reader_handle.take(), self.reader_done.take());
@@ -876,19 +876,19 @@ pub(crate) struct KernelState {
     pub(crate) next_req_id: u64,
     pub(crate) restarted_notice: bool,
     pub(crate) sandbox_fingerprint: Option<(pp_sandbox::EffectiveMode, u64)>,
-    /// 测试专用：下一次循环内内核回收返回固定 `CleanupError`，确定性覆盖清理失败收尾。
+    /// Test-only: the next in-loop kernel reap returns a fixed `CleanupError`, deterministically covering the cleanup-failure teardown.
     #[cfg(test)]
     fail_next_shutdown: bool,
 }
 
 impl KernelState {
-    /// 取出并回收当前常驻内核，供主循环内的清理路径统一调用。
-    /// 测试可注入清理故障，模拟「循环内 shutdown 失败」的错误边界。
+    /// Take and reap the current long-running kernel, called uniformly by cleanup paths inside the main loop.
+    /// Tests can inject a cleanup fault to simulate the "in-loop shutdown failure" error boundary.
     pub(crate) fn shutdown_running(&mut self) -> Result<()> {
         #[cfg(test)]
         if self.fail_next_shutdown {
             self.fail_next_shutdown = false;
-            // 模拟「SIGKILL 已发出但进程未回收」的清理失败：先组内强杀，再固定返回错误。
+            // Simulate the "SIGKILL sent but process not reaped" cleanup failure: kill the group first, then return the fixed error.
             if let Some(mut kernel) = self.running.take() {
                 kernel.send_signal_group(libc::SIGKILL);
                 drop(kernel);
@@ -1016,9 +1016,9 @@ pub(crate) fn run_cell(
     let mut kernel_died = false;
     let mut error_summary: Option<String> = None;
 
-    // 主帧循环包在内层结果边界内：循环内任何内核回收失败（CleanupError）
-    // 都会先落到下方统一的幂等 sink.finish()，再把错误上浮，
-    // 避免 artifact 永久滞留在 Store 的 live 表且元数据未封存。
+    // The main frame loop sits inside an inner result boundary: any in-loop kernel reap failure (CleanupError)
+    // first reaches the uniform, idempotent sink.finish() below, then the error is surfaced,
+    // so an artifact never lingers forever in the Store's live table with unsealed metadata.
     let loop_result: Result<()> = (|| {
         loop {
             let now = Instant::now();
@@ -1044,7 +1044,7 @@ pub(crate) fn run_cell(
             } else if let Some(sent_at) = interrupt_sent
                 && now.saturating_duration_since(sent_at) >= INTERRUPT_GRACE
             {
-                // 内核主线程卡在扩展/阻塞子进程无法响应 SIGINT：升级销毁整个进程组。
+                // The kernel main thread is stuck in an extension/blocking child process and cannot answer SIGINT: escalate by destroying the whole process group.
                 state.shutdown_running()?;
                 state.restarted_notice = true;
                 kernel_died = true;
@@ -1140,8 +1140,8 @@ pub(crate) fn run_cell(
                                 .chain()
                                 .any(|c| c.is::<CleanupError>() || c.is::<Cancelled>()) =>
                         {
-                            // 嵌套工具或 post-hook 发生取消或清理失败：立即停止内核，
-                            // 保留原类型链向上冒泡，绝不吞成脚本侧可捕获的异常。
+                            // A nested tool or post-hook was cancelled or failed to clean up: stop the kernel immediately
+                            // and bubble the original type chain up, never swallowing it into an exception the script can catch.
                             let shutdown_res = state.shutdown_running();
                             state.restarted_notice = true;
                             return pp_core::cancellation::merge_cleanup_result(
@@ -1156,8 +1156,8 @@ pub(crate) fn run_cell(
                             "error": format!("{err:#}"),
                         }),
                     };
-                    // 嵌套宿主工具调用期间的墙钟时间不计入计算预算，
-                    // 返回后只重置计时起点，避免宿主慢工具变相延长计算额度。
+                    // Wall-clock time spent inside a nested host tool call is not counted toward the compute budget;
+                    // only the timer start is reset afterwards, so a slow host tool cannot extend the compute allowance.
                     last_tick = Instant::now();
                     if let Some(kernel) = state.running.as_mut()
                         && let Err(err) = kernel.send_line(&reply)
@@ -1244,8 +1244,8 @@ pub(crate) fn run_cell(
         kernel.cell_active.store(false, Ordering::Release);
     }
 
-    // 无论循环内 shutdown 成败，都先做一次幂等收尾：封存捕获并发布元数据，
-    // 错误（含 CleanupError）在收尾完成后才上浮，不伪造 cell 成功。
+    // Regardless of whether the in-loop shutdown succeeded, do one idempotent teardown first: seal the capture and publish metadata,
+    // and only surface errors (including CleanupError) after teardown completes, without faking cell success.
     sink.finish();
     if dirty {
         emit(AgentEvent::ToolOutputSnapshot {

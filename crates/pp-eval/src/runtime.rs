@@ -1,4 +1,4 @@
-//! Python 解释器发现、环境变量清洗与轻量探测缓存。
+//! Python interpreter discovery, environment sanitizing and lightweight probe cache.
 
 use anyhow::{Context, Result, bail};
 use std::{
@@ -82,7 +82,7 @@ fn probe_cache() -> &'static Mutex<HashMap<ProbeCacheKey, PythonRuntime>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 过滤环境变量，仅保留安全白名单并剥离敏感凭据。
+/// Filter environment variables, keeping only a safe allowlist and stripping sensitive credentials.
 pub fn filter_env<I, K, V>(vars: I) -> BTreeMap<String, String>
 where
     I: IntoIterator<Item = (K, V)>,
@@ -315,7 +315,7 @@ fn probe_candidate(runtime: &PythonRuntime, cwd: &Path) -> Result<()> {
     }
 }
 
-/// 探测可用 Python 3.9+ 运行时；成功结果按环境键缓存。
+/// Probe for an available Python 3.9+ runtime; successful results are cached per environment key.
 pub fn probe_python(cwd: &Path, interpreter: Option<&str>) -> Result<PythonRuntime> {
     let base_env = filter_env(env::vars());
     let trimmed_interpreter = interpreter

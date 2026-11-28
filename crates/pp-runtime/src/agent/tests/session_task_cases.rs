@@ -61,11 +61,11 @@ mod integration {
                             assert!(system.contains(expected));
                             *captured = Some(system.to_owned());
                         } else {
-                            // 已有对话历史后改写 AGENTS.md 不破坏 system 前缀缓存，改为尾部 developer 追加。
+                            // Rewriting AGENTS.md after conversation history exists keeps the system prefix cache intact by appending a developer message to the tail.
                             assert_eq!(Some(system), prev_system);
                             assert!(body.to_string().contains(expected));
                         }
-                        // 首次建连结果返回前改写磁盘；卡片必须仍使用已发送的快照。
+                        // Rewrite the disk before the first connect result returns; the card must still use the snapshot that was sent.
                         std::fs::write(path_ref, next).unwrap();
                         request
                             .respond(Response::builder().status(500).body(Body::empty()).unwrap())
@@ -195,7 +195,7 @@ mod integration {
         let before = serde_json::to_value(&old.session).unwrap();
         let cwd = std::env::current_dir().unwrap();
         assert!(old.resume(&ids[0], &CancellationToken::new()).is_err());
-        // 运行中的恢复使用当前配置，不重新读取磁盘上的模型文件。
+        // A resume while running uses the current config and does not re-read the model files on disk.
         std::fs::write(&models, "invalid configuration").unwrap();
         let candidate =
             persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[1]), true)
@@ -234,7 +234,7 @@ mod integration {
         let before_resume_store = old.pipe_store();
         old.resume(&ids[1], &CancellationToken::new()).unwrap();
         assert_eq!(old.session_id(), Some(ids[1].as_str()));
-        // 恢复是新的有效会话根：临时管道 registry 换实例，旧 URI 不再解析。
+        // A restore is a new effective session root: the temporary pipe registry gets a new instance and old URIs no longer resolve.
         assert!(!before_resume_store.same_instance(&old.pipe_store()));
         assert!(
             persistence::load_test(&sessions, &sessions.join(".locks"), Some(&ids[0]), true)
@@ -307,7 +307,7 @@ mod integration {
 
         {
             let dir = tempfile::tempdir().unwrap();
-            // 不发真实请求，仅借共享 fixture 构造 Agent；地址占位即可。
+            // Send no real request, only build an Agent with the shared fixture; a placeholder address suffices.
             let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
             let mut previous = None;
             for outcome in [0, 1, 2] {
@@ -407,7 +407,7 @@ mod integration {
         };
 
         for protocol in ["completion", "response"] {
-            // Completed 且未取消：归档到 done。
+            // Completed and not cancelled: archived into done.
             let dir = tempfile::tempdir().unwrap();
             let mut agent = archive_agent(dir.path(), protocol);
             let cancellation = CancellationToken::new();
@@ -426,7 +426,7 @@ mod integration {
             assert_eq!(document.status, PlanStatus::Completed);
             assert_eq!(document.location, PlanLocation::Done);
 
-            // Completed 但取消已置位：进度刷新保留，归档不发生。
+            // Completed but cancellation is set: progress is refreshed, no archive happens.
             let dir = tempfile::tempdir().unwrap();
             let mut agent = archive_agent(dir.path(), protocol);
             let cancellation = CancellationToken::new();
@@ -447,7 +447,7 @@ mod integration {
                 PlanStatus::Executed
             );
 
-            // 任务失败：不归档。
+            // Task failed: no archive.
             let dir = tempfile::tempdir().unwrap();
             let mut agent = archive_agent(dir.path(), protocol);
             let result = agent.finish_task(
@@ -462,7 +462,7 @@ mod integration {
             assert!(dir.path().join(".pp/plans/create-canary.md").exists());
             assert!(!dir.path().join(".pp/done/create-canary.md").exists());
 
-            // AwaitingPlanReview：不归档。
+            // AwaitingPlanReview: no archive.
             let dir = tempfile::tempdir().unwrap();
             let mut agent = archive_agent(dir.path(), protocol);
             let result = agent.finish_task(
@@ -644,7 +644,7 @@ mod integration {
             let serving = protocol.to_owned();
             let worker = Arc::clone(&server);
             let handle = std::thread::spawn(move || {
-                // 第 1 轮：初始化未完成 todo 批次（产生第 1 个完整 boundary）。
+                // Round 1: initialize an incomplete todo batch (producing the 1st complete boundary).
                 let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
@@ -656,14 +656,14 @@ mod integration {
                     "todo",
                     &json!({"op":"init","items":["step one","step two"]}).to_string(),
                 );
-                // 第 2 轮：返回纯文本回复（产生第 2 个完整 boundary），因 todo 未完成自动注入 Developer 提醒并进入第 3 轮。
+                // Round 2: reply with plain text (producing the 2nd complete boundary); the unfinished todo injects a Developer reminder automatically and enters round 3.
                 let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
                     .unwrap();
                 let _: Value = request.json().unwrap();
                 final_for(&serving, request, "partial progress before reminder", true);
-                // 第 3 轮：收到携带 Developer 提醒的请求后触发手动取消。
+                // Round 3: trigger a manual cancellation after receiving the request carrying the Developer reminder.
                 let request = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
@@ -676,7 +676,7 @@ mod integration {
                 cancel_worker.cancel();
                 let _ =
                     request.respond(Response::builder().status(200).body(Body::empty()).unwrap());
-                // 随后处理手动 /compact 发出的摘要请求。
+                // Then serve the summary request issued by the manual /compact.
                 let summary_req = worker
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .unwrap()
@@ -730,7 +730,7 @@ mod integration {
             Some(async_openai::types::responses::PromptCacheRetention::Hours24)
         );
 
-        // 禁用 prompt_cache_key 时清除 key；retention 仍按策略更新。
+        // The key is cleared when prompt_cache_key is disabled; retention still follows the policy.
         session.apply_cache_policy(
             false,
             Some(pp_config::models::PromptCacheRetention::InMemory),
@@ -742,7 +742,7 @@ mod integration {
             Some(async_openai::types::responses::PromptCacheRetention::InMemory)
         );
 
-        // 同一角色、共享上下文、计划与模型派生相同的子 Agent 批次缓存键；任一维度变化即分离。
+        // The same role, shared context, plan and model derive the same subagent batch cache key; a change in any dimension separates them.
         let k1 = super::super::generate_subagent_prompt_cache_key(
             "explorer", "ctx-a", "plan-1", "gpt-5.4",
         );
@@ -818,10 +818,10 @@ mod integration {
 
             let worker = Arc::clone(&server);
             let handle = std::thread::spawn(move || {
-                // 两次工具调用：每次 600 input (0 cached) + 500 output = 1100 tokens，
-                // 费用 = 600*10/1e6 + 500*20/1e6 = $0.016/轮：
-                // - 第 1 轮后累计 1100 tokens ($0.016) >= 1.0x 但 < 1.5x -> 第 2 轮注入收尾提示；
-                // - 第 2 轮后累计 2200 tokens ($0.032) >= 1.5x -> 第 3 轮前硬熔断。
+                // Two tool calls: each costs 600 input (0 cached) + 500 output = 1100 tokens,
+                // cost = 600*10/1e6 + 500*20/1e6 = $0.016/turn:
+                // - after turn 1 the total is 1100 tokens ($0.016) >= 1.0x but < 1.5x -> turn 2 injects the wrap-up hint;
+                // - after turn 2 the total is 2200 tokens ($0.032) >= 1.5x -> a hard circuit break before turn 3.
                 let sse_call = |call_id: &str| {
                     let response = json!({
                         "id": format!("resp_{call_id}"),

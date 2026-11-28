@@ -29,11 +29,11 @@ pub struct InspectedDocument {
     pub sent: bool,
 }
 
-/// 单个规则文件的观测指纹：device/inode/长度/mtime（秒+纳秒）。
+/// Observed fingerprint of a single rule file: device/inode/length/mtime (seconds + nanoseconds).
 ///
-/// 与派生会话索引同一口径。只看 mtime 会漏掉“同长度、同一时间刻度内的覆盖写”，
-/// 因此 inode 与长度一起参与；真需要字节级精确的 edit/write 前置门禁仍每次整读，
-/// 不走该指纹（见 [`State::check`]）。
+/// Same basis as the derived session index. mtime alone misses overwrites that keep both the
+/// length and the same timestamp tick, so inode and length take part; the byte-exact edit/write
+/// pre-gate still reads the whole file every time and skips this fingerprint (see [`State::check`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Fingerprint {
     device: u64,
@@ -44,7 +44,7 @@ struct Fingerprint {
 }
 
 impl Fingerprint {
-    /// 只 stat，不跟随符号链接；文件缺失返回 `None`，其他错误上抛。
+    /// stat only, never following symlinks; a missing file yields `None` and other errors propagate.
     fn read(path: &Path) -> Result<Option<Self>> {
         let metadata = match std::fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
@@ -53,7 +53,7 @@ impl Fingerprint {
                 return Err(error).with_context(|| format!("reading {} metadata", path.display()));
             }
         };
-        // 与 `read_file` 同一规则：符号链接、目录与其他特殊文件都不是规则来源。
+        // Same rule as `read_file`: symlinks, directories and other special files are not rule sources.
         ensure!(
             metadata.is_file(),
             "{} must be a regular file",
@@ -69,32 +69,32 @@ impl Fingerprint {
     }
 }
 
-/// 目录链上的候选规则文件与它所属的项目根。
+/// Candidate rule file on a directory chain and the project root it belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RuleSource {
     path: PathBuf,
     root: PathBuf,
 }
 
-/// 最近一次成功读取的正文与读到它时的指纹。
+/// Body of the last successful read together with the fingerprint observed when it was read.
 struct Cached {
     fingerprint: Fingerprint,
     content: String,
 }
 
-/// 每个 Agent 独立保存已激活的目录和最近一次请求的完整规则快照。
+/// Each Agent keeps its own activated directories and the full rule snapshot of the last request.
 pub struct State {
     cwd: PathBuf,
     directories: BTreeSet<PathBuf>,
-    /// 当前规则快照与其共享副本：来源未变化时整份复用，不复制正文。
+    /// Current rule snapshot and its shared copy: reused whole while the sources are unchanged, without copying bodies.
     current: Arc<[Document]>,
     sent: Arc<[Document]>,
     roots: BTreeSet<PathBuf>,
     sent_roots: BTreeSet<PathBuf>,
-    /// 生成 `current` 时的候选来源与观测指纹，用来判断磁盘是否仍然一致。
+    /// Candidate sources and observed fingerprints captured when `current` was built, used to detect disk drift.
     sources: Vec<RuleSource>,
     observed: Vec<Option<Fingerprint>>,
-    /// 只保存成功读取的正文：读取失败不能当作规则缺失而被缓存。
+    /// Only successfully read bodies are stored: a read failure must not be cached as a missing rule.
     cache: BTreeMap<PathBuf, Cached>,
     blocked: Option<String>,
 }
@@ -103,7 +103,7 @@ impl State {
     pub fn new(cwd: &Path) -> Self {
         Self {
             cwd: cwd.to_owned(),
-            // 启动目录的祖先规则在首个请求前加载，后代目录仍按访问激活。
+            // Ancestor rules of the startup directory load before the first request; descendant directories still activate on access.
             directories: BTreeSet::from([cwd.to_owned()]),
             current: Arc::from(Vec::new()),
             sent: Arc::from(Vec::new()),
@@ -124,7 +124,7 @@ impl State {
             .or_else(|| directory.starts_with(&self.cwd).then(|| self.cwd.clone()))
     }
 
-    /// 一条目录链上的候选规则文件（项目根在前）；没有隐式根时为空。
+    /// Candidate rule files on one directory chain (project root first); empty when there is no implicit root.
     fn chain_sources(&self, directory: &Path) -> Vec<RuleSource> {
         let Some(root) = self.root(directory) else {
             return Vec::new();
@@ -146,7 +146,7 @@ impl State {
             .collect()
     }
 
-    /// 已激活范围的候选规则文件（去重后按深度、路径排序）与项目根集合。
+    /// Candidate rule files for the activated scope (deduped, sorted by depth then path) and the set of project roots.
     fn sources(&self) -> (Vec<RuleSource>, BTreeSet<PathBuf>) {
         let mut found = BTreeMap::new();
         let mut roots = BTreeSet::new();
@@ -155,7 +155,7 @@ impl State {
                 roots.insert(root);
             }
             for source in self.chain_sources(directory) {
-                // 同一文件被多条已激活链覆盖时，与既有顺序一致由后者决定所属根。
+                // When several activated chains cover the same file, the latter decides the owning root, matching the existing order.
                 found.insert(source.path.clone(), source);
             }
         }
@@ -170,7 +170,7 @@ impl State {
         (sources, roots)
     }
 
-    /// 只 stat 候选文件；`None` 表示当前不存在。
+    /// stat candidate files only; `None` means it does not currently exist.
     fn observe(sources: &[RuleSource]) -> Result<Vec<Option<Fingerprint>>> {
         sources
             .iter()
@@ -178,7 +178,7 @@ impl State {
             .collect()
     }
 
-    /// 命中指纹时取缓存正文，否则整读并记录当前指纹。
+    /// Take the cached body on a fingerprint hit, otherwise read in full and record the current fingerprint.
     fn cached(&mut self, source: &RuleSource, fingerprint: Fingerprint) -> Result<Option<&str>> {
         if self
             .cache
@@ -202,7 +202,7 @@ impl State {
             .map(|cached| cached.content.as_str()))
     }
 
-    /// 按观测结果装配快照；指纹未变化的文件不再读盘。
+    /// Assemble the snapshot from the observations; files whose fingerprint did not change are not read again.
     fn load(
         &mut self,
         sources: &[RuleSource],
@@ -216,7 +216,7 @@ impl State {
             let Some(content) = self.cached(source, fingerprint)? else {
                 continue;
             };
-            // 缺失与空白正文都不追加，也不清空父规则。
+            // Missing and blank bodies are neither appended nor allowed to clear parent rules.
             if content.trim().is_empty() {
                 continue;
             }
@@ -229,7 +229,7 @@ impl State {
         Ok(documents)
     }
 
-    /// edit/write 前置门禁的目录链：坚持整读，保证判定与磁盘字节一致。
+    /// Directory chain for the edit/write pre-gate: always read in full so the verdict matches the bytes on disk.
     fn chain_fresh(&self, directory: &Path) -> Result<Vec<Document>> {
         let mut documents = Vec::new();
         for source in self.chain_sources(directory) {
@@ -246,7 +246,7 @@ impl State {
         Ok(documents)
     }
 
-    /// 读取目录链的当前正文（激活校验用），指纹未变化的文件复用缓存。
+    /// Read the current bodies of a directory chain (for activation validation); unchanged fingerprints reuse the cache.
     fn chain(&mut self, directory: &Path) -> Result<Vec<Document>> {
         let sources = self.chain_sources(directory);
         let observed = Self::observe(&sources)?;
@@ -254,7 +254,7 @@ impl State {
     }
 
     pub fn activate(&mut self, directory: PathBuf) -> Result<()> {
-        // 先校验整条链，读取失败时不把半份规则当成已加载。
+        // Validate the whole chain first so a failed read never leaves half the rules marked as loaded.
         self.chain(&directory)?;
         self.directories.insert(directory);
         Ok(())
@@ -266,10 +266,10 @@ impl State {
         }
     }
 
-    /// 每个普通／摘要请求的当前规则快照。
+    /// Current rule snapshot for each regular/summary request.
     ///
-    /// 激活范围、候选来源与指纹都未变化时直接共享上一份快照（不读盘、不复制正文）；
-    /// 只有指纹变化的文件重新读取，因此磁盘变更在下一轮请求一定可见。
+    /// When the activated scope, candidate sources and fingerprints are unchanged, share the previous snapshot
+    /// directly (no disk reads, no body copies); only changed fingerprints are re-read, so disk changes show up next request.
     pub fn refresh_shared(&mut self) -> Result<Arc<[Document]>> {
         let (sources, roots) = self.sources();
         let observed = Self::observe(&sources)?;
@@ -284,7 +284,7 @@ impl State {
         Ok(Arc::clone(&self.current))
     }
 
-    /// 需要独占列表的调用方（独立预览、既有测试）使用；请求路径用 [`State::refresh_shared`]。
+    /// For callers that need an owned list (standalone preview, existing tests); the request path uses [`State::refresh_shared`].
     pub fn refresh(&mut self) -> Result<Vec<Document>> {
         Ok(self.refresh_shared()?.to_vec())
     }
@@ -305,7 +305,7 @@ impl State {
     }
 
     pub fn sent(&mut self) {
-        // 与 `current` 共享同一份快照：每轮请求不再深拷贝全部规则正文。
+        // Shares the same snapshot as `current`: each request no longer deep-copies every rule body.
         self.sent = Arc::clone(&self.current);
         self.sent_roots.clone_from(&self.roots);
         self.blocked = None;
@@ -332,7 +332,7 @@ impl State {
 
     pub fn check(&mut self, directory: PathBuf) -> Result<()> {
         self.directories.insert(directory.clone());
-        // 门禁按磁盘字节判定：同长度、同 mtime 的覆盖写不能绕过规则检查。
+        // The gate judges by bytes on disk: an overwrite that keeps length and mtime cannot bypass the rule check.
         let documents = self.chain_fresh(&directory)?;
         let sent_root = directory
             .ancestors()
@@ -382,9 +382,9 @@ pub fn render(documents: &[Document]) -> String {
     text
 }
 
-/// 读取普通 UTF-8 指令文件；缺失与空正文分开表示，保留显式空覆盖。
+/// Read a plain UTF-8 instruction file; missing and empty bodies stay distinct so an explicit empty override is kept.
 pub fn read_file(path: &Path) -> Result<Option<String>> {
-    // 禁止跟随符号链接；非阻塞打开使 FIFO 等特殊文件不会卡住 worker。
+    // Never follow symlinks; a non-blocking open keeps special files such as FIFOs from blocking the worker.
     let fd = match fs::open(
         path,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,

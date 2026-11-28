@@ -16,7 +16,7 @@ mod integration {
         let worker = Arc::clone(&server);
         let (tx, rx) = std::sync::mpsc::channel::<Value>();
         let server_thread = std::thread::spawn(move || {
-            // 第 1 轮：设置 Python 变量 counter = 41
+            // Round 1: set the Python variable counter = 41
             let r1 = worker
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()
@@ -35,7 +35,7 @@ mod integration {
             tx.send(r2.json().unwrap()).unwrap();
             final_for("response", r2, "turn 1 done", true);
 
-            // 第 2 轮：同一会话读取并递增 counter
+            // Round 2: read and increment counter in the same session
             let r3 = worker
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()
@@ -54,7 +54,7 @@ mod integration {
             tx.send(r4.json().unwrap()).unwrap();
             final_for("response", r4, "turn 2 done", true);
 
-            // 第 3 轮：/new 重置后 counter 应触发 NameError
+            // Round 3: after the /new reset, counter should raise NameError
             let r5 = worker
                 .recv_timeout(Duration::from_secs(10))
                 .unwrap()

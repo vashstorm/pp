@@ -1,10 +1,12 @@
-// 运行中消息排队的真实二进制场景（计划验证项 3、4、5）：FIFO follow-up 与多行
-// Unicode 草稿、取消/供应商错误后暂停并等待功能键 R、取消收尾忙碌期拒绝入队、
-// Esc 与已提交回复的竞争不自动续跑、取回原始模板 slash 且只执行编辑后的新值、
-// 非空草稿阻止取回且光标不变、Tab 不取回、Esc 只关菜单不取消任务、100×30 与
-// 40×10 下队列列表/草稿/原生光标不被覆盖。全部用真实 PTY、回环 fixture 与屏幕/
-// HTTP/文件 marker 作栅栏，不用 sleep 猜测阶段。辅助函数一律使用
-// `runtime_input_` 前缀，不新增 use 声明，避免与兄弟 include 文件冲突。
+// Real-binary scenarios for queueing messages while running (plan verification items 3, 4, 5): FIFO
+// follow-ups with a multi-line Unicode draft, pausing after a cancellation/provider error and waiting for
+// function key R, refusing enqueue during the post-cancel busy period, the race between Esc and an
+// already committed reply not auto-continuing, retrieving the original template slash and executing only
+// the edited value, a non-empty draft blocking retrieval with an unchanged cursor, Tab not retrieving,
+// Esc only closing the menu without cancelling the task, and the queue list/draft/native cursor staying
+// uncovered at 100×30 and 40×10. Everything uses the real PTY, the loopback fixture and screen/HTTP/file
+// markers as barriers, never sleep to guess stages. Helpers all use the `runtime_input_` prefix and add no
+// use declaration, to avoid clashing with sibling include files.
 
 fn runtime_input_empty_editor(pty: &mut Pty) {
     pty.wait_for("empty editor draft after enqueue", |screen| {
@@ -40,7 +42,8 @@ fn runtime_input_cancel_terminal(pty: &mut Pty, steering: usize, queued: usize) 
     runtime_input_counts(pty, steering, queued, true);
 }
 
-// 队列清空后计数行整行消失（0 条时不渲染），以此作为“全部应用”的屏幕栅栏。
+// Once the queue drains the count row disappears entirely (nothing is rendered for 0 entries), which is
+// the screen barrier for "all applied".
 fn runtime_input_queue_drained(pty: &mut Pty) {
     pty.wait_for("pending queue fully applied", |screen| {
         let text = screen.contents();
@@ -56,7 +59,8 @@ fn runtime_input_draft_visible(pty: &mut Pty, markers: &[&str]) {
     });
 }
 
-// 原生光标停在包含 marker 的那一行，返回该列；后续用同一列断言光标未被移动。
+// The native cursor sits on the line containing marker and its column is returned; the same column is
+// then used to assert the cursor was not moved.
 fn runtime_input_cursor_on(pty: &mut Pty, marker: &str) -> u16 {
     pty.wait_for("cursor on the draft tail line", |screen| {
         screen
@@ -79,7 +83,8 @@ fn runtime_input_cursor_kept(pty: &mut Pty, marker: &str, column: u16) {
     });
 }
 
-// 场景 5 需要 /命令 模板在 pp 启动前就位；配置写法与 runtime_input_start 相同。
+// Scenario 5 needs the /command template in place before pp starts; the configuration is written the
+// same way as in runtime_input_start.
 fn runtime_input_command_start(
     server: &TestServer,
     protocol: &str,
@@ -92,8 +97,9 @@ fn runtime_input_command_start(
     (home, pty)
 }
 
-// 场景 3：FIFO follow-up + 未提交多行 Unicode 草稿。Q2 只能在 Q1 成功后出现，
-// 每条用户消息各一次，独立任务各自发起请求；草稿与原生光标全程保持。
+// Scenario 3: FIFO follow-ups plus an uncommitted multi-line Unicode draft (CJK plus α/✓, so width and
+// cursor columns are real). Q2 may appear only after Q1 succeeds, each user message exactly once, and
+// independent tasks each issue a request; the draft and the native cursor survive throughout.
 #[test]
 fn tui_runtime_input_followup_fifo_and_draft_both_protocols() {
     let protocol = "response";
@@ -152,8 +158,9 @@ fn tui_runtime_input_followup_fifo_and_draft_both_protocols() {
         no_more(&server);
 }
 
-// 场景 8b：被 UserPromptSubmit 拒绝的补充输入显示拒绝原因与原文（不是成功的 You
-// 卡片）；全部被拒绝时没有新增输入，不得再发一次模型请求。
+// Scenario 8b: supplementary input rejected by UserPromptSubmit shows the rejection reason and the
+// original text (not a successful You card); when everything is rejected no input is added and no second
+// model request may be sent.
 #[test]
 fn hooks_tui_rejected_steering_card_needs_no_extra_request() {
     let protocol = "response";
@@ -190,23 +197,25 @@ fn hooks_tui_rejected_steering_card_needs_no_extra_request() {
         pty.ready();
 
         let stream = runtime_input_live(&mut pty, &server, protocol, "hook-task-U");
-        // 完成边界前入队：必须在提交边界被拒绝，绝不进入原生历史。
+        // Enqueued before the completion boundary: it must be rejected at the commit boundary and never
+        // enter native history.
         pty.input("reject-me\r");
         runtime_input_counts(&mut pty, 1, 0, false);
         cancel_assert_no_request(&server);
         runtime_input_end_live(stream, protocol);
         pty.wait_for("rejected steering card", |screen| {
             let text = screen.contents();
-            // 终端解析器不会保留原始 escape：出现 ESC 说明脚本正文漏进了屏幕。
+            // The terminal parser does not keep raw escapes: an ESC means script body leaked onto the screen.
             assert!(
                 !text.contains('\u{1b}'),
-                "{protocol}: hook 诊断不得注入原始终端转义：{text:?}"
+                "{protocol}: hook diagnostics must not inject raw terminal escapes: {text:?}"
             );
             text.contains("Rejected")
                 && text.contains("Input rejected: policy says no")
                 && text.contains("reject-me")
         });
-        // 全部补充输入被拒绝：没有新增用户输入，不得再请求模型。
+        // Every supplementary input was rejected: no user input was added, so the model must not be asked
+        // again.
         pty.wait_for("task finished after rejected steering", |screen| {
             screen.contents().contains("Completed ·") && input_is_ready(screen)
         });

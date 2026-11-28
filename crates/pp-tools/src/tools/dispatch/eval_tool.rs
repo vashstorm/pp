@@ -1,4 +1,4 @@
-//! `eval` 工具分支：持久 Python REPL 内核执行与嵌套宿主工具回调桥。
+//! `eval` tool branch: persistent Python REPL kernel execution and the nested host tool callback bridge.
 
 use super::*;
 use pp_core::cancellation::Cancelled;
@@ -119,7 +119,7 @@ impl Tools {
             call.nested_hook_halt = nested_hook_halt;
         }
 
-        /// 单次 eval cell 最多附带给模型的图片张数，防止循环绘图撑爆请求与视觉 token。
+        /// Maximum images attached to the model per eval cell, so repeated plotting cannot blow up the request and vision tokens.
         const MAX_EVAL_IMAGES: usize = 4;
 
         let mut value = outcome.value;
@@ -215,7 +215,7 @@ impl Tools {
         }
 
         let mut nested_emit = |event: AgentEvent| {
-            // 仅向宿主透传文件修改与诊断等真实副作用事件，避免内部子调用覆盖 eval 卡片状态。
+            // Forward only real side-effect events such as file mutations and diagnostics to the host, so internal sub-calls cannot overwrite the eval card state.
             if matches!(
                 event,
                 AgentEvent::FileChanged { .. } | AgentEvent::LspDiagnostics { .. }

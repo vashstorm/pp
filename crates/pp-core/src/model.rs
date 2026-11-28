@@ -73,8 +73,9 @@ impl std::str::FromStr for ThinkLevel {
     }
 }
 
-/// 当前生效模型的来源。`Override`/`Default` 由进程级模型状态给出，
-/// `Role`/`Fallback` 只在任务内出现（Plan 角色主模型、请求失败后的备用模型）。
+/// Source of the model currently in effect. `Override`/`Default` come from process-level model
+/// state; `Role`/`Fallback` only occur inside a task (the Plan role main model, the fallback model
+/// after a failed request).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelSource {
@@ -86,7 +87,7 @@ pub enum ModelSource {
 }
 
 impl ModelSource {
-    /// CLI／内容栏使用的说明文案。
+    /// Description text used by the CLI and the context bar.
     pub fn describe(self) -> &'static str {
         match self {
             Self::Default => "config default",

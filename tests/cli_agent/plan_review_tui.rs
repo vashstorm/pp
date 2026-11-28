@@ -10,7 +10,8 @@ fn plan_wait_report(pty: &mut Pty, marker: &str, outdated: bool) {
     });
 }
 
-// 审批动作 0/1/4 各自独立：新会话执行、保留上下文执行、恢复后返回讨论。
+// Approval actions 0/1/4 are independent: execute in a new session, execute keeping the context, and return to the
+// discussion after restoring.
 fn plan_review_case(action: usize) {
     let protocol = "response";
         let fixture = server();
@@ -186,7 +187,7 @@ fn plan_review_case(action: usize) {
             no_more(&fixture);
             assert_eq!(std::fs::read(&path).unwrap(), original);
             if action == 4 {
-                // 从报告正文反向切换到输入框，继续讨论。
+                // Shift focus back from the report body to the input box to continue the discussion.
                 pty.input("\x1b[ZWhich failure input should item two use?\r");
             } else {
                 plan_choose(&mut pty, action);

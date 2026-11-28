@@ -16,7 +16,8 @@ pub(super) fn is_permission_shortcut(key: KeyEvent) -> bool {
     let modifiers = key.modifiers - alt_or_meta;
     match key.code {
         KeyCode::F(6) => key.modifiers.is_empty(),
-        // 某些终端通过 Meta 报告 Alt，另一些只在字符大小写上体现 Shift。
+        // Some terminals report Alt through Meta and others only reflect Shift in the case of
+        // the character.
         KeyCode::Char('a' | 'A') if key.modifiers.intersects(alt_or_meta) => {
             modifiers == KeyModifiers::SHIFT
                 || (modifiers.is_empty() && key.code == KeyCode::Char('A'))
@@ -145,7 +146,8 @@ impl App {
         }
     }
 
-    /// 权限命令优先于面板／资源加载守卫执行；非 `/permissions` 命令返回 `false`。
+    /// Permission commands run before the panel/resource loading guards; commands other than
+    /// `/permissions` return `false`.
     pub(super) fn try_submit_permission_command(&mut self) -> bool {
         if self.shell_mode {
             return false;
@@ -248,8 +250,9 @@ impl App {
     }
 
     pub(super) fn apply_permission_command(&mut self, command: PermissionCommand) {
-        // 规则查询与撤销涉及 `permission.toml` / `permission.lock` 磁盘锁，
-        // 统一交给独立 worker，内存中的模式切换与状态查询继续即时完成。
+        // Rule queries and revocations touch the `permission.toml` / `permission.lock` disk
+        // locks, so they are handed to the dedicated worker, while in-memory mode switching and
+        // status queries stay immediate.
         match command {
             PermissionCommand::Rules => {
                 self.dispatch_permission_rule_op(
@@ -347,7 +350,7 @@ impl App {
 }
 
 fn permission_prompt(request: PermissionRequest) -> AskRequest {
-    // 说明仅供审批卡片展示，回复仍只按标签匹配。
+    // Descriptions are only shown on the approval card; replies still match labels alone.
     let option = |label: &str, description: &str| AskOption {
         label: label.into(),
         description: Some(description.into()),

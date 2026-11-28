@@ -1,8 +1,11 @@
-//! `/tips` 的本地参考清单：当前构建可用的斜杠命令与全局 TUI 快捷键。
+//! Local reference list for `/tips`: the slash commands and global TUI shortcuts
+//! available in the current build.
 //!
-//! `/test-*` 条目只在含 debug assertions 的构建中编译，其他构建不列这些命令。
-//! 两组内按用户看到的键名忽略大小写稳定排序；对齐宽度与单行宽度由
-//! [`key_width`]／[`row_width`] 派生，行模式对齐与 TUI 双列布局共用同一预算。
+//! `/test-*` entries compile only in builds with debug assertions; other builds do
+//! not list those commands. Both groups are stably sorted case-insensitively by the
+//! key label the user sees; the alignment width and single-row width derive from
+//! [`key_width`]/[`row_width`], so line-mode alignment and the TUI two-column layout
+//! share one budget.
 
 pub(crate) struct Tip {
     pub(crate) label: &'static str,
@@ -18,7 +21,7 @@ const fn tip(label: &'static str, description: &'static str) -> Tip {
     Tip { label, description }
 }
 
-// 平台相关的组合键：macOS 为 Option，其他平台为 Ctrl（见 `shortcuts`）。
+// Platform-specific modifier chords: Option on macOS, Ctrl elsewhere (see `shortcuts`).
 const fn platform_tip(macos: &'static str, other: &'static str, description: &'static str) -> Tip {
     Tip {
         label: crate::shortcuts::platform_text(macos, other),
@@ -26,7 +29,8 @@ const fn platform_tip(macos: &'static str, other: &'static str, description: &'s
     }
 }
 
-// 说明不超过 20 列、键名不超过 16 列，80 列终端（正文 78 列）仍能并排两列。
+// Descriptions stay within 20 columns and labels within 16, so an 80-column
+// terminal (78 columns of text) still fits two columns side by side.
 pub(crate) const SECTIONS: &[Section] = &[
     Section {
         title: "Commands",
@@ -131,17 +135,19 @@ pub(crate) const SECTIONS: &[Section] = &[
     },
 ];
 
-/// 当前构建的全部条目，按用户看到的键名（忽略大小写）稳定排序。
+/// All entries of the current build, stably sorted by the key label the user sees
+/// (case-insensitively).
 ///
-/// `/test-*` 条目已按 `#[cfg(debug_assertions)]` 从 `SECTIONS` 中裁剪，
-/// 这里不需要额外的可见性过滤。
+/// `/test-*` entries are already trimmed from `SECTIONS` by
+/// `#[cfg(debug_assertions)]`, so no extra visibility filtering is needed here.
 pub(crate) fn sorted(section: &'static Section) -> Vec<&'static Tip> {
     let mut tips: Vec<&'static Tip> = section.tips.iter().collect();
     tips.sort_by_key(|tip| tip.label.to_lowercase());
     tips
 }
 
-/// 键名对齐宽度：最长可见键名，下限 12 列保留窄屏观感。
+/// Key alignment width: the longest visible key label, floored at 12 columns to
+/// keep narrow terminals readable.
 pub(crate) fn key_width() -> usize {
     visible()
         .map(|tip| tip.label.chars().count())
@@ -150,7 +156,7 @@ pub(crate) fn key_width() -> usize {
         .max(12)
 }
 
-/// 单行条目宽度：对齐键名 + 分隔空格 + 最长说明。
+/// Single-row width: aligned key label + separating space + longest description.
 pub(crate) fn row_width() -> usize {
     key_width()
         + 1
@@ -160,7 +166,8 @@ pub(crate) fn row_width() -> usize {
             .unwrap_or(0)
 }
 
-/// 行模式输出：`Tips:`、空行、分组标题与对齐条目，组间留空行。
+/// Line-mode output: `Tips:`, a blank line, then group titles and aligned entries,
+/// with a blank line between groups.
 pub(crate) fn text() -> String {
     let key_width = key_width();
     let mut lines = vec!["Tips:".to_owned()];
@@ -211,7 +218,8 @@ mod tests {
             );
         }
         assert!(key_width() >= 12);
-        // 80 列终端正文为 78 列，右侧取消先前须仍放得下两列条目。
+        // An 80-column terminal gives 78 columns of text; the right side still has
+        // to fit two columns of entries before cancelling.
         assert!(
             row_width() * 2 + 4 <= 78,
             "row width {} exceeds the two-column budget",
@@ -265,7 +273,8 @@ mod tests {
         assert_eq!(index, lines.len());
     }
 
-    // 说明的起始列按字符计，与 `format!` 的键名补白口径一致。
+    // The description start column counts characters, matching how `format!` pads
+    // the key label.
     fn description_column(line: &str, description: &str) -> usize {
         let offset = line.find(description).expect("description present");
         line[..offset].chars().count()

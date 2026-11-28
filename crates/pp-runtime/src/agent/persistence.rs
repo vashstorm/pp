@@ -141,7 +141,8 @@ struct Active {
 pub(super) struct SessionJournal {
     dir: PathBuf,
     lock_dir: PathBuf,
-    /// 统计库句柄；由 `Agent` 构造方从 `pp_stats::database_path` 或临时目录传入。
+    /// Stats database handle; supplied by the `Agent` constructor from
+    /// `pp_stats::database_path` or a temporary directory.
     stats: pp_stats::Database,
     ephemeral: bool,
     active: Option<Active>,
@@ -157,11 +158,14 @@ pub(super) struct SessionJournal {
     pending_checkpoint: bool,
     pending_tools: bool,
     pending_stats: Option<String>,
-    /// 最近一次成功写入统计库的请求键；工具执行结果按它关联请求。
+    /// Request key of the most recent successful stats write; tool executions are
+    /// associated with a request through it.
     last_stats: Option<String>,
-    /// 工具调用 ID → (工具名, 开始时刻)，用于在 ToolFinished 时计算耗时。
+    /// Tool call ID → (tool name, start instant), used to compute the duration on
+    /// ToolFinished.
     tool_started: HashMap<String, (String, Instant)>,
-    /// 已冻结状态与耗时、等待最终回填模型文本的工具统计。
+    /// Tool stats whose status and duration are frozen and which await the final
+    /// model-facing text.
     pending_tool_stats: HashMap<String, PendingToolStat>,
     unlinked_stats: Arc<Mutex<Vec<String>>>,
     first_request: Arc<AtomicBool>,
@@ -256,7 +260,8 @@ impl SessionJournal {
         self.pending_tools = true;
     }
     pub(super) fn history_replaced(&mut self) {
-        // 仅恢复时不改变日志和排序；下一次请求发送后再保存新的模型与原生历史。
+        // Restore only: do not change the journal or ordering; the new model and native
+        // history are saved after the next request is sent.
         self.pending_checkpoint = true;
     }
     pub(super) fn check(&self) -> Result<()> {
@@ -283,7 +288,8 @@ impl SessionJournal {
             let physical = {
                 let active = self.active.as_mut().expect("active journal checked");
                 let mut line = if active.header_written {
-                    // 单次序列化：记录值直接进入共享值表，不再回读字节重建 Value。
+                    // Single serialization: the record value enters the shared value table
+                    // directly instead of re-reading bytes into a Value.
                     let value =
                         serde_json::to_value(&entry).context("serializing session record")?;
                     active
@@ -333,7 +339,8 @@ impl SessionJournal {
     fn custom(&mut self, custom: CustomRef<'_>, sync: bool) -> Result<()> {
         self.record(PayloadRef::Custom { custom }, sync)
     }
-    /// 落盘一条已编码的记录：先处理待截断的未完成尾部，再按需 fsync。
+    /// Persist one encoded record: handle a pending incomplete tail first, then fsync as
+    /// requested.
     fn append_physical(&mut self, physical: &[u8], sync: bool) -> Result<()> {
         let result = (|| -> Result<()> {
             let active = self.active.as_mut().expect("active journal checked");
@@ -357,7 +364,8 @@ impl SessionJournal {
         }
         Ok(())
     }
-    /// 头部记录按原样写入：首行不是共享值表记录。
+    /// The header record is written verbatim: the first line is not a shared value table
+    /// record.
     fn append_serialized(&mut self, serialized: serde_json::Result<()>, sync: bool) -> Result<()> {
         serialized.context("serializing session record")?;
         self.buffer.push(b'\n');
@@ -365,7 +373,8 @@ impl SessionJournal {
         self.append_physical(&physical, sync)
     }
 
-    /// 新上下文复用会话目录与锁目录，独立持有新会话的锁。
+    /// The new context reuses the session and lock directories and holds the new
+    /// session's own lock.
     pub(super) fn fork_empty(&self) -> Self {
         Self {
             ephemeral: self.ephemeral,
@@ -417,7 +426,8 @@ impl SessionJournal {
 
 #[cfg(test)]
 pub(crate) fn indexed_listing(dir: &Path) -> Result<SessionListing> {
-    // 每次验收显式使用独立临时库，不能从会话目录推导共享 /tmp/history.db。
+    // Every acceptance run explicitly uses a separate temporary database; a shared
+    // /tmp/history.db must never be derived from the session directory.
     let database = tempfile::tempdir()?;
     let mut store = crate::history::Store::open(&database.path().join("history.db"))?;
     let diagnostics = store.sync_sessions(dir, &pp_core::cancellation::CancellationToken::new())?;
@@ -427,7 +437,8 @@ pub(crate) fn indexed_listing(dir: &Path) -> Result<SessionListing> {
     })
 }
 
-/// 测试专用：统计库随会话目录落在临时工作区，避免写真实 `~/.pp/stats`。
+/// Test-only: the stats database follows the session directory into a temporary
+/// workspace, so the real `~/.pp/stats` is never written.
 #[cfg(test)]
 pub(super) fn load_test(
     dir: &Path,
@@ -444,7 +455,8 @@ pub(super) fn load_test(
     )
 }
 
-/// 冻结的展示格式 fixture 通过与生产读取相同的投影器进入 UI 测试。
+/// Frozen display-format fixtures enter UI tests through the same projector used by
+/// production reads.
 #[cfg(feature = "test-support")]
 pub fn replay_fixture(lines: &str) -> Result<Vec<ReplayRecord>> {
     use format::Entry;
@@ -462,7 +474,8 @@ pub(crate) mod tests;
 #[cfg(test)]
 mod slimming_tests;
 
-/// 写入路径的回归面：单次序列化只能减少编码次数，不能改变磁盘字节与落盘边界。
+/// Regression surface of the write path: single serialization may only reduce the number
+/// of encodings, never change the on-disk bytes or the commit boundaries.
 #[cfg(test)]
 mod write_path_tests {
     use super::format::{Content, Message, StateRef};
@@ -513,8 +526,10 @@ mod write_path_tests {
         (journal, path)
     }
 
-    /// 旧路径先序列化成字节再回读成 `Value`，新路径直接 intern 记录值。
-    /// 两者必须逐字节相同：既有的解码入口与冻结日志依赖同一份磁盘格式。
+    /// The legacy path serializes to bytes and reads them back into a `Value`; the new
+    /// path interns the record value directly.
+    /// Both must be byte-identical: existing decode entry points and frozen logs depend on
+    /// one and the same on-disk format.
     #[test]
     fn record_encoding_matches_the_legacy_byte_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -573,7 +588,7 @@ mod write_path_tests {
         }
     }
 
-    /// 用生产读取路径解码整份日志。
+    /// Decode the whole journal through the production read path.
     fn read_records(path: &Path) -> Vec<Value> {
         let mut reader = SessionReader::new(BufReader::new(File::open(path).unwrap()));
         let mut line = Vec::new();
@@ -584,7 +599,8 @@ mod write_path_tests {
         decoded
     }
 
-    /// `sync=true` 是落盘边界：返回前记录必须已经写入文件，不能停在用户态缓冲里。
+    /// `sync=true` is a commit boundary: the record must already be in the file when the
+    /// call returns and must not sit in a userspace buffer.
     #[test]
     fn synced_record_is_on_disk_before_it_returns() {
         let dir = tempfile::tempdir().unwrap();
@@ -596,7 +612,8 @@ mod write_path_tests {
         assert_eq!(last["thinkingLevel"], "high");
     }
 
-    /// 新写入路径落盘的文件必须能被读取路径完整读回，且共享值仍然只写一次。
+    /// Files written by the new path must read back completely through the read path, and
+    /// shared values must still be written only once.
     #[test]
     fn written_records_read_back_through_the_session_reader() {
         let dir = tempfile::tempdir().unwrap();

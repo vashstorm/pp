@@ -1,4 +1,5 @@
-//! App 与管道阶段观察线程之间的桥：根 epoch、view epoch 与本地面板动作。
+//! Bridge between App and the pipe-stage observer thread: root epoch, view epoch and local
+//! panel actions.
 
 use crate::tui::{App, pipes};
 use std::sync::mpsc::TryRecvError;
@@ -16,7 +17,8 @@ impl App {
         }
     }
 
-    /// F8 只在没有模态面板占用输入时进入；否则先关闭当前模态。
+    /// F8 enters only while no modal panel owns the input; otherwise the current modal is
+    /// closed first.
     pub(in crate::tui) fn pipes_entry_allowed(&self) -> bool {
         self.ask_panel.is_none()
             && self.subagent_panel.is_none()
@@ -33,7 +35,8 @@ impl App {
             && !self.history_browser
     }
 
-    /// 打开阶段浏览；运行中、取消中与空闲都可本地打开，不进入 steering。
+    /// Opens stage browsing; it opens locally while running, cancelling or idle and never
+    /// enters steering.
     pub(in crate::tui) fn open_pipes(&mut self, run: Option<&str>) {
         self.close_pipes();
         self.menu = None;
@@ -55,7 +58,8 @@ impl App {
         });
     }
 
-    /// 关闭面板：停止观察线程并释放正文副本；不取消任何 shell 任务。
+    /// Closes the panel: stops the observer thread and releases the body copy without
+    /// cancelling any shell task.
     pub(in crate::tui) fn close_pipes(&mut self) {
         self.pipes_panel = None;
         self.pipes_view_epoch = self.pipes_view_epoch.wrapping_add(1);
@@ -103,7 +107,8 @@ impl App {
         }
     }
 
-    /// 收取观察线程回复；旧根/旧 view/关闭后的回复按 epoch 丢弃。
+    /// Receives observer-thread replies; replies from an old root, an old view or a closed
+    /// panel are dropped by epoch.
     pub(in crate::tui) fn pipes_tick(&mut self) -> bool {
         let mut changed = false;
         for _ in 0..64 {

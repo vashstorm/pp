@@ -18,30 +18,31 @@ use std::{
 pub use walk::{DirectoryEntry, EntryKind, RESOURCE_BYTE_LIMIT, RESOURCE_FILE_LIMIT};
 use walk::{WalkBudget, walk_entries};
 
-/// 保存层的工作区句柄：启动目录是主受管根，临时目录（`/tmp` 与其真实
-/// 路径）是唯一额外的受管根。两者都用 NOFOLLOW 逐级打开的目录 fd 承接
-/// 写入，符号链接与逃逸路径仍一律拒绝。
+/// Workspace handle for the save layer: the startup directory is the primary managed root and
+/// the temporary directory (`/tmp` and its real path) is the only additional managed root. Both
+/// accept writes through NOFOLLOW directory fds opened level by level; symlinks and escaping
+/// paths are still rejected outright.
 pub struct Workspace {
     root: File,
     pub path: PathBuf,
     temp: Option<TempRoot>,
 }
 
-/// 临时目录受管根：`canonicalize` 后的真实路径加目录 fd。
+/// Managed temporary root: the canonicalized real path plus a directory fd.
 struct TempRoot {
     root: File,
     path: PathBuf,
 }
 
-/// 受管根：启动目录本身，或临时目录。
+/// Managed root: the startup directory itself, or the temporary directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Anchor {
     Workspace,
     Temp,
 }
 
-/// 一次路径解析的结果：路径归属哪个受管根、该根的目录 fd 与真实路径，
-/// 以及相对该根的分量。
+/// Result of one path resolution: which managed root the path belongs to, that root's
+/// directory fd and real path, and the components relative to that root.
 struct Location<'a> {
     anchor: Anchor,
     root: &'a File,
@@ -58,25 +59,28 @@ pub struct Target {
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-/// `save_new` 碰撞的统一计划文案；计划正文与登记表都不得覆盖既有文件，
-/// 也不得把碰撞伪装成保存失败以外的其他错误。
+/// Shared plan message for `save_new` collisions; neither plan bodies nor the registry may
+/// overwrite existing files, and a collision must not be disguised as any error other than a
+/// save failure.
 const PLAN_SAVE_NEW_CONFLICT: &str = "Plan file name already exists; choose another file_name.";
 
-/// 排他新建的冲突说明；计划保存与普通 write 各自提供明确原因。
+/// Conflict description for exclusive creation; plan saves and ordinary writes each supply
+/// their own explicit reason.
 #[derive(Clone, Copy)]
 enum NewConflict {
     Message(&'static str),
 }
 
-/// 只读资源句柄：父目录按 NOFOLLOW 打开，读取时核对最终节点类型。
+/// Read-only resource handle: the parent directory is opened with NOFOLLOW and the final node
+/// type is verified on read.
 pub struct ResourceTarget {
     parent: File,
     name: OsString,
     mode: Option<Mode>,
 }
 
-/// 临时目录的公开拼写：macOS 上它是 `/private/tmp` 的符号链接，Linux 上
-/// 通常就是真实目录；两种拼写都归入同一受管根。
+/// Public spelling of the temporary directory: on macOS it is a symlink to `/private/tmp`,
+/// on Linux it is usually the real directory; both spellings map to the same managed root.
 const TEMP_ALIAS: &str = "/tmp";
 
 impl Workspace {
@@ -101,8 +105,9 @@ impl Workspace {
         })
     }
 
-    /// 把 `/tmp/...` 折叠成临时根的真实前缀；其他拼写原样返回。纯值变换，
-    /// 不访问文件系统，`/tmp/a` 与 `/private/tmp/a` 因此得到同一路径。
+    /// Fold `/tmp/...` onto the real prefix of the temporary root; other spellings are returned
+    /// unchanged. Pure value transform with no filesystem access, so `/tmp/a` and `/private/tmp/a`
+    /// yield the same path.
     fn fold_temp(&self, path: &Path) -> PathBuf {
         match (&self.temp, path.strip_prefix(TEMP_ALIAS)) {
             (Some(temp), Ok(relative)) => temp.path.join(relative),
@@ -110,7 +115,8 @@ impl Workspace {
         }
     }
 
-    /// 工作区根内的相对路径；绝对路径落在工作区之外时返回 `None`。
+    /// Path relative to the workspace root; returns `None` when an absolute path falls outside
+    /// the workspace.
     fn workspace_relative<'a>(&self, folded: &'a Path) -> Option<&'a Path> {
         if folded.is_absolute() {
             folded.strip_prefix(&self.path).ok()
@@ -119,8 +125,9 @@ impl Workspace {
         }
     }
 
-    /// 解析受管路径：工作区根优先，其次临时根；两者之外一律拒绝。相对路径
-    /// 始终留在工作区，不因临时根存在而改变含义。
+    /// Resolve a managed path: workspace root first, then the temporary root; anything else is
+    /// rejected. Relative paths always stay in the workspace and do not change meaning because a
+    /// temporary root exists.
     fn resolve(&self, path: &Path) -> Result<Location<'_>> {
         let folded = self.fold_temp(path);
         if let Some(relative) = self.workspace_relative(&folded) {
@@ -144,8 +151,8 @@ impl Workspace {
         anyhow::bail!("path must stay inside the startup directory or /tmp")
     }
 
-    /// 只接受工作区根内的路径分量。Plan 与 LSP 的结构校验用它，临时根路径
-    /// 不会被误当作工作区相对路径。
+    /// Accept only path components inside the workspace root. Plan and LSP structural checks use
+    /// it so temporary-root paths are never mistaken for workspace-relative paths.
     pub fn components(&self, path: &Path) -> Result<Vec<OsString>> {
         let folded = self.fold_temp(path);
         let relative = self
@@ -154,8 +161,9 @@ impl Workspace {
         split_parts(relative)
     }
 
-    /// 变更、撤销与 hashline 快照使用的规范键：工作区根内是相对路径，临时
-    /// 根内是真实绝对路径，`/tmp/a` 与 `/private/tmp/a` 因此落到同一个键。
+    /// Canonical key used by changes, undo and hashline snapshots: relative inside the workspace
+    /// root, real absolute inside the temporary root, so `/tmp/a` and `/private/tmp/a` land on the
+    /// same key.
     pub fn key(&self, path: &Path) -> Result<PathBuf> {
         let location = self.resolve(path)?;
         let relative = location.parts.iter().collect::<PathBuf>();
@@ -169,19 +177,22 @@ impl Workspace {
         open_contained_directory(&self.root, parts, create)
     }
 
-    /// 计划生命周期搬迁的第一步：核对源普通文件与精确字节后，用 `linkat`
-    /// 在目标位置发布同一 inode 的硬链接；绝不复制覆盖。已存在的目标仅在
-    /// 同设备/inode 时允许幂等重入（返回 `None`）；不同 inode 的同名、符号
-    /// 链接、路径逃逸与跨文件系统一律失败并保留源文件。发布后的身份核对
-    /// 把 Err、不符与缺失统一送入清理分支：先移除刚发布的目标名再返回
-    /// 固定错误，不把指向外部的残留链接留在盘上。提交后的父目录同步失败
-    /// 只作为警告返回，不撤回已发布的链接。
+    /// First step of a plan lifecycle move: after verifying the source regular file and its exact
+    /// bytes, publish a hard link to the same inode at the destination with `linkat`; never copy
+    /// over. An existing destination is only re-admitted idempotently on the same device/inode
+    /// (returning `None`); same-name different inode, symlinks, path escapes and cross-filesystem
+    /// targets all fail while keeping the source file. The post-publish identity check routes Err,
+    /// mismatch and disappearance alike into the cleanup branch: remove the just-published
+    /// destination name first, then return the fixed error, leaving no link pointing outside on
+    /// disk. A parent-directory sync failure after the commit is returned only as a warning and
+    /// does not retract the published link.
     pub fn link_plan(&self, from: &Path, to: &Path, expected: &[u8]) -> Result<Option<String>> {
         self.link_plan_impl(from, to, expected, &SystemPlanLink)
     }
 
-    /// 与 [`Self::link_plan`] 相同的搬迁流程，但发布动作可注入：仅供测试
-    /// 构造“核对与发布之间源名被替换”的确定交错，不进入生产构建。
+    /// Same move flow as [`Self::link_plan`], but the publish action is injectable: only tests use
+    /// it to build the deterministic interleaving "the source name is replaced between check and
+    /// publish"; it is not compiled into production builds.
     #[cfg(test)]
     fn link_plan_with(
         &self,
@@ -193,7 +204,8 @@ impl Workspace {
         self.link_plan_impl(from, to, expected, operations)
     }
 
-    /// 搬迁的实现：发布动作由端口提供，生产实现是 `linkat`。
+    /// Move implementation: the publish action comes from a port; the production implementation
+    /// is `linkat`.
     fn link_plan_impl(
         &self,
         from: &Path,
@@ -217,8 +229,9 @@ impl Workspace {
         ) {
             Ok(()) => {}
             Err(Errno::EXIST) => {
-                // 幂等重入：仅同设备/inode 的既有目标允许；字节相同的不同
-                // 文件同样冲突，绝不覆盖。
+                // Idempotent re-entry: only an existing destination on the same device/inode is
+                // accepted; a different file with identical bytes is also a conflict and is never
+                // overwritten.
                 let current = destination.stat_optional()?;
                 ensure!(
                     current == Some(identity),
@@ -228,10 +241,11 @@ impl Workspace {
             }
             Err(error) => return Err(error).context("publishing the plan link"),
         }
-        // 提交后核对目标身份：Err、身份不符与缺失都进入清理分支，先移除
-        // 刚发布的目标名再返回固定错误，源文件保持原样。Err 包含源名被
-        // 换成符号链接时 NOFOLLOW 打开的真实 IO 错误（ELOOP），不能把已
-        // 发布的目标丢在盘上。
+        // Verify the destination identity after commit: Err, identity mismatch and disappearance
+        // all go to the cleanup branch, which removes the just-published destination name before
+        // returning the fixed error and keeps the source file intact. Err includes the real IO
+        // error (ELOOP) from the NOFOLLOW open when the source name was swapped for a symlink, and
+        // the published destination must not be left behind on disk.
         if destination.stat_optional().ok().flatten() != Some(identity) {
             let _ = fs::unlinkat(&destination.parent, &destination.name, AtFlags::empty());
             anyhow::bail!("Plan move published an unverified link; the source file is kept.");
@@ -244,10 +258,11 @@ impl Workspace {
             }))
     }
 
-    /// 计划生命周期搬迁的提交步骤：确认目标与源仍同 inode 且字节精确匹配
-    /// 后移除源名。源已缺失且目标字节正确视为已完成（幂等重入）；符号
-    /// 链接、路径逃逸与字节/身份不一致一律失败并保留现状。提交后的父
-    /// 目录同步失败只作为警告返回。
+    /// Commit step of a plan lifecycle move: after confirming the destination and source are still
+    /// the same inode and the bytes match exactly, remove the source name. A missing source with
+    /// correct destination bytes counts as done (idempotent re-entry); symlinks, path escapes and
+    /// byte/identity mismatches all fail and leave the current state. A parent-directory sync failure
+    /// after the commit is returned only as a warning.
     pub fn finish_plan_move(
         &self,
         from: &Path,
@@ -255,15 +270,16 @@ impl Workspace {
         expected: &[u8],
     ) -> Result<Option<String>> {
         let destination = self.target(to, true)?;
-        // `target` 对缺失的最终文件名也返回 Ok，这里用 NOFOLLOW stat 区分
-        // 源名消失（幂等完成语义）与目录缺失/符号链接等真实错误。
+        // `target` also returns Ok for a missing final file name, so use a NOFOLLOW stat here to
+        // tell the source name disappearing (idempotent completion) from real errors such as a
+        // missing directory or symlink.
         let source = match self.target(from, false) {
             Ok(source) => source.stat_optional()?.map(|_| source),
             Err(error) if is_missing(&error) => None,
             Err(error) => return Err(error),
         };
         let Some(source) = source else {
-            // 源已消失：目标存在且字节精确匹配才算完成。
+            // Source already gone: done only if the destination exists with exactly matching bytes.
             ensure!(
                 destination.stat_optional()?.is_some(),
                 "Plan move did not complete; neither the source nor the target exists."
@@ -307,9 +323,10 @@ impl Workspace {
         open_target_at(parent, name)
     }
 
-    /// 已获权限门显式放行的工作区外绝对路径保存入口：
-    /// 保留与工作区内一致的 `O_NOFOLLOW` 逐级目录打开、常规文件核对与原子替换，
-    /// 仅对 macOS 系统根别名（`/tmp`、`/var`、`/etc`）做前缀折叠。
+    /// Save entry for absolute paths outside the workspace explicitly cleared by the permission
+    /// gate: it keeps the same `O_NOFOLLOW` level-by-level directory opening, regular-file check and
+    /// atomic replace as inside the workspace, folding prefixes only for macOS system-root aliases
+    /// (`/tmp`, `/var`, `/etc`).
     pub fn external_target(&self, path: &Path, create_parents: bool) -> Result<Target> {
         ensure!(
             path.is_absolute(),
@@ -326,9 +343,10 @@ impl Workspace {
         open_target_at(parent, name)
     }
 
-    /// 资源事务入口：解析最终名的父目录。`create=false` 时缺失的父目录
-    /// 表示目标尚不存在（`Ok(None)`），preview 因此不会创建任何目录；
-    /// 已存在的每一级都以 NOFOLLOW 目录句柄验证，符号链接祖先仍是错误。
+    /// Resource operation entry: resolve the parent directory of the final name. With
+    /// `create=false` a missing parent means the target does not exist yet (`Ok(None)`), so preview
+    /// creates no directories; every existing level is verified through a NOFOLLOW directory handle
+    /// and a symlink ancestor is still an error.
     pub fn resource_target(&self, path: &Path, create: bool) -> Result<Option<ResourceTarget>> {
         let Location {
             root, mut parts, ..
@@ -348,8 +366,8 @@ impl Workspace {
         Ok(Some(ResourceTarget { parent, name, mode }))
     }
 
-    /// 与 [`Self::walk_directory`] 相同，但在每个节点前检查取消信号，让
-    /// 长目录遍历可以中止而不是先读完整个快照。
+    /// Same as [`Self::walk_directory`], but checks the cancellation signal before each node so a
+    /// long directory walk can abort instead of reading the whole snapshot first.
     pub fn walk_directory_cancellable(
         &self,
         path: &Path,
@@ -383,8 +401,9 @@ impl Workspace {
 }
 
 impl TempRoot {
-    /// `canonicalize` 把 `/tmp` 解析成真实目录（macOS 为 `/private/tmp`）。
-    /// 缺失或不是目录时不提供临时根，`/tmp` 写入回退为越界拒绝。
+    /// `canonicalize` resolves `/tmp` to the real directory (on macOS `/private/tmp`).
+    /// When it is missing or not a directory no temporary root is offered, so writes to
+    /// `/tmp` fall back to an out-of-bounds rejection.
     fn open() -> Option<Self> {
         let path = Path::new(TEMP_ALIAS).canonicalize().ok()?;
         let root = File::open(&path).ok()?;
@@ -427,7 +446,8 @@ fn fold_system_root_alias(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-/// 从给定受管根逐级以 NOFOLLOW 打开目录，`create` 时建出缺失的一级。
+/// Open a directory level by level with NOFOLLOW from the given managed root, creating each
+/// missing level when `create` is set.
 fn open_contained_directory(root: &File, parts: &[OsString], create: bool) -> Result<File> {
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let mut parent = root.try_clone()?;
@@ -454,7 +474,8 @@ fn open_contained_directory(root: &File, parts: &[OsString], create: bool) -> Re
     Ok(parent)
 }
 
-/// 把相对路径拆成普通分量；`..` 只能弹回已有分量，绝不越过受管根。
+/// Split a relative path into plain components; `..` may only pop an existing component and never
+/// climbs above the managed root.
 fn split_parts(relative: &Path) -> Result<Vec<OsString>> {
     let mut parts = Vec::new();
     for component in relative.components() {
@@ -482,8 +503,8 @@ impl ResourceTarget {
         })
     }
 
-    /// NOFOLLOW `lstat`：缺失返回 `Missing`；符号链接与特殊文件是错误，
-    /// 不把“看起来像文件”的名字当作普通文件。
+    /// NOFOLLOW `lstat`: missing returns `Missing`; symlinks and special files are errors, so a name
+    /// that merely looks like a file is never treated as a regular file.
     pub fn kind(&self) -> Result<EntryKind> {
         match fs::statat(&self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => match FileType::from_raw_mode(stat.st_mode) {
@@ -498,8 +519,9 @@ impl ResourceTarget {
         }
     }
 
-    /// 当前目标的权限位（`st_mode & 0o7777`，NOFOLLOW）；缺失返回 `None`，
-    /// 符号链接与特殊文件是错误。快照与回滚重建都用它保留可执行位。
+    /// Permission bits of the current target (`st_mode & 0o7777`, NOFOLLOW); missing returns
+    /// `None`, symlinks and special files are errors. Snapshots and rollback rebuilds both use it
+    /// to preserve the executable bit.
     pub fn permissions(&self) -> Result<Option<u32>> {
         match fs::statat(&self.parent, &self.name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(stat) => match FileType::from_raw_mode(stat.st_mode) {
@@ -519,7 +541,7 @@ impl ResourceTarget {
         self.as_target()?.read()
     }
 
-    /// 以 NOFOLLOW 打开目录本身，供递归遍历与移除。
+    /// Open the directory itself with NOFOLLOW for recursive walking and removal.
     pub fn open_directory(&self) -> Result<File> {
         let fd = fs::openat(
             &self.parent,
@@ -546,7 +568,8 @@ impl Target {
         Ok(File::from(fd))
     }
 
-    /// 通过已解析的父目录句柄打开普通文件，拒绝符号链接与特殊文件。
+    /// Open the regular file through the already-resolved parent directory handle, rejecting
+    /// symlinks and special files.
     pub fn open_regular_read(&self) -> Result<File> {
         let file = self.open_read().context("opening file without symlinks")?;
         ensure!(file.metadata()?.is_file(), "target must be a regular file");
@@ -572,7 +595,7 @@ impl Target {
         }
     }
 
-    /// 共用精确比较；调用者负责提供操作对应的脱敏错误。
+    /// Shared exact comparison; callers supply the redacted error appropriate to the operation.
     fn compare_bytes(&self, expected: &[u8]) -> Result<()> {
         let mut file = self.open_read()?;
         ensure!(file.metadata()?.is_file(), "target must be a regular file");
@@ -592,7 +615,7 @@ impl Target {
         self.save_with(content, &SystemSave, false)
     }
 
-    /// 在临时文件同步之后检查读取时的基线，再原子提交。
+    /// Check the baseline captured at read time after the temporary file is synced, then commit atomically.
     pub fn save_if_unchanged(&self, expected: &[u8], content: &[u8]) -> Result<Option<String>> {
         self.save_checked_with(
             content,
@@ -612,8 +635,9 @@ impl Target {
         self.save_new_with_conflict(content, PLAN_SAVE_NEW_CONFLICT)
     }
 
-    /// 与 `save_new` 完全相同的排他创建（linkat、不覆盖），但碰撞文案由调用方
-    /// 提供；计划登记表等非正文保存用它避免误导性的计划提示。
+    /// Exactly the same exclusive creation as `save_new` (`linkat`, no overwrite), but the caller
+    /// supplies the collision message; non-body saves such as the plan registry use it to avoid a
+    /// misleading plan hint.
     pub fn save_new_with_conflict(
         &self,
         content: &[u8],
@@ -628,7 +652,8 @@ impl Target {
         )
     }
 
-    /// 与 `save_if_unchanged` 完全相同的基线比较保存，但冲突文案由调用方提供。
+    /// Exactly the same baseline-compared save as `save_if_unchanged`, but the caller supplies the
+    /// conflict message.
     pub fn save_if_unchanged_custom(
         &self,
         expected: &[u8],
@@ -708,7 +733,8 @@ impl Target {
         operations
             .write(&mut file, content)
             .context("writing atomic save file; target unchanged")?;
-        // 非排他提交保留既有目标权限，排他创建交给 umask。
+        // Non-exclusive commits keep the existing target permissions; exclusive creation leaves it
+        // to the umask.
         if !new_only && let Some(mode) = self.mode {
             fs::fchmod(&file, mode).context("setting target permissions; target unchanged")?;
         }
@@ -735,10 +761,12 @@ impl Target {
             return Err(error).context("committing atomic save; target unchanged");
         }
         if new_only {
-            // linkat 已提交且目标名持有同一 inode；删掉临时名，目标不受影响。
+            // linkat has committed and the target name holds the same inode; remove the temporary
+            // name, the target is unaffected.
             drop(cleanup);
         } else {
-            // 重命名已经提交，后续错误只能作为持久化警告，不能伪装成未修改。
+            // The rename has committed, so later errors can only surface as persistence warnings and
+            // must not be disguised as an unmodified file.
             std::mem::forget(cleanup);
         }
         Ok(operations
@@ -767,8 +795,8 @@ impl Target {
         Ok(bytes)
     }
 
-    /// 通过 NOFOLLOW 句柄读取目标的 device/inode；缺失返回 `None`，
-    /// 符号链接与非普通文件报错。供计划身份登记的墓碑记录与 inode 确认使用。
+    /// Read the target's device/inode through the NOFOLLOW handle; missing returns `None` and
+    /// symlinks or non-regular files are errors. Used by plan identity tombstones and inode checks.
     pub fn stat_optional(&self) -> Result<Option<(u64, u64)>> {
         match self.open_read() {
             Ok(file) => {
@@ -781,8 +809,9 @@ impl Target {
         }
     }
 
-    /// 通过 NOFOLLOW 句柄读取目标身份与修改时间；缺失返回 `None`，符号
-    /// 链接与非普通文件报错。供管理页列表展示 `modified` 使用。
+    /// Read the target identity and modification time through the NOFOLLOW handle; missing returns
+    /// `None` and symlinks or non-regular files are errors. Used by the management page listing to
+    /// display `modified`.
     pub fn stat_optional_detailed(&self) -> Result<Option<(u64, u64, SystemTime)>> {
         match self.open_read() {
             Ok(file) => {
@@ -799,9 +828,10 @@ impl Target {
         }
     }
 
-    /// 通过已解析的父目录句柄安全移除目标名；不跟随符号链接，仅删除普通
-    /// 文件。调用者负责先核对内容与身份（精确字节/同 inode）；缺失即报错，
-    /// 由调用方决定如何向上报告。
+    /// Safely remove the target name through the already-resolved parent directory handle; symlinks
+    /// are not followed and only regular files are deleted. The caller verifies content and identity
+    /// first (exact bytes/same inode); a missing target is an error and the caller decides how to
+    /// report it upward.
     pub fn unlink(&self) -> Result<()> {
         let file = self
             .open_read()
@@ -817,13 +847,14 @@ impl Target {
     }
 }
 
-/// `st_mode` 的权限位（含 setuid/setgid/sticky 的低 12 位），供快照重建时
-/// 还原可执行位；不把文件类型位带进权限。
+/// Permission bits of `st_mode` (the low 12 bits including setuid/setgid/sticky), used to restore
+/// the executable bit on snapshot rebuild; file type bits are never mixed into permissions.
 fn permission_bits(mode: RawMode) -> u32 {
     (mode as u32) & 0o7777
 }
 
-/// 判断错误链中是否只是“路径不存在”；搬迁源缺失属于幂等完成语义。
+/// Tell whether the error chain is only "path does not exist"; a missing move source means
+/// idempotent completion.
 fn is_missing(error: &anyhow::Error) -> bool {
     error
         .chain()
@@ -879,8 +910,9 @@ trait SaveOperations {
 struct SystemSave;
 impl SaveOperations for SystemSave {}
 
-/// 计划链接发布的可注入端口：生产实现是 `linkat`，测试用它在发布前把
-/// 源名换成符号链接，构造确定交错（类别：测试无法构造的外部副作用）。
+/// Injectable port for publishing plan links: the production implementation is `linkat`, while tests
+/// use it to swap the source name for a symlink before publishing, building a deterministic
+/// interleaving (category: external side effect that tests cannot construct).
 trait PlanLinkOperations {
     fn publish(
         &self,

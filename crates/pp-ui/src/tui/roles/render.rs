@@ -1,4 +1,4 @@
-//! 侧栏、角色行与模型／档位列表的绘制。
+//! Drawing of the sidebar, role rows and the model/level list.
 
 use super::*;
 
@@ -201,7 +201,7 @@ impl Panel {
         );
         match self.view {
             View::Roles => {
-                // 只读 Override 行固定在角色列表上方；无覆盖时显示 none。
+                // The read-only Override row is pinned above the role list; it shows none without an override.
                 let override_y = subheader_y;
                 let mut spans = vec![
                     Span::styled("  ", Style::default().fg(muted())),
@@ -268,7 +268,10 @@ impl Panel {
                         effort: self.default_effort,
                     });
                     let (model, effort) = if is_fallback {
-                        let fallback = assignment.fallback.as_ref().expect("备用行来自已配置模型");
+                        let fallback = assignment
+                            .fallback
+                            .as_ref()
+                            .expect("the fallback row comes from a configured model");
                         (&fallback.model, fallback.effort)
                     } else {
                         (&assignment.model, assignment.effort)
@@ -454,7 +457,7 @@ fn draw_efforts(frame: &mut Frame, area: Rect, levels: &[ThinkLevel], selected: 
             Span::styled(closing, accent),
         ]);
         let line = if line.width() > usize::from(area.width) {
-            // 极窄时保留完整档位名称，选中态仍使用主题底色。
+            // Very narrow widths keep the full level name and the selected state still uses the theme background.
             Line::styled(level.as_str(), style)
         } else {
             line

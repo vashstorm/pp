@@ -1,12 +1,12 @@
-//! 启动期后台建连的进度快照与提示文案。
+//! Progress snapshots and tip text for startup background connection.
 //!
-//! 建连在 `McpManager` 的后台线程里进行，UI 与 CLI 只读取这里的快照，
-//! 不在绘制或事件循环中触网；提示文案由 runtime 唯一实现，避免两处漂移。
+//! Connections happen on an `McpManager` background thread; the UI and CLI only read the snapshots here
+//! and never touch the network while drawing or inside the event loop; tip text has a single implementation in runtime to avoid drift.
 
 use pp_core::text::display_text;
 use std::time::{Duration, Instant};
 
-/// 单个服务的建连阶段。
+/// Connection phase of a single server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectPhase {
     Pending,
@@ -15,7 +15,7 @@ pub enum ConnectPhase {
     Failed,
 }
 
-/// 单个服务的建连结果；`elapsed` 在建连结束后冻结。
+/// Connection result of a single server; `elapsed` freezes once the connection finishes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerConnect {
     pub name: String,
@@ -25,7 +25,7 @@ pub struct ServerConnect {
 }
 
 impl ServerConnect {
-    /// 单服务结果行（提示行与行模式逐条输出共用）：`context7 connected (874ms) ✓`。
+    /// Per-server result line (shared by the tip line and line-mode per-item output): `context7 connected (874ms) ✓`.
     pub fn describe(&self) -> String {
         let elapsed = self
             .elapsed
@@ -38,7 +38,7 @@ impl ServerConnect {
         }
     }
 
-    /// 失败服务的脱敏原因；未失败或无具体原因时返回 `None`。
+    /// Redacted reason for a failed server; returns `None` when it did not fail or has no concrete reason.
     pub fn reason(&self) -> Option<&str> {
         (self.phase == ConnectPhase::Failed)
             .then_some(self.error.as_deref())
@@ -47,7 +47,7 @@ impl ServerConnect {
     }
 }
 
-/// `McpManager::connect_snapshot` 的只读投影：不持锁、不触发连接。
+/// Read-only projection of `McpManager::connect_snapshot`: takes no lock and triggers no connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectSnapshot {
     pub servers: Vec<ServerConnect>,
@@ -57,8 +57,8 @@ pub struct ConnectSnapshot {
 }
 
 impl ConnectSnapshot {
-    /// 单行提示：建连中显示已完成服务的耗时与当前服务，结束后显示总状态。
-    /// 没有配置任何服务时返回 `None`，调用方不保留空行。
+    /// Single-line tip: while connecting it shows the elapsed times of finished servers and the current one; afterwards the overall status.
+    /// Returns `None` when no server is configured, so callers do not print a blank line.
     pub fn tip(&self) -> Option<String> {
         if let Some(error) = &self.error {
             return Some(format!("MCP unavailable: {error}"));
@@ -92,8 +92,9 @@ impl ConnectSnapshot {
         }
     }
 
-    /// 多行提示：每个服务单独占一行（不覆盖前序状态），失败服务在下一行缩进显示原因，全部结束后追加总状态行。
-    /// 没有配置任何服务时返回空列表，调用方不保留空行。
+    /// Multi-line tip: one line per server (earlier status is not overwritten), failures show their reason indented on the next line,
+    /// and a total status line is appended once everything finishes.
+    /// Returns an empty list when no server is configured, so callers do not print a blank line.
     pub fn tip_lines(&self) -> Vec<String> {
         if let Some(error) = &self.error {
             return vec![format!("MCP unavailable: {error}")];
@@ -131,22 +132,22 @@ fn duration_text(duration: Duration) -> String {
     }
 }
 
-/// 后台建连的可变进度；只在 `State` 锁内更新，快照在锁外使用。
+/// Mutable progress of the background connect; updated only under the `State` lock, while snapshots are used outside it.
 #[derive(Debug)]
 pub(crate) struct Progress {
     servers: Vec<ServerConnect>,
     started: Option<Instant>,
     total: Option<Duration>,
     finished: bool,
-    // 已向行模式输出过总状态：同一进程的后续任务不重复打印。
+    // The overall status has already been printed in line mode: later tasks in the same process do not print it again.
     reported: bool,
-    // 逐服务已报告游标：只前进不后退，新一轮 begin/reserve 重置。
+    // Per-server reported cursor: moves forward only and is reset by a new begin/reserve round.
     claimed: usize,
     error: Option<String>,
 }
 
 impl Default for Progress {
-    // 未启动建连的实例（测试、mock、无配置）视为已完成，`await_connect` 立即返回。
+    // Instances that never started connecting (tests, mocks, no config) count as finished, so `await_connect` returns immediately.
     fn default() -> Self {
         Self {
             servers: Vec::new(),
@@ -165,7 +166,7 @@ impl Progress {
         self.finished
     }
 
-    /// 起线程前同步登记“本轮进行中”：`await_connect` 不能在 worker 还没登记时穿透。
+    /// Synchronously marks "this round in progress" before spawning the thread: `await_connect` must not slip through before the worker registers.
     pub(crate) fn reserve(&mut self) {
         self.servers.clear();
         self.started = Some(Instant::now());
@@ -176,7 +177,7 @@ impl Progress {
         self.finished = false;
     }
 
-    /// 登记本轮目标服务并清空上一轮结果；空列表立即结束。
+    /// Registers this round's target servers and clears the previous round's results; an empty list finishes immediately.
     pub(crate) fn begin(&mut self, names: Vec<String>) {
         self.servers = names
             .into_iter()
@@ -226,13 +227,13 @@ impl Progress {
         }
     }
 
-    /// 配置加载失败等整体故障：结束本轮，提示行显示脱敏原因。
+    /// Overall failure such as config load failure: ends this round and shows the redacted reason in the tip line.
     pub(crate) fn fail(&mut self, message: &str) {
         self.error = Some(display_text(message).into_owned());
         self.finish();
     }
 
-    /// 尚未开始建连的目标：调用方据此把条目状态复位为可重试。
+    /// Targets that have not started connecting: callers use this to reset their entry status to retryable.
     pub(crate) fn unfinished(&self) -> Vec<String> {
         self.servers
             .iter()
@@ -275,8 +276,8 @@ impl Progress {
         }
     }
 
-    /// 行模式一次性领取新完成的连续服务：已领取的不再重复，被取消打断后继续领取
-    /// 也不会重打已输出过的行。遇到尚未结束的服务即停，保持输出顺序连续。
+    /// Line mode claims newly finished contiguous servers in one go: already claimed ones are not repeated, and continuing after a
+    /// cancellation interruption does not reprint lines already emitted. It stops at the first unfinished server to keep output order contiguous.
     pub(crate) fn take_claimed(&mut self) -> Vec<ServerConnect> {
         let mut claimed = Vec::new();
         while let Some(server) = self.servers.get(self.claimed) {
@@ -289,7 +290,7 @@ impl Progress {
         claimed
     }
 
-    /// 行模式一次性取走总状态：同一进程的后续任务不重复打印。
+    /// Line mode takes the overall status once: later tasks in the same process do not print it again.
     pub(crate) fn take_report(&mut self) -> Option<String> {
         if !self.finished || self.reported {
             return None;
@@ -346,7 +347,10 @@ mod tests {
                 Some("starting MCP\n\x1b[31mprocess failed"),
             );
             progress.finish();
-            let tip = progress.snapshot().tip().expect("已配置服务必须有总状态");
+            let tip = progress
+                .snapshot()
+                .tip()
+                .expect("a configured server must have an overall status");
             assert!(
                 tip.starts_with("Connected to MCP servers: 1 succeeded, 1 failed (")
                     && tip.ends_with(')'),
@@ -365,7 +369,10 @@ mod tests {
             progress.complete("context7", true, Duration::from_millis(20), None);
             progress.complete("exa", true, Duration::from_millis(900), None);
             progress.finish();
-            let tip = progress.snapshot().tip().expect("已配置服务必须有总状态");
+            let tip = progress
+                .snapshot()
+                .tip()
+                .expect("a configured server must have an overall status");
             assert!(
                 tip.starts_with("Connected to MCP servers: 2 succeeded (")
                     && !tip.contains("failed"),
@@ -421,7 +428,7 @@ mod tests {
     fn claimed_services_are_reported_once_and_only_while_contiguous() {
         let mut progress = Progress::default();
         progress.begin(names(&["a", "b", "c"]));
-        // 后一个服务先完成也不越过尚未完成的前一个：输出顺序与配置顺序一致。
+        // A later server finishing first does not jump ahead of an unfinished one: output order matches config order.
         progress.complete("b", true, Duration::from_millis(20), None);
         assert!(progress.take_claimed().is_empty());
         progress.complete("a", true, Duration::from_millis(10), None);
@@ -431,7 +438,7 @@ mod tests {
             .map(|server| server.name)
             .collect();
         assert_eq!(claimed, names(&["a", "b"]));
-        // 已领取的不再重复：取消后继续领取同一轮不会重打。
+        // Already claimed servers are not repeated: continuing the same round after a cancellation does not reprint them.
         assert!(progress.take_claimed().is_empty());
         progress.complete("c", true, Duration::from_millis(30), None);
         progress.finish();
@@ -442,7 +449,7 @@ mod tests {
             .collect();
         assert_eq!(claimed, names(&["c"]));
         assert!(progress.take_claimed().is_empty());
-        // 新一轮 begin 重置游标：新完成的服务重新可领取。
+        // A new begin round resets the cursor: newly finished servers can be claimed again.
         progress.begin(names(&["a"]));
         progress.complete("a", true, Duration::from_millis(5), None);
         assert_eq!(progress.take_claimed().len(), 1);

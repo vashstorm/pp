@@ -1,15 +1,18 @@
-// 行模式 `/stats` 的真实终端场景：stdin 是 FIFO（非 TTY），stdout/stderr 共用 PTY，
-// 因此进程选择行模式，但 `stdout` 仍是终端，`/stats` 会真的尝试启动浏览器。
+// Real-terminal scenario for line-mode `/stats`: stdin is a FIFO (not a TTY) while stdout/stderr share a
+// PTY, so the process picks line mode but `stdout` is still a terminal and `/stats` really tries to launch a
+// browser.
 //
-// `/stats` 通过 FIFO 逐条发送，浏览器替身登记被调用的 URL 后以非零码退出。
+// `/stats` is fed line by line through the FIFO, and the browser stand-in records the URL it was called with
+// before exiting non-zero.
 
-/// 行模式 `/stats` 的 URL 前缀；浏览器失败的 warning 不含它。
+/// URL prefix of line-mode `/stats`; the browser failure warning does not contain it.
 const URL_MARKER: &str = "pp stats: http://";
 
-// 远离真实供应商的固定配置：本场景不发送模型请求，只要求启动期配置有效。
+// Fixed configuration far from any real provider: this scenario sends no model requests and only needs the
+// startup configuration to be valid.
 const LINE_MODE_MODELS: &str = "providers:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://127.0.0.1:1/v1\n    models:\n      primary:\n        model: fixture-model\n";
 
-/// 浏览器替身：记录被调用的 URL，然后以非零码退出（浏览器启动失败）。
+/// Browser stand-in: records the URL it was called with and exits non-zero (browser launch failure).
 fn opener_fixture(dir: &std::path::Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = dir.join("bin");
@@ -35,10 +38,11 @@ fn fifo(path: &std::path::Path) {
     assert!(status.success(), "mkfifo {}", path.display());
 }
 
-/// 行模式进程的 stdin 是 FIFO：用例按需投递命令行，因此可以逐请求观察输出。
+/// The line-mode process's stdin is a FIFO: the case delivers command lines on demand, so output can be
+/// observed per request.
 struct LineModePty {
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    // PTY 两端都要活到子进程退出。
+    // Both ends of the PTY must stay alive until the child exits.
     _master: Box<dyn portable_pty::MasterPty + Send>,
     _slave: Box<dyn portable_pty::SlavePty + Send>,
     lines: mpsc::Sender<String>,
@@ -53,7 +57,7 @@ impl Drop for LineModePty {
 }
 
 impl LineModePty {
-    /// stdin 重定向到 FIFO：`is_terminal()` 为假，进程选择行模式。
+    /// stdin is redirected to a FIFO: `is_terminal()` is false and the process picks line mode.
     fn start(project: &std::path::Path, home: &std::path::Path, bin: &std::path::Path) -> Self {
         std::fs::write(config_path(home, "settings.yml"), fixture_settings()).unwrap();
         std::fs::write(config_path(home, "models.yml"), LINE_MODE_MODELS).unwrap();
@@ -106,7 +110,8 @@ impl LineModePty {
                 }
             }
         });
-        // 打开写端会阻塞到行模式进程打开读端，因此这条线程同时是启动栅栏。
+        // Opening the write end blocks until the line-mode process opens the read end, so this thread is also
+        // the startup barrier.
         let (lines, queue) = mpsc::channel::<String>();
         let path = input.clone();
         thread::spawn(move || {
@@ -138,7 +143,7 @@ impl LineModePty {
         String::from_utf8_lossy(&self.raw).into_owned()
     }
 
-    // 以“输出出现”为栅栏，不用 sleep 推测异步完成。
+    // Use "output appeared" as the barrier rather than sleeping to guess asynchronous completion.
     fn wait_for(&mut self, what: &str, needle: &str) -> String {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -196,8 +201,8 @@ impl LineModePty {
     }
 }
 
-/// 浏览器线程的失败提示不能占掉 launcher 的回复位置：两次 `/stats` 必须各自打印
-/// 自己那个服务进程的地址。
+/// A failure hint from the browser thread must not take over the launcher's reply slot: the two `/stats`
+/// calls must each print the address of their own service process.
 #[test]
 fn stats_line_mode_prints_one_url_per_request_when_the_browser_opener_fails() {
     let project = tempfile::tempdir().unwrap();
@@ -207,7 +212,8 @@ fn stats_line_mode_prints_one_url_per_request_when_the_browser_opener_fails() {
 
     pty.send("/stats --port 0\n");
     pty.wait_for("the first stats URL", URL_MARKER);
-    // 浏览器线程独立于 URL 回复，等替身确实被调用后再继续发命令。
+    // The browser thread is independent of the URL reply, so wait until the stand-in really ran before sending
+    // the next command.
     let opened_url = home.path().join("opened-url");
     let deadline = Instant::now() + Duration::from_secs(5);
     while !std::fs::read_to_string(&opened_url)
@@ -216,8 +222,8 @@ fn stats_line_mode_prints_one_url_per_request_when_the_browser_opener_fails() {
         assert!(Instant::now() < deadline, "browser opener never ran");
         thread::sleep(Duration::from_millis(10));
     }
-    // 第二条命令用不同参数强制换一个服务进程：两次回复属于不同的地址，
-    // 因此“各打印一次”无法由任何一次重复输出冒充。
+    // The second command forces a different service process with different arguments: the two replies belong
+    // to different addresses, so "printed once each" cannot be faked by any repeated output of one of them.
     pty.send("/stats --host 127.0.0.1 --port 0\n");
     pty.send("/quit\n");
     pty.wait_for_urls(2);

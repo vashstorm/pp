@@ -1,4 +1,4 @@
-//! 重定向、here-document 与外部脚本字面量的展示。
+//! Redirections, here-documents and external script literal display.
 
 use brush_core::parser::{
     Parser,
@@ -102,7 +102,8 @@ impl<'a> Printer<'a> {
                     if let Ok(program) =
                         Parser::new(&mut reader, &Default::default()).parse_program()
                     {
-                        // 外部 shell 字面量只有静态结构，绝不冒充当前解释器的子执行。
+                        // An external shell literal only has static structure and never pretends to be a sub-execution of
+                        // the current interpreter.
                         let mut detached = Model::default();
                         let mut printer = Printer::new(&mut detached, 0, Some(&value), depth + 1);
                         printer.program(&program);

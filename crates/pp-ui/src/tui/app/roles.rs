@@ -96,7 +96,8 @@ impl App {
                 }
             }
             roles::Action::ClearOverride => {
-                // 只回退到配置默认；`a` 仅存在于进程内，不需要 worker 持久化。
+                // Falls back to the configured default only; `a` exists in-process and needs
+                // no worker persistence.
                 if let Some(control) = &self.model_control {
                     if !control.submit(pp_runtime::model_control::Change::ClearOverride) {
                         self.notify(Level::Error, "Model control unavailable".into());
@@ -121,8 +122,9 @@ impl App {
     }
     pub(in crate::tui) fn request_model_switch(&mut self, reference: String) -> bool {
         if let Some(control) = &self.model_control {
-            // 手动选择记录为覆盖；目标档位沿用在 pp-config 里的统一策略
-            // （模型显式默认 → 保留当前档 → 该模型有效默认）。
+            // A manual choice is recorded as an override; the target effort follows the
+            // shared policy in pp-config (explicit model default -> keep current level ->
+            // that model's effective default).
             let selection = match control.resolve_reference(&reference, Some(self.think_level)) {
                 Ok(selection) => selection,
                 Err(error) => {
@@ -140,20 +142,24 @@ impl App {
         }
     }
 
-    /// 保存全局默认模型（写配置默认 `b`）：始终走 worker，保留既有的保存状态、失败提示与
-    /// `ModelsReloaded` 快照链路；`ModelState` 内部用写锁串行化，两条写路径不会互相覆盖。
+    /// Saves the global default model (writes config default `b`): always goes through the
+    /// worker, keeping the existing save state, failure notice and `ModelsReloaded` snapshot
+    /// chain; `ModelState` serializes with a write lock, so the two write paths never
+    /// overwrite each other.
     pub(in crate::tui) fn request_save_default(&mut self, reference: String) -> bool {
         self.send(
             WorkerCommand::SaveDefaultModel(reference),
             State::SavingModelSettings,
         )
     }
-    /// 切档不是 worker 命令：运行中与空闲都可提交，只要求没有本地面板/技能等待。
+    /// Effort switching is not a worker command: it can be submitted while running or idle
+    /// and only requires that no local panel or skill is waiting.
     pub(in crate::tui) fn think_switch_ready(&mut self) -> bool {
         matches!(self.state, State::Running | State::Cancelling) || self.shortcut_ready()
     }
 
-    /// 校验档位时使用的模型：优先已提交但尚未应用的目标，回落当前模型。
+    /// The model used to validate an effort level: prefer the submitted but not yet applied
+    /// target, falling back to the current model.
     fn effective_thinking(&self) -> Option<pp_config::models::ModelThinking> {
         self.pending_model
             .as_ref()
@@ -166,7 +172,8 @@ impl App {
             .map(|choice| choice.thinking)
     }
 
-    /// 提交主会话手动档位：只登记期望值，不发送 worker 命令、不改写 `State`。
+    /// Submits a manual effort level for the main session: registers the desired value only,
+    /// sends no worker command and does not rewrite `State`.
     pub(in crate::tui) fn submit_think_level(&mut self, level: ThinkLevel) -> bool {
         if matches!(self.state, State::Unavailable) {
             if let Some(error) = self.unavailable.clone() {
@@ -211,7 +218,8 @@ impl App {
             match report {
                 Report::Cleared { role, revision: _ } => {
                     if role == pp_config::config::ModelRole::Default {
-                        // 清除覆盖：待应用目标、来源与 `/roles` 只读行一起回到默认值。
+                        // Override cleared: the pending target, source and the `/roles`
+                        // read-only row all return to their defaults.
                         self.pending_model = None;
                         self.current_source = None;
                         self.override_selection = None;
@@ -220,8 +228,9 @@ impl App {
                         }
                     }
                     self.secondary_status = None;
-                    // 清除覆盖后 `a` 为空，会话要回到 `resolve()`；registry 已登记
-                    // `selection: None` 的主目标，这里只负责叫醒 worker 应用。
+                    // After clearing, `a` is empty and the session must return to `resolve()`;
+                    // the registry already registered a main target with `selection: None`, so
+                    // this only has to wake the worker to apply it.
                     if let Some(commands) = &self.commands {
                         let _ = commands.send(WorkerCommand::ApplyModelTargets);
                     }
@@ -235,13 +244,15 @@ impl App {
                     if let Some(commands) = &self.commands {
                         let _ = commands.send(WorkerCommand::ApplyModelTargets);
                     }
-                    // PLAN 是否生效取决于 worker 当前的模式和手动覆盖。
+                    // Whether PLAN takes effect depends on the worker's current mode and the
+                    // manual override.
                     if role == pp_config::config::ModelRole::Plan {
                         continue;
                     }
                     if role == pp_config::config::ModelRole::Default {
                         self.pending_model = Some((revision, selection.reference.clone()));
-                        // 覆盖已写入 `ModelState`；只登记快照，来源等实际应用后才切换。
+                        // The override is already written into `ModelState`; only the snapshot is
+                        // registered, and the source switches once it is actually applied.
                         self.override_selection =
                             (source == ModelSource::Override).then(|| selection.clone());
                         if let Some(panel) = &mut self.roles_panel {
@@ -270,8 +281,9 @@ impl App {
                     self.model_roles = roles;
                     self.default_model_reference = Some(default.clone());
                     self.default_think_level = effort;
-                    // 保存默认模型时 `ModelState` 会在 `a == b` 时丢弃覆盖；
-                    // UI 同步这一步，避免 `/roles` 显示已不存在的 Override。
+                    // Saving the default model makes `ModelState` drop the override when
+                    // `a == b`; the UI mirrors that step so `/roles` never shows an Override
+                    // that no longer exists.
                     let cleared_override = self.override_selection.as_ref().is_some_and(|s| {
                         s.reference == default
                             && self
@@ -372,7 +384,8 @@ impl App {
                     );
                 }
                 Report::ThinkQueued { revision, effort } => {
-                    // 连按时只保留最新期望值；级别不等说明是已被取代的旧目标。
+                    // Repeated presses keep only the newest desired value; a different level
+                    // means this is a superseded older target.
                     if self
                         .pending_think
                         .as_ref()
@@ -384,7 +397,8 @@ impl App {
                         "thinking → {} · pending next request",
                         effort.label()
                     ));
-                    // 空闲时 worker 的 50ms 轮询随即应用；忙碌时排在任务之后执行。
+                    // When idle the worker's 50ms poll applies it right away; when busy it runs
+                    // after the current task.
                     if let Some(commands) = &self.commands {
                         let _ = commands.send(WorkerCommand::ApplyModelTargets);
                     }
@@ -406,7 +420,8 @@ impl App {
                         if let Some(panel) = &mut self.roles_panel {
                             panel.update_override(self.override_selection.clone());
                         }
-                        // 命中率不可跨边界比较，旧用量快照同样失效。
+                        // Hit rates are not comparable across boundaries, so old usage snapshots
+                        // are stale too.
                         self.usage = None;
                         self.token_speed.clear();
                     }
@@ -424,7 +439,7 @@ impl App {
                     effort,
                     message,
                 } => {
-                    // 迟到的失败不能清掉更新的期望档位。
+                    // A late failure must not clear a newer desired effort level.
                     if self
                         .pending_think
                         .as_ref()

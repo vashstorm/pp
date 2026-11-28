@@ -40,7 +40,7 @@ pub(crate) fn remove_session_data(dir: &Path) -> Result<()> {
             fs::remove_file(entry.path())?;
         }
     }
-    // 工作树、补丁及其基线可能是隔离改动的唯一副本，保留给用户恢复。
+    // The worktree, patches and their baseline may be the only copy of the isolated changes, so keep them for the user to recover.
     match fs::remove_dir(dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::DirectoryNotEmpty => Ok(()),

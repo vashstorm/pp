@@ -1,4 +1,4 @@
-//! `web_search` 分支：执行无密钥 HTTP 网页检索并落实沙盒网络边界。
+//! `web_search` branch: keyless HTTP web search plus sandbox network boundaries.
 
 use super::*;
 

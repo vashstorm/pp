@@ -1,7 +1,7 @@
-//! 开发构建专用：`/test-*` 使用独立 worker、事件通道与取消令牌。
+//! Dev builds only: `/test-*` uses its own worker, event channel and cancellation token.
 //!
-//! 该 worker 不替换、也不依赖正常 Agent worker；Prepared/Progress/Completed
-//! 通过单独的有界通道回流，退出时先取消再丢弃接收端，最后 join 发送线程。
+//! That worker neither replaces nor depends on the normal Agent worker; Prepared/Progress/Completed
+//! flow back over a separate bounded channel, and on exit we cancel, drop the receiver and finally join the sender thread.
 
 use std::{
     sync::{
@@ -28,7 +28,7 @@ use pp_runtime::subagent::Binding;
 
 use super::{App, Level, State, WorkerEvent, dialog_guard, request_ask, todo};
 
-/// 开始 mock 运行前的正常展示状态；完成后原样恢复。
+/// Normal display state captured before a mock run starts; restored unchanged when it finishes.
 pub(in crate::tui) struct MockUiSnapshot {
     state: State,
     current_model: Option<ModelChoice>,
@@ -52,7 +52,7 @@ impl MockUiSnapshot {
     }
 }
 
-/// 场景 worker 的唯一 owner：取消令牌、事件接收端与发送线程。
+/// Sole owner of the scenario worker: cancellation token, event receiver and sender thread.
 pub(in crate::tui) struct Worker {
     cancellation: CancellationToken,
     started: Instant,
@@ -125,8 +125,8 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        // 先取消并关闭接收端：发送线程即使卡在满通道上也能解除阻塞并退出；
-        // 之后再 join，避免退出 TUI 时与有界通道互相等待。
+        // Cancel and close the receiver first so the sender unblocks and exits even when it is stuck on a full channel;
+        // then join, so leaving the TUI never deadlocks against the bounded channel.
         self.cancellation.cancel();
         drop(self.events.take());
         if let Some(thread) = self.thread.take() {
@@ -136,7 +136,7 @@ impl Drop for Worker {
 }
 
 impl App {
-    /// 启动一场独立 mock 测试；成功时返回 true，失败只发本地错误。
+    /// Start one isolated mock test; returns true on success, and failures only raise a local error.
     pub(in crate::tui) fn start_mock_test(&mut self, test: MockTest) -> bool {
         let endpoint = match pp_mock_ai::current_endpoint() {
             Ok(endpoint) => endpoint,
@@ -145,7 +145,7 @@ impl App {
                 return false;
             }
         };
-        // 正常展示状态整体移出；Prepared 到达前界面处于空的中性状态。
+        // The normal display state is moved out entirely; until Prepared arrives the UI is in an empty neutral state.
         let snapshot = self.take_mock_snapshot();
         self.hub_bound = None;
         self.close_hub();
@@ -160,7 +160,7 @@ impl App {
         };
         self.mock_saved = Some(snapshot);
         self.mock_worker = Some(worker);
-        // 上一场（或真实任务）的重试提示不能带进隔离场景。
+        // The previous run's (or a real task's) retry notice must not leak into an isolated scenario.
         self.retry_finished();
         if self.token_speed.is_active() {
             self.token_speed.clear();
@@ -179,24 +179,24 @@ impl App {
         true
     }
 
-    /// Prepared 只替换展示快照；不碰 session、workflow、model_control 或正常通道。
+    /// Prepared only swaps the display snapshot; it touches no session, workflow, model_control or normal channel.
     pub(in crate::tui) fn install_mock_snapshot(&mut self, snapshot: MockTestSnapshot) {
         self.current_model = Some(snapshot.current_model);
         self.choices = snapshot.choices;
         self.think_level = snapshot.think_level;
         self.default_think_level = snapshot.default_think_level;
-        // mock 场景没有手动覆盖，来源回到配置默认。
+        // A mock scenario has no manual override, so the source falls back to the configured default.
         self.current_source = Some(pp_core::model::ModelSource::Default);
         self.override_selection = None;
         self.usage = Some(snapshot.usage);
-        // 每场场景独立；上一场的 TODO 不能带进下一场。
+        // Each scenario is isolated; the previous scenario's TODO must not carry over.
         self.todo_panel = Default::default();
         self.subagent_control = snapshot.subagent_control;
         self.install_pipe_store(Some(snapshot.pipe_store));
         self.hub_sync_root();
     }
 
-    /// 完成/取消/失败统一收尾：恢复正常展示、关闭 mock 面板并释放隔离 worker。
+    /// Shared finish path for completion/cancel/failure: restore the normal display, close the mock panel and release the isolated worker.
     pub(in crate::tui) fn finish_mock_test(
         &mut self,
         result: Result<MockTestReport>,
@@ -212,9 +212,9 @@ impl App {
         self.active_cancellation = None;
         self.secondary_status = None;
         self.subagent_autowake = false;
-        // mock 从不消费输入队列；开始前已确认无 pending。
+        // mock never drains the input queue; it was confirmed pending-free before starting.
         self.queue_paused = false;
-        // 面板可能观察 mock registry；先关闭再恢复绑定，迟到回复按 epoch 丢弃。
+        // A panel may be observing the mock registry; close it before restoring the binding so late replies are dropped by epoch.
         self.close_hub();
         self.hub_bound = None;
         self.close_pipes();

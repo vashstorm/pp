@@ -58,7 +58,7 @@ fn settings_output_rg_read_and_eval_limits() {
         .unwrap();
         assert_eq!((limits.rg.context_before, limits.rg.context_after), (1, 3));
 
-        // checkpoint 契约：`ToolLimits` 的序列化键跟随字段名，必须是 `rg`。
+        // checkpoint contract: `ToolLimits` serialization keys follow the field names and must be `rg`.
         let value = serde_json::to_value(ToolLimits::default()).unwrap();
         assert!(value.get("rg").is_some(), "{value}");
         assert!(value.get("grep").is_none(), "{value}");
@@ -189,13 +189,13 @@ fn settings_legacy_preferences_migration_and_sqlite_concurrency() {
         let (dir, mut catalog) = catalog(None, Some(VALID_MODELS)).unwrap();
         let settings_path = dir.path().join("settings.yml");
         let models_path = dir.path().join("models.yml");
-        fs::write(&settings_path, "# 保留注释\nedit: hashline\n").unwrap();
+        fs::write(&settings_path, "# preserved comment\nedit: hashline\n").unwrap();
         assert_eq!(
             catalog.toggle_favorite_model("fixture/primary").unwrap(),
             ["fixture/primary"]
         );
         let saved = fs::read_to_string(&settings_path).unwrap();
-        assert!(saved.contains("# 保留注释"));
+        assert!(saved.contains("# preserved comment"));
         assert!(saved.contains("edit: hashline"));
         assert!(!saved.contains("favorite_models"));
         let restored = ModelCatalog::from_files(&settings_path, &models_path).unwrap();
@@ -212,7 +212,7 @@ fn settings_legacy_preferences_migration_and_sqlite_concurrency() {
 
     {
         let (dir, catalog) = catalog(
-            Some("# 保留注释\ndefault_model: fixture/primary\nfavorite_models: [fixture/primary]\nthink_level: high\nedit: hashline\n"),
+            Some("# preserved comment\ndefault_model: fixture/primary\nfavorite_models: [fixture/primary]\nthink_level: high\nedit: hashline\n"),
             Some(VALID_MODELS),
         )
         .unwrap();
@@ -220,7 +220,7 @@ fn settings_legacy_preferences_migration_and_sqlite_concurrency() {
         assert_eq!(catalog.favorite_models(), ["fixture/primary"]);
         assert_eq!(catalog.default_think_level(), ThinkLevel::High);
         let text = fs::read_to_string(dir.path().join("settings.yml")).unwrap();
-        assert!(text.contains("# 保留注释") && text.contains("edit: hashline"));
+        assert!(text.contains("# preserved comment") && text.contains("edit: hashline"));
         assert!(!text.contains("default_model"));
         assert!(!text.contains("favorite_models"));
         assert!(!text.contains("think_level"));

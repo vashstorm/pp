@@ -1,4 +1,4 @@
-//! Agent 构造入口、共享模型状态与提示词快照刷新。
+//! Agent construction entry points, shared model state and prompt snapshot refresh.
 use super::{Agent, Session, debug, persistence::SessionJournal};
 use anyhow::{Context, Result, ensure};
 use async_openai::types::chat::ChatCompletionRequestMessage;
@@ -12,10 +12,10 @@ use pp_tools::Tools;
 use std::path::PathBuf;
 
 impl Agent {
-    /// 用户级 `~/.pp/agent/hooks.yml` 与启动目录 `.pp/hooks.yml` 合并编译。
+    /// Merge and compile user-level `~/.pp/agent/hooks.yml` with the startup directory's `.pp/hooks.yml`.
     ///
-    /// 配置在 Agent 构造时冻结：文件缺失视为无 hooks，格式、结构或正则错误
-    /// 不静默忽略。脚本本身只在匹配时启动。
+    /// The config is frozen when the Agent is constructed: a missing file means no hooks, while format, structure
+    /// or regex errors are not silently ignored. The scripts themselves start only on a match.
     pub(in crate::agent) fn compile_hooks(
         catalog: &ModelCatalog,
         cwd: &std::path::Path,
@@ -27,8 +27,8 @@ impl Agent {
         )?))
     }
 
-    /// 按当前 settings 安装一次共享 Registry；配置无效只让 LSP 不可用，
-    /// 不阻止 Agent 启动。
+    /// Install one shared Registry from the current settings; an invalid config only disables LSP and does not
+    /// prevent the Agent from starting.
     pub(in crate::agent) fn install_lsp(tools: &mut Tools, catalog: &ModelCatalog) {
         if !catalog.lsp_settings().enabled || tools.lsp_registry().is_some() {
             return;
@@ -41,7 +41,7 @@ impl Agent {
         tools.install_lsp(registry);
     }
 
-    /// 测试构造入口：统计库随会话目录落在临时工作区，绝不写开发者真实 `~/.pp/stats`。
+    /// Test constructor: the stats database lives with the session directory inside the temporary workspace and never writes the developer's real `~/.pp/stats`.
     #[cfg(test)]
     pub(crate) fn new(
         catalog: ModelCatalog,
@@ -50,8 +50,8 @@ impl Agent {
     ) -> Result<Self> {
         let lock_dir = sessions_dir.join(".locks");
         let stats_db = sessions_dir.join(".stats/stats.db");
-        // 单测各自持有隔离管理器：Plan 交接测试的 `/mcp reload` 读的是本 catalog
-        // 指向的临时 `mcp.json`，不能落到真实用户配置或 HOME 下的 Claude/Codex 来源。
+        // Each unit test holds its own isolated manager: the `/mcp reload` of a Plan handoff test reads the temporary `mcp.json` this
+        // catalog points at, and must not fall back to real user config or Claude/Codex sources under HOME.
         let cwd = tools.cwd().to_owned();
         tools.mcp = std::sync::Arc::new(pp_mcp::McpManager::new_isolated(catalog.mcp_path(), cwd));
         Self::new_with_prompt(
@@ -64,12 +64,12 @@ impl Agent {
         )
     }
 
-    /// 进程内唯一模型状态的只读句柄；UI 用它启动 `model_control::Service`。
+    /// Read-only handle to the process-wide model state; the UI uses it to start `model_control::Service`.
     pub fn models(&self) -> std::sync::Arc<ModelState> {
         std::sync::Arc::clone(&self.models)
     }
 
-    /// 决议当前应使用的模型：`a`（手动覆盖）优先，否则配置默认；不自动套用任何角色。
+    /// Resolve the model to use now: `a` (manual override) first, otherwise the configured default; no role is applied implicitly.
     pub(in crate::agent) fn resolve_selection(
         models: &ModelState,
     ) -> Result<(pp_config::config::Config, Selection)> {
@@ -126,8 +126,8 @@ impl Agent {
         tools.configure_mcp(catalog.mcp_settings());
         tools.permission.set_config(config.settings.tools.clone());
         let client = OpenAiClient::new(&config)?;
-        // 进程级单例：启动期后台建连，不再阻塞首个界面；首个任务入口等它结束。
-        // 连接失败不是启动失败：失败只落到 `/mcp list` 与提示行。
+        // Process-wide singleton: the background connect starts at startup and no longer blocks the first screen; the first task entry waits for it to finish.
+        // A connect failure is not a startup failure: it only surfaces in `/mcp list` and the tip line.
         if tools.allows_any_mcp() {
             tools.mcp.start_connect(pp_mcp::Access::Full);
         }
@@ -146,7 +146,7 @@ impl Agent {
         let edit_mode = tools.edit_mode();
         let definitions = tools.all_definitions(pp_core::plan::WorkMode::Execute);
         let session_date = super::current_session_date();
-        // 项目文件在任务开始时加载，读取失败不会让整个交互会话永久不可用。
+        // Project files are loaded when the task starts; a read failure does not make the whole interactive session permanently unusable.
         let context = crate::system_prompt::RenderContext::new(
             tools.cwd(),
             &config.model,
@@ -169,7 +169,7 @@ impl Agent {
                 "",
             )
             .context(crate::system_prompt::PromptFailure)?;
-        // 无效正则或结构错误阻止 Agent 构造；脚本本身只在匹配时启动。
+        // An invalid regex or structural error blocks Agent construction; the scripts themselves start only on a match.
         let hooks = if hooks_enabled {
             Self::compile_hooks(&catalog, tools.cwd())?
         } else {
@@ -255,7 +255,7 @@ impl Agent {
         lock_dir: PathBuf,
         scripts: pp_llm::MockScripts,
     ) -> Result<Self> {
-        // mock 场景固定空管理器：不读取真实用户 MCP 定义。
+        // Mock scenarios always get an empty manager: real user MCP definitions are never read.
         tools.mcp = std::sync::Arc::new(pp_mcp::McpManager::empty());
         let mut agent = Self::new_with_prompt(
             ModelState::shared(catalog),
@@ -339,7 +339,7 @@ impl Agent {
         self.tools.sandbox_status()
     }
 
-    /// `--sandbox` 或 `/sandbox <mode>` 的会话级内存覆盖，刷新提示词与工具描述。
+    /// Session-level in-memory override from `--sandbox` or `/sandbox <mode>`, refreshing prompts and tool descriptions.
     pub fn set_sandbox_override(
         &mut self,
         mode: Option<pp_config::config::SandboxMode>,
@@ -363,7 +363,7 @@ impl Agent {
         Ok(())
     }
 
-    /// `/setting` 写回 `tools.sandbox.mode` 后同步运行时默认配置。
+    /// Sync the runtime default config after `/setting` writes back `tools.sandbox.mode`.
     pub fn update_sandbox_mode_from_settings(
         &mut self,
         mode: pp_config::config::SandboxMode,
@@ -375,7 +375,7 @@ impl Agent {
         Ok(())
     }
 
-    /// `/setting` 写回 `webSearch` 配置后同步工具开关、搜索设置与系统提示词。
+    /// Sync the tool switch, search settings and system prompt after `/setting` writes back the `webSearch` config.
     pub fn update_web_search_settings(
         &mut self,
         settings: pp_config::config::WebSearchSettings,
@@ -387,7 +387,7 @@ impl Agent {
         Ok(())
     }
 
-    /// 权限 handler 镜像 ask：不改变 schema 列表，无需刷新工具定义。
+    /// The permission handler mirrors ask: the schema list is unchanged, so tool definitions need no refresh.
     pub fn set_permission_handler(&mut self, handler: pp_tools::permission::PermissionHandler) {
         self.tools.permission.set_handler(handler);
     }
@@ -404,8 +404,8 @@ impl Agent {
         let scope_summary = self.tools.project_scope_summary();
         let rendered_all = scope_summary + &pp_tools::project_instructions::render(&documents);
 
-        // 已有对话历史且已冻结静态项目前缀时，保持 system/instructions 逐字节不变，
-        // 仅把新增或变更的 `AGENTS.md` 以 developer 消息增量追加到尾部，保护 Prompt Cache。
+        // When there is conversation history and the static project prefix is already frozen, keep system/instructions byte-identical and only
+        // append new or changed `AGENTS.md` content to the tail as developer messages, protecting the prompt cache.
         let use_dynamic_delta = self.session.has_history() && self.static_project_prompt.is_some();
         let system_project = if use_dynamic_delta {
             self.static_project_prompt.clone().unwrap_or_default()
@@ -436,7 +436,7 @@ impl Agent {
                 .iter()
                 .any(|document| document.path.to_string_lossy() == path.as_str())
         });
-        // 快照按引用计数共享；只为本轮新增或变化的规则建立待发布副本。
+        // The snapshot is shared by reference count; only rules added or changed this turn get a copy to publish.
         self.pending_project_load = documents
             .iter()
             .filter(|document| {

@@ -1,4 +1,4 @@
-//! 受管理 stdio 进程的启动、stderr 汇总与进程组回收。
+//! Startup, stderr aggregation and process-group reaping for managed stdio processes.
 
 use anyhow::{Context, Result, bail};
 use rustix::io::Errno;
@@ -23,7 +23,7 @@ use super::{
 };
 
 impl Transport {
-    /// 启动语言服务器进程；stderr 只保留末尾 64 KiB。
+    /// Start the language server process; only the last 64 KiB of stderr is kept.
     pub(crate) fn spawn(
         command: &Path,
         args: &[String],
@@ -48,13 +48,13 @@ impl Transport {
             .process_group(0)
             .spawn()
             .with_context(|| format!("starting LSP server {}", command.display()))?;
-        // 子进程一产生就登记：后续任何取管道/起线程失败都留下可重试的 slot，
-        // 而不是把未回收的进程丢给调用方。
+        // Register the child as soon as it exists, so any later pipe/thread failure leaves a retryable slot
+        // instead of handing an unreaped process back to the caller.
         {
             let mut slot = process.lock().unwrap_or_else(|e| e.into_inner());
             if slot.closing || slot.child.is_some() {
                 drop(slot);
-                // 未登记成功的进程由本线程自行回收，不进入 registry 的 slot。
+                // A process that was not registered successfully is reaped by this thread and never enters the registry's slot.
                 let orphan = Arc::new(Mutex::new(ProcessSlot {
                     child: Some(child),
                     closing: true,
@@ -120,15 +120,15 @@ impl Transport {
             Ok(())
         })();
         if let Err(error) = threads {
-            // 起线程失败时也要让 writer 看到队列断开，否则已启动的 writer
-            // 线程会永远阻塞在 recv 上；进程仍保留在 slot 里供重试回收。
+            // When starting a thread fails, the writer must still see the queue disconnect, otherwise an already started writer
+            // thread would block forever on recv; the process stays in the slot so the reap can be retried.
             *shared.writer.lock().unwrap_or_else(|e| e.into_inner()) = None;
             let _ = terminate_slot(&process, Duration::ZERO);
             return Err(error);
         }
 
-        // 起线程期间清理路径可能已设置 closing 并回收进程；此时不能返回一个
-        // 声称可用的 transport。
+        // While threads were starting, the cleanup path may already have set closing and reaped the process; in that case a transport
+        // claiming to be usable must not be returned.
         let closing = {
             let slot = process.lock().unwrap_or_else(|e| e.into_inner());
             slot.closing
@@ -148,9 +148,9 @@ impl Transport {
         })
     }
 
-    /// 关闭 stdin 并等待进程/进程组退出；未确认回收时保留 slot 并报错。
+    /// Close stdin and wait for the process/process group to exit; keeps the slot and errors when reaping is unconfirmed.
     pub(crate) fn terminate(&self, grace: Duration) -> Result<()> {
-        // 先断开写队列：writer 线程退出并关闭 stdin，服务器有机会自行退出。
+        // Disconnect the write queue first: the writer thread exits and closes stdin, giving the server a chance to exit on its own.
         *self.shared.writer.lock().unwrap_or_else(|e| e.into_inner()) = None;
         terminate_slot(&self.process, grace)?;
         self.shared.note_close("LSP server was terminated");
@@ -158,11 +158,11 @@ impl Transport {
     }
 }
 
-/// 回收一个服务器进程 slot：root 退出不代表后代关闭了管道，必须确认整个
-/// 进程组消失。registry 在初始化过程中取消/关闭时也用它，因此不依赖
-/// `Transport`（shared 尚未可用）。
+/// Reap a server process slot: the root exiting does not mean its descendants closed the pipes, so the whole
+/// process group must be confirmed gone. The registry also uses this when cancelling/closing during initialization, so it does not depend on
+/// `Transport` (whose `shared` is not available yet).
 ///
-/// 失败时保留 `slot.child`，调用方可以重试；绝不把未确认的回收报告为成功。
+/// On failure `slot.child` is kept so the caller can retry; an unconfirmed reap is never reported as success.
 pub(crate) fn terminate_slot(process: &Arc<Mutex<ProcessSlot>>, grace: Duration) -> Result<()> {
     let mut slot = process.lock().unwrap_or_else(|e| e.into_inner());
     slot.closing = true;
@@ -170,11 +170,11 @@ pub(crate) fn terminate_slot(process: &Arc<Mutex<ProcessSlot>>, grace: Duration)
         return Ok(());
     };
     let group = child.id();
-    // 宽限期内先等 root 自己退出（stdin 已关闭时通常会成功）。
+    // Within the grace period, first let the root exit by itself (it usually does once stdin is closed).
     let _ = wait_child(child, grace)?;
-    // root 退出不代表后代关闭了管道：只要进程组仍在就发信号回收。
-    // 先探测“还在”（EPERM 也算还在）再决定是否发信号，避免对已消失的
-    // pgid 发送信号（pgid 可能已被复用）。
+    // The root exiting does not mean its descendants closed the pipes: signal for reaping as long as the group is still there.
+    // Probe "still present" first (EPERM counts as present) before deciding to signal, so no signal is sent to a
+    // pgid that is already gone (the pgid may have been reused).
     if group_present(group)? {
         signal_group(group, Signal::TERM)?;
         let _ = wait_group(child, group, TERM_GRACE)?;
@@ -186,8 +186,8 @@ pub(crate) fn terminate_slot(process: &Arc<Mutex<ProcessSlot>>, grace: Duration)
     if !group_settled(group)? {
         bail!("LSP server process group {group} did not exit");
     }
-    // 组已消失/只剩僵尸意味着 root 也已退出；最后确认并回收，避免留下
-    // 僵尸进程。
+    // A gone group or one with only zombies means the root has exited too; confirm and reap at the end so no
+    // zombie process is left behind.
     if !wait_child(child, KILL_GRACE)? {
         bail!("LSP server process {group} did not exit");
     }
@@ -195,7 +195,7 @@ pub(crate) fn terminate_slot(process: &Arc<Mutex<ProcessSlot>>, grace: Duration)
     Ok(())
 }
 
-/// 在窗口内等待 root 退出；返回是否已回收。
+/// Wait for the root to exit within the window; returns whether it was reaped.
 fn wait_child(child: &mut Child, window: Duration) -> Result<bool> {
     let deadline = Instant::now() + window;
     loop {
@@ -213,7 +213,7 @@ fn wait_child(child: &mut Child, window: Duration) -> Result<bool> {
     }
 }
 
-/// 在窗口内等待整个进程组落定，同时持续回收 root。
+/// Wait for the whole process group to settle within the window while continuing to reap the root.
 fn wait_group(child: &mut Child, group: u32, window: Duration) -> Result<bool> {
     let deadline = Instant::now() + window;
     loop {
@@ -234,8 +234,8 @@ fn signal_group(id: u32, signal: Signal) -> Result<()> {
     };
     match kill_process_group(group, signal) {
         Ok(()) | Err(Errno::SRCH) => Ok(()),
-        // macOS 对仅剩僵尸的组返回 EPERM；确认 leader 已退出/已回收后视为
-        // 清理完成（僵尸成员不可运行，也无法再响应信号）。
+        // macOS returns EPERM for a group with only zombies left; once the leader has exited/been reaped, cleanup is
+        // considered complete (zombie members cannot run and cannot answer signals).
         Err(Errno::PERM) if cfg!(target_os = "macos") => {
             if group_leader_gone(group)? {
                 Ok(())
@@ -247,8 +247,8 @@ fn signal_group(id: u32, signal: Signal) -> Result<()> {
     }
 }
 
-/// 进程组是否仍在：EPERM 也视为仍在，必须先发信号再判定落定，避免把
-/// “只剩僵尸 + 仍有活后代”误判为空。
+/// Whether the process group still exists: EPERM also counts as present, so a signal must be sent before deciding it settled, avoiding mistaking
+/// "only zombies plus live descendants" for empty.
 fn group_present(id: u32) -> Result<bool> {
     let Some(group) = Pid::from_raw(id as i32) else {
         return Ok(false);
@@ -261,8 +261,8 @@ fn group_present(id: u32) -> Result<bool> {
     }
 }
 
-/// 进程组是否已没有可运行成员：ESRCH，或 macOS 上信号被拒（只剩僵尸）。
-/// 这不等于“干净成功”——调用方仍需确认 root 已被回收。
+/// Whether the process group has no runnable members left: ESRCH, or a rejected signal on macOS (only zombies).
+/// This does not equal "clean success" — the caller must still confirm the root was reaped.
 fn group_settled(id: u32) -> Result<bool> {
     let Some(group) = Pid::from_raw(id as i32) else {
         return Ok(true);
@@ -275,7 +275,7 @@ fn group_settled(id: u32) -> Result<bool> {
     }
 }
 
-/// leader 已退出（尚未回收）或已被回收；ECHILD 说明它已经被 wait 掉了。
+/// The leader has exited (not yet reaped) or was already reaped; ECHILD means it was already waited for.
 fn group_leader_gone(group: Pid) -> io::Result<bool> {
     loop {
         match waitid(
@@ -323,7 +323,7 @@ mod integration {
             .expect("spawn shell")
     }
 
-    /// 用 WNOWAIT 观察 leader 退出但不回收，模拟“root 已退出、slot 还持有句柄”。
+    /// Observe the leader exit with WNOWAIT without reaping it, simulating "the root has exited while the slot still holds its handle".
     fn wait_leader_exit(group: u32) {
         let pid = Pid::from_raw(group as i32).expect("valid group id");
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -360,7 +360,7 @@ mod integration {
             closing: false,
         }));
         wait_leader_exit(group);
-        // root 已退出但仍是僵尸；后台 sleep 仍持有同一个进程组。
+        // The root has exited but is still a zombie; the background sleep still holds the same process group.
         terminate_slot(&process, Duration::ZERO).expect("terminate");
         assert!(process.lock().unwrap().child.is_none());
         assert!(group_settled(group).expect("probe group"));
@@ -371,7 +371,7 @@ mod integration {
         let mut child = child_in_own_group("sleep 60 & exit 0");
         let group = child.id();
         wait_leader_exit(group);
-        // 调用方先回收 root：Child 仍保留 id 与缓存的退出状态。
+        // The caller reaps the root first: Child still keeps the id and the cached exit status.
         assert!(child.try_wait().expect("reap root").is_some());
         assert!(group_present(group).expect("probe group"));
         let process = Arc::new(Mutex::new(ProcessSlot {

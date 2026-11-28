@@ -15,7 +15,7 @@ fn command_menu_unknown_init_skill_and_ranking() {
 
     let mut registry = pp_config::skills::Skills::default();
     registry.diagnostics = vec![
-        "skill 根路径必须是目录：first".into(),
+        "skill root must be a directory: first".into(),
         "second diagnostic".into(),
     ];
     let shared = registry.shared();
@@ -37,7 +37,7 @@ fn command_menu_unknown_init_skill_and_ranking() {
     skill_app.show_welcome = true;
     let screen = draw(&mut skill_app, 100, 30).replace(' ', "");
     assert!(
-        screen.contains("skill根路径必须是目录：first")
+        screen.contains("skillrootmustbeadirectory:first")
             && screen.contains("seconddiagnostic")
             && !screen.contains("Skillscanissues")
     );
@@ -589,7 +589,7 @@ fn skills_panel_cancel_busy_and_save_failure_notice() {
     let mut snapshot = pp_config::skills::Skills::default();
     snapshot.entries.push(pp_config::skills::Skill {
         name: "rust".into(),
-        description: "Rust 指导".into(),
+        description: "Rust guidance".into(),
         path: "/skills/rust/SKILL.md".into(),
         enabled: true,
     });

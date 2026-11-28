@@ -1,8 +1,8 @@
-//! 指标字段的构造与按宽度整组降级。
+//! Construction of metric fields and group-wide degradation by width.
 
 use super::*;
 
-/// 满千使用 K、满百万使用 M，去掉无意义的 .0；CLI 仍用完整整数。
+/// K from a thousand, M from a million, dropping a meaningless .0; the CLI still uses full integers.
 pub(in crate::tui) fn abbreviate_tokens(tokens: u64) -> String {
     if tokens < 1000 {
         tokens.to_string()
@@ -23,7 +23,7 @@ fn abbreviate_metric(value: f64) -> String {
     format!("{}{unit}", text.strip_suffix(".0").unwrap_or(&text))
 }
 
-/// 速度图标：低于 60 tok/s 为低速档，60 到 120 为中速档，120 及以上为高速档。
+/// Speed icon: below 60 tok/s is low, 60 to 120 is medium, 120 and above is high.
 fn speed_icon(rate: Option<f64>) -> &'static str {
     let icons = themes::current_icons();
     match rate {
@@ -70,7 +70,7 @@ fn title_field(text: &str, width: usize) -> Line<'static> {
     let truncated = Line::from(text).width() > width;
     let budget = width.saturating_sub(usize::from(truncated));
     let mut title = String::new();
-    // 逐字素累加列宽，不再为每个前缀重新度量整串。
+    // Accumulate the column width grapheme by grapheme instead of remeasuring the whole string for every prefix.
     let mut columns = 0;
     for grapheme in text.graphemes(true) {
         let size = Span::raw(grapheme).width();
@@ -95,7 +95,7 @@ fn cost_amount(usd: f64, display: &pp_config::config::CostDisplay) -> Option<Str
     Some(format!("{total:.precision$}"))
 }
 
-/// 费用金额字段：受支持币种的图标加按 `CostDisplay` 换算后的金额。
+/// Cost field: the icon of a supported currency plus the amount converted per `CostDisplay`.
 pub(super) fn amount_field(
     usd: f64,
     display: &pp_config::config::CostDisplay,
@@ -141,10 +141,10 @@ fn metric_separator() -> Span<'static> {
     Span::styled(METRIC_SEPARATOR, Style::default().fg(Color::DarkGray))
 }
 
-/// 指标之间的分隔符；拼接与宽度预算共用同一文本。
+/// Separator between metrics; concatenation and the width budget share the same text.
 const METRIC_SEPARATOR: &str = " · ";
 
-/// 已存在的字段拼成整行的列宽：字段宽度之和 + 首尾空格与分隔符。
+/// Column width of a row assembled from existing fields: sum of field widths + leading/trailing spaces and separators.
 fn joined_width(fields: &[Option<Line<'static>>]) -> usize {
     let mut width = 0;
     let mut count = 0;
@@ -158,8 +158,8 @@ fn joined_width(fields: &[Option<Line<'static>>]) -> usize {
     width + 2 + (count - 1) * Line::raw(METRIC_SEPARATOR).width()
 }
 
-/// 状态栏指标簇的用量输入：`context` 由调用方构造一次后复用，
-/// 避免同一帧为同一个字段做两遍格式化。
+/// Usage input for the status bar metric cluster: the caller builds `context` once and reuses it
+/// so the same field is not formatted twice in one frame.
 pub(in crate::tui) struct Metrics<'a> {
     pub usage: &'a ContextUsage,
     pub context: Line<'static>,
@@ -187,14 +187,14 @@ pub(super) fn speed_field(rate: Option<f64>, running_subagents: usize) -> Line<'
         2 => subagent_two_icon(icons),
         _ => subagent_group_icon(icons),
     };
-    // 子代理数量和速度作为同一组参与窄屏降级。
+    // Subagent count and speed degrade together as one group on narrow screens.
     let mut line = field(icon, running_subagents.to_string(), subagents_color());
     line.spans.push(metric_separator());
     line.spans.extend(speed.spans);
     line
 }
 
-/// 指标行是否有任何可显示的数据（ctx 基线不算数据，全部缺席时整行隐藏）。
+/// Whether the metric row has anything displayable (the ctx baseline does not count; the row hides when everything is absent).
 pub(in crate::tui) fn has_data(
     usage: &ContextUsage,
     speed: Option<(f64, bool)>,
@@ -215,7 +215,7 @@ pub(in crate::tui) fn has_data(
         || task.is_some_and(|(t, d)| t.title.is_some() || cost_field(t, d).is_some())
 }
 
-/// 所有指标共享显示列预算：先缩短标题，再按整组降级，最后保留 Ctx。
+/// All metrics share a display-column budget: shorten the title first, then degrade group by group, and keep Ctx last.
 pub(in crate::tui) fn metric_fields(
     metrics: Metrics<'_>,
     speed: Option<(f64, bool)>,
@@ -232,8 +232,8 @@ pub(in crate::tui) fn metric_fields(
     let icons = themes::current_icons();
     let count = |value: Option<u64>| value.map_or_else(|| "—".into(), abbreviate_tokens);
     let last = usage.last_request;
-    // out 累计整个会话的服务端 output tokens；生成中的请求还没有 usage 时，
-    // 在累计值上叠加已接收字节的估算，完成后随累计值一起刷新。
+    // out accumulates the server output tokens for the whole session; while a generating request has no usage yet,
+    // add the estimate for received bytes on top of the total and refresh it together with the total once finished.
     let session_output = usage.session_output_tokens;
     let output_tokens = match live_output {
         Some(live) => Some(session_output.saturating_add(live)),
@@ -261,7 +261,7 @@ pub(in crate::tui) fn metric_fields(
         elapsed.map(|text| field(timer_icon(icons), text.replace(' ', ""), context_color())),
     ];
     let budget = usize::from(width);
-    // 先按列宽预算决定保留哪些字段，最后只拼接一次。
+    // Decide which fields to keep from the column budget first, then concatenate exactly once.
     let mut total = joined_width(&fields);
     if total > budget
         && let Some(title) = fields[1].as_ref()
@@ -287,7 +287,7 @@ mod tests {
     use super::*;
     use pp_core::context::TokenUsage;
 
-    /// 测试按调用方已构造 ctx 字段的方式调用指标簇。
+    /// Tests call the metric cluster the same way the caller builds the ctx field.
     fn metrics(usage: &ContextUsage) -> Metrics<'_> {
         Metrics {
             usage,
@@ -322,7 +322,7 @@ mod tests {
         {
             let usage = status_usage();
             let task = pp_config::task_status::Snapshot {
-                title: Some("修复会话历史".into()),
+                title: Some("fix session history".into()),
                 cost: 0.0123,
                 ..Default::default()
             };
@@ -338,7 +338,7 @@ mod tests {
             assert_eq!(
                 line_text(&line),
                 format!(
-                    " {} 30.2 tok/s · {} 修复会话历史 · {} 81.6%/500K · {} 12.3K/45.7K · {} 8K/0 · {} 0.012 · {} 1m25s ",
+                    " {} 30.2 tok/s · {} fix session history · {} 81.6%/500K · {} 12.3K/45.7K · {} 8K/0 · {} 0.012 · {} 1m25s ",
                     speed_slow_icon(icons),
                     title_icon(icons),
                     context_icon(icons),
@@ -350,7 +350,7 @@ mod tests {
             );
             for (text, color) in [
                 ("30.2 tok/s", speed_color()),
-                ("修复会话历史", plan_mode()),
+                ("fix session history", plan_mode()),
                 ("81.6%/500K", context_color()),
                 ("12.3K", input_color()),
                 ("45.7K", output_color()),
@@ -387,7 +387,7 @@ mod tests {
             ));
             assert!(text.contains(&format!("{io} —/—")));
             assert!(text.contains(&format!("{cache} —/—")));
-            // 切模型或压缩清空最近请求指标，会话累计输出继续显示。
+            // Switching models or compacting clears the latest-request metrics; the session total output stays visible.
             usage.session_output_tokens = 45_678;
             let text = line_text(&metric_fields(
                 metrics(&usage),
@@ -428,7 +428,7 @@ mod tests {
 
         {
             let usage = status_usage();
-            // 生成中：out 在会话累计上叠加实时估算，in 与缓存仍是最近一次完成的请求。
+            // Generating: out adds the live estimate to the session total, while in and cache still come from the last completed request.
             let text = line_text(&metric_fields(
                 metrics(&usage),
                 None,
@@ -440,7 +440,7 @@ mod tests {
             ));
             assert!(text.contains(&format!("{io} 12.3K/49.9K")), "{text}");
             assert!(text.contains(&format!("{cache} 8K/0")), "{text}");
-            // 没有估算时 out 就是会话累计，不回到单次请求的输出量。
+            // Without an estimate, out is the session total and never falls back to a single request's output count.
             let text = line_text(&metric_fields(
                 metrics(&usage),
                 None,
@@ -451,7 +451,7 @@ mod tests {
                 240,
             ));
             assert!(text.contains(&format!("{io} 12.3K/45.7K")), "{text}");
-            // 首个请求没有历史 usage 时，in/缓存保持未知，out 也只是本次实时估算。
+            // With no historical usage for the first request, in/cache stay unknown and out is just this request's live estimate.
             let first = ContextUsage {
                 last_request: None,
                 session_output_tokens: 0,
@@ -626,7 +626,7 @@ mod tests {
             cost: 0.02,
             ..Default::default()
         };
-        // 低于 60 tok/s 时速度字段使用低速档图标。
+        // Below 60 tok/s the speed field uses the low-speed icon.
         let rate = 30.2;
         let render = |width, task| {
             metric_fields(
@@ -664,10 +664,16 @@ mod tests {
                 .iter()
                 .take_while(|icon| !text.contains(**icon))
                 .count();
-            assert!(missing >= previous, "宽度下降不能恢复已隐藏的字段");
+            assert!(
+                missing >= previous,
+                "a narrower width must not bring back a hidden field"
+            );
             previous = missing;
             for icon in &removal_order[missing..] {
-                assert!(text.contains(icon), "不能跳过降级优先级: {text}");
+                assert!(
+                    text.contains(icon),
+                    "degradation priority must not be skipped: {text}"
+                );
             }
             for pair in ["12.3K/45.7K", "8K/0"] {
                 let icon = if pair.starts_with("12") { io } else { cache };
@@ -757,7 +763,7 @@ mod tests {
         ] {
             assert!(
                 has_data(usage, speed, subagents, live, task, elapsed),
-                "{case} 应触发指标行显示"
+                "{case} should make the metric row visible"
             );
         }
     }

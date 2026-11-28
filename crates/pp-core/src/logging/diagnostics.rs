@@ -6,13 +6,14 @@ use std::{
 const MAX_DETAIL_BYTES: usize = 64 * 1024;
 static SECRETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// 登记实际使用的凭据，包含其 JSON 转义形式，供所有线程的错误日志遮蔽。
+/// Register a credential actually in use, including its JSON-escaped form, so error logs from every
+/// thread can redact it.
 pub fn register_secret(secret: &str) {
     if secret.is_empty() {
         return;
     }
     let mut secrets = SECRETS.lock().unwrap_or_else(|e| e.into_inner());
-    let escaped = serde_json::to_string(secret).expect("字符串可以序列化为 JSON");
+    let escaped = serde_json::to_string(secret).expect("a string can be serialized as JSON");
     for value in [secret.to_owned(), escaped[1..escaped.len() - 1].to_owned()] {
         if !value.is_empty() && !secrets.contains(&value) {
             secrets.push(value);
@@ -21,15 +22,17 @@ pub fn register_secret(secret: &str) {
     secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
 }
 
-/// 错误现场允许保留正文，但凭据不进入日志；先遮蔽再按 UTF-8 边界截断。
+/// An error site may keep its body text, but credentials never reach the log; redact first, then
+/// truncate on a UTF-8 boundary.
 pub fn diagnostic_text(text: &str) -> String {
     static CREDENTIALS: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(
         r#"(?i)("(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|client[_-]?secret)"\s*:\s*)"(?:\\.|[^"\\])*""#,
-    ).expect("固定的凭据字段正则有效")
+    ).expect("the fixed credential field regex is valid")
     });
     static BEARER: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"(?i)bearer[ \t]+[a-z0-9._~+/=-]+").expect("固定的 Bearer 正则有效")
+        regex::Regex::new(r"(?i)bearer[ \t]+[a-z0-9._~+/=-]+")
+            .expect("the fixed Bearer regex is valid")
     });
     let mut text = text.to_owned();
     for secret in SECRETS.lock().unwrap_or_else(|e| e.into_inner()).iter() {
@@ -54,7 +57,8 @@ fn bounded(mut text: String, limit: usize) -> String {
     text
 }
 
-/// 只在请求失败时落盘；有界保留最近的分片，成功请求不记录正文。
+/// Written to disk only when a request fails; the most recent chunks are kept within bounds and
+/// successful requests record no body text.
 #[derive(Default)]
 pub struct FailureContext {
     events: VecDeque<String>,
@@ -66,8 +70,9 @@ pub struct FailureContext {
 impl FailureContext {
     pub fn push(&mut self, raw: String) {
         self.count += 1;
-        // 常规 SSE 分片延迟到失败落盘时再脱敏；超过单条上限的超大文本就地脱敏并截断，
-        // 避免直接截断原始串导致凭据跨边界漏出或占用过多内存。
+        // Ordinary SSE chunks are redacted later, when a failure is written to disk; oversized text
+        // beyond the per-chunk limit is redacted and truncated in place so truncating the raw string
+        // cannot leak a credential across the boundary or hold too much memory.
         let text = if raw.len() > 16 * 1024 {
             bounded(diagnostic_text(&raw), 16 * 1024)
         } else {
@@ -196,7 +201,7 @@ mod tests {
                 .unwrap()
                 .contains("panic-evidence")
         );
-        // 默认测试构建会裁剪符号，回溯仍应包含栈帧。
+        // Default test builds strip symbols, but the backtrace should still contain stack frames.
         let backtrace = record["fields"]["backtrace"].as_str().unwrap();
         assert!(
             backtrace.lines().any(|line| {

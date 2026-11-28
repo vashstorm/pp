@@ -1,8 +1,8 @@
-//! 分页观察日志的增量接入；不把页边界当作运行结束。
+//! Incremental ingestion of the paginated observation log; a page boundary is not treated as the end of a run.
 
 use super::*;
 
-/// 将已有时间戳映射到本进程单调时钟，缺失、未来或越界的值保持未知。
+/// Map an existing timestamp onto this process's monotonic clock; missing, future or out-of-range values stay unknown.
 fn recorded_start(timestamp_ms: Option<u64>, now_ms: u64, now: Instant) -> Option<Instant> {
     now.checked_sub(Duration::from_millis(now_ms.checked_sub(timestamp_ms?)?))
 }
@@ -25,7 +25,7 @@ impl Transcript {
         self.activity = Some(activity);
     }
 
-    /// 历史与日志尾部共用卡片更新；完成工具不生成基于导入速度的 Wall。
+    /// History and the log tail share card updates; a completed tool produces no wall time derived from import speed.
     pub(in crate::tui) fn progress_recorded(
         &mut self,
         event: AgentEvent,
@@ -49,7 +49,7 @@ impl Transcript {
         }
     }
 
-    /// 取消和失败也按历史语义收尾，避免给未完成的工具补造耗时。
+    /// Cancellation and failure also close out with history semantics so unfinished tools are not given fabricated elapsed time.
     pub(in crate::tui) fn stop_recorded_run(&mut self, cancelled: bool) {
         let replaying = self.replaying;
         self.replaying = true;

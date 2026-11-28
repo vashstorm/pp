@@ -1,4 +1,4 @@
-//! 批次派发、worker 启动与 run 结算。
+//! Batch dispatch, worker launch and run settlement.
 
 use anyhow::{Context, Result, ensure};
 use pp_config::config::ModelRole;
@@ -40,7 +40,7 @@ impl Binding {
             !batch.tasks.is_empty() && batch.tasks.len() <= 32,
             "tasks count must be in 1..=32"
         );
-        // 整批使用同一份可用角色快照；旧 prompt 或手写调用也必须通过校验。
+        // The whole batch uses one snapshot of available roles; an old prompt or a hand-written call must also pass validation.
         let roles = self.model_roles();
         let definitions = self.custom_roles();
         let available = self
@@ -188,7 +188,7 @@ impl Binding {
             (self.inner.validate)(&mut spec)?;
             prepared.push((item, spec, def.blocking));
         }
-        // 预检模型与能力在任何 worker 启动前完成。
+        // Model and capability prechecks finish before any worker launches.
         let mut records = Vec::new();
         {
             let mut state = lock(&self.inner.state);
@@ -306,8 +306,8 @@ impl Binding {
             !state.stopping,
             "Agent is shutting down; resume is temporarily unavailable"
         );
-        // 已决定退出的 worker 仍可能持有 Live，但它不再读取队列；视同已停泊，
-        // 由新 worker 接管，避免新任务被排进无人消费的通道。
+        // A worker that has decided to exit may still hold Live but no longer reads the queue; treat it as parked and let
+        // a new worker take over, so new tasks are never enqueued into an unconsumed channel.
         if state
             .retiring
             .get(&record.id)
@@ -380,7 +380,7 @@ impl Binding {
             state.live.remove(&id);
             return Err(error.into());
         }
-        // 在唤醒 worker 前发布排队状态，避免迟到的 queued 覆盖 running。
+        // Publish the queued status before waking the worker so a late queued never overwrites running.
         self.inner.observe(
             &id,
             None,

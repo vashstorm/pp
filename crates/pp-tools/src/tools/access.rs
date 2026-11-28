@@ -1,4 +1,4 @@
-//! `Tools` 的构造、拆除与工具侧句柄访问器。
+//! Construction, teardown and tool-side handle accessors for `Tools`.
 use anyhow::{Result, bail, ensure};
 use pp_config::config::EditMode;
 use pp_config::config::PermissionMode;
@@ -18,7 +18,7 @@ use super::{
 use pp_bash::{BackgroundCleanup, PipeStore};
 use pp_workspace::{diff, save};
 
-/// 仅提取模型参数中的显示路径，不访问文件系统。
+/// Extract only the display path from model arguments, without touching the filesystem.
 pub fn edit_path(arguments: &Value) -> Option<&str> {
     let input = arguments["input"].as_str()?.trim_start_matches('\n');
     let input = input.strip_prefix("*** Begin Patch\n").unwrap_or(input);
@@ -32,9 +32,9 @@ pub fn edit_path(arguments: &Value) -> Option<&str> {
 }
 
 impl Tools {
-    /// 测试与 mock 专用构造：空 `McpManager`，不读取真实用户 MCP 定义。
-    /// `eval` 可用性保守关闭，只由 `configure_eval` 按配置唯一赋值，
-    /// 因此这里不探测 Python（避免构造期多起一次子进程）。
+    /// Construction for tests and mocks only: an empty `McpManager` that never reads real user MCP definitions.
+    /// `eval` availability stays conservatively off and is assigned only by `configure_eval` from config,
+    /// so Python is not probed here (avoiding one extra subprocess at construction time).
     pub fn new(cwd: PathBuf, edit_mode: EditMode) -> Result<Self> {
         let workspace = save::Workspace::open(&cwd)?;
         Ok(Self {
@@ -126,7 +126,7 @@ impl Tools {
             .is_none_or(crate::AllowedTools::allows_lsp_lifecycle)
     }
 
-    /// 生产与子 Agent 构造入口：注入进程级共享的 `McpManager`。
+    /// Production and subagent construction entry: injects the process-wide shared `McpManager`.
     pub fn with_mcp(
         cwd: PathBuf,
         edit_mode: EditMode,
@@ -141,12 +141,12 @@ impl Tools {
         self.pipe_store.clone()
     }
 
-    /// 换根时替换 registry；旧会话的临时 URI 不跨根复用。
+    /// Replace the registry when the root changes; temporary URIs from an old session are not reused across roots.
     pub fn reset_pipe_store(&mut self) {
         self.pipe_store = PipeStore::new();
     }
 
-    /// 子 Agent 的 run 与根会话共用临时正文配额和生命周期。
+    /// A subagent run shares the temporary body quota and lifetime with the root session.
     pub fn share_pipe_store(&mut self, store: &PipeStore) {
         self.pipe_store = store.clone();
     }
@@ -161,7 +161,7 @@ impl Tools {
         self.background_tasks.cleanup()
     }
 
-    /// `eval` 可用性的唯一赋值点：按 `settings.yml` 的 `eval` 节探测 Python 与 JS 运行时。
+    /// The single assignment point for `eval` availability: probes the Python and JS runtimes from the `eval` section of `settings.yml`.
     pub fn configure_eval(&mut self, settings: &pp_config::config::EvalSettings) {
         self.eval_enabled = settings.enabled;
         self.eval_interpreter.clone_from(&settings.interpreter);
@@ -215,12 +215,12 @@ impl Tools {
         plan::is_plan_path(&self.workspace, path, expected_path)
     }
 
-    /// 登记表/登记事务复用的安全工作区句柄；不扩大任何文件权限。
+    /// Safe workspace handle reused by the registry and registry transactions; it grants no extra file permissions.
     pub fn plan_workspace(&self) -> &save::Workspace {
         &self.workspace
     }
 
-    /// 调用者已完成安全提交，并传入工作区规范相对路径；此处不再读盘。
+    /// The caller already committed safely and passes the canonical workspace-relative path; nothing is read here.
     pub(super) fn record_committed_file(
         &self,
         call_id: &str,
@@ -268,8 +268,8 @@ impl Tools {
         call: &ExecuteCall<'_, '_>,
         hook_ask: Option<&'a str>,
     ) -> Result<AuthorizedAccess<'a>> {
-        // 在进入任何审批等待前同时冻结权限档位与实际沙盒快照（含 /sandbox 覆盖值），
-        // 避免等待期间切换档位或清除覆盖影响当前已进入审批的调用。
+        // Freeze the permission tier and the actual sandbox snapshot (including the /sandbox override) before any approval wait,
+        // so switching tiers or clearing the override during the wait cannot affect a call already in approval.
         self.sandbox
             .set_permission_overlay(self.permission.sandbox_overlay(&self.cwd));
         let (permissions, sandbox_mode) = self.permission.snapshot_with_sandbox();
@@ -371,14 +371,14 @@ impl Tools {
         if name == "web_search" && !self.web_search.enabled {
             bail!("web_search is disabled in settings.");
         }
-        // 未安装（enabled=false 或 Agent 未初始化 LSP）时显式调用直接失败，
-        // 既不进入审批也不尝试发现服务器。
+        // An explicit call fails outright when not installed (enabled=false or the Agent did not initialize LSP),
+        // neither entering approval nor trying to discover a server.
         if name == "lsp" && self.lsp.is_none() {
             bail!("lsp is not available; LSP is disabled or not installed.");
         }
-        // LSP 的动作级授权在执行层完成：受限模式（Plan/Review/readonly
-        // 子 Agent）连写动作的参数都不解析就拒绝，且必须先于权限门，
-        // 避免受限 Agent 通过权限提示绕过白名单。schema 裁剪只是提示。
+        // LSP action-level authorization happens in the execution layer: restricted modes (Plan/Review/readonly
+        // subagents) reject write actions without even parsing their arguments, and it must precede the permission
+        // gate so a restricted Agent cannot bypass the allowlist through an approval prompt. Schema trimming is only a hint.
         let lsp_access = match &call.policy {
             ToolPolicy::Execute { .. } if !self.lsp_readonly => pp_lsp::tool::Access::Execute,
             _ => pp_lsp::tool::Access::ReadOnly,
@@ -389,9 +389,9 @@ impl Tools {
         if let Some(message) = self.instruction_batch_blocked() {
             bail!("{message}");
         }
-        // Plan 中未标为只读的 MCP 工具沿用 Execute 的写档权限规则；
-        // Execute 与 Plan 下的本地读工具（read/rg/glob/lsp）均接入沙盒读路径分类与审批，
-        // Review 模式保持只读无交互、直接由沙盒拦截越界读取。
+        // MCP tools not marked read-only keep the Execute write-tier permission rules under Plan;
+        // local read tools (read/rg/glob/lsp) under Execute and Plan go through sandbox read-path classification and approval,
+        // while Review stays non-interactive and read-only, with the sandbox intercepting out-of-scope reads directly.
         let needs_permission = match call.policy {
             ToolPolicy::Execute { .. } => {
                 !(mcp_readonly_tool && self.subagent.as_ref().is_some_and(|b| b.plan_mode()))
@@ -426,10 +426,10 @@ impl Tools {
             } else {
                 permission::tier_of_arguments(perm_name, perm_args)
             };
-            // 审批必须反映当次冻结的真实沙盒策略：仅 Execute 下受沙盒约束的
-            // 工具在策略真实存在时才算 sandboxed。off / auto 降级（policy 为
-            // None）回退到普通审批；显式开启但平台不可用则 fail-closed，
-            // 在进入审批或产生任何副作用之前返回错误。
+            // Approval must reflect the real sandbox policy frozen for this call: only sandbox-constrained
+            // tools under Execute count as sandboxed when the policy really exists. off / auto degradation
+            // (policy is None) falls back to ordinary approval; explicitly enabled but unavailable on the
+            // platform fails closed, returning an error before approval or any side effect.
             let sandbox_checked_tool = matches!(call.policy, ToolPolicy::Execute { .. })
                 && matches!(name, "write" | "edit" | "bash" | "bash_task" | "eval");
             let policy = if sandbox_checked_tool
@@ -595,8 +595,8 @@ impl Drop for Tools {
         {
             tracing::error!(error=%error,"subagent exit cleanup failed");
         }
-        // 只有根/独立 Registry 的 owner 持有该句柄；显式 stop 由调用方负责
-        // 上报错误，这里只做兜底回收。
+        // Only the owner of the root/standalone Registry holds this handle; explicit stop leaves error
+        // reporting to the caller, so this is a safety-net reclaim.
         if let Some(mut cleanup) = self.lsp_cleanup.take()
             && let Err(error) = cleanup.stop()
         {

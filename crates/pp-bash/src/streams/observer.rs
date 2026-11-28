@@ -1,4 +1,4 @@
-//! 解释器观察者（`RunObserver`）与一次 bash 调用的观察句柄（`PipeRun`）。
+//! Interpreter observer (`RunObserver`) and the observation handle of one bash call (`PipeRun`).
 
 use brush_core::PipelineObserver;
 use brush_core::openfiles::OpenFile;
@@ -96,7 +96,7 @@ impl PipelineObserver for RunObserver {
     }
 }
 
-/// 一次 bash 调用的观察句柄。clone 共享同一 run。
+/// Observation handle of one bash call. Clones share the same run.
 #[derive(Clone)]
 pub struct PipeRun {
     pub(super) store: PipeStore,
@@ -109,7 +109,7 @@ impl PipeRun {
         &self.state.id
     }
 
-    /// 交给 `ExecutionParameters::set_pipeline_observer` 的进程内观察者。
+    /// In-process observer handed to `ExecutionParameters::set_pipeline_observer`.
     pub fn observer(&self) -> Arc<dyn PipelineObserver> {
         self.observer.clone()
     }
@@ -130,7 +130,8 @@ impl PipeRun {
         self.state.revision.load(Ordering::Acquire)
     }
 
-    /// 当前仍持有的中继线程句柄数；长 run 中应只与并发 open 流数量相关。
+    /// Number of relay thread handles still held; during a long run this should only track the number
+    /// of concurrently open streams.
     #[cfg(test)]
     pub(crate) fn relay_handle_count(&self) -> usize {
         self.state.relay_handle_count()
@@ -145,12 +146,13 @@ impl PipeRun {
         self.state.snapshot()
     }
 
-    /// 运行中与最终结果共用的 `pipes` JSON（有界元数据，不含阶段正文）。
+    /// `pipes` JSON shared by the live run and the final result (bounded metadata, no stage bodies).
     pub(crate) fn pipes_json(&self) -> Value {
         self.state.snapshot().to_json()
     }
 
-    /// 只预览最新顶层管道的第一条边，避免多级管道把同一正文重复展示。
+    /// Preview only the first edge of the newest top-level pipeline so multi-stage pipelines do not
+    /// display the same body repeatedly.
     pub(crate) fn preview(&self) -> Option<String> {
         let pipeline = lock(&self.state.meta)
             .pipelines
@@ -166,7 +168,7 @@ impl PipeRun {
         let start = ring.start().max(ring.end().saturating_sub(PREVIEW_BYTES));
         let bytes = ring.read(start, ring.end());
         drop(ring);
-        // 尾部窗口可能从 UTF-8 字符中间开始，丢弃残缺前缀。
+        // The tail window may start mid UTF-8 character; drop the partial prefix.
         let start = if start > 0 {
             bytes
                 .iter()
@@ -175,7 +177,8 @@ impl PipeRun {
         } else {
             0
         };
-        // 复用主输出的解码与控制序列过滤；不完整字符留待后续快照显示。
+        // Reuse the main output's decoding and control-sequence filtering; incomplete characters are
+        // left for a later snapshot.
         let mut normalizer = pp_workspace::output::Normalizer::default();
         let mut preview = normalizer.feed(&bytes[start..], false);
         if !stream.is_open() {
@@ -184,10 +187,11 @@ impl PipeRun {
         (!preview.is_empty()).then_some(preview)
     }
 
-    /// 封存本次 run：等待/停止中继、封闭剩余流、登记完成历史。
+    /// Seal this run: wait for/stop relays, close remaining streams and record completion history.
     ///
-    /// 重复调用无副作用；返回最终快照。正常收尾先给中继一个观察 EOF 的宽限，
-    /// 超时或已中断则协作停止（`Interrupted`），绝不完结仍在运行的流。
+    /// Repeated calls have no effect; returns the final snapshot. Normal shutdown first gives relays
+    /// a grace period to observe EOF; on timeout or after an interrupt they are stopped cooperatively
+    /// (`Interrupted`) and streams still running are never closed as complete.
     pub(crate) fn finish(&self, end: RunEnd) -> RunInfo {
         self.observer.shell.finish();
         if !self.state.begin_finish(&end) {
@@ -218,7 +222,8 @@ impl PipeRun {
                 relay.join();
             }
         }
-        // 中继都 join 过之后仍 open 的流只能是中继异常退出；按真实终态封存。
+        // A stream still open after every relay joined can only mean the relay exited abnormally;
+        // seal it with its real terminal state.
         let streams = lock(&self.state.streams).clone();
         for stream in streams {
             if stream.is_open() {
@@ -234,7 +239,8 @@ impl PipeRun {
     }
 }
 
-/// 回归测试用弱观察句柄：确认 run 状态（含环形缓存）已无强引用。
+/// Weak observation handle for regression tests: confirms the run state (including ring buffers) has
+/// no strong references left.
 #[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct RunWatch(Weak<RunState>);
@@ -253,7 +259,7 @@ impl PipeRun {
     }
 }
 
-/// 阶段标签按 UTF-8 边界裁到 512 字节。
+/// Stage labels are truncated to 512 bytes on a UTF-8 boundary.
 pub(super) fn truncate_label(label: &str) -> &str {
     if label.len() <= MAX_LABEL_BYTES {
         return label;
@@ -328,7 +334,11 @@ mod tests {
             assert!(preview.len() <= PREVIEW_BYTES as usize);
             assert!(preview.chars().all(|ch| ch == '中'));
             run.observer().begin(None, 2, false, false).unwrap();
-            assert_eq!(run.preview(), None, "新管道不能沿用旧管道的预览");
+            assert_eq!(
+                run.preview(),
+                None,
+                "a new pipeline must not reuse the previous preview"
+            );
         }
         {
             let store = PipeStore::new();
@@ -362,7 +372,7 @@ mod tests {
                 .observer()
                 .begin(None, MAX_STREAMS_PER_RUN + 2, false, false)
                 .unwrap();
-            // 保持解释器侧端点存活，确保这些流始终是 open 流。
+            // Keep the interpreter-side endpoints alive so these streams stay open.
             let mut live = Vec::new();
             for stream in 1..=MAX_STREAMS_PER_RUN {
                 let pair = run
@@ -372,7 +382,8 @@ mod tests {
                     .unwrap_or_else(|| panic!("stream {stream} must be captured"));
                 live.push(pair);
             }
-            // 所有槽位都是 open 流：第 17 条边直接不捕获，不淘汰任何 open 流。
+            // Every slot holds an open stream: the 17th edge is simply not captured and never evicts an
+            // open stream.
             let rejected = run
                 .observer()
                 .pipe(pipeline, MAX_STREAMS_PER_RUN + 1, "yes", "head")
@@ -384,7 +395,7 @@ mod tests {
             assert_eq!(info.untapped_edges, 1);
             assert!(info.incomplete);
             assert!(info.streams.iter().all(|stream| stream.open));
-            // 配额拒绝也不占用 stream id：仍保持单调递增。
+            // A quota rejection does not consume a stream id either: ids stay monotonically increasing.
             let mut ids = info
                 .streams
                 .iter()
@@ -417,7 +428,8 @@ mod tests {
                     "iteration {index}: stream {stream_id} must close"
                 );
                 drop(consumer);
-                // 已封存流的中继句柄必须在下一次登记时被回收，而不是只堆积到 run 结束。
+                // Relay handles of sealed streams must be reclaimed on the next registration instead of
+                // piling up until the run ends.
                 peak = peak.max(run.relay_handle_count());
                 assert!(
                     run.relay_handle_count() <= MAX_CLOSED_STREAMS_PER_RUN + 1,

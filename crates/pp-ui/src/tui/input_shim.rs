@@ -1,18 +1,19 @@
-//! 把 tmux 的 xterm modifyOtherKeys 编码翻译成 Kitty CSI-u，并丢弃终端回复。
+//! Translate tmux's xterm modifyOtherKeys encoding into Kitty CSI-u and drop terminal replies.
 //!
-//! tmux 在 `extended-keys on` 下按 `extended-keys-format`（默认 `xterm`）回报带
-//! 修饰键的按键，例如 Shift + Enter 是 `CSI 27;2;13~`；crossterm 只解析
-//! `CSI 13;2u`，其余序列会被静默丢弃。这里把 fd 0 换成一个伪终端从端，由
-//! 后台线程读原始终端并做等价改写；没有该编码的终端不受影响。
+//! Under `extended-keys on`, tmux reports modified keys following `extended-keys-format`
+//! (default `xterm`), e.g. Shift + Enter is `CSI 27;2;13~`; crossterm only parses
+//! `CSI 13;2u` and silently discards the rest. Here fd 0 is replaced by a pty slave and a
+//! background thread reads the raw terminal and rewrites equivalently; terminals without
+//! that encoding are unaffected.
 //!
-//! 终端能力回复（APC／DCS／OSC 字符串、DA1、Kitty 键盘标志、尺寸与设备状态
-//! 报告）同样走这条通道，但 crossterm 会把无法解析的部分当成按键输出；探测窗口
-//! 之外到达的回复还会在启动后冒出。它们一律整条丢弃，括号粘贴的内容除外。
-//! tmux 会把未知回复的 `ESC _`／`ESC [` 等前缀当作 Alt 按键重新编码；分类前先
-//! 还原这几个分隔符，同时支持 `csi-u` 和 `xterm` 两种扩展键格式。
+//! Terminal capability replies (APC/DCS/OSC strings, DA1, Kitty keyboard flags, size and status
+//! reports) use the same channel, but crossterm emits the parts it cannot parse as key presses;
+//! replies arriving outside the probe window also surface after startup. They are dropped whole, except bracketed-paste content.
+//! tmux re-encodes the prefix of an unknown reply (`ESC _`/`ESC [`) as an Alt key press; these
+//! separators are restored before classification, covering both the `csi-u` and `xterm` extended key formats.
 //!
-//! 必须用伪终端而不是管道：crossterm 在 stdin 不是 TTY 时改读 `/dev/tty`，
-//! 管道会让它绕开翻译层。
+//! A pty is required rather than a pipe: crossterm reads `/dev/tty` when stdin is not a TTY, and a
+//! pipe would let it bypass the translation layer.
 
 use std::{
     fs::File,
@@ -25,31 +26,31 @@ use std::{
     thread,
 };
 
-/// 单个 CSI 序列的缓冲上限；超限直接透传，避免病态输入无限占用内存。
+/// Buffer cap for a single CSI sequence; over-long input is passed through verbatim so pathological input cannot hold memory without bound.
 const MAX_SEQUENCE: usize = 64;
-/// APC／DCS／OSC 的长度上限：终端标识、Kitty 图形回复与剪贴板回复都远小于它。
+/// Length cap for APC/DCS/OSC: terminal identification, Kitty graphics replies and clipboard replies are all far below it.
 const MAX_STRING_SEQUENCE: usize = 4096;
-/// 输入线程轮询间隔：既用于发现完整序列，也决定退出延迟。
+/// Input-thread poll interval, used both to notice complete sequences and to bound shutdown latency.
 const POLL_INTERVAL_MS: i32 = 50;
-/// 重新扫描前的读取块大小。
+/// Read block size between rescans.
 const CHUNK: usize = 8 * 1024;
-/// 括号粘贴标记：内部内容必须逐字节透传。
+/// Bracketed-paste markers: the enclosed payload must pass through byte for byte.
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static STOP: AtomicBool = AtomicBool::new(false);
-/// 真实终端 fd：`restore` 用它换回 fd 0，使关闭 raw mode 作用在原始终端上。
+/// Real terminal fd: `restore` swaps it back into fd 0 so disabling raw mode applies to the original terminal.
 static SAVED: Mutex<Option<File>> = Mutex::new(None);
 
-/// 用伪终端替换 fd 0，并把原始终端字节经 [`Translator`] 转发进去。
+/// Replace fd 0 with a pty and forward the raw terminal bytes into it through [`Translator`].
 ///
-/// 必须在 `enable_raw_mode` 与一次性能力探测之后调用：探测直接读原始终端。
+/// Must be called after `enable_raw_mode` and the one-shot capability probe: the probe reads the raw terminal directly.
 pub(super) fn install(pending_reply: Vec<u8>) -> io::Result<()> {
     if INSTALLED.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    // 非 TTY 输入（重定向、测试夹具）保持原样，交给 crossterm 自行处理。
+    // Non-TTY input (redirection, test fixtures) is left as-is for crossterm to handle.
     if unsafe { libc::isatty(libc::STDIN_FILENO) } != 1 {
         return Ok(());
     }
@@ -67,7 +68,7 @@ pub(super) fn install(pending_reply: Vec<u8>) -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    // 主端由输入线程持有；从端成为 fd 0，必须 raw，否则行缓冲会吃掉按键。
+    // The master side is held by the input thread; the slave becomes fd 0 and must be raw, otherwise line buffering eats key presses.
     let master = unsafe { File::from_raw_fd(master) };
     let real = unsafe { libc::dup(libc::STDIN_FILENO) };
     if real < 0 {
@@ -75,7 +76,7 @@ pub(super) fn install(pending_reply: Vec<u8>) -> io::Result<()> {
     }
     let real = unsafe { File::from_raw_fd(real) };
     let forwarded = real.try_clone()?;
-    // 先登记回滚点：之后的任何失败都能把真实终端还给 fd 0。
+    // Register the rollback point first: any later failure can hand the real terminal back to fd 0.
     *SAVED.lock().unwrap_or_else(|error| error.into_inner()) = Some(real);
     if unsafe { libc::dup2(slave, libc::STDIN_FILENO) } < 0 {
         return Err(io::Error::last_os_error());
@@ -88,7 +89,7 @@ pub(super) fn install(pending_reply: Vec<u8>) -> io::Result<()> {
     Ok(())
 }
 
-/// 关闭回显、行缓冲与信号字符处理，使写入端的字节原样到达读取端。
+/// Disable echo, line buffering and signal-character handling so the writer's bytes reach the reader verbatim.
 fn make_raw(fd: libc::c_int) -> io::Result<()> {
     let mut termios: libc::termios = unsafe { std::mem::zeroed() };
     if unsafe { libc::tcgetattr(fd, &mut termios) } != 0 {
@@ -101,7 +102,7 @@ fn make_raw(fd: libc::c_int) -> io::Result<()> {
     Ok(())
 }
 
-/// 把真实终端还给 fd 0；随后的 `disable_raw_mode` 因此作用于原始终端。
+/// Hand the real terminal back to fd 0; the subsequent `disable_raw_mode` therefore applies to the original terminal.
 pub(super) fn restore() {
     STOP.store(true, Ordering::SeqCst);
     let saved = SAVED
@@ -133,7 +134,7 @@ fn pump(mut input: File, mut output: File, pending_reply: Vec<u8>) {
             break;
         }
         if ready == 0 {
-            // 只放行独立 Esc；不完整回复保留到下次读取，不能因分片间隔泄漏正文。
+            // Only a lone Esc is released here; an incomplete reply stays buffered for the next read so a fragment gap cannot leak body text.
             if !write_all(&mut output, &translator.take_pending()) {
                 break;
             }
@@ -145,8 +146,8 @@ fn pump(mut input: File, mut output: File, pending_reply: Vec<u8>) {
                 if !write_all(&mut output, &translator.push(&buffer[..count])) {
                     break;
                 }
-                // 独立 Esc 立即放行，避免与用户随后输入的字符拼成 Alt；已经收到
-                // CSI／APC 等前缀的分片继续缓冲，不受这个快捷路径影响。
+                // A lone Esc is released immediately so it cannot pair with the user's next character into Alt; fragments that
+                // already carry a CSI/APC prefix keep buffering and are unaffected by this fast path.
                 if translator.pending == b"\x1b"
                     && !ready_now(&input)
                     && !write_all(&mut output, &translator.take_pending())
@@ -173,21 +174,21 @@ fn write_all(output: &mut File, bytes: &[u8]) -> bool {
     bytes.is_empty() || output.write_all(bytes).is_ok()
 }
 
-/// 增量翻译器：改写 `CSI 27;mod;code~`，丢弃终端回复，其余字节原样输出。
+/// Incremental translator: rewrites `CSI 27;mod;code~`, drops terminal replies and passes the rest through verbatim.
 #[derive(Default)]
 pub(super) struct Translator {
     pending: Vec<u8>,
-    /// 括号粘贴内部：内容不受序列分类与改写影响。
+    /// Inside a bracketed paste: the content is immune to sequence classification and rewriting.
     paste: bool,
 }
 
 impl Translator {
-    /// 追加原始字节，返回可以立即写出的结果；末尾不完整的序列留到下一次。
+    /// Append raw bytes and return what can be written immediately; a trailing incomplete sequence waits for the next call.
     pub(super) fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(bytes.len());
         for &byte in bytes {
             if self.paste {
-                // 粘贴内容不做 tmux 解码，只增量匹配结束标记。
+                // Paste content gets no tmux decoding; only the terminator is matched incrementally.
                 self.pending.push(byte);
                 while !PASTE_END.starts_with(&self.pending) {
                     out.push(self.pending.remove(0));
@@ -219,7 +220,7 @@ impl Translator {
                         };
                         if self.pending.len() > limit {
                             if string {
-                                // 有界丢弃超长字符串，保留可能分片的结束序列。
+                                // Drop over-long strings within a bound, keeping a possibly fragmented terminator.
                                 let tail = self.pending.iter().rposition(|b| *b == 0x1b);
                                 if let Some(tail) = tail.filter(|offset| {
                                     *offset >= 2 && self.pending.len() - offset <= MAX_SEQUENCE
@@ -240,7 +241,7 @@ impl Translator {
         out
     }
 
-    /// 处理粘贴起始标记；其他完整序列过滤回复后改写或透传。
+    /// Handle the paste start marker; other complete sequences are filtered for replies, then rewritten or passed through.
     fn forward(&mut self, sequence: &[u8], out: &mut Vec<u8>) {
         if sequence == PASTE_START {
             self.paste = true;
@@ -256,7 +257,7 @@ impl Translator {
         }
     }
 
-    /// 仅放行独立 Esc，其余前缀继续缓冲，直到回复完整或粘贴结束。
+    /// Release only a lone Esc; every other prefix keeps buffering until the reply completes or the paste ends.
     pub(super) fn take_pending(&mut self) -> Vec<u8> {
         if !self.paste && self.pending == b"\x1b" {
             std::mem::take(&mut self.pending)
@@ -265,15 +266,15 @@ impl Translator {
         }
     }
 
-    /// 是否还有等待后续字节的序列前缀。
+    /// Whether a sequence prefix is still waiting for further bytes.
     #[cfg(test)]
     pub(super) fn has_pending(&self) -> bool {
         !self.pending.is_empty()
     }
 }
 
-/// tmux 会把不认识的终端回复前缀当作 Alt 按键，并按扩展键协议重新编码。
-/// 只还原控制序列分隔符，普通 Alt 快捷键仍交给 crossterm。
+/// tmux treats the prefix of an unrecognized terminal reply as an Alt key press and re-encodes it per the extended key protocol.
+/// Only control-sequence separators are restored; ordinary Alt shortcuts are still left to crossterm.
 pub(super) fn restore_tmux_escape_tail(buffer: &mut Vec<u8>) {
     if !matches!(buffer.last(), Some(b'u' | b'~')) {
         return;
@@ -307,14 +308,14 @@ fn tmux_alt_separator(bytes: &[u8]) -> Option<u8> {
 }
 
 enum Sequence {
-    /// 完整序列的字节长度。
+    /// Byte length of the complete sequence.
     Complete(usize),
-    /// 结尾被截断，需要更多字节才能判定。
+    /// The tail was truncated and more bytes are needed to decide.
     Incomplete,
 }
 
-/// 返回 `ESC` 起始序列的结束位置：CSI 以 0x40..=0x7E 收尾，APC／DCS 以 ST 收尾，
-/// OSC 还接受 BEL。
+/// Return the end of the sequence starting at `ESC`: CSI ends at 0x40..=0x7E, APC/DCS at ST,
+/// and OSC also accepts BEL.
 fn sequence(bytes: &[u8]) -> Sequence {
     if bytes.len() == 1 {
         return Sequence::Incomplete;
@@ -322,7 +323,7 @@ fn sequence(bytes: &[u8]) -> Sequence {
     match bytes[1] {
         b'[' => csi(bytes),
         b'_' | b'P' | b']' => control_string(bytes),
-        // `ESC ESC` 只放行一个，交给下一次扫描，Alt 组合整体透传。
+        // Release only one byte of `ESC ESC` and leave the rest to the next scan; Alt combinations pass through whole.
         _ => Sequence::Complete(if bytes[1] == 0x1b { 1 } else { 2 }),
     }
 }
@@ -333,7 +334,7 @@ fn csi(bytes: &[u8]) -> Sequence {
             return Sequence::Complete(offset + 1);
         }
         if !(0x20..=0x3f).contains(byte) {
-            // 非法 CSI：只放行 ESC，后续字节重新扫描。
+            // Invalid CSI: release only the ESC and rescan the following bytes.
             return Sequence::Complete(1);
         }
     }
@@ -341,7 +342,7 @@ fn csi(bytes: &[u8]) -> Sequence {
 }
 
 fn control_string(bytes: &[u8]) -> Sequence {
-    // 只有 OSC 用 BEL 收尾；APC 与 DCS 只认 ST。
+    // Only OSC is terminated by BEL; APC and DCS accept ST alone.
     let osc = bytes[1] == b']';
     let mut offset = 2;
     while offset < bytes.len() {
@@ -356,17 +357,17 @@ fn control_string(bytes: &[u8]) -> Sequence {
     Sequence::Incomplete
 }
 
-/// 终端能力回复只可能由终端发出，客户端永远不需要它们。
+/// Terminal capability replies can only originate from the terminal; clients never need them.
 fn terminal_reply(sequence: &[u8]) -> bool {
     match sequence.get(1) {
-        // APC／DCS／OSC 字符串：Kitty 图形回复、XTVERSION、剪贴板与配色回复。
+        // APC/DCS/OSC strings: Kitty graphics replies, XTVERSION, clipboard and palette replies.
         Some(b'_' | b'P' | b']') => true,
         Some(b'[') => {
             let private = sequence.get(2) == Some(&b'?');
             match sequence.last() {
-                // DA1 与 Kitty 键盘协议标志。
+                // DA1 and Kitty keyboard protocol flags.
                 Some(b'c' | b'u') => private,
-                // 窗口／单元格尺寸与设备状态报告。
+                // Window/cell size and device status reports.
                 Some(b't' | b'n') => !private,
                 _ => false,
             }
@@ -375,7 +376,7 @@ fn terminal_reply(sequence: &[u8]) -> bool {
     }
 }
 
-/// `CSI 27;mod;code~` → `CSI code;mod u`；其他序列返回 `None` 原样输出。
+/// `CSI 27;mod;code~` → `CSI code;mod u`; other sequences return `None` and pass through.
 fn rewrite(bytes: &[u8]) -> Option<Vec<u8>> {
     let body = bytes.strip_prefix(b"\x1b[")?.strip_suffix(b"~")?;
     let mut parts = std::str::from_utf8(body).ok()?.split(';');
@@ -387,7 +388,7 @@ fn rewrite(bytes: &[u8]) -> Option<Vec<u8>> {
     if parts.next().is_some() || !(2..=16).contains(&modifier) {
         return None;
     }
-    // xterm 的 Meta 位是 8，Kitty 的 Meta 位是 32（位 8 表示 Super）。
+    // xterm's Meta bit is 8, Kitty's Meta bit is 32 (bit 8 means Super).
     let modifier = if modifier >= 9 {
         modifier + 24
     } else {

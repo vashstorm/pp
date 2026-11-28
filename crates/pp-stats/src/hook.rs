@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// 生命周期 Hook 单次 handler 执行的采集状态。
+/// Collection status of a single lifecycle Hook handler execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookStatus {
     Ok,
@@ -24,7 +24,8 @@ impl HookStatus {
     }
 }
 
-/// 单次 Hook handler 执行记录；不持久化命令原文、参数或完整 stdin/stdout。
+/// Record of a single Hook handler execution; the raw command, its arguments and the full stdin/stdout
+/// are never persisted.
 pub struct HookRun<'a> {
     pub session_file: &'a Path,
     pub cwd: &'a Path,
@@ -36,7 +37,8 @@ pub struct HookRun<'a> {
     pub duration_ms: f64,
 }
 
-/// 记录一次 Hook handler 执行；复用句柄内的连接，存储失败只提示，不改变 Hook 决策。
+/// Records one Hook handler execution; reuses the connection in the handle, and a storage failure only
+/// warns without changing the Hook decision.
 pub fn hook(database: &Database, run: &HookRun<'_>) {
     if database.with_store(|store| store.hook(run)).is_err() {
         warn();
@@ -321,7 +323,8 @@ mod tests {
                 now - 200,
                 40.0,
             ),
-            // 边界测试：恰好落在 1 小时下界（包含）与 1 小时外（排除）与未来（排除）
+            // Boundary test: exactly on the 1-hour lower bound (included), just outside 1 hour (excluded)
+            // and in the future (excluded)
             (
                 s2,
                 beta,

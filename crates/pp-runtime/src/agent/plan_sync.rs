@@ -17,23 +17,25 @@ const COMPLETED_CONFLICT: &str =
 const REGISTER_CONFLICT: &str =
     "Plan file name is registered to another plan; resolve it in /plan-list.";
 
-/// 按 ID 协调结果：绑定需采纳登记、登记需首次建立，或已一致。
+/// Reconciliation outcome by ID: the binding adopts the registration, registers for the first time, or
+/// already agrees.
 enum PlanReconciliation {
-    /// 归档文件已缺失，当前会话可以继续独立工作。
+    /// The archived file is gone; the current session may keep working on its own.
     DetachArchived,
-    /// 登记表优先：把绑定同步到 canonical 名称/位置/状态。
+    /// The catalog wins: sync the binding to the canonical name/location/status.
     Adopt {
         file_name: String,
         location: PlanLocation,
         status: PlanStatus,
         leftover: Option<String>,
     },
-    /// 首次登记：按迁移规则原位登记，不搬迁文件。
+    /// First registration: register in place under the migration rules without moving the file.
     Register {
         file_name: String,
         location: PlanLocation,
     },
-    /// 首次登记并按迁移规则搬迁到 Drafts（旧 Draft/Ready 的 Plans 绑定）。
+    /// First registration that also moves a legacy Draft/Ready Plans binding to Drafts per the migration
+    /// rules.
     RegisterAndMove {
         file_name: String,
         location: PlanLocation,
@@ -42,13 +44,15 @@ enum PlanReconciliation {
     },
 }
 
-/// 按 ID 协调计划身份：登记表始终优先，把绑定文档同步到 canonical
-/// 名称/位置；纯路径/状态变化不递增正文 revision，但使旧 path token
-/// 失效。未登记的 revision>=1 旧绑定按迁移规则首次登记：Draft/Ready 的
-/// 旧 Plans 绑定保留旧名迁回 Drafts（安全搬迁），Executed 仍在 Plans，
-/// Abandoned 保留原位置只读，历史 Executed 登记到 Done 时只读同步
-/// Completed。Done 登记的文件缺失时解除会话绑定，保留项目登记。
-/// 墓碑和其他路径/正文缺失仍报错，禁止从历史快照重建文件或降级生命周期位置。
+/// Reconcile plan identity by ID: the catalog always wins, so the bound document is synced to the
+/// canonical name/location. Pure path/status changes do not bump the body revision, but they invalidate
+/// the old path token. An unregistered legacy binding with revision>=1 registers for the first time under
+/// the migration rules: a legacy Draft/Ready Plans binding keeps its name and moves back to Drafts (a
+/// safe move), Executed stays in Plans, Abandoned stays where it is read-only, and a historical Executed
+/// registered into Done read-only syncs to Completed. When the file of a Done registration is missing the
+/// session binding is detached and the project registration is kept. Tombstones and any other missing
+/// path/body still error out; never rebuild a file from a historical snapshot or downgrade a lifecycle
+/// location.
 pub(super) fn reconcile_plan_state(
     workspace: &pp_workspace::save::Workspace,
     journal: &mut SessionJournal,
@@ -64,7 +68,7 @@ pub(super) fn reconcile_plan_state(
     let previous_file_name = document.file_name.clone();
     let previous_location = document.location;
     let previous_status = document.status;
-    // revision>=1 的绑定一定有可解析路径（旧 <id>.md 兜底或显式名称）。
+    // A revision>=1 binding always has a resolvable path (the legacy <id>.md fallback or an explicit name).
     let previous_path = document.path().expect("saved plan has a lifecycle path");
 
     let adopted = {
@@ -87,7 +91,7 @@ pub(super) fn reconcile_plan_state(
             }
             Some(entry) => {
                 let status = if entry.location == PlanLocation::Done {
-                    // 登记到 Done 的历史 Executed 只读同步 Completed。
+                    // A historical Executed registered into Done read-only syncs to Completed.
                     PlanStatus::Completed
                 } else {
                     ensure!(
@@ -111,8 +115,8 @@ pub(super) fn reconcile_plan_state(
                 }
             }
             None => {
-                // 未登记的旧绑定：首次登记按迁移规则；名称冲突 fail-closed，
-                // 不抢注其他计划的名称。
+                // Unregistered legacy binding: register for the first time under the migration rules. Name
+                // conflicts fail closed; never squat on another plan's name.
                 let (file_name, mut location) = match &previous_file_name {
                     Some(name) => (name.clone(), previous_location),
                     None => (format!("{id}.md"), previous_location),
@@ -121,7 +125,7 @@ pub(super) fn reconcile_plan_state(
                     snapshot.catalog.active_by_file_name(&file_name).is_none(),
                     "{REGISTER_CONFLICT}"
                 );
-                // 登记绝不指向读不到的路径：正文缺失在此报错。
+                // A registration never points at an unreadable path: a missing body errors out here.
                 let source = workspace.target(Path::new(&previous_path), false)?;
                 let bytes = source.read_bounded(plan::PLAN_MAX_BYTES)?;
                 let moved = matches!(previous_status, PlanStatus::Draft | PlanStatus::Ready)
@@ -129,7 +133,7 @@ pub(super) fn reconcile_plan_state(
                 if moved {
                     location = PlanLocation::Drafts;
                     let target_path = plan::path_for(&file_name, location);
-                    // 发布目标链接后再 CAS 建立登记；失败保留源链接。
+                    // Publish the target link first, then register with CAS; a failure keeps the source link.
                     workspace.link_plan(
                         Path::new(&previous_path),
                         Path::new(&target_path),
@@ -262,7 +266,8 @@ fn detach_archived_plan(journal: &mut SessionJournal, workflow: &mut WorkflowSta
     Ok(())
 }
 
-/// 绑定文档的身份三元组：登记协调是否改变了名称/位置/状态。
+/// The binding document's identity triple: whether registration reconciliation changed
+/// name/location/status.
 fn plan_identity(document: &PlanDocument) -> (Option<String>, PlanLocation, PlanStatus) {
     (
         document.file_name.clone(),
@@ -271,7 +276,8 @@ fn plan_identity(document: &PlanDocument) -> (Option<String>, PlanLocation, Plan
     )
 }
 
-/// 已结束计划的只读投影：按 Markdown 勾选状态派生，不保留 active/blocker。
+/// Read-only projection of a finished plan: derived from Markdown checkbox state, keeping no
+/// active/blocker.
 fn readonly_phases(document: &PlanDocument) -> Result<Vec<pp_core::todo::TodoPhase>> {
     let mut phases: Vec<pp_core::todo::TodoPhase> = Vec::new();
     let mut region: Option<usize> = None;
@@ -300,11 +306,12 @@ fn readonly_phases(document: &PlanDocument) -> Result<Vec<pp_core::todo::TodoPha
     Ok(phases)
 }
 
-/// 安全导入绑定计划的实际 Markdown，执行模式另同步任务投影。
-/// Plan 仅更新正文、修订和状态，并清除旧版本的 TODO 预览。
-/// Execute+Executed 冻结旧记录的批准基线后读取磁盘，拒绝任务集合漂移，
-/// 保留合法 active/blocked；结束计划只读，脱离后的普通清单不被覆盖。
-/// 所有状态先持久化再发布，失败恢复最后可信的正文与运行态。
+/// Safely import the real Markdown of a bound plan; execution mode also syncs the task projection.
+/// Plan only updates body, revision and status, and clears the previous version's TODO preview.
+/// Execute+Executed freezes the approval baseline from the old record before reading disk, rejects task
+/// set drift and keeps legitimate active/blocked entries; finished plans are read-only and a plain list
+/// that got detached is never overwritten. All state is persisted before it is published, and a failure
+/// restores the last trusted body and runtime state.
 pub(super) fn sync_plan_todos(
     tools: &Tools,
     journal: &mut SessionJournal,
@@ -313,7 +320,8 @@ pub(super) fn sync_plan_todos(
     publish_snapshot: bool,
 ) -> Result<()> {
     if workflow.mode == WorkMode::Plan {
-        // 兼容旧会话：包括删除计划后留下的无绑定清单，均在请求或恢复前清理。
+        // Legacy-session compatibility: staleness that includes an unbound list left behind by a deleted
+        // plan is cleaned up before a request or a resume.
         let previous_todos = std::mem::take(&mut workflow.todos);
         let previous_source = workflow.todo_plan_id.take();
         if !previous_todos.is_empty() || previous_source.is_some() {
@@ -353,7 +361,8 @@ pub(super) fn sync_plan_todos(
     let identity_changed = plan_identity(document) != identity_before;
     let executing = workflow.mode == WorkMode::Execute && document.status == PlanStatus::Executed;
     if executing && document.approved_tasks.is_none() {
-        // 迁移基线只能来自已登记旧正文，不能让随后读取的新磁盘任务获得批准。
+        // The migrated baseline may only come from the already registered old body; a newly read task on
+        // disk must not become approved afterwards.
         let approved = plan::plan_tasks(&document.content)
             .into_iter()
             .map(|task| task.text)
@@ -372,7 +381,7 @@ pub(super) fn sync_plan_todos(
     } else {
         let content = match tools.read_plan(document) {
             Ok(content) => content,
-            // 文件可能在协调后的两次磁盘访问之间消失。
+            // The file can disappear between the two disk accesses that follow reconciliation.
             Err(error) if document.status == PlanStatus::Completed && is_missing(&error) => {
                 detach_archived_plan(journal, workflow)?;
                 if publish_snapshot {
@@ -461,7 +470,8 @@ pub(super) fn sync_plan_todos(
     Ok(())
 }
 
-/// 恢复只携带一次同步新生成的快照；replay 已包含相同快照时不重复追加。
+/// Resume carries the freshly generated snapshot only once; when replay already holds the same snapshot
+/// it is not appended again.
 fn resume_todo_snapshot(
     workflow: &WorkflowState,
     replay: &[super::persistence::ReplayRecord],
@@ -493,7 +503,7 @@ fn resume_todo_snapshot(
     (!replayed).then_some(event)
 }
 
-/// 启动恢复与交互式 resume 共用同一文件同步和快照去重边界。
+/// Startup restore and interactive resume share the same file-sync and snapshot-dedup boundary.
 pub(super) fn sync_restored_todos(
     tools: &Tools,
     journal: &mut SessionJournal,

@@ -1,4 +1,4 @@
-//! `--allowed-tools` / `--disallowed-tools` 解析、工具能力白名单与权限门预批准同步。
+//! `--allowed-tools` / `--disallowed-tools` parsing, tool capability allowlist and permission-gate pre-approval sync.
 
 use anyhow::{Result, bail, ensure};
 use pp_permission::BashCommandPattern;
@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 
 const VALID_TOOL_NAMES: &str = "Read, Grep (rg), Glob, Edit, Write, Bash, Bash(cmd:*), BashTask, Eval, WebSearch, Lsp, Todo, Wait, Task, mcp__*, mcp__<server>__*, *, none";
 
-/// 工具能力白名单与黑名单，同时驱动 schema 暴露、执行期门禁与 CLI 预批准。
+/// Tool capability allowlist and denylist; drives schema exposure, execution-time gating and CLI pre-approval.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AllowedTools {
     exact: BTreeSet<String>,
@@ -17,13 +17,13 @@ pub struct AllowedTools {
     disallowed_prefixes: Vec<String>,
     disallowed_all: bool,
     bash_disallowed: Vec<BashCommandPattern>,
-    /// 仅当由 `--allowed-tools`（含 `-p` 默认只读集合）构造时才同步写入权限门预批准；
-    /// 仅传 `--disallowed-tools` 的限制集合不得反向赋予预批准。
+    /// Pre-approvals are synced into the permission gate only when built from `--allowed-tools`
+    /// (including the `-p` default read-only set); a `--disallowed-tools`-only restriction set must not grant them.
     preapprove: bool,
 }
 
 impl AllowedTools {
-    /// 非交互 `-p` 模式的默认只读白名单：`Read, Grep, Glob`。
+    /// Default read-only allowlist for non-interactive `-p` mode: `Read, Grep, Glob`.
     pub fn default_non_interactive() -> Self {
         Self {
             preapprove: true,
@@ -31,7 +31,7 @@ impl AllowedTools {
         }
     }
 
-    /// 由精确内部工具名集合构造白名单（供子 Agent 与测试复用）。
+    /// Build the allowlist from an exact set of internal tool names (reused by subagents and tests).
     pub fn exact(names: impl IntoIterator<Item = String>) -> Self {
         Self {
             exact: names.into_iter().collect(),
@@ -39,8 +39,8 @@ impl AllowedTools {
         }
     }
 
-    /// 将子 Agent 工具白名单与父级 `--allowed-tools` / `--disallowed-tools` 求交集，
-    /// 并继承父级的黑名单及 `Bash(...)` AST 规则。
+    /// Intersect a subagent tool allowlist with the parent `--allowed-tools` / `--disallowed-tools`,
+    /// inheriting the parent denylist and `Bash(...)` AST rules.
     pub fn restrict_for_child(&self, child_names: impl IntoIterator<Item = String>) -> Self {
         let exact: BTreeSet<String> = child_names
             .into_iter()
@@ -64,7 +64,7 @@ impl AllowedTools {
         }
     }
 
-    /// 交互模式仅指定 `--disallowed-tools` 时使用的全量受限基线（不赋予 CLI 预批准）。
+    /// Full restricted baseline used in interactive mode when only `--disallowed-tools` is given (no CLI pre-approval).
     fn all_with_task_no_preapprove() -> Self {
         Self {
             all_standard: true,
@@ -74,7 +74,7 @@ impl AllowedTools {
         }
     }
 
-    /// 解析 CLI `--allowed-tools` 参数列表（支持逗号分隔、括号内 Bash 规则与重复传入）。
+    /// Parse the CLI `--allowed-tools` argument list (comma separation, Bash rules in parentheses, repeated flags).
     pub fn parse_cli(values: &[String]) -> Result<Self> {
         let mut parsed = Self {
             preapprove: true,
@@ -105,7 +105,7 @@ impl AllowedTools {
         Ok(parsed)
     }
 
-    /// 基于可选白名单叠加 `--disallowed-tools` 黑名单（黑名单优先级高于白名单）。
+    /// Layer the `--disallowed-tools` denylist onto an optional allowlist (the denylist wins).
     pub fn with_disallowed(
         base: Option<Self>,
         disallowed_values: &[String],
@@ -333,7 +333,7 @@ impl AllowedTools {
         (self.all_standard || self.exact.contains("bash")) && !self.is_disallowed("bash")
     }
 
-    /// 判断内部工具名是否被当前能力配置允许（黑名单优先于白名单）。
+    /// Whether the current capability configuration allows an internal tool name (denylist wins).
     pub fn allows(&self, name: &str) -> bool {
         if matches!(name, "mcp_search" | "mcp_call") {
             return self.allows_any_mcp();
@@ -347,7 +347,7 @@ impl AllowedTools {
             || self.prefixes.iter().any(|prefix| name.starts_with(prefix))
     }
 
-    /// 调用期硬门禁：除工具级能力判定外，在 `Bash(...)` 规则生效时对 AST 叶子命令做强制检查。
+    /// Call-time hard gate: besides the tool-level capability check, enforce a check on AST leaf commands while `Bash(...)` rules are active.
     pub fn authorize_call(&self, name: &str, arguments: &str) -> Result<()> {
         ensure!(
             self.allows(name),
@@ -365,12 +365,12 @@ impl AllowedTools {
         Ok(())
     }
 
-    /// 非交互下只有显式包含 `Task` 且未被 `--disallowed-tools Task` 禁用时才启用 subagent。
+    /// In non-interactive mode, enable subagents only when `Task` is explicit and not disabled by `--disallowed-tools Task`.
     pub fn enables_subagents(&self) -> bool {
         self.exact.contains("task") && !self.is_disallowed("task")
     }
 
-    /// 未允许任何未被禁用的 MCP 工具时跳过启动期 MCP 建连与等待。
+    /// Skip startup MCP connection and waiting when no enabled MCP tool is allowed.
     pub fn allows_any_mcp(&self) -> bool {
         if self.disallowed_all
             || self
@@ -391,12 +391,12 @@ impl AllowedTools {
                 .any(|prefix| prefix.starts_with("mcp__") && !self.is_disallowed(prefix))
     }
 
-    /// 仅在允许 `lsp` 或存在文件修改工具（保存联动诊断）时初始化 LSP。
+    /// Initialize LSP only when `lsp` or a file-modifying tool (save-linked diagnostics) is allowed.
     pub fn allows_lsp_lifecycle(&self) -> bool {
         self.allows("lsp") || self.allows("edit") || self.allows("write")
     }
 
-    /// 方案 B：将 `--allowed-tools`（扣减黑名单后）同步为本次运行的权限门预批准集合。
+    /// Option B: sync `--allowed-tools` (after denylist subtraction) into this run's permission-gate pre-approval set.
     pub fn apply_permission_grants(&self, gate: &pp_permission::Gate) {
         if !self.preapprove || self.disallowed_all {
             return;
@@ -472,7 +472,7 @@ fn parse_bash_wrapper(token: &str) -> Result<Option<&str>> {
     Ok(Some(&token[open + 1..token.len() - 1]))
 }
 
-/// 解析 `Bash(...)` 内部模式：`None` 表示无界 `Bash(*)`，`Some` 表示前缀或精确规则。
+/// Parse the `Bash(...)` inner pattern: `None` is unbounded `Bash(*)`, `Some` is a prefix or exact rule.
 fn parse_bash_pattern(inner: &str) -> Result<Option<BashCommandPattern>> {
     let trimmed = inner.trim();
     ensure!(!trimmed.is_empty(), "empty Bash(...) pattern");

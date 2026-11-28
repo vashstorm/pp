@@ -1,5 +1,5 @@
 /**
- * Traces 模块共享状态、通用格式辅助与子模块回调桥接。
+ * State shared by the Traces modules, common formatting helpers and the submodule callback bridge.
  */
 
 import { fixedCost, h } from "./format.js";
@@ -214,7 +214,7 @@ export const traceBridge = {
 };
 
 /**
- * 格式化 Trace 毫秒耗时。
+ * Formats a Trace duration in milliseconds.
  * @param {number | null | undefined} value
  * @param {number} [digits]
  * @returns {string}
@@ -227,7 +227,7 @@ export const traceDurationMs = (value, digits) => {
 };
 
 /**
- * 格式化超过一分钟的长耗时为 `Xm Ys` 或 `Xh Ym`。
+ * Formats long durations over a minute as `Xm Ys` or `Xh Ym`.
  * @param {number | null | undefined} ms
  * @returns {string}
  */
@@ -243,7 +243,7 @@ export function traceElapsed(ms) {
 }
 
 /**
- * 格式化相对会话起点的偏移量（如 `+01:23.450`）。
+ * Formats an offset relative to the session start (such as `+01:23.450`).
  * @param {number} deltaMs
  * @returns {string}
  */
@@ -262,7 +262,7 @@ export function traceOffset(deltaMs) {
 }
 
 /**
- * 格式化 `HH:MM:SS` 时钟标签。
+ * Formats an `HH:MM:SS` clock label.
  * @param {number} timestamp
  * @returns {string}
  */
@@ -274,7 +274,7 @@ export function traceClock(timestamp) {
 }
 
 /**
- * 提取会话文件 stem。
+ * Extracts the session file stem.
  * @param {string | null | undefined} file
  * @returns {string}
  */
@@ -287,7 +287,7 @@ export function traceFileStem(file) {
 }
 
 /**
- * 提取工作目录末尾两级路径。
+ * Extracts the last two path segments of the working directory.
  * @param {string | null | undefined} cwd
  * @returns {string}
  */
@@ -299,7 +299,7 @@ export function traceFolderTail(cwd) {
 }
 
 /**
- * 查找当前选中的 span 与其所属轨道。
+ * Finds the currently selected span and the track it belongs to.
  * @param {TraceViewModel | null} view
  * @param {TraceState | null} state
  * @returns {{ span: TraceSpan, track: TraceTrack } | null}
@@ -314,7 +314,7 @@ export function traceSelected(view, state) {
 }
 
 /**
- * 记录时间线和 Transcript 滚动条位置以便重绘后恢复。
+ * Records the timeline and Transcript scroll positions so they can be restored after a redraw.
  */
 export function traceRememberScroll() {
   if (!traceStore.state || !traceStore.request) return;
@@ -325,7 +325,7 @@ export function traceRememberScroll() {
 }
 
 /**
- * 确保当前会话的交互状态对象存在。
+ * Ensures the interaction state object of the current session exists.
  * @param {string} file
  * @returns {TraceState}
  */
@@ -353,7 +353,7 @@ export function traceBegin(file) {
 }
 
 /**
- * 格式化 Trace 页可空金额，并在未定价时输出 `N/A`。
+ * Formats a nullable amount on the Trace page and outputs `N/A` when unpriced.
  * @param {number | null | undefined} value
  * @param {number} unpriced
  * @returns {string}

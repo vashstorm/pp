@@ -31,7 +31,7 @@ impl App {
             || matches!(&event, Event::Paste(_));
         let clipboard_key = matches!(&event, Event::Key(key) if key.code == KeyCode::Char('v') && key.modifiers == KeyModifiers::CONTROL);
         let input_focused = self.completion_input_focused();
-        // 普通文本输入不维护图片编辑记录，也不复制整个草稿。
+        // Plain text input keeps no image edit records and copies no whole draft.
         if self.resources.images.is_empty() && self.resources.job.is_none() && !clipboard_key {
             let before = load_references.then(|| self.input_text());
             let quit = self.handle_inner(event, dirty);
@@ -55,7 +55,10 @@ impl App {
             && self.resources.job.is_some()
         {
             self.resources.cancel();
-            self.notify(Level::Normal, "已取消输入资源加载，草稿保留。".into());
+            self.notify(
+                Level::Normal,
+                "Input resource loading cancelled; draft kept.".into(),
+            );
             *dirty = true;
             return false;
         }
@@ -142,7 +145,8 @@ impl App {
         {
             self.escape_tap.reset();
         }
-        // 权限切换独立于任务状态与面板焦点：任何时候都可立即切换并在下一次工具调用生效。
+        // Permission switching is independent of task state and panel focus: it applies at any
+        // time and takes effect on the next tool call.
         if let Event::Key(key) = &event
             && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
             && super::permissions::is_permission_shortcut(*key)
@@ -153,7 +157,8 @@ impl App {
             *dirty = true;
             return false;
         }
-        // F7 在任何状态（含确认弹窗与全屏模态面板）打开／关闭 `/permissions` 命令入口。
+        // F7 opens/closes the `/permissions` command entry in any state, including confirmation
+        // dialogs and full-screen modal panels.
         if let Event::Key(key) = &event
             && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
             && super::permissions::is_permission_command_shortcut(*key)
@@ -231,7 +236,8 @@ impl App {
             *dirty = true;
             return false;
         }
-        // 放弃确认独占输入；粘贴、鼠标和全局快捷键不能绕过确认。
+        // The abandon confirmation owns the input; paste, mouse and global shortcuts cannot
+        // bypass it.
         if let Some(panel) = &mut self.plan_leave_confirmation {
             if let Event::Key(key) = event {
                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -249,7 +255,8 @@ impl App {
                 if control && key.code == KeyCode::Char('c') {
                     return key.kind == KeyEventKind::Press;
                 }
-                // F8 是全局入口：即使面板已打开也重绑到最近的 run。
+                // F8 is a global entry point: it rebinds to the nearest run even when a panel is
+                // already open.
                 if key.code == KeyCode::F(8)
                     && key.modifiers.is_empty()
                     && self.pipes_entry_allowed()
@@ -260,7 +267,8 @@ impl App {
                     *dirty = true;
                     return false;
                 }
-                // 面板独占按键：Esc 只关闭，Ctrl+O 等全局键不得穿透。
+                // The panel owns its keys: Esc only closes it and global keys such as Ctrl+O must
+                // not pass through.
                 if let Some(panel) = &mut self.pipes_panel {
                     let action = panel.key(key);
                     self.escape_tap.reset();
@@ -268,7 +276,8 @@ impl App {
                     *dirty = true;
                     return false;
                 }
-                // Alt+A 只在主视图切换 Hub；未获得绑定时也允许打开空态。
+                // Alt+A toggles the Hub in the main view only; the empty state opens even
+                // without a binding.
                 if crate::tui::app::hub::is_hub_toggle(&Event::Key(key))
                     && self.hub_toggle_allowed()
                 {
@@ -304,7 +313,7 @@ impl App {
                     }
                     return false;
                 }
-                // Esc 收起或历史召回后，显式 Tab 可重新唤起补全。
+                // After Esc collapses or history recall, an explicit Tab reopens completion.
                 if key.code == KeyCode::Tab
                     && key.modifiers.is_empty()
                     && self.menu.is_none()
@@ -316,7 +325,8 @@ impl App {
                         return false;
                     }
                 }
-                // 文件菜单独占左右方向键，普通聊天与计划讨论共用同一导航行为。
+                // The file menu owns the left/right arrows; normal chat and plan discussion share
+                // the same navigation behavior.
                 if self.completion_input_focused()
                     && self.file_query.is_some()
                     && (self.menu.is_some() || self.files_pending)
@@ -392,7 +402,8 @@ impl App {
                 {
                     self.escape_tap.reset();
                 }
-                // 显示切换先于普通菜单和 ask，但不穿透全屏面板。
+                // Display toggles run before the regular menu and ask, but never through
+                // full-screen panels.
                 if key.code == KeyCode::Char('o')
                     && key.modifiers == KeyModifiers::CONTROL
                     && self.session_panel.is_none()
@@ -421,14 +432,16 @@ impl App {
                     self.apply_ask_action(action);
                     return false;
                 }
-                // 会话面板打开时优先消费键盘输入，编辑器、历史翻阅与快捷操作不穿透。
+                // While the session panel is open it consumes keyboard input first; the editor,
+                // history browsing and shortcuts do not pass through.
                 if self.session_panel.is_some() {
                     let action = self
                         .session_panel
                         .as_mut()
                         .expect("active session panel")
                         .key(key);
-                    // 查询/范围变化立即发出异步 Search；结果只按最新请求安装。
+                    // A query/range change issues an async Search immediately; results are
+                    // installed only for the newest request.
                     self.search_session_panel();
                     match action {
                         sessions::Action::None => {}
@@ -442,7 +455,8 @@ impl App {
                                 .expect("selection indexes the session list")
                                 .to_owned();
                             if self.session_id.as_deref() == Some(id.as_str()) {
-                                // 当前会话：只关闭列表，不重锁自己的 journal。
+                                // Current session: just close the list without relocking its own
+                                // journal.
                                 self.close_session_panel();
                             } else {
                                 self.session_panel
@@ -470,8 +484,9 @@ impl App {
                                 .and_then(|panel| panel.id(index))
                                 .expect("selection indexes the session list")
                                 .to_owned();
-                            // 删除仍由 Agent worker 取得会话锁并删除 JSONL；
-                            // 面板存在即阻止队列派发与编辑器输入，故保持 Ready。
+                            // Deletion still takes the session lock and removes the JSONL through
+                            // the Agent worker; while the panel exists it blocks queue dispatch and
+                            // editor input, so Ready is kept.
                             if !self.send(WorkerCommand::DeleteSession(id), State::Ready) {
                                 self.session_panel = None;
                             }
@@ -487,8 +502,9 @@ impl App {
                     }
                     return false;
                 }
-                // 主输入框的 Shift + Enter 始终换行：补全／队列菜单、文件选择与
-                // 提交都不得抢占；需要键盘协议的终端才会与普通 Enter 区分开。
+                // Shift + Enter in the main input box always inserts a newline: completion/queue
+                // menus, file selection and submission must not preempt it; only terminals with
+                // keyboard protocols distinguish it from a plain Enter.
                 if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {
                     self.input.insert_newline();
                     self.refresh_candidates(true);
@@ -602,7 +618,8 @@ impl App {
                             .as_ref()
                             .map(|model| model.thinking)
                             .unwrap_or_default();
-                        // 已登记但未应用的期望值参与选环：连按时每次前进一档。
+                        // A registered but unapplied desired value takes part in cycling: each
+                        // repeated press advances one level.
                         let current = self
                             .pending_think
                             .map_or(self.think_level, |(_, level)| level);
@@ -661,7 +678,8 @@ impl App {
                             return false;
                         }
                         KeyCode::Char('k') => {
-                            // 行尾也要删除换行符，否则连续按下无法逐行删除。
+                            // The trailing newline must go too, otherwise pressing repeatedly cannot
+                            // delete line by line.
                             self.input.cancel_selection();
                             if self.input.delete_line_by_end() {
                                 if self.input.lines().iter().all(String::is_empty) {
@@ -733,7 +751,8 @@ impl App {
                         self.active_transcript().page_up();
                     }
                     KeyCode::PageDown => {
-                        // 只有当前显示的转录回到底部才退出浏览态。
+                        // Browsing ends only when the currently displayed transcript returns to the
+                        // bottom.
                         self.active_transcript().page_down();
                         if self.active_transcript().following() {
                             self.history_browser = false;
@@ -742,7 +761,8 @@ impl App {
                     KeyCode::Up | KeyCode::Down if key.modifiers.is_empty() => {
                         let cursor = self.input.cursor();
                         self.edit_input(key);
-                        // 先在显示行之间移动，越过首末显示行时才浏览历史。
+                        // Move between displayed lines first and browse history only past the first
+                        // or last displayed line.
                         if self.input.cursor() == cursor && self.model_picker_draft.is_none() {
                             self.navigate_history(key.code == KeyCode::Up);
                         } else {

@@ -1,4 +1,5 @@
-//! 错误分组和会话请求时间线，只使用统计库中的记录，不重新读取会话文件。
+//! Error grouping and session request timelines; uses only records in the stats database and never
+//! re-reads session files.
 use super::{
     COLUMNS, Range, RequestRow, SessionScope, Store, analytics::Aggregate, row,
     session_requests_sql,
@@ -8,8 +9,8 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// 会话标题由调用方从 history.db 的派生索引注入；键为会话 ID（会话文件名去扩展名），
-/// 空摘要不覆盖会话 ID。
+/// Session titles are injected by the caller from the derived index in history.db; the key is the
+/// session ID (session file name without extension) and an empty summary does not override the ID.
 fn title<'a>(titles: &HashMap<&str, &'a str>, stem: Option<&str>) -> Option<&'a str> {
     let id = stem.and_then(|stem| stem.rsplit(['/', '\\']).next())?;
     titles
@@ -18,8 +19,9 @@ fn title<'a>(titles: &HashMap<&str, &'a str>, stem: Option<&str>) -> Option<&'a 
         .filter(|title| !title.trim().is_empty())
 }
 
-/// 会话文件去掉 `.jsonl` 后的 stem；子 Agent 文件 `<root>.subagents/sessions/<id>.jsonl`
-/// 归到根会话，与 `session_cost` 的目录约定一致。
+/// Stem of the session file without the `.jsonl` suffix; a subagent file
+/// `<root>.subagents/sessions/<id>.jsonl` folds into the root session, matching the directory
+/// convention of `session_cost`.
 fn session_stem(file: &str) -> &str {
     match file.find(".subagents/sessions/") {
         Some(index) => &file[..index],
@@ -55,18 +57,20 @@ fn summary(rows: &[&RequestRow]) -> Value {
     value
 }
 
-/// 失败请求列表；`status='failed'` 与时间范围、倒序都由部分索引 `requests_failed_time` 满足。
-/// `?3` 是 `limit+1`：多取一行只为判断是否还有更早的失败请求。
+/// Failed request list; `status='failed'`, the time range and the descending order are all served by
+/// the partial index `requests_failed_time`. `?3` is `limit+1`: the extra row only tells whether an
+/// older failed request exists.
 pub(super) fn failed_requests_sql() -> String {
     format!(
         "SELECT {COLUMNS} FROM requests WHERE status='failed' AND timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC LIMIT ?3"
     )
 }
 
-/// Traces 详情的工具执行：派生表按会话作用域两段 `UNION ALL`，再用 `LEFT JOIN` 取请求信息。
-/// 外层的列顺序必须与行映射一致：`t.id`、`t.request_key`、`t.session_file`、`t.call_id`、
-/// `t.tool`、`t.timestamp`、`t.duration_ms`、`t.status`、`t.error_message`、`r.id`；
-/// 派生表内显式列出同一顺序的非 `r.*` 列，不用依赖表列顺序的 `SELECT *`。
+/// Tool executions for a Traces detail: the derived table unions two session-scoped `UNION ALL`
+/// branches, then a `LEFT JOIN` fetches the request info. The outer column order must match the row
+/// mapping: `t.id`, `t.request_key`, `t.session_file`, `t.call_id`, `t.tool`, `t.timestamp`,
+/// `t.duration_ms`, `t.status`, `t.error_message`, `r.id`; the derived table lists the non-`r.*`
+/// columns explicitly in the same order instead of a `SELECT *` that depends on table column order.
 pub(super) fn trace_tools_sql() -> String {
     "SELECT t.id,t.request_key,t.session_file,t.call_id,t.tool,t.timestamp,t.duration_ms,t.status,t.error_message,r.id
                  FROM (SELECT id,request_key,session_file,call_id,tool,timestamp,duration_ms,status,error_message
@@ -80,8 +84,9 @@ pub(super) fn trace_tools_sql() -> String {
 }
 
 impl Store {
-    /// 失败请求列表：行本身就是页面数据，签名分组、模型分布与统计量都由前端按已加载行计算，
-    /// 与服务端聚合无关；`limit+1` 只用来判断是否存在更早的失败请求。
+    /// Failed request list: the rows themselves are the page data; signature grouping, model
+    /// distribution and statistics are all computed by the frontend from the loaded rows, independent
+    /// of server-side aggregation; `limit+1` only detects whether an older failed request exists.
     pub(super) fn errors(&self, range: Range, now: i64, limit: usize) -> Result<Value> {
         let since = range.since(now);
         let rows = self
@@ -109,7 +114,8 @@ impl Store {
     ) -> Result<Value> {
         let rows = self.conn.prepare(&format!("SELECT {COLUMNS} FROM requests WHERE timestamp>=?1 AND timestamp<=?2 ORDER BY timestamp DESC,id DESC"))?
             .query_map(params![range.since(now), now], row)?.collect::<rusqlite::Result<Vec<_>>>()?;
-        // 子 Agent 请求折叠进根会话；未记录会话的请求各自成组，不能合并成一个会话。
+        // Subagent requests fold into the root session; requests without a recorded session form their
+        // own group and must not be merged into one session.
         let mut tools = BTreeMap::<(bool, String), i64>::new();
         {
             let mut statement = self.conn.prepare("SELECT session_file,COUNT(*) FROM tool_calls WHERE timestamp>=?1 AND timestamp<=?2 GROUP BY session_file")?;
@@ -185,7 +191,8 @@ impl Store {
         now: i64,
         titles: &HashMap<&str, &str>,
     ) -> Result<Option<Value>> {
-        // 使用读事务保证两次查询看到同一快照，避免并发 gc 删除后 rows 为空 panic。
+        // A read transaction makes both queries see the same snapshot, so a concurrent gc that deletes
+        // rows cannot leave them empty and panic.
         let tx = self.conn.unchecked_transaction()?;
         let session: Option<Option<String>> = tx
             .query_row("SELECT session_file FROM requests WHERE id=?1", [id], |r| {
@@ -205,7 +212,8 @@ impl Store {
             Some(raw) => (Some(raw), Some(raw.to_owned()), None),
             None => (None, None, None),
         };
-        // 有会话时按索引范围取根会话与专属子 Agent 目录；没有会话或非标准路径时按精确列取。
+        // With a session, the index range covers the root session and its dedicated subagent directory;
+        // without a session or with a non-standard path, match the exact column instead.
         let (rows, tools) = match (&scope, &root) {
             (Some(scope), _) => {
                 let rows = tx
@@ -391,12 +399,12 @@ mod tests {
                 })
                 .unwrap();
         }
-        let titles = HashMap::from([("root", "修复 traces 会话标题")]);
+        let titles = HashMap::from([("root", "Fix traces session titles")]);
         let traces = store.traces(Range::Hour, now, 500, &titles).unwrap();
         assert_eq!(traces["total"], 1);
         let session = &traces["sessions"][0];
         assert_eq!(session["session_file"], root_file);
-        assert_eq!(session["title"], "修复 traces 会话标题");
+        assert_eq!(session["title"], "Fix traces session titles");
         assert_eq!(session["requests"], 3);
         assert_eq!(session["agents"], 1);
         assert_eq!(session["tool_calls"], 2);
@@ -406,7 +414,7 @@ mod tests {
         assert!(untitled["sessions"][0].get("title").is_none());
         let id = session["id"].as_i64().unwrap();
         let trace = store.trace(id, now, &titles).unwrap().unwrap();
-        assert_eq!(trace["title"], "修复 traces 会话标题");
+        assert_eq!(trace["title"], "Fix traces session titles");
         assert_eq!(trace["session_file"], root_file);
         assert_eq!(trace["summary"]["requests"], 3);
         assert_eq!(trace["summary"]["agents"], 1);
@@ -451,7 +459,8 @@ mod tests {
         store
             .insert(&fixture("future", now + 1), &Value::Null)
             .unwrap();
-        // 失败行按 `limit+1` 取，多出的一行只用于判断是否还有更早的失败请求。
+        // Failed rows are fetched with `limit+1`; the extra row only tells whether an older failed
+        // request exists.
         let errors = store.errors(Range::Day, now, 200).unwrap();
         assert_eq!(errors["requests"].as_array().unwrap().len(), 200);
         assert_eq!(errors["limit"], 200);
@@ -529,7 +538,7 @@ mod tests {
                     400
                 );
             }
-            // Errors 页按 50／200／1000 分档加载，请求日志与 Traces 用 500／2000。
+            // The Errors page loads in 50/200/1000 steps; the request log and Traces use 500/2000.
             let limit = if endpoint == "errors" { 1000 } else { 2000 };
             assert_eq!(
                 server::dispatch(
@@ -551,7 +560,7 @@ mod tests {
             400
         );
 
-        // 非 `.jsonl` 后缀 session_file 不得越界 panic。
+        // A session_file without the `.jsonl` suffix must not panic on out-of-bounds slicing.
         let mut custom = fixture("custom-session", now - 10);
         custom.session_file = Some("custom-session".into());
         store.insert(&custom, &Value::Null).unwrap();

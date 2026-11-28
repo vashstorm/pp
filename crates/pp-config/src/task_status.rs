@@ -1,4 +1,4 @@
-//! 会话费用与当前任务标题的运行时快照。
+//! Runtime snapshot of session cost and the current task title.
 use crate::config::ModelCatalog;
 use crate::models::{ModelCost, ModelPricing};
 use pp_core::context::TokenUsage;
@@ -21,12 +21,12 @@ pub struct Snapshot {
     pub title: Option<String>,
     pub cost: f64,
     pub history: Option<HistoricalCost>,
-    /// 生成中请求的实时预估费用之和；只在对应请求落定前有效。
+    /// Sum of live estimates for in-flight requests; valid only until those requests settle.
     pub live: f64,
     pub incomplete: bool,
 }
 
-/// 从现有统计记录回算的 USD 小计。没有可计价记录时金额未知。
+/// USD subtotal recomputed from the existing statistics records. The amount is unknown when no records are priceable.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HistoricalCost {
     pub usd: Option<f64>,
@@ -47,7 +47,7 @@ pub struct Ledger {
 struct State {
     snapshot: Snapshot,
     settled: HashSet<u64>,
-    /// 生成中的预估按请求 ID 保存，落定时移除。
+    /// Live estimates keyed by request ID; removed once the request settles.
     live: BTreeMap<u64, f64>,
 }
 
@@ -136,8 +136,8 @@ impl Ledger {
         self.prices.rate(reference, model)
     }
 
-    /// 生成中的请求更新实时预估：输入与输出分别由调用方按请求体／已接收输出字节估算。
-    /// 落定前统一按未命中缓存的输入价计算；未知价格不估算，也不标记 `incomplete`。
+    /// In-flight requests publish live estimates: callers estimate input and output from the request body and received output bytes respectively.
+    /// Until settlement everything is priced as cache-missing input; unknown prices are not estimated and do not mark `incomplete`.
     pub fn progress(
         &self,
         id: u64,
@@ -180,7 +180,7 @@ impl Ledger {
     }
 }
 
-/// 预估只是显示进度，溢出时整段丢弃，不能污染已落定金额。
+/// Estimates only show progress; on overflow the whole total is dropped so settled amounts stay clean.
 fn refresh_live(state: &mut State) {
     let total: f64 = state.live.values().sum();
     state.snapshot.live = if total.is_finite() { total } else { 0.0 };
@@ -283,13 +283,13 @@ mod tests {
         let view = View::default();
         let old = view.begin_prices(prices());
         let current = view.begin_prices(prices());
-        old.title("旧标题".into());
+        old.title("Old title".into());
         old.settle(1, old.rate("p/main", ""), Some(usage()));
         assert_eq!(view.snapshot().unwrap().generation, 2);
         assert!((view.snapshot().unwrap().cost - 0.00254).abs() < 1e-12);
         assert!(view.snapshot().unwrap().title.is_none());
-        current.title("新标题".into());
-        assert_eq!(view.snapshot().unwrap().title.as_deref(), Some("新标题"));
+        current.title("New title".into());
+        assert_eq!(view.snapshot().unwrap().title.as_deref(), Some("New title"));
         view.clear();
         current.settle(2, current.rate("p/main", ""), Some(usage()));
         assert!(view.snapshot().is_none());
@@ -322,20 +322,31 @@ mod tests {
         let ledger = view.begin_prices(prices());
         ledger.progress(1, ledger.rate("p/main", ""), 1000, 100);
         assert!((ledger.snapshot().live - 0.0028).abs() < 1e-12);
-        assert_eq!(ledger.snapshot().cost, 0.0, "估算不能进已落定金额");
+        assert_eq!(
+            ledger.snapshot().cost,
+            0.0,
+            "estimates must not enter settled cost"
+        );
         assert!(!ledger.snapshot().incomplete);
-        // 并发的子 Agent 请求各自占一条估算，显示的是它们的和。
+        // Concurrent subagent requests each hold one estimate; the display is their sum.
         ledger.progress(2, ledger.rate("p/main", ""), 500, 0);
         assert!((ledger.snapshot().live - 0.0038).abs() < 1e-12);
         ledger.settle(1, ledger.rate("p/main", ""), Some(usage()));
         let snapshot = ledger.snapshot();
         assert!((snapshot.cost - 0.00254).abs() < 1e-12);
-        assert!((snapshot.live - 0.001).abs() < 1e-12, "落定后只留其他请求");
-        // 迟到的进度不能把已落定的请求重新计入估算。
+        assert!(
+            (snapshot.live - 0.001).abs() < 1e-12,
+            "only other requests remain after settlement"
+        );
+        // Late progress must not count a settled request in the estimates again.
         ledger.progress(1, ledger.rate("p/main", ""), 1000, 100);
         assert!((ledger.snapshot().live - 0.001).abs() < 1e-12);
         ledger.settle(2, ledger.rate("p/fallback", ""), None);
-        assert_eq!(ledger.snapshot().live, 0.0, "未知 usage 也清掉估算");
+        assert_eq!(
+            ledger.snapshot().live,
+            0.0,
+            "unknown usage also clears the estimate"
+        );
         assert!(ledger.snapshot().incomplete);
     }
 
@@ -348,12 +359,12 @@ mod tests {
         assert_eq!(ledger.snapshot().cost, 0.0);
         assert!(
             !ledger.snapshot().incomplete,
-            "生成中缺价格只隐藏估算，不标记部分费用"
+            "a missing price during generation only hides the estimate and never marks partial cost"
         );
-        // 未知缓存量的模型在估算里按零缓存计价，不要求 cacheWrite 单价。
+        // Models with unknown cache volume are priced as zero-cache in estimates and do not require a cacheWrite rate.
         ledger.progress(1, ledger.rate("p/fallback", ""), 1000, 100);
         assert!((ledger.snapshot().live - 0.0056).abs() < 1e-12);
-        // 换成无价格模型时立刻撤掉同一请求的估算，不保留旧值。
+        // Switching to an unpriced model withdraws the estimate for the same request immediately instead of keeping the old value.
         ledger.progress(1, ledger.rate("unpriced/model", ""), 1200, 200);
         assert_eq!(ledger.snapshot().live, 0.0);
     }

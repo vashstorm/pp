@@ -5,7 +5,8 @@ use crate::tui::{
 };
 
 impl App {
-    // 有待处理消息时禁止改动会话历史；/tree 与 submit 的 New/Resume/Tree 入口共用。
+    // Session history must not change while work is pending; shared by /tree and the
+    // New/Resume/Tree entry points of submit.
     pub(in crate::tui) fn pending_blocks_session_change(&mut self) -> bool {
         if !self.has_pending() {
             return false;
@@ -112,7 +113,8 @@ impl App {
         }
     }
 
-    /// /plan-list 打开前提：Ready、无 pending、无其它 modal；被拒时保留输入。
+    /// Precondition for opening /plan-list: Ready, no pending work and no other modal; the
+    /// input is kept when rejected.
     pub(in crate::tui) fn plan_list_entry_ready(&mut self) -> bool {
         if !matches!(self.state, State::Ready) {
             self.notify(
@@ -264,8 +266,9 @@ impl App {
         }
     }
 
-    /// `n` 新建规划：保留已保存草稿，关闭列表并进入 Plan+None 待命；
-    /// 不分配 ID、不写正文、不调模型；未落盘草稿复用裸 /plan 放弃确认。
+    /// `n` creates a new plan: keeps saved drafts, closes the list and enters Plan+None standby;
+    /// it allocates no ID, writes no body and calls no model, and an unsaved draft reuses the
+    /// bare /plan abandon confirmation.
     pub(in crate::tui) fn plan_list_new_plan(&mut self) {
         if self.workflow.mode == WorkMode::Plan
             && let Some(plan) = &self.workflow.plan
@@ -285,12 +288,13 @@ impl App {
             );
             return;
         }
-        // 已在 Plan 模式：先解除当前绑定（LeavePlan→Execute+None），
-        // 成功后由 WorkflowChanged 立即重新进入 Plan 待命。
+        // Already in Plan mode: release the current binding first (LeavePlan->Execute+None), and
+        // on success WorkflowChanged re-enters Plan standby immediately.
         self.request_plan_leave(true);
     }
 
-    /// Done 只读预览：以 selection 构造展示用文档，不发审批 token。
+    /// Done read-only preview: builds a display-only document from the selection and issues no
+    /// approval token.
     pub(in crate::tui) fn open_plan_list_preview(&mut self, selection: &PlanSelection) {
         let location = plan_location_from_path(&selection.path).unwrap_or(PlanLocation::Drafts);
         let file_name = selection

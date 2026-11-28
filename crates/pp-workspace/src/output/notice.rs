@@ -1,7 +1,8 @@
-//! 输出状态与恢复指引的展示文案（不访问文件）。
+//! Display text for output status and recovery guidance (no file access).
 use serde_json::{Value, json};
 
-/// 模型结果中的补读指引；保留结构化元数据，不把终端展示文案混入日志正文。
+/// Follow-up read guidance embedded in tool results; structured metadata is kept
+/// separate so terminal display text never leaks into log bodies.
 pub(super) fn recovery_notice(value: &Value) -> Option<String> {
     if value["capture_error"].is_string() {
         return Some("Artifact capture failed; full saved output is unavailable. No artifact is available for recovery.".into());
@@ -29,7 +30,7 @@ pub(super) fn recovery_notice(value: &Value) -> Option<String> {
     ))
 }
 
-/// `result.pipes` 的有界阶段摘要；只读元数据，不访问 registry、没有阶段正文。
+/// Bounded stage summary of `result.pipes`; metadata only, no registry access and no stage bodies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PipesStatus {
     pub run_id: String,
@@ -39,7 +40,7 @@ pub struct PipesStatus {
 }
 
 impl PipesStatus {
-    /// CLI 追加行：URI、非零阶段计数与观测/保留不完整提示。
+    /// CLI trailer line: URI, non-zero stage count and the incomplete observation/retention hint.
     pub fn notice(&self) -> String {
         let mut status = format!("[pipes: {}", self.uri);
         if self.nonzero_stages > 0 {
@@ -56,7 +57,7 @@ impl PipesStatus {
     }
 }
 
-/// 从 `pipes` 元数据提取有界摘要；没有真实管道时返回 `None`，老结果保持原样。
+/// Extract a bounded summary from `pipes` metadata; returns `None` when there is no real pipeline and older results stay unchanged.
 pub fn pipes_status(pipes: &Value) -> Option<PipesStatus> {
     if !pipes.is_object() {
         return None;
@@ -77,7 +78,7 @@ pub fn pipes_status(pipes: &Value) -> Option<PipesStatus> {
     })
 }
 
-/// 仅从已保存元数据生成展示文案，不在 UI 访问文件。
+/// Build display text from saved metadata only; the UI never touches files here.
 pub fn notice(value: &Value) -> String {
     let mut notices = Vec::new();
     if value["truncated"] == true {
@@ -117,7 +118,7 @@ mod tests {
     fn pipes_status_is_bounded_and_absent_for_old_results() {
         assert!(pipes_status(&Value::Null).is_none());
         assert!(pipes_status(&json!({"ok":true,"stdout":"plain"})).is_none());
-        // 没有真实管道的 run 不占用卡片底部入口。
+        // A run without real pipelines does not use the card footer entry.
         assert!(pipes_status(&json!({"run_id":"abc","uri":"pipe://abc"})).is_none());
 
         let status = pipes_status(&json!({

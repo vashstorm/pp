@@ -1,8 +1,8 @@
-//! `write` 的正文尾部窗口布局。
+//! Tail-window body layout of `write`.
 
 use super::*;
 
-/// 三个写入阶段折叠时都保留末尾的屏幕正文行，省略提示另占一行。
+/// All three write phases keep the trailing screen body lines when folded, with the omission hint on a line of its own.
 pub(in crate::tui) fn write_body(
     content: &str,
     width: u16,
@@ -22,7 +22,7 @@ pub(in crate::tui) fn write_body(
     let content = content.strip_suffix('\n').unwrap_or(content);
     let mut source = content.split('\n');
     let mut rows = Vec::new();
-    // 多取一行用于判断是否需要省略提示。
+    // Read one extra line to decide whether the omission hint is needed.
     while rows.len() <= WRITE_LINES {
         let Some(line) = source.next_back() else {
             break;
@@ -46,13 +46,13 @@ pub(in crate::tui) fn write_body(
 
 fn write_line_tail(line: &str, width: u16, style: Style, limit: usize) -> Vec<Line<'static>> {
     let columns = usize::from(width.max(1));
-    // 可打印 ASCII 每字节占一列，可以直接跳过窗口外的整行。
+    // Every printable ASCII byte takes one column, so whole lines outside the window can be skipped.
     if line.len() > limit * columns && line.bytes().all(|byte| matches!(byte, b' '..=b'~')) {
         let start = (line.len().div_ceil(columns) - limit) * columns;
         return wrap_block(block_line(line[start..].to_owned(), style), width, "");
     }
 
-    // 宽字符和制表符仍按统一的换行规则计算，只保留窗口内的行。
+    // Wide characters and tabs still go through the shared wrapping rules and only keep the lines inside the window.
     let mut rows = VecDeque::new();
     visit_wrapped_rows(block_line(line.to_owned(), style), width, "", |row| {
         if rows.len() == limit {

@@ -1,4 +1,4 @@
-//! 附件标记沿用文本布局，但所有编辑边界必须落在标记之外。
+//! Attachment markers reuse the text layout, but every edit boundary must fall outside a marker.
 use super::resources::Bindings;
 use crossterm::event::KeyEvent;
 use ratatui_textarea::{CursorMove, DataCursor, TextArea};
@@ -8,7 +8,7 @@ pub(super) fn color() -> ratatui::style::Color {
     super::themes::palette().attachment_color
 }
 
-/// 返回旧文本的替换区间及新文本替换区间的终点，全部使用 UTF-8 字节位置。
+/// Return the replaced range in the old text and the end of the replaced range in the new text, all as UTF-8 byte positions.
 pub(super) fn changed_range(before: &str, after: &str) -> (usize, usize, usize) {
     let start = before
         .chars()
@@ -26,7 +26,7 @@ pub(super) fn changed_range(before: &str, after: &str) -> (usize, usize, usize) 
     (start, before.len() - suffix, after.len() - suffix)
 }
 
-/// 相邻文字相同时最短 diff 可能把插入位置移到另一侧，优先使用真实光标和选区。
+/// With identical adjacent text the shortest diff may move the insertion to the other side, so prefer the real cursor and selection.
 pub(super) fn edited_range(
     before: &str,
     after: &str,
@@ -151,7 +151,7 @@ pub(super) fn key(input: &mut TextArea<'static>, key: KeyEvent, bindings: &Bindi
     let selection = input
         .selection_range()
         .map(|((a, b), (c, d))| offset(input, DataCursor(a, b))..offset(input, DataCursor(c, d)));
-    // 在副本上得到编辑器原生的词删除、选区替换等范围，再扩展到完整附件。
+    // Run the editor's native word delete, selection replace and similar ranges on a copy, then expand them to whole attachments.
     let mut probe = input.clone();
     let changed = probe.input(key);
     let after = probe.lines().join("\n");

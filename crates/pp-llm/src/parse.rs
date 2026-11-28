@@ -1,4 +1,4 @@
-//! 两种协议的响应 → turn 转换与严格校验。
+//! Response → turn conversion and strict validation for both protocols.
 
 use anyhow::{Result, bail, ensure};
 use async_openai::types::{

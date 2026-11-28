@@ -1,8 +1,9 @@
-//! 会话原生历史消息拆分为 User / Developer Messages、Assistant Messages、Tool Calls 与 Tool Output。
+//! Split session native history messages into User / Developer Messages, Assistant Messages, Tool Calls and Tool Output.
 //!
-//! 分类结果按消息身份（位置 + 原生 JSON 字节数 + 内容哈希）缓存：追加消息时只重算新增尾部，
-//! 整段替换历史（压缩、树导航、跨协议转换、恢复）时从头重算。
-//! 大正文先按字节预算判定：超过 `MAX_PREVIEW_BYTES` 不再整体克隆、拼接、解析或美化，只给字节摘要。
+//! Classification results are cached by message identity (position + native JSON byte count + content hash): an append
+//! only recomputes the new tail, and a wholesale history replacement (compaction, tree navigation, cross-protocol conversion, restore)
+//! recomputes from scratch. Large bodies are judged by byte budget first: beyond `MAX_PREVIEW_BYTES` they are no longer cloned,
+//! joined, parsed or pretty-printed as a whole; only a byte summary is given.
 
 use super::sections::{
     body_preview, first_line_preview, json_body_preview, oversized_preview, parts_total,
@@ -58,20 +59,20 @@ pub(super) struct HistoryBreakdown {
     pub tool_outputs: HistoryBucket,
 }
 
-/// 每条消息的廉价身份：分类相关字段的结构化字节数 + 有界内容哈希。索引由位置隐含，
-/// 因此“已缓存身份是新身份的前缀”即表示只有尾部新增。
+/// Cheap identity of one message: structured byte counts of the classification-relevant fields + a bounded content hash. The index
+/// is implied by position, so "the cached identity is a prefix of the new identity" means only the tail is new.
 ///
-/// 身份只覆盖分类读取的字段（正文、角色、拒绝、工具调用与结果、思考内容），
-/// 每段正文只哈希首尾各 [`ID_SAMPLE_BYTES`] 字节，因此每条消息的开销与正文大小无关；
-/// 整段替换历史会改变长度或首尾片段从而触发全量重算，唯一会原地重写的系统提示词
-/// 同时纳入半静态分区指纹。稀有 item 变体退回流式序列化兜底。
+/// The identity covers only the fields classification reads (body, role, refusal, tool calls and results, thinking content);
+/// each body hashes only its first and last [`ID_SAMPLE_BYTES`] bytes, so the cost per message is independent of body size;
+/// a wholesale history replacement changes the length or the head/tail fragments and thus forces a full recompute, and the only
+/// system prompt rewritten in place is covered by the semi-static section fingerprint as well. Rare item variants fall back to streaming serialization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct MessageId {
     bytes: u64,
     hash: u64,
 }
 
-/// 单条消息身份只哈希首尾片段（各 32 字节），因此开销与正文大小无关。
+/// A single message identity hashes only the head and tail fragments (32 bytes each), so the cost is independent of body size.
 const ID_SAMPLE_BYTES: usize = 32;
 
 #[derive(Default)]
@@ -122,7 +123,7 @@ impl MessageIdBuilder {
         }
     }
 
-    /// 无法逐字段描述的稀有 item 用流式序列化兜底。
+    /// Rare items that cannot be described field by field fall back to streaming serialization.
     fn serde(&mut self, value: &impl Serialize) {
         let mut writer = FingerprintWriter::default();
         let _ = serde_json::to_writer(&mut writer, value);
@@ -281,19 +282,19 @@ impl ProtocolKind {
     }
 }
 
-/// 当前会话逐条消息的身份，用于历史与思考分类的缓存前缀判定。
+/// Identity of each message in the current session, used for cache-prefix decisions of history and thinking classification.
 pub(super) fn message_ids(session: &Session) -> Vec<MessageId> {
     match session {
         Session::Completion(request) => request.messages.iter().map(chat_message_id).collect(),
         Session::Response(request) => match &request.input {
-            // 文本输入没有逐条 item；与既有历史分类一致，不产生条目。
+            // Text input has no per-item granularity; consistent with the existing history classification, it yields no entries.
             InputParam::Text(_) => Vec::new(),
             InputParam::Items(items) => items.iter().map(response_item_id).collect(),
         },
     }
 }
 
-/// 历史分类的增量状态：已分类前缀 + 跨消息共享的调用表。
+/// Incremental state of the history classification: the already-classified prefix + the call table shared across messages.
 #[derive(Default)]
 pub(super) struct HistoryState {
     protocol: Option<ProtocolKind>,
@@ -309,7 +310,7 @@ pub(super) struct HistoryState {
 }
 
 impl HistoryState {
-    /// 只分类 `ids[self.ids.len()..]` 对应的新增消息；`ids` 必须与当前会话逐条对齐。
+    /// Classify only the new messages corresponding to `ids[self.ids.len()..]`; `ids` must align one-to-one with the current session.
     fn extend(&mut self, session: &Session, ids: &[MessageId]) -> Result<()> {
         match session {
             Session::Completion(request) => {
@@ -653,7 +654,7 @@ impl HistoryState {
                 });
             }
             InputItem::Item(Item::Reasoning(_)) => {
-                // 思考项由 `thinking` 模块独立统计，归入 Assistant Thinking。
+                // Thinking items are counted separately by the `thinking` module and belong to Assistant Thinking.
             }
             InputItem::Item(Item::FunctionCall(call)) => {
                 let args_summary = summarize_tool_args(&call.name, &call.arguments);
@@ -736,7 +737,7 @@ impl HistoryState {
 }
 
 impl Agent {
-    /// 复用与 `ids` 前缀一致的历史分类，只对新增尾部追加分类；缓存为空或前缀不一致时全量重算。
+    /// Reuse the history classification when it matches the `ids` prefix and classify only the new tail; recompute fully when the cache is empty or the prefix diverges.
     pub(super) fn inspect_history_cached(
         &self,
         cache: &mut Option<HistoryState>,
@@ -756,7 +757,7 @@ impl Agent {
     }
 }
 
-/// 单段或多段正文的预览；`json` 为真时按 JSON 正文美化（预算内）。
+/// Preview of one or more body parts; when `json` is true the JSON body is pretty-printed (within the budget).
 fn parts_preview(parts: &[Cow<'_, str>], json: bool) -> String {
     let total = parts_total(parts);
     if total > MAX_PREVIEW_BYTES {
@@ -777,7 +778,7 @@ fn parts_preview(parts: &[Cow<'_, str>], json: bool) -> String {
     }
 }
 
-/// 助手正文 + 拒绝正文的预览：拒绝块沿用既有 `"\n\n[Refusal]\n"` 口径。
+/// Preview of assistant body + refusal body; the refusal block keeps the existing `"\n\n[Refusal]\n"` format.
 fn assistant_preview(parts: &[Cow<'_, str>], refusal: &str) -> String {
     if refusal.is_empty() {
         return parts_preview(parts, false);
@@ -915,9 +916,9 @@ fn summarize_image_url(url: &str) -> String {
     }
 }
 
-/// 工具正文是否来自 `skill://` 读取（归入 `Skill Body`）。
+/// Whether the tool body comes from a `skill://` read (counted under `Skill Body`).
 ///
-/// 超过预览预算的正文不再整体解析 JSON，只做子串探测，避免为分类解析大对象。
+/// Bodies beyond the preview budget are not parsed as JSON wholesale, only probed with substring searches, so classification never parses large objects.
 fn is_skill_body(tool_name: &str, args_summary: &str, output: &str) -> bool {
     if tool_name != "read" {
         return false;
@@ -939,7 +940,7 @@ fn is_skill_body(tool_name: &str, args_summary: &str, output: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 工具调用参数摘要：超大参数不解析 JSON，退回首行预览。
+/// Tool call argument summary: oversized arguments are not parsed as JSON and fall back to a first-line preview.
 fn summarize_tool_args(name: &str, raw: &str) -> String {
     if raw.len() > MAX_PREVIEW_BYTES {
         return first_line_preview(raw);

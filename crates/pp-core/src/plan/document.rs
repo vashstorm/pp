@@ -5,8 +5,8 @@ use crate::todo::TodoPhase;
 
 pub const PLAN_MAX_BYTES: usize = 262_144;
 
-/// 首个 H1 文本；缺失/空白时回退文件名（去掉 `.md` 后缀）。显示标题修剪
-/// 后约束在 1..=120 字符，不改正文。
+/// First H1 text; when missing or blank, fall back to the file name (without the `.md` suffix). The
+/// display title is trimmed and constrained to 1..=120 characters without touching the body.
 pub fn plan_display_title(content: &str, file_name: &str) -> String {
     let heading = first_h1(content)
         .map(|text| text.trim().to_owned())
@@ -19,7 +19,8 @@ pub fn plan_display_title(content: &str, file_name: &str) -> String {
     title.chars().take(120).collect()
 }
 
-/// 提取首个一级标题的纯文本（Text/Code 事件拼接）；没有则返回 `None`。
+/// Extract the plain text of the first level-one heading (concatenated Text/Code events); returns
+/// `None` when there is none.
 fn first_h1(content: &str) -> Option<String> {
     use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
     let mut inside = false;
@@ -38,8 +39,8 @@ fn first_h1(content: &str) -> Option<String> {
     None
 }
 
-/// 计划文件的生命周期目录；新文档显式落在 Drafts。
-/// serde 默认 Plans 仅供缺少 `location` 字段的旧记录反序列化。
+/// Lifecycle directory of a plan file; new documents land explicitly in Drafts.
+/// The serde default Plans only serves deserializing old records without a `location` field.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanLocation {
@@ -50,7 +51,7 @@ pub enum PlanLocation {
 }
 
 impl PlanLocation {
-    /// `.pp/` 下的目录名。
+    /// Directory name under `.pp/`.
     pub fn dir_name(self) -> &'static str {
         match self {
             PlanLocation::Drafts => "drafts",
@@ -60,7 +61,7 @@ impl PlanLocation {
     }
 }
 
-/// 执行期进度规则，由两种批准交接与 Execute 的 workflow 注入。
+/// Execution-phase progress rules, injected by both approval handoffs and the Execute workflow.
 pub(crate) const PROGRESS_INSTRUCTIONS: &str = include_str!("../prompts/plan-progress.md");
 
 pub fn execution_prompt(plan: &PlanDocument, context: ExecutionContext) -> String {
@@ -73,7 +74,8 @@ pub fn execution_prompt(plan: &PlanDocument, context: ExecutionContext) -> Strin
         prompt.push_str(&plan.origin_prompt);
     }
     use std::fmt::Write;
-    // 审批流程保证只有已保存（revision>=1）的计划能进入执行交接。
+    // The approval flow guarantees that only a saved (revision>=1) plan reaches the execution
+    // handoff.
     let path = plan
         .path()
         .expect("approved plan has a saved lifecycle path");
@@ -108,14 +110,16 @@ pub struct PlanDocument {
     pub content: String,
     pub status: PlanStatus,
     pub origin_prompt: String,
-    /// AI 选定的稳定文件名（含 `.md`）；首存时绑定，旧记录缺失时保持 None。
+    /// Stable file name chosen by the AI (including `.md`); bound on first save and left None when an
+    /// old record lacks it.
     #[serde(default)]
     pub file_name: Option<String>,
-    /// 生命周期位置；默认 Plans 仅供旧记录反序列化，新文档显式 Drafts。
+    /// Lifecycle location; the default Plans only serves deserializing old records, new documents use
+    /// Drafts explicitly.
     #[serde(default)]
     pub location: PlanLocation,
-    /// 批准时由经 ReviewToken 验证的正文冻结的有序任务文本；执行进度导入
-    /// 不得覆盖。旧记录与未批准草稿为 None。
+    /// Ordered task text frozen at approval from the body verified by ReviewToken; importing
+    /// execution progress must not overwrite it. None for old records and unapproved drafts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_tasks: Option<Vec<String>>,
 }
@@ -127,13 +131,14 @@ pub struct WorkflowState {
     pub plan: Option<PlanDocument>,
     #[serde(default)]
     pub review: Option<PlanReviewReport>,
-    /// 计划派生的阶段/任务投影缓存，同时是 active/blocked 运行态载体；
-    /// Markdown 始终是任务与勾选的主记录，这里不是竞争的第二主记录。
-    /// 空时省略，旧会话记录靠 serde default 兼容，checkpoint 格式不升版。
+    /// Phase/task projection cache derived from the plan, and the carrier of active/blocked runtime
+    /// state; Markdown always stays the primary record of tasks and checkmarks, so this is not a
+    /// competing second record. Omitted when empty, and old session records rely on the serde default,
+    /// so the checkpoint format gets no version bump.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub todos: Vec<TodoPhase>,
-    /// None 表示普通清单；Some(id) 表示当前清单来自该计划的派生投影，
-    /// 必须与当前绑定的 plan.id 一致。
+    /// None means a plain list; Some(id) means the current list is a derived projection of that plan
+    /// and must match the currently bound plan.id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_plan_id: Option<String>,
 }
@@ -158,7 +163,7 @@ pub enum ExecutionContext {
 pub struct ReviewToken {
     pub session_id: String,
     pub plan_id: String,
-    /// 审阅时安全读取到的实际短路径；重命名/移位/删除后旧 token 失效。
+    /// The actual short path read safely during review; rename/move/delete invalidates an old token.
     pub path: String,
     pub revision: u64,
     pub content: String,
@@ -189,9 +194,10 @@ impl PlanDocument {
         })
     }
 
-    /// 当前绑定的实际短路径。新 revision-0 未保存时返回 None；
-    /// 已命名文档返回生命周期目录路径；旧 revision>=1 缺失文件名时
-    /// 临时返回旧 `<id>.md` 路径，登记显式文件名后不再使用该兜底。
+    /// Actual short path of the current binding. Returns None for an unsaved revision-0; a named
+    /// document returns its lifecycle directory path; an old revision>=1 without a file name
+    /// temporarily returns the old `<id>.md` path, and that fallback is dropped once an explicit file
+    /// name is registered.
     pub fn path(&self) -> Option<String> {
         match (&self.file_name, self.revision) {
             (Some(name), _) => Some(path_for(name, self.location)),
@@ -208,7 +214,7 @@ impl PlanDocument {
     }
 }
 
-/// 生命周期目录内的计划文件路径；不再由 ID 推导。
+/// Plan file path inside its lifecycle directory; no longer derived from the ID.
 pub fn path_for(file_name: &str, location: PlanLocation) -> String {
     format!(".pp/{}/{}", location.dir_name(), file_name)
 }
@@ -220,8 +226,8 @@ pub fn valid_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// 新 AI 命名与用户重命名的严格规则：英文 kebab-case 的 Markdown 文件名。
-/// 仅 ASCII 小写字母/数字以单个连字符分段，总长 4..=100 字节。
+/// Strict rule for new AI names and user renames: an English kebab-case Markdown file name.
+/// ASCII lowercase letters/digits only, separated by single hyphens, 4..=100 bytes in total.
 pub fn validate_file_name(file_name: &str) -> Result<()> {
     let stem = file_name
         .strip_suffix(".md")
@@ -240,8 +246,8 @@ pub fn validate_file_name(file_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// 旧文件名/目录扫描的宽松规则：合法的单个 normal path component，
-/// 以 `.md` 结尾，长度 4..=255 字节；保留旧 Unicode 文件名。
+/// Lenient rule for legacy file names and directory scans: a valid single normal path component
+/// ending in `.md`, 4..=255 bytes long; legacy Unicode file names are preserved.
 pub fn validate_stored_file_name(file_name: &str) -> Result<()> {
     ensure!(
         (4..=255).contains(&file_name.len())
@@ -294,8 +300,8 @@ impl WorkflowState {
     pub fn instructions(&self, plan_prompt: &str) -> String {
         let mut instructions = match self.mode {
             WorkMode::Plan => plan_prompt.to_owned(),
-            // 进度规则只在 Execute+Executed 注入；Completed/Abandoned 是
-            // 只读历史，不再注入执行规则。
+            // Progress rules are injected only for Execute+Executed; Completed/Abandoned are read-only
+            // history and never get execution rules.
             WorkMode::Execute
                 if self
                     .plan
@@ -313,7 +319,7 @@ impl WorkflowState {
         };
         if let Some(plan) = &self.plan {
             use std::fmt::Write;
-            // 未保存的新绑定不打印假路径。
+            // An unsaved new binding prints no fake path.
             let path = plan.path().unwrap_or_else(|| "Not saved yet".to_owned());
             let status_note = match plan.status {
                 PlanStatus::Executed => {
@@ -352,14 +358,14 @@ impl WorkflowState {
                 validate_title(&plan.title).map_err(|_| anyhow::anyhow!(invalid))?;
                 validate_content(&plan.content).map_err(|_| anyhow::anyhow!(invalid))?;
                 ensure!(!plan.origin_prompt.trim().is_empty(), "{invalid}");
-                // 旧记录允许缺失 file_name（由登记协调补齐）；已命名的按
-                // stored 宽松规则校验，保留旧 Unicode 文件名。
+                // Old records may lack file_name (registration reconciles it later); named ones are
+                // validated with the lenient stored rule so legacy Unicode file names survive.
                 if let Some(name) = &plan.file_name {
                     validate_stored_file_name(name).map_err(|_| anyhow::anyhow!(invalid))?;
                 }
             }
-            // 生命周期位置约束：旧 Draft/Ready/Abandoned 在 Plans 仍可
-            // 反序列化，之后按迁移规则协调；Completed 只在 Done。
+            // Lifecycle location constraint: legacy Draft/Ready/Abandoned may still deserialize in
+            // Plans and are reconciled by the migration rules afterwards; Completed only in Done.
             ensure!(
                 match plan.status {
                     PlanStatus::Draft | PlanStatus::Ready =>
@@ -379,7 +385,7 @@ impl WorkflowState {
                 "{invalid}"
             );
         }
-        // 计划来源的 todo 必须仍绑定当前计划；普通清单不需要来源。
+        // A plan-derived todo must still be bound to the current plan; a plain list needs no source.
         if let Some(id) = &self.todo_plan_id {
             let plan = self.plan.as_ref().ok_or_else(|| anyhow::anyhow!(invalid))?;
             ensure!(*id == plan.id, "{invalid}");
@@ -417,19 +423,20 @@ mod tests {
     #[test]
     fn plan_document_serde_source_binding_and_revision_validation() {
         {
-            // 旧会话记录没有 todo 字段：serde default 补齐为空，checkpoint 不升版。
+            // Old session records carry no todo field: the serde default fills it empty and the
+            // checkpoint gets no version bump.
             let legacy: WorkflowState =
                 serde_json::from_str(r#"{"mode":"execute","plan":null}"#).unwrap();
             assert_eq!(legacy, WorkflowState::default());
             assert!(legacy.todos.is_empty());
             assert_eq!(legacy.todo_plan_id, None);
 
-            // 空投影不写入保存的 workflow 快照。
+            // An empty projection is not written to the saved workflow snapshot.
             let text = serde_json::to_string(&WorkflowState::default()).unwrap();
             assert!(!text.contains("todos"));
             assert!(!text.contains("todo_plan_id"));
 
-            // 非空投影与来源完整往返。
+            // A non-empty projection and its source round-trip completely.
             let planned = WorkflowState {
                 todos: vec![TodoPhase {
                     name: "Write".into(),
@@ -464,7 +471,7 @@ mod tests {
             };
             base.validate().unwrap();
 
-            // 与当前 plan.id 一致的来源合法；投影条目可有可无。
+            // A source matching the current plan.id is valid; projection entries are optional.
             let mut bound = base.clone();
             bound.todo_plan_id = Some(plan.id.clone());
             bound.validate().unwrap();
@@ -478,17 +485,17 @@ mod tests {
             }];
             bound.validate().unwrap();
 
-            // 来源与当前计划不一致拒绝。
+            // A source that disagrees with the current plan is rejected.
             let mut wrong = bound.clone();
             wrong.todo_plan_id = Some("ffffffffffffffffffffffffffffffff".into());
             assert!(wrong.validate().is_err());
 
-            // 有来源但未绑定计划拒绝。
+            // A source without a bound plan is rejected.
             let mut detached = bound;
             detached.plan = None;
             assert!(detached.validate().is_err());
 
-            // 无来源的普通清单合法。
+            // A plain list without a source is valid.
             let mut ordinary = base;
             ordinary.todos = vec![TodoPhase {
                 name: "Tasks".into(),
@@ -528,7 +535,7 @@ mod tests {
     #[test]
     fn plan_document_paths_and_location_file_name_rules() {
         {
-            // 新 AI 命名：严格 kebab-case。
+            // New AI naming: strict kebab-case.
             assert!(validate_file_name("fix-config-loading.md").is_ok());
             assert!(validate_file_name("a.md").is_ok());
             assert!(validate_file_name(".md").is_err());
@@ -542,7 +549,7 @@ mod tests {
             assert!(validate_file_name(&format!("{}.md", "a".repeat(97))).is_ok());
             assert!(validate_file_name(&format!("{}.md", "a".repeat(98))).is_err());
 
-            // 旧存储命名：单个普通 component 的 `.md` 文件，保留 Unicode。
+            // Legacy stored naming: a single normal component `.md` file, Unicode preserved.
             assert!(validate_stored_file_name("计划-修订.md").is_ok());
             assert!(validate_stored_file_name(&format!("{}.md", "0".repeat(32))).is_ok());
             assert!(validate_stored_file_name(".md").is_err());
@@ -556,12 +563,12 @@ mod tests {
             assert!(validate_stored_file_name(&format!("{}.md", "长".repeat(85))).is_err());
         }
         {
-            // 未保存的新绑定没有路径。
+            // An unsaved new binding has no path.
             let fresh = PlanDocument::new().unwrap();
             assert_eq!(fresh.path(), None);
             assert_eq!(fresh.location, PlanLocation::Drafts);
 
-            // 已命名文档按生命周期目录解析。
+            // A named document resolves under its lifecycle directory.
             let mut named = PlanDocument::new().unwrap();
             named.revision = 1;
             named.file_name = Some("fix-config-loading.md".into());
@@ -579,7 +586,7 @@ mod tests {
                 ".pp/done/done-plan.md"
             );
 
-            // 旧 revision>=1 缺失文件名：临时旧路径兜底。
+            // Old revision>=1 without a file name: temporary legacy path fallback.
             let mut legacy = PlanDocument::new().unwrap();
             legacy.revision = 1;
             legacy.location = PlanLocation::Plans;
@@ -600,13 +607,13 @@ mod tests {
                 plan: Some(plan),
                 ..Default::default()
             };
-            // Draft/Ready 在 Drafts 或 Plans（旧记录）。
+            // Draft/Ready are allowed in Drafts or Plans (old records).
             for location in [PlanLocation::Drafts, PlanLocation::Plans] {
                 let mut document = plan.clone();
                 document.location = location;
                 workflow(document).validate().unwrap();
             }
-            // 已命名时 Completed 只在 Done；Executed 只在 Plans。
+            // Once named, Completed lives only in Done; Executed only in Plans.
             let mut completed = plan.clone();
             completed.status = PlanStatus::Completed;
             completed.location = PlanLocation::Done;
@@ -621,15 +628,15 @@ mod tests {
             let mut wrong = executed.clone();
             wrong.location = PlanLocation::Drafts;
             assert!(workflow(wrong).validate().is_err());
-            // 旧 Unicode 名称通过 stored 规则。
+            // A legacy Unicode name passes the stored rule.
             let mut unicode = plan.clone();
             unicode.file_name = Some("旧计划.md".into());
             workflow(unicode).validate().unwrap();
-            // 非法名称被拒绝。
+            // An illegal name is rejected.
             let mut escape = plan.clone();
             escape.file_name = Some("../escape.md".into());
             assert!(workflow(escape).validate().is_err());
-            // 旧记录缺 file_name 仍合法（legacy 兜底路径）。
+            // A legacy record without file_name is still valid (legacy fallback path).
             let mut unnamed = plan;
             unnamed.file_name = None;
             unnamed.location = PlanLocation::Plans;

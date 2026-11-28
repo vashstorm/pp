@@ -147,7 +147,7 @@ fn hub_sync_root_and_subagents_ensured_avoid_duplicate_bind_and_reset_projection
 
     let mut app = app();
     *app.subagent_control.lock().unwrap() = Some(root1);
-    // hub_tick 先于 SubagentsEnsured 看到新根：只触发一次 Bind。
+    // hub_tick sees the new root before SubagentsEnsured: Bind is triggered only once.
     app.hub_tick();
     let epoch_after_sync = app.hub_root_epoch;
     assert_eq!(epoch_after_sync, 1);
@@ -158,7 +158,7 @@ fn hub_sync_root_and_subagents_ensured_avoid_duplicate_bind_and_reset_projection
 
     app.open_hub();
     assert_eq!(app.hub_root_epoch, epoch_after_sync);
-    // 迟到的 SubagentsEnsured 对同一根不得重绑，也不会让 tokens 翻倍。
+    // A late SubagentsEnsured must not rebind the same root and must not double the tokens.
     app.subagents_ensured(Ok(()));
     assert_eq!(app.hub_root_epoch, epoch_after_sync);
     let screen = draw(&mut app, 130, 32);
@@ -167,7 +167,7 @@ fn hub_sync_root_and_subagents_ensured_avoid_duplicate_bind_and_reset_projection
     assert!(!screen.contains("2K tok"), "{screen}");
     assert!(!screen.contains("· loading"), "{screen}");
 
-    // 开着 Hub 换到新根（无子 Agent）：必须清空旧投影并重新附着新空根。
+    // Switching to a new root with the Hub open (no subagents): the old projection must be cleared and the new empty root attached.
     *app.subagent_control.lock().unwrap() = Some(root2);
     app.hub_tick();
     assert!(app.hub_attached);
@@ -178,7 +178,7 @@ fn hub_sync_root_and_subagents_ensured_avoid_duplicate_bind_and_reset_projection
     let empty_screen = draw(&mut app, 130, 32);
     assert!(!empty_screen.contains("worker-1"), "{empty_screen}");
 
-    // 关闭 Hub 后若回到无子 Agent 的空根：不保持附着。
+    // After closing the Hub, returning to an empty root without subagents keeps no attachment.
     let dir3 = tempfile::tempdir().unwrap();
     let root3 = seed_subagent_root(dir3.path(), 0, false);
     app.close_hub();
@@ -197,9 +197,12 @@ fn hub_preloads_existing_subagents_and_reuses_projection_within_root() {
     let mut app = app();
     *app.subagent_control.lock().unwrap() = Some(empty_root);
     app.hub_tick();
-    assert!(app.hub_worker.is_none(), "无子 Agent 的会话不启动观察线程");
+    assert!(
+        app.hub_worker.is_none(),
+        "a session without subagents starts no observer thread"
+    );
 
-    // 切换到包含历史子 Agent 的会话（例如 /resume）：未打开 Hub 也会后台静默预加载。
+    // Switching to a session with historical subagents (e.g. /resume) preloads silently in the background even with the Hub closed.
     *app.subagent_control.lock().unwrap() = Some(full_root);
     app.hub_tick();
     assert!(app.hub_worker.is_some());
@@ -209,7 +212,7 @@ fn hub_preloads_existing_subagents_and_reuses_projection_within_root() {
         app.hub_projection.agent_ready("a1")
     });
 
-    // 首帧打开 Hub 直接看到完整终态，无 loading 占位。
+    // Opening the Hub shows the complete terminal state on the first frame, with no loading placeholder.
     app.open_hub();
     let epoch = app.hub_root_epoch;
     let first_open = draw(&mut app, 130, 32);
@@ -219,7 +222,7 @@ fn hub_preloads_existing_subagents_and_reuses_projection_within_root() {
     assert!(!first_open.contains("Loading activity"), "{first_open}");
     assert!(!first_open.contains("— tools"), "{first_open}");
 
-    // 同根内关闭再打开：复用投影与 epoch，不重扫。
+    // Closing and reopening within the same root reuses the projection and epoch without rescanning.
     app.close_hub();
     assert!(app.subagent_panel.is_none());
     app.open_hub();

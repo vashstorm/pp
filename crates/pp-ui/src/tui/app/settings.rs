@@ -1,4 +1,5 @@
-//! 统一 Setting TUI 协调层：标签切换、通用配置面板交互、预览回滚与命令/补全接线。
+//! Unified Setting TUI coordination layer: tab switching, general settings panel
+//! interaction, preview rollback and command/completion wiring.
 use crate::tui::{
     App, Event, KeyCode, KeyEventKind, KeyModifiers, Level, PendingKind, editor, roles, settings,
     skills,
@@ -78,7 +79,8 @@ impl App {
         if keep != Some(settings::Tab::Themes)
             && let Some(panel) = self.themes_panel.take()
         {
-            // 未保存离开 Themes 时恢复进入前持久化外观，避免悬停预览泄漏。
+            // Leaving Themes without saving restores the appearance persisted before entry, so
+            // hover previews never leak out.
             self.apply_appearance(panel.saved_appearance());
         }
         if keep != Some(settings::Tab::Skills) {
@@ -204,8 +206,9 @@ impl App {
                 if !key.modifiers.is_empty() && key.modifiers != KeyModifiers::CONTROL {
                     return None;
                 }
-                // Roles 页的模型／档位选择器打开时，未修饰的 ←/→ 用于滚动选择项，
-                // 不能切换外层页签；Ctrl + ←/→ 仍是显式切页签手势。
+                // While the Roles-page model/effort picker is open, unmodified ←/→ scroll
+                // selections and must not switch the outer tab; Ctrl + ←/→ is still the explicit
+                // tab-switch gesture.
                 if key.modifiers.is_empty() && self.roles_picker_open() {
                     return None;
                 }

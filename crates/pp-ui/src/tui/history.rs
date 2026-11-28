@@ -1,4 +1,4 @@
-//! 输入回忆和派生搜索使用独立线程，不被模型请求 worker 占用。
+//! Input recall and derived search use a dedicated thread and are not occupied by the model-request worker.
 use anyhow::Result;
 use pp_core::cancellation::CancellationToken;
 use pp_runtime::agent::persistence::SessionListing;
@@ -47,7 +47,7 @@ pub(super) enum Request {
 }
 
 pub(super) enum Reply {
-    /// `history.db` 打开失败：主线程不再阻塞等待握手，改由本条回复告知并停用持久回忆。
+    /// `history.db` failed to open: the main thread no longer blocks on the handshake; this reply reports it and disables persistent recall.
     Unavailable,
     InputAppended(Result<i64>),
     InputsLoaded {
@@ -75,9 +75,9 @@ pub(super) struct Worker {
 }
 
 impl Worker {
-    /// 只构造通道与线程后立即返回：`history.db` 在 worker 内打开。
+    /// Builds only the channel and thread, then returns immediately: `history.db` is opened inside the worker.
     ///
-    /// 打开失败经 [`Reply::Unavailable`] 回报，主线程不再为首帧等待握手。
+    /// An open failure is reported through [`Reply::Unavailable`], and the main thread no longer waits for the handshake on the first frame.
     pub(super) fn new(path: PathBuf) -> Result<Self> {
         let (requests, receiver) = mpsc::channel();
         let (sender, replies) = mpsc::channel();
@@ -99,7 +99,7 @@ impl Worker {
         let Some(thread) = self.thread.take() else {
             return Ok(());
         };
-        // 取消扫描但不终止 recv；FIFO 的 Shutdown 之前所有 append 仍会落盘。
+        // Cancelling the scan does not stop recv; every append ahead of Shutdown in the FIFO still lands on disk.
         self.scan_cancellation.cancel();
         let sent = self.requests.send(Request::Shutdown);
         let joined = thread.join();
@@ -118,10 +118,10 @@ impl Drop for Worker {
     }
 }
 
-/// worker 主体：先打开数据库，再按 FIFO 逐条处理请求。
+/// Worker body: open the database first, then handle requests one by one in FIFO order.
 ///
-/// 打开失败经 `Reply::Unavailable` 报告一次，然后只排空请求直到 `Shutdown`：
-/// 调用方收到该回复即释放 worker，不会有请求悬空等待，也不会有后续追加被排队。
+/// An open failure is reported once through `Reply::Unavailable`, then requests are only drained until `Shutdown`:
+/// once the caller receives that reply it releases the worker, so no request is left waiting and no later append is queued.
 fn run(
     path: PathBuf,
     receiver: Receiver<Request>,
@@ -145,12 +145,12 @@ fn run(
         let Some(reply) = reply_to(&mut store, &sessions, &cancellation, request) else {
             break;
         };
-        // 回复接收者退出也不能丢弃已接受、排在 Shutdown 前的 append。
+        // Even if the reply receiver exits, appends already accepted and ordered before Shutdown must not be dropped.
         let _ = sender.send(reply);
     }
 }
 
-/// 单条请求 → 单条回复；`Shutdown` 返回 `None` 结束循环。
+/// One request → one reply; `Shutdown` returns `None` and ends the loop.
 fn reply_to(
     store: &mut Store,
     sessions: &Path,
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn history_worker_reports_unavailable_without_blocking_construction() {
         let directory = tempfile::tempdir().unwrap();
-        // 父路径是普通文件：`history.db` 的目录既不能创建也不能打开。
+        // The parent path is a regular file: the `history.db` directory can neither be created nor opened.
         let blocker = directory.path().join("blocked");
         std::fs::write(&blocker, b"not a directory").unwrap();
         let mut worker = Worker::new(blocker.join("history.db")).unwrap();
@@ -351,7 +351,7 @@ mod tests {
             worker.replies.recv_timeout(Duration::from_secs(5)).unwrap(),
             Reply::Unavailable
         ));
-        // 打开失败后只排空请求、不再回失败页：调用方收到 Unavailable 即释放 worker。
+        // After an open failure only drain requests and never fail again per page: the caller releases the worker on Unavailable.
         assert!(
             worker
                 .requests

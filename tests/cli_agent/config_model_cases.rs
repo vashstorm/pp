@@ -9,14 +9,14 @@ fn yaml_block_configs_drive_both_protocols() {
         let server = server();
         let home = tempfile::tempdir().unwrap();
         let models = format!(
-            "# 模型配置\nextra: {{version: 1}}\nproviders:\n  fixture:\n    id: ignored-provider-id\n    protocol: {protocol}\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        id: ignored-model-id\n        api_key: ignored-model-key\n        base_url: http://127.0.0.1:0/ignored\n        protocol: ignored\n        model: yaml-model\n        cost:\n          input: 2.0\n          cacheRead: 0.2\n          output: 8.0\n",
+            "# Model configuration\nextra: {{version: 1}}\nproviders:\n  fixture:\n    id: ignored-provider-id\n    protocol: {protocol}\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        id: ignored-model-id\n        api_key: ignored-model-key\n        base_url: http://127.0.0.1:0/ignored\n        protocol: ignored\n        model: yaml-model\n        cost:\n          input: 2.0\n          cacheRead: 0.2\n          output: 8.0\n",
             server.addr()
         );
         let cli = Cli::start_with(
             home.path(),
             Some("hello"),
             r#"
-think_level: low # 启动档位
+think_level: low # startup level
 debug: false
 rate_limit_retry_budget_seconds: 0
 extra: [1, 2]

@@ -128,21 +128,24 @@ pub fn run(
     bootstrap: Option<pp_runtime::agent::Bootstrap>,
     initial_command: Option<String>,
 ) -> Result<()> {
-    // 初始化中途失败和 panic 同样恢复终端模式。
+    // A failure or panic in the middle of initialization also restores terminal mode.
     let _guard = TerminalGuard;
     surface::initialize().context("initializing terminal")?;
     pp_core::logging::perf::mark("surface_ready");
-    // 能力探测独占 stdin，必须在 crossterm 首次读取事件之前完成。
+    // Capability probing takes exclusive ownership of stdin, so it must finish before
+    // crossterm first reads events.
     let (picker, mut initial_events, pending_reply) = image_terminal::detect();
     pp_core::logging::perf::mark("image_probe_ready");
-    // tmux 默认以 xterm modifyOtherKeys 编码回报扩展按键，这里接管 fd 0 把它
-    // 翻译成 crossterm 支持的 CSI-u；探测结束后安装，避免争抢原始终端。
+    // tmux reports extended keys as xterm modifyOtherKeys by default; this takes over
+    // fd 0 and translates them into the CSI-u form crossterm understands. Install it
+    // after probing finishes so the raw terminal is not contended.
     input_shim::install(pending_reply).context("installing input translator")?;
     surface::enable_focus_reporting().context("enabling terminal focus reporting")?;
     themes::set_active_appearance(options.theme, options.icons, options.tool_style);
     let mut surface = surface::Surface::new(io::stdout());
     let mut canvas = ratatui::Terminal::new(ratatui::backend::TestBackend::new(1, 1))?;
-    // 持久输入历史与 agent 配置目录同级；无可定位目录时明确只保留进程内回忆。
+    // Persistent input history lives next to the agent config directory; when no such
+    // directory is locatable, recall is explicitly limited to this process.
     let history_path = bootstrap
         .as_ref()
         .map(|bootstrap| bootstrap.dir.join("history.db"));
@@ -167,7 +170,8 @@ pub fn run(
     app.bootstrap = bootstrap;
     app.bind_bootstrap_permissions();
     if auto_continue && matches!(app.state, State::Ready) {
-        // -c：Execute 保持原继续行为；Plan/Draft 提示继续输入；Plan/Ready 进入审阅。
+        // -c: Execute keeps the existing continue behavior; Plan/Draft prompts for more
+        // input; Plan/Ready opens review.
         match (
             &app.workflow.mode,
             app.workflow.plan.as_ref().map(|plan| plan.status),
@@ -182,11 +186,13 @@ pub fn run(
             }
         }
     }
-    // `pp -r`：启动后立即打开 /resume 会话选择面板，等同于空闲时提交 /resume。
+    // `pp -r`: opens the /resume session picker right after startup, equivalent to
+    // submitting /resume while idle.
     if open_resume && matches!(app.state, State::Ready) {
         app.open_session_panel();
     }
-    // `pp /COMMAND`：与按 Enter 提交走同一路径；`/quit` 沿用既有退出收尾。
+    // `pp /COMMAND`: same path as pressing Enter to submit; `/quit` keeps the existing
+    // shutdown cleanup.
     let mut initial_quit = false;
     if let Some(command) = initial_command {
         initial_quit = app.submit_initial_command(&command);
@@ -199,7 +205,8 @@ pub fn run(
     let mut clock = frame_clock::FrameClock::new(options.max_fps);
     let mut first_frame = false;
     loop {
-        // 先采纳已经到达的后台结果，再用最新状态解释下一批按键。
+        // Adopt background results that already arrived first, then interpret the next
+        // key batch against the newest state.
         dirty |= app.receive();
         if let Some(fps) = app.pending_max_fps.take() {
             clock = frame_clock::FrameClock::new(fps);
@@ -224,7 +231,8 @@ pub fn run(
         }
         dirty |= input_changed;
         dirty |= app.receive();
-        // 使用这一批终端输入更新后的焦点，丢弃同批已关闭的对话。
+        // Use the focus updated by this terminal input batch and drop conversations
+        // closed within the same batch.
         if !quit {
             app.flush_desktop_notifications(notification_mode, |notice| {
                 if let Some(worker) = &desktop_notifier {
@@ -321,14 +329,16 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// 主屏幕和原生历史提交共用的几何结果，TODO 永远不进入对话 viewport。
+/// Geometry shared by the main screen and native-history commits; TODO never enters
+/// the conversation viewport.
 pub(in crate::tui) struct MainLayout {
     pub(in crate::tui) conversation: Rect,
     todo: Rect,
     subagents: Rect,
     ask: Rect,
     activity: Rect,
-    // 自动重试固定信息框；始终位于输入框上方，不进入对话区。
+    // Automatic-retry notice box; always above the input box and never inside the
+    // conversation area.
     retry: Rect,
     slash_completion: Option<Rect>,
     pub(in crate::tui) input: Rect,
@@ -357,7 +367,8 @@ fn paint_surface(
     }
     let alternate = !exiting && app.needs_alternate();
     app.native_render = !alternate;
-    // 输入框与面板排版每帧只做一次：原生批次与整帧绘制共用同一几何结果。
+    // Input box and panel layout run once per frame: native batches and the full-frame
+    // draw share the same geometry.
     let layout = (!alternate).then(|| app.main_layout(area));
     if !alternate {
         let conversation_height = layout.as_ref().expect("native layout").conversation.height;
@@ -370,7 +381,8 @@ fn paint_surface(
                     thread::park_timeout(Duration::from_millis(1));
                     continue;
                 }
-                // 排版等待期间仍可能产生后续批次，不能在批次间隙显示光标。
+                // Later batches may still appear while layout is pending, so the cursor
+                // must not be shown between batches.
                 if !app.conversation.render_pending() {
                     *rebuilding_history = false;
                 }
@@ -383,7 +395,8 @@ fn paint_surface(
             } else {
                 rendered.expect("rendered frame")
             };
-            // 历史重建跨越多帧，只在全部批次提交后恢复输入光标。
+            // History rebuilding spans multiple frames; the input cursor returns only
+            // after every batch is committed.
             let cursor = (canvas.backend().cursor_visible() && !*rebuilding_history)
                 .then(|| canvas.backend().cursor_position());
             surface.paint_images(buffer, cursor, false, &batch.rows, &app.image_view.graphics)?;
@@ -405,7 +418,8 @@ fn paint_surface(
     Ok(false)
 }
 
-/// 绘制一帧：退出路径写入整帧快照，其余路径只保留一份拷贝。
+/// Draws one frame: the exit path writes a full-frame snapshot, other paths keep a
+/// single copy.
 fn draw_frame(
     app: &mut App,
     canvas: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
@@ -429,7 +443,8 @@ enum State {
     Ready,
     Running,
     RunningShell,
-    /// 本地测试专用运行态；非 dev/test 构建仍保留状态机形状，仅专用命令已编译排除。
+    /// Run state used only by local tests; non-dev/test builds keep the state machine
+    /// shape and simply compile the dedicated commands out.
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
     RunningTools,
     #[cfg_attr(not(debug_assertions), allow(dead_code))]
@@ -440,7 +455,8 @@ enum State {
     Resetting,
     SwitchingModel,
     SavingModelSettings,
-    // 仅剩 `⌥ + S` / `Ctrl + S` 的全局默认值保存；会话档位切换不再经过 worker。
+    // Only the `⌥ + S` / `Ctrl + S` global default save remains; session effort switches
+    // no longer go through the worker.
     SavingThinkDefault,
     Resuming,
     ReadingTree,
@@ -454,7 +470,8 @@ enum State {
     ChangingPlan,
     ReadingPlan,
     PreparingExecution,
-    // 独立 reviewer 运行中：审批/派发/命令全部暂停，草稿仍可编辑。
+    // A standalone reviewer is running: approval/dispatch/commands all pause while the
+    // draft stays editable.
     ReviewingPlan,
 }
 
@@ -515,15 +532,19 @@ struct App {
     review_stream: stream_buffer::StreamBuffer,
     renderer: Option<render_worker::Worker>,
     model_control: Option<pp_runtime::model_control::Service>,
-    // 控制报告与 worker 快照走不同通道；旧快照不能覆盖已应用的新选择。
+    // Control reports and worker snapshots travel on different channels; an old
+    // snapshot must not overwrite a newer applied selection.
     model_revision: u64,
     pending_model: Option<(u64, String)>,
-    // 当前生效模型的来源；`Default` 不增加状态栏噪声。
+    // Where the currently effective model came from; `Default` adds no status-line
+    // noise.
     current_source: Option<ModelSource>,
-    // `a` 的手动覆盖快照；只用于 `/roles` 只读展示与清除，不参与决议。
+    // Manual override snapshot for `a`; used only for `/roles` read-only display and
+    // clearing, never for resolution.
     override_selection: Option<Selection>,
-    // 期望档位：`0` 表示已提交但控制线程尚未确认，其余为 `ThinkQueued` 的 revision。
-    // 切档不是 worker 命令，因此这里的变化绝不同步改写 `state`。
+    // Desired effort: `0` means submitted but not yet acknowledged by the control
+    // thread, otherwise it is the `ThinkQueued` revision. Effort switching is not a
+    // worker command, so changes here never rewrite `state`.
     pending_think: Option<(u64, ThinkLevel)>,
     auth_worker: auth::Worker,
     stats_worker: Option<crate::stats::Worker>,
@@ -546,22 +567,25 @@ struct App {
     input_history: Vec<String>,
     history_index: Option<usize>,
     history_draft: Option<(TextArea<'static>, bool)>,
-    // 持久输入回忆：独立 worker 拥有 history.db，启动 cwd 固定不变。
+    // Persistent input recall: a dedicated worker owns history.db and the startup cwd
+    // stays fixed.
     history_worker: Option<history::Worker>,
     history_cwd: std::path::PathBuf,
-    // 已加载的最老记录 id；None 表示初始页尚未返回或库为空。
+    // Oldest loaded record id; None means the initial page has not returned yet or the
+    // store is empty.
     history_oldest_id: Option<i64>,
     history_has_more: bool,
-    // 正在等待的 LoadInputs request_id；同刻只有一个翻页请求。
+    // The LoadInputs request_id currently awaited; only one page request at a time.
     history_page_pending: Option<u64>,
     history_request_id: u64,
-    // Up 在已加载最老条目上等待下一页；重复 Up 合并为一次等待导航。
+    // Up on the oldest loaded entry waits for the next page; repeated Up collapses into
+    // one pending navigation.
     history_waiting_up: bool,
-    // 脱敏失败提示只发一次，避免每次追加都重复弹窗。
+    // The redaction-failure notice fires once, so repeated appends do not re-pop it.
     history_failure_notified: bool,
-    // 会话搜索面板的代次；每次打开单调递增。
+    // Generation of the session search panel; increments monotonically on every open.
     session_generation: u64,
-    // 单元测试独占的临时目录，保证 history.db 生命周期覆盖 App。
+    // Temp directory owned by unit tests, so the history.db lifetime covers App.
     #[cfg(test)]
     history_dir: Option<tempfile::TempDir>,
     state: State,
@@ -584,7 +608,8 @@ struct App {
     ask_cancellation: Option<CancellationToken>,
     commands: Option<Sender<WorkerCommand>>,
     events: Option<Receiver<WorkerEvent>>,
-    // 隔离的 /test-* worker 与开始前保存的正常展示状态；不参与正常会话清理。
+    // Isolated /test-* worker plus the normal display state saved before it started;
+    // not part of normal session cleanup.
     #[cfg(debug_assertions)]
     mock_worker: Option<mock_test::Worker>,
     #[cfg(debug_assertions)]
@@ -596,7 +621,8 @@ struct App {
     current_model: Option<ModelChoice>,
     default_model_reference: Option<String>,
     favorite_models: Vec<String>,
-    // 最近一次 worker 发布的常用排序快照；绘制/按键不读数据库。
+    // Most recent usage-ranking snapshot published by the worker; drawing and key
+    // handling never read the database.
     model_usage: BTreeMap<String, u64>,
     think_level: ThinkLevel,
     default_think_level: ThinkLevel,
@@ -627,10 +653,11 @@ struct App {
     context_snapshot: Option<pp_runtime::agent::context_diagnosis::Snapshot>,
     subagent_panel: Option<subagents::Panel>,
     subagent_autowake: bool,
-    // 当前根的观察修订号与正在运行的子代理数。
+    // Observation revision of the current root and the number of running subagents.
     subagent_status: Option<(u64, usize)>,
     subagent_control: std::sync::Arc<std::sync::Mutex<Option<pp_runtime::subagent::Binding>>>,
-    // Hub 观察线程与根/view epoch；草稿只保留在当前根内。
+    // Hub observer thread plus the root/view epoch; drafts live only inside the
+    // current root.
     hub_worker: Option<subagents::Worker>,
     hub_root_epoch: u64,
     hub_view_epoch: u64,
@@ -641,28 +668,35 @@ struct App {
     hub_preload_error: Option<String>,
     hub_sends: BTreeMap<u64, app::hub::HubSend>,
     child_drafts: subagents::Drafts,
-    /// worker 最近发布的根会话临时管道 registry；面板据此判断换根。
+    /// Temp pipe registry of the root session most recently published by the worker;
+    /// the panel uses it to detect a root switch.
     pipe_store: Option<pp_bash::PipeStore>,
-    /// 根会话实例代次；每次 `same_instance` 判定为换根时递增。
+    /// Root session instance generation; increments whenever `same_instance` reports a
+    /// root switch.
     pipe_store_epoch: u64,
     pipes_panel: Option<pipes::Panel>,
     pipes_worker: Option<pipes::Worker>,
-    /// 面板 view 代次；选择 run/stream 或关闭时递增，旧回复直接丢弃。
+    /// Panel view generation; increments when a run/stream is selected or the panel
+    /// closes, and stale replies are dropped immediately.
     pipes_view_epoch: u64,
     plan_list_panel: Option<plan_list::Panel>,
-    // 列表动作读取 selection 后继续执行的后续步骤。
+    // The follow-up step a list action runs after reading the selection.
     plan_list_pending: Option<plan_list::PendingOp>,
-    // `n` 在 Plan 模式下先解除绑定（LeavePlan），成功后立即重新进入 Plan 待命。
+    // `n` unbinds first in Plan mode (LeavePlan), then re-enters Plan standby on
+    // success.
     plan_reenter_standby: bool,
     plan_leave_confirmation: Option<plan_leave::Panel>,
     escape_tap: EscapeTap,
     session_id: Option<String>,
-    // 最近一次 ContextUpdated 快照；渲染直接使用，不逐帧重新估算。
+    // Most recent ContextUpdated snapshot; rendering uses it directly and never
+    // re-estimates per frame.
     usage: Option<pp_core::context::ContextUsage>,
     token_speed: statusline::TokenSpeed,
-    // 自动重试等待期的固定信息框；不进入对话、不写历史。
+    // Fixed notice box during automatic retry waits; never enters the conversation or
+    // the history.
     retry_notice: Option<app::retry::Notice>,
-    // 启动期 MCP 建连提示：多行展示于欢迎页下方，首个任务后让出。
+    // Startup MCP connect hints: multi-line below the welcome page, yielding after the
+    // first task.
     mcp_tip: Vec<String>,
     mcp_tip_dismissed: bool,
     task_status_view: pp_config::task_status::View,
@@ -679,27 +713,34 @@ struct App {
     files_pending: bool,
     file_scan_root: String,
     file_commands: commands::FileCommands,
-    // worker 发布的 workflow 快照；UI 不是权限权威，只用于展示与派发守卫。
+    // Workflow snapshot published by the worker; the UI is not the permission
+    // authority and uses it only for display and dispatch guards.
     workflow: WorkflowState,
     plan_panel: Option<plan::Panel>,
-    // 从计划面板发起的讨论完成且队列清空后，安全重读并恢复面板。
+    // Once a discussion started from the plan panel finishes and the queue drains,
+    // safely re-read and restore the panel.
     reopen_plan_after_discussion: bool,
-    // 仅在正文变化时重算的 (completed, total) 进度缓存。
+    // (completed, total) progress cache recomputed only when the body changes.
     plan_progress: (usize, usize),
-    // ExecutionPrepared 中 replay 重绘产生的显示错误，等待 SessionResumed 一并通知。
+    // Display error produced by the replay redraw in ExecutionPrepared, notified together
+    // with the waiting SessionResumed.
     resume_note: Option<String>,
-    // EnterPlan 失败：下一次 /plan 优先重发 EnterPlan 重试。
+    // EnterPlan failed: the next /plan re-sends EnterPlan first to retry.
     plan_retry_enter: bool,
-    // EnterPlan 成功后再提示待命或发送提示词，失败时不得发送。
+    // After EnterPlan succeeds, hint standby or send the prompt; on failure nothing may
+    // be sent.
     plan_after_enter: Option<PlanEnterAction>,
-    // 独立审查页的临时 transcript；审查进度不进主对话、不更新用量。
+    // Temporary transcript of the standalone review tab; review progress never enters
+    // the main conversation and never updates usage.
     review_transcript: Option<Transcript>,
-    // 审查成功后待下一次 ReadPlan 消费的最终报告（刷新面板或降级展示）。
+    // Final report awaiting the next ReadPlan after a successful review (refresh the
+    // panel or degrade to plain display).
     plan_review_pending: Option<PlanReviewReport>,
 }
 
 enum PlanEnterAction {
-    // 待命提示：进入 Plan 不绑定旧稿，也不打开审阅面板。
+    // Standby hint: entering Plan neither binds the old draft nor opens the review
+    // panel.
     Standby,
     Prompt(String, Option<pp_runtime::user_input::UserInput>),
 }
@@ -714,18 +755,21 @@ fn editor() -> TextArea<'static> {
     editor
 }
 
-/// 编辑器在给定宽度下占用的屏幕行数；主输入框与 child 详情共用同一套折行测量。
+/// Screen rows the editor occupies at a given width; the main input box and child
+/// details share the same wrap measurement.
 pub(in crate::tui) fn input_rows(editor: &TextArea<'_>, width: u16, max_rows: u16) -> u16 {
     if width == 0 || max_rows == 0 {
         return max_rows;
     }
-    // 在有界内存缓冲中刷新组件自己的折行映射，保持单词、宽字符和 Tab 规则一致。
+    // Refresh the widget's own wrap map in a bounded in-memory buffer, keeping words,
+    // wide characters and Tab rules identical.
     let area = Rect::new(0, 0, width, max_rows);
     editor.render(area, &mut Buffer::empty(area));
     let mut previous = editor.screen_to_data(0, 0);
     for row in 1..max_rows {
         let current = editor.screen_to_data(usize::from(row), 0);
-        // 超出正文的屏幕行会映射到最后一行；重复位置即表示正文已经结束。
+        // Screen rows past the body map to the last line; a repeated position means the
+        // body has ended.
         if current == previous {
             return row;
         }
@@ -734,7 +778,8 @@ pub(in crate::tui) fn input_rows(editor: &TextArea<'_>, width: u16, max_rows: u1
     max_rows
 }
 
-/// 限流等待时长的展示形式：整秒不带小数，非整秒保留一位小数。
+/// Display form of the rate-limit wait: whole seconds without decimals, otherwise one
+/// decimal place.
 pub(crate) fn format_wait(wait_ms: u64) -> String {
     if wait_ms.is_multiple_of(1000) {
         format!("{}s", wait_ms / 1000)
@@ -743,7 +788,8 @@ pub(crate) fn format_wait(wait_ms: u64) -> String {
     }
 }
 
-/// 从登记的相对路径推导生命周期目录；仅用于只读展示，不是授权依据。
+/// Derives the lifecycle directory from the registered relative path; read-only display
+/// only, not an authorization basis.
 fn plan_location_from_path(path: &str) -> Option<PlanLocation> {
     let rest = path.strip_prefix(".pp/")?;
     let (directory, _) = rest.split_once('/')?;

@@ -249,7 +249,7 @@ fn source_time_epoch(source: &SearchSource) -> Option<i64> {
     iso_date_to_epoch_secs(published.trim())
 }
 
-/// 按维度执行宽松后置过滤：若某个约束维度会将结果全部筛空，则放宽该维度并记录说明。
+/// Run lenient post-filtering per dimension: when a constraint dimension would filter every result out, relax that dimension and record a note.
 pub fn apply_query_constraints(
     sources: &[SearchSource],
     q: &StructuredQuery,

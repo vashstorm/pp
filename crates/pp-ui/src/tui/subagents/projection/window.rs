@@ -1,4 +1,4 @@
-//! 列表与 Activity 的可见窗口：排序、树遍历、scope 与搜索。
+//! Visible windows of the list and the Activity: sorting, tree traversal, scope and search.
 
 use super::summary::{agent_number, run_number};
 use super::text::fuzzy;
@@ -11,7 +11,7 @@ impl Projection {
         self.sorted = true;
     }
 
-    /// Agents 列表：扁平或 parent-first DFS；过滤只匹配 id/name（子序列）。
+    /// Agents list: flat or parent-first DFS; filtering matches id/name only (subsequence).
     pub(in crate::tui::subagents) fn list(&self, tree: bool, filter: &str) -> Vec<TreeRow> {
         let needle = filter.trim().to_lowercase();
         let matches = |agent: &AgentView| {
@@ -33,7 +33,7 @@ impl Projection {
                 .collect();
         }
         let children = self.children();
-        // 匹配项的祖先作为 lineage 保留。
+        // Ancestors of matches are kept as lineage.
         let mut keep = BTreeSet::new();
         for (index, agent) in self.agents.iter().enumerate() {
             if matches(agent) {
@@ -61,7 +61,7 @@ impl Projection {
                 "",
             );
         }
-        // 孤立 parent 或环防护：未访问项追加为根，不丢行。
+        // Orphaned parents and cycle protection: unvisited items are appended as roots so no row is lost.
         for index in 0..self.agents.len() {
             if !visited.contains(&index) {
                 self.walk(
@@ -146,7 +146,7 @@ impl Projection {
         }
     }
 
-    /// 可见 Activity 行：类别 + scope + 搜索；scope 锚点不随活动行选择漂移。
+    /// Visible Activity rows: category + scope + search; the scope anchor does not drift with the Activity row selection.
     pub(in crate::tui::subagents) fn activity(
         &self,
         category: Category,
@@ -206,7 +206,7 @@ impl Projection {
         }
     }
 
-    /// 概要只保留工具与已发布的最终答复，独立 Activity 页仍使用完整事件流。
+    /// The summary keeps only tools and the published final answer; the separate Activity page still uses the full event stream.
     pub(in crate::tui::subagents) fn recent(&self, agent: &str, limit: usize) -> Vec<ActivityRow> {
         let mut rows = self
             .rows
@@ -306,21 +306,21 @@ mod tests {
         isolated.spec.cwd = PathBuf::from("/work/app/.pp/worktrees/a2");
         let mut projection = Projection::default();
         projection.apply_snapshot(snapshot(vec![plain, isolated], vec![]), 1);
-        let view = projection.agent("a1").expect("快照应包含 a1");
+        let view = projection.agent("a1").expect("snapshot must contain a1");
         assert_eq!(
             view.cwd,
             PathBuf::from("/work/app"),
-            "普通 Agent 的 spec.cwd 应原样投影"
+            "a plain Agent's spec.cwd must be projected as is"
         );
-        let view = projection.agent("a2").expect("快照应包含 a2");
+        let view = projection.agent("a2").expect("snapshot must contain a2");
         assert!(
             view.isolated,
-            "fixture 标记 isolated 后投影的 isolated 应保持 true"
+            "the projected isolated flag must stay true when the fixture marks isolated"
         );
         assert_eq!(
             view.cwd,
             PathBuf::from("/work/app/.pp/worktrees/a2"),
-            "isolated Agent 首轮改写后的 spec.cwd 应原样投影"
+            "the rewritten spec.cwd of an isolated Agent must be projected as is after the first turn"
         );
     }
 
@@ -343,9 +343,9 @@ mod tests {
             .iter()
             .map(|row| projection.agents()[row.agent].id.clone())
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["a1", "a2"], "过滤保留 lineage");
+        assert_eq!(ids, ["a1", "a2"], "filtering keeps lineage");
         assert!(rows[0].muted && !rows[1].muted);
-        // 孤立 parent 与循环都不能丢行或死循环。
+        // Neither an orphaned parent nor a cycle may drop rows or deadlock.
         let mut orphan = Projection::default();
         orphan.apply_snapshot(
             snapshot(
@@ -360,7 +360,11 @@ mod tests {
         );
         let rows = orphan.list(true, "");
         assert_eq!(rows.len(), 3);
-        assert_eq!(orphan.list(true, "zzz").len(), 0, "无匹配显示空列表");
+        assert_eq!(
+            orphan.list(true, "zzz").len(),
+            0,
+            "no match shows an empty list"
+        );
     }
 
     #[test]
@@ -406,9 +410,16 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(projection.rows()[errors[0]].status, RowStatus::Error);
         let subtree = projection.activity(Category::All, Scope::Subtree, Some("a1"), "");
-        assert_eq!(subtree.len(), 3, "subtree 包含自身与后代，不含 sibling");
+        assert_eq!(
+            subtree.len(),
+            3,
+            "subtree holds itself and its descendants, not siblings"
+        );
         let selected = projection.activity(Category::All, Scope::Selected, Some("a3"), "");
-        assert!(selected.is_empty(), "scope 无有效 Agent 时明确空态");
+        assert!(
+            selected.is_empty(),
+            "scope with no valid Agent reports an explicit empty state"
+        );
         let tools = projection.activity(Category::Tools, Scope::All, None, "read");
         assert!(tools.is_empty());
         for query in ["RG", "Grep"] {
@@ -435,9 +446,9 @@ mod tests {
                 .map(|agent| agent.id.as_str())
                 .collect::<Vec<_>>(),
             ["a1", "a2"],
-            "初次按 running/idle/parked/aborted 排序"
+            "first sort by running/idle/parked/aborted"
         );
-        // 运行中的任务越过其他状态。
+        // A running task outranks the other states.
         projection.apply_snapshot(
             snapshot(
                 vec![record("a1", "Main", "parked"), record("a2", "Main", "idle")],
@@ -453,7 +464,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a2", "a1"]
         );
-        // 同优先级恢复冻结顺序，新批次插到前面。
+        // Equal priorities restore the frozen order and a new batch is inserted in front.
         projection.apply_snapshot(
             snapshot(
                 vec![

@@ -1,4 +1,4 @@
-//! Content-Length 帧读写、reader/writer 线程与回帧写路径。
+//! Content-Length frame reading/writing, the reader/writer threads and the reply write path.
 
 use serde_json::{Value, json};
 use std::io::{self, BufReader, Read, Write};
@@ -20,8 +20,8 @@ pub(super) fn writer_loop(
     }
 }
 
-/// 读取并分发服务器消息。reader 线程只做解析、内存状态更新与回帧：从不执行
-/// 磁盘编辑、不等待 UI；applyEdit 在这里立即拒绝。
+/// Read and dispatch server messages. The reader thread only parses, updates in-memory state and replies: it never performs
+/// disk edits and never waits on the UI; applyEdit is rejected here immediately.
 pub(super) fn reader_loop(stdout: impl Read, shared: Arc<Shared>, sink: NotificationSink) {
     let mut reader = BufReader::new(stdout);
     loop {
@@ -107,8 +107,8 @@ pub(super) fn reply_error(
     )
 }
 
-/// reader 线程直接回复 server request 时复用的写路径；写队列由 writer 线程消费，
-/// 队列满即视为协议失效（与调用线程的判定一致）。
+/// Write path reused when the reader thread answers a server request directly; the write queue is consumed by the writer thread,
+/// and a full queue is treated as a protocol failure (matching the decision on the calling thread).
 fn send_raw(shared: &Arc<Shared>, message: Value) -> Result<(), Failure> {
     let body = serde_json::to_vec(&message).map_err(|_| Failure::Closed)?;
     if body.len() > BODY_LIMIT {
@@ -144,8 +144,8 @@ fn read_frame(reader: &mut impl Read) -> Result<Vec<u8>, String> {
         if !name.trim().eq_ignore_ascii_case("content-length") {
             continue;
         }
-        // 重复 Content-Length 直接判定连接失效：不同值可能是请求走私的雏形，
-        // 相同值也没有合法理由出现。
+        // A repeated Content-Length fails the connection outright: differing values may be the seed of request smuggling,
+        // and identical values have no legitimate reason to appear either.
         if length.is_some() {
             return Err("LSP message repeats the Content-Length header".to_owned());
         }
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn lsp_transport_frame_parser_rejects_duplicate_content_length() {
-        // 不同值的重复头是请求走私的典型形态，相同值也没有合法理由。
+        // A repeated header with differing values is the classic request-smuggling shape, and identical values have no legitimate reason either.
         let mut input = Cursor::new(b"Content-Length: 2\r\nContent-Length: 3\r\n\r\n{}x".to_vec());
         let error = read_frame(&mut input).expect_err("duplicate header must fail");
         assert!(error.contains("repeats the Content-Length"), "{error}");
@@ -283,7 +283,7 @@ mod tests {
         let sink = no_sink();
         let input = frame(&json!({"jsonrpc": "2.0", "id": 42, "result": true}));
         reader_loop(Cursor::new(input), shared.clone(), sink);
-        // 迟到响应没有等待方：reader 丢弃它并正常结束。
+        // A late response has no waiter: the reader drops it and ends normally.
         assert!(shared.pending.lock().unwrap().is_empty());
         assert!(shared.closed.load(Ordering::SeqCst));
     }

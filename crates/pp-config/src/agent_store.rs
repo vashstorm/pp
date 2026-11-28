@@ -1,8 +1,8 @@
-//! agent.db（`~/.pp/agent/agent.db`）的偏好与授权存储。
+//! Preference and authorization storage for agent.db (`~/.pp/agent/agent.db`).
 //!
-//! 安全打开、WAL/外键/FULL/250ms 由 `pp_core::sqlite::open` 统一负责；本模块只拥有
-//! agent.db 的固定 schema 与领域操作。所有存储/授权错误都转换为不含 SQL 参数、
-//! 令牌与正文的固定领域提示；不实现通用 key/value 接口或跨库事务。
+//! `pp_core::sqlite::open` owns safe opening, WAL/foreign keys/FULL/250ms; this module owns only
+//! agent.db's fixed schema and domain operations. Every storage/authorization error is converted into a fixed domain message
+//! without SQL parameters, tokens or bodies; no generic key/value interface and no cross-database transactions.
 
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -24,7 +24,7 @@ const SCHEMA_VERSION: i64 = 5;
 
 static USAGE_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// 逻辑请求使用计数失败的固定脱敏警告；与 `stats::warn` 相同的 once 模式。
+/// Fixed redacted warning for failed logical request usage counting; same once pattern as `stats::warn`.
 pub fn warn_usage_unavailable() {
     tracing::warn!(event = "model_usage_unavailable");
     if !USAGE_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -33,7 +33,7 @@ pub fn warn_usage_unavailable() {
 }
 
 pub struct AgentStore {
-    // 仅供本模块及其子模块（迁移）使用；连接由本结构独占，不跨线程共享。
+    // Used only by this module and its submodules (migration); this struct owns the connection exclusively and never shares it across threads.
     conn: Connection,
 }
 
@@ -90,7 +90,7 @@ impl AgentStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
-            // 在写锁内重读版本，避免与并发初始化竞争。
+            // Re-read the version under the write lock to avoid racing concurrent initialization.
             let version: i64 = tx
                 .pragma_query_value(None, "user_version", |row| row.get(0))
                 .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
@@ -101,7 +101,7 @@ impl AgentStore {
                 tx.execute_batch(AUTH_SCHEMA)
                     .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
             } else if (1..SCHEMA_VERSION).contains(&version) {
-                // SQLite 不能直接扩展 CHECK；在同一事务中重建授权表并完整保留凭证。
+                // SQLite cannot extend a CHECK constraint directly; rebuild the authorization table in the same transaction and keep every credential.
                 tx.execute_batch("ALTER TABLE auth_credentials RENAME TO auth_credentials_legacy;")
                     .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
                 tx.execute_batch(AUTH_SCHEMA)
@@ -128,7 +128,7 @@ impl AgentStore {
                 .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
             }
             if version == 3 {
-                // SQLite 不能直接扩展 CHECK；重建角色表并完整保留主备配置。
+                // SQLite cannot extend a CHECK constraint directly; rebuild the roles table and keep the primary/fallback configuration intact.
                 tx.execute_batch("ALTER TABLE model_roles RENAME TO model_roles_v3;")
                     .map_err(|_| anyhow::anyhow!(UNAVAILABLE))?;
                 tx.execute_batch(SCHEMA)
@@ -153,7 +153,7 @@ impl AgentStore {
         read_preferences(&self.conn)
     }
 
-    /// 读取持久化授权；逐 provider 调用 `Credential::validate`。
+    /// Reads the persisted authorization; calls `Credential::validate` per provider.
     pub(crate) fn load_auth(&self) -> Result<crate::auth::Store> {
         let mut statement = self
             .conn
@@ -207,7 +207,7 @@ impl AgentStore {
         Ok(crate::auth::Store { credentials })
     }
 
-    /// 在一笔事务内整体替换授权表，不触碰偏好或 model_usage。
+    /// Replaces the authorization table wholesale in one transaction without touching preferences or model_usage.
     pub(crate) fn save_auth(&mut self, store: &crate::auth::Store) -> Result<()> {
         for (provider, credential) in &store.credentials {
             credential.validate(*provider)?;
@@ -244,7 +244,7 @@ impl AgentStore {
         Ok(())
     }
 
-    /// 保存默认模型，并用传入模型能力在事务内同步已启用 Default Role 的 effort。
+    /// Saves the default model and, inside the transaction, syncs the effort of the enabled Default Role using the supplied model capabilities.
     pub fn set_default_model(
         &mut self,
         reference: &str,
@@ -291,7 +291,7 @@ impl AgentStore {
         Ok(updated)
     }
 
-    /// 保存全局 effort；事务内读到的已启用 Default Role 模型经 `validate` 回调校验并同步 effort。
+    /// Saves the global effort; the enabled Default Role model read inside the transaction is validated through the `validate` callback and its effort synced.
     pub(crate) fn set_default_effort(
         &mut self,
         level: ThinkLevel,
@@ -329,7 +329,7 @@ impl AgentStore {
         Ok(updated)
     }
 
-    /// 保存或移除单个 Role 行；assignment 与收藏 reference 的可用性由调用方校验。
+    /// Saves or removes a single Role row; the caller validates the availability of the assignment and favorite references.
     pub(crate) fn set_model_role(
         &mut self,
         role: ModelRole,
@@ -375,7 +375,7 @@ impl AgentStore {
         Ok(updated)
     }
 
-    /// 切换收藏并保持原顺序；仅在事务内重读当前收藏后更新 favorite_models。
+    /// Toggles a favorite while keeping the original order; favorite_models is updated only after re-reading the current favorites inside the transaction.
     pub(crate) fn toggle_favorite(&mut self, reference: &str) -> Result<ModelPreferences> {
         let tx = self
             .conn
@@ -400,7 +400,7 @@ impl AgentStore {
         Ok(updated)
     }
 
-    /// 原子 +1 一次逻辑模型请求；不依赖 stats 写入结果。
+    /// Atomically increments the usage count of one logical model request; independent of whether the stats write succeeds.
     pub fn increment_model_usage(&mut self, reference: &str) -> Result<()> {
         let tx = self
             .conn

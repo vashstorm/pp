@@ -1,4 +1,4 @@
-//! 输入框上方的只读任务区；只持有已提交状态的展示快照。
+//! Read-only task area above the input box; it only holds a display snapshot of committed state.
 use super::{tool_display, transcript_style as palette};
 use crate::shortcuts::platform_text;
 use pp_core::events::TodoState;
@@ -16,7 +16,7 @@ use ratatui::{
 
 pub(super) const TOGGLE_HINT: &str = platform_text("⌥ + T", "Ctrl + T");
 
-/// 收起时最多展示的任务数；阶段行不占这个额度。
+/// Maximum number of tasks shown when collapsed; phase rows do not count against it.
 const COMPACT_TASKS: usize = 3;
 
 #[derive(Default)]
@@ -64,7 +64,7 @@ impl Panel {
         self.state.phases.iter().flat_map(|phase| &phase.tasks)
     }
 
-    /// 按阶段展开任务，同时给出阶段序号与阶段本身；收起窗口靠它插入阶段行。
+    /// Expand tasks by phase, yielding the phase index and the phase itself; the collapsed window uses it to insert phase rows.
     fn listing(&self) -> impl Iterator<Item = (usize, &TodoPhase, &TodoItem)> {
         self.state
             .phases
@@ -218,7 +218,7 @@ impl Panel {
         };
         let mut summary = self.summary();
         let width = usize::from(width);
-        // 先缩短操作和状态文字，尽量保留快捷键提示。
+        // Shorten the action and status text first so the shortcut hint survives as long as possible.
         let controls = [
             format!("{TOGGLE_HINT} {action}{position}"),
             format!("{TOGGLE_HINT} {action}"),
@@ -276,7 +276,7 @@ impl Panel {
             .unwrap_or_else(|| self.tasks().count().saturating_sub(1))
     }
 
-    /// 收起窗口内的任务区间：尽量让焦点项居中，首尾用相邻项补齐。
+    /// Task range inside the collapsed window: center the focused item where possible and fill the ends with neighbors.
     fn window(&self, visible: usize) -> (usize, usize) {
         let count = self.tasks().count();
         let visible = visible.min(count);
@@ -290,7 +290,7 @@ impl Panel {
         (start, start + visible)
     }
 
-    /// 收起窗口的行数：每个进入新阶段的位置多一行阶段头。
+    /// Row count of the collapsed window: one extra phase header for each position that starts a new phase.
     fn compact_row_count(&self, visible: usize) -> usize {
         let (start, end) = self.window(visible);
         let mut rows = 0;
@@ -305,7 +305,7 @@ impl Panel {
         rows
     }
 
-    /// 收起窗口：阶段头只省略同一窗口内重复的阶段，不再整体省略。
+    /// Collapsed window: phase headers suppress only phases repeated within the same window, never all of them.
     fn compact(&self, limit: usize, width: u16) -> Vec<Line<'static>> {
         let max = self.tasks().count().min(COMPACT_TASKS);
         if limit == 0 || max == 0 {
@@ -315,7 +315,7 @@ impl Panel {
             .rev()
             .find(|visible| self.compact_row_count(*visible) <= limit)
         else {
-            // 连阶段头都放不下时退化为单行任务，避免整块空白。
+            // When not even the phase header fits, degrade to single-line tasks instead of a blank block.
             let (start, end) = self.window(1);
             return self.compact_rows(start, end, width, false);
         };
@@ -381,7 +381,7 @@ impl Panel {
         if self.expanded && body.height > 0 {
             self.prepare(body.width);
             if self.focus_pending {
-                // 按排版时记录的任务首行定位，阶段标题和正文折行不影响寻址。
+                // Address rows by the task's first row recorded during layout so wrapped phase titles and bodies do not break addressing.
                 if let Some(row) = self.task_rows.get(self.focus_task()) {
                     self.scroll = row.saturating_sub(usize::from(body.height) / 2);
                 }
@@ -397,7 +397,7 @@ impl Panel {
             return;
         }
         let mut rows = if self.expanded {
-            // 按物理行切片，避免 Paragraph 的 u16 scroll 在超长清单中截断。
+            // Slice by physical row so Paragraph's u16 scroll cannot truncate an over-long list.
             let end = self
                 .scroll
                 .saturating_add(usize::from(body.height))

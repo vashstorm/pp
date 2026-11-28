@@ -1,4 +1,4 @@
-//! Shell 语义行的终端布局；语法与执行状态由 runtime 提供。
+//! Terminal layout of shell semantic lines; syntax and execution state come from the runtime.
 
 use super::{Context, palette, wrap_block};
 use pp_core::shell_display::{ShellPresentation, ShellRow, ShellState, ShellStyle};
@@ -180,7 +180,7 @@ fn safe(text: &str) -> String {
     pp_core::text::display_text(text).replace(['\n', '\r'], " ")
 }
 
-/// 极窄窗口容不下双列字形时使用单列占位，避免越过右边界。
+/// When a very narrow window cannot fit the two-column glyph, a single-column placeholder keeps the row inside the right edge.
 fn fit_line(mut line: Line<'static>, width: u16) -> Line<'static> {
     if line.width() <= usize::from(width) {
         return line;

@@ -31,10 +31,10 @@ fn tui_file_picker_inserts_path_without_sending() {
             .any(|line| line.trim().trim_start_matches("❯ ").trim() == label)
     };
 
-    // 根目录单列左缩进四列，选中项为黄色，其余文字亮白。
+    // The root directory is a single column indented four columns; the selected entry is yellow and the rest bright white.
     pty.input("分析 @");
     pty.wait_for(
-        "输入框上方列出根目录，不平铺后代文件",
+        "the root directory is listed above the input box without flattening descendants",
         |screen| {
             let text = screen.contents();
             has_item(screen, "src/")
@@ -73,45 +73,50 @@ fn tui_file_picker_inserts_path_without_sending() {
         );
     }
     pty.input("\r");
-    pty.wait_for("Enter 进入目录", |screen| {
+    pty.wait_for("Enter enters the directory", |screen| {
         has_item(screen, "../") && has_item(screen, "nested/") && has_item(screen, "main.rs")
     });
     pty.draft("分析 @src/");
     no_more(&server);
     pty.input("\x1b[C");
-    pty.wait_for("右方向键进入第二级目录", |screen| {
-        has_item(screen, "../") && has_item(screen, "child.rs") && !has_item(screen, "main.rs")
-    });
+    pty.wait_for(
+        "the right arrow enters the second directory level",
+        |screen| {
+            has_item(screen, "../") && has_item(screen, "child.rs") && !has_item(screen, "main.rs")
+        },
+    );
     pty.draft("分析 @src/nested/");
     no_more(&server);
     pty.input("\x1b[D");
-    pty.wait_for("左方向键返回一级目录", |screen| {
+    pty.wait_for("the left arrow returns one directory level", |screen| {
         has_item(screen, "main.rs")
     });
     pty.draft("分析 @src/");
     pty.input("\x1b[D");
-    pty.wait_for("左方向键返回项目根目录", |screen| {
+    pty.wait_for("the left arrow returns to the project root", |screen| {
         has_item(screen, "README.md") && !has_item(screen, "../")
     });
     pty.draft("分析 @");
     pty.input("\x1b[C");
-    pty.wait_for("右方向键进入目录", |screen| {
+    pty.wait_for("the right arrow enters the directory", |screen| {
         has_item(screen, "main.rs")
     });
     pty.draft("分析 @src/");
 
-    // 继续输入只筛选当前子树；确认只插入引用，不提交草稿。
+    // Further typing filters the current subtree only; confirming inserts the reference without submitting the draft.
     pty.input("main");
-    pty.wait_for("筛选后只剩 main.rs", |screen| {
+    pty.wait_for("filtering leaves only main.rs", |screen| {
         has_item(screen, "main.rs") && !has_item(screen, "map.rs")
     });
     pty.input("\x1b[C");
     pty.draft("分析 @src/main.rs");
-    pty.wait_for("插入后菜单关闭", |screen| !has_item(screen, "../"));
+    pty.wait_for("the menu closes after insertion", |screen| {
+        !has_item(screen, "../")
+    });
     no_more(&server);
 
-    // 补全时只编辑草稿，提交时携带实际文件正文。
-    pty.input("说明\r");
+    // Completion only edits the draft; submitting carries the real file body.
+    pty.input("describe\r");
     let (request, body) = pty.request(&server);
     let serialized = body.to_string();
     assert!(
@@ -127,84 +132,95 @@ fn tui_file_picker_inserts_path_without_sending() {
             .unwrap()
             .contains("attached-resource-content")
     );
-    assert!(user["content"].as_str().unwrap().contains("说明"));
+    assert!(user["content"].as_str().unwrap().contains("describe"));
     final_reply(request, "file picker answer");
     pty.text("file picker answer");
     pty.ready_model("fixture/primary");
 
-    // 多候选时 Tab 只补到共同前缀，筛选为单候选后才补全文件。
+    // With several candidates Tab completes to the common prefix only; the file is completed after filtering to one candidate.
     pty.input("\x01\x0btab @");
-    pty.wait_for("新的 @ 激活重新列出候选", |screen| {
+    pty.wait_for("a new @ reactivates the candidate list", |screen| {
         has_item(screen, "README.md") && !has_item(screen, "../")
     });
     pty.input("\x1b[C");
-    pty.wait_for("打开目录", |screen| has_item(screen, "main.rs"));
+    pty.wait_for("open the directory", |screen| has_item(screen, "main.rs"));
     pty.input("m\t");
     pty.draft("tab @src/ma");
-    pty.wait_for("Tab 后保留两个候选", |screen| {
+    pty.wait_for("two candidates remain after Tab", |screen| {
         has_item(screen, "main.rs") && has_item(screen, "map.rs")
     });
     pty.input("in");
-    pty.wait_for("Tab 选择筛选后的文件", |screen| {
+    pty.wait_for("Tab selects the filtered file", |screen| {
         has_item(screen, "main.rs") && !has_item(screen, "nested/")
     });
     pty.input("\t");
     pty.draft("tab @src/main.rs");
     no_more(&server);
 
-    // Esc 取消选择但保留已补全的目录路径。
+    // Esc cancels the selection but keeps the already completed directory path.
     pty.input("\x01\x0besc @");
-    pty.wait_for("Esc 前菜单打开", |screen| {
+    pty.wait_for("the menu is open before Esc", |screen| {
         has_item(screen, "README.md")
     });
     pty.input("\x1b[C");
-    pty.wait_for("进入 src", |screen| has_item(screen, "nested/"));
+    pty.wait_for("enter src", |screen| has_item(screen, "nested/"));
     pty.input("\x1b[C");
-    pty.wait_for("进入 nested", |screen| has_item(screen, "child.rs"));
+    pty.wait_for("enter nested", |screen| has_item(screen, "child.rs"));
     pty.input("\x1b");
-    pty.wait_for("Esc 关闭菜单并保留草稿", |screen| {
+    pty.wait_for("Esc closes the menu and keeps the draft", |screen| {
         !has_item(screen, "../") && !has_item(screen, "child.rs")
     });
     pty.draft("esc @src/nested/");
     no_more(&server);
 
-    // 输入空格即可结束目录引用并关闭菜单，不发送草稿。
+    // Typing a space ends the directory reference and closes the menu without sending the draft.
     pty.input("\x01\x0bdirectory @");
-    pty.wait_for("目录引用前根菜单打开", |screen| {
-        has_item(screen, "README.md")
-    });
+    pty.wait_for(
+        "the root menu opens before the directory reference",
+        |screen| has_item(screen, "README.md"),
+    );
     pty.input("\x1b[C");
-    pty.wait_for("目录引用只显示子项和返回上级", |screen| {
-        has_item(screen, "main.rs") && !screen.contents().contains("引用当前目录")
-    });
+    pty.wait_for(
+        "a directory reference shows only children and the parent entry",
+        |screen| {
+            has_item(screen, "main.rs")
+                && !screen.contents().contains("Reference current directory")
+        },
+    );
     pty.input(" ");
     pty.draft("directory @src/");
-    pty.wait_for("空格结束目录引用并关闭菜单", |screen| {
-        !has_item(screen, "../") && !has_item(screen, "main.rs")
-    });
+    pty.wait_for(
+        "a space ends the directory reference and closes the menu",
+        |screen| !has_item(screen, "../") && !has_item(screen, "main.rs"),
+    );
     no_more(&server);
 
-    // 菜单打开时缩放终端，恢复后仍可用 Enter 选择文件。
+    // Resizing the terminal while the menu is open still allows picking a file with Enter afterwards.
     pty.input("\x01\x0bresize @");
-    pty.wait_for("缩放前根菜单打开", |screen| {
+    pty.wait_for("the root menu opens before the resize", |screen| {
         has_item(screen, "README.md")
     });
     pty.input("\r");
-    pty.wait_for("缩放前进入 src", |screen| has_item(screen, "main.rs"));
+    pty.wait_for("enter src before the resize", |screen| {
+        has_item(screen, "main.rs")
+    });
     pty.resize(4, 20);
     pty.resize(30, 100);
-    pty.wait_for("恢复尺寸后菜单仍可选", |screen| {
-        has_item(screen, "main.rs")
-            && has_item(screen, "map.rs")
-            && !screen.contents().contains("Enter/Tab")
-    });
+    pty.wait_for(
+        "the menu is still selectable after the size is restored",
+        |screen| {
+            has_item(screen, "main.rs")
+                && has_item(screen, "map.rs")
+                && !screen.contents().contains("Enter/Tab")
+        },
+    );
     pty.input("\x1b[F\r");
     pty.draft("resize @src/map.rs");
     no_more(&server);
 
-    // 菜单打开时 Ctrl-C 仍立即退出并恢复终端。
+    // Ctrl-C still exits immediately and restores the terminal while the menu is open.
     pty.input("\x01\x0bquit @");
-    pty.wait_for("退出前菜单打开", |screen| {
+    pty.wait_for("the menu is open before quitting", |screen| {
         has_item(screen, "README.md")
     });
     pty.input("\x03");
@@ -229,11 +245,11 @@ fn tui_image_path_paste_and_persistent_recall_send_real_images_both_protocols() 
         let mut pty = Pty::start_with_args(project.path(), home.path(), &[]);
         pty.ready_model("fixture/primary");
         pty.input(&format!("\x1b[200~{}\x1b[201~", path.display()));
-        pty.wait_for("图片路径转为编号和摘要", |screen| {
+        pty.wait_for("the image path becomes a numbered summary", |screen| {
             screen.contents().contains("\u{f03e} #1") && screen.contents().contains("2x3")
         });
         no_more(&server);
-        pty.input("解释\r");
+        pty.input("explain\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
         let history = if protocol == "completion" {
             body["messages"].as_array().unwrap()
@@ -250,7 +266,7 @@ fn tui_image_path_paste_and_persistent_recall_send_real_images_both_protocols() 
             1
         );
         assert!(user.to_string().contains("data:image/png;base64,"));
-        assert!(user.to_string().contains("解释"));
+        assert!(user.to_string().contains("explain"));
         if protocol == "completion" {
             final_reply(request, "image-first-done");
         } else {
@@ -265,9 +281,10 @@ fn tui_image_path_paste_and_persistent_recall_send_real_images_both_protocols() 
         let mut pty = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
         pty.ready_model("fixture/primary");
         pty.input("\x1b[A");
-        pty.wait_for("重启后召回带图输入", |screen| {
-            screen.contents().contains("\u{f03e} #1") && screen.contents().contains("2x3")
-        });
+        pty.wait_for(
+            "the recalled input carries the image after a restart",
+            |screen| screen.contents().contains("\u{f03e} #1") && screen.contents().contains("2x3"),
+        );
         pty.input("\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
         let history = if protocol == "completion" {

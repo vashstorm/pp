@@ -1,4 +1,4 @@
-//! TUI worker 与主循环之间的命令／事件协议，以及 worker 侧的发布与 ACK 助手。
+//! Command/event protocol between the TUI worker and the main loop, plus the worker-side publish and ACK helpers.
 
 use anyhow::Result;
 use pp_config::config::ModelChoice;
@@ -71,7 +71,7 @@ pub(super) enum WorkerCommand {
     InspectContext,
     Dump(pp_runtime::agent::DumpMode),
     Reset,
-    /// 会话根切换（/resume、/tree、/new）会停掉旧子 Agent 根；Hub 打开时按需重建。
+    /// A session root switch (/resume, /tree, /new) stops the old subagent root; the Hub rebuilds on demand while open.
     EnsureSubagents,
     SwitchModel(String),
     ApplyModelTargets,
@@ -102,7 +102,7 @@ pub(super) enum WorkerCommand {
         cancellation: CancellationToken,
         input: InputQueue,
     },
-    // /plan-list 管理：列表/预览/打开/重命名/删除，全部在 worker 侧完成 I/O。
+    // /plan-list management: list/preview/open/rename/delete, with all I/O done on the worker side.
     ListPlans,
     ReadListedPlan {
         id: String,
@@ -125,7 +125,7 @@ pub(super) enum WorkerCommand {
         cancellation: CancellationToken,
         input: InputQueue,
     },
-    // 独立 reviewer：进度经 ReviewProgress 事件回流，终态为 PlanReviewed。
+    // Independent reviewer: progress flows back as ReviewProgress events, the terminal state is PlanReviewed.
     ReviewPlan {
         token: pp_core::plan::ReviewToken,
         cancellation: CancellationToken,
@@ -175,12 +175,12 @@ pub(super) enum WorkerEvent {
         finished_at: chrono::DateTime<chrono::Local>,
     },
     SessionStarted(String),
-    /// 根会话临时管道 registry 绑定。启动与换根后发布；接收端用
-    /// `same_instance` 判断是否真正换根并递增打开面板的 epoch。
+    /// Temporary pipe registry binding for the root session. Published at startup and after a root change; the receiver uses
+    /// `same_instance` to tell whether the root really changed and bump the epoch of an open panel.
     PipeStoreBound {
         store: pp_bash::PipeStore,
     },
-    // 压缩终态：与普通任务 Completed 是不同的判别值，不触发任务收尾展示。
+    // Compaction terminal state: a different discriminant from an ordinary task Completed, so no task-final display is triggered.
     Compacted(Result<CompactionOutcome>),
     SandboxStatus(Result<(pp_sandbox::SandboxStatus, bool)>),
     ContextInspected(Result<pp_runtime::agent::context_diagnosis::ContextReport>),
@@ -199,53 +199,53 @@ pub(super) enum WorkerEvent {
     FavoriteModelsSaved(Result<Vec<String>>),
     SessionDeleted(Result<()>),
     SessionResumed(Result<ResumeState>),
-    /// 子 Agent 根绑定重建结果：只影响 Hub 可读性，不改变会话状态。
+    /// Subagent root binding rebuild result: affects only Hub readability, never session state.
     SubagentsEnsured(Result<()>),
     TreeRead(Result<pp_runtime::agent::persistence::tree::View>),
     TreeNavigated(Result<pp_runtime::agent::TreeNavigation>),
-    // /plan-list 管理结果；失败保留旧列表与输入，只展示可见错误。
+    // /plan-list management result; on failure the old list and input are kept and only a visible error is shown.
     PlansListed(Result<PlanListing>),
     ListedPlanRead(Result<PlanSelection>),
-    // 携带完整执行准备：UI 采纳 workflow/replay/todo 快照，但不自动请求模型。
+    // Carries full execution preparation: the UI adopts the workflow/replay/todo snapshots but does not request the model automatically.
     ListedPlanOpened(Result<ExecutionPreparation>),
     ListedPlanRenamed(Result<PlanListing>),
     ListedPlanDeleted(Result<PlanListing>),
-    // 计划模式转换结果；Err 时 worker 会紧随一份真实 workflow 快照，
-    // 避免 UI 在转换失败的提示中显示错误的模式。
+    // Plan mode switch result; on Err the worker follows immediately with a real workflow snapshot
+    // so the UI does not show the wrong mode in a failed-switch notice.
     WorkflowChanged(Result<WorkflowState>),
     PlanRead(Result<PlanReview>),
-    // 审查进度：只进独立 review transcript，不进主对话、用量或派发。
+    // Review progress: goes only to the dedicated review transcript, never to the main conversation, usage or dispatch.
     ReviewProgress(AgentEvent),
-    // reviewer 终态：成功携带最终报告；失败/取消保留上次完整报告。
+    // Reviewer terminal state: success carries the final report; failure/cancel keeps the last complete report.
     PlanReviewed(Result<PlanReviewReport>),
-    // 无专属结果事件的动作（普通运行/压缩/切换模型/树导航）之后发布的快照。
+    // Snapshot published after actions without a dedicated result event (plain runs/compaction/model switches/tree navigation).
     Workflow(WorkflowState),
-    // lazy=false 后台预热失败：单服务器隔离，正常工具不受影响。
+    // lazy=false background warm-up failed: isolated to one server, ordinary tools are unaffected.
     LspWarmupFailed {
         server: String,
         error: String,
     },
-    // 空闲轮询迟到诊断时的错误；去重后交给 UI 提示，不终止会话。
+    // Error when an idle poll receives a late diagnostic; deduplicated and surfaced to the UI without ending the session.
     LspPollFailed(String),
-    // 一次性交接：UI 采纳 workflow/replay/usage/todo 快照并 ACK 后 worker 才继续。
+    // One-shot handoff: the worker continues only after the UI adopts the workflow/replay/usage/todo snapshots and ACKs.
     ExecutionPrepared {
         workflow: WorkflowState,
         session_id: Option<String>,
         usage: Option<pp_core::context::ContextUsage>,
         replay: Option<Vec<pp_runtime::agent::persistence::ReplayRecord>>,
-        /// 交接快照：UI 必须在采纳 replay/替换 workflow 之后、ACK 之前渲染，
-        /// Fresh 清理后才入卡，源会话不能先 emit 再被清掉。
+        /// Handoff snapshot: the UI must render after adopting replay/replacing the workflow and before the ACK,
+        /// so it enters the card only after Fresh cleanup and the source session cannot be emitted and then cleared.
         todo_snapshot: Option<AgentEvent>,
         reply: mpsc::SyncSender<()>,
     },
 }
 
-/// 转换失败后的纠正快照：发布真实 workflow 与模型字段；所有 Plan 转换失败路径共用。
+/// Correction snapshot after a failed switch: publishes the real workflow and model fields; shared by all Plan switch failure paths.
 pub(super) fn publish_transition_failure(agent: &Agent, snapshots: &mut Vec<WorkerEvent>) {
     push_workflow_snapshot(agent, snapshots);
 }
 
-/// 换根后立即发布新的临时管道 registry；接收端按实例身份过滤重复发布。
+/// Publish the new temporary pipe registry right after a root change; the receiver filters duplicate publications by instance identity.
 pub(super) fn publish_pipe_store(events: &mpsc::SyncSender<WorkerEvent>, agent: &Agent) -> bool {
     events
         .send(WorkerEvent::PipeStoreBound {
@@ -293,8 +293,8 @@ fn send_and_wait_ack<T: Send>(
     }
 }
 
-/// 发布 ExecutionPrepared 并等待 UI 采纳快照后的 ACK。
-/// ACK 失败或取消时返回错误。
+/// Publish ExecutionPrepared and wait for the ACK once the UI has adopted the snapshot.
+/// Returns an error when the ACK fails or is cancelled.
 pub(super) fn publish_prepared(
     events: &mpsc::SyncSender<WorkerEvent>,
     agent: &Agent,
@@ -344,7 +344,7 @@ pub(super) fn request_ask(
 impl WorkerEvent {
     pub(super) fn model_state(agent: &Agent) -> Self {
         Self::ModelState {
-            // 快照同时携带模型和思考档位，版本需反映两者最近一次应用。
+            // The snapshot carries both the model and the thinking level, so the version must reflect the latest application of either.
             revision: agent
                 .runtime_models
                 .as_ref()
@@ -364,7 +364,7 @@ impl WorkerEvent {
     }
 }
 
-/// worker 完整加载并验证后的模型目录快照。
+/// Model catalog snapshot fully loaded and validated by the worker.
 pub(super) struct ModelListing {
     pub(super) roles: pp_config::config::ModelRoles,
     pub(super) default_effort: ThinkLevel,
@@ -372,9 +372,9 @@ pub(super) struct ModelListing {
     pub(super) default_reference: String,
     pub(super) favorites: Vec<String>,
     pub(super) usage: BTreeMap<String, u64>,
-    /// `a`：手动覆盖快照，供 `/roles` 只读行与来源标记恢复。
+    /// `a`: manual override snapshot, used to restore the `/roles` read-only row and the source tag.
     pub(super) override_selection: Option<Selection>,
-    /// 当前生效模型来源；重新加载目录后覆盖可能被 `ModelState` 校正。
+    /// Currently effective model source; the override may be corrected by `ModelState` after the catalog is reloaded.
     pub(super) source: ModelSource,
 }
 
@@ -393,13 +393,13 @@ impl ModelListing {
     }
 }
 
-/// 由 worker 一次性准备好的会话切换产物；全部就绪后才替换 UI 状态。
-/// 历史 replay 通过 ExecutionPrepared 交接，这里只保留会话 ID。
+/// Session switch artifacts prepared in one shot by the worker; UI state is replaced only once everything is ready.
+/// History replay is handed over through ExecutionPrepared, so only the session ID is kept here.
 pub(super) struct ResumeState {
     pub(super) id: String,
 }
 
-// worker 内部把 Agent 用量快照包装为进度事件；估算失败时跳过，不中断命令。
+// The worker wraps the Agent usage snapshot in a progress event; estimation failures are skipped without aborting the command.
 pub(super) fn usage_snapshot(agent: &Agent) -> Option<WorkerEvent> {
     agent
         .context_usage()

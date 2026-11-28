@@ -1,4 +1,4 @@
-//! Codex `permission.toml` TOML 编解码与私有文件元数据/规范路径工具。
+//! Codex `permission.toml` TOML encoding/decoding plus private-file metadata and canonical-path helpers.
 
 use super::{
     BashRule, DEFAULT_PROFILE, Document, MatchMode, NetworkDomainDecision, Profile, SandboxGrant,

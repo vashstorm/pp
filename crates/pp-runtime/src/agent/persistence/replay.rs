@@ -1,4 +1,4 @@
-//! 消息展示快照的共用回放器；展示数据不进入原生请求。
+//! Message display snapshot replay, shared; display data never enters native requests.
 use super::*;
 use crate::agent::subagents::injected_run_id;
 use async_openai::types::{chat as c, responses as r};
@@ -21,7 +21,8 @@ enum Part {
     Call {
         id: String,
         name: String,
-        // 保留原文，非对象或畸形参数不能默认为空对象。
+        // Keep the raw text; non-object or malformed arguments must not default to an
+        // empty object.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         raw_arguments: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,7 +82,8 @@ impl Capture {
         self.attempt.is_some()
     }
 
-    /// 返回是否由 message 投影代替本条事件；调用方仍先完成统计等副作用。
+    /// Returns whether this event is replaced by the message projection; the caller still
+    /// performs side effects such as stats first.
     pub fn event(&mut self, event: &AgentEvent) -> bool {
         if !self.active() {
             return false;
@@ -131,7 +133,8 @@ impl Capture {
                 });
             }
             AgentEvent::ToolFinished { id, result } => {
-                // 最终结果取代流式工具输出；没有结果的输出继续留在失败快照中。
+                // The final result replaces the streaming tool output; outputs without a
+                // result stay in the failure snapshot.
                 self.order
                     .retain(|step| !matches!(step, Step::Output { id: call, .. } if call == id));
                 self.order.push(Step::Result {
@@ -457,7 +460,8 @@ impl Projector {
                 "unreferenced replay event"
             );
         } else {
-            // 无扩展的标准消息用于旧格式迁移。仅有结果的 call 才视为已执行。
+            // A standard message without extensions is used for legacy migration. Only a
+            // call that already has a result counts as executed.
             self.standard(&messages, retained)?;
         }
         Ok(())
@@ -571,7 +575,8 @@ fn injected_runs(append: &NativeAppend) -> Vec<String> {
     }
 }
 
-/// 快照的完成正文供树摘要复用；分片之间不能人为添加空格。
+/// The snapshot's completed text is reused for tree summaries; no spaces may be inserted
+/// between fragments.
 pub(super) fn completed_text(message: &Value) -> Option<String> {
     let finish = message["ppReplay"]["order"]
         .as_array()?

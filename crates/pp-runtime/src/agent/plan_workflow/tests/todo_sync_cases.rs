@@ -47,7 +47,8 @@ fn todo_sync_reset_legacy_cache_and_rollback() {
         let session_id = agent.session_id().unwrap().to_owned();
         let plan_id = agent.workflow.plan.as_ref().unwrap().id.clone();
 
-        // 旧版本草稿带有预览缓存；同步后必须清空并持久化。
+        // A legacy draft carried a preview cache; it must be cleared and persisted after the
+        // sync.
         agent.workflow.todos =
             pp_tools::todo::project_plan_todos(agent.workflow.plan.as_ref().unwrap(), &[], false)
                 .unwrap();
@@ -64,7 +65,8 @@ fn todo_sync_reset_legacy_cache_and_rollback() {
         assert!(agent.workflow.todo_plan_id.is_none());
         assert_eq!(journal_workflow(dir.path(), &session_id), agent.workflow);
 
-        // Fresh 批准后的来源会话仍是 Plan，不恢复执行 TODO。
+        // The source session after a Fresh approval is still in Plan and does not restore the
+        // execution TODO.
         agent.workflow.plan.as_mut().unwrap().status = PlanStatus::Executed;
         sync_plan_todos(
             &agent.tools,
@@ -77,7 +79,8 @@ fn todo_sync_reset_legacy_cache_and_rollback() {
         assert!(agent.workflow.todos.is_empty());
         assert!(agent.workflow.todo_plan_id.is_none());
 
-        // Execute+Executed：执行投影归一化，激活首个未勾选项。
+        // Execute+Executed: the execution projection is normalized and the first unchecked item
+        // is activated.
         agent.workflow.mode = WorkMode::Execute;
         sync_plan_todos(
             &agent.tools,
@@ -93,8 +96,8 @@ fn todo_sync_reset_legacy_cache_and_rollback() {
         );
         assert_eq!(journal_workflow(dir.path(), &session_id), agent.workflow);
 
-        // 已用 init 脱离旧计划的独立普通清单：查看/刷新旧 Completed
-        // 文档绝不替换它，也不触碰其计划文档。
+        // A standalone plain list detached from the old plan via init: viewing/refreshing the old
+        // Completed document never replaces it and never touches its plan document.
         let content = PLAN_CONTENT.replace("- [ ]", "- [x]");
         write_plan_file(&agent, &content);
         sync_plan_todos(
@@ -202,7 +205,7 @@ fn plan_todo_sync_checkboxes_drift_journal_failure_and_readonly() {
         seed_session(&mut agent, EXPLORATION);
         let session_id = agent.session_id().unwrap().to_owned();
 
-        // 内容未变：运行态按序保留，不产生新写入或事件。
+        // Content unchanged: runtime state is kept in order and produces no new write or event.
         let mut published = Vec::new();
         sync_plan_todos(
             &agent.tools,
@@ -218,8 +221,9 @@ fn plan_todo_sync_checkboxes_drift_journal_failure_and_readonly() {
         assert_eq!(states[1].1, pp_core::todo::TodoStatus::Blocked);
         assert_eq!(states[1].2.as_deref(), Some("waiting on CI"));
 
-        // 外部勾选第一项：正文与 revision 同步，第一项转 completed，
-        // 第二项保留 blocked 与原因；blocked 不自动启动。
+        // The first item is checked externally: body and revision sync, the first item becomes
+        // completed, the second keeps blocked and its reason; blocked is not started
+        // automatically.
         let progress = agent
             .workflow
             .plan
@@ -264,8 +268,9 @@ fn plan_todo_sync_checkboxes_drift_journal_failure_and_readonly() {
             .join(document.path().expect("saved plan path"));
         let trusted_todos = agent.workflow.todos.clone();
 
-        // 改写、增项、删除、重排（即使全部未勾选）都在同步处立即拒绝；
-        // 最后可信的正文、revision 与运行态原样保留，磁盘不被覆盖。
+        // Rewrites, additions, deletions and reordering (even with nothing checked) are rejected
+        // immediately at the sync point; the last trusted body, revision and runtime state are
+        // kept as-is and the disk is not overwritten.
         let drifted = [
             format!("# Create hello\n\n- [ ] Rewritten task.\n- [ ] {second}\n"),
             format!("# Create hello\n\n- [ ] {first}\n- [ ] {second}\n- [ ] extra\n"),
@@ -291,7 +296,7 @@ fn plan_todo_sync_checkboxes_drift_journal_failure_and_readonly() {
             );
         }
 
-        // 恢复批准任务集合后同步恢复正常。
+        // Sync returns to normal once the approved task set is restored.
         std::fs::write(&trusted_path, trusted.0.as_bytes()).unwrap();
         sync_plan_todos(
             &agent.tools,
@@ -330,12 +335,14 @@ fn plan_todo_sync_checkboxes_drift_journal_failure_and_readonly() {
             &mut |_| {},
             false,
         ));
-        // journal 只读：同步失败回滚全部内存状态，不假装已同步。
+        // Journal read-only: a failed sync rolls back all in-memory state and does not pretend
+        // the sync happened.
         assert!(error.contains("last synchronized progress retained"));
         assert_eq!(agent.workflow, previous);
         drop(error);
 
-        // 已结束计划仍以实际 Markdown 为准，始终只读，不恢复执行态。
+        // A finished plan still follows the actual Markdown, stays read-only and never returns to
+        // the executing state.
         let mut agent = runtime_input_agent(dir.path(), protocol, "127.0.0.1:1", "");
         let done_content = PLAN_CONTENT.replace("- [ ]", "- [x]");
         agent.workflow = plan_workflow(&done_content, ORIGIN, PlanStatus::Completed);
@@ -387,7 +394,8 @@ fn plan_todo_sync_checkboxes_drift_journal_failure_and_readonly() {
             PlanStatus::Completed
         );
         let trusted = agent.workflow.clone();
-        // 归档文件仍在但正文无效时，保留已验证的进度并报告读取失败。
+        // When the archived file exists but its body is invalid, keep the verified progress and
+        // report the read failure.
         std::fs::write(&done_path, b"\xff\xfe").unwrap();
         assert!(
             sync_plan_todos(
@@ -405,8 +413,8 @@ fn plan_todo_sync_checkboxes_drift_journal_failure_and_readonly() {
 
 #[test]
 fn todo_resume_syncs_checkboxes_and_carries_snapshot_once() {
-    // prepare_resume 从全局 sessions 目录读取，因此用临时 HOME 重入
-    // 自身（与 plan_resume 相同模式）。
+    // prepare_resume reads from the global sessions directory, so re-enter ourselves with a
+    // temporary HOME (the same pattern as plan_resume).
     const FIXTURE: &str = "PP_TEST_TODO_RESUME";
     let Ok(root) = std::env::var(FIXTURE) else {
         let home = tempfile::tempdir().unwrap();
@@ -427,7 +435,8 @@ fn todo_resume_syncs_checkboxes_and_carries_snapshot_once() {
     let sessions = root.join(".pp/agent/sessions");
     std::fs::create_dir_all(&sessions).unwrap();
     for protocol in ["completion", "response"] {
-        // 正常缓存已经可信，且没有快照事件：resume 不能复制工具卡片内容。
+        // The cache is already trusted and there is no snapshot event: resume must not copy the
+        // tool card contents.
         for concurrent in [false, true] {
             let unchanged_dir = root.join(format!("unchanged-exec-{concurrent}"));
             std::fs::create_dir_all(&unchanged_dir).unwrap();
@@ -461,13 +470,15 @@ fn todo_resume_syncs_checkboxes_and_carries_snapshot_once() {
         std::fs::create_dir_all(root.join("exec")).unwrap();
         let (mut source, _first, _second) = executed_todo_fixture(&root.join("exec"), protocol);
         source.journal = SessionJournal::new(sessions.clone());
-        // 源会话缺 todo 字段（todos 为空、来源为空）：恢复时初始化。
+        // The source session lacks the todo fields (empty todos, empty source): initialize them
+        // on resume.
         source.workflow.todos = Vec::new();
         source.workflow.todo_plan_id = None;
         seed_session(&mut source, EXPLORATION);
         let executed_id = source.session_id().unwrap().to_owned();
         let plan_id = source.workflow.plan.as_ref().unwrap().id.clone();
-        // 磁盘进度：第一项已勾选（执行会话目录里准备实际文件）。
+        // On-disk progress: the first item is already checked (prepare the actual file in the
+        // execution session directory).
         let progress = source
             .workflow
             .plan
@@ -489,8 +500,9 @@ fn todo_resume_syncs_checkboxes_and_carries_snapshot_once() {
         let preparation = agent
             .resume(&executed_id, &CancellationToken::new())
             .unwrap();
-        // 恢复时按实际 Markdown 初始化执行投影：第一项 completed，
-        // 第二项归一化激活；快照随交接发布一次。
+        // Resume initializes the execution projection from the actual Markdown: the first item
+        // completed, the second normalized to active; the snapshot is published once with the
+        // handoff.
         let states = task_states(&agent);
         assert_eq!(states[0].1, pp_core::todo::TodoStatus::Completed);
         assert_eq!(states[1].1, pp_core::todo::TodoStatus::InProgress);
@@ -505,7 +517,7 @@ fn todo_resume_syncs_checkboxes_and_carries_snapshot_once() {
         ));
         assert_eq!(agent.workflow.plan.as_ref().unwrap().content, progress);
 
-        // 再次恢复：replay 已包含相同快照，不重复携带。
+        // Resuming again: replay already contains the same snapshot, so it is not carried again.
         drop(agent);
         let mut agent = fixture_agent(&current_dir, &sessions, protocol);
         seed_session(&mut agent, "current");

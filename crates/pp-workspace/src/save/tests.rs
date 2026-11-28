@@ -167,7 +167,8 @@ fn atomic_save_faults_mode_and_path_safety() {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
     {
-        // 保存层按 canonical 根校验绝对路径；临时父目录规范化后拼写一致。
+        // The save layer validates absolute paths against the canonical root; a temporary parent
+        // directory spells the same path once canonicalized.
         let canonical = std::env::temp_dir().canonicalize().unwrap();
         let dir = tempfile::Builder::new().tempdir_in(&canonical).unwrap();
         let outside = outside_dir();
@@ -186,7 +187,8 @@ fn atomic_save_faults_mode_and_path_safety() {
         ] {
             assert!(workspace.target(path, true).is_err(), "{path:?}");
         }
-        // 解析父目录后即使路径被换成外部链接，保存仍使用原目录句柄。
+        // Once the parent directory is resolved, saving still uses the original directory handle
+        // even if the path is swapped for an external link.
         std::fs::create_dir(dir.path().join("parent")).unwrap();
         let target = workspace.target(Path::new("parent/new"), false).unwrap();
         std::fs::rename(dir.path().join("parent"), dir.path().join("moved")).unwrap();
@@ -204,7 +206,8 @@ fn atomic_save_faults_mode_and_path_safety() {
             .save(b"local")
             .unwrap();
         assert_eq!(std::fs::read(&peer).unwrap(), b"outside");
-        // 启动目录的 canonical 绝对路径可直接使用（与相对路径指向同一目标）。
+        // The canonical absolute path of the startup directory works directly (same target as the
+        // relative path).
         workspace
             .target(&workspace.path.join("canonical"), true)
             .unwrap()
@@ -217,10 +220,11 @@ fn atomic_save_faults_mode_and_path_safety() {
 #[cfg(target_os = "macos")]
 fn macos_tmp_alias_spelling_and_temp_root_writability() {
     {
-        // macOS 的 /tmp 是指向 /private/tmp 的符号链接；工作区 canonical 根落在
-        // /private/tmp 后，/tmp/... 拼写必须与 canonical 结果等价，越界与符号
-        // 链接规则不变。测试要求实际文件系统存在该别名；非默认环境会失败并
-        // 显式给出原因，而不是静默跳过。
+        // On macOS /tmp is a symlink to /private/tmp; once the workspace canonical root lands in
+        // /private/tmp, the /tmp/... spelling must be equivalent to the canonical result, with the
+        // same out-of-bounds and symlink rules. The test requires the alias to exist on the actual
+        // filesystem; non-default environments fail with an explicit reason instead of skipping
+        // silently.
         let dir = tempfile::tempdir_in("/tmp").unwrap();
         assert!(
             dir.path()
@@ -235,7 +239,7 @@ fn macos_tmp_alias_spelling_and_temp_root_writability() {
                 .strip_prefix("/tmp")
                 .expect("tempdir lies under /tmp"),
         );
-        // 同一目录的三种拼写完全等价。
+        // All three spellings of the same directory are fully equivalent.
         workspace
             .target(&alias_root.join("aliased"), true)
             .unwrap()
@@ -250,8 +254,9 @@ fn macos_tmp_alias_spelling_and_temp_root_writability() {
             .expect_err("directory target has no file path")
             .to_string();
         assert_eq!(root_missing_file, "write/edit requires a file path");
-        // 工作区在临时根内：兄弟目录同属临时根，可写，且键是真实绝对路径而不是
-        // 工作区相对路径。
+        // The workspace is inside the temporary root: sibling directories belong to the temporary
+        // root too and are writable, and the key is the real absolute path rather than a
+        // workspace-relative path.
         let sibling = tempfile::tempdir_in("/tmp").unwrap();
         workspace
             .target(&sibling.path().join("peer"), true)
@@ -265,8 +270,9 @@ fn macos_tmp_alias_spelling_and_temp_root_writability() {
         );
     }
     {
-        // 启动目录不在临时目录内时，`/tmp` 与 `/private/tmp` 两种拼写仍是同一受管
-        // 根、同一个规范键；临时根与工作区根之外的路径仍拒绝。
+        // When the startup directory is not inside the temporary directory, the `/tmp` and
+        // `/private/tmp` spellings still map to the same managed root and the same canonical key;
+        // paths outside the temporary root and the workspace root are still rejected.
         let dir = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(dir.path()).unwrap();
         let outside = tempfile::tempdir_in("/tmp").unwrap();
@@ -287,7 +293,8 @@ fn macos_tmp_alias_spelling_and_temp_root_writability() {
             .save(b"probe")
             .unwrap();
         assert_eq!(std::fs::read(&real).unwrap(), b"probe");
-        // 临时根之外的绝对路径与越出工作区的相对路径都不能写入。
+        // Absolute paths outside the temporary root and relative paths escaping the workspace cannot
+        // be written.
         assert!(workspace.key(Path::new("/etc/hosts")).is_err());
         assert!(workspace.target(Path::new("../escape"), true).is_err());
     }
@@ -298,9 +305,9 @@ fn read_and_save_new_guards() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(dir.path()).unwrap();
         let target = workspace.target(Path::new("data"), false).unwrap();
-        // 缺失是唯一的 None 语义。
+        // Missing is the only `None` semantic.
         assert_eq!(target.read_optional().unwrap(), None);
-        // read() 的缺失错误语义保持不变。
+        // The missing-file error semantics of read() are unchanged.
         assert!(target.read().is_err());
 
         target.save(b"payload").unwrap();
@@ -310,7 +317,8 @@ fn read_and_save_new_guards() {
         );
         assert_eq!(target.read().unwrap(), b"payload");
 
-        // 提交后名称被换成 symlink：NOFOLLOW 读取报真实错误，而不是 None。
+        // After commit the name is swapped for a symlink: the NOFOLLOW read reports a real error
+        // rather than None.
         std::fs::remove_file(dir.path().join("data")).unwrap();
         symlink("elsewhere", dir.path().join("data")).unwrap();
         let error = target.read_optional().unwrap_err();
@@ -324,7 +332,8 @@ fn read_and_save_new_guards() {
         let workspace = Workspace::open(dir.path()).unwrap();
         let target = workspace.target(Path::new("secret"), false).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        // root 与部分环境不强制权限位；仅当普通读取确实被拒绝时断言。
+        // root and some environments do not enforce permission bits; assert only when the plain
+        // read is actually denied.
         if std::fs::read(&path).is_err() {
             assert!(target.read_optional().is_err());
             assert!(target.read().is_err());
@@ -535,7 +544,7 @@ fn hashline_checked_save_and_swap_rejection() {
     }
 }
 
-// --- 计划生命周期搬迁原语 ---
+// --- Plan lifecycle move primitives ---
 
 #[test]
 fn plan_move_lifecycle_collisions_and_escapes() {
@@ -547,7 +556,7 @@ fn plan_move_lifecycle_collisions_and_escapes() {
         std::fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();
         std::fs::write(&source, b"# plan\r\n\xff bytes").unwrap();
 
-        // 发布目标链接：字节精确保留，源仍存在。
+        // Publish the destination link: bytes preserved exactly, source still present.
         let warning = workspace
             .link_plan(
                 Path::new(".pp/drafts/fix-config.md"),
@@ -558,13 +567,14 @@ fn plan_move_lifecycle_collisions_and_escapes() {
         assert_eq!(warning, None);
         assert_eq!(std::fs::read(&target).unwrap(), b"# plan\r\n\xff bytes");
         assert_eq!(std::fs::read(&source).unwrap(), b"# plan\r\n\xff bytes");
-        // 同一 inode 的硬链接，不是复制。
+        // A hard link to the same inode, not a copy.
         assert_eq!(
             std::fs::metadata(&source).unwrap().ino(),
             std::fs::metadata(&target).unwrap().ino()
         );
 
-        // 重复发布是幂等重入；提交移除源名；再次提交同样成功。
+        // Republishing is idempotent re-entry; the commit removes the source name; committing again
+        // also succeeds.
         assert_eq!(
             workspace
                 .link_plan(
@@ -607,7 +617,8 @@ fn plan_move_lifecycle_collisions_and_escapes() {
         std::fs::write(dir.path().join(".pp/drafts/a.md"), b"source").unwrap();
         std::fs::write(dir.path().join(".pp/plans/a.md"), b"existing").unwrap();
 
-        // 字节相同的不同 inode 目标同样冲突；不同字节自不必说。
+        // A destination with identical bytes but a different inode is also a conflict; different
+        // bytes need no argument.
         std::fs::hard_link(
             dir.path().join(".pp/drafts/a.md"),
             dir.path().join(".pp/plans/copy.md"),
@@ -638,7 +649,7 @@ fn plan_move_lifecycle_collisions_and_escapes() {
         std::fs::remove_file(dir.path().join(".pp/plans/copy.md")).unwrap();
         std::fs::remove_file(dir.path().join(".pp/plans/same-bytes.md")).unwrap();
 
-        // 预期字节不匹配时报错且不发布目标。
+        // A mismatched expected byte sequence errors and publishes no destination.
         let error = workspace
             .link_plan(
                 Path::new(".pp/drafts/a.md"),
@@ -667,7 +678,8 @@ fn plan_move_lifecycle_collisions_and_escapes() {
         )
         .unwrap();
 
-        // 符号链接目标在发布前被拒绝；符号链接源同样拒绝，源保留。
+        // A symlink destination is rejected before publishing; a symlink source is rejected too and
+        // the source is kept.
         let error = workspace
             .link_plan(
                 Path::new(".pp/drafts/a.md"),
@@ -704,7 +716,7 @@ fn plan_move_lifecycle_collisions_and_escapes() {
             b"inside"
         );
 
-        // 路径逃逸（工作区外）被拒绝。
+        // A path escape (outside the workspace) is rejected.
         assert!(
             workspace
                 .link_plan(
@@ -716,7 +728,7 @@ fn plan_move_lifecycle_collisions_and_escapes() {
         );
         assert!(!outside.path().join("escape.md").exists());
 
-        // 提交步骤要求源字节仍精确匹配；不匹配时两侧都保留。
+        // The commit step requires the source bytes to still match; on mismatch both sides are kept.
         std::fs::write(dir.path().join(".pp/drafts/a.md"), b"changed").unwrap();
         workspace
             .link_plan(
@@ -737,7 +749,7 @@ fn plan_move_lifecycle_collisions_and_escapes() {
         assert!(dir.path().join(".pp/drafts/a.md").exists());
         assert!(dir.path().join(".pp/plans/b.md").exists());
 
-        // 外部换掉的符号链接源不被提交步骤跟随。
+        // A source symlink swapped in from outside is not followed by the commit step.
         std::fs::remove_file(dir.path().join(".pp/drafts/a.md")).unwrap();
         symlink(
             outside.path().join("peer"),
@@ -761,11 +773,11 @@ fn plan_move_lifecycle_collisions_and_escapes() {
     }
 }
 
-// --- 目录快照字节预算与计划链接发布后的清理 ---
+// --- Directory snapshot byte budgets and cleanup after publishing plan links ---
 
-/// linkat 前把源名换成指向外部的符号链接：macOS 上不带 `AT_SYMLINK_FOLLOW`
-/// 的 linkat 会发布符号链接本身，Linux 上以 EPERM 拒绝；两种平台都不得把
-/// 目标名留在盘上，也不得吞掉错误。
+/// Swap the source name for a symlink pointing outside just before linkat: on macOS a linkat
+/// without `AT_SYMLINK_FOLLOW` publishes the symlink itself, on Linux it fails with EPERM; neither
+/// platform may leave the destination name on disk, and neither may swallow the error.
 struct SwapSourceWithSymlink {
     source: PathBuf,
     outside: PathBuf,
@@ -814,15 +826,17 @@ fn plan_move_symlink_swap_walk_budget_and_external_target() {
                 },
             )
             .unwrap_err();
-        // 错误可诊断：清理分支返回固定文案，不吞掉失败。
+        // The error is diagnosable: the cleanup branch returns the fixed message and does not
+        // swallow the failure.
         assert!(error.to_string().contains("unverified link"), "{error}");
-        // 旧行为会在目标名留下指向外部的符号链接；修复后目标名不存在。
+        // The old behavior left a symlink pointing outside under the destination name; after the fix
+        // the destination name does not exist.
         assert!(
             std::fs::symlink_metadata(&target).is_err(),
             "published plan link target must be cleaned up, found: {}",
             target.display()
         );
-        // 外部文件未被触碰，源名（此时已是指向它的符号链接）也保留。
+        // The external file is untouched and the source name (now a symlink to it) is also kept.
         assert_eq!(std::fs::read(&peer).unwrap(), b"outside");
         assert!(
             std::fs::symlink_metadata(&source).is_ok(),
@@ -830,9 +844,10 @@ fn plan_move_symlink_swap_walk_budget_and_external_target() {
         );
     }
     {
-        // 小预算表驱动：每棵树都是 top.bin 4 字节 + sub/deep.bin 1 字节，总量
-        // 恰好 5 字节；预算等于总量时通过，少一个字节即拒绝。两个文件分别
-        // 位于不同层级，跨递归累计因此也被覆盖；目录本身不占字节预算。
+        // Small-budget table: every tree is top.bin's 4 bytes plus sub/deep.bin's 1 byte, exactly 5
+        // bytes total; a budget equal to the total passes and one byte less is refused. The two files
+        // sit at different levels, so cross-recursion accumulation is covered as well; directories do
+        // not consume the byte budget.
         let dir = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(dir.path()).unwrap();
         for (budget, case) in [
@@ -845,7 +860,7 @@ fn plan_move_symlink_swap_walk_budget_and_external_target() {
             let nested = root.join("sub");
             std::fs::create_dir_all(&nested).unwrap();
             std::fs::write(root.join("top.bin"), b"abcd").unwrap();
-            // flat 用例把第二个文件放进顶层，总量不变，层级结构不同。
+            // The flat case puts the second file at the top level: same total, different structure.
             if case.starts_with("flat") {
                 std::fs::write(root.join("side.bin"), b"e").unwrap();
             } else {
@@ -877,8 +892,8 @@ fn plan_move_symlink_swap_walk_budget_and_external_target() {
         }
     }
     {
-        // 稀疏文件无需真实分配 256 MiB 即可证明：set_len 超限的普通文件在
-        // metadata 预检处被拒绝，不会被读入内存。
+        // A sparse file proves it without allocating 256 MiB for real: a regular file whose set_len
+        // exceeds the limit is rejected by the metadata pre-check and never read into memory.
         let dir = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(dir.path()).unwrap();
         std::fs::create_dir(dir.path().join("d")).unwrap();
@@ -927,7 +942,8 @@ fn plan_move_symlink_swap_walk_budget_and_external_target() {
             .err()
             .expect("cancelled walk must be refused");
         assert!(error.to_string().contains("cancelled"), "{error}");
-        // 现有文件保持原样：拒绝只放弃快照，不提交/删除任何东西。
+        // Existing files stay intact: a rejection only abandons the snapshot and commits/deletes
+        // nothing.
         assert!(dir.path().join("d/a.bin").exists());
         assert!(dir.path().join("d/sub/b.bin").exists());
     }

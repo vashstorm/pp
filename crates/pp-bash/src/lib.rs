@@ -158,13 +158,14 @@ fn cleanup_error(message: impl std::fmt::Display) -> anyhow::Error {
     CleanupError(anyhow::anyhow!("{message}")).into()
 }
 
-/// 执行核心自身失败时是否属于“进程/临时资源无法收尾”。
-/// 这类错误不能降级成普通的命令失败，必须让调用方看到清理问题。
+/// Whether a failure of the execution core itself means "process/temporary resources cannot be cleaned up".
+/// Such errors must not be downgraded to an ordinary command failure; callers must see the cleanup problem.
 fn is_cleanup_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<CleanupError>())
 }
 
-/// 后台任务线程独占的一份输入；路径与命令已复制，线程不借用调用方栈。
+/// A private copy of the inputs for the background task thread; paths and command are copied so the
+/// thread never borrows the caller's stack.
 struct BackgroundRun {
     cwd: PathBuf,
     cache: PathBuf,
@@ -181,8 +182,9 @@ struct BackgroundTask {
     started: Instant,
     stop: CancellationToken,
     sandbox: Option<Arc<Policy>>,
-    /// 运行中的管道 run 句柄；任务完成后由 [`BackgroundState::final_pipes`]
-    /// 取代并释放，避免已从 registry 淘汰的环形缓存仍被任务永久强引用。
+    /// Handle of the live pipeline run; after the task completes it is replaced by
+    /// [`BackgroundState::final_pipes`] and released so ring buffers already evicted from the registry are
+    /// not kept strongly referenced by the task forever.
     pipes: Mutex<Option<streams::PipeRun>>,
     state: Mutex<BackgroundState>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
@@ -197,14 +199,14 @@ struct BackgroundState {
     warning: Option<String>,
     cleanup_error: Option<String>,
     sandbox_blocked: bool,
-    /// 完成时从 run 复制出的有界阶段/流元数据（不含阶段正文）。
+    /// Bounded stage/stream metadata copied from the run on completion (no stage bodies).
     final_pipes: Option<Value>,
     final_shell: Option<pp_core::shell_display::ShellPresentation>,
 }
 
 impl BackgroundTask {
     fn snapshot(&self, id: &str) -> Result<Value> {
-        // 仅复制有界预览及状态，完整日志由独立资源快照读取。
+        // Copy only the bounded preview and state; the full log is read from a separate resource snapshot.
         let state = lock(&self.state);
         if let Some(error) = &state.cleanup_error {
             return Err(cleanup_error(error));
@@ -217,8 +219,13 @@ impl BackgroundTask {
         });
         value
             .as_object_mut()
-            .expect("输出总是对象")
-            .extend(fields.as_object().expect("状态总是对象").clone());
+            .expect("output is always an object")
+            .extend(
+                fields
+                    .as_object()
+                    .expect("state is always an object")
+                    .clone(),
+            );
         if let Some(error) = &state.error {
             value["error"] = json!(error);
         }
@@ -239,8 +246,8 @@ impl BackgroundTask {
         {
             attach_sandbox_denial(&mut value, policy);
         }
-        // 运行中读同一份 live run；完成后只读有界元数据，不重新持有已可淘汰的
-        // run 状态与环形缓存。
+        // While running, read the same live run; after completion only bounded metadata is read, so the
+        // already evictable run state and ring buffers are not retained again.
         let pipes =
             final_pipes.or_else(|| lock(&self.pipes).as_ref().map(streams::PipeRun::pipes_json));
         if let Some(pipes) = pipes {
@@ -352,7 +359,7 @@ impl TaskManager {
             .checked_add(1)
             .context("background task ID exhausted")?;
         let id = format!("bg-{next_id}");
-        // 与前台一致：每个任务一个 run，共享根会话的临时管道存储。
+        // Same as the foreground path: one run per task, sharing the root session's temporary pipe store.
         let pipes = new_pipe_run(pipe_store, call_id)?;
         pipes.prepare_shell(command);
         let output = Arc::new(Mutex::new(sink));
@@ -393,7 +400,8 @@ impl TaskManager {
         {
             Ok(worker) => worker,
             Err(error) => {
-                // 线程没有启动时解释器不会收尾，run 不能留在 running 状态。
+                // The interpreter never shuts down when the thread fails to start, so the run must not stay
+                // in the running state.
                 if let Some(pipes) = lock(&task.pipes).take() {
                     pipes.finish(streams::RunEnd::interrupted("host_setup_failed"));
                 }
@@ -484,10 +492,12 @@ fn stop_registry(registry: &Mutex<TaskRegistry>, close: bool) -> Result<()> {
     Ok(())
 }
 
-/// 后台任务线程：与前台共用同一个内嵌执行核心，但没有固定截止时间。
+/// Background task thread: shares the same embedded execution core as the foreground path but has no
+/// fixed deadline.
 fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
     let Some(pipes) = lock(&task.pipes).as_ref().cloned() else {
-        // run 已被回收（仅可能来自启动失败路径），不再启动解释器。
+        // The run has already been reclaimed (only possible on the startup-failure path); do not start the
+        // interpreter.
         return;
     };
     let result = host::run_host(
@@ -495,7 +505,7 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
             cwd: &run.cwd,
             cache: &run.cache,
             command: &run.command,
-            // 后台任务只由父任务取消或显式 stop 收尾。
+            // Background tasks are only shut down by the parent task's cancellation or an explicit stop.
             timeout_seconds: 0,
             call_id: &run.call_id,
             cancellation: &run.cancellation,
@@ -507,12 +517,12 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
         run.sink.clone(),
         None,
     );
-    // 执行核心已封存本次 run；复制有界元数据并先发布到状态，再释放任务对
-    // run 的强引用。快照因此在任何时刻要么读到 live run，要么读到最终元数据，
-    // 不会出现“状态已完成但元数据缺失”的中间态。
+    // The execution core has already sealed this run; copy the bounded metadata and publish it to the
+    // state first, then release the task's strong reference to the run. A snapshot therefore always reads
+    // either the live run or the final metadata, never the intermediate "state done but metadata missing".
     let final_pipes = pipes.pipes_json();
     let mut state = lock(&task.state);
-    // 执行核心正常路径已封存；这里覆盖启动阶段就失败的路径。
+    // The normal path already sealed in the execution core; this covers the startup-failure path.
     lock(state.output.as_ref()).finish();
     state.duration_ms = Some(task.started.elapsed().as_millis() as u64);
     state.final_pipes = Some(final_pipes);
@@ -559,7 +569,8 @@ fn background_worker(task: &BackgroundTask, run: &BackgroundRun) {
         }
     }
     drop(state);
-    // 元数据已固化为最终快照；此后 registry 淘汰才能真正释放环形缓存。
+    // Metadata is now frozen into the final snapshot; only after this can registry eviction really release
+    // the ring buffers.
     drop(pipes);
     lock(&task.pipes).take();
 }
@@ -578,7 +589,8 @@ mod integration {
             let dir = tempfile::tempdir().unwrap();
             let manager = TaskManager::default();
             let cancellation = CancellationToken::new();
-            // 两条管道都写入超过容量和保存限额的数据，完成标记必须在写入后生成。
+            // Both pipes write more than the capacity and save limit, so the completion marker must be created
+            // after those writes.
             let command = r#"
                 cleanup() {
                     for ((i=0; i<64; i++)); do
@@ -604,7 +616,10 @@ mod integration {
                 {
                     break text;
                 }
-                assert!(Instant::now() < deadline, "后台任务未就绪：{method}");
+                assert!(
+                    Instant::now() < deadline,
+                    "background task not ready: {method}"
+                );
                 thread::sleep(POLL);
             };
             match method {
@@ -622,11 +637,11 @@ mod integration {
             assert_eq!(
                 std::fs::read_to_string(dir.path().join("cleanup.done")).unwrap(),
                 "done",
-                "TERM 清理未完成：{method}"
+                "TERM cleanup did not finish: {method}"
             );
             let snapshot = task.snapshot(id).unwrap();
-            // 管理 TERM 会真实执行 trap（cleanup.done），但取消本身不可被 trap
-            // 的 `exit 0` 否决：逻辑 shell 以终止状态收尾。
+            // Managing TERM really runs the trap (cleanup.done), but the cancellation itself cannot be vetoed
+            // by the trap's `exit 0`: the logical shell still finishes in a terminated state.
             assert_eq!(snapshot["exit_code"], 128 + 15, "{method}: {snapshot}");
             assert_eq!(
                 snapshot["status"],
@@ -639,7 +654,10 @@ mod integration {
             assert_eq!(snapshot["truncated"], true);
             assert_eq!(snapshot["total_bytes"], 64 * 4096 * 2);
             assert!(snapshot["output"].as_str().unwrap().len() < 1024);
-            assert!(!Path::new(&scratch).exists(), "临时目录未清理：{method}");
+            assert!(
+                !Path::new(&scratch).exists(),
+                "temporary directory not cleaned up: {method}"
+            );
         }
     }
 
@@ -777,7 +795,8 @@ mod integration {
 
     #[test]
     fn background_completed_tasks_release_evicted_pipe_bodies() {
-        // 每个任务把超过单流 1 MiB 的正文送过管道；完成 run 只按 registry 上限保留。
+        // Each task pushes more than 1 MiB of body per stream through the pipe; completed runs are kept
+        // only up to the registry limit.
         const RUNS: usize = super::streams::MAX_COMPLETED_RUNS + 2;
         const CHUNK: u64 = 65536;
         const CHUNKS: usize = 24;
@@ -802,7 +821,7 @@ mod integration {
                 .unwrap();
             let id = snapshot["task_id"].as_str().unwrap().to_owned();
             let task = manager.task(&id).unwrap();
-            // 运行中由 live run 提供同一份元数据。
+            // While running, the live run provides the same metadata.
             assert!(
                 snapshot["pipes"]["run_id"]
                     .as_str()
@@ -817,7 +836,7 @@ mod integration {
             tasks.push((id, watch));
         }
 
-        // 完成 run 只保留最近 MAX_COMPLETED_RUNS 条；更老的 URI 已失效。
+        // Only the latest MAX_COMPLETED_RUNS completed runs are kept; older URIs are already invalid.
         assert_eq!(store.list().len(), super::streams::MAX_COMPLETED_RUNS);
         for (index, (id, watch)) in tasks.iter().enumerate() {
             let task = manager.task(id).unwrap();
@@ -842,7 +861,7 @@ mod integration {
                 "task {index} must hold one capped ring body"
             );
             let run_id = pipes["run_id"].as_str().unwrap();
-            // 任务句柄完成后不再强引用 live run。
+            // After completion the task handle no longer strongly references the live run.
             assert!(
                 lock(&task.pipes).is_none(),
                 "task {index} kept a live run handle"
@@ -852,7 +871,8 @@ mod integration {
                     store.snapshot(run_id).is_err(),
                     "old run {index} must be evicted from the store"
                 );
-                // 淘汰后若任务仍持有 PipeRun，Ring 正文会绕过配额永久存活。
+                // If the task still held the PipeRun after eviction, the Ring body would outlive the quota
+                // forever.
                 assert!(
                     !watch.is_alive(),
                     "task {index} still owns the evicted run body"

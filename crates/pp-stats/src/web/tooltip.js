@@ -1,5 +1,5 @@
 /**
- * 全局悬停/聚焦气泡提示与表格单元格详情增强。
+ * Global hover/focus tooltip and table cell detail enhancement.
  */
 
 import { $ } from "./format.js";
@@ -10,7 +10,7 @@ let tooltip = null;
 let tooltipTarget = null;
 
 /**
- * 确保 tooltip 节点已挂载并返回之。
+ * Ensures the tooltip node is mounted and returns it.
  * @returns {HTMLDivElement}
  */
 function ensureTooltip() {
@@ -25,7 +25,7 @@ function ensureTooltip() {
 }
 
 /**
- * 隐藏当前气泡提示并清理 `aria-describedby`。
+ * Hides the current tooltip and clears `aria-describedby`.
  */
 export function hideTooltip() {
   tooltipTarget?.removeAttribute("aria-describedby");
@@ -34,7 +34,7 @@ export function hideTooltip() {
 }
 
 /**
- * 在指定视口坐标展示目标元素的 `data-tooltip` 内容。
+ * Shows the target element's `data-tooltip` content at the given viewport coordinates.
  * @param {HTMLElement | SVGElement} target
  * @param {number} x
  * @param {number} y
@@ -54,7 +54,7 @@ export function showTooltip(target, x, y) {
 }
 
 /**
- * 将页面内所有 `title` 与表格单元格提升为统一的 `data-tooltip` 气泡。
+ * Promotes every `title` in the page and every table cell to a unified `data-tooltip` bubble.
  */
 export function prepareDetails() {
   hideTooltip();
@@ -102,7 +102,7 @@ export function prepareDetails() {
 let tooltipBound = false;
 
 /**
- * 绑定全局 tooltip 指针、焦点与滚动监听（幂等）。
+ * Binds the global tooltip pointer, focus and scroll listeners (idempotent).
  */
 export function initTooltip() {
   if (tooltipBound) return;

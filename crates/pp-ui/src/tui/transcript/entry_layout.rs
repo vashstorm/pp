@@ -1,4 +1,4 @@
-//! 真实物理行布局：把卡片正文排成可滚动、可提交的行。
+//! Real physical line layout: lay out the card body as scrollable, committable lines.
 
 use super::*;
 
@@ -51,8 +51,8 @@ impl TranscriptEntry {
         {
             return;
         }
-        // 等待回答时只显示交互面板；结束后再保留完整问答卡片。
-        // 清单在固定 TODO 区展示，操作过程与成功结果不再生成历史卡片。
+        // While waiting for an answer only the interaction panel shows; the full Q&A card is kept once it finishes.
+        // The checklist shows in the fixed TODO area, so the steps taken and a successful result produce no history card.
         if self.hidden
             || (self.kind == EntryKind::Ask && self.status == EntryStatus::Running)
             || (self.tool.as_deref() == Some("todo") && self.status != EntryStatus::Failed)
@@ -61,7 +61,7 @@ impl TranscriptEntry {
             return;
         }
         if matches!(self.kind, EntryKind::Error | EntryKind::Notice) {
-            // 错误与运行时提示共用同一幅框卡：只有边框色、标题与正文色不同。
+            // Errors and runtime notices share one frame card: only the border color, title and body color differ.
             let notice = self.kind == EntryKind::Notice;
             let border_style = Style::default().fg(if notice {
                 palette::accent()
@@ -79,7 +79,7 @@ impl TranscriptEntry {
                 " Error ".to_owned()
             };
             let mut rows = Vec::new();
-            // 极窄窗口优先保留正文；空间恢复后重新生成完整外框。
+            // Very narrow windows favor the body; the full frame is regenerated once space returns.
             if width >= 6 {
                 let title = if usize::from(width) >= label.len() + 2 {
                     label.as_str()
@@ -239,7 +239,7 @@ impl TranscriptEntry {
                 }),
             );
         } else if self.is_file_read() {
-            // 路径与参数保留独立 span，避免文件名中的冒号或空格干扰着色。
+            // Paths and arguments keep separate spans so colons or spaces in a file name do not disturb the coloring.
             let summary = self
                 .display_title
                 .as_ref()
@@ -328,7 +328,7 @@ impl TranscriptEntry {
                     }),
             );
         } else if let EntryBody::Markdown(document) = &self.body {
-            // 思考普通文本继承灰色，保留语义 span 的颜色与粗体等修饰。
+            // Plain thinking text inherits gray while keeping the semantic span colors and modifiers such as bold.
             let base_style =
                 (self.kind == EntryKind::Think).then(|| Style::default().fg(muted_text()));
             lines.extend(document.layout(width).into_iter().map(|mut line| {
@@ -487,7 +487,7 @@ impl TranscriptEntry {
         }
         for line in &mut lines {
             line.height = if self.kind == EntryKind::Activity
-                // 边框行必须保持单行，窄宽度下标题按现有规则裁剪。
+                // Border rows must stay single-line; at narrow widths the title is trimmed by the existing rules.
                 || (edit && matches!(line.source(), Some(Source::Title | Source::Bottom)))
                 || matches!(line.content, LayoutContent::Styled(_))
             {
@@ -619,7 +619,7 @@ impl TranscriptEntry {
     fn push_tool_body_lines(&self, width: u16, lines: &mut Vec<LayoutLine>) {
         let bash = self.kind == EntryKind::Bash;
         let eval = self.kind == EntryKind::Eval;
-        // 正文只由 stdout 组成时直接借用，避免每帧复制整段工具输出。
+        // Borrow directly when the body consists of stdout only, avoiding a copy of the whole tool output every frame.
         let joined;
         let text: &str = if self.visible_text().is_empty()
             && self.stderr.is_empty()
@@ -749,7 +749,7 @@ impl TranscriptEntry {
             && eval_has_output;
 
         if tool_body {
-            // `write` 成功时的 "Wrote N bytes" 已呈现在头部 meta，仅保留正文内容（如有）。
+            // The "Wrote N bytes" of a successful `write` already shows in the header meta, so only the body content (if any) is kept.
             if !(self.tool.as_deref() == Some("write")
                 && self.status == EntryStatus::Complete
                 && self.visible_text().starts_with("Wrote ")

@@ -591,7 +591,7 @@ fn rg_hashline_isolation_types_and_override_globs() {
             invalid.to_string().contains("invalid -g glob"),
             "{invalid:#}"
         );
-        // `glob` 是 `-g` 的别名：同时给出时合并为覆盖集合。
+        // `glob` is an alias for `-g`: when both are given they merge into the override set.
         let merged = query(
             dir.path(),
             json!({"pattern":"needle","-g":"*.rs","glob":"*.js","context":0}),
@@ -607,9 +607,9 @@ fn rg_hashline_isolation_types_and_override_globs() {
     }
 }
 
-/// 模型常见的参数偏差（取自真实会话失败记录）必须被归一化而不是报错：
-/// 字符串化的布尔/数字、ripgrep CLI 风格别名、`-c`/`-l` 模式开关与 null 值；
-/// 未知键被忽略并在结果中提示。
+/// Common model argument drift (taken from real session failure records) must be normalized, not rejected:
+/// stringified booleans/numbers, ripgrep CLI style aliases, `-c`/`-l` mode flags and null values;
+/// unknown keys are ignored and reported as a hint in the result.
 #[test]
 fn rg_normalizes_common_model_argument_drift() {
     let dir = tempfile::tempdir().unwrap();
@@ -682,7 +682,7 @@ fn rg_head_limit_caps_lines_and_entries() {
         fs::write(dir.path().join(format!("{i}.txt")), "needle\n").unwrap();
     }
     let run = |args: Value| query(dir.path(), args, &mut hashline::Store::default()).unwrap();
-    // content：按正文行计数（含上下文行），别名 `head_limit`/`head`/`limit` 等价。
+    // content: counted by body lines (context lines included); the aliases `head_limit`/`head`/`limit` are equivalent.
     for key in ["head_limit", "head", "limit", "max_lines"] {
         let capped = run(json!({"pattern":"needle","path":"file","context":0,key:"2"}));
         let text = capped["content"].as_str().unwrap();
@@ -698,7 +698,7 @@ fn rg_head_limit_caps_lines_and_entries() {
     assert_eq!(unlimited["details"]["matchCount"], 4, "{unlimited}");
     let exact = run(json!({"pattern":"needle","path":"file","context":0,"head_limit":4}));
     assert_eq!(exact["details"]["headLimitReached"], false, "{exact}");
-    // 其余模式按条目计数，并给出逐条续页的 skip。
+    // Other modes count entries and give a per-entry pagination skip.
     let files = run(json!({"pattern":"needle","-g":"*.txt","-l":true,"head_limit":2}));
     let text = files["content"].as_str().unwrap();
     assert!(
@@ -746,7 +746,7 @@ fn rg_missing_path_suggests_workspace_matches() {
             && moved.contains("crates/pp-config/src/auth.rs"),
         "{moved}"
     );
-    // 无扩展名的名字匹配同 stem 文件；行区间选择器不影响纠错。
+    // A name without an extension matches a same-stem file; a line-range selector does not affect suggestions.
     let stem = error("crates/pp-runtime/src/system_prompt:3");
     assert!(
         stem.contains("did you mean: crates/pp-runtime/src/system_prompt.rs?"),

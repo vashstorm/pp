@@ -1,9 +1,9 @@
-//! 键鼠事件路由：roster/activity 导航与 child 详情输入。
+//! Keyboard and mouse event routing: roster/activity navigation and child detail input.
 
 use super::*;
 
 impl Panel {
-    /// 返回 true 表示关闭整个 Hub。
+    /// Returning true closes the whole Hub.
     pub(in crate::tui) fn handle(&mut self, event: Event, drafts: &mut Drafts) -> bool {
         if let Event::Key(key) = &event
             && key.kind == KeyEventKind::Release
@@ -16,7 +16,7 @@ impl Panel {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 let close = self.handle_key(key, drafts);
-                // 过滤/树切换后让选择始终落在可见行上。
+                // After a filter/tree switch the selection always lands on a visible row.
                 self.validate_selection();
                 close
             }
@@ -46,7 +46,7 @@ impl Panel {
         match event {
             Event::Key(key) => {
                 if key.code == KeyCode::Esc && key.modifiers.is_empty() {
-                    // Esc 保留 child 草稿，返回来源页。
+                    // Esc keeps the child draft and returns to the originating page.
                     self.commands
                         .push(Command::CloseDetail { view: detail.view });
                     self.detail = None;
@@ -114,7 +114,7 @@ impl Panel {
         }
         match key.code {
             KeyCode::Esc => {
-                // 先清过滤，再退出 inspector，最后才关闭 Hub。
+                // Clear the filter first, then leave the inspector, then close the Hub.
                 if self.page == Page::Agents && !self.filter.is_empty() {
                     self.filter.clear();
                     return false;
@@ -246,7 +246,7 @@ impl Panel {
             }
             KeyCode::Char('r') if press && self.page == Page::Agents => {
                 if let Some(agent) = self.selected_agent() {
-                    // 有活动 Run 时恢复没有意义；parked/aborted 才真正重建实例。
+                    // Resuming is meaningless while a Run is active; only parked/aborted instances are really rebuilt.
                     if agent.has_active_run {
                         self.notice =
                             Some("Agent is busy; cancel the run or send a message.".into());
@@ -266,7 +266,7 @@ impl Panel {
         };
         let available = match action {
             Control::Cancel => agent.has_active_run,
-            // 恢复是幂等的：空闲实例上为无操作，parked/aborted 才重建。
+            // Resuming is idempotent: a no-op on an idle instance, a rebuild only for parked/aborted ones.
             Control::Revive => !agent.has_active_run,
             Control::Kill | Control::Send => true,
         };

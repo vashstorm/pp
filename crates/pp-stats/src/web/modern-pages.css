@@ -1,4 +1,4 @@
-/* 表格体系统一（x-table 与旧 table） */
+/* Unified table system (x-table and the legacy table) */
 html[data-style="modern"] .x-table th,
 html[data-style="modern"] table:not(.x-table) th {
   background: color-mix(in srgb, var(--raised) 55%, var(--card));
@@ -91,7 +91,7 @@ html[data-style="modern"] .group-details {
   border-top: 1px solid var(--line-1);
 }
 
-/* 比例条、组件列表与 Projects 排行 */
+/* Ratio bars, component lists and the Projects ranking */
 html[data-style="modern"] .token-bar,
 html[data-style="modern"] .cost-split {
   height: 9px;
@@ -124,7 +124,7 @@ html[data-style="modern"] .insight-ranking button:hover {
   border-color: var(--line-1);
 }
 
-/* 图表与悬浮提示统一 */
+/* Unified charts and tooltips */
 html[data-style="modern"] .chart line {
   stroke: var(--chart-grid);
 }
@@ -159,7 +159,7 @@ html[data-style="modern"] .x-chart-tooltip {
   box-shadow: var(--shadow-2);
 }
 
-/* Traces 页面精致化 */
+/* Traces page refinement */
 html[data-style="modern"] .traces-minimap {
   border-radius: 10px;
   border-color: var(--line-2);
@@ -191,7 +191,7 @@ html[data-style="modern"] .trace-sheet-header {
   border-bottom-color: var(--line-2);
 }
 
-/* 请求详情抽屉 (#drawer) 与 .trace-sheet 同源毛玻璃语言 */
+/* Request detail drawer (#drawer) sharing the .trace-sheet frosted-glass language */
 html[data-style="modern"] #overlay {
   z-index: 60;
   background: var(--veil);
@@ -299,7 +299,7 @@ html[data-style="modern"] .payload pre {
   color: var(--ink-2);
 }
 
-/* 上下文阅读器 (#context-reader) */
+/* Context reader (#context-reader) */
 html[data-style="modern"] #context-overlay {
   background: var(--veil);
   backdrop-filter: blur(6px);
@@ -410,7 +410,8 @@ html[data-style="modern"] .load-note {
   }
 }
 
-/* 高对比度 / 强制色彩模式兜底：确保边界与激活状态不依赖纯阴影或渐变 */
+/* High-contrast / forced-colors fallback: boundaries and active states must not rely on pure shadows
+   or gradients */
 @media (forced-colors: active) {
   html[data-style="modern"] .x-card,
   html[data-style="modern"] .x-stat-grid,

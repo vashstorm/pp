@@ -132,7 +132,7 @@ fn hashline_edit_and_rg_snapshot_enforcement() {
             assert_eq!(result["ok"], false, "{result}");
             assert!(result["error"].as_str().unwrap().contains("unread"));
         }
-        // 修改未显示行、仅行尾空格变化也必须让旧快照失效。
+        // Changing an undisplayed line — even only trailing spaces — must also invalidate the old snapshot.
         fs::write(&path, "external  \ntwo\nthree\n").unwrap();
         let result = execute(&tools, "edit", hashline_args(&content, "PUT 2.=2:\n+TWO"));
         assert_eq!(result["ok"], false);
@@ -258,7 +258,7 @@ fn hashline_read_caps_caches_and_pagination() {
             row_text(last["content"].as_str().unwrap()),
             ["\u{feff}keep"]
         );
-        // 多段读取补齐已读集合后，可以针对同一原始版本编辑完整范围。
+        // Once multi-part reads complete the seen set, the full range can be edited against the same original version.
         let all = execute(&tools, "read", json!({"path":"file:1-2,3-4"}));
         assert_eq!(
             all["content"].as_str().unwrap().lines().next().unwrap(),
@@ -295,7 +295,7 @@ fn replace_edit_and_file_changed_events() {
         let dir = tempfile::tempdir().unwrap();
         let tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
 
-        // replace 模式返回纯文本正文，没有 hashline 头。
+        // Replace mode returns the plain text body with no hashline header.
         fs::write(dir.path().join("plain.txt"), "one\ntwo\nthree\n").unwrap();
         assert_eq!(
             read_content(&tools, "plain.txt"),
@@ -308,7 +308,7 @@ fn replace_edit_and_file_changed_events() {
             ("ok\u{fffd}\u{fffd}\n".to_owned(), false)
         );
 
-        // 字节上限落在多字节字符内时，也只保留前面的完整行。
+        // When the byte cap falls inside a multi-byte character, only the preceding complete lines are kept.
         let bytes = format!("ok\n{}", "中".repeat(21_846));
         fs::write(dir.path().join("cap.txt"), bytes.as_bytes()).unwrap();
         let (content, truncated) = read_content(&tools, "cap.txt");
@@ -439,7 +439,7 @@ fn replace_edit_and_file_changed_events() {
             assert_eq!(fs::read(&path).unwrap(), original, "{name}");
         }
 
-        // 顶层扁平 `{path, oldText, newText}` 作为单次编辑的等价写法必须生效。
+        // The flat top-level `{path, oldText, newText}` form must work as an equivalent single edit.
         let flat = execute(
             &tools,
             "edit",

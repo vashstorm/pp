@@ -1,7 +1,7 @@
-//! 临时管道阶段浏览：只持有当前选中流的有界正文，读取与轮询在观察线程。
+//! Temporary pipe-stage browser: holds only the bounded body of the selected stream; reading and polling happen on the observer thread.
 //!
-//! 面板打开不进入 steering、不发送模型请求；Esc 只关闭面板，不改写输入草稿，
-//! 也不触碰原生主屏历史。正文副本在关闭时随面板一起释放。
+//! Opening the panel never joins steering or sends a model request; Esc only closes the panel, without rewriting the input draft
+//! or touching native main-screen history. The body copy is released with the panel on close.
 
 mod keys;
 mod render;
@@ -12,12 +12,12 @@ use crossterm::event::{KeyCode, KeyEvent};
 use pp_core::text::display_text;
 pub(super) use worker::{Reply, Request, Worker};
 
-/// 面板正文上限；跟随时只保留最新 1 MiB，冻结快照同样有界。
+/// Panel body cap; while following only the newest 1 MiB is kept, and frozen snapshots are bounded too.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 pub(super) const HINT: &str = "←/→ run  ↑/↓ stream  PgUp/PgDn/wheel scroll  Home top  End tail  f follow  r refresh  Esc close";
 
-/// 观察线程与面板共用的有界 run 视图；不暴露 `tools::bash` 的私有类型。
+/// Bounded run view shared by the observer thread and the panel; never exposes `tools::bash` private types.
 #[derive(Clone, Debug, Default)]
 pub(super) struct RunView {
     pub run_id: String,
@@ -71,7 +71,7 @@ pub(super) struct StreamView {
     pub close_reason: Option<String>,
 }
 
-/// 一次受观察的正文更新；`reset` 表示必须丢弃旧正文重建。
+/// One observed body update; `reset` means the old body must be dropped and rebuilt.
 #[derive(Clone, Debug)]
 pub(super) struct BodyUpdate {
     pub run: String,
@@ -225,7 +225,7 @@ impl Panel {
                 open: stream.open,
             };
         }
-        // Runs 只在签名或选择变化时到达；即便两者未变，live 元数据也可能更新。
+        // Runs arrive only when the signature or selection changes; live metadata may still update when neither did.
         let _ = (run_changed, stream_changed);
         true
     }

@@ -1,7 +1,7 @@
-//! 前台 `bash` 工具的真实执行路径上的管道镜像回归。
+//! Pipeline mirror regression on the real execution path of the foreground `bash` tool.
 //!
-//! 这些用例通过工具事件、结果里的 `pipes` 元数据和 `PipeStore::read` 观察行为，
-//! 不断言源码文本或内部 schema 文案。
+//! These cases observe behaviour through tool events, the `pipes` metadata in results and `PipeStore::read`,
+//! and never assert on source text or internal schema copy.
 
 mod integration {
     use super::super::*;

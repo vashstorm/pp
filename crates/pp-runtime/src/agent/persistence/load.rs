@@ -19,7 +19,8 @@ pub fn load(
     load_with_options(dir, lock_dir, id, include_replay, stats_db, false)
 }
 
-/// 以只读快照方式恢复历史会话：不获取会话锁、不截断或追加原文件，后续运行全程 `--ephemeral`。
+/// Restore a historical session as a read-only snapshot: no session lock is taken, the
+/// original file is neither truncated nor appended, and the rest of the run stays `--ephemeral`.
 pub fn load_readonly(
     dir: &Path,
     lock_dir: &Path,
@@ -235,7 +236,8 @@ fn load_with_options(
     })
 }
 
-/// 逐条应用原生增量，每条 state 都验证有效基线与元数据，不能只验证最终结果。
+/// Apply native increments one by one; every state validates its effective baseline and
+/// metadata, so validating only the final result is not enough.
 pub(super) fn apply_native(
     checkpoint: &mut Option<Checkpoint>,
     header: &Header,
@@ -358,8 +360,9 @@ fn validate_checkpoint(saved: &Checkpoint, id: &str) -> Result<()> {
             .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty()),
         "invalid saved model reference"
     );
-    // 角色路由只作审计：恢复后的模型由进程级 `ModelState::resolve()`（a → b）决定，
-    // 不再要求保存的模型等于路由主模型或备用模型。
+    // Role routing is for auditing only: the model after resume is decided by the
+    // process-level `ModelState::resolve()` (a → b), and the saved model no longer has to
+    // equal the route's primary or fallback model.
     if let Some(route) = &saved.role_route {
         pp_config::config::RoleAssignment {
             enabled: true,

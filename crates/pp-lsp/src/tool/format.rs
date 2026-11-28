@@ -1,4 +1,4 @@
-//! 服务器结果格式化：位置、hover 文本与符号列表。
+//! Server result formatting: positions, hover text and symbol lists.
 
 use crate::client;
 use crate::types::DocumentSymbol;
@@ -13,7 +13,7 @@ use std::path::Path;
 
 use super::servers::display_path;
 
-/// 位置上下文行数（上下各一行）。
+/// Number of context lines around a position (one above and one below).
 const CONTEXT_LINES: u32 = 1;
 
 pub(super) fn parse_locations(value: &Value) -> Result<Vec<Location>> {

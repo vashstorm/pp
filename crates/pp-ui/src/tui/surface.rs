@@ -1,4 +1,4 @@
-//! 主屏幕增量提交与备用屏幕共享唯一输出入口。
+//! Main-screen incremental commit and the alternate screen share a single output entry point.
 
 use crossterm::{
     SynchronizedUpdate,
@@ -68,7 +68,7 @@ impl GraphicsCleanup {
 
     fn clear(&self, writer: &mut impl Write) -> io::Result<()> {
         for (id, tmux) in &self.kitty {
-            // 仅删除当前 pp 帧拥有的图片，保留终端中其他应用的图像。
+            // Delete only the images owned by the current pp frame, keeping images from other terminal applications.
             if *tmux {
                 write!(
                     writer,
@@ -86,10 +86,10 @@ impl GraphicsCleanup {
                     SetAttribute(Attribute::Reset),
                     MoveTo(area.x, row)
                 )?;
-                // ECH 只擦除拥有的矩形，避免波及同一行的其他缩略图。
+                // ECH only erases the owned rectangle so other thumbnails on the same row are untouched.
                 write!(writer, "\x1b[{}X", area.width)?;
                 if *tmux {
-                    // 原生图片不在 tmux 的字符缓冲内，空白格上的擦除可能被优化掉。
+                    // Native images live outside tmux's character buffer, so erasing over blank cells may be optimized away.
                     write!(writer, "\x1bPtmux;\x1b\x1b[{}X\x1b\\", area.width)?;
                 }
             }
@@ -105,9 +105,9 @@ pub(super) fn initialize() -> io::Result<()> {
         previous(info);
     }));
     terminal::enable_raw_mode()?;
-    // 同时请求两套扩展按键协议：tmux 只认 xterm 的 modifyOtherKeys（CSI > 4;2m），
-    // 只支持 Kitty 协议的终端忽略它；Kitty 推送放在后面作为可解 CSI-u 的首选。
-    // 两者都不支持的终端忽略这些序列，仍可用 Ctrl + J 换行。
+    // Request both extended key protocols: tmux only honors xterm's modifyOtherKeys (`CSI > 4;2m`),
+    // and terminals that only support the Kitty protocol ignore it; the Kitty push comes last as the preferred decodable CSI-u.
+    // Terminals supporting neither ignore these sequences and can still use Ctrl + J for newlines.
     execute!(
         io::stdout(),
         EnableBracketedPaste,
@@ -122,7 +122,7 @@ pub(super) fn enable_focus_reporting() -> io::Result<()> {
 }
 
 pub(super) fn restore() {
-    // 先把真实终端还给 fd 0，raw mode 关闭与终端恢复才能作用在原始终端。
+    // Hand the real terminal back to fd 0 first so disabling raw mode and restoring the terminal apply to the original terminal.
     super::input_shim::restore();
     let mut stdout = io::stdout();
     if let Ok(mut graphics) = GRAPHICS.lock() {
@@ -147,7 +147,7 @@ pub(super) fn restore() {
     let _ = terminal::disable_raw_mode();
 }
 
-/// 宽度变化只裁切屏幕内的冻结行，不重发已进入原生滚动历史的行。
+/// A width change only clips frozen rows still on screen; rows already in native scrollback are not resent.
 pub(super) fn copy_row(cells: &[Cell], target: &mut Buffer, x: u16, y: u16, width: u16) {
     let mut column = 0;
     while column < cells.len().min(usize::from(width)) {
@@ -168,7 +168,7 @@ pub(super) fn copy_row(cells: &[Cell], target: &mut Buffer, x: u16, y: u16, widt
 
 pub(super) struct Surface<W: Write> {
     writer: W,
-    // 差分基线共享同一份整帧缓冲：主屏幕帧的 previous 与 main 是同一块内存。
+    // The diff baseline shares one full-frame buffer: the main-screen frame's previous is the same memory as main.
     previous: Option<Arc<Buffer>>,
     main: Option<Arc<Buffer>>,
     alternate: bool,
@@ -198,7 +198,7 @@ impl<W: Write> Surface<W> {
         self.reset_pending = true;
     }
 
-    /// 一批历史与对应尾帧在同一次短同步更新内提交。
+    /// A batch of history and its trailing frame commit within one short synchronous update.
     #[cfg(test)]
     pub(super) fn paint(
         &mut self,
@@ -239,7 +239,7 @@ impl<W: Write> Surface<W> {
                     })
             })
             .collect();
-        // 被擦除区域覆盖的旧图也须重绘；新增浮层不应删除、重传未变化的缩略图。
+        // Old images covered by the erased area must be repainted too; a new overlay must not delete or resend unchanged thumbnails.
         loop {
             let before = removed.len();
             for area in &self.graphics {
@@ -268,7 +268,7 @@ impl<W: Write> Surface<W> {
         };
         let unknown = Buffer::empty(buffer.area);
         let previous = previous.filter(|old| old.area == buffer.area);
-        // 图形先从物理屏幕擦除，再以相同状态计算滚动和差分。
+        // Graphics are erased from the physical screen first, then scrolling and diffing are computed from the same state.
         let cleaned = previous.filter(|_| clear_graphics && !switch).map(|old| {
             let mut cleaned = old.clone();
             for area in &removed {
@@ -283,8 +283,8 @@ impl<W: Write> Surface<W> {
         });
         let previous = cleaned.as_ref().or(previous);
         let cursor_known = self.started && !reset && !switch && previous.is_some();
-        // 每次历史提交都会把整个可见屏幕上移一行，底部留下默认样式的空行。
-        // 差分必须基于滚动后的物理屏幕，不能沿用滚动前的坐标或强制重发所有行。
+        // Every history commit shifts the whole visible screen up one row, leaving a default-styled blank row at the bottom.
+        // The diff must be based on the physically scrolled screen, not on pre-scroll coordinates or a forced repaint of every row.
         let scrolled = previous.filter(|_| !history.is_empty()).map(|old| {
             let mut scrolled = Buffer::empty(buffer.area);
             let offset =
@@ -312,19 +312,19 @@ impl<W: Write> Surface<W> {
         let structural = !started || reset || switch || !history.is_empty();
         let visibility_changed = !cursor_known || self.cursor.is_some() != cursor.is_some();
         if clear_graphics || structural || redraw || !cursor_known || self.cursor != cursor {
-            // backend 的定位和显隐方法会 flush；先写内存，使同步更新结束序列
-            // 与整帧一起提交到终端，避免实际 writer 在一帧中途被多次刷新。
+            // The backend's positioning and visibility methods flush; write to memory first so the synchronous-update
+            // end sequence and the full frame commit together, avoiding several real writer flushes mid-frame.
             let mut output = Vec::new();
             output.sync_update(|writer| -> io::Result<()> {
                 if clear_graphics {
                     cleanup.clear(writer)?;
                 }
                 if cursor.is_none() && visibility_changed {
-                    // 先隐藏，再滚屏、清屏或定位，避免重建期间暴露中间位置。
+                    // Hide first, then scroll, clear or position, so rebuilding never exposes an intermediate position.
                     queue!(writer, Hide)?;
                 }
                 if !started {
-                    // 为主界面预留独立屏幕，将启动前的 shell 内容自然推入历史。
+                    // Reserve a dedicated screen for the main UI, pushing pre-startup shell content into history.
                     writer.write_all("\r\n".repeat(usize::from(buffer.area.height)).as_bytes())?;
                 }
                 if was_alternate && (!alternate || reset) {
@@ -369,7 +369,7 @@ impl<W: Write> Surface<W> {
                 }
                 let mut backend = CrosstermBackend::new(writer);
                 if redraw {
-                    // 图形协议可能移动光标或改变样式；下一批文字必须显式重新定位。
+                    // The graphics protocol may move the cursor or change styles; the next text batch must reposition explicitly.
                     let mut text = Vec::new();
                     for cell in changes {
                         if cell.2.symbol().contains('\x1b') {
@@ -386,7 +386,7 @@ impl<W: Write> Surface<W> {
                     }
                 }
                 if let Some(cursor) = cursor {
-                    // 正文写入也会移动物理光标，即使输入位置没变仍需恢复。
+                    // Writing body text also moves the physical cursor, so it must be restored even when the input position did not change.
                     if structural || redraw || !cursor_known || self.cursor != Some(cursor) {
                         backend.set_cursor_position(cursor)?;
                     }
@@ -397,13 +397,13 @@ impl<W: Write> Surface<W> {
                 Backend::flush(&mut backend)
             })??;
             if alternate {
-                // 部分写入后失败也可能已进入备用屏幕，退出清理仍须尝试恢复。
+                // A failure after a partial write may already have entered the alternate screen; exit cleanup must still attempt a restore.
                 ALTERNATE_ACTIVE.store(true, Ordering::SeqCst);
             }
             self.writer.write_all(&output)?;
             self.writer.flush()?;
         }
-        // 主屏幕帧的差分基线与 main 共享同一份整帧缓冲，只复制一次。
+        // The main-screen frame's diff baseline shares the same full-frame buffer as main, so it is copied once.
         let main_area = buffer.area;
         let snapshot = buffer.clone();
         self.previous = Some(snapshot.clone());
@@ -414,7 +414,7 @@ impl<W: Write> Surface<W> {
                 .as_ref()
                 .is_some_and(|main| main.area != main_area)
         {
-            // 备用屏幕期间的清理或缩放也会改变主屏幕，不能复用旧差分基线。
+            // Cleanup or resize during the alternate screen also changes the main screen, so the old diff baseline cannot be reused.
             self.main = None;
         }
         if !alternate {
@@ -434,7 +434,7 @@ impl<W: Write> Surface<W> {
     }
 
     pub(super) fn finish(&mut self, height: u16) -> io::Result<()> {
-        // 正常帧已留在主屏幕；只给 shell 腾出紧邻内容的一行。
+        // A normal frame already remains on the main screen; only free the single row next to the content for the shell.
         queue!(
             self.writer,
             ResetColor,
@@ -470,7 +470,7 @@ mod tests {
         }
 
         fn flush(&mut self) -> io::Result<()> {
-            // 每次实际刷新都必须包含完整的同步更新结束序列。
+            // Every real flush must contain the complete synchronous-update end sequence.
             assert!(self.bytes.ends_with(b"\x1b[?2026l"));
             self.flushes += 1;
             Ok(())
@@ -486,11 +486,11 @@ mod tests {
             for x in 0..buffer.area.width {
                 let actual = parser.screen().cell(y, x).unwrap();
                 let expected = reference.screen().cell(y, x).unwrap();
-                // 未写入的空格与显式写入的空格在格式化快照中不同，视觉效果相同。
+                // Unwritten spaces differ from explicitly written spaces in a formatted snapshot but look identical.
                 assert_eq!(
                     actual.contents().trim_end_matches(' '),
                     expected.contents().trim_end_matches(' '),
-                    "单元格 ({x}, {y}) 正文不同"
+                    "cell ({x}, {y}) contents differ"
                 );
                 let appearance = |cell: &vt100::Cell| {
                     (
@@ -510,7 +510,7 @@ mod tests {
                 assert_eq!(
                     appearance(actual),
                     appearance(expected),
-                    "单元格 ({x}, {y}) 样式不同"
+                    "cell ({x}, {y}) style differs"
                 );
             }
         }
@@ -752,13 +752,13 @@ mod tests {
     impl Write for FailingWriter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             if self.fail_write {
-                Err(io::Error::other("测试写入失败"))
+                Err(io::Error::other("test write failed"))
             } else {
                 Ok(bytes.len())
             }
         }
         fn flush(&mut self) -> io::Result<()> {
-            Err(io::Error::other("测试写入失败"))
+            Err(io::Error::other("test write failed"))
         }
     }
 

@@ -46,7 +46,8 @@ fn trim_common_lines<'a>(old: &'a str, after: &'a str) -> (&'a str, &'a str, usi
         0
     } else {
         let old_common_start = old_rem.len() - suffix;
-        // 对齐到公共后缀内的第一个完整行首，再向后放宽 4 行上下文缓冲。
+        // Align to the first complete line start inside the common suffix, then widen by a
+        // 4-line context buffer.
         let first_nl = old_rem[old_common_start..]
             .iter()
             .position(|&b| b == b'\n')
@@ -134,7 +135,7 @@ pub enum Original {
     Unavailable,
 }
 
-/// 从真实提交前后的存在性与字节构造 diff；删除空文件也有独立的删除标记。
+/// Build a diff from the existence and bytes before/after a real commit; deleting an empty file also gets its own delete marker.
 pub fn committed(before: &Original, after: Option<&[u8]>) -> FileDiff {
     let before = match before {
         Original::Missing => None,
@@ -222,7 +223,7 @@ mod tests {
             };
             assert_eq!((added, removed), (2, 2));
             assert_eq!(hunks.len(), 2);
-            // 前导 context 截到最后三行，变化行带真实行号。
+            // Leading context is trimmed to the last three lines; changed lines carry real line numbers.
             let first = &hunks[0];
             assert_eq!(first.lines.len(), 5);
             assert_eq!(first.lines[0].kind, DiffLineKind::Removed);
@@ -230,7 +231,7 @@ mod tests {
             assert_eq!(first.lines[1].text, "L1\n");
             assert_eq!(first.lines[2].new_line, Some(2));
             assert_eq!(first.lines[4].new_line, Some(4));
-            // 内部 6 行以内的相同段保留在一个 hunk 中，超过则拆分。
+            // Identical spans within 6 interior lines stay in one hunk; anything larger is split.
             let second = &hunks[1];
             assert_eq!(second.lines.len(), 5);
             assert_eq!(second.lines[0].new_line, Some(7));
@@ -243,7 +244,7 @@ mod tests {
     #[test]
     fn eol_bom_missing_newline_and_commit_flags() {
         {
-            // CRLF -> LF 是真实差异，不抹掉。
+            // CRLF -> LF is a real difference and is not erased.
             let diff = build(Some("a\r\nb\r\n"), "a\nb\r\n");
             let FileDiff::Text { hunks, .. } = diff else {
                 panic!("text diff expected");
@@ -254,7 +255,7 @@ mod tests {
             assert_eq!(hunks[0].lines[1].text, "a\n");
             assert_eq!(hunks[0].lines[2].text, "b\r\n");
 
-            // BOM 属于首行内容，不规范化。
+            // A BOM is part of the first line's content and is not normalized.
             let diff = build(Some("\u{feff}x\n"), "x\n");
             let FileDiff::Text { hunks, .. } = diff else {
                 panic!("text diff expected");
@@ -262,7 +263,7 @@ mod tests {
             assert_eq!(hunks[0].lines[0].text, "\u{feff}x\n");
             assert_eq!(hunks[0].lines[1].text, "x\n");
 
-            // 末行缺少换行符时保留原始形态，显示层据此提示。
+            // A missing trailing newline is kept as-is; the display layer flags it from that.
             let diff = build(Some("a\nb"), "a\nc");
             let FileDiff::Text { hunks, .. } = diff else {
                 panic!("text diff expected");
@@ -274,7 +275,7 @@ mod tests {
             assert_eq!(hunks[0].lines[2].text, "c");
         }
         {
-            // 完全相同的 write：无 hunk，显示层据此输出 No content changes.
+            // Identical write: no hunks, so the display layer prints No content changes.
             let diff = build(Some("same\n"), "same\n");
             let FileDiff::Text {
                 created,
@@ -289,7 +290,7 @@ mod tests {
             assert!(!created);
             assert_eq!((added, removed, hunks.len()), (0, 0, 0));
 
-            // 新建空文件：created=true 且无 hunk，显示层据此输出 Created empty file.
+            // New empty file: created=true with no hunks, so the display layer prints Created empty file.
             let diff = build(None, "");
             let FileDiff::Text {
                 created,
@@ -304,7 +305,7 @@ mod tests {
             assert!(created);
             assert_eq!((added, removed, hunks.len()), (0, 0, 0));
 
-            // 已存在的空文件不算新建。
+            // An existing empty file does not count as created.
             let diff = build(Some(""), "x");
             let FileDiff::Text {
                 created,

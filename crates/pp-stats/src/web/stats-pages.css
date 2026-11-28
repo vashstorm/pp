@@ -679,7 +679,8 @@ pre {
   text-overflow: ellipsis;
 }
 
-/* Errors 页的页内样式；外壳、卡片、表格与指标沿用 ui.css 的 x- 组件。 */
+/* In-page styles of the Errors page; the shell, cards, tables and metrics reuse the x- components
+   from ui.css. */
 .errors-signature {
   display: -webkit-box;
   -webkit-line-clamp: 2;

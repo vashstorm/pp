@@ -5,8 +5,8 @@ mod sandbox_cases;
 mod settings_cases;
 mod web_search_cases;
 
-/// 跨进程设置保存的确定性交错控制点：仅当写线程显式注册后才同步，
-/// 其他调用方零开销直通。见 `update_settings_fields_returning` 的持锁临界区。
+/// Deterministic interleaving control point for cross-process settings saves: syncs only after a writer thread
+/// explicitly registers, and passes through with zero overhead otherwise. See the lock-guarded critical section in `update_settings_fields_returning`.
 pub(crate) mod settings_interleave;
 
 const VALID_SETTINGS: &str = "{}";
@@ -32,7 +32,7 @@ fn catalog(
     Ok((dir, catalog))
 }
 
-/// 在首次构建 catalog 前直接向 agent.db 播种偏好；TempDir 生命周期由调用方持有。
+/// Seeds preferences straight into agent.db before the first catalog is built; the caller keeps the TempDir alive.
 fn seeded_catalog(
     settings: Option<&str>,
     models: Option<&str>,

@@ -1,4 +1,5 @@
-//! 非交互结构化输出：`--mode json`（单条终态汇总 JSON）与 `--mode stream-json`（JSONL 事件流）。
+//! Non-interactive structured output: `--mode json` (a single final summary JSON) and
+//! `--mode stream-json` (a JSONL event stream).
 
 use anyhow::{Context, Result};
 use pp_core::cancellation;
@@ -14,7 +15,7 @@ use std::{
 
 use super::mcp_status;
 
-/// CLI 非交互输出模式。
+/// CLI non-interactive output mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OutputMode {
     #[default]
@@ -41,7 +42,8 @@ pub(crate) fn run_json_task(
     let resumed = options.resumed;
     let guard = options.guard;
     let started = Instant::now();
-    // 结构化模式等待启动期 MCP 建连完成但不打印人类进度横幅；配置告警仍输出到 stderr。
+    // Structured mode waits for startup MCP connects to finish but prints no human
+    // progress banner; configuration warnings still go to stderr.
     let mut sink = io::sink();
     mcp_status::wait(
         agent,
@@ -131,7 +133,8 @@ pub(crate) fn run_json_task(
     Ok(final_text)
 }
 
-/// 在任务循环尚未开始即失败（如参数/配置/恢复错误）时补写终态错误 JSON。
+/// Writes a final error JSON when the task loop fails before it starts (for example
+/// argument, configuration or resume errors).
 pub fn write_error_result(
     stdout: &mut impl Write,
     error: &anyhow::Error,

@@ -26,7 +26,8 @@ fn cancel_mcp_assert_pid_stopped(path: &Path) {
     }
 }
 
-// 反向断言：进入 Plan 不再断开 MCP 服务，进程必须仍在运行。信号 0 探测不递送信号。
+// Reversed assertion: entering Plan no longer disconnects the MCP service, so the process must still be running.
+// Probing with signal 0 delivers no signal.
 fn cancel_mcp_assert_pid_alive(path: &Path) {
     let pid: i32 = std::fs::read_to_string(path).unwrap().trim().parse().unwrap();
     let pid = rustix::process::Pid::from_raw(pid).unwrap();
@@ -76,7 +77,7 @@ fn cancel_mcp_begin(pty: &mut Pty, provider: &TestServer, dir: &Path, protocol: 
     cancel_mcp_wait_file(pty, &dir.join("mcp-log.cancel-ready"));
     cancel_mcp_wait_file(pty, &dir.join("mcp-log.cancel-child.pid"));
     pty.input("\x1b");
-    pty.wait_for("取消完成状态行", |screen| {
+    pty.wait_for("cancellation completion status line", |screen| {
         cancel_count_normalized(screen, CANCEL_DONE) == 1
     });
     pty.ready();

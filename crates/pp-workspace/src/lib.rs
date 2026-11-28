@@ -7,7 +7,7 @@ pub mod stream_text;
 
 use serde::{Deserialize, Serialize};
 
-/// 工具审批风险分档；由 `pp-lsp`、`pp-tools` 等执行层共用。
+/// Tool approval risk tier; shared by execution layers such as `pp-lsp` and `pp-tools`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
     Read,
@@ -15,7 +15,7 @@ pub enum Tier {
     Exec,
 }
 
-/// 后台 Bash 与子 Agent 共用的等待任务快照。
+/// Wait-job snapshot shared by background Bash tasks and subagents.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WaitJob {
     pub id: String,

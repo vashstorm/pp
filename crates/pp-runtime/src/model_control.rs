@@ -1,8 +1,8 @@
-//! 配置期望值和实际生效状态分离；各 Agent 只在提交边界领取目标。
+//! Configured intent and actual effective state are separated; each agent takes its target only at commit boundaries.
 //!
-//! 唯一的模型决议权威是 [`ModelState`]（`a` 手动覆盖 → `b` 配置默认）。本模块只负责：
-//! 把 UI/CLI 的意图串行化成 `ModelState` 的写操作，并通过 revision 把"待应用的目标"
-//! 发布给主 Agent 与子 Agent；读侧永远回到 `ModelState::resolve()`。
+//! The only model resolution authority is [`ModelState`] (`a` manual override → `b` configured default). This module only:
+//! serializes UI/CLI intent into `ModelState` writes and publishes "targets awaiting application"
+//! to the root agent and subagents by revision; the read side always goes back to `ModelState::resolve()`.
 use anyhow::Result;
 use pp_config::config::ModelCatalog;
 use pp_config::config::ModelChoice;
@@ -20,17 +20,17 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-/// 主 Agent 或子 Agent 待应用的模型目标。
+/// Model target awaiting application by the root agent or a subagent.
 #[derive(Clone)]
 pub struct Target {
     pub revision: u64,
-    /// `None`：没有手动覆盖，跟随配置默认。
+    /// `None`: no manual override, follow the configured default.
     pub selection: Option<Selection>,
     pub source: ModelSource,
     pub(crate) plan_route: Option<RoleRoute>,
 }
 
-/// 主会话手动思考档位目标；只有主 Agent 领取，不写配置文件。
+/// Manual thinking-level target for the main session; only the root agent takes it, and no config file is written.
 #[derive(Clone)]
 pub struct ThinkTarget {
     pub revision: u64,
@@ -41,11 +41,11 @@ pub struct ThinkTarget {
 struct State {
     revision: u64,
     catalog: Option<Arc<ModelCatalog>>,
-    /// 主 Agent 的手动覆盖目标；`selection == None` 表示清除覆盖、跟随默认。
+    /// Manual override target for the root agent; `selection == None` clears the override and follows the default.
     main: Option<Target>,
-    /// PLAN 供规划中的主 Agent 领取，其余角色由各自绑定的子 Agent 领取。
+    /// PLAN is taken by the root agent while planning; other roles are taken by their bound subagents.
     roles: BTreeMap<ModelRole, Target>,
-    /// 仅 `Change::Think` 写入；只有主 Agent 消费。
+    /// Written only by `Change::Think`; consumed by the root agent only.
     think: Option<ThinkTarget>,
     reports: VecDeque<Report>,
     applied: BTreeMap<String, (u64, bool)>,
@@ -55,15 +55,15 @@ struct State {
 pub struct Registry(Arc<Mutex<State>>);
 
 pub enum Change {
-    /// 主 Agent 手动选择（⌥P、`/model`、`--model`）：写 `a`。
+    /// Root agent manual selection (⌥P, `/model`, `--model`): writes `a`.
     Override(Selection),
-    /// 清除手动覆盖，回到配置默认。
+    /// Clears the manual override and returns to the configured default.
     ClearOverride,
-    /// 保存全局默认模型：写 `b`，不切换运行中的会话。
+    /// Saves the global default model: writes `b` without switching the running session.
     SaveDefault(String),
-    /// 角色目标，只写 `roles` 槽（DEFAULT 走 `b`，不进 `roles`）。
+    /// Role target, writes the `roles` slot only (DEFAULT goes through `b` and never enters `roles`).
     Role(ModelRole, Option<RoleAssignment>),
-    /// 主会话手动档位，只写 `think` 槽；不读不写配置文件。
+    /// Manual level for the main session, writes the `think` slot only; never reads or writes config files.
     Think(ThinkLevel),
     #[cfg(test)]
     Barrier(mpsc::Sender<()>),
@@ -122,7 +122,7 @@ pub struct Binding {
 }
 
 impl Binding {
-    /// 只检查待应用的模型目标，保留当前领取进度。
+    /// Only checks for targets awaiting application, keeping the current take progress.
     pub fn pending(&self, follow_plan: bool) -> bool {
         let mut probe = self.clone();
         probe.take_targets(follow_plan).0.is_some()
@@ -148,10 +148,10 @@ impl Binding {
         }
     }
 
-    /// 一次加锁取齐两个槽，保证同批快照里两个 revision 可比。
+    /// Takes both slots under a single lock so the two revisions are comparable within the same snapshot.
     pub fn take_targets(&mut self, follow_plan: bool) -> (Option<Target>, Option<ThinkTarget>) {
         let state = self.registry.0.lock().unwrap_or_else(|e| e.into_inner());
-        // 主 Agent 在无手动覆盖的 Plan 模式下也领取 PLAN 角色目标。
+        // The root agent also takes the PLAN role target in plan mode without a manual override.
         let picked = if self.agent.is_none() {
             let plan = follow_plan
                 .then(|| state.roles.get(&ModelRole::Plan))
@@ -170,7 +170,7 @@ impl Binding {
             .inspect(|target| {
                 self.seen = target.revision;
             });
-        // 手动档位只下发给主 Agent；子 Agent 只跟随角色 effort。
+        // The manual level is handed down to the root agent only; subagents follow the role effort.
         let think = if self.agent.is_none() {
             state
                 .think
@@ -252,13 +252,13 @@ impl Registry {
 pub struct Service {
     sender: Option<mpsc::Sender<Change>>,
     pub registry: Registry,
-    /// 只读句柄：UI 用它把一次选择解析成完整 `Selection`，写操作仍经控制线程。
+    /// Read-only handle: the UI uses it to resolve a choice into a full `Selection`, while writes still go through the control thread.
     models: Arc<ModelState>,
     join: Option<JoinHandle<()>>,
 }
 
 impl Service {
-    /// `models` 是进程内唯一的模型决议权威；本线程是它唯一的串行写者。
+    /// `models` is the only in-process model resolution authority; this thread is its only serial writer.
     pub fn start(models: Arc<ModelState>) -> std::io::Result<Self> {
         let registry = Registry::default();
         let state = registry.clone();
@@ -313,7 +313,7 @@ impl Service {
             .is_some_and(|sender| sender.send(change).is_ok())
     }
 
-    /// 把一次模型选择解析成完整 `Selection`，沿用目标档位策略（显式默认 → 当前档 → 有效默认）。
+    /// Resolves a model choice into a full `Selection`, keeping the target level policy (explicit default → current level → effective default).
     pub fn resolve_reference(
         &self,
         reference: &str,
@@ -345,15 +345,15 @@ impl Drop for Service {
     }
 }
 
-/// 单次配置变更：写 `ModelState` 后把待应用目标与报告发布到 registry。
+/// Applies one config change: after writing `ModelState`, publishes the target awaiting application and the report to the registry.
 fn apply(models: &Arc<ModelState>, registry: &Registry, change: Change) -> Result<()> {
     match change {
         Change::Think(level) => {
             models.set_override_effort(level)?;
             let mut state = registry.0.lock().unwrap_or_else(|e| e.into_inner());
             state.catalog = Some(Arc::new(models.catalog_snapshot()));
-            // revision 必须由本 registry 单调递增：`ModelState` 的 revision 只在覆盖变化时前进，
-            // 无覆盖会话（例如默认模型上改档位）会停在 0，导致目标被 `seen_think` 过滤掉。
+            // The revision must increase monotonically within this registry: `ModelState`'s revision advances only when the override changes,
+            // so a session without an override (for example changing the level of the default model) stays at 0 and the target is filtered out by `seen_think`.
             state.revision += 1;
             let revision = state.revision;
             state.think = Some(ThinkTarget {
@@ -403,7 +403,7 @@ fn apply(models: &Arc<ModelState>, registry: &Registry, change: Change) -> Resul
                 effort: catalog.default_think_level(),
             });
             state.catalog = Some(Arc::new(catalog));
-            // DEFAULT 角色即 `b`：只改配置默认，不切换运行中的主会话。
+            // The DEFAULT role is `b`: change the configured default only, without switching the running main session.
             if role == ModelRole::Default {
                 return Ok(());
             }
@@ -448,7 +448,7 @@ fn publish_override(models: &Arc<ModelState>, registry: &Registry) {
     state.catalog = Some(Arc::new(models.catalog_snapshot()));
     state.revision += 1;
     let revision = state.revision;
-    // 清除覆盖时 `selection` 为 `None`：Agent 应用目标时再按 `resolve()` 取 `b`。
+    // `selection` is `None` when clearing the override: the agent takes `b` from `resolve()` when applying the target.
     state.main = Some(Target {
         revision,
         selection: selection.clone(),

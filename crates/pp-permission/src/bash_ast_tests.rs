@@ -157,7 +157,7 @@ fn git_add_and_forced_bash_scope_confirmation() {
             Ok(PermissionDecision::ApprovePersistently)
         }));
 
-        // 批准 `git add aaa.txt`（持久化）
+        // Approve `git add aaa.txt` persistently
         let scope = sandboxed_bash_in(
             &gate,
             PermissionMode::WorkspaceWrite,
@@ -179,8 +179,8 @@ fn git_add_and_forced_bash_scope_confirmation() {
         );
         assert!(toml_text.contains("[[sandbox]]"), "{toml_text}");
 
-        // 重启新 Gate：同名精确文件命令 `git add aaa.txt` 直接放行，
-        // 但 `git add bbb.txt` 或 `git add .` 仍必须拦截弹窗！
+        // Restart a fresh Gate: the exact same-file command `git add aaa.txt` is allowed directly,
+        // but `git add bbb.txt` or `git add .` must still trigger the approval prompt!
         let restarted = process_gate(&root, PermissionMode::WorkspaceWrite);
         let scope2 = sandboxed_bash_in(
             &restarted,
@@ -280,7 +280,9 @@ fn git_add_and_forced_bash_scope_confirmation() {
                 ))
                 .unwrap();
             }
-            gate.set_auto_review_handler(Arc::new(|_, _| panic!("必须进行人工审批")));
+            gate.set_auto_review_handler(Arc::new(|_, _| {
+                panic!("human approval must be required")
+            }));
             let prompts = Arc::new(Mutex::new(Vec::new()));
             let recorded = Arc::clone(&prompts);
             gate.set_handler(Box::new(move |request, _| {
@@ -369,7 +371,7 @@ fn rules_precedence_protected_agents_and_config_overrides() {
         ))
         .unwrap();
 
-        // 精确规则放行对应参数，不放行其他参数
+        // The exact rule allows the matching arguments and no others
         sandboxed_bash(
             &gate,
             PermissionMode::ReadOnly,
@@ -427,7 +429,7 @@ fn rules_precedence_protected_agents_and_config_overrides() {
             );
         }
 
-        // 只读读取 .agents 下的文件不触发写审批
+        // Read-only access to files under .agents does not trigger write approval
         sandboxed_bash_in(
             &gate,
             PermissionMode::WorkspaceWrite,
@@ -548,7 +550,7 @@ fn ast_wrappers_expansions_redirects_and_memorization() {
         .unwrap()
         .unwrap();
 
-        // 输入重定向 `<` 与扩展读命令均应识别目标并区分会话/工作区外读取。
+        // Input redirection `<` and extended read commands must both identify their targets and distinguish session from outside-workspace reads.
         let redirect_cmd = format!(
             "head < '{}' && rg needle '{}'",
             session_file.display(),
@@ -560,7 +562,7 @@ fn ast_wrappers_expansions_redirects_and_memorization() {
         assert_eq!(classified.outside_reads, vec![home_file]);
         assert!(classified.immutable_denied.is_none());
 
-        // 若已设置 HOME，则 `cat ~/...` 静态波浪号应展开并按 $HOME 读取策略分类。
+        // When HOME is set, the static tilde in `cat ~/...` must expand and be classified under the $HOME read policy.
         if let Some(real_home) = std::env::var_os("HOME")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
@@ -580,7 +582,7 @@ fn ast_wrappers_expansions_redirects_and_memorization() {
             assert!(tilde_classified.immutable_denied.is_some());
         }
 
-        // 解释器与路径型可执行文件禁止生成可记忆 Exact 规则。
+        // Interpreters and path-form executables must not produce a memorable Exact rule.
         for non_memorizable in [
             "python3 read_secret.py",
             "node script.js",
@@ -604,7 +606,7 @@ fn ast_wrappers_expansions_redirects_and_memorization() {
         let memorizable = crate::bash_ast::analyze_command("git status");
         assert!(crate::bash_ast::ProgramAnalysis::suggested_rules(&memorizable.leaves).is_some());
 
-        // 超长命令截断提示禁用可记忆授权并跳过 auto_review。
+        // The oversized-command truncation notice disables memorable grants and skips auto_review.
         let mut gate = Gate::for_process(&root, Some(PermissionMode::AutoReview), false);
         gate.set_config(ToolsSettings::default());
         gate.set_auto_review_handler(Arc::new(|_request, _token| {

@@ -59,7 +59,7 @@ pub(crate) fn run(
     }
 }
 
-/// Plans 中只有重新进入讨论的 Draft 可以保存或提交。
+/// Among plans, only a Draft that went back to discussion can be saved or submitted.
 fn ensure_writable(document: &PlanDocument) -> Result<()> {
     ensure!(
         document.location != PlanLocation::Plans || document.status == plan::PlanStatus::Draft,
@@ -110,7 +110,7 @@ mod fixtures {
         }
     }
 
-    /// 把已登记条目写入登记表（模拟另一会话的登记）。
+    /// Write an already registered entry into the registry (simulating another session's registration).
     pub(super) fn register(
         workspace: &save::Workspace,
         id: &str,

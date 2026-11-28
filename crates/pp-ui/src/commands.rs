@@ -503,7 +503,8 @@ pub(crate) enum Command<'a> {
     Mcp(pp_mcp::Action),
     Shell(&'a str),
     Prompt(String),
-    /// 未注册的斜杠命令；消费者必须静默丢弃，不发送模型请求。
+    /// Unregistered slash command; consumers must silently drop it and send no model
+    /// request.
     Unknown,
 }
 
@@ -594,7 +595,8 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
             return Ok(Some(Command::Plan(match argument {
                 "" => PlanCommand::Toggle,
                 "view" => PlanCommand::View,
-                // 旧子命令已删除：只报本地错误，不进入 Plan、不发送模型请求。
+                // Legacy subcommand removed: report a local error only, do not enter Plan
+                // and do not send a model request.
                 "new" | "off" => {
                     bail!("Use /plan to toggle; manage plans with /plan-list.")
                 }
@@ -717,7 +719,8 @@ pub(crate) fn parse<'a>(input: &'a str, files: &FileCommands) -> Result<Option<C
         _ => {
             let file: Option<&FileCommand> = files.entries.iter().find(|file| file.name == name);
             let Some(file) = file else {
-                // 未知命令静默忽略：不产生本地错误，也不作为普通提示词发送。
+                // Unknown commands are silently ignored: no local error and no send as a
+                // regular prompt.
                 return Ok(Some(Command::Unknown));
             };
             let prompt = file.expand(argument);
@@ -792,7 +795,8 @@ fn format_help_row(usage: &str, description: &str) -> String {
     }
 }
 
-/// 命令清单：`COMMANDS` 已按构建裁剪，非 dev/test 不含 `/test-*` 条目。
+/// Command listing: `COMMANDS` is already trimmed per build, so non-dev/test builds
+/// contain no `/test-*` entries.
 pub(crate) fn help(files: &FileCommands) -> String {
     let mut lines = vec!["Help:".to_owned()];
     for &category in CommandCategory::ALL {

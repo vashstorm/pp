@@ -8,7 +8,7 @@ use super::{
     update_settings_fields_returning,
 };
 
-/// `/setting` 面板 `General` 页可编辑的运行参数补丁。
+/// Runtime parameter patch editable from the `General` page of the `/setting` panel.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingPatch {
     Edit(EditMode),
@@ -203,7 +203,7 @@ fn serialize_cost(cost: &super::CostDisplay) -> Result<(&'static str, Value)> {
     ))
 }
 
-/// 以严格的 YAML 校验与原子写入更新一项通用配置，返回提交后的完整 `Settings`。
+/// Updates one general setting with strict YAML validation and an atomic write, returning the committed `Settings`.
 pub fn update_general_setting(path: &Path, patch: SettingPatch) -> Result<Settings> {
     update_settings_fields_returning(path, |settings| Ok(vec![patch.apply(settings)?]))
 }

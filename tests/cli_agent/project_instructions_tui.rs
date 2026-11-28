@@ -1,4 +1,4 @@
-// 通过真实 PTY 验证启动规则加载、普通 read 展示、展开和恢复。
+// Verified through a real PTY: startup rule loading, ordinary read rendering, expansion and restore.
 
 #[test]
 fn agents_tui_resume_history_keeps_current_directory_rules_both_protocols() {
@@ -21,7 +21,7 @@ fn agents_tui_resume_history_keeps_current_directory_rules_both_protocols() {
     pty.ready();
     system_prompt::write(current.path(), ".pp/SYSTEM_TEMPLATE.md", "{{#if broken}}");
     pty.input("/resume\r");
-    // 等待后台扫描结束，避免在 Loading 状态发送会被忽略的方向键。
+    // Wait for the background scan to finish, so arrow keys are not sent while Loading would ignore them.
     pty.text("No sessions in current folder.");
     pty.input("\x1b[C");
     pty.text("agents-saved-task");

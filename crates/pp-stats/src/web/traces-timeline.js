@@ -1,5 +1,5 @@
 /**
- * Traces 时间线：Canvas / Minimap / Gutter 渲染、悬停提示与指针/键盘交互。
+ * Traces timeline: Canvas / Minimap / Gutter rendering, hover tooltip and pointer/keyboard interaction.
  */
 
 import { fixedCost, h, icon, number } from "./format.js";
@@ -42,7 +42,7 @@ const DIM_ALPHA = 0.3;
 export { traceBounds, traceLayout, traceScale };
 
 /**
- * 读取当前 CSS 变量计算画布调色板。
+ * Reads the current CSS variables to compute the canvas palette.
  */
 export function traceColors() {
   const style = getComputedStyle(document.documentElement);
@@ -91,7 +91,7 @@ function traceMatchIds(view) {
 }
 
 /**
- * 返回当前有效视口区间。
+ * Returns the currently effective viewport range.
  * @param {TraceState} state
  * @returns {{ u0: number, u1: number }}
  */
@@ -102,7 +102,7 @@ export function traceViewport(state) {
 }
 
 /**
- * 将视口限制在有效时间域和最小窗口宽度内。
+ * Clamps the viewport to the valid time domain and the minimum window width.
  * @param {TraceState} state
  * @param {number} u0
  * @param {number} u1
@@ -118,7 +118,7 @@ export function traceClampViewport(state, u0, u1) {
 }
 
 /**
- * 计算指定 span 在当前视口内的像素矩形。
+ * Computes the pixel rectangle of the given span within the current viewport.
  * @param {TraceState} state
  * @param {TraceLayout} layout
  * @param {TraceSpan} span
@@ -313,7 +313,7 @@ export function traceDrawScene(state, view, layout, laneAxes, colors) {
 }
 
 /**
- * 绘制顶部概览 Minimap 与当前视口选框。
+ * Draws the top overview Minimap and the current viewport selection box.
  * @param {TraceState} state
  * @param {TraceViewModel} view
  * @param {ReturnType<typeof traceColors>} colors
@@ -373,7 +373,7 @@ export function traceDrawMinimap(state, view, colors) {
 }
 
 /**
- * 更新时间线上的悬停高亮框与选中高亮框叠加层。
+ * Updates the hover highlight box and the selection highlight box overlays on the timeline.
  * @param {TraceState} state
  * @param {TraceViewModel} view
  * @param {TraceLayout} layout
@@ -417,7 +417,7 @@ export function traceDrawOverlays(state, view, layout) {
 }
 
 /**
- * 重绘主画布、Minimap、叠加框与搜索匹配计数。
+ * Redraws the main canvas, the Minimap, the overlay boxes and the search match count.
  */
 export function traceRedraw() {
   if (!traceStore.state || !traceStore.view || app.page !== "traces" || !traceStore.request) return;
@@ -436,7 +436,7 @@ export function traceRedraw() {
 }
 
 /**
- * 渲染左侧轨道标签与折叠按钮。
+ * Renders the left-side track labels and collapse buttons.
  * @param {TraceState} state
  * @param {TraceLayout} layout
  */
@@ -494,7 +494,7 @@ export function traceTooltipHide() {
 }
 
 /**
- * 展示时间线 span 或 marker 的悬停气泡。
+ * Shows the hover bubble of a timeline span or marker.
  * @param {TraceHit} hit
  * @param {TraceViewModel} view
  * @param {number} clientX
@@ -539,7 +539,7 @@ function traceShowTooltip(hit, view, clientX, clientY) {
 }
 
 /**
- * 将视口居中对齐到超出视野的选中 span。
+ * Centers the viewport on the selected span when it falls outside the visible area.
  * @param {TraceState} state
  * @param {TraceSpan} span
  */
@@ -603,7 +603,7 @@ function traceZoomToSpan(state, span) {
 }
 
 /**
- * 绑定主画布与 Minimap 的指针、滚轮、键盘与自适应尺寸事件。
+ * Binds pointer, wheel, keyboard and resize events of the main canvas and the Minimap.
  * @param {TraceViewModel} view
  * @param {TraceState} state
  * @param {TraceLayout} layout

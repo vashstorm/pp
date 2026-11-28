@@ -1,4 +1,4 @@
-//! 模型目录、思考档位与角色绑定的只读查询和保存入口。
+//! Read-only queries and save entry points for the model catalog, thinking levels and role bindings.
 use super::Agent;
 use anyhow::{Result, bail};
 use pp_config::config::ModelCatalog;
@@ -38,7 +38,7 @@ impl Agent {
         self.models.default_think_level()
     }
 
-    /// 保存全局默认档位（写 `b`），不切换运行中的会话。
+    /// Save the global default level (writes `b`) without switching the running session.
     pub fn save_default_think_level(&mut self, level: ThinkLevel) -> Result<()> {
         self.models.save_default_think_level(level)?;
         self.catalog = self.models.catalog_snapshot();
@@ -52,7 +52,7 @@ impl Agent {
             .to_owned()
     }
 
-    /// 保存全局默认模型（写 `b`），不切换运行中的会话。
+    /// Save the global default model (writes `b`) without switching the running session.
     pub fn save_default_model(&mut self, reference: &str) -> Result<()> {
         self.models.set_default(reference)?;
         self.catalog = self.models.catalog_snapshot();
@@ -86,7 +86,7 @@ impl Agent {
         Ok(favorites)
     }
 
-    /// 实际尝试发送的逻辑模型请求累计次数；读取失败时不得伪装成零。
+    /// Cumulative number of logical model requests actually attempted; a read failure must not masquerade as zero.
     pub fn model_usage(&self) -> Result<BTreeMap<String, u64>> {
         self.models.model_usage()
     }
@@ -127,7 +127,7 @@ impl Agent {
         self.catalog.clone()
     }
 
-    /// 当前生效模型的来源（覆盖/默认/角色/fallback）。
+    /// Source of the currently effective model (override/default/role/fallback).
     pub fn model_source(&self) -> pp_core::model::ModelSource {
         self.model_source
     }

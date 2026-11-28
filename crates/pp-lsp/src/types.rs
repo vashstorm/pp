@@ -1,7 +1,7 @@
-//! LSP 3.17 协议类型（只覆盖 pp 实际协商与消费的部分）。
+//! LSP 3.17 protocol types (covering only the parts pp actually negotiates and consumes).
 //!
-//! 未知字段一律忽略：语言服务器的扩展字段不是错误。可选/版本字段保留
-//! `null` 与缺失的区别，因为 `documentChanges` 允许 `version: null`。
+//! Unknown fields are always ignored: language-server extension fields are not an error. Optional/version fields keep
+//! the distinction between `null` and absent, because `documentChanges` allows `version: null`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -77,8 +77,8 @@ pub(crate) struct PublishDiagnosticsParams {
 pub(crate) struct TextEdit {
     pub(crate) range: Range,
     pub(crate) new_text: String,
-    /// `AnnotatedTextEdit`/snippet 扩展字段：`2` 表示 `newText` 是 snippet。
-    /// pp 拒绝应用 snippet 编辑，因为把它们当纯文本会插入 `${1:...}` 占位符。
+    /// `AnnotatedTextEdit`/snippet extension field: `2` means `newText` is a snippet.
+    /// pp refuses to apply snippet edits, because treating them as plain text would insert `${1:...}` placeholders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) insert_text_format: Option<u8>,
 }
@@ -212,7 +212,7 @@ pub(crate) struct CodeAction {
     pub(crate) command: Option<Command>,
 }
 
-/// 服务器声明的文本文档同步方式。
+/// Text document synchronization mode declared by the server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SyncKind {
     None,
@@ -223,22 +223,22 @@ pub(crate) enum SyncKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SaveKind {
     Never,
-    /// 保存通知带正文（`includeText: true`）。
+    /// The save notification carries the text (`includeText: true`).
     IncludeText,
-    /// 保存通知不带正文。
+    /// The save notification carries no text.
     Plain,
 }
 
-/// `initialize` 结果里的服务器能力。
+/// Server capabilities from the `initialize` result.
 ///
-/// `raw` 原样保留服务器声明的完整 capabilities 对象（包括 pp 不认识的扩展
-/// 字段以及 `executeCommandProvider.commands`）；其余字段只是从**顶层**声明
-/// 解析出的便捷视图。LSP 3.17 的导航、编辑、格式化与执行命令能力都在
-/// capabilities 顶层，只有 `workspace.workspaceFolders` 是嵌套的；这里不保留
-/// 任何旧的错误嵌套回退，避免把未声明的能力当成可用。
+/// `raw` keeps the full capabilities object exactly as the server declared it (including extension
+/// fields pp does not know and `executeCommandProvider.commands`); the remaining fields are just convenience
+/// views parsed from the **top-level** declarations. In LSP 3.17 the navigation, edit, formatting and execute-command capabilities all live at
+/// capabilities top level, and only `workspace.workspaceFolders` is nested; no legacy
+/// incorrect-nesting fallback is kept here, to avoid treating undeclared capabilities as available.
 #[derive(Clone, Debug)]
 pub(crate) struct ServerCapabilities {
-    /// 服务器原样返回的 capabilities；`capabilities_json` 直接输出它。
+    /// The capabilities exactly as returned by the server; `capabilities_json` emits it directly.
     pub(crate) raw: Value,
     pub(crate) position_encoding: Option<String>,
     pub(crate) sync: SyncKind,
@@ -296,8 +296,8 @@ fn truthy(value: Option<&Value>) -> bool {
     }
 }
 
-/// `workspaceFolders.changeNotifications` 允许布尔值或注册 id 字符串；
-/// 两种形式都表示服务器支持工作区根变更通知。
+/// `workspaceFolders.changeNotifications` allows a boolean or a registration id string;
+/// both forms mean the server supports workspace-root change notifications.
 fn registration(value: Option<&Value>) -> bool {
     match value {
         Some(Value::Bool(flag)) => *flag,
@@ -308,12 +308,12 @@ fn registration(value: Option<&Value>) -> bool {
 }
 
 impl ServerCapabilities {
-    /// 消费 initialize 返回的 capabilities。
+    /// Consume the capabilities returned by initialize.
     ///
-    /// 所有属性都按 LSP 3.17 的**顶层**声明解析（`workspace.workspaceFolders`
-    /// 除外）。解析阶段只借用原值，最后把整个 JSON 移入 [`Self::raw`]，不再
-    /// 复制一份完整 capabilities；`diagnostic_provider` 只保留选项对象的副本
-    /// 供 pull 诊断判定使用。
+    /// Every property is parsed from the LSP 3.17 **top-level** declaration (`workspace.workspaceFolders`
+    /// excepted). Parsing only borrows the original value, and finally the whole JSON is moved into [`Self::raw`], avoiding
+    /// a second copy of the full capabilities; `diagnostic_provider` keeps only a copy of the options object
+    /// for pull-diagnostic decisions.
     pub(crate) fn parse(capabilities: Value) -> Self {
         let mut parsed = Self {
             position_encoding: capabilities
@@ -398,7 +398,7 @@ impl ServerCapabilities {
             parsed.workspace_folders_change_notifications =
                 registration(folders.get("changeNotifications"));
         }
-        // 以上解析只借用原值；这里整体移入，避免完整 JSON 的第二次复制。
+        // The parsing above only borrows the original value; move it in here to avoid a second copy of the full JSON.
         parsed.raw = capabilities;
         parsed
     }

@@ -1,5 +1,5 @@
-//! 工具显示策略，基准为 Oh My Pi 0b5c27ab 的 ANSI 渲染路径。
-//! read 始终隐藏正文，其余工具在完整回放时使用保留的原始正文。
+//! Tool display policy, based on the ANSI rendering path of Oh My Pi 0b5c27ab.
+//! read always hides its body; other tools use the retained raw body on a full replay.
 
 use super::transcript::{block_line, visit_wrapped_rows, wrap_block};
 use super::transcript_style as palette;
@@ -36,7 +36,7 @@ const FIND_ITEMS: usize = 8;
 const BASH_LINES: usize = 10;
 pub(super) const DIFF_HUNKS: usize = 8;
 pub(super) const DIFF_LINES: usize = 16;
-// 文件工具在参数预览、执行中和完成后共用正文上限。
+// File tools share one body quota across the argument preview, the run and completion.
 const WRITE_LINES: usize = DIFF_LINES;
 const MCP_LINES: usize = 4;
 const MCP_EXPANDED_LINES: usize = 12;
@@ -73,7 +73,7 @@ pub(super) struct View<'a> {
 
 pub(super) fn clip(text: &str, width: usize, ellipsis: bool) -> String {
     let safe = pp_core::text::display_text(text);
-    // 列宽计算必须与实际绘制使用相同的 tab stop，避免截断后再次折成多行。
+    // Column math must use the same tab stops as the actual drawing so truncated text is not wrapped onto another line.
     let expanded_tabs;
     let safe = if safe.contains('\t') {
         let mut columns = 0;
@@ -161,7 +161,7 @@ pub(super) fn command(text: &str, expanded: bool, context: Context) -> Vec<Strin
 }
 
 pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static>> {
-    // read 的完整查看、预览配置和全局展开均只保留错误诊断。
+    // The read full view, preview settings and global expansion all keep the error diagnostics only.
     if view.name == "read" {
         return view
             .result
@@ -178,7 +178,7 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     let expanded = view.expanded || view.context.full;
     let text = view.text;
     if view.name == "todo" {
-        // 清单由固定区展示；历史只保留操作标题及失败诊断。
+        // The checklist is shown by the fixed area; history only keeps the operation title and failure diagnostics.
         return todo_body(&view, width);
     }
     if view.name == "rg" {
@@ -296,13 +296,13 @@ pub(super) fn body(view: View<'_>, width: u16, style: Style) -> Vec<Line<'static
     }
 }
 
-/// 逻辑行（丢弃末尾换行造成的空行），可双向迭代且不分配。
+/// Logical lines (dropping the empty line left by a trailing newline), bidirectionally iterable without allocating.
 fn logical_lines(text: &str) -> impl DoubleEndedIterator<Item = &str> {
     let text = (!text.is_empty()).then(|| text.strip_suffix('\n').unwrap_or(text));
     text.into_iter().flat_map(|text| text.split('\n'))
 }
 
-/// 与 `wrap` 行数完全一致的统计：常见日志行走长度快路径，其余逐字素换行但不保留行。
+/// Counting that matches the `wrap` line count exactly: common log lines take the fast length path, everything else wraps per grapheme without keeping lines.
 fn wrapped_rows(line: &str, width: u16) -> usize {
     if line.len() <= usize::from(width)
         && line
@@ -334,7 +334,7 @@ pub(super) fn tail_output(
     stdout_color: ratatui::style::Color,
 ) -> Vec<Line<'static>> {
     if expanded {
-        // `[stderr]` 分隔行与其后的所有行使用错误色。
+        // The `[stderr]` separator line and every line after it use the error color.
         let mut stderr = false;
         return logical_lines(text)
             .flat_map(|line| {
@@ -350,7 +350,7 @@ pub(super) fn tail_output(
             })
             .collect();
     }
-    // 尾部预览必须先知道总行数与首个 `[stderr]` 位置：这一遍只数换行。
+    // The tail preview first needs the total line count and the first `[stderr]` position: this pass only counts newlines.
     let mut lines = 0;
     let mut marker = None;
     for (index, line) in logical_lines(text).enumerate() {
@@ -359,7 +359,7 @@ pub(super) fn tail_output(
             marker = Some(index);
         }
     }
-    // 从后往前只生成 limit 个屏幕行，头部只统计行数。
+    // Generate only the trailing limit screen lines from the end, while the head is only counted.
     let limit = max_lines.min(context.window());
     let mut rows: VecDeque<Line<'static>> = VecDeque::new();
     let mut hidden = 0;
@@ -376,7 +376,7 @@ pub(super) fn tail_output(
             stdout_color
         };
         let mut wrapped = wrap([line.to_owned()], width, style.fg(color));
-        // 本行最前面的屏幕行落在额度之外，只计入省略行数。
+        // The leading screen rows of this line fall outside the quota and only count as omitted lines.
         let overflow = (wrapped.len() + rows.len()).saturating_sub(limit);
         if overflow > 0 {
             hidden += overflow;
@@ -538,7 +538,7 @@ fn generic(text: &str, mcp: bool, expanded: bool, width: u16, style: Style) -> V
     rows
 }
 
-// 与上游相同：根对象从深度 1 开始，容器显示大小，超深或超行时保留省略标记。
+// Same as upstream: the root object starts at depth 1, containers show their size, and the omission marker is kept when too deep or too long.
 fn json_tree(value: &Value, expanded: bool) -> (Vec<String>, bool) {
     let mut tree = JsonTree {
         lines: Vec::new(),

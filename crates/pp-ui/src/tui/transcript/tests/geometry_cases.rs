@@ -1,12 +1,12 @@
 use super::*;
 
-/// 构造一条确定高度的会话条目，便于按索引核对翻页窗口。
-/// Data 卡片按逻辑行逐行渲染，行数可直接控制。
+/// Build a conversation entry with a deterministic height so paging windows can be checked by index.
+/// The Data card renders line by line per logical line, so the row count is directly controllable.
 fn fixed_entry(transcript: &mut Transcript, label: &str, rows: usize) {
     transcript.append("Note", &format!("{label}\n{}", "body\n".repeat(rows - 1)));
 }
 
-/// 期望从 offset 开始的窗口正文：取每行的可见文本并裁掉右侧填充空格。
+/// Expected window body starting at offset: take the visible text of each line and trim the right-hand padding spaces.
 fn visible_rows(buffer: &Buffer) -> Vec<String> {
     (buffer.area.y..buffer.area.bottom())
         .map(|y| {
@@ -19,15 +19,15 @@ fn visible_rows(buffer: &Buffer) -> Vec<String> {
         .collect()
 }
 
-/// 按同一确定性脚本构建混合历史，供对照渲染使用。
+/// Build a mixed history from the same deterministic script for comparison rendering.
 fn mixed_history() -> Transcript {
     let mut transcript = Transcript::new();
-    // 240 轮 × 每轮 1.25 条（含错误卡）＝ 300 条混合条目。
+    // 240 turns × 1.25 entries each (including error cards) = 300 mixed entries.
     for index in 0..240 {
         match index % 4 {
             0 => fixed_entry(&mut transcript, &format!("short-{index:03}"), 1),
             1 => fixed_entry(&mut transcript, &format!("multi-{index:03}"), 5),
-            // 空正文 Data 卡片高度为 0：验证零高度槽不占行也不加 gap。
+            // An empty-body Data card has height 0: verify that a zero-height slot takes no line and adds no gap.
             2 => transcript.append("Note", ""),
             _ => {
                 fixed_entry(&mut transcript, &format!("wide-{index:03}"), 2);
@@ -40,7 +40,7 @@ fn mixed_history() -> Transcript {
 
 #[test]
 fn long_history_pages_by_geometry_and_matches_full_render_row_by_row() {
-    // 300+ 条混合条目：短文本、多行正文、空正文（零高度）与本地错误卡。
+    // 300+ mixed entries: short text, multi-line bodies, empty bodies (zero height) and local error cards.
     let width = 40;
     let height = 10;
     let mut reference = mixed_history();
@@ -48,7 +48,7 @@ fn long_history_pages_by_geometry_and_matches_full_render_row_by_row() {
     let base_rows = visible_rows(&base);
     assert!(base_rows.iter().any(|row| !row.is_empty()));
 
-    // 逐页向下翻页：每屏的正文必须来自几何定位的同一批条目，且单调推进。
+    // Page down one page at a time: each screen's body must come from the same batch of entries located by the geometry and must advance monotonically.
     let mut transcript = mixed_history();
     transcript.follow_bottom = false;
     transcript.offset = 0;
@@ -59,10 +59,10 @@ fn long_history_pages_by_geometry_and_matches_full_render_row_by_row() {
         let rows = visible_rows(&buffer);
         assert!(
             rows.iter().any(|row| !row.is_empty()),
-            "翻页窗口不应整屏空白"
+            "a paged window must not be entirely blank"
         );
         if let Some(earlier) = previous.as_ref() {
-            assert_ne!(&rows, earlier, "page_down 必须推进窗口");
+            assert_ne!(&rows, earlier, "page_down must advance the window");
         }
         previous = Some(rows);
         if transcript.following() {
@@ -70,26 +70,32 @@ fn long_history_pages_by_geometry_and_matches_full_render_row_by_row() {
         }
         transcript.page_down();
         pages += 1;
-        assert!(pages < 5000, "翻页未终止");
+        assert!(pages < 5000, "paging did not terminate");
     }
 
-    // 逐页向上翻回顶部：offset 单调不增。
+    // Page back up to the top: offset is monotonically non-increasing.
     let mut offsets = Vec::new();
     while transcript.offset > 0 {
         let before = transcript.offset;
         transcript.page_up();
         render(&mut transcript, width, height);
-        assert!(transcript.offset <= before, "page_up 不应向下移动窗口");
+        assert!(
+            transcript.offset <= before,
+            "page_up must not move the window down"
+        );
         offsets.push(transcript.offset);
-        assert!(offsets.len() < 5000, "回滚未终止");
+        assert!(offsets.len() < 5000, "scrolling back did not terminate");
     }
 
-    // 与全量渲染的对应窗口逐行等价：完整查看器路径不受几何定位影响。
+    // Row-by-row equivalence with the corresponding window of the full render: the full viewer path is unaffected by geometry positioning.
     let mut full = mixed_history();
     full.prepare_layout(width);
     full.sync_geometry();
     let total = full.total;
-    assert!(total > 0, "同步几何后应得到正的总量");
+    assert!(
+        total > 0,
+        "syncing the geometry must yield a positive total"
+    );
     let mut stitched: Vec<String> = Vec::new();
     for start in (0..total).step_by(64) {
         let rows = (total - start).min(64);
@@ -98,7 +104,7 @@ fn long_history_pages_by_geometry_and_matches_full_render_row_by_row() {
         full.render(&mut buffer, area, start);
         stitched.extend(visible_rows(&buffer));
     }
-    // 全量回放的最后一屏与备用屏底部窗口包含同样的末尾内容。
+    // The last screen of the full replay and the alternate-screen bottom window hold the same trailing content.
     let last_window: Vec<String> = stitched
         .iter()
         .rev()
@@ -109,18 +115,18 @@ fn long_history_pages_by_geometry_and_matches_full_render_row_by_row() {
         last_window
             .iter()
             .any(|row| row.contains("error-239") || row.contains("wide-239")),
-        "全量回放末尾应包含最新内容：{last_window:?}"
+        "the end of the full replay must contain the latest content: {last_window:?}"
     );
     assert!(
         base_rows
             .iter()
             .any(|row| row.contains("error-239") || row.contains("wide-239")),
-        "备用屏底部窗口应包含最新内容：{base_rows:?}"
+        "the alternate-screen bottom window must contain the latest content: {base_rows:?}"
     );
     assert_eq!(
         base_rows.iter().filter(|row| !row.is_empty()).count(),
         last_window.iter().filter(|row| !row.is_empty()).count(),
-        "备用屏与全量回放的末尾窗口可见行数应一致"
+        "the alternate screen and the full replay must show the same number of visible rows in the trailing window"
     );
 }
 
@@ -137,7 +143,7 @@ fn streaming_replacement_of_middle_entry_keeps_anchor_on_same_entry() {
     let width = 60;
     let height = 8;
     render(&mut transcript, width, height);
-    // 从底部上溯到正好落在中段条目内的行号。
+    // Walk up from the bottom to the line number that lands exactly inside the middle entry.
     let marker_index = transcript
         .entries
         .iter()
@@ -147,7 +153,7 @@ fn streaming_replacement_of_middle_entry_keeps_anchor_on_same_entry() {
     let marker_height = transcript.geometry.height(marker_index);
     assert!(
         marker_height >= 20,
-        "被测条目应足够高以承载条目内行偏移：{marker_height}"
+        "the entry under test must be tall enough to carry an in-entry row offset: {marker_height}"
     );
     let marker_start = transcript.geometry.start(marker_index);
     transcript.offset = marker_start + 10;
@@ -155,11 +161,20 @@ fn streaming_replacement_of_middle_entry_keeps_anchor_on_same_entry() {
     transcript.browse_anchor = None;
     let before = screen(&render(&mut transcript, width, height));
     let anchor = transcript.browse_anchor.unwrap();
-    assert_eq!(anchor.entry, marker_index, "锚点应落在被测条目内：{before}");
-    assert_eq!(anchor.row, 10, "条目内行偏移应保持：{before}");
-    assert!(before.contains("body"), "窗口应显示条目正文：{before}");
+    assert_eq!(
+        anchor.entry, marker_index,
+        "the anchor must fall inside the entry under test: {before}"
+    );
+    assert_eq!(
+        anchor.row, 10,
+        "the in-entry row offset must be preserved: {before}"
+    );
+    assert!(
+        before.contains("body"),
+        "the window must show the entry body: {before}"
+    );
 
-    // 中段条目内容被流式替换：身份变化应被下一帧捕获，锚点保持在同一条目。
+    // The middle entry is replaced by streaming content: the identity change must be caught on the next frame and the anchor must stay on the same entry.
     let entry = &mut transcript.entries[marker_index];
     entry.text = format!("replaced\n{}", "new body\n".repeat(45));
     entry.layout = None;
@@ -167,12 +182,18 @@ fn streaming_replacement_of_middle_entry_keeps_anchor_on_same_entry() {
     let after = screen(&render(&mut transcript, width, height));
     assert!(
         after.contains("replaced") || after.contains("new body"),
-        "替换后仍应显示该条目：{after}"
+        "the entry must still be shown after replacement: {after}"
     );
     let resolved = transcript.browse_anchor.unwrap();
-    assert_eq!(resolved.entry, anchor.entry, "锚点条目不应漂移");
-    assert_eq!(resolved.row, anchor.row, "条目内行偏移不应漂移");
-    // 替换后窗口仍落在同一批条目：后续内容不应被推进或拉回。
+    assert_eq!(
+        resolved.entry, anchor.entry,
+        "the anchor entry must not drift"
+    );
+    assert_eq!(
+        resolved.row, anchor.row,
+        "the in-entry row offset must not drift"
+    );
+    // The window still lands on the same batch of entries after the replacement: later content must not push it or pull it back.
     assert!(
         after.contains("after-0") || after.contains("new body"),
         "{after}"
@@ -200,27 +221,30 @@ fn geometry_hidden_members_tree_roundtrip_theme_and_gap_lines() {
         let width = 60;
         render(&mut transcript, width, 12);
         transcript.sync_geometry();
-        // 槽位：0=You，1=read 组首（可见），2..5=隐藏成员，6=收尾 You。
+        // Slots: 0=You, 1=read group head (visible), 2..5=hidden members, 6=trailing You.
         assert_eq!(transcript.entries.len(), 7);
         let first_height = transcript.geometry.height(0);
         let group_height = transcript.geometry.height(1);
-        assert!(group_height > 0, "read 组首应可见");
+        assert!(group_height > 0, "the read group head must be visible");
         for hidden in 2..6 {
             assert_eq!(
                 transcript.geometry.height(hidden),
                 0,
-                "隐藏成员槽 {hidden} 不应占行"
+                "hidden member slot {hidden} must take no line"
             );
         }
         let after_start = transcript.geometry.start(6);
         let expected = first_height + 1 + group_height + 1;
         assert_eq!(after_start, expected);
-        // 隐藏成员不占行：定位到收尾条目起点时窗口应从该条目开始。
+        // Hidden members take no line: positioning at the start of the trailing entry must begin the window at that entry.
         transcript.offset = after_start;
         transcript.follow_bottom = false;
         let rows = screen(&render(&mut transcript, width, 12));
         assert!(rows.contains("after the read group"));
-        assert!(!rows.contains("body-"), "隐藏成员正文不应占行：{rows}");
+        assert!(
+            !rows.contains("body-"),
+            "the body of a hidden member must take no line: {rows}"
+        );
     }
 
     {
@@ -239,12 +263,12 @@ fn geometry_hidden_members_tree_roundtrip_theme_and_gap_lines() {
                 label: Line::raw(format!("node-{index}")),
             });
         }
-        // 先以普通视图渲染基线（备用屏几何已建立）。
+        // Render a baseline in the regular view first (the alternate-screen geometry is already built).
         let width = 48;
         let height = 20;
         let baseline = screen(&render(&mut transcript, width, height));
 
-        // 进入树视图（接管展示、清空几何），再返回普通视图：屏幕应逐行相同。
+        // Enter the tree view (takes over the display, clears the geometry) and return to the regular view: the screen must be identical line by line.
         tree_render(
             &mut transcript,
             &blocks,
@@ -254,7 +278,10 @@ fn geometry_hidden_members_tree_roundtrip_theme_and_gap_lines() {
             width,
             height,
         );
-        assert!(transcript.geometry.is_empty(), "树视图接管时应清空几何");
+        assert!(
+            transcript.geometry.is_empty(),
+            "the tree view must clear the geometry on takeover"
+        );
         let restored = screen(&render(&mut transcript, width, height));
         assert_eq!(restored, baseline);
     }
@@ -266,12 +293,15 @@ fn geometry_hidden_members_tree_roundtrip_theme_and_gap_lines() {
         terminal
             .draw(|frame| transcript.draw(frame, frame.area()))
             .unwrap();
-        assert!(transcript.geometry.is_empty(), "零尺寸帧不应产生几何");
+        assert!(
+            transcript.geometry.is_empty(),
+            "a zero-sized frame must not produce geometry"
+        );
         assert!(
             transcript.entries[0].layout.is_none(),
-            "零尺寸帧不应排版条目"
+            "a zero-sized frame must not lay out entries"
         );
-        // 恢复正常尺寸后渲染照常。
+        // Rendering works as usual once the size is restored.
         let rows = screen(&render(&mut transcript, 40, 8));
         assert!(rows.contains("entry"));
     }
@@ -288,17 +318,20 @@ fn geometry_hidden_members_tree_roundtrip_theme_and_gap_lines() {
         let before = screen(&render(&mut transcript, width, height));
         let anchor = transcript.browse_anchor.unwrap();
 
-        // 主题失效会清空全部布局：几何身份比较应捕获并全量重算。
+        // Invalidating the theme clears every layout: the geometry identity comparison must catch that and recompute everything.
         transcript.invalidate_theme();
         let after = screen(&render(&mut transcript, width, height));
-        assert_eq!(after, before, "同主题往返应得到相同屏幕");
+        assert_eq!(
+            after, before,
+            "a round trip within the same theme must yield the same screen"
+        );
         let resolved = transcript.browse_anchor.unwrap();
         assert_eq!(resolved.entry, anchor.entry);
         assert_eq!(resolved.row, anchor.row);
     }
 
     {
-        // gap 行（正高度条目之后那一行）本身没有内容：渲染应跳到下一条目。
+        // The gap line (the row after a positive-height entry) has no content of its own: rendering must skip to the next entry.
         let mut transcript = Transcript::new();
         fixed_entry(&mut transcript, "first", 3);
         fixed_entry(&mut transcript, "second", 2);
@@ -312,6 +345,9 @@ fn geometry_hidden_members_tree_roundtrip_theme_and_gap_lines() {
         transcript.follow_bottom = false;
         transcript.browse_anchor = None;
         let rows = screen(&render(&mut transcript, width, height));
-        assert!(rows.contains("second"), "gap 行起点应渲染下一条目：{rows}");
+        assert!(
+            rows.contains("second"),
+            "a window starting on a gap line must render the next entry: {rows}"
+        );
     }
 }

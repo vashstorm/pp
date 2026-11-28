@@ -1,4 +1,4 @@
-//! 已提交文件与语言服务器文档视图的同步。
+//! Synchronization between committed files and the language server's document view.
 
 use crate::Registry;
 use pp_core::cancellation::CancellationToken;
@@ -34,8 +34,8 @@ pub(crate) fn sync_file_events(
                 "failureReason": crate::transport::UNAUTHORIZED_EDIT
             }));
         };
-        // 逐文件 warning（如无法按 UTF-8 同步的内容）与传输/取消失败合并进同一份报告；
-        // 正常工具失败不会被吞掉，也不会挤掉同批其它文件的通知。
+        // Per-file warnings (e.g. content that cannot be synced as UTF-8) and transport/cancellation failures merge into the same report;
+        // ordinary tool failures are never swallowed, and never crowd out notifications for the other files in the batch.
         match client.operation(deadline, cancellation, &mut deny, |op| {
             client.sync_file_events_in_operation(op, &events)
         }) {

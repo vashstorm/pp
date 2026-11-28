@@ -1,4 +1,4 @@
-//! 基于解释器语法与真实执行事件生成 OMP 风格的命令展示。
+//! OMP-style command display built from interpreter syntax and real execution events.
 
 use brush_core::parser::{
     SourceSpan,
@@ -134,7 +134,7 @@ impl Trace {
             let mut printer = printer::Printer::new(model, unit, source, depth);
             printer.program(program);
             if printer.overflow {
-                // 所有展示转换都是可丢弃的；超限不能改变解释器行为。
+                // Every display transformation is discardable; exceeding a limit must not change interpreter behavior.
                 printer.model.rows.truncate(first_row);
                 printer.model.nodes.truncate(first_node);
                 printer

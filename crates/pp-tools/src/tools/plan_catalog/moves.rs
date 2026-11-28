@@ -1,4 +1,4 @@
-//! 生命周期搬迁：文件身份、发布／提交与已确认残留清理。
+//! Lifecycle moves: file identity, publish/commit and confirmed leftover cleanup.
 use anyhow::{Result, bail, ensure};
 use std::path::Path;
 
@@ -6,9 +6,9 @@ use super::{PlanCatalogEntry, PlanCatalogLock, PlanFileIdentity, load_catalog, s
 use pp_core::plan::PlanLocation;
 use pp_workspace::save::Workspace;
 
-/// 安全读取相对路径目标的文件身份；缺失返回 `None`，符号链接与非普通
-/// 文件报错。供登记墓碑记录与同 inode 残留确认使用，不能替代操作前的
-/// 精确字节读取。
+/// Safely read the file identity of a relative-path target; missing returns `None` and symlinks or non-regular
+/// files error. Used for registry tombstones and same-inode leftover confirmation, and no substitute for the
+/// exact byte read performed before an operation.
 pub fn file_identity(workspace: &Workspace, path: &Path) -> Result<Option<PlanFileIdentity>> {
     let target = workspace.target(path, false)?;
     Ok(target
@@ -16,11 +16,11 @@ pub fn file_identity(workspace: &Workspace, path: &Path) -> Result<Option<PlanFi
         .map(|(device, inode)| PlanFileIdentity { device, inode }))
 }
 
-/// 生命周期搬迁的发布步骤：核对当前登记（墓碑、源身份、目标重名）后，
-/// 在目标位置发布不覆盖的同 inode 链接，并以 CAS 原子更新登记表路径。
-/// 失败保留源链接；同 inode 的既有目标允许幂等重入。锁顺序：调用方须
-/// 先持有计划 `PlanLease`，再由本函数获取 `PlanCatalogLock`。发布成功
-/// 后由调用方提交 workflow/handoff，再调用 `commit_plan_move` 移除源名。
+/// Publish step of a lifecycle move: after checking the current registration (tombstone, source identity, target name clash),
+/// publish a non-overwriting same-inode link at the target and update the registry path with an atomic CAS.
+/// A failure keeps the source link; an existing same-inode target allows idempotent re-entry. Lock order: the caller must
+/// already hold the plan `PlanLease`, and this function then acquires `PlanCatalogLock`. After a successful publish
+/// the caller commits workflow/handoff and only then calls `commit_plan_move` to remove the source name.
 pub fn publish_plan_move(
     workspace: &Workspace,
     id: &str,
@@ -41,7 +41,7 @@ pub fn publish_plan_move(
     let (source_name, source_location) = source;
     let (target_name, target_location) = target;
     match snapshot.catalog.active_by_id(id) {
-        // 已在目标身份：幂等重入，只核对同 inode 链接，登记无需更新。
+        // Already at the target identity: idempotent re-entry that only checks the same-inode link, no registry update needed.
         Some(entry) if entry.file_name == target_name && entry.location == target_location => {
             return workspace.link_plan(
                 Path::new(&path_for_name(source_name, source_location)),
@@ -49,8 +49,8 @@ pub fn publish_plan_move(
                 expected,
             );
         }
-        // 正常搬迁：登记条目必须仍指向源身份；否则登记表已被其他会话
-        // 更改，fail-closed 等待按 ID 协调。
+        // Normal move: the registry entry must still point at the source identity; otherwise another session
+        // already changed the registry, so fail closed and wait for ID-based reconciliation.
         Some(entry) => {
             ensure!(
                 entry.file_name == source_name && entry.location == source_location,
@@ -94,8 +94,8 @@ pub fn publish_plan_move(
         .map(|registration_warning| warning.or(registration_warning))
 }
 
-/// 生命周期搬迁的提交步骤：调用方已提交 workflow/handoff 后移除源链接。
-/// 失败保留源链接，交由按 ID 协调做同 inode 残留清理。
+/// Commit step of a lifecycle move: remove the source link after the caller committed workflow/handoff.
+/// A failure keeps the source link and leaves same-inode leftover cleanup to ID-based reconciliation.
 pub fn commit_plan_move(
     workspace: &Workspace,
     source: (&str, PlanLocation),
@@ -109,9 +109,9 @@ pub fn commit_plan_move(
     )
 }
 
-/// 恢复协调的残留清理：仅当旧生命周期路径与新登记路径确认为同一 inode
-/// 时移除旧名；缺失、不同 inode、符号链接或任何读取异常都保留现状，
-/// 绝不越权删除，也不能让未确认的残留挡住计划访问。
+/// Leftover cleanup during recovery reconciliation: remove the old name only when the old lifecycle path and the new
+/// registered path are confirmed to be the same inode; missing paths, different inodes, symlinks and any read error keep
+/// the status quo, never deleting beyond authority and never letting an unconfirmed leftover block plan access.
 pub fn cleanup_confirmed_leftover(
     workspace: &Workspace,
     current: &str,
@@ -125,7 +125,7 @@ pub fn cleanup_confirmed_leftover(
         return Ok(());
     };
     let Ok(leftover_target) = workspace.target(Path::new(leftover), false) else {
-        // 符号链接/特殊文件/缺失目录等异常残留不触碰，留给显式管理。
+        // Anomalous leftovers (symlinks, special files, missing directories) are left untouched for explicit management.
         return Ok(());
     };
     let Ok(Some(leftover_identity)) = leftover_target.stat_optional() else {
@@ -182,7 +182,7 @@ mod tests {
         fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();
         fs::write(dir.path().join(".pp/drafts/a.md"), b"body").unwrap();
 
-        // 未登记身份：发布 + 登记到目标位置；提交移除源。
+        // Unregistered identity: publish and register at the target location, then commit to remove the source.
         let warning = publish_plan_move(
             &ws,
             &id,
@@ -214,7 +214,7 @@ mod tests {
             b"body"
         );
 
-        // 已在目标身份：幂等重入（含同 inode 残留源）。
+        // Already at the target identity: idempotent re-entry (including a same-inode leftover source).
         fs::hard_link(
             dir.path().join(".pp/plans/a.md"),
             dir.path().join(".pp/drafts/a.md"),
@@ -237,7 +237,7 @@ mod tests {
         .unwrap();
         assert!(!dir.path().join(".pp/drafts/a.md").exists());
 
-        // 登记指向其他身份（既非源也非目标）时 fail-closed；墓碑报已删除。
+        // Fail closed when the registry points at a third identity (neither source nor target); a tombstone reports already deleted.
         let error = publish_plan_move(
             &ws,
             &id,
@@ -316,7 +316,7 @@ mod tests {
         fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();
         fs::write(dir.path().join(".pp/plans/a.md"), b"body").unwrap();
 
-        // 同 inode 残留被移除；缺失残留静默完成。
+        // A same-inode leftover is removed; a missing leftover completes silently.
         fs::hard_link(
             dir.path().join(".pp/plans/a.md"),
             dir.path().join(".pp/drafts/a.md"),
@@ -326,7 +326,7 @@ mod tests {
         assert!(!dir.path().join(".pp/drafts/a.md").exists());
         cleanup_confirmed_leftover(&ws, ".pp/plans/a.md", ".pp/drafts/gone.md").unwrap();
 
-        // 不同 inode、符号链接与特殊残留一律保留现状。
+        // Different inodes, symlinks and special leftovers all keep the status quo.
         fs::write(dir.path().join(".pp/drafts/other.md"), b"body").unwrap();
         symlink("a.md", dir.path().join(".pp/drafts/alias.md")).unwrap();
         cleanup_confirmed_leftover(&ws, ".pp/plans/a.md", ".pp/drafts/other.md").unwrap();
@@ -337,7 +337,7 @@ mod tests {
         );
         assert!(dir.path().join(".pp/drafts/alias.md").is_symlink());
 
-        // 相同路径与登记缺失均无动作。
+        // An identical path and a missing registration both do nothing.
         cleanup_confirmed_leftover(&ws, ".pp/plans/a.md", ".pp/plans/a.md").unwrap();
         cleanup_confirmed_leftover(&ws, ".pp/plans/missing.md", ".pp/drafts/other.md").unwrap();
         assert!(dir.path().join(".pp/plans/a.md").exists());

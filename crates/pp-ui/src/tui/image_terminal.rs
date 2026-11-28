@@ -1,8 +1,8 @@
-//! 启动时同步探测图片协议；不用依赖库的超时读取线程，避免它继续争抢 stdin。
+//! Probe the image protocol synchronously at startup; no dependency timeout reader thread that would keep competing for stdin.
 //!
-//! 探测只读取命令回复：任何 `ESC` 起始的字节都归入回复序列并整段丢弃，只有探测
-//! 窗口内抢先输入的非 `ESC` 字符会转成事件。否则回复的残余字节会被 crossterm
-//! 当成按键或粘贴写进输入框。
+//! The probe only reads command replies: every byte starting with `ESC` joins a reply sequence and is discarded whole,
+//! and only non-`ESC` characters typed early inside the probe window become events. Otherwise leftover reply bytes
+//! would be written into the input box by crossterm as key presses or paste.
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui_image::picker::{
     Picker, ProtocolType,
@@ -13,11 +13,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// 终端不回复时的探测上限。
+/// Probe upper bound when the terminal does not reply.
 const PROBE_WINDOW: Duration = Duration::from_millis(200);
-/// 收到回复后的安静窗口：tmux 与真实终端的回复可能分批到达，读到安静为止。
+/// Quiet window after a reply: tmux and real terminals may deliver replies in batches, so read until it goes quiet.
 const PROBE_QUIET: Duration = Duration::from_millis(40);
-/// 单条回复序列的缓冲上限；超长控制字符串只保留前缀，继续丢弃至结束。
+/// Buffer cap for one reply sequence; an over-long control string keeps only its prefix and keeps discarding to the end.
 const MAX_SEQUENCE: usize = 1024;
 
 pub(super) fn detect() -> (Picker, Vec<Event>, Vec<u8>) {
@@ -32,7 +32,7 @@ pub(super) fn detect() -> (Picker, Vec<Event>, Vec<u8>) {
     {
         let deadline = Instant::now() + PROBE_WINDOW;
         let mut quiet_until = deadline;
-        // 读到安静窗口为止：tmux 与真实终端会把回复分批送达，中途不能停。
+        // Read until the quiet window: tmux and real terminals deliver replies in batches, so stopping early is not allowed.
         while let Some(timeout) = quiet_until
             .min(deadline)
             .checked_duration_since(Instant::now())
@@ -42,7 +42,7 @@ pub(super) fn detect() -> (Picker, Vec<Event>, Vec<u8>) {
                 events: libc::POLLIN,
                 revents: 0,
             };
-            // poll 与 read 使用同一个原始 fd，既没有后台读取者，也没有 stdio 预读缓冲。
+            // poll and read use the same raw fd, so there is neither a background reader nor a stdio read-ahead buffer.
             let ready = unsafe {
                 libc::poll(
                     &mut fd,
@@ -55,7 +55,7 @@ pub(super) fn detect() -> (Picker, Vec<Event>, Vec<u8>) {
             }
             let mut byte = 0u8;
             let count = unsafe { libc::read(libc::STDIN_FILENO, (&mut byte as *mut u8).cast(), 1) };
-            // 用户开始输入后剩下的字节留给 crossterm，继续读会吞掉按键。
+            // Once the user starts typing, the remaining bytes belong to crossterm; reading further would swallow key presses.
             if count != 1 || parser.push(byte) {
                 break;
             }
@@ -76,7 +76,7 @@ pub(super) fn detect() -> (Picker, Vec<Event>, Vec<u8>) {
         }
     }
     let mut picker = if let Some(font) = font {
-        // 该构造器只配置字号和环境提示，不读取 stdin；旧版本的主动查询会泄漏读取线程。
+        // This constructor only configures font size and environment hints without reading stdin; the old active query leaked a reader thread.
         #[allow(deprecated)]
         let picker = Picker::from_fontsize(font);
         picker
@@ -96,7 +96,7 @@ pub(super) fn detect() -> (Picker, Vec<Event>, Vec<u8>) {
             incompatible_kitty,
         ));
     }
-    // 窗口结束时可能只读到了回复的前半段，由输入线程接着消费，不能丢失前缀。
+    // When the window ends only the first half of a reply may have been read; the input thread consumes the rest, so the prefix must not be lost.
     let pending_reply = std::mem::take(&mut parser.sequence);
     (picker, parser.input_events(), pending_reply)
 }
@@ -107,7 +107,7 @@ fn select_protocol(
     iterm2: bool,
     incompatible_kitty: bool,
 ) -> ProtocolType {
-    // Kitty 查询成功不代表支持本组件依赖的 Unicode 占位符，iTerm2 使用原生协议。
+    // A successful Kitty query does not mean the Unicode placeholders this component relies on are supported; iTerm2 uses its native protocol.
     if iterm2 {
         return ProtocolType::Iterm2;
     }
@@ -125,17 +125,17 @@ struct Probe {
 }
 
 impl Probe {
-    /// 每次只读取一个字节；返回 true 表示用户已开始输入，剩余字节留给 crossterm。
+    /// Read one byte at a time; returning true means the user has started typing and the rest belongs to crossterm.
     ///
-    /// 终端回复一律丢弃：把它们当输入会以按键或粘贴的形式污染输入框。
+    /// Terminal replies are always dropped: treating them as input would pollute the input box as key presses or paste.
     fn push(&mut self, byte: u8) -> bool {
         if self.sequence.is_empty() && byte != 0x1b {
             self.input.push(byte);
             return match std::str::from_utf8(&self.input) {
                 Ok(_) => true,
-                // 多字节字符还没收全，继续读。
+                // The multi-byte character is not complete yet; keep reading.
                 Err(error) if error.error_len().is_none() => false,
-                // 非法 UTF-8 只可能是终端噪声。
+                // Invalid UTF-8 can only be terminal noise.
                 Err(_) => {
                     self.input.clear();
                     false
@@ -146,7 +146,7 @@ impl Probe {
         super::input_shim::restore_tmux_escape_tail(&mut self.sequence);
         if !reply_complete(&self.sequence) {
             if self.sequence.len() > MAX_SEQUENCE {
-                // 超长控制字符串只保留前缀与可能的 ST 起始字节，继续丢弃至结束。
+                // An over-long control string keeps only its prefix and a possible ST start byte, discarding the rest to the end.
                 let escape = byte == 0x1b;
                 self.sequence.truncate(2);
                 if escape {
@@ -196,7 +196,7 @@ impl Probe {
     }
 }
 
-/// `ESC` 起始的终端回复是否已经收全：CSI 以 0x40..=0x7e 收尾，APC／DCS 以 ST 收尾。
+/// Whether the `ESC`-started terminal reply is complete: CSI ends at 0x40..=0x7e, APC/DCS at ST.
 fn reply_complete(sequence: &[u8]) -> bool {
     let Some(&last) = sequence.last() else {
         return false;
@@ -210,7 +210,7 @@ fn reply_complete(sequence: &[u8]) -> bool {
     if sequence.starts_with(b"\x1b]") && last == 0x07 {
         return true;
     }
-    // 单字节 `ESC` 与 APC／DCS／OSC 前缀都还要等后续字节。
+    // A lone `ESC` and an APC/DCS/OSC prefix still wait for further bytes.
     sequence.len() == 2 && last != b'_' && last != b'P' && last != b']'
 }
 

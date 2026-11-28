@@ -1,4 +1,4 @@
-//! 编辑结果与 applyEdit 回调：建议结果、格式化建议与多服务器冲突。
+//! Edit results and the applyEdit callback: suggestion results, formatting suggestions and multi-server conflicts.
 
 use crate::Registry;
 use crate::client::Client;
@@ -114,7 +114,7 @@ pub(super) fn format_suggestions(
     Ok(result)
 }
 
-/// 将只读建议渲染为紧凑 diff 文本（不包含 `before`/`after` 原文全文与冗余 JSON）。
+/// Render a read-only suggestion as compact diff text (without the full `before`/`after` payloads or redundant JSON).
 fn render_suggestion_summary(suggestion: &Value) -> String {
     use pp_core::events::{DiffLineKind, FileDiff};
 
@@ -240,7 +240,7 @@ fn render_format_summary(results: &[Value], conflicts: &[Value], failures: &[Val
     }
 }
 
-/// 多服务器候选按文件比较，仅报告冲突，不选优先级或合并编辑。
+/// Candidates from several servers are compared per file; only conflicts are reported, without picking a priority or merging edits.
 pub(super) fn suggestion_conflicts(suggestions: &[Value]) -> Vec<Value> {
     let mut seen: BTreeMap<&str, (&Value, &Value)> = BTreeMap::new();
     let mut conflicts = Vec::new();

@@ -1,4 +1,4 @@
-//! 增量 UTF-8 流式字节解码器，跨读取边界保留不完整的多字节前缀。
+//! Incremental UTF-8 streaming byte decoder that keeps incomplete multibyte prefixes across read boundaries.
 
 #[derive(Default)]
 pub struct StreamText {

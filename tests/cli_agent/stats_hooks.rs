@@ -97,7 +97,7 @@ fn stats_hooks_are_recorded_served_by_api_and_cleaned_by_gc() {
     assert!(!body.contains("hook-secret-marker"));
     assert!(!body.contains("post-fail.sh"));
 
-    // 写入一条超过 90 天的旧 hook 记录，验证 `pp gc` 会清理它并保留近期记录。
+    // Write an old hook record older than 90 days and verify `pp gc` cleans it up while keeping recent records.
     let db = Connection::open(dir.path().join(".pp/stats/stats.db")).unwrap();
     let old_ts = chrono::Utc::now().timestamp_millis() - 91 * 24 * 60 * 60 * 1000;
     db.execute(

@@ -1,4 +1,4 @@
-//! `/mcp` 管理命令入口：持有 control 后交给 lifecycle。
+//! `/mcp` management command entry point: takes control and hands off to lifecycle.
 
 use anyhow::Result;
 use pp_core::cancellation::CancellationToken;

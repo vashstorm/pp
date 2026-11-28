@@ -1,4 +1,4 @@
-//! Review 页：汇总全部题目的答案、滚动与折行缓存。
+//! Review page: aggregates the answers of all questions plus scroll and wrap caching.
 
 use super::*;
 

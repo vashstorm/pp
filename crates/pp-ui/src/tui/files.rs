@@ -90,7 +90,7 @@ fn scan_explicit(cwd: &Path, root: &str) -> Result<Vec<String>> {
     let directory = pp_runtime::user_input::resolve(root, cwd)?;
     let mut paths = Vec::new();
     for entry in std::fs::read_dir(&directory)
-        .with_context(|| format!("无法列出 {}", directory.display()))?
+        .with_context(|| format!("cannot list {}", directory.display()))?
     {
         let entry = entry?;
         let name = entry.file_name();
@@ -215,7 +215,8 @@ pub(super) fn query(input: &ratatui_textarea::TextArea<'_>) -> Option<Query> {
             prefix.push('"');
             prefix = serde_json::from_str(&prefix).ok()?;
         }
-        // 用同一解析器判断代码上下文；补上临时路径后可覆盖尚未输入完整的 @。
+        // Use the same parser to decide the code context; substituting a placeholder path
+        // also covers an `@` that is still being typed.
         let source = input.lines().join("\n");
         let row_offset = input.lines()[..row]
             .iter()
@@ -344,7 +345,7 @@ mod tests {
     fn file_picker_entries_and_query_boundaries() {
         let paths: Vec<String> = [
             "README.md",
-            "docs/my folder/说明.md",
+            "docs/my folder/notes.md",
             "src-extra/no.rs",
             "src/main.rs",
             "src/tui/files.rs",
@@ -377,7 +378,7 @@ mod tests {
             [("src/tui/files.rs", false), ("src/tui/menu.rs", false)]
         );
         assert_eq!(visible("", "menu"), [("src/", true)]);
-        assert_eq!(visible("docs/", "说明"), [("docs/my folder/", true)]);
+        assert_eq!(visible("docs/", "notes"), [("docs/my folder/", true)]);
         assert!(visible("src/", "missing").is_empty() && visible("missing/", "").is_empty());
 
         use ratatui_textarea::{CursorMove, TextArea};

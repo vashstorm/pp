@@ -1,4 +1,5 @@
-// `pp --model … /COMMAND`：启动即提交一条文件命令，任务完成后会话仍可交互。
+// `pp --model … /COMMAND`: a single file command is submitted at startup and the session stays interactive after the
+// task completes.
 #[test]
 fn initial_command_runs_on_startup_and_keeps_session_interactive() {
     let server = server();
@@ -16,7 +17,8 @@ fn initial_command_runs_on_startup_and_keeps_session_interactive() {
         &["--model", "fixture/primary", "/commit"],
     );
 
-    // 启动命令与按 Enter 提交同一路径：请求里只能是展开后的模板正文。
+    // The startup command takes the same path as submitting with Enter: the request may only carry the expanded
+    // template body.
     let (request, body) = pty.request(&server);
     assert_eq!(body["model"], "fixture-model");
     let messages = body["messages"].as_array().unwrap();
@@ -24,11 +26,11 @@ fn initial_command_runs_on_startup_and_keeps_session_interactive() {
     let prompt = slash_message_text(&messages[1]);
     assert!(prompt.contains("COMMIT-MARKER"), "{prompt}");
     final_reply(request, "COMMIT-DONE");
-    pty.wait_for("启动命令的模板标记与回复", |screen| {
+    pty.wait_for("startup command template marker and reply", |screen| {
         let text = screen.contents();
         text.contains("COMMIT-MARKER") && text.contains("COMMIT-DONE")
     });
-    // 命令跑完后输入框仍可用：会话没有随启动命令一起退出。
+    // The input box is still usable after the command finished: the session did not exit with the startup command.
     pty.completed_after("COMMIT-DONE");
     assert!(input_is_ready(pty.parser.screen()));
     pty.input("/quit\r");

@@ -1,5 +1,5 @@
-//! 普通 write/edit 的保存联动回归：最终磁盘内容、字节数、diff、undo 与
-//! 自动诊断开关都从真实 fixture language server 的协议交互观察，不模拟回显。
+//! Save-linkage regression for ordinary write/edit: final disk content, byte count, diff, undo and
+//! the auto-diagnostics switch are all observed from a real fixture language server's protocol traffic, without echo simulation.
 
 mod integration {
     use super::super::*;
@@ -148,7 +148,7 @@ mod integration {
         );
         assert_eq!(result["ok"], true, "{result}");
         assert_eq!(fs::read_to_string(&path).unwrap(), content);
-        // 模型视图只保留渲染后的 content，不重复发送结构化 diagnostics 对象；UI 事件保留完整报告。
+        // The model view keeps only the rendered content and does not resend the structured diagnostics object; UI events keep the full report.
         assert!(result.get("diagnostics").is_none(), "{result}");
         assert!(result["content"].as_str().unwrap().contains("wrong value"));
         let finished = events
@@ -258,7 +258,7 @@ mod integration {
             "failed save must not start diagnostics"
         );
 
-        // 暂存失败（旧文本不存在）同样没有提交事实，不发 diff、不启动诊断。
+        // A staging failure (old text missing) likewise has no commit, emits no diff and starts no diagnostics.
         let path = dir.path().join("sample.fixture");
         fs::write(&path, "one\n").unwrap();
         let (result, events) = execute_events(

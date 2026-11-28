@@ -1,19 +1,20 @@
 /**
- * 共享纯格式化、转义、数值聚合与 SVG 图标/区间元数据工具。
+ * Shared pure helpers for formatting, escaping, numeric aggregation and SVG icon/range metadata.
  */
 
 /** @typedef {import("../../web-types/api.d.ts").RequestRow} RequestRow */
 /** @typedef {import("../../web-types/api.d.ts").StatsRange} StatsRange */
 
 /**
- * 按 ID 获取 DOM 元素。
+ * Looks up a DOM element by ID.
  * @param {string} id
  * @returns {HTMLElement | null}
  */
 export const $ = (id) => document.getElementById(id);
 
 /**
- * 转义 HTML 文本与属性特殊字符，防止动态字段被解释为标签或脚本。
+ * Escapes special characters in HTML text and attributes so dynamic fields are not interpreted as
+ * tags or script.
  * @param {unknown} value
  * @returns {string}
  */
@@ -67,7 +68,7 @@ export const paths = {
 };
 
 /**
- * 渲染内置线性 SVG 图标。
+ * Renders a built-in line SVG icon.
  * @param {string} name
  * @param {number} [size]
  * @returns {string}
@@ -118,14 +119,14 @@ export const TOOL_RANGES = {
 };
 
 /**
- * 格式化整数或可空数值。
+ * Formats an integer or a nullable value.
  * @param {number | null | undefined} n
  * @returns {string}
  */
 export const number = (n) => (n == null ? "—" : Number(n).toLocaleString("en-US"));
 
 /**
- * 使用 K/M/B 缩写格式化数量。
+ * Formats a quantity with K/M/B abbreviations.
  * @param {number | null | undefined} n
  * @returns {string}
  */
@@ -137,7 +138,7 @@ export const short = (n) => {
 };
 
 /**
- * 使用 Intl compact 格式输出紧凑数字。
+ * Outputs a compact number using Intl compact notation.
  * @param {number | null | undefined} value
  * @returns {string}
  */
@@ -145,7 +146,7 @@ export const compact = (value) =>
   value == null ? "—" : Number(value).toLocaleString("en-US", { notation: "compact" });
 
 /**
- * 格式化毫秒为秒字符串。
+ * Formats milliseconds as a seconds string.
  * @param {number | null | undefined} ms
  * @returns {string}
  */
@@ -153,7 +154,7 @@ export const duration = (ms) =>
   ms == null ? "—" : ms < 1000 ? `${(ms / 1000).toFixed(2)}s` : `${(ms / 1000).toFixed(1)}s`;
 
 /**
- * 格式化 `n / d` 百分比。
+ * Formats `n / d` as a percentage.
  * @param {number | null | undefined} n
  * @param {number | null | undefined} d
  * @returns {string}
@@ -164,7 +165,7 @@ export const percent = (n, d) =>
     : "—";
 
 /**
- * 格式化比例值为百分比字符串。
+ * Formats a ratio value as a percentage string.
  * @param {number} value
  * @param {number} [digits]
  * @returns {string}
@@ -172,7 +173,7 @@ export const percent = (n, d) =>
 export const ratioPercent = (value, digits = 1) => `${(value * 100).toFixed(digits)}%`;
 
 /**
- * 格式化错误率并保留极小非零值的 `<0.01%` 标记。
+ * Formats an error rate and keeps the `<0.01%` marker for tiny non-zero values.
  * @param {number} value
  * @returns {string}
  */
@@ -183,7 +184,7 @@ export const errorRateText = (value) => {
 };
 
 /**
- * 格式化 USD 费用（概览/请求页口径，小额最多保留 6 位）。
+ * Formats a USD cost (overview/requests page style, small amounts keep up to 6 digits).
  * @param {number | null | undefined} n
  * @returns {string}
  */
@@ -198,7 +199,7 @@ export const money = (n) =>
         })}`;
 
 /**
- * 格式化 USD 费用（Tools/Models/Traces 口径，固定小数位）。
+ * Formats a USD cost (Tools/Models/Traces style, fixed decimal places).
  * @param {number | null | undefined} value
  * @param {number} [digits]
  * @returns {string}
@@ -214,7 +215,7 @@ export const fixedCost = (value, digits) => {
 };
 
 /**
- * 格式化含未定价回退的估算费用。
+ * Formats an estimated cost including the unpriced fallback.
  * @param {number | null | undefined} value
  * @param {number} unpriced
  * @returns {string}
@@ -223,7 +224,7 @@ export const estimatedCost = (value, unpriced) =>
   value == null ? "—" : value === 0 && unpriced > 0 ? "N/A" : fixedCost(value);
 
 /**
- * 计算单次请求总 token（输入与输出任一未知则返回 null）。
+ * Computes the total tokens of a single request (null when either input or output is unknown).
  * @param {Pick<RequestRow, "input_tokens" | "output_tokens">} r
  * @returns {number | null}
  */
@@ -231,7 +232,8 @@ export const total = (r) =>
   r.input_tokens == null || r.output_tokens == null ? null : r.input_tokens + r.output_tokens;
 
 /**
- * 计算未命中/未写入缓存的纯输入 token（任一分量未知或越界时返回 null）。
+ * Computes plain input tokens that neither hit nor wrote the cache (null when any component is
+ * unknown or out of range).
  * @param {Pick<RequestRow, "input_tokens" | "cached_tokens" | "cache_write_tokens">} r
  * @returns {number | null}
  */
@@ -247,7 +249,7 @@ export const uncached = (r) =>
     : null;
 
 /**
- * 对已知值求和；全为 null/undefined 且数组非空时返回 null。
+ * Sums the known values; returns null when all are null/undefined and the array is not empty.
  * @param {Array<number | null | undefined>} values
  * @returns {number | null}
  */
@@ -257,7 +259,7 @@ export const sum = (values) => {
 };
 
 /**
- * 计算线性插值分位数。
+ * Computes a linearly interpolated quantile.
  * @param {Array<number | null | undefined>} values
  * @param {number} q
  * @returns {number | null}
@@ -271,7 +273,7 @@ export const quantile = (values, q) => {
 };
 
 /**
- * 计算相对时间描述（30 秒以内不按分钟计）。
+ * Computes a relative-time description (under 30 seconds is not counted in minutes).
  * @param {number} ms
  * @param {number} [nowMs]
  * @returns {string}
@@ -296,7 +298,7 @@ export const relative = (ms, nowMs = Date.now()) => {
 };
 
 /**
- * 格式化顶栏 Live chip 短时间差。
+ * Formats the short time delta of the topbar Live chip.
  * @param {number} ms
  * @param {number} [nowMs]
  * @returns {string}
@@ -311,7 +313,7 @@ export const liveAge = (ms, nowMs = Date.now()) => {
 };
 
 /**
- * 格式化本地时间字符串。
+ * Formats a local time string.
  * @param {number} ms
  * @returns {string}
  */
@@ -326,14 +328,14 @@ export const localTime = (ms) =>
   });
 
 /**
- * 补齐两位数字。
+ * Pads to two digits.
  * @param {number} value
  * @returns {string}
  */
 export const pad2 = (value) => String(value).padStart(2, "0");
 
 /**
- * 包裹带精确全量数值悬停提示的展示文本。
+ * Wraps display text with a hover tooltip carrying the exact full value.
  * @param {number | null | undefined} value
  * @param {string} [display]
  * @param {string} [unit]
@@ -347,7 +349,7 @@ export const detailed = (value, display = short(value), unit = "") =>
   )}">${display}</span>`;
 
 /**
- * 生成图表中可聚焦与悬停命中的透明热区矩形。
+ * Generates the transparent hit-area rectangle for focus and hover in a chart.
  * @param {number} x
  * @param {number} y
  * @param {number} width

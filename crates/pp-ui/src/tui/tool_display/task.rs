@@ -1,4 +1,4 @@
-//! 从 Task 的调用参数和返回快照排版派发卡片。
+//! Lay out the dispatch card from the Task call arguments and the returned snapshot.
 
 use super::*;
 use crate::tui::transcript::card::anatomy::compose_header;
@@ -75,7 +75,7 @@ pub(in crate::tui) fn header(
     let status = Span::styled(status.to_owned(), Style::default().fg(color));
     let columns = usize::from(width);
     let bg = palette::tool_pending_bg();
-    if title.width() + count.width() + status.width() + 1 <= columns {
+    if title.width() + count.width() + status.width() < columns {
         vec![Line::from(compose_header(
             vec![title.bg(bg), count.bg(bg)],
             vec![status.bg(bg)],
@@ -104,7 +104,7 @@ pub(super) fn body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
 
     if view.failed || returned.is_empty() {
-        // 旧记录或未知结果仍保留原有正文；校验错误放在任务清单前。
+        // Old records and unknown results keep their original body; validation errors are placed before the task list.
         rows.extend(wrap(
             logical(view.text).into_iter().map(str::to_owned),
             width,
@@ -116,7 +116,7 @@ pub(super) fn body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     }
 
     for index in 0..shown {
-        // 调度器按提交顺序返回标识，名称、角色和任务说明保存在调用参数中。
+        // The scheduler returns identifiers in submission order while names, roles and task descriptions stay in the call arguments.
         let request = requested.get(index).unwrap_or(&Value::Null);
         let response = returned.get(index).unwrap_or(&Value::Null);
         push_task(

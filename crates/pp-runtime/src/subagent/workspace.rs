@@ -1,4 +1,4 @@
-//! Git worktree、脏基线和嵌套仓库补丁；冲突保留所有恢复产物。
+//! Git worktree, dirty baseline and nested repository patches; conflicts keep every recovery artifact.
 use super::{atomic_json, lock};
 use anyhow::{Context, Result, ensure};
 use pp_core::cancellation;
@@ -283,7 +283,7 @@ fn find_nested(root: &Path, artifacts: &Path) -> Result<Vec<PathBuf>> {
                 repos.push(path);
                 continue;
             }
-            // 使用 Git ignore 规则避免扫描 target、node_modules 等构建目录。
+            // Use Git ignore rules to avoid scanning build directories such as target and node_modules.
             let output = Command::new("git")
                 .arg("-C")
                 .arg(root)

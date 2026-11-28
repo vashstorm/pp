@@ -49,7 +49,7 @@ fn slash_themes_categories_preview_independently_and_esc_restores() {
         (Theme::Default, IconMode::Ascii)
     );
 
-    // 分类栏导航到颜色页，未保存的图标预览不会带入颜色页。
+    // Navigating the category bar to the color page does not carry an unsaved icon preview into it.
     app.handle(key(KeyCode::Tab), &mut dirty);
     app.handle(key(KeyCode::Down), &mut dirty);
     app.handle(key(KeyCode::Enter), &mut dirty);
@@ -61,7 +61,7 @@ fn slash_themes_categories_preview_independently_and_esc_restores() {
         (Theme::TokyoNight, IconMode::Nerd)
     );
 
-    // 返回图标分类仍保留其草稿，颜色预览不影响图标分类。
+    // Returning to the icon category keeps its draft, and the color preview does not affect it.
     app.handle(key(KeyCode::Tab), &mut dirty);
     app.handle(key(KeyCode::Home), &mut dirty);
     app.handle(key(KeyCode::Enter), &mut dirty);
@@ -115,7 +115,7 @@ fn slash_themes_confirm_persists_appearance_and_preserves_other_tui_settings() {
     type_command(&mut app, "/themes");
     assert!(app.themes_panel.is_some());
 
-    // 图标分类直接保存，不必进入颜色分类。
+    // The icon category saves directly without entering the color category.
     app.handle(key(KeyCode::Down), &mut dirty);
     app.handle(key(KeyCode::Enter), &mut dirty);
     wait_for_theme_save(&mut app);
@@ -127,7 +127,7 @@ fn slash_themes_confirm_persists_appearance_and_preserves_other_tui_settings() {
 
     type_command(&mut app, "/themes");
     draw(&mut app, 100, 32);
-    // 图标分类先预览 Nerd，再切到颜色分类；保存颜色不能提交图标草稿。
+    // The icon category previews Nerd, then the color category is selected; saving the color must not commit the icon draft.
     app.handle(key(KeyCode::Up), &mut dirty);
     app.handle(key(KeyCode::Tab), &mut dirty);
     app.handle(key(KeyCode::Down), &mut dirty);
@@ -178,7 +178,7 @@ fn slash_themes_completion_and_direct_arguments_update_and_persist() {
         vec![MenuAction::ThemeIcon(IconMode::Ascii)]
     );
 
-    // Tab 补全 ascii，空格后列出全部主题颜色而不重复图标项。
+    // Tab completes ascii, and after a space every theme color is listed without repeating the icon item.
     app.handle(key(KeyCode::Tab), &mut dirty);
     app.handle(key(KeyCode::Char(' ')), &mut dirty);
     let values = menu_values(&app);
@@ -206,7 +206,7 @@ fn slash_themes_completion_and_direct_arguments_update_and_persist() {
     assert_eq!(saved.tui.theme, Theme::Dracula);
     assert_eq!(saved.tui.icons, IconMode::Ascii);
 
-    // 直接传入工具卡片风格并持久化，保留已保存的颜色与图标。
+    // Pass the tool card style directly and persist it, keeping the saved color and icon.
     type_command(&mut app, "/themes rail");
     assert!(app.themes_panel.is_none());
     assert_eq!(crate::tui::themes::current_tool_style(), ToolStyle::Rail);

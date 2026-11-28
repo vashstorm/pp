@@ -1,12 +1,12 @@
-// 验证项 1：两协议各跑 headers 前与部分 delta 后两种阶段。Esc 取消后旧连接
-// 必须在提交下一任务前真的关闭；无隐式重试；草稿/光标/alternate screen 保留；
-// 新请求原生历史包含两条用户消息各一次、没有半成品 assistant。
+// Coverage 1: both protocols run the before-headers and after-partial-delta phases. After an Esc cancel the old
+// connection must really close before the next task is submitted; no implicit retry; draft/cursor/alternate screen
+// preserved; the new request's native history holds both user messages exactly once and no half-finished assistant.
 #[test]
 fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_recover() {
     for (protocol, phase) in [("completion", "headers"), ("response", "sse")] {
             let raw = CancelRawModel::start();
             let home = tempfile::tempdir().unwrap();
-            // 原始 TCP fixture 只观察主请求；独立标题服务保持挂起，随任务取消。
+            // The raw TCP fixture only observes the main requests; the separate title service stays pending and is cancelled with the task.
             let title_server = server();
             let mut settings: Value = serde_json::from_str(CANCEL_SETTINGS).unwrap();
             settings["model_roles"] = json!({"fast":{"model":"title/fast","effort":"none"}});
@@ -39,32 +39,32 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
             } else {
                 raw.hold();
             }
-            pty.input("保留草稿");
-            pty.draft("保留草稿");
+            pty.input("kept draft");
+            pty.draft("kept draft");
             pty.input("\x1b");
             cancel_wait_cancelled_ready(&mut pty);
             if phase == "sse" {
                 assert_eq!(
                     cancel_count_normalized(pty.parser.screen(), "partial-cancel-token"),
                     1,
-                    "已显示的 partial 必须保留"
+                    "a partial that was already shown must be preserved"
                 );
             }
-            // 旧连接在提交下一任务前已经关闭，而不是等下一次 block_on 才清理。
+            // The old connection is already closed before the next task is submitted instead of waiting for the next block_on.
             raw.expect_close();
-            // 不先发送新用户消息就没有任何额外模型请求。
+            // Without sending a new user message first there are no extra model requests.
             raw.assert_silent();
-            // 光标在草稿末尾：追加一个字符证明草稿与光标都被保留。
-            pty.input("字");
-            pty.draft("保留草稿字");
+            // The cursor stays at the end of the draft: appending one character proves both draft and cursor survived.
+            pty.input("!");
+            pty.draft("kept draft!");
             pty.input("\r");
             let (path, body) = raw.expect_request();
             assert_eq!(path, api_path(protocol));
             let text = serde_json::to_string(&body).unwrap();
-            assert!(!text.contains("pp.cancelled"), "pp.cancelled 不得进入请求");
+            assert!(!text.contains("pp.cancelled"), "pp.cancelled must not reach the request");
             assert!(
                 !text.contains("partial-cancel-token"),
-                "半成品 assistant 不得进入原生历史"
+                "a half-finished assistant must not enter the native history"
             );
             if protocol == "completion" {
                 let messages = body["messages"].as_array().unwrap();
@@ -83,14 +83,14 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
                     0
                 );
                 assert_eq!(messages[1]["content"], "cancel idle prompt");
-                assert_eq!(messages[2]["content"], "保留草稿字");
+                assert_eq!(messages[2]["content"], "kept draft!");
             } else {
                 let items = body["input"].as_array().unwrap();
                 assert_eq!(items.len(), 2);
                 response_user(&items[0], "cancel idle prompt");
-                response_user(&items[1], "保留草稿字");
+                response_user(&items[1], "kept draft!");
             }
-            // 新 runtime/client 真正可用：下一次请求返回正常最终回答。
+            // The new runtime/client really works: the next request returns a normal final answer.
             raw.final_answer(protocol, "idle recovered answer");
             pty.text("idle recovered answer");
             pty.ready();
@@ -125,9 +125,9 @@ fn tui_cancel_idle_headers_and_sse_close_connection_before_next_request_and_reco
     }
 }
 
-// 验证项 2：两协议 write→bash→write 批次取消。父 shell 忽略 TERM 也能被回收，
-// 保留的文件与已捕获输出不回滚、跳过的调用未执行，下一次请求中三个 tool
-// result 与原 call_id 按序完整配对且不重复执行；取消本身不触发任何 HTTP。
+// Coverage 2: write→bash→write batch cancel on both protocols. The parent shell is reaped even though it ignores TERM,
+// kept files and captured output are not rolled back, skipped calls never execute, and the next request pairs all three
+// tool results with their original call_ids in order without re-running them; the cancel itself triggers no HTTP.
 #[test]
 fn tui_cancel_tool_batch_stops_process_group_and_pairs_results_on_next_request() {
     let protocol = "response";
@@ -149,23 +149,23 @@ fn tui_cancel_tool_batch_stops_process_group_and_pairs_results_on_next_request()
             "cancel batch prompt",
             project.path(),
         );
-        pty.input("批后草稿");
-        pty.draft("批后草稿");
+        pty.input("post-batch draft");
+        pty.draft("post-batch draft");
         pty.input("\x1b");
         cancel_wait_cancelled_ready(&mut pty);
         cancel_assert_batch_stopped(project.path());
-        // 取消收尾不触发任何模型请求。
+        // Settling the cancel triggers no model request.
         cancel_assert_no_request(&fixture);
-        // 主动提交下一条任务（保留的草稿），验证配对与不重放。
+        // Submit the next task explicitly (the kept draft) and verify the pairing without replay.
         pty.input("\r");
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         cancel_assert_paired_results(&body, protocol);
         assert_eq!(
             cancel_user_messages(&body, protocol),
-            ["cancel batch prompt", "批后草稿"]
+            ["cancel batch prompt", "post-batch draft"]
         );
         let text = serde_json::to_string(&body).unwrap();
-        assert!(!text.contains("pp.cancelled"), "pp.cancelled 不得进入请求");
+        assert!(!text.contains("pp.cancelled"), "pp.cancelled must not reach the request");
         if protocol == "completion" {
             final_reply(request, "batch recovered answer");
         } else {
@@ -176,7 +176,7 @@ fn tui_cancel_tool_batch_stops_process_group_and_pairs_results_on_next_request()
         pty.input("/quit\r");
         pty.finish();
         cancel_assert_no_request(&fixture);
-        // 旧工具从未被重放：文件状态保持取消后的样子。
+        // The old tools were never replayed: file state stays as it was after the cancel.
         assert_eq!(
             std::fs::read_to_string(project.path().join("kept.txt")).unwrap(),
             "kept"
@@ -184,10 +184,10 @@ fn tui_cancel_tool_batch_stops_process_group_and_pairs_results_on_next_request()
         assert!(!project.path().join("skipped.txt").exists());
 }
 
-// 验证项 4：headers 前、SSE 空闲、工具批次三种取消的持久化与重启。取消只
-// 显示状态行、不追加提示块、不误报 interrupted；/resume 列表为 aborted，完成新任务后可为 done；
-// -r ID -p 与 -c ID 的原生请求只含已接受用户消息、完整旧历史和成对工具结果，
-// 不执行旧工具，pp.cancelled 不进入请求。
+// Coverage 4: persistence and restart for all three cancels — before headers, SSE idle, and tool batch. A cancel only
+// shows the status line, appends no notice block, and never claims interrupted by mistake; /resume lists it as aborted and
+// may turn done after a new task completes; the native requests of -r ID -p and -c ID contain only accepted user messages,
+// the complete old history and paired tool results, never execute old tools, and pp.cancelled does not reach the request.
 #[derive(Clone, Copy, PartialEq)]
 enum CancelPhase {
     Headers,
@@ -195,8 +195,8 @@ enum CancelPhase {
     Tools,
 }
 
-// 一个取消阶段 × 一种协议的完整往返：取消终态落盘、-r 恢复、/resume 标记、
-// 行模式 -r/-c 复用历史。阶段之间互不依赖，按用例拆分并行执行。
+// One full round trip per cancel phase × protocol: the cancel terminal state is persisted, -r resumes, /resume marks it,
+// and line mode -r/-c reuses the history. Phases are independent and split into separate cases that run in parallel.
 fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
     let fixture = server();
             let home = tempfile::tempdir().unwrap();
@@ -215,7 +215,7 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
             match phase {
                 CancelPhase::Headers => {
                     pty.input("persist cancel prompt\r");
-                    // 请求已到达但未回应；持有 CapturedRequest 防止对端提前 EOF。
+                    // The request arrived but was not answered; holding CapturedRequest keeps the peer from EOFing early.
                     let (_request, _) = pty.request_at(&fixture, path);
                     pty.input("\x1b");
                     cancel_wait_cancelled_ready(&mut pty);
@@ -261,18 +261,18 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
                     .join(format!("{id}.jsonl")),
             )
             .unwrap();
-            assert!(journal.contains("pp.cancelled"), "取消终态必须落盘");
+            assert!(journal.contains("pp.cancelled"), "the cancel terminal state must be persisted");
 
-            // 交互式 -r 恢复：回放已接受的用户消息，不追加提示块，也不出现
-            // 假 interrupted 横幅。
+            // Interactive -r resume: replay the accepted user message, append no notice block, and show no
+            // bogus interrupted banner.
             let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
-            resumed.wait_for("恢复取消会话：已接受的用户消息与空闲输入框", |screen| {
+            resumed.wait_for("resuming a cancelled session: accepted user message and idle input", |screen| {
                 input_is_ready(screen) && screen.contents().contains("persist cancel prompt")
             });
             assert!(
                 !cancel_normalize(resumed.parser.screen())
                     .contains("Previousrequestwasinterrupted."),
-                "主动取消不得误报为 interrupted"
+                "an explicit cancel must not be reported as interrupted"
             );
             assert_eq!(
                 cancel_count_normalized(resumed.parser.screen(), "persist cancel prompt"),
@@ -286,7 +286,7 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
             }
             resumed.ready();
             if phase == CancelPhase::Tools {
-                // 恢复不重放旧工具：PID marker 与文件保持不变。
+                // Resume does not replay old tools: the PID markers and files stay unchanged.
                 assert_eq!(
                     std::fs::read(project.path().join("bash.pid")).unwrap(),
                     pid_before
@@ -303,15 +303,15 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
             }
             cancel_assert_no_request(&fixture);
 
-            // /resume 列表为 aborted 而不是 done；结果由 history worker 异步安装。
+            // /resume lists it as aborted rather than done; the result is installed asynchronously by the history worker.
             resume_boundary_open(&mut resumed);
-            resumed.wait_for("恢复列表把取消会话标记为 aborted", |screen| {
+            resumed.wait_for("the resume list marks the cancelled session aborted", |screen| {
                 screen.contents().contains("■ aborted")
             });
             assert!(!resumed.parser.screen().contents().contains("\u{f00c} done"));
             resume_boundary_close(&mut resumed);
 
-            // 取消终态之后完成新任务，列表再次可为 done。
+            // After the cancel terminal state, completing a new task lets the list show done again.
             resumed.input("persist recovery prompt\r");
             let (request, _) = resumed.request_at(&fixture, path);
             if protocol == "completion" {
@@ -320,10 +320,10 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
                 response_final(request, "persist recovery answer");
             }
             resumed.text("persist recovery answer");
-            // 输入框在运行中也可编辑；等待本次任务完成后才能执行空闲命令。
+            // The input box is editable while running; idle commands only run once this task completes.
             resumed.completed();
             resume_boundary_open(&mut resumed);
-            resumed.wait_for("完成新任务后列表标记为 done", |screen| {
+            resumed.wait_for("the list marks done after a new task completes", |screen| {
                 screen.contents().contains("\u{f00c} done")
             });
             resume_boundary_close(&mut resumed);
@@ -331,7 +331,7 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
             resumed.finish();
             cancel_assert_no_request(&fixture);
 
-            // 行模式 -r ID -p：请求只含已接受用户消息与完整旧历史，无 pp.cancelled。
+            // Line mode -r ID -p: the request holds only accepted user messages plus the complete old history, no pp.cancelled.
             let home_path = home.path().to_str().unwrap();
             let cli = Cli::spawn(
                 project.path(),
@@ -352,17 +352,17 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
                 ["persist recovery answer"]
             );
             let text = serde_json::to_string(&body).unwrap();
-            assert!(!text.contains("pp.cancelled"), "pp.cancelled 不得进入请求");
+            assert!(!text.contains("pp.cancelled"), "pp.cancelled must not reach the request");
             assert!(
                 !text.contains("persist-partial-token"),
-                "半成品 assistant 不得进入原生历史"
+                "a half-finished assistant must not enter the native history"
             );
             if phase == CancelPhase::Tools {
                 cancel_assert_paired_results(&body, protocol);
             } else {
                 assert!(
                     cancel_tool_outputs(&body, protocol).is_empty(),
-                    "非工具批次取消不得产生工具结果"
+                    "a cancel outside a tool batch must not produce tool results"
                 );
             }
             if protocol == "completion" {
@@ -379,7 +379,7 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
             assert_eq!(output.stdout, b"persist cli answer\n");
             cancel_assert_no_request(&fixture);
 
-            // 行模式 -c ID：发送保存的原生请求，历史仍合法、旧工具不执行。
+            // Line mode -c ID: send the saved native request; the history stays valid and old tools do not run.
             let cli = Cli::spawn(project.path(), &["-c", id.as_str()], &[("HOME", home_path)]);
             let (request, body) = receive_at(&fixture, path);
             assert_eq!(
@@ -395,7 +395,7 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
                 ["persist recovery answer", "persist cli answer"]
             );
             let text = serde_json::to_string(&body).unwrap();
-            assert!(!text.contains("pp.cancelled"), "pp.cancelled 不得进入请求");
+            assert!(!text.contains("pp.cancelled"), "pp.cancelled must not reach the request");
             assert!(!text.contains("persist-partial-token"));
             if phase == CancelPhase::Tools {
                 cancel_assert_paired_results(&body, protocol);
@@ -422,9 +422,9 @@ fn cancel_terminal_state_case(protocol: &str, phase: CancelPhase) {
         }
 }
 
-// 验证项 4 的持久化故障模式：取消收尾的 commit/sync 失败必须优先显示
-// persisting session，不声称成功取消、不写 pp.cancelled、不再发模型请求，
-// 同时取消路径仍要停止真实 bash 进程。
+// Persistence failure mode of coverage 4: when the cancel settle's commit/sync fails, the UI must show
+// persisting session first, never claim the cancel succeeded, write no pp.cancelled, send no further model
+// request, and still stop the real bash process on the cancel path.
 #[test]
 fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
     let protocol = "response";
@@ -437,8 +437,8 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
             response_models(&fixture, Some(protocol)),
         )
         .unwrap();
-        // ulimit -f 256：header/用户记录写得下，流式的大内容让取消收尾的
-        // native commit 以 EFBIG 失败。
+        // ulimit -f 256: the header/user records still fit, while the large streamed content makes the cancel
+        // settle's native commit fail with EFBIG.
         let mut pty = Pty::start_with_file_limit(project.path(), home.path(), 256, &[]);
         pty.ready();
         pty.input("overflow cancel batch\r");
@@ -463,26 +463,26 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
                 ]),
             );
         }
-        // PID marker 是进入 bash 执行阶段的栅栏。
+        // The PID marker is the fence for entering the bash execution phase.
         cancel_wait_pid_files(project.path(), &["overflow-bash.pid"]);
         pty.input("\x1b");
         pty.wait_for(
-            "取消收尾提交失败显示 persisting session 红色弹窗",
+            "a failed cancel commit shows the persisting session red dialog",
             |screen| {
                 notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
                     && cancel_normalize(screen).contains("persistingsession")
             },
         );
-        // 不声称成功取消。
+        // No claim that the cancel succeeded.
         assert_eq!(
             cancel_count_normalized(pty.parser.screen(), CANCEL_DONE),
             0,
-            "持久化失败不得显示取消完成状态行"
+            "a persistence failure must not show the cancel completion status line"
         );
         pty.ready();
-        // 取消收尾失败后不再发模型请求。
+        // No further model request after the failed cancel settle.
         cancel_assert_no_request(&fixture);
-        // 取消路径仍停止了真实 bash 进程。
+        // The cancel path still stopped the real bash process.
         cancel_wait_pid_dead(&project.path().join("overflow-bash.pid"));
         pty.input("\x03");
         pty.finish();
@@ -495,7 +495,7 @@ fn tui_cancel_journal_failure_reports_persisting_session_not_success() {
         .unwrap();
         assert!(
             !journal.contains("pp.cancelled"),
-            "取消终态提交失败时不得写 pp.cancelled"
+            "a failed cancel terminal-state commit must not write pp.cancelled"
         );
 }
 

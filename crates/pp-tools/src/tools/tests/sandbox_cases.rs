@@ -164,7 +164,7 @@ mod integration {
                 ProbeResult::Available,
             );
 
-            // read: 拒绝凭据、放行 allowRead、正常读取普通文件
+            // read: denies credentials, allows allowRead, reads ordinary files normally
             let denied = execute(
                 &tools,
                 "read",
@@ -186,7 +186,7 @@ mod integration {
             );
             assert_eq!(allowed["ok"], true, "{allowed}");
 
-            // rg: 直接搜拒绝路径失败；搜父目录时跳过 .ssh，不泄漏 id_ed25519 内容
+            // rg: searching a denied path fails directly; searching the parent skips .ssh and never leaks id_ed25519 content
             let rg_denied = execute(
                 &tools,
                 "rg",
@@ -204,7 +204,7 @@ mod integration {
             assert!(rg_text.contains("public.txt"), "{rg_parent}");
             assert!(!rg_text.contains("id_ed25519"), "{rg_parent}");
 
-            // glob: 直接搜 .ssh 失败；搜父目录跳过 .ssh
+            // glob: searching .ssh directly fails; searching the parent skips .ssh
             let glob_denied = execute(
                 &tools,
                 "glob",
@@ -231,10 +231,10 @@ mod integration {
             let ws = root.path().join("ws");
             fs::create_dir_all(&ws).unwrap();
 
-            // (说明, 配置模式, 覆盖, 探针, 写工具, 期望放行)
-            // 可用 workspace-write: accept-edits 下 write/edit/bash 自动执行;
-            // off 与 auto 降级: 同一批写工具必须回到审批 (无 handler 时 fail-closed);
-            // 显式 workspace-write + 不可用探针: 直接 fail-closed。
+            // (description, configured mode, override, probe, write tool, expected verdict)
+            // Available workspace-write: write/edit/bash run automatically under accept-edits;
+            // off and auto degradation: the same write tools must return to approval (fail-closed with no handler);
+            // explicit workspace-write + unavailable probe: fail-closed immediately.
             for (case, configured, mode_override, probe) in [
                 (
                     "available workspace-write",
@@ -320,7 +320,7 @@ mod integration {
                 assert_eq!(bash_marker.exists(), expect_auto);
             }
 
-            // 显式 workspace-write + 平台不可用: 在审批之前 fail-closed。
+            // Explicit workspace-write + platform unavailable: fail-closed before approval.
             let ws_dir = tempfile::Builder::new().tempdir_in(&ws).unwrap();
             let mut tools = Tools::new(ws_dir.path().to_path_buf(), EditMode::Replace).unwrap();
             tools.set_sandbox(Arc::new(Sandbox::with_probe_for_test(
@@ -342,7 +342,7 @@ mod integration {
             );
             tools.permission.set_config(ToolsSettings::default());
             tools.permission.set_handler(Box::new(|_, _| {
-                panic!("显式开启但不可用必须直接 fail-closed, 不进入审批")
+                panic!("explicitly enabled but unavailable must fail-closed directly, without entering approval")
             }));
             let blocked = execute(
                 &tools,
@@ -359,7 +359,7 @@ mod integration {
             );
             assert!(!ws_dir.path().join("nope").exists());
 
-            // 有 handler 时降级场景走正常审批, 批准后正常执行。
+            // With a handler, the degraded scenario goes through ordinary approval and runs normally once approved.
             let ws_dir = tempfile::Builder::new().tempdir_in(&ws).unwrap();
             let mut tools = Tools::new(ws_dir.path().to_path_buf(), EditMode::Replace).unwrap();
             let sandbox_settings = SandboxSettings {
@@ -613,7 +613,7 @@ mod integration {
                 let target = dir.path().join(marker);
                 let before = target.clone();
                 tools.permission.set_handler(Box::new(move |request, _| {
-                    assert!(!before.exists(), "命令在授权前启动");
+                    assert!(!before.exists(), "the command started before authorization");
                     assert!(request.reason.contains("outbound network"));
                     Ok(decision)
                 }));
@@ -636,9 +636,9 @@ mod integration {
                 assert_eq!(target.exists(), expected);
             }
 
-            tools
-                .permission
-                .set_handler(Box::new(|_, _| panic!("普通命令失败不应打开沙盒权限询问")));
+            tools.permission.set_handler(Box::new(|_, _| {
+                panic!("a plain command failure must not open a sandbox permission prompt")
+            }));
             let failed = execute(
                 &tools,
                 "bash",

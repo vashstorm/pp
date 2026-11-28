@@ -1,4 +1,4 @@
-//! 本地路径搜索，使用 pattern 匹配表达式和可选 path 搜索目录。
+//! Local path search using a pattern expression and an optional path directory.
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
 use globset::{GlobBuilder, GlobMatcher};
@@ -137,17 +137,17 @@ struct Entry {
 fn rank(a: &Entry, b: &Entry) -> std::cmp::Ordering {
     b.mtime.cmp(&a.mtime).then_with(|| a.path.cmp(&b.path))
 }
-/// 有界候选缓冲：保留 `rank` 最高的至多 `limit` 项。
+/// Bounded candidate buffer: keeps at most `limit` entries with the highest `rank`.
 ///
-/// 候选按遍历顺序追加，缓冲超过 `2 × limit` 时才整体按 `rank` 排序并截断，
-/// 每个候选的摊销成本为 O(1)（旧实现每多出一个候选就要扫一遍已选集合找最差项，
-/// 也就是 O(limit)）。由于路径互不相同，`rank` 在候选集合上是全序，
-/// top-limit 与淘汰顺序无关，因此选出集合与逐次淘汰最差项的实现逐位相同。
+/// Candidates are appended in traversal order; only when the buffer exceeds `2 × limit` is it sorted wholesale
+/// by `rank` and truncated, keeping each candidate's amortized cost at O(1) (the old implementation scanned the
+/// selected set for the worst entry on every extra candidate, i.e. O(limit)). Since paths are distinct, `rank` is
+/// a total order over the candidate set, so top-limit does not depend on eviction order and the selected set is bit-for-bit identical to the evict-worst-each-time implementation.
 ///
-/// 不在“已选满 limit”时提前结束遍历：`rank` 只依据 mtime 与路径，与遍历顺序、
-/// 条目深度无关（readdir 顺序也不是路径序），任何基于层级或已访问前缀的提前
-/// 终止都可能丢掉尚未访问但更新（rank 更高）的候选。保持既有语义：不超时、
-/// 不取消时结果恒为全部候选里 rank 最高的 `limit` 项。
+/// Traversal does not stop early once "limit is full": `rank` depends only on mtime and path, not on
+/// traversal order or entry depth (readdir order is not path order either), so any early termination
+/// based on depth or a visited prefix can drop candidates not yet visited but newer (higher rank).
+/// Existing semantics hold: without timeout or cancellation the result is always the `limit` highest-ranked candidates.
 struct Results {
     entries: Vec<Entry>,
     limit: usize,
@@ -182,7 +182,7 @@ impl Results {
             self.reduce();
         }
     }
-    /// 按 `rank` 排序（最靠前的最优）并截断到 `limit`，丢弃即置 `more`。
+    /// Sort by `rank` (front is best) and truncate to `limit`; dropping anything sets `more`.
     fn reduce(&mut self) {
         self.entries.sort_by(rank);
         if self.entries.len() > self.limit {
@@ -256,9 +256,9 @@ fn grouped(items: &[Entry]) -> String {
     lines.join("\n")
 }
 
-/// 遍历剪枝：普通 entry 在与拒绝根不相交的遍历根下直接放行，否则走词法快路径；
-/// symlink 与无法取得类型的 entry 取规范化结果，避免链接指向拒绝根时被词法前缀误放行
-/// （`follow_links(false)` 已保证不跨越目录链接）。
+/// Traversal pruning: regular entries pass directly under a traversal root disjoint from every denied root, otherwise
+/// they take the lexical fast path; symlinks and entries without a file type use the resolved result so a link into a
+/// denied root is not wrongly allowed by a lexical prefix (`follow_links(false)` already guarantees directory links are not crossed).
 fn sandbox_denied_entry(
     policy: Option<&pp_sandbox::Policy>,
     can_contain_denied: bool,
@@ -699,7 +699,7 @@ mod tests {
         }
     }
 
-    /// 与被替换的逐次淘汰最差项实现逐位对照：候选集合、limit 与遍历顺序全部变化。
+    /// Bit-for-bit comparison against the replaced evict-worst-each-time implementation: candidate set, limit and traversal order all vary.
     fn legacy_selection(candidates: &[Entry], limit: usize) -> (Vec<String>, bool) {
         let mut entries: std::collections::BTreeMap<String, Entry> =
             std::collections::BTreeMap::new();
@@ -732,7 +732,7 @@ mod tests {
         (kept.into_iter().map(|entry| entry.path).collect(), more)
     }
 
-    /// 确定性洗牌（xorshift64），不用额外依赖；只用于打乱遍历到达顺序。
+    /// Deterministic shuffle (xorshift64) without extra dependencies; used only to scramble traversal arrival order.
     fn shuffled(items: &[Entry], seed: u64) -> Vec<Entry> {
         let mut out = items.to_vec();
         let mut state = seed | 1;
@@ -787,7 +787,7 @@ mod tests {
         }
 
         {
-            // 路径互不相同，mtime 有刻意重复的平局项（按路径升序进入前列）。
+            // Paths are distinct; mtime deliberately repeats ties (ties enter the front in ascending path order).
             let pool: Vec<Entry> = [30_u64, 10, 20, 20, 10, 30, 5]
                 .iter()
                 .enumerate()
@@ -833,7 +833,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
-            // 创建顺序与 mtime 顺序相反，其中 c.rs/d.rs 同 mtime（平局按路径升序）。
+            // Creation order is the reverse of mtime order, with c.rs/d.rs sharing an mtime (ties break on ascending path).
             for (name, seconds) in [
                 ("e.rs", 10_u64),
                 ("d.rs", 20),

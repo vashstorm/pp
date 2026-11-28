@@ -1,5 +1,6 @@
 /**
- * Costs 页面：按模型或计费分量展示 API 等效费用估算与费率覆盖明细。
+ * Costs page: API-equivalent cost estimates and rate coverage detail, grouped by model or billing
+ * component.
  */
 
 import {
@@ -27,7 +28,7 @@ import { app } from "./state.js";
 /** @typedef {import("../../web-types/api.d.ts").AnalyticsResponse} AnalyticsResponse */
 
 /**
- * 渲染 Costs 页面。
+ * Renders the Costs page.
  * @returns {string}
  */
 export function costsPage() {

@@ -1,4 +1,5 @@
-//! 非交互 2 期基础设施：`--timeout`/`SIGINT`/`SIGTERM` 取消守卫、管道 stdin 读取、`--output-schema` 加载与 `-o` 原子落盘。
+//! Non-interactive phase 2 infrastructure: `--timeout`/`SIGINT`/`SIGTERM` cancellation
+//! guard, piped stdin reads, `--output-schema` loading and atomic `-o` writes.
 
 use anyhow::{Context, Result, bail, ensure};
 use pp_core::cancellation::{CancellationToken, Cancelled, SignalCancelled, TimedOut, UsageError};
@@ -35,7 +36,7 @@ extern "C" fn handle_termination_signal(signal: libc::c_int) {
     }
 }
 
-/// 统一管理非交互任务的 `SIGINT`/`SIGTERM` 信号与 `--timeout` 超时取消。
+/// Owns the `SIGINT`/`SIGTERM` and `--timeout` cancellation of non-interactive tasks.
 pub struct RunGuard {
     token: CancellationToken,
     cause: Arc<Mutex<Option<CancelCause>>>,
@@ -53,7 +54,8 @@ struct SignalWatcher {
 }
 
 impl RunGuard {
-    /// 仅安装 `--timeout` 定时器（不接管进程全局信号，适合单测或嵌入场景）。
+    /// Installs only the `--timeout` timer (does not take over process-wide signals, so
+    /// it suits unit tests and embedded use).
     pub fn with_timeout_only(timeout: Option<Duration>) -> Self {
         let token = CancellationToken::new();
         let cause = Arc::new(Mutex::new(None));
@@ -67,7 +69,8 @@ impl RunGuard {
         }
     }
 
-    /// 安装 `--timeout`（如配置）与 `SIGINT`/`SIGTERM` self-pipe 优雅取消守卫。
+    /// Installs `--timeout` (when configured) plus the `SIGINT`/`SIGTERM` self-pipe
+    /// graceful cancellation guard.
     pub fn install(timeout: Option<Duration>) -> Result<Self> {
         let mut guard = Self::with_timeout_only(timeout);
         guard.signals = Some(SignalWatcher::install(&guard.token, &guard.cause)?);
@@ -78,7 +81,8 @@ impl RunGuard {
         &self.token
     }
 
-    /// 将取消（`Cancelled` 或超时/信号中止导致的错误）映射为带语义退出码的 typed error。
+    /// Maps cancellation (`Cancelled` or an error caused by a timeout/signal abort) to a
+    /// typed error carrying the semantic exit code.
     pub fn remap_error(&self, error: anyhow::Error) -> anyhow::Error {
         let cause = *self.cause.lock().unwrap_or_else(|e| e.into_inner());
         let is_cancelled = error.chain().any(|cause| cause.is::<Cancelled>());
@@ -92,7 +96,8 @@ impl RunGuard {
         error
     }
 
-    /// 任务循环返回 `RunOutcome::Cancelled` 时生成对应错误对象。
+    /// Builds the matching error object when the task loop returns
+    /// `RunOutcome::Cancelled`.
     pub fn cancellation_error(&self) -> anyhow::Error {
         let cause = *self.cause.lock().unwrap_or_else(|e| e.into_inner());
         match cause {
@@ -291,7 +296,8 @@ fn set_nonblock(fd: libc::c_int) {
     }
 }
 
-/// 解析 `--timeout` 时长：支持纯数字秒或组合单位（`500ms`、`30s`、`5m`、`1h`、`1m30s`）。
+/// Parses a `--timeout` duration: bare seconds or combined units (`500ms`, `30s`, `5m`,
+/// `1h`, `1m30s`).
 pub fn parse_duration(raw: &str) -> Result<Duration> {
     let text = raw.trim();
     if text.is_empty() {
@@ -367,7 +373,7 @@ fn parse_unit_duration(number: &str, unit: &str) -> Result<Duration> {
     Ok(duration)
 }
 
-/// 当 stdin 非终端（管道/重定向）时读取输入至 EOF，上限 16 MiB。
+/// Reads input to EOF when stdin is not a terminal (pipe/redirect), capped at 16 MiB.
 pub fn read_piped_stdin() -> Result<Option<String>> {
     let stdin = io::stdin();
     if stdin.is_terminal() {
@@ -389,7 +395,8 @@ pub fn read_piped_stdin() -> Result<Option<String>> {
     Ok(Some(text))
 }
 
-/// 组合命令行显式 prompt 与管道 stdin 内容；两者均空时返回 `UsageError`。
+/// Combines an explicit command-line prompt with piped stdin content; returns
+/// `UsageError` when both are empty.
 pub fn combine_prompt_and_stdin(prompt: Option<String>, stdin: Option<String>) -> Result<String> {
     if let Some(ref explicit) = prompt
         && explicit.trim().is_empty()
@@ -407,7 +414,8 @@ pub fn combine_prompt_and_stdin(prompt: Option<String>, stdin: Option<String>) -
     }
 }
 
-/// 加载并预校验 `--output-schema`（支持内联 JSON 对象或 JSON Schema 文件路径）。
+/// Loads and pre-validates `--output-schema` (inline JSON object or a JSON Schema file
+/// path).
 pub fn load_output_schema(spec: &str) -> Result<serde_json::Value> {
     let trimmed = spec.trim();
     if trimmed.is_empty() {
@@ -434,7 +442,8 @@ pub fn load_output_schema(spec: &str) -> Result<serde_json::Value> {
     Ok(value)
 }
 
-/// 将非交互最终结果以同目录临时文件 + 原子重命名写入 `-o` / `--output-file`。
+/// Writes the non-interactive final result to `-o` / `--output-file` via a sibling
+/// temporary file plus atomic rename.
 pub fn write_output_file(path: &Path, content: &str) -> Result<()> {
     let parent = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,

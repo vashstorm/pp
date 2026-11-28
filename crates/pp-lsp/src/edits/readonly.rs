@@ -1,4 +1,4 @@
-//! 只读建议入口：移动校验与虚拟预览，不提交任何修改。
+//! Read-only suggestion entry point: move validation and virtual preview, committing no modification.
 
 use crate::types::WorkspaceEdit;
 use anyhow::Result;
@@ -11,7 +11,7 @@ use std::path::Path;
 
 use super::plan;
 
-/// 校验文件移动建议的工作区边界、节点类型和目标冲突，不创建目录。
+/// Validate the workspace boundary, node types and target conflicts of a file move suggestion without creating directories.
 pub(crate) fn validate_move(
     workspace: &Workspace,
     source: &Path,
@@ -27,7 +27,7 @@ pub(crate) fn validate_move(
     plan(workspace, None, &edit, cancellation).map(|_| ())
 }
 
-/// 只读建议：保留原始编辑顺序与版本，并返回基线和最终虚拟内容。
+/// Read-only suggestion: preserves the original edit order and versions, and returns the baseline and final virtual content.
 pub(crate) fn suggest(
     workspace: &Workspace,
     client: &crate::Client,

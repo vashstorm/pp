@@ -64,13 +64,14 @@ fn mcp_preview_title_colors_and_global_tool_folding() {
                     .collect();
                 line.contains("codebase-memory-mcp")
             })
-            .expect("标题行可见");
+            .expect("title row is visible");
         let color_at = |needle: &str| {
             let line: String = (0..buffer.area.width)
                 .map(|x| buffer[(x, row)].symbol())
                 .collect();
             let start = line.find(needle).expect(needle);
-            let column = u16::try_from(line[..start].chars().count()).expect("标题行宽度有限");
+            let column =
+                u16::try_from(line[..start].chars().count()).expect("title row width is bounded");
             buffer[(column, row)].fg
         };
         assert_eq!(color_at("MCP codebase"), palette::mcp_title());
@@ -508,7 +509,10 @@ fn ask_card_lifecycle_and_details() {
                 "preview-detail",
                 "Ask · running",
             ] {
-                assert!(!text.contains(hidden), "等待时不应显示 ask 卡片：{text}");
+                assert!(
+                    !text.contains(hidden),
+                    "the ask card must stay hidden while waiting: {text}"
+                );
             }
             assert!(transcript.has_running_ask("ask-card"));
             assert_eq!(transcript.entries[1].layout.as_ref().unwrap().height, 0);
@@ -539,13 +543,16 @@ fn ask_card_lifecycle_and_details() {
         } else {
             "Database question?"
         };
-        assert!(text.contains(expected), "结束后应保留记录：{text}");
+        assert!(
+            text.contains(expected),
+            "the record must be kept once it finishes: {text}"
+        );
         transcript.append("Assistant", "after-ask");
         let native = retire_native(&mut transcript, 80, 1, true);
         assert_eq!(
             native.matches(expected).count(),
             1,
-            "历史应只提交一次：{native}"
+            "the history must be committed exactly once: {native}"
         );
         assert!(retire_native(&mut transcript, 80, 1, true).is_empty());
     }
@@ -575,10 +582,16 @@ fn ask_card_lifecycle_and_details() {
         "preview-tail",
         "other-description",
     ] {
-        assert!(text.contains(expected), "消息中应显示完整详情：{text}");
+        assert!(
+            text.contains(expected),
+            "the message must show the full details: {text}"
+        );
     }
     assert!(!text.contains('\u{1b}'));
-    assert!(!text.contains("**Preview**"), "预览应按 Markdown 渲染");
+    assert!(
+        !text.contains("**Preview**"),
+        "the preview must render as Markdown"
+    );
     assert!(block.finish(&json!({"ok":true,"answers":[{
         "id":"db", "selected_options":["SQLite"], "custom_input":null
     }]})));
@@ -596,7 +609,10 @@ fn ask_card_lifecycle_and_details() {
             "󰐽 Postgres",
             "other-description",
         ] {
-            assert!(text.contains(expected), "回答和缩放后仍应保留详情：{text}");
+            assert!(
+                text.contains(expected),
+                "the details must survive the answer and the resize: {text}"
+            );
         }
     }
 }

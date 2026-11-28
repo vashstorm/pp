@@ -18,7 +18,10 @@ impl App {
         kind: PendingKind,
     ) {
         if self.resources.job.is_some() {
-            self.notify(Level::Normal, "正在准备输入资源，Esc 可取消。".into());
+            self.notify(
+                Level::Normal,
+                "Preparing input resources, Esc to cancel.".into(),
+            );
             return;
         }
         match resources::start(
@@ -34,7 +37,8 @@ impl App {
     }
 
     pub(in crate::tui) fn paste_resource_input(&mut self, text: String) {
-        // 先显示原始粘贴文本；随后编辑或取消时也不会丢掉用户输入。
+        // Show the raw pasted text first, so later edits or a cancellation never lose user
+        // input.
         self.resources.cancel();
         self.insert_input(text.replace("\r\n", "\n").replace('\r', "\n"));
         self.refresh_candidates(true);
@@ -89,9 +93,13 @@ impl App {
         let result = match job.reply.try_recv() {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return false,
-            Err(_) => Err(anyhow::anyhow!("输入资源线程已关闭")),
+            Err(_) => Err(anyhow::anyhow!("input resource thread closed")),
         };
-        let job = self.resources.job.take().expect("当前输入资源任务");
+        let job = self
+            .resources
+            .job
+            .take()
+            .expect("current input resource job");
         match result {
             Ok(resources::Output::Empty) => {}
             Ok(resources::Output::Prepared(input)) => {
@@ -107,7 +115,8 @@ impl App {
                 } else {
                     self.submit(job.kind);
                 }
-                // 状态变化导致提交未被接受时，不能把准备结果留给另一条输入。
+                // When a state change rejects the submission, the prepared result must not be
+                // left over for another input.
                 if !matches!(self.state, State::ChangingPlan) {
                     self.resources.ready = None;
                 }
@@ -158,7 +167,8 @@ impl App {
                 let model_offset = prepared_text
                     .as_ref()
                     .and_then(|text| job.source.find(text));
-                // 先按正文顺序分配编号，再从后向前替换，保持原始 UTF-8 范围有效。
+                // Number the images in body order first, then replace back to front so the
+                // original UTF-8 ranges stay valid.
                 let replacements: Vec<_> = replacements
                     .into_iter()
                     .map(|(range, mut image)| {

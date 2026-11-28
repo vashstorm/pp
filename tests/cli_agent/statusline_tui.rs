@@ -1,4 +1,5 @@
-// 标题专用测试直接控制旁路请求，不使用通用夹具的自动标题响应。
+// The title-specific tests control the side-channel request directly and do not use the generic
+// fixture's automatic title response.
 fn statusline_home(server: &TestServer, protocol: &str, fast: bool) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     let other = if protocol == "completion" {
@@ -54,31 +55,32 @@ fn statusline_out_accumulates_session_usage_across_requests_both_protocols() {
         let (_home, mut pty) = statusline_start(&fixture, protocol, false);
         pty.input("live out task\r");
         let ((main, _), (title, _)) = statusline_requests(&fixture);
-        statusline_reply_usage(title, protocol, "实时输出");
+        statusline_reply_usage(title, protocol, "live output");
         let mut stream = main.start_sse().unwrap();
-        // 19 字节正文；本次请求尚未收尾时，out 只能来自字节估算。
+        // A 19-byte body; while this request has not terminated, out can only come from the byte estimate.
         streaming_delta(&mut stream, protocol, "statusline-live-out");
         pty.text("statusline-live-out");
-        pty.wait_for("生成中的 out 按已接收字节实时增长", |screen| {
+        pty.wait_for("out grows in real time with the bytes received while generating", |screen| {
             screen.contents().contains("\u{f04e2} —/7")
         });
         context_tui_stream_usage(&mut stream, protocol, "statusline-live-out");
         stream.finish();
         pty.completed_after("statusline-live-out");
-        pty.wait_for("首个请求完成后 out 等于会话累计", |screen| {
+        pty.wait_for("after the first request completes out equals the session total", |screen| {
             screen.contents().contains("\u{f04e2} 12K/300")
         });
-        // 同一会话的第二个请求：out 在上一笔 300 上叠加，而不是重新从本次 usage 开始。
+        // The second request in the same session: out stacks onto the previous 300 instead of restarting
+        // from this request's usage.
         pty.input("second out task\r");
         let ((main, _), (title, _)) = statusline_requests(&fixture);
-        statusline_reply_usage(title, protocol, "第二任务输出");
+        statusline_reply_usage(title, protocol, "second task output");
         statusline_reply_usage(main, protocol, "statusline-second-out");
         pty.completed_after("statusline-second-out");
-        pty.wait_for("第二次请求后 out 累计为整个会话", |screen| {
+        pty.wait_for("after the second request out accumulates for the whole session", |screen| {
             screen.contents().contains("\u{f04e2} 12K/600")
         });
         pty.input("/new\r");
-        pty.wait_for("新会话清空累计输出并隐藏无数据指标行", |screen| {
+        pty.wait_for("a new session clears accumulated output and hides the no-data metrics row", |screen| {
             let text = screen.contents();
             !text.contains('\u{f04e2}') && !text.contains('\u{e62a}')
         });
@@ -92,8 +94,8 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
     let protocol = "response";
         let fixture = server();
         let (home, mut pty) = statusline_start(&fixture, protocol, true);
-        pty.input("修复会话历史 sqlite\r");
-        // 两个请求都在任何响应前到达，证明标题不会阻塞主请求。
+        pty.input("fix session history sqlite\r");
+        // Both requests arrive before any response, proving the title does not block the main request.
         let ((main, body), (title, title_body)) = statusline_requests(&fixture);
         let title_protocol = if protocol == "completion" {
             "response"
@@ -106,20 +108,20 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
         assert!(title_body["tool_choice"].is_null());
         assert_eq!(title.target(), api_path(title_protocol));
         assert!(!body.to_string().contains("Generate a short task title"));
-        statusline_reply_usage(title, title_protocol, "修复会话历史");
-        pty.wait_for("后台标题和费用先于主回复到达", |screen| {
+        statusline_reply_usage(title, title_protocol, "fix history");
+        pty.wait_for("background title and cost arrive before the main reply", |screen| {
             let text = screen.contents();
-            text.contains("修复会话历史")
+            text.contains("fix history")
                 && text.contains("0.025")
                 && text.contains("\u{f04e2} —/—")
         });
         assert!(
             context_tui_speed(pty.parser.screen()).is_none(),
-            "标题不能污染主请求速度"
+            "the title must not pollute the main request speed"
         );
         statusline_reply_usage(main, protocol, "statusline-main-answer");
         pty.completed_after("statusline-main-answer");
-        pty.wait_for("主请求与标题费用只累计一次", |screen| {
+        pty.wait_for("main request and title costs accumulate only once", |screen| {
             screen.contents().contains("0.037")
         });
         let screen = pty.parser.screen();
@@ -128,7 +130,7 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
             screen.cell(row, col).unwrap().fgcolor(),
             vt100::Color::Idx(1)
         );
-        let (title_row, title_col) = context_tui_locate(screen, "\u{f09a9} 修复会话历史").unwrap();
+        let (title_row, title_col) = context_tui_locate(screen, "\u{f09a9} fix history").unwrap();
         assert_eq!(title_row, row);
         assert_eq!(
             screen.cell(row, title_col).unwrap().fgcolor(),
@@ -163,7 +165,7 @@ fn task_status_title_parallel_fast_both_protocols_cost_and_history_isolation() {
             1
         );
         pty.input("/new\r");
-        pty.wait_for("新会话清空标题、费用和累计输出并隐藏无数据指标行", |screen| {
+        pty.wait_for("a new session clears the title, cost and accumulated output and hides the no-data metrics row", |screen| {
             let text = screen.contents();
             !text.contains('\u{e62a}')
                 && !text.contains('\u{f04e2}')

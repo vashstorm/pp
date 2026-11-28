@@ -17,7 +17,7 @@ fn tui_slash_file_command_menu_and_submission() {
     let mut pty = Pty::start(&server, dir.path());
     pty.ready();
 
-    // 忽略大小写的模糊输入列出自定义命令及其说明。
+    // Case-insensitive fuzzy input lists the custom commands with their descriptions.
     pty.input("/RVW");
     pty.wait_for("file command candidate with description", |screen| {
         let text = screen.contents();

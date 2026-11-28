@@ -1,4 +1,4 @@
-//! 仅开发构建提供的本地 Responses 服务与内嵌调试场景。
+//! Only available in development builds: a local Responses service and embedded debug scenarios.
 
 #[cfg(debug_assertions)]
 mod mock_ai;

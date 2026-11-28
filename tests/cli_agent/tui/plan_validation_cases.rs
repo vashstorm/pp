@@ -1,6 +1,6 @@
 use super::*;
 
-// 每个外部文件故障是独立会话：既不恢复快照，也不执行计划。
+// Every external file fault is a separate session: it neither restores a snapshot nor executes the plan.
 fn plan_tui_external_file_error_case(fault: &str) {
     let protocol = "response";
     let fixture = server();

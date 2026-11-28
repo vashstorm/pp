@@ -7,7 +7,7 @@ use std::{
 
 use axum::body::Body;
 
-/// 固定的小 gzip 数据（`hello`，mtime 0）：用于验证原始字节未被改写或自动解压。
+/// Fixed small gzip payload (`hello`, mtime 0): verifies the raw bytes are neither rewritten nor auto-decompressed.
 const GZIP: &[u8] = &[
     0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07,
     0x00, 0x86, 0xa6, 0x10, 0x36, 0x05, 0x00, 0x00, 0x00,
@@ -46,7 +46,7 @@ fn captures_request_and_returns_response_bytes_unmodified() {
             .build()
             .unwrap();
         runtime.block_on(async move {
-            // 关闭自动解压，才能断言原始 gzip 字节未被改写。
+            // Disable auto-decompression; only then can we assert the raw gzip bytes are unmodified.
             let client = reqwest::Client::builder().no_gzip().build().unwrap();
             let response = client
                 .post(url)
@@ -65,7 +65,7 @@ fn captures_request_and_returns_response_bytes_unmodified() {
     let request = server
         .recv_timeout(Duration::from_secs(10))
         .unwrap()
-        .expect("客户端请求必须到达");
+        .expect("client request must arrive");
     assert_eq!(request.method(), Method::POST);
     assert_eq!(request.target(), "/v1/responses?stream=true");
     assert_eq!(request.headers()["x-fixture"], "kept");
@@ -115,7 +115,7 @@ fn held_request_sends_no_headers_and_other_connections_proceed() {
         "held request must not send a response header: {error}"
     );
 
-    // 第二条连接在第一条仍未响应时照常收发。
+    // The second connection keeps working while the first is still unanswered.
     let mut other = client(&server);
     send(
         &mut other,
@@ -193,7 +193,7 @@ fn streams_sse_frames_and_stops_the_listener_when_dropped() {
         .unwrap();
     let mut sse = request.start_sse().unwrap();
     sse.frame("first").unwrap();
-    // 生产端尚未 finish，客户端已读到第一段。
+    // The producer has not finished yet, but the client already read the first segment.
     let chunk = received.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(chunk.contains("data: first\n\n"), "{chunk}");
     sse.frame("héllo").unwrap();
@@ -206,7 +206,7 @@ fn streams_sse_frames_and_stops_the_listener_when_dropped() {
     let body = worker.join().unwrap();
     assert_eq!(body, "data: first\n\ndata: héllo\n\ndata: [DONE]\n\n");
 
-    // 未完成响应存在时 Drop owner：连接在 2s 内关闭，监听地址不再可连。
+    // Drop the owner with an unfinished response outstanding: the connection closes within 2s and the listen address no longer accepts.
     let mut held = client(&server);
     send(
         &mut held,

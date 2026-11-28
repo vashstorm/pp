@@ -1,4 +1,4 @@
-//! 交互请求共用回复通道，各面板独立处理布局与输入。
+//! Interactive requests share one reply channel while each panel handles layout and input on its own.
 
 use pp_core::interaction::{AskAnswer, AskRequest};
 use ratatui::{Frame, layout::Rect};

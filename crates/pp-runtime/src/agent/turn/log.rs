@@ -1,4 +1,4 @@
-//! 任务与模型请求收尾的结构化诊断日志。
+//! Structured diagnostic logs for task and model request completion.
 use super::*;
 
 pub(in crate::agent) fn log_task_finished(

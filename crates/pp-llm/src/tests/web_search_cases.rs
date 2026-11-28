@@ -319,7 +319,7 @@ mod integration {
 
     #[test]
     fn query_parser_and_auto_routing_with_fallback() {
-        // 保留既有查询解析与路由断言
+        // Keep the existing query parsing and routing assertions
         let parsed = parse_search_query(
             r#"site:github.com/rust-lang -site:spam.example inurl:releases intitle:"async runtime" filetype:md after:2025-01-01 before:2027-01-01 (tokio OR smol) -legacy"#,
         );
@@ -467,7 +467,7 @@ mod integration {
             ..Default::default()
         };
 
-        // 1. HN 专属查询自动优先 Hacker News。
+        // 1. HN-specific queries prefer Hacker News automatically.
         let hn_req = WebSearchRequest {
             query: "site:news.ycombinator.com rust".into(),
             recency: None,
@@ -500,7 +500,7 @@ mod integration {
             hn_res.sources[1]
         );
 
-        // 2. 配置 SearXNG 后优先走 SearXNG（并验证 sandbox 断网时本地 loopback SearXNG 仍放行）。
+        // 2. Once SearXNG is configured, SearXNG is preferred (and a local loopback SearXNG is still allowed when the sandbox is offline).
         let searx_settings = WebSearchSettings {
             searxng: Some(SearxngSettings {
                 endpoint: format!("http://{sx_addr}"),
@@ -539,7 +539,7 @@ mod integration {
             Some("2026-03-10")
         );
 
-        // 3. 当非 loopback SearXNG 遇到断网沙盒时必须拒绝。
+        // 3. A non-loopback SearXNG must be refused when the sandbox has no network.
         let remote_searx = WebSearchSettings {
             searxng: Some(SearxngSettings {
                 endpoint: "https://searx.remote.example".into(),

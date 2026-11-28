@@ -1,4 +1,5 @@
-//! worker `Ask`／`DialogFinished` 事件：打开交互面板并登记回复通道。
+//! Worker `Ask`/`DialogFinished` events: open the interaction panel and register the reply
+//! channel.
 
 use crate::tui::{
     App, State, WorkerEvent, desktop_notifications, dialog, worker_bridge::DialogOrigin,
@@ -44,7 +45,7 @@ impl App {
         }
     }
 
-    /// 交互请求到达时重新绘制。
+    /// Redraws when an interaction request arrives.
     pub(super) fn on_ask_event(&mut self, event: WorkerEvent) -> bool {
         let mut changed = false;
         match event {
@@ -84,7 +85,7 @@ impl App {
                             .is_some_and(|token| !token.is_cancelled())
                         || request.call_id.starts_with("subagent-")
                         || request.call_id == "permission-dialog")
-                    // 真实请求可以替换没有回复通道的本地预览。
+                    // A real request may replace a local preview that has no reply channel.
                     && self.ask_reply.is_none()
                     && (self.conversation.has_running_ask(&request.call_id)
                         || request.call_id.starts_with("subagent-")
@@ -93,7 +94,7 @@ impl App {
                     self.menu = None;
                     self.menu_dismissed = true;
                     self.queue_menu = false;
-                    // 交互面板需要优先接收键盘输入。
+                    // The interaction panel must receive keyboard input first.
                     self.plan_panel = None;
                     self.ask_id = Some(request.call_id.clone());
                     let kind = match origin {

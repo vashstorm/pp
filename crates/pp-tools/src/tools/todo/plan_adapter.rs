@@ -16,9 +16,9 @@ const PLAN_STRUCTURE_LOCKED: &str =
     "Approved plan tasks cannot be added, removed, replaced, or dropped; re-plan first.";
 /// The approved ordered checklist drifted from the executed document.
 const TASKS_CHANGED: &str = "Plan tasks changed; re-plan before completing.";
-/// 执行计划的任务适配器：`current` 与批准正文的任务数量、顺序一致，
-/// 按文档序号定位并通过条件保存回写 checkbox。普通操作失败携带可信的
-/// 调用前投影；`Err` 不携带 todo 修改。
+/// Task adapter for plan execution: `current` matches the approved body's task count and order,
+/// positioned by document ordinal and written back to checkboxes through a conditional save. An ordinary operation
+/// failure carries a trustworthy pre-call projection; `Err` carries no todo change.
 pub(in crate::tools) fn run_plan(
     workspace: &save::Workspace,
     document: &PlanDocument,
@@ -259,7 +259,7 @@ fn write_plan_progress(
     Ok((revision, Some(content), warning))
 }
 
-/// 执行模式中仍绑定计划的只读投影；仅允许 `view`，不修改文件或运行态。
+/// Read-only projection still bound to the plan in execute mode; only `view` is allowed, with no file or runtime state change.
 pub(in crate::tools) fn run_readonly(
     document: &PlanDocument,
     arguments: &str,
@@ -341,8 +341,8 @@ fn readonly_projection(document: &PlanDocument) -> anyhow::Result<Vec<TodoPhase>
     project_plan_todos(document, &[], false)
 }
 
-/// 计划按完整任务原文、完整阶段名和筛选后的一基 occurrence 定位。
-/// 同名阶段区域全部参与筛选；显式空目标也只做精确匹配，不扩大成全部任务。
+/// A plan task is located by the complete task text, the complete phase name and a filtered one-based occurrence.
+/// Regions of same-named phases all take part in filtering; an explicitly empty target only matches exactly and is never widened to all tasks.
 pub(super) fn plan_task_targets(
     current: &[TodoPhase],
     params: &TodoParams,

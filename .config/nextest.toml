@@ -1,12 +1,12 @@
 [profile.default]
-# 每个用例占两个调度名额，并发上限为逻辑 CPU 数的一半，向下取整且不低于 1。
+# Each test claims two scheduler slots; the cap is half the logical CPU count, rounded down to at least 1.
 test-threads = "num-cpus"
 threads-required = 2
 retries = 0
 fail-fast = false
 
 [test-groups.mock-write-workspace]
-# 这些用例共用 /tmp/pp-test-write，同一时间只能有一个用例访问该目录。
+# These tests share /tmp/pp-test-write, so only one test may touch that directory at a time.
 max-threads = 2
 
 [[profile.default.overrides]]
@@ -16,27 +16,27 @@ or (binary_id(pp::cli_agent) and test(=mock_test::mock_test_normal_agent_session
 '''
 test-group = "mock-write-workspace"
 
-# L1: 纯单元测试层（纯内存状态机、解析、布局、TestBackend；无子进程/HTTP/PTY）
+# L1: pure unit layer (in-memory state machines, parsing, layout, TestBackend; no subprocess/HTTP/PTY)
 [profile.unit]
 default-filter = 'not binary_id(pp::cli_agent) and not test(/(^|::)integration(::|$)/)'
 
-# L2: Crate 组件集成层（TestServer / REPL / LSP / MCP / Bash / Sandbox）
+# L2: crate component integration layer (TestServer / REPL / LSP / MCP / Bash / Sandbox)
 [profile.integration]
 default-filter = 'not binary_id(pp::cli_agent) and test(/(^|::)integration(::|$)/)'
 
-# L3: Headless CLI 二进制端到端层（非 PTY 的 pp::cli_agent）
+# L3: headless CLI binary end-to-end layer (non-PTY pp::cli_agent)
 [profile.e2e-cli]
 default-filter = 'binary_id(pp::cli_agent) and not test(/^tui::/)'
 
-# L4: 真实 PTY / TUI 端到端层（cli_agent::tui::）
+# L4: real PTY / TUI end-to-end layer (cli_agent::tui::)
 [profile.e2e-pty]
 default-filter = 'binary_id(pp::cli_agent) and test(/^tui::/)'
 
-# 日常快速回归：全部 L1 纯单测 + 核心 L3/L4 冒烟。
+# Daily quick regression: every L1 unit test plus core L3/L4 smoke tests.
 [profile.quick]
 default-filter = '(not binary_id(pp::cli_agent) and not test(/(^|::)integration(::|$)/)) or (binary_id(pp::cli_agent) and test(/^(command_cases::|non_interactive::|tui::streaming_cases::|tui::plan_mode_cases::|tui::startup_cases::)/))'
 
-# 禁用伪终端的环境仍可运行普通 CLI 和 crate 内测试。
+# Environments without pseudo-terminals can still run plain CLI and in-crate tests.
 [profile.no_pty]
 default-filter = '''
 not (binary_id(pp::cli_agent) and (

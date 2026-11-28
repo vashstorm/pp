@@ -1,5 +1,5 @@
-//! `/context` 独立 TUI 面板渲染：
-//! 顶部三行摘要 + 左侧 25×16 占比网格 + 右侧紧凑 12 行列表（数值紧跟文字）+ 原地展开子项。
+//! Rendering of the standalone `/context` TUI panel:
+//! a three-row summary on top, a 25x16 share grid on the left and a compact 12-row list on the right (values follow the text) plus in-place expanded children.
 
 use super::*;
 use crate::tui::{
@@ -57,7 +57,7 @@ impl Panel {
             return;
         }
 
-        // 左右各留 1 列内边距，视觉更舒展。
+        // One column of padding on each side keeps the layout airy.
         let inner = if box_inner.width >= 16 {
             Rect::new(
                 box_inner.x + 1,
@@ -519,7 +519,7 @@ fn build_grid_cells(report: &ContextReport) -> [GridCell; GRID_CELLS] {
         }
     }
 
-    // `usable_cells` 之后的格子在未被实际占用覆盖时渲染为 Auto-Compact Buffer (`⛝`)。
+    // Cells beyond `usable_cells` render as Auto-Compact Buffer (`⛝`) whenever actual usage does not cover them.
     for cell in cells.iter_mut().skip(usable_cells.max(cursor)) {
         *cell = GridCell::Buffer;
     }
@@ -569,8 +569,8 @@ fn allocate_category_cells(categories: &[CategorySummary], target_cells: usize) 
         counts[idx] += 1;
     }
 
-    // 尽量为极小但非零的分类（如 53 token 的 Instruction Files）保留至少 1 格视觉提示，
-    // 从格数最多的分类挪出 1 格，直到非零分类都有格子或不可再挪。
+    // Keep at least one visual cell for tiny but non-zero categories (e.g. Instruction Files at 53 tokens)
+    // by moving one cell from the largest category until every non-zero category has a cell or nothing can move.
     for &(idx, _) in &in_ctx {
         if counts[idx] > 0 {
             continue;

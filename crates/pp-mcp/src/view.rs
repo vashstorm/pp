@@ -1,4 +1,4 @@
-//! 工具表与 `/mcp list` 快照：可用性过滤与来源状态。
+//! Tool table and `/mcp list` snapshot: availability filtering and source status.
 
 use async_openai::types::chat::FunctionObject;
 use serde_json::{Map, Value, json};
@@ -10,7 +10,7 @@ use super::{Access, EntryView, McpManager, RemoteTool, SharedServer, State, View
 const MAX_SUMMARY_DESC_CHARS: usize = 240;
 const MAX_PROP_DESC_CHARS: usize = 120;
 
-/// 供 `mcp_search` 返回的精简 MCP 工具摘要（避免把冗长完整 schema 一次塞进上下文）。
+/// Compact MCP tool summary returned by `mcp_search` (avoids stuffing the full, verbose schema into the context at once).
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ToolSummary {
     pub name: String,
@@ -37,7 +37,7 @@ impl McpManager {
             .count()
     }
 
-    /// 按关键词与可选服务名检索当前可访问的 MCP 工具，返回 `(总命中数, 当前页摘要)`。
+    /// Searches currently accessible MCP tools by keyword and optional server name, returning `(total matches, current page of summaries)`.
     pub fn search_tools(
         &self,
         access: Access,
@@ -139,8 +139,8 @@ impl McpManager {
         (total, page)
     }
 
-    /// 将 `mcp_call` 传入的工具名（支持完整 `mcp__server__tool`，或 `server` + `original_name`，
-    /// 或全局唯一的 `original_name`）解析为规范暴露名 `mcp__*`。
+    /// Resolves a tool name passed to `mcp_call` (a full `mcp__server__tool`, `server` + `original_name`,
+    /// or a globally unique `original_name`) into the canonical exposed name `mcp__*`.
     pub fn resolve_tool_name(&self, tool: &str, server: Option<&str>) -> Option<String> {
         let tool = tool.trim();
         if tool.is_empty() {
@@ -181,7 +181,7 @@ impl McpManager {
             .filter(|entry| tool_available(&state, entry) && entry.original_name == tool);
         let first = matched.next()?;
         if matched.next().is_some() {
-            // 多服务同名工具时要求显式指定 server 或完整 mcp__ 名称，避免误调用。
+            // Same-named tools on several servers require an explicit server or the full mcp__ name to avoid calling the wrong one.
             return None;
         }
         Some(first.definition.name.clone())
@@ -256,7 +256,7 @@ impl McpManager {
                     {
                         "suspended (read-only)"
                     } else if let Some(server) = state.servers.get(name) {
-                        // 并行调用正在使用服务时视为可用，不阻塞管理查询。
+                        // A server in use by a parallel call counts as available; management queries do not block.
                         match server.try_lock() {
                             Ok(server) => {
                                 if server.restart_after_cancel {
@@ -311,7 +311,7 @@ impl McpManager {
     }
 }
 
-// 服务可用性：`WouldBlock` 表示正被其他线程调用，视为可用；中毒沿用旧的可读语义。
+// Server availability: `WouldBlock` means another thread is calling it and is treated as available; poisoning keeps the previous readable semantics.
 fn server_available(server: &SharedServer) -> bool {
     match server.try_lock() {
         Ok(state) => !state.client.stopped || state.restart_after_cancel,
@@ -343,7 +343,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     }
 }
 
-/// 精简参数 schema：保留 `required` 与顶层属性的类型/枚举/短说明，去除冗长嵌套文档。
+/// Compact parameter schema: keeps `required` plus each top-level property's type/enum/short description and drops verbose nested documentation.
 fn compact_parameters_schema(schema: &Value) -> Value {
     let Some(obj) = schema.as_object() else {
         return schema.clone();
@@ -484,13 +484,13 @@ mod tests {
         assert_eq!(hits[0].name, "mcp__docs__lookup");
         assert!(hits[0].read_only);
         assert!(hits[0].description.as_deref().unwrap().ends_with('…'));
-        // 精简 schema 保留 required 与属性类型/短说明，去除多余 examples 字段。
+        // The compact schema keeps required and property types/short descriptions and drops extra examples fields.
         let params = hits[0].parameters.as_ref().unwrap();
         assert_eq!(params["required"], json!(["id"]));
         assert_eq!(params["properties"]["id"]["type"], "string");
         assert!(params["properties"]["id"].get("examples").is_none());
 
-        // 唯一原名可直接解析；跨服务同名必须给 server 或完整 mcp__ 名称。
+        // A unique original name resolves directly; the same name across servers needs the server or the full mcp__ name.
         assert_eq!(
             manager.resolve_tool_name("lookup", None).as_deref(),
             Some("mcp__docs__lookup")

@@ -1,4 +1,4 @@
-//! 将独立子会话接入既有模型循环；持久消费标记与原生上下文一起提交。
+//! Wire independent child sessions into the existing model loop; consume the persistent marker and commit it together with native context.
 use super::*;
 use crate::subagent::{Binding, Record};
 use serde::{Deserialize, Serialize};
@@ -69,17 +69,17 @@ impl Agent {
         let user_dir = self.subagent_user_dir(&config.agent_db_path)?;
         let runtime_models = self.runtime_models.clone();
         let skills = self.tools.skills.clone();
-        // 子 Agent 一律共享父级 MCP 管理器：经代理调用复用父连接，权限仍受
-        // 只读门禁与授权集合约束。
+        // Subagents always share the parent's MCP manager: proxied calls reuse the parent connection, and permissions are
+        // still bounded by the readonly gate and the granted set.
         let mcp = self.tools.mcp.clone();
         let permission = self.tools.permission.clone();
         let ask = self.tools.ask_handler.clone();
         let write_lock = self.tools.write_lock.clone();
         let artifacts = self.tools.artifacts.clone();
-        // 临时管道正文属于根会话：子 Agent 只共享 registry，不另起一棵树。
+        // Temporary pipe bodies belong to the root session: subagents only share the registry and start no tree of their own.
         let pipe_store = self.tools.pipe_store();
-        // 非隔离子 Agent 共享父 Registry；隔离子 Agent 使用实际 prepare 后的 cwd
-        // 新建独立 Registry。settings 与用户配置路径都从当前会话冻结。
+        // Non-isolated subagents share the parent Registry; an isolated subagent uses the actual post-prepare cwd
+        // to create a separate Registry. Both settings and user config paths are frozen from the current session.
         let lsp = self.tools.lsp.clone();
         let lsp_settings = self.catalog.lsp_settings();
         let lsp_path = self.catalog.lsp_path();
@@ -97,9 +97,9 @@ impl Agent {
         } else {
             self.journal.directory().join(format!("{id}.subagents"))
         };
-        // 子 Agent 的请求与工具记录写入父级同一个统计库。
+        // A subagent's requests and tool records go to the same stats database as the parent.
         let stats_db = self.journal.stats_database().to_owned();
-        // 配置在进程内冻结：子 Agent 复用父级编译结果，不重读 settings。
+        // Config is frozen within the process: subagents reuse the parent's compiled result and never re-read settings.
         let hooks = self.hooks.clone();
         let parent_allowed_tools = self.tools.allowed_tools.clone();
 
@@ -134,7 +134,7 @@ impl Agent {
                     "saved subagent session model mismatch"
                 );
             }
-            // v2 快照记录已经提交的实际模型；注册表写失败后也可据此安全恢复。
+            // The v2 snapshot records the commit-time effective model; it also allows a safe restore after a registry write failure.
             let actual_model = saved
                 .as_ref()
                 .map_or(record.spec.model.as_str(), |saved| saved.model.as_str());
@@ -181,7 +181,7 @@ impl Agent {
                     lsp_settings,
                 ));
             }
-            // 恢复旧记录时也以父级当前权限为准，子 Agent 默认的 Execute 不扩大权限。
+            // Restored old records also defer to the parent's current permission, so a subagent's default Execute does not widen permissions.
             let mut readonly = plan_mode
                 || record.spec.readonly
                 || record
@@ -266,7 +266,7 @@ impl Agent {
                 last_request_raw_tokens: None,
                 session_output_tokens: 0,
                 thinking_history: Vec::new(),
-                // 子 Agent 只吃角色配置：自己的 ModelState 没有手动覆盖。
+                // A subagent only consumes role config: its own ModelState has no manual override.
                 models: ModelState::shared(catalog.clone()),
                 model_source: if record.spec.model_role.is_some() {
                     pp_core::model::ModelSource::Role
@@ -486,7 +486,7 @@ impl Agent {
     pub(crate) fn yielded(&self) -> Option<serde_json::Value> {
         self.tools.yielded.borrow().clone()
     }
-    /// 隐式等待也在整批完成后才交付结果；补充输入不能越过屏障。
+    /// An implicit wait also delivers results only after the whole batch completes; supplementary input cannot cross the barrier.
     pub(super) fn wait_owned_subagents(
         &mut self,
         token: &CancellationToken,
@@ -636,7 +636,7 @@ fn consumed_results(session: &Session) -> Result<std::collections::BTreeSet<Stri
             }
         }
     }
-    // 开头标记只从本地注入的 developer 信封读取，不扫描任意工具或子任务正文。
+    // The opening marker is read only from locally injected developer envelopes, never by scanning arbitrary tool or subagent bodies.
     if let Some(items) = items {
         for item in items.iter().filter(|i| i["role"] == "developer") {
             let text = item["content"]

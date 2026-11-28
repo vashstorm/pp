@@ -1,4 +1,4 @@
-//! `ask` 分支：交互提问与答案校验。
+//! `ask` branch: interactive questions and answer validation.
 
 use super::*;
 

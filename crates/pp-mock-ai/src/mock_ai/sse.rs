@@ -1,6 +1,6 @@
-//! Responses API 的 SSE 编码：单一生命周期、原生 item 事件与可取消的 token 限速。
+//! SSE encoding for the Responses API: single lifecycle, native item events and cancellable token pacing.
 //!
-//! 这里只产出 SSE 帧字节，HTTP 状态行、chunked framing 与连接由 Axum／Hyper 负责。
+//! This module only produces SSE frame bytes; the HTTP status line, chunked framing and connection are handled by Axum/Hyper.
 
 use std::{
     borrow::Cow,
@@ -18,10 +18,10 @@ use tokio::{
 
 use super::protocol::{self, Instruction, Text, Tool};
 
-/// 将一个已预留的指令组编码为 Responses SSE 帧，并写入容量 1 的 body 通道。
+/// Encode one already-reserved instruction group into Responses SSE frames and write them to the capacity-1 body channel.
 ///
-/// 队列的 busy 标记与取消由调用方持有；这里只负责在分片之间与限速等待中
-/// 检查取消与接收端关闭，并在写入失败时立即停止。
+/// The queue's busy flag and cancellation are owned by the caller; this only checks cancellation
+/// and receiver closure between chunks and during rate waits, and stops as soon as a write fails.
 pub(super) async fn send(
     sender: mpsc::Sender<Bytes>,
     instructions: &[Instruction],
@@ -140,7 +140,7 @@ fn response_body(id: &str, model: &str, created_at: u64, status: &str, output: &
     })
 }
 
-/// 正文全文：字符串直接借用，显式分片仅在需要全文时拼接一次。
+/// Full message text: a string is borrowed directly, explicit chunks are joined once only when the full text is needed.
 fn full_text(text: &Text) -> Cow<'_, str> {
     match text {
         Text::String(text) => Cow::Borrowed(text),
@@ -148,7 +148,7 @@ fn full_text(text: &Text) -> Cow<'_, str> {
     }
 }
 
-/// `response` 只做数据回显：字符串逐字输出，其他非 null 值使用紧凑 JSON。
+/// `response` is pure data echo: strings are emitted verbatim, other non-null values use compact JSON.
 fn echo_text(response: Option<&Value>) -> Result<Option<Cow<'_, str>>> {
     match response {
         None | Some(Value::Null) => Ok(None),
@@ -547,13 +547,13 @@ fn output_text(text: &str) -> Value {
     json!({"type": "output_text", "text": text, "annotations": [], "logprobs": null})
 }
 
-/// 正文来源：显式分片或普通字符串（回显、工具参数）。
+/// Message source: explicit chunks or a plain string (echo, tool arguments).
 enum Body<'a> {
     Text(&'a Text),
     Plain(&'a str),
 }
 
-/// 按 mock token 逐个写出；返回 `false` 表示取消或接收端关闭发生在写出之前。
+/// Write one mock token at a time; `false` means cancellation or receiver closure happened before the write.
 async fn emit_body(
     stream: &mut Stream,
     throttle: &mut Throttle,
@@ -566,7 +566,7 @@ async fn emit_body(
     match body {
         Body::Text(Text::Chunks(chunks)) => {
             for chunk in chunks {
-                // 显式空元素不是 mock token，也不产生空帧。
+                // An explicit empty element is not a mock token and produces no empty frame.
                 if chunk.is_empty() {
                     continue;
                 }
@@ -591,7 +591,7 @@ async fn emit_body(
     }
 }
 
-/// 不限速字符串整段一帧；限速时按 Unicode scalar 分片，不按 UTF-8 字节切割。
+/// An unthrottled string is a single frame; when throttled it is split by Unicode scalar, never by UTF-8 byte.
 async fn emit_plain(
     stream: &mut Stream,
     throttle: &mut Throttle,
@@ -638,7 +638,7 @@ fn stopped(
     shutdown.is_cancelled() || run_cancel.is_cancelled() || sender.is_closed()
 }
 
-/// 任一停止信号到达即返回：全局关闭、run 级取消或 body 接收端关闭。
+/// Return once any stop signal arrives: global shutdown, run cancellation or body receiver closure.
 async fn halt(
     shutdown: &CancellationToken,
     run_cancel: &CancellationToken,
@@ -651,7 +651,7 @@ async fn halt(
     }
 }
 
-/// 每条指令独立的单调时钟限速；首个 token 立即发送。
+/// Monotonic-clock pacing per instruction; the first token is sent immediately.
 struct Throttle {
     interval: Option<Duration>,
     next: Option<Instant>,
@@ -681,7 +681,7 @@ impl Throttle {
         self.interval.is_some()
     }
 
-    /// 等到下一个 mock token 的 deadline；`false` 表示等待期间被取消或接收端关闭。
+    /// Wait for the deadline of the next mock token; `false` means cancellation or receiver closure while waiting.
     async fn ready(
         &mut self,
         shutdown: &CancellationToken,
@@ -715,7 +715,7 @@ impl Throttle {
     }
 }
 
-/// SSE 帧编码与递增的 `sequence_number`；只写帧，不写 HTTP framing。
+/// SSE frame encoding with an incrementing `sequence_number`; writes frames only, never HTTP framing.
 struct Stream {
     sender: mpsc::Sender<Bytes>,
     sequence: u64,
@@ -729,7 +729,7 @@ impl Stream {
         }
     }
 
-    /// 发送一帧；`false` 表示取消或接收端关闭。
+    /// Send one frame; `false` means cancellation or receiver closure.
     async fn event(
         &mut self,
         kind: &str,
@@ -758,7 +758,7 @@ impl Stream {
 mod tests {
     use super::*;
 
-    /// 收集帧里的 `type` 与 `sequence_number`，以及 `data` 负载。
+    /// Collect the `type` and `sequence_number` of each frame, plus its `data` payload.
     async fn collect(receiver: &mut mpsc::Receiver<Bytes>) -> Vec<(String, Value)> {
         let mut frames = Vec::new();
         while let Some(frame) = receiver.recv().await {
@@ -767,7 +767,7 @@ mod tests {
                 .strip_prefix("event: ")
                 .and_then(|frame| frame.split_once("\ndata: "))
                 .and_then(|(kind, data)| data.strip_suffix("\n\n").map(|data| (kind, data)))
-                .expect("SSE 帧必须是 event + data");
+                .expect("SSE frame must be event + data");
             let data: Value = serde_json::from_str(data).unwrap();
             assert_eq!(data["type"], kind);
             frames.push((kind.to_owned(), data));
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(frames[1].1["sequence_number"], 1);
     }
 
-    /// 逐帧收集 `delta`：通道容量足以容纳这些帧，因此无需消费者任务。
+    /// Collect `delta` frame by frame: the channel capacity holds these frames, so no consumer task is needed.
     async fn tokens(body: Body<'_>, rate: f64) -> Vec<String> {
         let (sender, mut receiver) = mpsc::channel(16);
         let shutdown = CancellationToken::new();
@@ -840,7 +840,7 @@ mod tests {
             let data = frame
                 .strip_prefix("event: delta\ndata: ")
                 .and_then(|data| data.strip_suffix("\n\n"))
-                .expect("delta 帧");
+                .expect("delta frame");
             let data: Value = serde_json::from_str(data).unwrap();
             collected.push(data["delta"].as_str().unwrap().to_owned());
         }
@@ -849,11 +849,11 @@ mod tests {
 
     #[tokio::test]
     async fn mock_sse_tokens_follow_rate_and_chunk_rules() {
-        // 不限速字符串整段一帧，显式空分片不产生 token。
+        // An unthrottled string is one frame and explicit empty chunks produce no token.
         assert_eq!(tokens(Body::Plain("héllo"), 0.0).await, ["héllo"]);
         let chunks = Text::Chunks(vec!["a".into(), String::new(), "bé".into()]);
         assert_eq!(tokens(Body::Text(&chunks), 0.0).await, ["a", "bé"]);
-        // 限速时按 Unicode scalar 分片，不切断多字节字符。
+        // When throttled, text is split by Unicode scalar and multi-byte characters stay intact.
         assert_eq!(tokens(Body::Plain("aé"), 1_000.0).await, ["a", "é"]);
         let text = Text::String("xy".into());
         assert_eq!(tokens(Body::Text(&text), 1_000.0).await, ["x", "y"]);

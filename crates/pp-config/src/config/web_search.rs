@@ -83,7 +83,7 @@ pub struct SearxngSettings {
     pub safesearch: Option<u8>,
 }
 
-// 遮蔽认证凭据，避免 token 与密码进入调试或错误日志。
+// Redact credentials so tokens and passwords never reach debug or error logs.
 impl fmt::Debug for SearxngSettings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SearxngSettings")
@@ -184,7 +184,7 @@ impl SearxngSettings {
     }
 }
 
-/// `settings.yml` 的 `webSearch:` 配置节；字段名沿用 camelCase。
+/// The `webSearch:` settings section of `settings.yml`; field names stay camelCase.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct WebSearchSettings {

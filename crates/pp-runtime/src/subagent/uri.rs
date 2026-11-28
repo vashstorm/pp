@@ -1,4 +1,4 @@
-//! `agent://`／`history://`／`proc://` URI 读取与结果文件解析。
+//! `agent://`/`history://`/`proc://` URI reads and result file parsing.
 
 use anyhow::{Context, Result, bail, ensure};
 use pp_core::cancellation;
@@ -166,7 +166,7 @@ impl Binding {
                 result
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // 旧登记表和中断恢复可能只有内联结果。已截断的预览不能冒充完整正文。
+                // A legacy registry or an interrupted restore may have only the inline result. A truncated preview must not pass as the full body.
                 let preview = &metadata["published"]["result"];
                 ensure!(preview["truncated"] != true, "agent result file is missing");
                 preview.clone()

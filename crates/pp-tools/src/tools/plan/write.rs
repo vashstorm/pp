@@ -1,4 +1,4 @@
-//! Plan 模式的 `write`：首存登记、绑定目标与后续条件保存。
+//! `write` in Plan mode: first-save registration, target binding and subsequent conditional saves.
 use anyhow::{Context, Result, bail, ensure};
 use pp_core::plan;
 use pp_core::plan::PLAN_MAX_BYTES;
@@ -17,7 +17,7 @@ pub(super) fn write(
     args: WriteArgs,
 ) -> Result<(Value, Option<PlanChange>)> {
     let components = workspace.components(Path::new(&args.path))?;
-    // 路径校验先于目录创建；Plan 的 write 不能写任意项目文件或登记文件。
+    // Path validation precedes directory creation; a Plan write must not write arbitrary project files or registry files.
     let (file_name, path) = if document.revision == 0 {
         ensure!(
             components.len() == 3
@@ -36,7 +36,7 @@ pub(super) fn write(
         let (file_name, path) = bound_target(workspace, document)?;
         let requested = components.iter().collect::<std::path::PathBuf>();
         let bound = Path::new(&path);
-        // 兼容旧路径只允许写入同名绑定草稿，保存目标始终使用登记路径。
+        // Legacy-path compatibility allows writing only the same-named bound draft; the save target always uses the registered path.
         let uses_legacy_path = bound.starts_with(".pp/drafts")
             && requested == Path::new(&plan::path_for(&file_name, PlanLocation::Plans));
         if !uses_legacy_path {
@@ -78,7 +78,7 @@ pub(super) fn write(
     ))
 }
 
-/// 登记表活动条目中的计划身份（canonical 名称与位置）。
+/// Plan identity (canonical name and location) from an active registry entry.
 fn active_entry<'a>(
     catalog: &'a plan_catalog::PlanCatalog,
     id: &str,
@@ -90,9 +90,9 @@ fn active_name(catalog: &plan_catalog::PlanCatalog, file_name: &str) -> bool {
     catalog.active_by_file_name(file_name).is_some()
 }
 
-/// 碰撞扫描：安全 NOFOLLOW 读取探测同名文件是否已存在于任一生命周期
-/// 目录。缺失目录/文件返回 false；符号链接、超限或其他错误如实报错，
-/// 绝不静默覆盖。
+/// Collision scan: a safe NOFOLLOW read probes whether a same-named file already exists in any
+/// lifecycle directory. A missing directory/file returns false; symlinks, over-limit sizes and other
+/// errors report truthfully and are never silently overwritten.
 fn disk_name_exists(workspace: &save::Workspace, path: &str) -> Result<bool> {
     match workspace
         .target(Path::new(path), false)
@@ -112,10 +112,10 @@ fn disk_name_exists(workspace: &save::Workspace, path: &str) -> Result<bool> {
     }
 }
 
-/// 首存事务：登记表锁 → load → 活动 id/名称检查 → save_new 原子发布 →
-/// 登记当前 ID/名称/位置 → 保存登记表。登记失败时正文已保留，返回
-/// “文件已保存但登记失败”；重试仅在当前 ID 已登记同路径且字节匹配时
-/// 接纳为首存完成。
+/// First-save transaction: registry lock → load → active id/name checks → save_new atomic publish →
+/// register the current ID/name/location → save the registry. If registration fails the body is kept and it returns
+/// "file saved but registration failed"; a retry is accepted as a finished first save only when the current ID is
+/// already registered on the same path with matching bytes.
 fn first_save(
     workspace: &save::Workspace,
     id: &str,
@@ -126,7 +126,7 @@ fn first_save(
     let snapshot = plan_catalog::load_catalog(workspace)?;
     let path = plan::path_for(file_name, PlanLocation::Drafts);
     if let Some(entry) = active_entry(&snapshot.catalog, id) {
-        // 同一 ID 的重试：同路径且磁盘字节匹配才算首存完成。
+        // Retry for the same ID: a first save is complete only on the same path with matching disk bytes.
         let same_target = entry.file_name == file_name && entry.location == PlanLocation::Drafts;
         ensure!(
             same_target,
@@ -141,7 +141,7 @@ fn first_save(
         !active_name(&snapshot.catalog, file_name),
         "{NAME_COLLISION}"
     );
-    // 三个生命周期目录内的同名磁盘文件都是碰撞；永不覆盖、不自动换名。
+    // A same-named disk file in any of the three lifecycle directories is a collision; never overwrite and never auto-rename.
     for location in [
         PlanLocation::Drafts,
         PlanLocation::Plans,
@@ -153,7 +153,7 @@ fn first_save(
     }
     let target = workspace.target(Path::new(&path), true)?;
     let warning = target.save_new(content)?;
-    // save_new 成功后登记；失败保留正文并如实报告。
+    // Register after save_new succeeds; on failure keep the body and report truthfully.
     let mut catalog = snapshot.catalog;
     catalog.entries.push(plan_catalog::PlanCatalogEntry {
         id: id.to_owned(),
@@ -170,8 +170,8 @@ fn first_save(
     }
 }
 
-/// 后续写入的绑定目标：登记表条目优先；未登记的旧绑定保持原位。
-/// 登记位置与当前绑定不一致时 fail-closed，等待按 ID 协调。
+/// Bound target for later writes: the registry entry wins; an unregistered legacy binding stays in place.
+/// When the registered location disagrees with the current binding it fails closed, waiting for ID-based reconciliation.
 fn bound_target(workspace: &save::Workspace, document: &PlanDocument) -> Result<(String, String)> {
     let _lock = plan_catalog::PlanCatalogLock::acquire(workspace)?;
     let snapshot = plan_catalog::load_catalog(workspace)?;
@@ -183,8 +183,8 @@ fn bound_target(workspace: &save::Workspace, document: &PlanDocument) -> Result<
                 "{MOVED_PLAN}"
             );
         } else {
-            // 旧记录缺文件名：接受登记 canonical 名称，但位置必须与
-            // 当前绑定一致，避免登记/正文路径分叉。
+            // Legacy record without a file name: accept the registered canonical name, but the location must match
+            // the current binding so the registry and body paths do not diverge.
             ensure!(document.location == entry.location, "{MOVED_PLAN}");
         }
     }
@@ -243,7 +243,7 @@ mod tests {
             std::fs::read(dir.path().join(&path)).unwrap(),
             b"# Spaced\n\n- [ ] task\n"
         );
-        // 首存完成即登记当前 ID/名称/位置。
+        // A finished first save registers the current ID/name/location.
         let snapshot = plan_catalog::load_catalog(&workspace).unwrap();
         assert_eq!(snapshot.catalog.entries.len(), 1);
         assert_eq!(snapshot.catalog.entries[0].id, document.id);
@@ -257,7 +257,7 @@ mod tests {
             1
         );
 
-        // 三个生命周期目录内的同名文件都阻止首存，且原字节不变。
+        // A same-named file in any of the three lifecycle directories blocks the first save and leaves the original bytes untouched.
         std::fs::create_dir_all(dir.path().join(".pp/plans")).unwrap();
         std::fs::create_dir_all(dir.path().join(".pp/done")).unwrap();
         for (location, bytes) in [
@@ -278,7 +278,7 @@ mod tests {
             std::fs::remove_file(dir.path().join(&collision)).unwrap();
         }
 
-        // 活动登记重名阻止首存；磁盘上没有同名文件时同样不留下新文件。
+        // A duplicate active registration blocks the first save; with no same-named file on disk no new file is left behind either.
         let registered = "registry-only.md";
         register(
             &workspace,
@@ -295,7 +295,7 @@ mod tests {
                 .exists()
         );
 
-        // 非法命名（路径逃逸、非 kebab）在触碰磁盘前被拒绝。
+        // Invalid names (path escape, non-kebab) are rejected before touching the disk.
         for bad in ["../escape.md", "Nested/name.md", "Not-Kebab.md", "ab.md.md"] {
             let other = plan_document(0, "", "");
             let error = write(&workspace, &other, write_args(bad, "- [ ] task")).unwrap_err();
@@ -314,7 +314,7 @@ mod tests {
         std::fs::write(dir.path().join(&path), b"- [ ] task\n").unwrap();
         register(&workspace, &document.id, file_name, PlanLocation::Drafts);
 
-        // 同 ID + 同路径 + 字节匹配：接纳为首存完成，不重复写入。
+        // Same ID + same path + matching bytes: accepted as a finished first save without rewriting.
         let (value, change) = first_save(&workspace, &document.id, file_name, b"- [ ] task\n")
             .map(|warning| {
                 (
@@ -332,7 +332,7 @@ mod tests {
         let snapshot = plan_catalog::load_catalog(&workspace).unwrap();
         assert_eq!(snapshot.catalog.entries.len(), 1);
 
-        // 同路径但字节不同：明确保留冲突，不覆盖。
+        // Same path but different bytes: keep the conflict explicit and do not overwrite.
         let error = first_save(&workspace, &document.id, file_name, b"different\n").unwrap_err();
         assert_eq!(error.to_string(), NAME_COLLISION);
         assert_eq!(
@@ -340,7 +340,7 @@ mod tests {
             b"- [ ] task\n"
         );
 
-        // 同 ID 已登记到不同名称/位置：拒绝，等待按 ID 协调。
+        // The same ID is already registered under a different name/location: reject and wait for ID-based reconciliation.
         let error =
             first_save(&workspace, &document.id, "other-name.md", b"- [ ] task\n").unwrap_err();
         assert_eq!(
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(value, json!({"ok":true,"path":path,"revision":1}));
         assert!(change.is_none());
 
-        // 后续写入 file_name 必须等于绑定值；改名走 /plan-list。
+        // Later writes require file_name to equal the bound value; renaming goes through /plan-list.
         let error = write(&workspace, &document, write_args("renamed.md", content)).unwrap_err();
         assert_eq!(error.to_string(), RENAME_BOUND);
 
@@ -413,7 +413,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.to_string(), "Plan revision limit reached.");
 
-        // NUL 正文不允许落盘。
+        // A body containing NUL must not reach disk.
         let current = plan_document(1, "Title", content);
         std::fs::write(dir.path().join(current.path().unwrap()), content).unwrap();
         let error = write(
@@ -435,7 +435,7 @@ mod tests {
         let workspace = save::Workspace::open(dir.path()).unwrap();
         let content = "- [ ] task\n";
 
-        // 旧文档缺文件名：登记 canonical 名称优先，旧 <id>.md 仍需精确匹配。
+        // Legacy document without a file name: the registered canonical name wins, while the old <id>.md still needs an exact match.
         let mut legacy = plan_document(1, "Title", content);
         legacy.file_name = None;
         legacy.location = PlanLocation::Plans;
@@ -463,7 +463,7 @@ mod tests {
         };
         assert_eq!(file_name, format!("{}.md", legacy.id));
 
-        // 登记位置与文档位置分叉时 fail-closed。
+        // Fail closed when the registered location and the document location diverge.
         let moved = plan_document(1, "Title", content);
         std::fs::create_dir_all(dir.path().join(".pp/drafts")).unwrap();
         let moved_path = plan::path_for("create-canary.md", PlanLocation::Drafts);

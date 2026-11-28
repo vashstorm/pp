@@ -285,7 +285,7 @@ fn todo_done_start_drop_rm_and_parallel_rules() {
         }
         assert_eq!(status_of(&current, "E"), TodoStatus::Pending);
 
-        // 完成、阻塞及追加操作均不撤销其他并发项，也不提前启动后续工作。
+        // Done, block and append operations never revert other concurrent items and never start later work early.
         for args in [
             r#"{"op":"done","task":"B"}"#,
             r#"{"op":"block","task":"C","reason":"dependency"}"#,

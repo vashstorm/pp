@@ -5,7 +5,7 @@ use pp_core::events::{DiffHunk, DiffLine};
 
 fn build_sample_transcript() -> Transcript {
     let mut t = Transcript::new();
-    // 1. Read 分组 (2 files)
+    // 1. Read group (2 files)
     for (id, path, end) in [
         ("r1", "crates/pp-config/src/config/theme.rs", 42),
         ("r2", "crates/pp-ui/src/tui/themes.rs", 120),
@@ -21,7 +21,7 @@ fn build_sample_transcript() -> Transcript {
             result: json!({"ok": true, "source": path, "lines_read": end, "content": "ok"}),
         });
     }
-    // 2. Bash 完成
+    // 2. Bash finished
     tool(
         &mut t,
         "b1",
@@ -187,7 +187,7 @@ fn style_matrix_renders_across_widths_and_icon_modes_without_pua_in_ascii() {
                     }
                     if style == ToolStyle::Slab && width >= 40 {
                         let expected_bg = card::tone::slab_body_bg(themes::palette());
-                        // Slab 工具卡片正文行背景不应回落 Reset
+                        // The Slab tool card body row background must not fall back to Reset
                         let edit_row = text
                             .lines()
                             .position(|line| line.contains("tokyonight"))
@@ -217,7 +217,7 @@ fn new_styles_align_body_columns_and_right_status_consistently() {
         let buffer = render(&mut t, 80, 50);
         let text = screen(&buffer);
 
-        // 检查 Bash / Grep / Edit / MCP 正文首字起始列一致
+        // Verify that Bash / Grep / Edit / MCP bodies start their first character in the same column
         let bash_row = text
             .lines()
             .position(|l| l.contains("running 12 tests"))
@@ -325,7 +325,7 @@ fn native_scrollback_preserves_committed_style_when_tool_style_changes() {
     let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
     terminal.draw(|frame| t.draw(frame, frame.area())).unwrap();
     let tail = screen(terminal.backend().buffer());
-    // 新卡片使用 Rail 风格，而已提交的行仍是 Classic 快照
+    // The new card uses the Rail style while committed rows keep their Classic snapshot
     assert!(committed.contains("╭─ Bash"));
     assert!(tail.contains("● Bash") || tail.contains("╰─"), "{tail}");
     themes::set_active_appearance(Theme::Default, IconMode::Nerd, ToolStyle::Classic);

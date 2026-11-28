@@ -1,4 +1,4 @@
-//! 已提交路径与文档视图的同步，不重新进入 operation。
+//! Synchronization of committed paths with the document view, without re-entering the operation.
 
 use anyhow::Result;
 use serde_json::json;
@@ -18,17 +18,17 @@ use super::handshake::unauthorized_edit;
 use super::{Client, Op};
 
 impl Client {
-    /// 在已持有的 operation 里同步刚提交到磁盘的路径，不重新进入 operation。
+    /// Sync paths just committed to disk inside an already held operation, without re-entering it.
     ///
-    /// 调用方给出的是它已经按 Registry 覆盖关系筛选过的路径；这里不再用本客户端的
-    /// `fileTypes` 二次过滤（共享/完整 identity 的别名可能比单一定义更宽）。
-    /// 存在的普通文件：刷新文档文本、清除 `pending_write`，已打开的文档补发
-    /// `didChange`/`didSave`；缺失或不再是普通文件：关闭已打开的文档、丢弃
-    /// 文档状态与诊断。两种情况都发出对应的 watched-files 变更。
+    /// The caller supplies paths it has already filtered by Registry coverage; they are not filtered a second time by this client's
+    /// `fileTypes` (aliases of a shared/full identity may be wider than a single definition).
+    /// Existing regular file: refresh the document text, clear `pending_write`, and re-send
+    /// `didChange`/`didSave` for an open document; missing or no longer a regular file: close the open document and discard
+    /// the document state and diagnostics. Both cases emit the corresponding watched-files change.
     ///
-    /// 磁盘读取失败不中断同批其余事件：清除 `pending_write`、使诊断失效、把已知的
-    /// change kind 记入 watched 列表，并以 warning 返回给调用方。已提交的事实不会
-    /// 因此被改写，但失败也不会阻塞后续 reconcile。
+    /// A failed disk read does not abort the rest of the batch: it clears `pending_write`, invalidates diagnostics, records the known
+    /// change kind in the watched list, and returns the failure as a warning to the caller. The committed fact is never
+    /// rewritten by it, and the failure does not block later reconciliation.
     #[cfg(test)]
     pub(crate) fn sync_committed_in_operation(
         &self,
@@ -38,15 +38,15 @@ impl Client {
         self.sync_committed_locked(op, paths.iter().map(|path| (path.as_path(), 2)))
     }
 
-    /// 在**已经持有本客户端 operation** 的 server 回调里同步刚提交的路径。
+    /// Sync just-committed paths inside a server callback that **already holds this client's operation**.
     ///
-    /// 不变量：调用方必须位于 [`Client::operation`] 的 body 或 service 回调中，
-    /// 且该 operation 仍持有 `op_lock`。因此本方法绝不重新取得 operation 锁、
-    /// 也绝不进入另一个 operation（那会等待自己并永久阻塞）；它只写 transport
-    /// 队列、更新文档缓存与诊断缓存。
+    /// Invariant: the caller is inside the body or service callback of [`Client::operation`],
+    /// and that operation still holds `op_lock`. So this method never re-acquires the operation lock and
+    /// never enters another operation (that would wait on itself and block forever); it only writes the transport
+    /// queue and updates the document and diagnostic caches.
     ///
-    /// 不在 operation 内的普通保存后同步必须使用
-    /// [`Client::sync_committed_in_operation`] 或 `edits::sync_committed`。
+    /// Post-save sync outside an operation must use
+    /// [`Client::sync_committed_in_operation`] or `edits::sync_committed`.
     #[cfg(test)]
     pub(crate) fn notify_committed_from_current_operation(
         &self,
@@ -94,10 +94,10 @@ impl Client {
                     let text = match read_document_text(path) {
                         Ok(text) => text,
                         Err(error) => {
-                            // 已提交但无法表示为 UTF-8 文本：不清除 pending_write
-                            // 会让后续 reconcile 永远被挡住，所以先清标记、失效诊断，
-                            // 再把已知的 change kind 记进 watched；错误本身降为
-                            // warning，同批其余文件继续同步。
+                            // Committed but not representable as UTF-8 text: leaving pending_write set
+                            // would block later reconciliation forever, so clear the flag, invalidate diagnostics,
+                            // then record the known change kind in watched; the error itself is downgraded to a
+                            // warning and the rest of the batch keeps syncing.
                             if let Some(mut state) = self.take_document(path) {
                                 state.pending_write = false;
                                 self.store_document(path, &state);
@@ -114,7 +114,7 @@ impl Client {
                     };
                     let state = self.take_document(path);
                     let Some(mut state) = state else {
-                        // 没有打开过的文档：只通知内容变化，不替调用方打开新文档。
+                        // A document never opened: only notify the content change, do not open the new document on the caller's behalf.
                         self.diagnostics.invalidate(&uri);
                         watched.push(json!({"uri": uri, "type": change_kind}));
                         continue;
@@ -125,7 +125,7 @@ impl Client {
                     let will_notify_save =
                         state.opened && self.capabilities.save != SaveKind::Never;
                     if (changed && state.opened) || will_notify_save {
-                        // 在向 writer 投递任何变更/保存通知之前使旧诊断失效，防止与 reader 线程竞态。
+                        // Invalidate stale diagnostics before delivering any change/save notification to the writer, avoiding a race with the reader thread.
                         self.diagnostics.invalidate(&uri);
                     }
                     if changed {
@@ -146,7 +146,7 @@ impl Client {
                     watched.push(json!({"uri": uri, "type": change_kind}));
                 }
                 Ok(_) => {
-                    // 目录/FIFO/设备：不是可同步的文档，按删除处理。
+                    // Directory/FIFO/device: not a document that can be synced, treat it as deleted.
                     self.close_document(op, path)?;
                     watched.push(json!({"uri": uri, "type": 3}));
                 }
@@ -184,8 +184,8 @@ mod integration {
         let (dir, client) = fixture_client(&[]);
         let path = dir.path().join("sample.fixture");
         std::fs::write(&path, "committed\n").unwrap();
-        // 在同一个 operation 里先放 overlay 再同步提交内容：helper 不能自己
-        // 再取 operation 锁，否则会永久阻塞。
+        // Inside one operation, install the overlay first and then sync the committed content: the helper must not
+        // take the operation lock itself or it would block forever.
         with_client(&client, |op| {
             client.set_overlay(op, &path, "pending\n", true)?;
             client.notify_committed_from_current_operation(
@@ -207,8 +207,8 @@ mod integration {
         let normal = dir.path().join("normal.fixture");
         std::fs::write(&broken, [0xff, 0xfe]).unwrap();
         std::fs::write(&normal, "committed\n").unwrap();
-        // 两个文件各有 overlay（pending_write）；didOpen 的推送会在客户端缓存里
-        // 建立旧报告，这是同步前必须存在的前置条件。
+        // Both files have their own overlay (pending_write); the didOpen pushes establish stale reports
+        // in the client cache, which is a prerequisite that must exist before syncing.
         with_client(&client, |op| {
             client.set_overlay(op, &broken, "pending\n", true)?;
             client.set_overlay(op, &normal, "pending\n", true)?;
@@ -245,7 +245,7 @@ mod integration {
             Ok(warnings) => warnings,
             Err(error) => vec![format!("{error:#}")],
         };
-        // 读取失败以 warning 返回，而不是中止整批同步。
+        // Read failures are returned as warnings instead of aborting the whole batch sync.
         assert!(
             warnings
                 .iter()
@@ -259,7 +259,7 @@ mod integration {
             "warnings must name the file that failed: {warnings:?}"
         );
 
-        // 读取失败的文件之后不会再有任何推送，所以旧报告必须停在已失效状态。
+        // No further push will arrive for the file that failed to read, so its stale report must stay invalidated.
         let broken_entry = client.diagnostics.snapshot(&path_to_uri(&broken));
         assert!(
             broken_entry.is_some_and(|entry| entry.seq == 0),
@@ -267,7 +267,7 @@ mod integration {
             broken.display()
         );
 
-        // 两份文件的 watched 通知都送达：非 UTF-8 不能挤掉同批的正常文件。
+        // Watched notifications for both files are delivered: non-UTF-8 content cannot crowd out the normal file in the same batch.
         let events = wait_logged(&dir, Instant::now() + Duration::from_secs(5), |events| {
             events.iter().any(|event| {
                 event["method"] == "workspace/didChangeWatchedFiles"
@@ -299,17 +299,17 @@ mod integration {
             "a later normal file in the same batch must be synced: {watched:?}"
         );
 
-        // 正常文件的文档状态继续推进：overlay 被 committed 内容替换并清除 pending_write。
+        // The normal file's document state keeps advancing: the overlay is replaced by the committed content and pending_write is cleared.
         let state = client.document(&normal).unwrap();
         assert_eq!(state.text, "committed\n");
         assert!(!state.pending_write);
-        // 失败文件的 overlay 也被清掉 pending_write，后续 reconcile 不再被挡；
-        // 磁盘内容无法表示，所以保留它上一次已知的文本。
+        // The failed file's overlay also has pending_write cleared so later reconciliation is not blocked; the on-disk content
+        // cannot be represented, so its last known text is kept.
         let broken_state = client.document(&broken).unwrap();
         assert!(!broken_state.pending_write);
         assert_eq!(broken_state.text, "pending\n");
 
-        // 失败之后同一客户端的后续同步仍可继续。
+        // Later syncs on the same client still work after the failure.
         let follow_up = with_client(&client, |op| {
             Ok(client.sync_committed_in_operation(op, std::slice::from_ref(&normal)))
         })

@@ -203,7 +203,7 @@ fn cleanup(store: &AgentStore, dir: &Path, cancellation: &CancellationToken) -> 
         let context = || format!("loading YAML settings config {}", settings_path.display());
         let mapping: Mapping = yaml::parse(&settings.text, "settings").with_context(context)?;
         let (actual, _) = split_settings(&settings.text).with_context(context)?;
-        // 缺失字段可能已经在上次清理中删除；只比较仍存在的源字段。
+        // A missing field may already have been removed by an earlier cleanup; compare only the source fields still present.
         for field in FIELDS {
             if mapping.contains_key(Value::String((*field).into())) {
                 let matches = match *field {
@@ -218,7 +218,7 @@ fn cleanup(store: &AgentStore, dir: &Path, cancellation: &CancellationToken) -> 
         }
     }
     let auth_path = dir.join("auth.yml");
-    // 安全旧读取先检查权限与大小；比较和删除使用随后持有的精确快照。
+    // The safe legacy read checks permissions and size first; comparison and deletion use the exact snapshot taken afterwards.
     auth::load_legacy_store(&auth_path)?;
     let legacy_auth = snapshot(&auth_path)?;
     if let Some(baseline) = &legacy_auth {
@@ -238,7 +238,7 @@ fn cleanup(store: &AgentStore, dir: &Path, cancellation: &CancellationToken) -> 
         ensure!(actual == expected, CONFLICT);
         unchanged(&auth_path, baseline)?;
     }
-    // 先检查两端冲突再清理任一源文件，失败始终保留数据库权威。
+    // Check for conflicts on both sides before cleaning up either source file; on failure the database stays authoritative.
     check(cancellation)?;
     if let Some(settings) = settings {
         let updated = yaml::remove_fields(&settings.text, FIELDS)?;
@@ -275,7 +275,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn legacy(dir: &Path) {
-        fs::write(dir.join("settings.yml"), "# 保留注释\ndefault_model: fixture/one\nfavorite_models: [fixture/one, fixture/one, removed/two]\nthink_level: high\nmodel_roles: {fast: {model: fixture/two, effort: low}}\ndisabled_skills: [keep-disabled]\nskill_dirs: [unchanged]\n").unwrap();
+        fs::write(dir.join("settings.yml"), "# preserved comment\ndefault_model: fixture/one\nfavorite_models: [fixture/one, fixture/one, removed/two]\nthink_level: high\nmodel_roles: {fast: {model: fixture/two, effort: low}}\ndisabled_skills: [keep-disabled]\nskill_dirs: [unchanged]\n").unwrap();
         fs::write(dir.join("auth.yml"), "credentials:\n  glm: {generation: fixed-glm, access_token: fixture-private-glm}\n  zai: {generation: fixed-zai, access_token: fixture-private-zai}\n").unwrap();
         fs::set_permissions(dir.join("auth.yml"), fs::Permissions::from_mode(0o600)).unwrap();
         fs::write(dir.join("models.yml"), "manual unchanged").unwrap();
@@ -305,7 +305,7 @@ mod tests {
             "fixed-zai"
         );
         let text = fs::read_to_string(root.path().join("settings.yml")).unwrap();
-        assert!(text.contains("# 保留注释"));
+        assert!(text.contains("# preserved comment"));
         let settings: Mapping = yaml::parse(&text, "settings").unwrap();
         assert_eq!(settings["disabled_skills"][0], "keep-disabled");
         assert_eq!(settings["skill_dirs"][0], "unchanged");
@@ -350,7 +350,7 @@ mod tests {
         assert_eq!(error.to_string(), CONFLICT);
         assert!(root.path().join("auth.yml").exists());
         assert_eq!(store.preferences().unwrap().think_level, ThinkLevel::High);
-        // 上次退出已清理授权和一个字段；其余清理仍可继续。
+        // The previous exit already cleaned the authorization and one field; the remaining cleanup can still continue.
         fs::remove_file(root.path().join("auth.yml")).unwrap();
         fs::write(
             root.path().join("settings.yml"),
@@ -359,7 +359,7 @@ mod tests {
         .unwrap();
         initialize(root.path(), &CancellationToken::new()).unwrap();
         assert_eq!(stage(&store).unwrap().as_deref(), Some("ready"));
-        // ready 后人为放回旧凭证也不能在登出或重启时复活。
+        // Once ready, even manually restoring old credentials must not resurrect them on logout or restart.
         fs::write(
             root.path().join("auth.yml"),
             "credentials: {glm: {access_token: resurrected}}\n",

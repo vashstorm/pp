@@ -1,4 +1,4 @@
-//! 创建／重命名／删除条目的虚拟推进与版本证明继承。
+//! Virtual advancement and version-proof inheritance for create/rename/delete entries.
 
 use crate::types::CreateFile;
 use crate::types::CreateFileOptions;
@@ -14,8 +14,8 @@ use std::path::Path;
 use super::{Kind, NodeState, Planner, clone_original};
 
 impl<'a> Planner<'a> {
-    /// 重命名目标沿用来源文件的版本证明（原始字节与发起服务器的文档路径）。
-    /// 新建/截断的文件不再是原始文档：非 null 版本不能借用旧内容证明。
+    /// A rename target inherits the source file's version proof (original bytes and the originating server's document path).
+    /// A newly created/truncated file is no longer the original document: a non-null version cannot borrow the old content as proof.
     pub(super) fn reset_version_proof(&mut self, path: &Path) {
         if let Some(state) = self.files.get_mut(path) {
             state.proof = Original::Missing;
@@ -174,8 +174,8 @@ impl<'a> Planner<'a> {
                     .filter(|entry| entry.content.is_some())
                     .count();
                 self.ensure_virtual_parents(&to.path)?;
-                // 先处理文件，再标记/建立目录：若先标记来源子目录 Missing，
-                // 后续文件会误以为自己已不存在而丢失原始基线。
+                // Handle files first, then mark/create directories: marking the source subdirectory Missing first would
+                // make later files wrongly consider themselves gone and lose their original baseline.
                 for entry in entries.iter().filter(|entry| entry.content.is_some()) {
                     let content = entry.content.as_deref().expect("filtered to files");
                     let source = from.path.join(&entry.relative);
@@ -245,8 +245,8 @@ impl<'a> Planner<'a> {
                     .iter()
                     .filter(|entry| entry.content.is_some())
                     .count();
-                // 先处理文件、再隐藏目录：否则先标记的父目录会让子文件
-                // 的原始基线被当成 Missing，丢失删除快照与回滚内容。
+                // Handle files first, then hide directories: otherwise a parent marked first makes child files
+                // treat their original baseline as Missing, losing the deletion snapshot and rollback content.
                 for entry in entries.iter().filter(|entry| entry.content.is_some()) {
                     let child = resolved.path.join(&entry.relative);
                     self.ensure_file(&child, &resolved.relative.join(&entry.relative))?;

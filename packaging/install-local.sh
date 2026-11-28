@@ -19,7 +19,7 @@ if [ -d "$destination" ]; then
     exit 1
 fi
 
-# 在目标目录暂存新文件，复制成功后原子替换现有二进制。
+# Stage the new file inside the target directory, then atomically replace the existing binary.
 temporary=$(mktemp "$bin_dir/.pp.XXXXXXXX")
 trap 'rm -f "$temporary"' EXIT
 trap 'exit 1' HUP INT TERM

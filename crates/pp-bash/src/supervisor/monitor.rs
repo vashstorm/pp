@@ -1,4 +1,4 @@
-//! 监督器 monitor 线程：观察、信号升级与回收。
+//! Supervisor monitor thread: observation, signal escalation and reclamation.
 
 use brush_core::CleanupPermit;
 use pp_core::cancellation::CancellationToken;
@@ -22,12 +22,14 @@ use super::{
 #[cfg(test)]
 mod killing_tests;
 
-/// TERM 宽限耗尽后升级 SIGKILL 时记录的固定诊断：SIGKILL 后的回收宽限期
-/// 已过而外部进程仍未退出，放弃等待而非无限重发信号。
+/// Fixed diagnostic recorded when SIGKILL is escalated after the TERM grace period expires: the
+/// reclamation grace period after SIGKILL elapsed and the external process still has not exited, so the
+/// wait is abandoned instead of resending signals forever.
 const KILL_ABANDONED: &str = "external work remained after SIGKILL; abandoning reclamation";
 
-/// active 轮询的指数退避：基线 5ms，无状态变化时逐轮翻倍到 50ms 上限。
-/// 退避只是为了减少空转唤醒，任何注册表或事件变化都让它回到基线。
+/// Exponential backoff for active polling: 5ms baseline, doubling each round up to a 50ms ceiling when
+/// nothing changes. Backoff only reduces idle wakeups; any registry or event change returns it to the
+/// baseline.
 struct Backoff {
     next: Duration,
 }
@@ -41,7 +43,7 @@ impl Backoff {
         self.next = ACTIVE_POLL;
     }
 
-    /// 取本轮间隔，并为下一轮翻倍（不超过上限）。
+    /// Take this round's interval and double it for the next round (capped at the ceiling).
     fn advance(&mut self) -> Duration {
         let interval = self.next;
         self.next = interval.saturating_mul(2).min(ACTIVE_POLL_MAX);
@@ -49,12 +51,14 @@ impl Backoff {
     }
 }
 
-/// 本轮应等待的时长。
+/// How long this round should wait.
 ///
-/// `active` 为真（有未观察的子进程，或正在 TERM/KILL 升级）时使用会退避的
-/// active 间隔；否则固定用空闲间隔。`changed` 为真表示自上一轮以来注册表被
-/// 观察/回收改变，或发生过一次唤醒事件（新注册、显式停止、解释器结束、租约
-/// 释放）：此时立即回到基线，不把刚发生的变化推到下一个长间隔之后。
+/// When `active` is true (there are unobserved children, or a TERM/KILL escalation is in progress) the
+/// backing-off active interval is used; otherwise the fixed idle interval applies. `changed` being true
+/// means the registry changed through observation/reclamation since the last round, or a wakeup event
+/// happened (new registration, explicit stop, interpreter finished, lease released): in that case the
+/// baseline applies immediately so a change that just happened is not pushed behind the next long
+/// interval.
 fn poll_interval(active: bool, changed: bool, backoff: &mut Backoff) -> Duration {
     if changed {
         backoff.reset();
@@ -62,20 +66,22 @@ fn poll_interval(active: bool, changed: bool, backoff: &mut Backoff) -> Duration
     if active {
         backoff.advance()
     } else if changed {
-        // 空闲阶段也只在事件后立刻复查一次，随后回到空闲间隔。
+        // The idle phase also re-checks once right after an event, then returns to the idle interval.
         ACTIVE_POLL
     } else {
         IDLE_POLL
     }
 }
 
-/// 退避不能推迟 TERM/KILL 升级或超时判定：本轮睡眠不跨过最近的待处理截止
-/// 时间，并保留下限 `ACTIVE_POLL` 以免截止时间已过时忙等。
+/// Backoff must not delay TERM/KILL escalation or timeout decisions: this round's sleep does not cross
+/// the nearest pending deadline, and the `ACTIVE_POLL` floor avoids busy waiting once a deadline has
+/// already passed.
 fn clamp_to_pending_deadline(state: &State, now: Instant, interval: Duration) -> Duration {
     let deadline = match state.phase {
         Phase::Stopping => state.grace_deadline,
-        // `Killing` 使用独立的回收截止时间，不复用早已过期的 grace 截止：
-        // 到期且外部进程仍未被 SIGKILL 终止就放弃回收，而不是无限重发 SIGKILL。
+        // `Killing` uses its own reclamation deadline instead of the long-expired grace deadline: when it
+        // expires and the external process still has not been terminated by SIGKILL, reclamation is abandoned
+        // rather than resending SIGKILL forever.
         Phase::Killing => state.kill_deadline,
         Phase::Running if !state.interpreter_done => state.deadline,
         _ => None,
@@ -93,8 +99,8 @@ pub(super) fn monitor(
     stop: CancellationToken,
 ) {
     let mut backoff = Backoff::new();
-    // 上一轮结束时观察到的唤醒计数；跨轮对比即可覆盖“唤醒发生在采样之后、
-    // 等待之前”这种不会让条件变量再唤醒一次的窗口。
+    // Wakeup counter observed at the end of the last round; comparing across rounds covers the window where
+    // a wakeup happens after sampling and before waiting, which would not signal the condition variable again.
     let mut seen = shared.generation();
     loop {
         let mut state = lock(&shared.state);
@@ -203,8 +209,9 @@ fn begin_reclaim(state: &mut State, now: Instant) {
     signal_registered(state, libc::SIGTERM);
 }
 
-/// TERM 清理窗口结束：吊销清理许可并升级 SIGKILL。SIGKILL 之后的回收改用独立的
-/// `kill_deadline`，不复用早已过期的 grace 截止，等待因此有界。
+/// End of the TERM cleanup window: revoke the cleanup permit and escalate to SIGKILL. Reclamation after
+/// SIGKILL uses the separate `kill_deadline` rather than the long-expired grace deadline, so the wait is
+/// bounded.
 fn begin_killing(state: &mut State, now: Instant) {
     if let Some(permit) = state.permit.take() {
         permit.revoked.store(true, Ordering::Release);
@@ -214,15 +221,15 @@ fn begin_killing(state: &mut State, now: Instant) {
     signal_registered(state, libc::SIGKILL);
 }
 
-/// SIGKILL 后的回收宽限期已过而外部进程仍未退出（见
-/// `external_work_survives_kill`）：记录固定诊断，给尚未完成的 `ProcessCell`
-/// 写入清理错误并唤醒 waker，使解释器与 `Supervisor::wait()` 能收尾。未回收
-/// 记录保留真实的观察/reaped 状态，不伪造退出码或成功回收；终态由既有 outcome
-/// 生成 `CleanupError`。
+/// The reclamation grace period after SIGKILL elapsed while the external process still has not exited (see
+/// `external_work_survives_kill`): record the fixed diagnostic, write a cleanup error into the unfinished
+/// `ProcessCell`s and wake their wakers so the interpreter and `Supervisor::wait()` can finish. Unreclaimed
+/// records keep their real observed/reaped state without fabricating an exit code or a successful
+/// reclamation; the terminal state produces a `CleanupError` from the existing outcome.
 fn abandon_killing(state: &mut State) {
     state.errors.insert(KILL_ABANDONED.to_owned());
     for (pid, record) in state.procs.iter() {
-        // 幂等：已完成的 cell 保持真实退出状态，只有尚未完成的拿到清理错误。
+        // Idempotent: finished cells keep their real exit status, only unfinished ones receive the cleanup error.
         record.cell.complete_error(
             io::ErrorKind::Other,
             format!("external process {pid} was not reclaimed after SIGKILL"),
@@ -232,36 +239,39 @@ fn abandon_killing(state: &mut State) {
     state.phase = Phase::Draining;
 }
 
-/// Draining 阶段的终态判定：解释器已结束，且（注册表已清空，或 SIGKILL 后的
-/// 回收已被放弃）。放弃后注册表仍保留未回收记录，但不再阻塞收尾。
+/// Terminal-state decision for the Draining phase: the interpreter has finished and (the registry is empty,
+/// or reclamation after SIGKILL has been abandoned). After abandoning, unreclaimed records stay in the
+/// registry but no longer block shutdown.
 fn draining_reaches_finished(state: &State) -> bool {
     state.interpreter_done && (state.abandoned || !state.has_live_work())
 }
 
-/// Killing 阶段的一轮转移：注册表已清空则进入 Draining；仍有 live work 时在
-/// 独立 kill 宽限期内重发 SIGKILL；到期且外部进程真的扛住了 SIGKILL 才放弃
-/// 回收并唤醒等待者。抽出为独立函数以便用假 ProcessCell 与显式 deadline 单测。
+/// One transition of the Killing phase: enter Draining when the registry is empty; while live work remains,
+/// resend SIGKILL within the separate kill grace period; only when it expires and the external process
+/// really survived SIGKILL is reclamation abandoned and the waiters woken. Extracted as a separate
+/// function so unit tests can use fake `ProcessCell`s and explicit deadlines.
 fn advance_killing(state: &mut State, now: Instant) {
     if !state.has_live_work() {
         state.phase = Phase::Draining;
         return;
     }
-    // 兜底：未经 `begin_killing` 就进入 Killing 的状态也必须拿到有界截止，
-    // 否则等待会退化为无限重发信号。
+    // Fallback: a state that entered Killing without `begin_killing` must still get a bounded deadline,
+    // otherwise waiting degrades into resending signals forever.
     let deadline = *state
         .kill_deadline
         .get_or_insert(now.checked_add(GRACE).unwrap_or(now));
     if now >= deadline {
         if external_work_survives_kill(state) {
-            // SIGKILL 后的回收宽限期已过而外部进程仍未退出：放弃回收并唤醒
-            // 等待者，不无限重发信号。
+            // The reclamation grace period after SIGKILL elapsed while the external process still has not exited:
+            // abandon reclamation and wake the waiters instead of resending signals forever.
             abandon_killing(state);
             return;
         }
-        // 所有注册的外部进程都已观察为退出、注册进程组内也无存活成员：SIGKILL
-        // 已经生效，剩下的只是等待解释器释放组租约并回收 anchor 的簿记工作，
-        // 它的进度由调用方（例如阻塞的输出回调）决定而不是内核拒绝回收。刷新
-        // 窗口继续等待，不把正常收尾误判成回收失败。
+        // Every registered external process has been observed as exited and no members are alive in the
+        // registered process groups: SIGKILL already took effect and what remains is bookkeeping that waits for
+        // the interpreter to release the group lease and reclaim the anchor. Its progress is decided by the
+        // caller (for example a blocking output callback), not by a kernel refusal to reclaim. Refresh the window
+        // and keep waiting so a normal shutdown is not misjudged as a reclamation failure.
         state.kill_deadline = Some(now.checked_add(GRACE).unwrap_or(now));
     }
     // A descendant can be forked between TERM and the first KILL; repeat the
@@ -270,12 +280,13 @@ fn advance_killing(state: &mut State, now: Instant) {
     signal_registered(state, libc::SIGKILL);
 }
 
-/// SIGKILL 之后外部进程是否真的扛住了信号：仍有注册进程未被观察为退出，或某个
-/// 注册进程组在核心里还有存活成员（排除已观察退出但作为 anchor 未回收的自身）。
-/// 只有这些情况才算回收失败；已全部退出的注册表只剩等待解释器释放租约，不是
-/// 内核层面的回收失败。组存活查询失败不当作“已回收”，也不据此放弃：`reap`
-/// 已把该错误记入清理诊断并强制释放 anchor，瞬时无法判定不应伪装成 SIGKILL
-/// 失效。
+/// Whether an external process really survived SIGKILL: some registered process has not been observed as
+/// exited, or one of the registered process groups still has live members in the kernel (excluding itself
+/// once observed as exited but unreclaimed as an anchor). Only those cases count as a reclamation failure; a
+/// registry where everything has exited merely waits for the interpreter to release the lease, which is not a
+/// kernel-level reclamation failure. A failed group liveness query is not treated as "reclaimed" and does not
+/// trigger abandonment: `reap` already recorded that error in the cleanup diagnostics and forced the anchor
+/// release, so a transiently undecidable state must not masquerade as SIGKILL failing.
 fn external_work_survives_kill(state: &State) -> bool {
     if state.procs.values().any(|process| !process.observed) {
         return true;
@@ -405,8 +416,9 @@ pub(super) fn spawn_closed(reason: &str) -> io::Error {
 /// Observes and reaps direct children. Leader anchors are reaped only after the
 /// group has no live members and no spawn leases.
 ///
-/// 返回本轮是否改动了注册表（观察/回收/清理失败）：供 monitor 决定继续退避
-/// 还是回到 5ms 基线。常态的空转轮询（子进程仍在跑、组还有成员）不算变化。
+/// Returns whether this round changed the registry (observation/reclamation/cleanup failure) so the monitor
+/// can decide between continuing the backoff and returning to the 5ms baseline. Normal idle polling (child
+/// still running, group still has members) does not count as a change.
 fn reap(state: &mut State) -> bool {
     let mut changed = false;
     // Observe exits without reaping them so a leader remains a WNOWAIT anchor.
@@ -457,7 +469,7 @@ fn reap(state: &mut State) -> bool {
                 state
                     .errors
                     .insert(format!("observing external process {pid}: {error}"));
-                // 观察失败不在退避范围内反复推迟：按基线重试并上报。
+                // Observation failures retry at the baseline and are reported rather than postponed by backoff.
                 changed = true;
             }
         }
@@ -825,7 +837,8 @@ mod tests {
         duration.as_millis() as u64
     }
 
-    /// 空闲期轮询间隔必须逐轮提升到上界，并在任何状态变化后立刻回到基线。
+    /// The idle polling interval must climb round by round to the ceiling and return to the baseline
+    /// immediately after any state change.
     #[test]
     fn supervisor_poll_backoff_escalates_and_resets_on_state_change() {
         let mut backoff = Backoff::new();
@@ -841,7 +854,8 @@ mod tests {
         );
         assert_eq!(millis(poll_interval(true, false, &mut backoff)), 10);
 
-        // 空闲阶段不受 active 退避影响；事件后的第一次复查仍用基线间隔。
+        // The idle phase is unaffected by active backoff; the first re-check after an event still uses the
+        // baseline interval.
         assert_eq!(millis(poll_interval(false, false, &mut backoff)), 50);
         assert_eq!(millis(poll_interval(false, true, &mut backoff)), 5);
         assert_eq!(
@@ -851,7 +865,7 @@ mod tests {
         );
     }
 
-    /// 退避的睡眠不得跨过待处理截止时间，也不能因为截止时间已过而忙等。
+    /// The backoff sleep must not cross a pending deadline, nor busy-wait because a deadline has passed.
     #[test]
     fn supervisor_poll_interval_never_passes_a_pending_deadline() {
         let now = Instant::now();
@@ -862,14 +876,15 @@ mod tests {
             30
         );
 
-        // 解释器已结束时超时截止不再需要精确唤醒。
+        // Once the interpreter has finished the timeout deadline no longer needs precise wakeups.
         running.interpreter_done = true;
         assert_eq!(
             clamp_to_pending_deadline(&running, now, ACTIVE_POLL_MAX),
             ACTIVE_POLL_MAX
         );
 
-        // TERM/KILL 升级窗口：截止时间临近就按时唤醒；已经过时按基线重发 KILL。
+        // TERM/KILL escalation window: wake on time when the deadline approaches; once it has passed, resend KILL
+        // at the baseline.
         let mut stopping = State::new(None);
         stopping.phase = Phase::Stopping;
         stopping.grace_deadline = Some(now + Duration::from_millis(400));
@@ -882,7 +897,7 @@ mod tests {
             clamp_to_pending_deadline(&stopping, now, ACTIVE_POLL_MAX),
             ACTIVE_POLL
         );
-        // Killing 阶段改用独立的回收截止时间，不再沿用已过期的 grace 截止。
+        // The Killing phase switches to its own reclamation deadline and no longer uses the expired grace deadline.
         stopping.phase = Phase::Killing;
         assert_eq!(
             clamp_to_pending_deadline(&stopping, now, ACTIVE_POLL_MAX),

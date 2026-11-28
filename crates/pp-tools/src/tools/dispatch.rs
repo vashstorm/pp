@@ -1,7 +1,7 @@
-//! `execute_inner` 各工具分支的实现体：父模块 `tools` 只保留门禁与薄分发。
+//! Implementation bodies of the `execute_inner` tool branches: the parent `tools` module keeps only gating and thin dispatch.
 //!
-//! 子模块用 `impl Tools` 块访问祖先模块的私有字段与方法，不新增 getter。
-//! `bash`／`edit`／`read` 的模块名加 `_tool` 后缀，避免遮蔽 `tools::bash`／`tools::edit`／`tools::read`。
+//! Submodules use `impl Tools` blocks to reach ancestor private fields and methods instead of adding getters.
+//! The `bash`/`edit`/`read` modules get a `_tool` suffix to avoid shadowing `tools::bash`/`tools::edit`/`tools::read`.
 
 mod ask;
 mod bash_tool;
@@ -21,8 +21,8 @@ pub(in crate::tools) struct MutationTarget {
 }
 
 impl Tools {
-    /// 解析并授权 `write` / `edit` 目标路径：支持工作区普通文件、`/tmp`、
-    /// 受保护目录（`.git` / `.agents` / `.pp`，需审批）及工作区外绝对路径（`Full Access` 免审，其他模式需审批）。
+    /// Resolve and authorize `write` / `edit` target paths: workspace regular files, `/tmp`,
+    /// protected directories (`.git` / `.agents` / `.pp`, requiring approval) and absolute paths outside the workspace (`Full Access` skips approval, other modes require it).
     #[allow(clippy::too_many_arguments)]
     pub(in crate::tools) fn prepare_mutation_target(
         &self,

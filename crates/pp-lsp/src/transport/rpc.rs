@@ -1,4 +1,4 @@
-//! 请求表、取消/超时、通知与写队列。
+//! Request table, cancellation/timeout, notifications and the write queue.
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -41,7 +41,7 @@ impl Transport {
         self.shared.diagnostics_registered()
     }
 
-    /// 标记一次活动操作；不授予服务器任何文件修改权限。
+    /// Mark one active operation; grants the server no file modification permission whatsoever.
     pub(crate) fn begin_operation(&self) {
         let _callbacks = self
             .shared
@@ -52,7 +52,7 @@ impl Transport {
     }
 
     pub(crate) fn end_operation(&self) {
-        // 入队与操作结束共用锁，旧授权范围的请求不能留给下一次操作。
+        // Enqueueing and ending an operation share the lock, so requests from an old authorization scope cannot be left for the next operation.
         let mut callbacks = self
             .shared
             .callbacks
@@ -65,12 +65,12 @@ impl Transport {
         }
     }
 
-    /// 发送一条 JSON-RPC 通知（无响应）。
+    /// Send a JSON-RPC notification (no response).
     pub(crate) fn notify(&self, method: &str, params: Value) -> Result<(), Failure> {
         self.write_message(json!({"jsonrpc": "2.0", "method": method, "params": params}))
     }
 
-    /// 发送请求并等待响应，期间处理 server 回调。
+    /// Send a request and wait for its response, handling server callbacks meanwhile.
     pub(crate) fn request(
         &self,
         method: &str,
@@ -79,7 +79,7 @@ impl Transport {
         cancellation: &CancellationToken,
         service: &mut dyn FnMut(ServerRequest),
     ) -> Result<Value, Failure> {
-        // 预检：已关闭/已取消/已过期都不必再占用 id、写帧或登记 pending。
+        // Precheck: closed/cancelled/expired all skip consuming an id, writing a frame or registering a pending entry.
         if self.is_closed() {
             return Err(Failure::Closed);
         }
@@ -149,8 +149,8 @@ impl Transport {
         }
     }
 
-    /// 放弃一个在途请求：先移除 pending（迟到的响应会被 reader 丢弃），再
-    /// 通知服务器取消。两者都不能反过来——先拿到响应的 reader 不会再等待。
+    /// Abandon an in-flight request: remove the pending entry first (a late response is dropped by the reader), then
+    /// notify the server of the cancellation. Neither order may be reversed — a reader that already got the response no longer waits.
     fn abandon(&self, id: i64) {
         self.shared
             .pending
@@ -164,7 +164,7 @@ impl Transport {
         }));
     }
 
-    /// 处理累积的 server 回调；回调失败不打断外层等待。
+    /// Handle accumulated server callbacks; a callback failure does not interrupt the outer wait.
     pub(crate) fn service_callbacks(&self, service: &mut dyn FnMut(ServerRequest)) {
         loop {
             let next = {
@@ -203,8 +203,8 @@ impl Transport {
             Ok(()) => Ok(()),
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Err(Failure::Closed),
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                // 写队列满说明 stdin 写入被阻塞：按协议失效处理，交给上层
-                // 关闭连接并确认回收，而不是无限等待。
+                // A full write queue means stdin writes are blocked: treat it as a protocol failure, leaving it to the upper layer
+                // to close the connection and confirm reaping instead of waiting forever.
                 self.shared
                     .note_close("LSP server stopped reading requests");
                 Err(Failure::Closed)
@@ -254,7 +254,7 @@ mod tests {
         );
         assert!(shared.pending.lock().unwrap().is_empty());
         assert!(frames.try_recv().is_err());
-        // 预检失败不消耗请求 id。
+        // A failed precheck does not consume a request id.
         assert_eq!(transport.next_id.load(Ordering::SeqCst), 1);
     }
 

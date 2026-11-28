@@ -1,4 +1,4 @@
-// —— 验证项：草稿/光标/粘贴保留，Esc 取消跳过同批 write 且历史成对 ——
+// —— Coverage: draft/cursor/paste preserved, Esc cancel skips the write in the same batch and history stays paired ——
 
 #[test]
 fn ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
@@ -9,7 +9,7 @@ fn ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
         let mut pty = ask_tui_start(&server, home.path(), project.path(), protocol);
         pty.ready();
         pty.input("ask esc task\r");
-        // 先抓住请求但不回复：worker 等待 SSE，此时输入的草稿必须保留。
+        // Hold the request without replying first: the worker is waiting on SSE, so the typed draft must survive.
         let (request, _) = pty.request_at(&server, api_path(protocol));
         pty.input("排队草稿");
         pty.draft("排队草稿");
@@ -27,8 +27,8 @@ fn ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
         );
         ask_wait_panel(&mut pty, "Which database should the project use?");
         pty.draft("排队草稿");
-        // 面板内的粘贴不进入主草稿；取消完成后再断言其从未出现。
-        pty.input("\x1b[200~粘贴拦截\x1b[201~");
+        // A paste inside the panel never reaches the main draft; assert it never showed up once the cancel settles.
+        pty.input("\x1b[200~blocked-paste\x1b[201~");
         pty.input("\x1b");
         cancel_wait_cancelled_ready(&mut pty);
         pty.draft("排队草稿");
@@ -36,7 +36,7 @@ fn ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
         {
             let text = pty.parser.screen().contents();
             assert!(
-                !text.contains("粘贴拦截"),
+                !text.contains("blocked-paste"),
                 "paste inside the panel must not reach the main draft\n{text}"
             );
         }
@@ -44,10 +44,10 @@ fn ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
             std::fs::read(project.path().join("later.txt")).is_err(),
             "cancelled batch must not execute the later write"
         );
-        // 取消本身不触发任何 HTTP。
+        // The cancel itself triggers no HTTP.
         cancel_assert_no_request(&server);
 
-        // 下一个任务正常提交；历史中两个 call id 与结果成对且顺序稳定。
+        // The next task submits normally; both call ids stay paired with their results in a stable order.
         ask_clear_draft(&mut pty);
         pty.input("after esc task\r");
         let (request, body) = pty.request_at(&server, api_path(protocol));
@@ -83,9 +83,9 @@ fn ask_tui_esc_cancel_keeps_draft_skips_batch_write_and_pairs_history() {
         no_more(&server);
 }
 
-// —— 验证项：等待 ask 时 Ctrl-C 立即退出并恢复终端 ——
+// —— Coverage: Ctrl-C exits immediately and restores the terminal while waiting on ask ——
 
-// —— 验证项：/new、跨协议 /model、-r 恢复后 TUI schema 仍含 ask ——
+// —— Coverage: the TUI schema still offers ask after /new, a cross-protocol /model, and -r resume ——
 
 fn ask_schema_offered_tui(body: &Value, protocol: &str) -> bool {
     body["tools"].as_array().is_some_and(|tools| {
@@ -99,7 +99,7 @@ fn ask_schema_offered_tui(body: &Value, protocol: &str) -> bool {
     })
 }
 
-// —— 验证项：replay 只还原问答卡片，不重开交互，答案不进输入历史 ——
+// —— Coverage: replay restores the question card only, never reopens the interaction, and answers stay out of input history ——
 
-// —— 验证项：只有 ToolStarted 没有结果的日志恢复为中断提示，不重开面板 ——
+// —— Coverage: a log with ToolStarted but no result restores as an interruption notice without reopening the panel ——
 

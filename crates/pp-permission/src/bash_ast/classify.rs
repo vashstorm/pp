@@ -1,4 +1,4 @@
-//! 叶子命令的危险度分级、只读安全判定与规范前缀推导。
+//! Hazard classification of leaf commands, read-only safety checks and canonical prefix derivation.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -14,7 +14,7 @@ use crate::rules::{BashRule, MatchMode};
 
 pub(super) const AUTH_FILES: &[&str] = &["/etc/passwd", "/etc/shadow", "/etc/sudoers"];
 
-/// 仅用于读取或无副作用查询的内置/常见命令（绝不包含 `rm`/`chmod`/`mv` 等写入工具）。
+/// Builtin/common commands used only for reading or side-effect-free queries (never write tools such as `rm`/`chmod`/`mv`).
 const SAFE_READ_ONLY_COMMANDS: &[&str] = &[
     "pwd", "ls", "ll", "la", "dir", "tree", "stat", "file", "wc", "du", "df", "uname", "whoami",
     "id", "hostname", "date", "which", "whereis", "type", "printenv", "readlink", "realpath",
@@ -61,7 +61,7 @@ impl LeafCommand {
         self.matches_prefix_with(prefix, false)
     }
 
-    /// 供 `Deny`/`Prompt` 与 `--disallowed-tools` 使用：跳过带值全局选项识别真实子命令。
+    /// Used by `Deny`/`Prompt` and `--disallowed-tools`: skips value-carrying global options to find the real subcommand.
     pub(crate) fn matches_restrictive_prefix(&self, prefix: &[String]) -> bool {
         self.matches_prefix_with(prefix, true)
     }
@@ -124,19 +124,19 @@ impl LeafCommand {
         Some(out)
     }
 
-    /// 推导细粒度到具体参数/文件的精确命令规则（用于 `[[rules]]` `match = "exact"`）。
+    /// Derives a command rule fine-grained down to concrete arguments/files (for `[[rules]]` `match = "exact"`).
     ///
-    /// - 动态命令、函数调用、shell 解释器脚本、`eval`/`source` 或带不安全配置覆盖参数
-    ///   （`git -c`、`cargo --config`、`npm --registry` 等）均拒绝记忆，只允许单次确认。
-    /// - 保留全部安全参数及清理后的文件参数，确保批准 `git add aaa.txt` 不会连带放行
-    ///   `git add bbb.txt` 或 `git add .`。
+    /// - Dynamic commands, function calls, shell interpreter scripts, `eval`/`source` and unsafe
+    ///   configuration override arguments (`git -c`, `cargo --config`, `npm --registry`, ...) are never remembered; only one-off confirmation is allowed.
+    /// - All safe arguments and sanitized file arguments are kept, so approving `git add aaa.txt` does not also
+    ///   allow `git add bbb.txt` or `git add .`.
     pub(crate) fn suggested_exact_pattern(&self) -> Option<Vec<String>> {
         if self.dynamic_exec || self.is_function_call {
             return None;
         }
         let program = self.program()?;
-        // Shell 解释器、代码求值器与脚本语言解释器均禁止自动记忆规则，
-        // 避免记住 `python3 script.py` 后借免审批的 write/edit 改写脚本绕过审批。
+        // Shell interpreters, code evaluators and scripting-language interpreters never get remembered rules,
+        // otherwise remembering `python3 script.py` would let an unapproved write/edit rewrite the script and bypass approval.
         if matches!(
             program,
             "eval"
@@ -170,8 +170,8 @@ impl LeafCommand {
         ) {
             return None;
         }
-        // 路径型可执行文件（如 `./script.sh`、`scripts/run.sh`、`/tmp/tool`、`~/bin/run`）
-        // 位于潜在可写或动态位置，一律禁止自动记忆。
+        // Path-form executables (e.g. `./script.sh`, `scripts/run.sh`, `/tmp/tool`, `~/bin/run`)
+        // live in potentially writable or dynamic locations, so they are never remembered automatically.
         if self
             .raw_args
             .first()
@@ -240,7 +240,7 @@ impl LeafCommand {
         (!out.is_empty()).then_some(out)
     }
 
-    /// 静态识别该命令是否需要写入工作区内的受保护目录（`.git`、`.agents`、`.pp`）。
+    /// Statically detects whether the command needs to write inside protected directories of the workspace (`.git`, `.agents`, `.pp`).
     pub(crate) fn protected_write_targets(&self, cwd: &Path) -> Vec<PathBuf> {
         let mut out = Vec::new();
         let mut push_unique = |path: PathBuf| {
@@ -253,12 +253,12 @@ impl LeafCommand {
             && !self.is_safe_read_only()
         {
             let sub = extract_hazard_subcommand_for("git", &self.tokens[1..]);
-            // 纯远程查询（如 `git ls-remote`）不写 `.git`；其余非只读 git 命令默认写入 `.git` 目录。
+            // Pure remote queries (e.g. `git ls-remote`) do not write `.git`; every other non-read-only git command writes into the `.git` directory by default.
             if sub.as_deref() != Some("ls-remote") {
                 push_unique(cwd.join(".git"));
             }
         }
-        // 对于非纯只读命令（或带写重定向的命令），检查字面量参数中指向 .git / .agents / .pp 的路径。
+        // For commands that are not purely read-only (or that carry a write redirect), inspect literal arguments for paths into .git / .agents / .pp.
         if !self.is_safe_read_only() {
             for token in self.tokens.iter().skip(1) {
                 if let ArgToken::Literal(arg) = token
@@ -272,7 +272,7 @@ impl LeafCommand {
         out
     }
 
-    /// 静态识别明显需要出站互联网访问的命令。
+    /// Statically detects commands that clearly need outbound internet access.
     pub(crate) fn needs_network(&self) -> bool {
         let (tokens, _) = strip_privilege_prefix(&self.tokens, &self.raw_args);
         let Some(ArgToken::Literal(raw_program)) = tokens.first() else {
@@ -326,7 +326,7 @@ impl LeafCommand {
         }
     }
 
-    /// 是否高影响命令（非 YOLO 下默认需确认）。
+    /// Whether this is a high-impact command (confirm by default outside YOLO).
     pub(crate) fn is_high_impact(&self) -> bool {
         if self.dynamic_exec {
             return false;
@@ -347,7 +347,7 @@ impl LeafCommand {
         }
     }
 
-    /// 是否静态可证明的纯只读命令（用于 `AlwaysAsk` 下减摩擦免弹窗）。
+    /// Whether this is a statically provable read-only command (used under `AlwaysAsk` to skip the prompt and reduce friction).
     pub(crate) fn is_safe_read_only(&self) -> bool {
         if self.dynamic_exec || self.is_function_call || self.has_write_redirect {
             return false;
@@ -425,7 +425,7 @@ impl LeafCommand {
     }
 }
 
-/// Git 只免审能明确识别的查询，配置覆盖、动态参数和未知子命令都需确认。
+/// Git may only skip approval for clearly recognized queries; configuration overrides, dynamic arguments and unknown subcommands all need confirmation.
 fn git_is_read_only(args: &[ArgToken]) -> bool {
     if args.is_empty()
         || matches!(args, [ArgToken::Literal(flag)] if matches!(flag.as_str(), "--version" | "-v" | "--help" | "-h"))
@@ -456,7 +456,7 @@ fn git_is_read_only(args: &[ArgToken]) -> bool {
                 })
                 .count();
             let args = &args[listing_flags..];
-            // 旧版 Git 的 `branch -l <name>` 会创建分支及 reflog。
+            // `branch -l <name>` on older Git versions creates the branch and a reflog.
             matches!(args, [] | ["--show-current"])
                 || matches!(args, ["--list", patterns @ ..] if git_positional_args(patterns))
         }
@@ -483,7 +483,7 @@ fn git_is_read_only(args: &[ArgToken]) -> bool {
             )
         }
         subcommand if GIT_READ_ONLY_SUBCOMMANDS.contains(&subcommand) => {
-            // diff 和部分历史查询支持把结果写入指定文件，包括可识别的选项缩写。
+            // diff and some history queries can write their result to a given file, including recognizable option abbreviations.
             !args.iter().take_while(|arg| **arg != "--").any(|arg| {
                 let flag = arg.split('=').next().unwrap_or(arg);
                 flag.starts_with("--") && "--output".starts_with(flag)

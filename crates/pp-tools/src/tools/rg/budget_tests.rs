@@ -42,7 +42,7 @@ fn rg_output_token_budget_caps_all_modes_without_changing_count_totals() {
             assert_eq!(limited["details"]["totalMatchCount"], 75);
             assert_eq!(limited["details"]["countComplete"], true);
         }
-        // 极大预算保留既有分页、提示与输出上限，不发生乘法溢出。
+        // A huge budget keeps the existing paging, notice and output cap, with no multiplication overflow.
         args["max_output_tokens"] = json!(u64::MAX);
         let mut unlimited = query(dir.path(), args.clone(), &mut store);
         assert_eq!(unlimited["details"]["tokenLimitReached"], false);

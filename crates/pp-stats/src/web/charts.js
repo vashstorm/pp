@@ -1,5 +1,6 @@
 /**
- * 共享图表、指标卡片、图例、时间轴分桶与 SVG 渲染原语（Tools / Hooks / Models / Providers / Errors 共用）。
+ * Shared chart, stat card, legend, timeline bucketing and SVG rendering primitives (used by Tools /
+ * Hooks / Models / Providers / Errors).
  */
 
 import { $, compact, fixedCost, h, number, pad2, TOOL_RANGES } from "./format.js";
@@ -49,7 +50,7 @@ export const TOOL_MODERN_LIGHT_COLORS = [
 export const TOOL_OTHER_COLOR = "#6c6c74";
 
 /**
- * 返回当前外观与明暗主题对应的图表面板调色板。
+ * Returns the chart panel palette for the current style and light/dark theme.
  * @returns {string[]}
  */
 export const toolSeriesColors = () =>
@@ -60,14 +61,14 @@ export const toolSeriesColors = () =>
     : TOOL_SERIES_COLORS;
 
 /**
- * 返回当前选择时间范围对应的分桶与标签元信息。
+ * Returns the bucketing and label metadata for the currently selected time range.
  * @param {StatsRange} [range]
  * @returns {{ windowLabel: string, bucketMs: number, spanMs: number | null }}
  */
 export const toolRangeMeta = (range = app.range) => TOOL_RANGES[range] || TOOL_RANGES["7d"];
 
 /**
- * 计算本地时间当天零点毫秒时间戳。
+ * Computes the millisecond timestamp of local midnight on that day.
  * @param {number} timestamp
  * @returns {number}
  */
@@ -78,7 +79,7 @@ export function toolStartOfDay(timestamp) {
 }
 
 /**
- * 计算本地时间次日零点毫秒时间戳。
+ * Computes the millisecond timestamp of local midnight on the following day.
  * @param {number} timestamp
  * @returns {number}
  */
@@ -90,7 +91,8 @@ export function toolNextDay(timestamp) {
 }
 
 /**
- * 生成与服务端分桶规则对齐的连续时间桶起点数组。
+ * Builds the array of consecutive bucket start timestamps, aligned with the server-side bucketing
+ * rules.
  * @param {number[]} timestamps
  * @param {StatsRange} [range]
  * @param {number} [nowMs]
@@ -119,7 +121,8 @@ export function toolBucketAxis(
 }
 
 /**
- * 将点集按时间桶对齐、汇总并按总量降序切分 Top-N 与 Other 折叠系列。
+ * Aligns and aggregates a point set into time buckets, then splits it into Top-N and a collapsed
+ * Other series by descending total.
  * @template TPoint
  * @param {TPoint[]} points
  * @param {number[]} buckets
@@ -180,7 +183,7 @@ export function pivotSeries(points, buckets, limit, options) {
 }
 
 /**
- * 将点集按时间桶聚合为单条稠密序列。
+ * Aggregates a point set into time buckets as a single dense series.
  * @param {Array<{ timestamp: number, value: number }>} points
  * @param {number[]} buckets
  * @returns {number[]}
@@ -196,7 +199,7 @@ export function toolDensify(points, buckets) {
 }
 
 /**
- * 返回时间桶粒度文案。
+ * Returns the label of the bucket granularity.
  * @param {number} bucketMs
  * @returns {string}
  */
@@ -205,7 +208,7 @@ export function toolBucketWord(bucketMs) {
 }
 
 /**
- * 格式化时间轴刻度文本。
+ * Formats the axis tick text.
  * @param {number} timestamp
  * @param {number} bucketMs
  * @returns {string}
@@ -217,7 +220,7 @@ export function toolTickLabel(timestamp, bucketMs) {
 }
 
 /**
- * 格式化图例与悬停提示中的桶时间标签。
+ * Formats the bucket time label used in the legend and the hover tooltip.
  * @param {number} timestamp
  * @param {number} bucketMs
  * @returns {string}
@@ -232,7 +235,7 @@ export function toolBucketLabel(timestamp, bucketMs) {
 }
 
 /**
- * 计算整洁的坐标轴边界与刻度数组。
+ * Computes tidy axis bounds and tick values.
  * @param {number} max
  * @param {number} [min]
  * @returns {{ min: number, max: number, ticks: number[] }}
@@ -257,7 +260,7 @@ export function toolNiceScale(max, min = 0) {
 }
 
 /**
- * 渲染无坐标轴迷你趋势线（用于指标卡片与表格趋势列）。
+ * Renders an axis-free sparkline (used by stat cards and table trend columns).
  * @param {Array<number | null>} values
  * @param {number | null} width
  * @param {number} height
@@ -287,7 +290,7 @@ export function toolSparkline(values, width, height, color) {
 }
 
 /**
- * 渲染 `x-stat` 指标卡。
+ * Renders an `x-stat` stat card.
  * @param {string} label
  * @param {string} value
  * @param {string | undefined} [hint]
@@ -333,7 +336,7 @@ let toolChartModels = new Map();
 let toolChartSeq = 0;
 
 /**
- * 在每次进入新页面渲染前重置页面内图表注册表。
+ * Resets the per-page chart registry before every new page render.
  */
 export function resetToolCharts() {
   toolChartModels = new Map();
@@ -341,7 +344,7 @@ export function resetToolCharts() {
 }
 
 /**
- * 注册图表模型并返回占位容器 HTML。
+ * Registers a chart model and returns the placeholder container HTML.
  * @param {{ buckets: number[], bucketMs?: number }} view
  * @param {ChartSeries[]} series
  * @param {string | undefined} emptyLabel
@@ -364,7 +367,7 @@ export function toolChart(view, series, emptyLabel, options = {}) {
 }
 
 /**
- * 渲染可点击切换显示的图例。
+ * Renders a legend whose entries toggle visibility on click.
  * @param {ChartSeries[]} series
  * @param {(value: number) => string} [format]
  * @param {{ hidden?: Set<string>, attribute?: string, focusAttribute?: string, values?: boolean }} [options]
@@ -384,7 +387,7 @@ export function toolLegend(series, format = compact, options = {}) {
 }
 
 /**
- * 渲染 `x-card` 面板容器。
+ * Renders an `x-card` panel container.
  * @param {number} index
  * @param {string} title
  * @param {string} description
@@ -399,7 +402,8 @@ export function toolCard(index, title, description, actions, body, flush = false
 }
 
 /**
- * 根据模型与容器宽度生成双轴/堆叠/折线 SVG 图表与几何元数据。
+ * Builds the dual-axis/stacked/line SVG chart and its geometry metadata from the model and the
+ * container width.
  * @param {ChartModel} model
  * @param {number} width
  */
@@ -580,7 +584,7 @@ export function toolChartSvg(model, width) {
 }
 
 /**
- * 筛选当前悬停时间桶下的非零提示行并按值降序排列。
+ * Filters the non-zero tooltip rows of the hovered bucket and sorts them by descending value.
  * @param {ChartSeries[]} visible
  * @param {number} hover
  * @returns {Array<{ series: ChartSeries, value: number }>}
@@ -597,7 +601,7 @@ function toolChartTooltipRows(visible, hover) {
 }
 
 /**
- * 更新图表悬停游标与浮动提示框位置。
+ * Updates the chart hover cursor and the floating tooltip position.
  * @param {HTMLElement} root
  * @param {ReturnType<typeof toolChartSvg> & { model: ChartModel }} geometry
  * @param {number | null} hover
@@ -664,7 +668,7 @@ function toolChartHover(root, geometry, hover) {
 }
 
 /**
- * 测量容器宽度、绘制 SVG 图表并绑定悬停事件。
+ * Measures the container width, draws the SVG chart and binds the hover handlers.
  */
 export function wireToolsCharts() {
   const pageEl = $("page");

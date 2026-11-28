@@ -198,7 +198,7 @@ impl Panel {
         if area.is_empty() {
             return;
         }
-        // 按全部分类的最大列表行数固定上方列表槽位（上限 MAX_LIST_ROWS），既防止切换分类时预览区跳动，又保证下方预览区有充裕高度。
+        // Size the top list slot from the largest row count across all categories (capped at MAX_LIST_ROWS) so the preview never jumps when switching category while the preview still gets ample height.
         let max_list_rows = (IconMode::ALL
             .len()
             .max(Theme::ALL.len())

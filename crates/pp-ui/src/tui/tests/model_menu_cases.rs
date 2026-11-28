@@ -653,7 +653,7 @@ fn menu_overlay_and_command_menu_render_without_moving_editor_or_history() {
                     let menu_top = input_top - app.menu.as_ref().unwrap().height(input_top);
                     let (buffer, position) = render(&mut app);
                     assert_eq!(position, cursor);
-                    // 覆盖区之外的对话、输入正文和状态栏必须逐格保持原位。
+                    // Conversation, input body and status bar outside the overlay must stay put cell by cell.
                     for y in (0..menu_top).chain(input_top + 1..height) {
                         for x in 0..width {
                             if y == height - 2 {
@@ -734,7 +734,7 @@ fn shortcuts_cycle_levels_model_picker_draft_and_modifiers() {
     {
         let (control, binding) = model_control();
         let mut app = app();
-        // 运行中切档：不得落回阻塞态，也不得经 worker 排队。
+        // Switching level during a run: must not fall back to a blocked state and must not queue through the worker.
         app.state = State::Running;
         app.model_control = Some(control);
         app.choices = vec![all_levels_choice()];
@@ -765,7 +765,7 @@ fn shortcuts_cycle_levels_model_picker_draft_and_modifiers() {
             let pressed = encodings[index % encodings.len()];
             let previous = app.think_level;
             app.handle(Event::Key(pressed), &mut dirty);
-            // 只登记期望值：State 未变、已应用档位未变、未向 worker 发任何命令。
+            // Only a desired value is recorded: State is unchanged, the applied level is unchanged, and no worker command is sent.
             assert!(matches!(app.state, State::Running));
             assert_eq!(app.pending_think, Some((0, level)));
             assert_eq!(app.think_level, previous);
@@ -774,13 +774,13 @@ fn shortcuts_cycle_levels_model_picker_draft_and_modifiers() {
             assert_eq!(app.history_index, Some(0));
             assert_eq!(app.input_history, ["已提交"]);
             assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
-            // 长按产生的 Repeat 不重复登记目标。
+            // Repeat events from a held key do not re-record the target.
             let mut repeat = pressed;
             repeat.kind = KeyEventKind::Repeat;
             app.handle(Event::Key(repeat), &mut dirty);
             assert_eq!(app.pending_think, Some((0, level)));
             assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
-            // 控制线程先确认待生效目标，再发布边界应用结果。
+            // The control thread confirms the pending target first, then publishes the boundary application result.
             let revision = wait_for_queued_think(&mut app, level);
             assert_eq!(app.think_level, previous);
             assert!(
@@ -810,7 +810,7 @@ fn shortcuts_cycle_levels_model_picker_draft_and_modifiers() {
             assert_eq!(app.input.cursor(), cursor);
             assert_eq!(app.history_index, Some(0));
             assert_eq!(app.input_history, ["已提交"]);
-            // 待生效确认后 UI 只补发 ApplyModelTargets；其余命令依旧不经 worker。
+            // After the pending confirmation the UI only re-sends ApplyModelTargets; other commands still bypass the worker.
             while let Ok(command) = requests.try_recv() {
                 assert!(matches!(command, WorkerCommand::ApplyModelTargets));
             }
@@ -1167,7 +1167,7 @@ fn effort_space_opens_inline_menu_and_confirms_only_after_enter() {
     );
     app.handle(key(KeyCode::Char(' ')), &mut dirty);
     let screen = draw(&mut app, 100, 30);
-    // 测试缓冲区把中文占用的第二列表示为空格。
+    // The test buffer represents the second column occupied by a wide character as a space.
     let compact = screen.replace(' ', "");
     assert!(
         menu_values(&app)
@@ -1187,7 +1187,7 @@ fn effort_space_opens_inline_menu_and_confirms_only_after_enter() {
     }
     assert!(draw(&mut app, 100, 30).contains("❯ max"));
     app.handle(key(KeyCode::Enter), &mut dirty);
-    // 确认后只登记期望值：不改 State、不经 worker，也不移动草稿。
+    // After confirmation only a desired value is recorded: State is untouched, the worker is bypassed and the draft does not move.
     assert_eq!(app.pending_think, Some((0, ThinkLevel::Max)));
     assert_eq!(app.think_level, ThinkLevel::High);
     assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
@@ -1229,7 +1229,7 @@ fn sqlite_model_menu_orders_favorites_then_usage() {
 
     let mut dirty = false;
     app.handle(Event::Paste("/model ".into()), &mut dirty);
-    // 收藏 p/two 尽管次数最低仍居首；非收藏按次数降序，5/5 平手保持目录顺序。
+    // Favorite p/two stays first despite the lowest count; non-favorites sort by descending count, and a 5/5 tie keeps catalog order.
     assert_eq!(
         menu_values(&app),
         vec![
@@ -1239,7 +1239,7 @@ fn sqlite_model_menu_orders_favorites_then_usage() {
         ]
     );
 
-    // 过滤到平手对：排序键在筛选结果内同样生效且保持目录顺序。
+    // Filter down to the tie: the sort key still applies within the filtered results and keeps catalog order.
     app.close_model_panel();
     app.input = editor();
     app.handle(Event::Paste("/model one".into()), &mut dirty);
@@ -1248,13 +1248,13 @@ fn sqlite_model_menu_orders_favorites_then_usage() {
         vec![MenuAction::Model(0), MenuAction::Model(1)]
     );
 
-    // 打开面板、筛选、取消不发请求，也不改动缓存的用量快照。
+    // Opening the panel, filtering and cancelling send no request and leave the cached usage snapshot untouched.
     let usage_before = app.model_usage.clone();
     app.handle(key(KeyCode::Esc), &mut dirty);
     assert!(requests.try_recv().is_err());
     assert_eq!(app.model_usage, usage_before);
 
-    // 选中 p/one-b 后目录刷新重排；选择跟随同一模型而不是固定位置。
+    // After selecting p/one-b the catalog refresh reorders; the selection follows the same model rather than a fixed position.
     app.input = editor();
     app.handle(Event::Paste("/model ".into()), &mut dirty);
     app.handle(key(KeyCode::Down), &mut dirty);
@@ -1282,7 +1282,7 @@ fn sqlite_model_menu_orders_favorites_then_usage() {
     );
     assert_eq!(active_menu(&app).selected_index(), Some(1));
 
-    // 用量读取失败：保留旧快照与菜单，单独报错，不把缓存清零。
+    // Usage read failure: keep the old snapshot and menu, report the error separately and do not zero the cache.
     app.receive_event_for_test(WorkerEvent::ModelsReloaded(Err(anyhow::anyhow!(
         "Agent database unavailable."
     ))));
@@ -1297,7 +1297,7 @@ fn sqlite_model_menu_orders_favorites_then_usage() {
     );
     assert!(draw(&mut app, 130, 30).contains("Could not refresh models"));
 
-    // 偏好已提交但随后的快照读取失败：保存成功与刷新失败分别提示，不伪装保存失败。
+    // The preference was committed but the following snapshot read failed: report the save and the refresh failure separately instead of faking a save failure.
     app.receive_event_for_test(WorkerEvent::DefaultModelSaved(Ok("p/one-b".into())));
     assert!(!draw(&mut app, 130, 30).contains("Default model saved:"));
     app.receive_event_for_test(WorkerEvent::ModelsReloaded(Err(anyhow::anyhow!(
@@ -1317,7 +1317,7 @@ fn model_picker_submits_override_and_statusline_hides_source_until_fallback() {
         app.model_control = Some(control);
         app.choices = choices;
         app.current_model = Some(app.choices[0].clone());
-        // 全局默认档位 High 由 two 支持：⌥P 应记录该模型的有效默认档位。
+        // The global default level High is supported by two: ⌥P should record that model's effective default level.
         app.default_think_level = ThinkLevel::High;
         let mut dirty = false;
         app.handle(function_key('p'), &mut dirty);
@@ -1325,13 +1325,13 @@ fn model_picker_submits_override_and_statusline_hides_source_until_fallback() {
         app.handle(key(KeyCode::Enter), &mut dirty);
         assert!(
             matches!(requests.try_recv(), Err(TryRecvError::Empty)),
-            "model_control 路径不应发送 worker 命令"
+            "the model_control path must not send worker commands"
         );
         let selection = wait_for_override(&mut app, "fixture/two");
-        // 目标档位沿既有策略：two 无显式 defaultLevel，当前档位 off 与全局默认都不在
-        // 它允许的 low/high 内，因此落到该模型的首个允许档位 Low。
+        // The target level follows the existing policy: two has no explicit defaultLevel, and neither the current off level nor the global default is among
+        // its allowed low/high, so it lands on the model's first allowed level, Low.
         assert_eq!(selection.effort, ThinkLevel::Low);
-        // 目标已登记但尚未由 Agent 应用：状态栏仍显示旧模型，来源等应用后再更新。
+        // The target is recorded but not yet applied by the Agent: the status bar still shows the old model, and the source updates after application.
         assert!(app.pending_model.is_some());
         assert_eq!(app.current_model.as_ref().unwrap().reference, "fixture/one");
     }
@@ -1365,7 +1365,7 @@ fn model_picker_submits_override_and_statusline_hides_source_until_fallback() {
             assert!(status.contains("fixture/one"), "{status}");
         }
 
-        // 切到备用模型时，内容栏出现醒目卡片，而不是只靠状态栏一个词。
+        // Switching to a fallback model adds a prominent card to the content column instead of relying on one word in the status bar.
         app.show_welcome = false;
         app.receive_event_for_test(WorkerEvent::Progress(AgentEvent::ModelRouteChanged {
             model: "fixture/two".into(),

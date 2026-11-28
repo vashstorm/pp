@@ -1,4 +1,5 @@
-//! 词级转换只使用解析语法与可证明常量，不读取宿主环境、不做展开执行。
+//! Word-level conversion uses only parsed syntax and provable constants; it reads no host environment and
+//! performs no expansion or execution.
 
 use brush_core::parser::word::{self, Parameter, ParameterExpr, WordPiece, WordPieceWithSource};
 use std::collections::HashMap;
@@ -15,7 +16,7 @@ fn literal_pieces(pieces: &[WordPieceWithSource]) -> Option<String> {
             WordPiece::Text(s) | WordPiece::SingleQuotedText(s) => output.push_str(s),
             WordPiece::EscapeSequence(s) => output.push_str(s.strip_prefix('\\').unwrap_or(s)),
             WordPiece::DoubleQuotedSequence(pieces) => output.push_str(&literal_pieces(pieces)?),
-            // 保留 ANSI-C 及 gettext 原文；不猜测 Bash 特定的解码语义。
+            // Keep ANSI-C and gettext text verbatim; Bash-specific decoding semantics are not guessed.
             _ => return None,
         }
     }
@@ -23,7 +24,7 @@ fn literal_pieces(pieces: &[WordPieceWithSource]) -> Option<String> {
 }
 
 pub(super) fn quote(value: &str) -> String {
-    serde_json::to_string(value).expect("字符串总能编码为 JSON")
+    serde_json::to_string(value).expect("a string always encodes as JSON")
 }
 
 pub(super) fn render(raw: &str, string: bool, constants: &HashMap<String, String>) -> String {

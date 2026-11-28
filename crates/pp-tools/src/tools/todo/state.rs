@@ -1,4 +1,4 @@
-//! 按序数的目标定位与状态转换。
+//! Ordinal-based target resolution and state transitions.
 use pp_core::todo::{TodoItem, TodoPhase, TodoStatus};
 use std::collections::HashSet;
 
@@ -211,7 +211,7 @@ fn locate_phase(current: &[TodoPhase], name: &str, errors: &mut Vec<String>) -> 
     }
 }
 
-/// 单任务定位支持可选阶段筛选及一基 occurrence；缺失或空任务原文报错。
+/// Single-task resolution supports an optional phase filter and a one-based occurrence; a missing or empty task text errors.
 fn resolve_task(
     current: &[TodoPhase],
     params: &TodoParams,
@@ -450,8 +450,8 @@ fn clone_phases(current: &[TodoPhase]) -> Vec<TodoPhase> {
         .collect()
 }
 
-/// 保留所有进行项；仅在没有进行项时启动最早的 pending。
-/// 不自动启动 blocked，也不重开 completed。
+/// Keep every in-progress item; start the earliest pending only when nothing is in progress.
+/// Never auto-start a blocked item and never reopen a completed one.
 pub fn normalize_in_progress(phases: &mut [TodoPhase]) {
     if phases
         .iter()

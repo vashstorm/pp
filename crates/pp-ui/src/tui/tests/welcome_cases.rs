@@ -33,11 +33,11 @@ fn welcome_separates_shift_enter_from_description_across_breakpoints() {
         assert!(
             screen.contains(&format!("Shift + Enter  {expected_desc}"))
                 || screen.contains(&format!("Shift + Enter {expected_desc}")),
-            "Shift + Enter 应与说明保留间隔 ({width}x{height}):\n{screen}"
+            "Shift + Enter should keep a gap from its description ({width}x{height}):\n{screen}"
         );
         assert!(
             !screen.contains(&format!("Shift + Enter{expected_desc}")),
-            "Shift + Enter 与说明不得粘连 ({width}x{height})"
+            "Shift + Enter must not run into its description ({width}x{height})"
         );
     }
 }
@@ -48,7 +48,7 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
     let mut app = app();
     app.input.insert_str("welcome draft");
 
-    // 宽屏 100x30：品牌区上对齐并保留 2 行顶部留白，双栏完整展示 14 项入口。
+    // Wide 100x30: the brand block is top-aligned with 2 rows of padding, and two columns show all 14 entries.
     let wide = draw(&mut app, 100, 30);
     let wide_lines: Vec<&str> = wide.lines().collect();
     let logo_y = wide_lines
@@ -59,7 +59,10 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
         .iter()
         .position(|line| line.contains('▄'))
         .expect("wide brand top");
-    assert_eq!(brand_top_y, 2, "品牌区应上对齐并保留 2 行顶部留白: {wide}");
+    assert_eq!(
+        brand_top_y, 2,
+        "the brand block should be top-aligned with 2 rows of padding: {wide}"
+    );
     assert!(wide.contains("Paper Plane"));
     let card_top_y = wide_lines
         .iter()
@@ -69,7 +72,7 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
         !wide_lines[logo_y..card_top_y]
             .iter()
             .any(|line| line.contains("fixture-cwd")),
-        "logo 下方不应重复工作目录:\n{wide}"
+        "the working directory must not repeat below the logo:\n{wide}"
     );
     assert!(
         wide_lines
@@ -77,16 +80,16 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
             .any(|line| line.contains("Session & workflow")
                 && line.contains("│")
                 && line.contains("Keyboard")),
-        "宽屏双栏卡片应包含两列标题与竖直分隔线:\n{wide}"
+        "the wide two-column card should have headings for both columns and a vertical divider:\n{wide}"
     );
     assert!(wide.contains("welcome draft"));
 
-    // 80x24：两列文案仍完整单行展示。
+    // 80x24: both columns still show their text fully on one line.
     let std = draw(&mut app, 80, 24);
     assert!(std.contains("plan, then approve edits"), "{std}");
     assert!(std.contains("cancel the running task"), "{std}");
 
-    // 60x30：紧凑品牌为单列卡片留出空间，保留全部入口。
+    // 60x30: the compact brand leaves room for a single-column card and keeps every entry.
     let narrow = draw(&mut app, 60, 30);
     assert_eq!(narrow.lines().next().unwrap().trim(), "\u{f1d9}  PP");
     let session_y = narrow
@@ -99,7 +102,7 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
         .expect("narrow keyboard");
     assert!(session_y < keyboard_y);
 
-    // 38x30：紧凑品牌 + 完整单列提示。
+    // 38x30: compact brand plus the full single-column hints.
     let compact_tall = draw(&mut app, 38, 30);
     assert_eq!(compact_tall.lines().next().unwrap().trim(), "\u{f1d9}  PP");
     assert!(compact_tall.contains("Shift + Tab"));
@@ -113,17 +116,17 @@ fn welcome_responsive_breakpoints_keep_top_gap_and_preserve_draft() {
             "↑ / ↓",
             "Ctrl + O",
         ] {
-            assert!(screen.contains(entry), "缺少 {entry}:\n{screen}");
+            assert!(screen.contains(entry), "missing {entry}:\n{screen}");
         }
     }
 
-    // 40x12：极矮屏幕保留紧凑品牌、最简提示与草稿。
+    // 40x12: a very short screen keeps the compact brand, the minimal hints and the draft.
     let compact_short = draw(&mut app, 40, 12);
     assert_eq!(compact_short.lines().next().unwrap().trim(), "\u{f1d9}  PP");
     assert!(compact_short.contains("/tips  All shortcuts"));
     assert!(compact_short.contains("welcome draft"));
 
-    // 20x6：极小终端优先保留输入草稿。
+    // 20x6: a tiny terminal gives priority to the input draft.
     let tiny = draw(&mut app, 20, 6);
     assert!(tiny.contains("welcome draft"));
 }
@@ -185,7 +188,7 @@ fn welcome_widens_tips_card_on_wide_screens_and_keeps_logo_aligned() {
     let _guard = WelcomeThemeGuard::set(Theme::Default, IconMode::Nerd);
     let mut app = app();
 
-    // 宽屏下卡片按 75% 终端宽自适应（下限 84，上限 120）。
+    // On wide screens the card adapts to 75% of the terminal width (minimum 84, maximum 120).
     for (term_w, expected_card_w) in [(100, 84), (120, 90), (160, 120), (200, 120)] {
         let screen = draw(&mut app, term_w, 30);
         let rule_len = screen
@@ -196,14 +199,14 @@ fn welcome_widens_tips_card_on_wide_screens_and_keeps_logo_aligned() {
                     .then(|| trimmed.chars().count())
             })
             .next()
-            .expect("tips 卡片应含水平边框");
+            .expect("the tips card should have a horizontal border");
         assert_eq!(
             rule_len, expected_card_w,
-            "终端宽度 {term_w} 应渲染 {expected_card_w} 列卡片:\n{screen}"
+            "terminal width {term_w} should render a {expected_card_w}-column card:\n{screen}"
         );
     }
 
-    // 副标题比 WORDMARK 更短时，WORDMARK、Paper Plane 与版本号右列起始列仍对齐。
+    // When the tagline is shorter than WORDMARK, the right-column start of WORDMARK, Paper Plane and the version still line up.
     let wide = draw(&mut app, 160, 30);
     let lines: Vec<&str> = wide.lines().collect();
     let wordmark_col = lines
@@ -229,11 +232,14 @@ fn welcome_widens_tips_card_on_wide_screens_and_keeps_logo_aligned() {
         .expect("version");
     assert_eq!(
         wordmark_col, tagline_col,
-        "wordmark 与副标题应左对齐:\n{wide}"
+        "the wordmark and the tagline should be left-aligned:\n{wide}"
     );
-    assert_eq!(tagline_col, version_col, "副标题与版本号应左对齐:\n{wide}");
+    assert_eq!(
+        tagline_col, version_col,
+        "the tagline and the version should be left-aligned:\n{wide}"
+    );
 
-    // 品牌组合（logo + PP）可见外框在偶数终端宽下左右边距应完全相等。
+    // At even terminal widths the visible brand block (logo + PP) has exactly equal left and right margins.
     for term_w in [100_u16, 120, 160] {
         let screen = draw(&mut app, term_w, 30);
         let brand_rows: Vec<&str> = screen
@@ -254,9 +260,9 @@ fn welcome_widens_tips_card_on_wide_screens_and_keeps_logo_aligned() {
         let right_margin = usize::from(term_w) - max_right;
         assert_eq!(
             min_left, right_margin,
-            "终端宽度 {term_w} 下品牌组合应左右居中（左 {min_left}，右 {right_margin}）:\n{screen}"
+            "at terminal width {term_w} the brand block should be horizontally centered (left {min_left}, right {right_margin}):\n{screen}"
         );
-        // 卡片中间竖线 `│` 必须落在顶部 logo 右缘与 `PP` 左缘的间隙内。
+        // The card's central divider `│` must sit inside the gap between the logo's right edge and `PP`'s left edge.
         let wordmark_left = brand_rows
             .iter()
             .find_map(|l| l.find("██████").map(|idx| l[..idx].chars().count()))
@@ -281,7 +287,7 @@ fn welcome_widens_tips_card_on_wide_screens_and_keeps_logo_aligned() {
             .unwrap();
         assert!(
             divider_col >= logo_right && divider_col < wordmark_left,
-            "终端宽度 {term_w} 下竖线列 {divider_col} 应落在 logo 右缘 {logo_right} 与 PP 左缘 {wordmark_left} 之间:\n{screen}"
+            "at terminal width {term_w} the divider column {divider_col} should fall between the logo right edge {logo_right} and the PP left edge {wordmark_left}:\n{screen}"
         );
     }
 }

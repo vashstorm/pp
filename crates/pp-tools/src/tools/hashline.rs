@@ -1,4 +1,4 @@
-//! 文件版本标签、会话快照与单文件行编辑协议。
+//! File version tags, session snapshots and the single-file line editing protocol.
 use anyhow::{Context, Result, ensure};
 use std::{
     collections::{HashMap, HashSet},
@@ -20,12 +20,12 @@ pub(super) struct Line {
     pub end: usize,
 }
 
-/// 与展示和编辑共用；CRLF 与独立 CR 都代表一个换行。
+/// Shared by display and editing; both CRLF and a lone CR count as one newline.
 pub(super) fn scan(source: &str) -> Vec<Line> {
     scan_lines(source, None)
 }
 
-/// 快照路径：一次遍历同时产出行索引与标签，不再为 hash 重扫全文。
+/// Snapshot path: one traversal yields both the line index and the tag, so the text is no longer rescanned for the hash.
 pub(super) fn scan_with_tag(source: &str) -> (Vec<Line>, String) {
     let mut hasher = Xxh32::new(0);
     let lines = scan_lines(source, Some(&mut hasher));
@@ -48,7 +48,7 @@ fn scan_lines(source: &str, mut hasher: Option<&mut Xxh32>) -> Vec<Line> {
             body_end + usize::from(body_end < bytes.len())
         };
         if let Some(hasher) = hasher.as_deref_mut() {
-            // BOM 已由起始偏移跳过；标签只压缩行尾空白，与 `file_hash` 逐字节一致。
+            // The BOM is already skipped via the start offset; the tag only collapses trailing whitespace, matching `file_hash` byte for byte.
             hasher.update(
                 source[start..body_end]
                     .trim_end_matches([' ', '\t'])
@@ -78,7 +78,7 @@ fn hash_input(source: &str) -> String {
         .join("\n")
 }
 
-/// 协议规则参考 oh-my-pi/pi-edit 的 file_hash；只保留 xxHash32 低 16 位。
+/// The protocol rule follows oh-my-pi/pi-edit's file_hash; only the low 16 bits of xxHash32 are kept.
 pub(super) fn file_hash(source: &str) -> String {
     let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let bytes = source.as_bytes();
@@ -106,7 +106,7 @@ pub(super) fn file_hash(source: &str) -> String {
 
 #[cfg(test)]
 thread_local! {
-    /// 计数替身：一次快照写入只应计算一次标签。
+    /// Counting double: a snapshot write must compute the tag exactly once.
     static TAG_COMPUTATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -143,7 +143,7 @@ pub(super) fn render_page(bytes: &[u8], offset: usize) -> String {
             offset + i,
             &text[line.start..line.body_end]
         )
-        .expect("写入字符串不会失败");
+        .expect("writing to a string cannot fail");
     }
     output
 }
@@ -158,7 +158,7 @@ struct Entry {
     touched: u64,
 }
 
-/// 合并已读行范围；`record` 与 `extend_seen` 共用同一套区间语义。
+/// Merge read line ranges; `record` and `extend_seen` share the same range semantics.
 fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
     ranges.sort_unstable_by_key(|r| r.start);
     let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
@@ -203,8 +203,8 @@ impl Store {
             entry.seen.clear();
         }
     }
-    /// 写入一份快照。`tag` 由调用方在同一次读取上算好（`file_hash`），
-    /// 这里不再重算，也不再为探测重复写入整份正文。
+    /// Record one snapshot. `tag` is computed by the caller on that same read (`file_hash`),
+    /// so it is not recomputed here and the full body is not rewritten just to probe for duplicates.
     pub(super) fn record(
         &mut self,
         path: PathBuf,
@@ -255,8 +255,8 @@ impl Store {
         self.evict();
         active && self.entries.contains_key(&path)
     }
-    /// `record` 已写入正文与标签；这里只补记实际展示给模型的行范围，
-    /// 不重算 hash、不重建版本链。
+    /// `record` already stored the body and tag; this only adds the line ranges actually shown to the model,
+    /// without recomputing hashes or rebuilding the version chain.
     pub(super) fn extend_seen(&mut self, path: &Path, ranges: Vec<Range<usize>>) {
         let Some(entry) = self.entries.get_mut(path) else {
             return;
@@ -420,9 +420,9 @@ pub(super) fn parse(input: &str) -> Result<Patch> {
         while rows.peek().is_some_and(|r| r.starts_with('+')) {
             let text = rows
                 .next()
-                .expect("已经检查存在")
+                .expect("existence already checked")
                 .strip_prefix('+')
-                .expect("已经检查前缀");
+                .expect("prefix already checked");
             ensure!(
                 !text.contains('\r'),
                 "hashline body lines must not contain CR"
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn hashline_hashing_scanning_and_patching() {
-        // 上游 pi-edit/src/store.rs 的固定向量，同时覆盖 CRLF 和行尾空白。
+        // Fixed vectors from upstream pi-edit/src/store.rs, covering CRLF and trailing whitespace.
         assert_eq!(file_hash("a \n b\t\r\nc"), "80BA");
         assert_eq!(file_hash("hello\n"), "5BF9");
         assert_eq!(file_hash(""), "5D05");
@@ -555,8 +555,8 @@ mod tests {
         assert_eq!(file_hash("hello\r"), "5BF9");
         assert_ne!(file_hash(" hello\n"), file_hash("hello\n"));
 
-        // 合并遍历必须与既有 `scan` / `file_hash` 逐字节一致：BOM、CRLF、独立 CR、
-        // 行尾空白、无末尾换行与空正文都要覆盖。
+        // The merged traversal must match the existing `scan` / `file_hash` byte for byte, covering BOM, CRLF, lone CR,
+        // trailing whitespace, a missing final newline and an empty body.
         for source in [
             "",
             "\u{feff}",
@@ -675,7 +675,7 @@ mod tests {
                         .insert(tag.clone(), text.clone())
                         .map(|first| (first, text, tag))
                 })
-                .expect("65537 个不同文本必定碰撞四位标签");
+                .expect("65537 distinct texts must collide on a four-digit tag");
             let mut store = Store::default();
             let intermediate = "intermediate version\n";
             store.record(

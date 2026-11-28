@@ -1,4 +1,4 @@
-//! 文档状态、didOpen/didChange、overlay 与文件文本读取。
+//! Document state, didOpen/didChange, overlays and file text reads.
 
 use anyhow::{Context, Result, ensure};
 use rustix::fs::{Mode, OFlags};
@@ -30,7 +30,7 @@ pub(crate) struct DocumentState {
     pub(crate) version: i64,
     pub(crate) text: String,
     pub(crate) opened: bool,
-    /// 最近一次 didOpen 的时间；冷启动空报告的窗口按文档计算。
+    /// Time of the most recent didOpen; the cold-start empty-report window is computed per document.
     pub(crate) opened_at: Instant,
     pub(crate) last_used: Instant,
     pub(crate) pending_write: bool,
@@ -45,10 +45,10 @@ impl Client {
             .cloned()
     }
 
-    /// 打开或刷新目标文档：读取当前盘内容；真正首次打开时只发 didOpen。
+    /// Open or refresh the target document: read the current on-disk content; only a real first open sends didOpen.
     ///
-    /// 文档可能因为 5 分钟空闲被 didClose，再次打开时必须重新 didOpen，
-    /// 不能在未打开的文档上先发 didChange。
+    /// A document may have been didClose'd after 5 minutes idle, so reopening must didOpen again
+    /// and must not send didChange on a document that is not open.
     pub(crate) fn open_or_refresh(&self, op: &mut Op<'_>, path: &Path) -> Result<DocumentState> {
         self.open_or_refresh_with_sync(op, path)
             .map(|(state, _)| state)
@@ -70,7 +70,7 @@ impl Client {
         if let Some(previous) = previous.as_ref()
             && previous.pending_write
         {
-            // 写入流程自己负责同步；此时不得用盘上旧内容覆盖 overlay。
+            // The write path syncs itself; stale on-disk content must not overwrite the overlay here.
             return Ok((previous.clone(), false));
         }
         let text = read_document_text(path)?;
@@ -99,7 +99,7 @@ impl Client {
             Some(mut state) => {
                 state.last_used = now;
                 if !state.opened {
-                    // 空闲关闭后重开：先用完整内容 didOpen，绝不再发一次 didChange。
+                    // Reopen after an idle close: didOpen with the full content first, never another didChange.
                     self.ensure_workspace_folder(op, path)?;
                     state.version += 1;
                     state.text = text;
@@ -127,7 +127,7 @@ impl Client {
         }
     }
 
-    /// 服务器是否需要 didOpen（只有 openClose 或文本同步能力时才有意义）。
+    /// Whether the server needs didOpen (meaningful only with openClose or text synchronization capability).
     pub(super) fn syncs_documents(&self) -> bool {
         self.capabilities.open_close || self.capabilities.sync != SyncKind::None
     }
@@ -178,15 +178,15 @@ impl Client {
             .insert(path.to_path_buf(), state.clone());
     }
 
-    /// 把一份尚未落盘的内容放进服务器文档视图（临时 overlay）。
+    /// Put content that is not yet on disk into the server's document view (temporary overlay).
     ///
-    /// 调用方必须已经持有本客户端的 operation（`op` 来自 [`Client::operation`]），
-    /// 这里既不重新加锁，也不再次进入 operation。内容从不读盘：新文件即使还
-    /// 不存在也能先以 `didOpen` 建立临时文档；`pending_write=true` 期间
-    /// [`Client::open_or_refresh`] 不会用盘上旧内容覆盖它。
+    /// The caller must already hold this client's operation (`op` comes from [`Client::operation`]);
+    /// this neither re-locks nor re-enters the operation. Content is never read from disk: a new file that does not
+    /// exist yet can still be established as a temporary document with `didOpen`; while `pending_write=true`,
+    /// [`Client::open_or_refresh`] will not overwrite it with stale on-disk content.
     ///
-    /// 已打开的文档内容变化发 `didChange`，空闲关闭或从未打开的文档发
-    /// `didOpen`。诊断缓存按 URI 失效，旧版本的报告不会被当成新鲜结果。
+    /// A change to an open document sends `didChange`; a document closed while idle or never opened sends
+    /// `didOpen`. The diagnostic cache is invalidated per URI, so reports from an older version are never treated as fresh.
     #[cfg(test)]
     pub(crate) fn set_overlay(
         &self,
@@ -220,7 +220,7 @@ impl Client {
                 state.last_used = now;
                 state.pending_write = pending_write;
                 if !state.opened {
-                    // 空闲关闭后重开：只能用完整内容 didOpen，不能先发 didChange。
+                    // Reopen after an idle close: only didOpen with the full content, never didChange first.
                     self.ensure_workspace_folder(op, path)?;
                     state.version += 1;
                     state.text = content.to_owned();
@@ -242,13 +242,13 @@ impl Client {
         Ok(state)
     }
 
-    /// 放弃一次尚未落盘的临时内容：恢复盘上内容；文件仍不存在时关闭临时文档。
+    /// Abandon temporary content that is not yet on disk: restore the on-disk content, and close the temporary document when the file still does not exist.
     ///
-    /// 本地失效是无条件且先发生的：即使调用方令牌已取消、`deadline` 已过期，
-    /// 或随后的通知失败，`pending_write` 也会被清除，新文件的状态会被移除。
-    /// 这样下一次 [`Client::open_or_refresh`] 只会读盘，绝不会继续使用失败的候选
-    /// 内容。磁盘内容读取用非阻塞 fd 完成（FIFO 不会挂住），通知本身使用与调用
-    /// 方取消解耦的有界预算；失败只作为警告返回，已完成的清除不会回退。
+    /// Local invalidation is unconditional and happens first: even if the caller's token is already cancelled,
+    /// the `deadline` has expired, or the subsequent notification fails, `pending_write` is cleared and the new file's state is removed.
+    /// That way the next [`Client::open_or_refresh`] only reads from disk and never keeps using failed candidate
+    /// content. On-disk content is read through a non-blocking fd (a FIFO cannot hang it), and the notification itself uses a bounded budget
+    /// decoupled from caller cancellation; failures are returned only as warnings, and completed clearing is never rolled back.
     #[cfg(test)]
     pub(crate) fn abort_pending_write(
         &self,
@@ -273,7 +273,7 @@ impl Client {
             changed = true;
         }
         if restored.is_some() {
-            // 盘上内容可读：缓存回到真实内容，但已有内容不一致时仍需通知服务器。
+            // On-disk content is readable: the cache returns to the real content, but an inconsistency with existing content still needs a server notification.
             self.store_document(path, &state);
         }
         self.diagnostics.invalidate(&uri);
@@ -283,7 +283,7 @@ impl Client {
         if !notify_close && !notify_change {
             return Ok(());
         }
-        // 有界、与调用方取消解耦的 best-effort 通知。
+        // Bounded best-effort notification, decoupled from caller cancellation.
         let mut deny = |request: ServerRequest| request.respond(unauthorized_edit());
         let service: &mut dyn FnMut(ServerRequest) = &mut deny;
         let limit = Instant::now() + ABORT_BUDGET;
@@ -302,8 +302,8 @@ impl Client {
         match notified {
             Ok(()) => Ok(()),
             Err(error) => {
-                // 通知没送达时缓存不能留下可能与会话不一致的文档：下一次打开
-                // 会以盘上内容重新 didOpen。清除先于这个错误，错误只是警告。
+                // When the notification was not delivered, the cache must not keep a document that may disagree with the session: the next open
+                // didOpens again from the on-disk content. Clearing happens before this error, which is only a warning.
                 let _ = self.take_document(path);
                 self.diagnostics.invalidate(&uri);
                 Err(error)
@@ -318,7 +318,7 @@ impl Client {
             .remove(path)
     }
 
-    /// 关闭并丢弃文档状态；`didClose` 只在服务器声明 openClose 时发送。
+    /// Close and discard the document state; `didClose` is sent only when the server declares openClose.
     pub(super) fn close_document(&self, op: &mut Op<'_>, path: &Path) -> Result<()> {
         match self.take_document(path) {
             Some(state) => self.close_document_state(op, path, state),
@@ -344,11 +344,11 @@ impl Client {
     }
 }
 
-/// 目标文件的文本；缺失、非普通文件与非法 UTF-8 都是错误。
+/// Text of the target file; missing, not a regular file and invalid UTF-8 are all errors.
 ///
-/// 先以 `O_NONBLOCK` 打开 fd，再检查它确实是普通文件：这样 stat 与 read
-/// 之间即使路径被换成 FIFO，也不会在 `read` 上永久挂住。符号链接仍按
-/// 只读导航的需要正常跟随（工作区外文件也允许读取）。
+/// The fd is opened with `O_NONBLOCK` first and then confirmed to be a regular file, so even if the path is swapped for a
+/// FIFO between stat and read, `read` cannot hang forever. Symlinks are still followed normally for
+/// read-only navigation (files outside the workspace may be read too).
 pub(crate) fn read_document_text(path: &Path) -> Result<String> {
     let fd = rustix::fs::open(
         path,
@@ -373,7 +373,7 @@ pub(crate) fn read_document_text(path: &Path) -> Result<String> {
     Ok(text)
 }
 
-/// 语言标识：配置优先，否则按扩展名推断。
+/// Language identifier: configuration wins, otherwise inferred from the extension.
 pub(crate) fn language_id(definition: &ServerDefinition, path: &Path) -> String {
     if let Some(language_id) = &definition.language_id {
         return language_id.clone();
@@ -501,13 +501,13 @@ mod integration {
         assert!(state.pending_write);
         assert_eq!(state.text, "pending   \n\n");
 
-        // 盘上内容在这期间变化，但 pending_write 的 overlay 不能被读盘覆盖。
+        // The on-disk content changes in the meantime, but the pending_write overlay must not be overwritten by a disk read.
         std::fs::write(&path, "disk-new\n").unwrap();
         let refreshed = with_client(&client, |op| client.open_or_refresh(op, &path));
         assert_eq!(refreshed.text, "pending   \n\n");
         assert!(refreshed.pending_write);
 
-        // 提交后同步：overlay 采用最终盘上内容并清除 pending_write。
+        // Sync after commit: the overlay adopts the final on-disk content and clears pending_write.
         std::fs::write(&path, "committed\n").unwrap();
         with_client(&client, |op| {
             client.sync_committed_in_operation(op, std::slice::from_ref(&path))
@@ -597,18 +597,18 @@ mod integration {
         });
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        // 已取消的令牌 + 已过期的 deadline：仍必须立刻清除 pending_write。
+        // Cancelled token plus an expired deadline: pending_write must still be cleared immediately.
         let _ = client.abort_pending_write(
             &path,
             Instant::now() - Duration::from_secs(1),
             &cancellation,
         );
-        // 下一次语义查询必须读盘，不能继续读失败的候选内容。
+        // The next semantic query must read from disk and not keep reading the failed candidate content.
         let state = with_client(&client, |op| client.open_or_refresh(op, &path));
         assert_eq!(state.text, "disk\n");
         assert!(!state.pending_write);
 
-        // 新文件的失败候选直接移除，且不会创建文件。
+        // A failed candidate for a new file is simply removed and no file is created.
         let new_file = dir.path().join("new.fixture");
         let _ = with_client(&client, |op| {
             client.set_overlay(op, &new_file, "failed candidate\n", true)

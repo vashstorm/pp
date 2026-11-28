@@ -1,5 +1,5 @@
-//! 项目级 /plan-list 管理面板：只渲染 worker 发布的快照，磁盘/登记 I/O 全部留在 worker。
-//! 键盘与绘制路径不做任何 IO；操作只携带 ID，worker 按 ID 重查登记并核对当前路径与精确正文。
+//! Project-level /plan-list management panel: renders only worker-published snapshots, with all disk/registry I/O on the worker.
+//! Key handling and drawing paths do no I/O; actions carry only IDs, and the worker re-reads the registry by ID and checks the current path and exact body.
 use super::transcript::wrap_block;
 use super::transcript_style::{accent, added, code, dim, link, muted, removed};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -24,13 +24,13 @@ mod render;
 use self::render::{category_color, relative_path};
 
 pub(super) const HINT: &str = "↑/↓ select · ←/→ or Tab category · Enter open · / search · F5 refresh · n new · c continue · e actions · r rename · d delete · Esc close";
-/// Done 只读详情显示返回列表的提示。
+/// Read-only Done detail shows a hint for returning to the list.
 pub(super) const DETAIL_HINT: &str = "Read-only completed plan · ↑/↓ scroll · Esc back to list";
 const SEARCH_HINT: &str = "search: Enter apply · Esc exit · Ctrl+U clear";
 const RENAME_HINT: &str = "rename: Enter submit · Esc cancel";
 const CONFIRM_HINT: &str = "Tab/arrows select · Enter confirm · Esc cancel";
 const DELETE_NOTICE: &str = "Delete the plan file only; code and sessions are not rolled back.";
-/// 空列表仍提供新建入口；其余空态说明当前分类/过滤。
+/// An empty list still offers the create entry; other empty states describe the current category/filter.
 const EMPTY_NEW_PLAN: &str = "No saved plans. Press n to start a new plan.";
 fn row_bg() -> Color {
     super::themes::palette().panel_bg
@@ -90,21 +90,21 @@ pub(super) enum Action {
     None,
     Close,
     Refresh,
-    /// Enter：读取 selection；Drafts/Plans 打开操作菜单，Done 只读展示。
+    /// Enter: read the selection; Drafts/Plans open the action menu, Done is read-only.
     Preview(String),
-    /// c/e：先读取 selection，再按意图打开只携带计划的新会话。
+    /// c/e: read the selection first, then open a new session carrying only the plan, per intent.
     Open(String, PlanOpenIntent),
-    /// n：关闭列表并进入 Plan 待命；未落盘草稿由 App 复用防丢失门禁拒绝。
+    /// n: close the list and enter Plan standby; an unsaved draft is rejected by the App's existing loss-prevention gate.
     NewPlan,
-    /// r：先读取 selection，再提交重命名（新文件名已就绪）。
+    /// r: read the selection first, then submit the rename (the new file name is already available).
     Rename(String, String),
-    /// d 确认后：先读取 selection，再删除。
+    /// After d is confirmed: read the selection first, then delete.
     Delete(String),
-    /// 面板内可见提示：禁用操作的原因等，不关闭列表。
+    /// Visible in-panel notice: why an action is disabled, and so on; the list stays open.
     Message(String),
 }
 
-/// 读取 selection 后继续执行的列表动作；由 App 在 ListedPlanRead 后消费。
+/// List action to run after reading the selection; consumed by the App after ListedPlanRead.
 pub(super) enum PendingOp {
     Preview,
     Open(PlanOpenIntent),
@@ -227,8 +227,8 @@ impl Panel {
         self.phase = phase;
     }
 
-    /// worker 成功返回的新列表：保持分类/搜索，尽量保持同 ID 选中；
-    /// 删除后 ID 消失则自动落到同位置的邻近项。
+    /// New list returned by the worker on success: keep the category/search and, where possible, the same ID selected;
+    /// if the ID disappeared after a delete, fall back to the neighbor at the same position.
     pub(super) fn set_listing(&mut self, listing: PlanListing) {
         self.listing = listing;
         self.phase = Phase::Ready;
@@ -251,7 +251,7 @@ impl Panel {
         self.offset = self.offset.min(self.selected);
     }
 
-    /// 失败保留旧列表与输入，只展示可见错误。
+    /// On failure keep the old list and input and show only a visible error.
     pub(super) fn set_error(&mut self, error: String) {
         self.error = Some(display_text(&error).into_owned());
         self.phase = Phase::Ready;
@@ -571,30 +571,30 @@ mod tests {
         for character in "LOGIN Flow".chars() {
             panel.key(key(KeyCode::Char(character)));
         }
-        // 多词 AND 必须在同一条目内全部命中（大小写无关）：仅标题含两词的 b。
+        // Multi-word AND must match entirely within one entry (case-insensitive): only b has both words in its title.
         assert_eq!(panel.filtered.len(), 1);
         assert_eq!(selected_file(&panel), "other.md");
-        // AND 跨条目不成立：fix 与 login 分属不同条目，结果为空。
+        // AND does not hold across entries: fix and login belong to different entries, so the result is empty.
         panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         for character in "fix login".chars() {
             panel.key(key(KeyCode::Char(character)));
         }
         assert!(panel.filtered.is_empty());
-        // 文件名匹配：仅 a 含 fix。
+        // File-name match: only a contains fix.
         panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         for character in "FIX".chars() {
             panel.key(key(KeyCode::Char(character)));
         }
         assert_eq!(panel.filtered.len(), 1);
         assert_eq!(selected_file(&panel), "fix-config.md");
-        // 相对路径匹配：目录名与文件名可同时作为多词命中同一条目。
+        // Relative path match: the directory name and file name can both hit the same entry as separate words.
         panel.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         for character in "drafts fix".chars() {
             panel.key(key(KeyCode::Char(character)));
         }
         assert_eq!(panel.filtered.len(), 1);
         assert_eq!(selected_file(&panel), "fix-config.md");
-        // Esc 退出搜索保留 query；重新进入搜索后 Ctrl+U 清空恢复全部。
+        // Esc leaves search and keeps the query; re-entering search and pressing Ctrl+U clears it and restores everything.
         panel.key(key(KeyCode::Esc));
         assert!(!panel.searching);
         assert_eq!(panel.filtered.len(), 1);
@@ -647,20 +647,20 @@ mod tests {
         ]);
         panel.key(key(KeyCode::Down));
         assert_eq!(selected_file(&panel), "second.md");
-        // 重命名后同 ID 保持在选中位置。
+        // After a rename the same ID stays selected.
         panel.set_listing(listing(vec![
             entry("a", "first.md", PlanLocation::Drafts, "First", 0, 1),
             entry("b", "renamed.md", PlanLocation::Drafts, "Second", 0, 1),
             entry("c", "third.md", PlanLocation::Drafts, "Third", 0, 1),
         ]));
         assert_eq!(selected_file(&panel), "renamed.md");
-        // 删除后同 ID 消失，落到同位置邻近项。
+        // After a delete the ID is gone and the neighbor at the same position takes over.
         panel.set_listing(listing(vec![
             entry("a", "first.md", PlanLocation::Drafts, "First", 0, 1),
             entry("c", "third.md", PlanLocation::Drafts, "Third", 0, 1),
         ]));
         assert_eq!(selected_file(&panel), "third.md");
-        // 分类/搜索在刷新后保持。
+        // Category/search are preserved across a refresh.
         panel.key(key(KeyCode::Right));
         panel.key(key(KeyCode::Char('/')));
         for character in "third".chars() {
@@ -733,7 +733,7 @@ mod tests {
                 error: Some("invalid utf-8".into()),
             },
         ]);
-        // Done：预览可用，c/e 拒绝，r/d 仍可用。
+        // Done: preview works, c/e are rejected, r/d still work.
         assert!(matches!(
             panel.key(key(KeyCode::Enter)),
             Action::Preview(id) if id == "a"
@@ -746,13 +746,13 @@ mod tests {
             panel.key(key(KeyCode::Char('e'))),
             Action::Message(_)
         ));
-        // 零任务：仍能打开操作菜单，执行由审批门禁拒绝。
+        // Zero tasks: the action menu still opens, and execution is rejected by the approval gate.
         panel.key(key(KeyCode::Down));
         assert!(matches!(
             panel.key(key(KeyCode::Char('e'))),
             Action::Open(_, PlanOpenIntent::Execute)
         ));
-        // 错误条目：全部动作只产生可见提示。
+        // Error entry: every action only produces a visible notice.
         panel.key(key(KeyCode::Down));
         assert!(matches!(panel.key(key(KeyCode::Enter)), Action::Message(_)));
         assert!(matches!(
@@ -767,7 +767,7 @@ mod tests {
             panel.key(key(KeyCode::Char('c'))),
             Action::Message(_)
         ));
-        // 加载中除 Esc 外不接收按键。
+        // While loading, no keys are accepted except Esc.
         let mut loading = Panel::new();
         assert!(matches!(loading.key(key(KeyCode::Char('n'))), Action::None));
         assert!(matches!(loading.key(key(KeyCode::Esc)), Action::Close));

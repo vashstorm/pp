@@ -205,8 +205,9 @@ function seedStatsDatabase(homeDir: string): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(now - 119_500, rootSession, "demo-app", "/tmp/demo-app", "PreToolUse", "read", "ok", 1, 12);
 
-  // 恰好 50 条失败（含上面的 rk-2），且全部新增行 usage 未知：
-  // 浏览器同时验证 Tools 的未知值与 Errors 的完整单页边界。
+  // Exactly 50 failures (including rk-2 above) and every added row has unknown usage:
+  // the browser verifies both the unknown value on Tools and the complete single-page boundary on
+  // Errors.
   const insertUnknownFailure = db.query(
     `INSERT INTO requests (
       id, request_key, timestamp, model, provider, model_reference, api,
@@ -287,7 +288,7 @@ async function run(): Promise<void> {
   try {
     const errors: string[] = [];
 
-    // 1. 空 HOME 冒烟：确保无配置、无历史数据时能正常启动并渲染全路由。
+    // 1. Empty HOME smoke: the server must start and render every route without config or history.
     server = await startStatsServer(bin, tempHome);
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await context.newPage();
@@ -304,7 +305,7 @@ async function run(): Promise<void> {
     server.child.kill("SIGTERM");
     server = null;
 
-    // 2. 注入真实表数据并验证全页面交互与样式持久化。
+    // 2. Seed real table data and exercise every page interaction plus style persistence.
     seedStatsDatabase(tempHome);
     server = await startStatsServer(bin, tempHome);
     const seededContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -320,14 +321,15 @@ async function run(): Promise<void> {
       );
     }
 
-    // 验证样式切换持久化与主题切换。
+    // Verify the style switch persistence and theme toggle.
     await seededPage.click("#style");
     await seededPage.waitForFunction(() => document.documentElement.dataset.style === "modern");
     await seededPage.reload({ waitUntil: "networkidle" });
     await seededPage.waitForFunction(() => document.documentElement.dataset.style === "modern");
     await seededPage.click("#theme");
 
-    // 真实 DOM：未知 usage 不折成 0；恰好 50 条且 has_more=false 时不显示加载更多。
+    // Real DOM: unknown usage is not folded into 0; exactly 50 rows with has_more=false shows no load
+    // more control.
     await seededPage.goto(`${server.baseUrl}/#/tools?range=24h`, { waitUntil: "networkidle" });
     const unknownTool = seededPage.locator('[data-toolselect="unknown-tool"]');
     await unknownTool.waitFor();
@@ -347,7 +349,7 @@ async function run(): Promise<void> {
       throw new Error("Errors page marked an exact complete page as incomplete");
     }
 
-    // 验证 Requests 抽屉 + Context 阅读器。
+    // Verify the Requests drawer + Context reader.
     await seededPage.goto(`${server.baseUrl}/#/requests?range=24h`, { waitUntil: "networkidle" });
     await seededPage.click('tr[data-id="1"]');
     await seededPage.waitForSelector('[data-context-id="1"]');
@@ -356,7 +358,7 @@ async function run(): Promise<void> {
     await seededPage.keyboard.press("Escape");
     await seededPage.keyboard.press("Escape");
 
-    // 验证 Errors 签名折叠与 Projects 行展开。
+    // Verify the Errors signature folding and the Projects row expansion.
     await seededPage.goto(`${server.baseUrl}/#/errors?range=24h`, { waitUntil: "networkidle" });
     await seededPage.click("[data-error-signature]");
     await seededPage.waitForSelector(".errors-detail");
@@ -365,7 +367,7 @@ async function run(): Promise<void> {
     await seededPage.click("[data-expand]");
     await seededPage.waitForSelector(".expanded-detail:not([hidden])");
 
-    // 验证 Traces 时间线 Canvas 与 Span 抽屉。
+    // Verify the Traces timeline Canvas and the Span drawer.
     await seededPage.goto(`${server.baseUrl}/#/traces?range=24h`, { waitUntil: "networkidle" });
     await seededPage.click("[data-trace-open]");
     await seededPage.waitForSelector("[data-trace-canvas]");

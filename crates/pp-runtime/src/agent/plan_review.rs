@@ -1,5 +1,7 @@
-//! 独立计划审阅：使用 REVIEW Role 的模型和 effort；未配置时沿用主会话。
-//! 审阅运行在独立临时上下文中，报告作为绑定计划修订的工作流记录保存。
+//! Standalone plan review: uses the REVIEW Role's model and effort, falling back to the main
+//! session when unconfigured.
+//! The review runs in a separate temporary context and the report is saved as a workflow record
+//! bound to the plan revision.
 //!
 //! The reviewer reuses the real SDK clients and the shared tool gate, but
 //! never touches the main session's native history, context usage, request
@@ -48,7 +50,8 @@ struct ReviewModels {
 }
 
 impl Agent {
-    /// 使用 REVIEW Role 独立审阅已保存计划，将报告写入 `workflow.review`。
+    /// Review a saved plan independently with the REVIEW Role and write the report into
+    /// `workflow.review`.
     ///
     /// The token is validated exactly like an approval (mode, Ready status,
     /// session, revision, queue, journal health and exact on-disk bytes); a
@@ -167,7 +170,7 @@ impl Agent {
                                 && models.fallback.is_some() =>
                         {
                             cancellation::check(cancellation)?;
-                            let target = models.fallback.take().expect("已确认备用模型");
+                            let target = models.fallback.take().expect("fallback model confirmed");
                             models.window = super::fallback::switch_scratch_model(
                                 client,
                                 session,
@@ -200,7 +203,7 @@ impl Agent {
                                 && models.fallback.is_some() =>
                         {
                             cancellation::check(cancellation)?;
-                            let target = models.fallback.take().expect("已确认备用模型");
+                            let target = models.fallback.take().expect("fallback model confirmed");
                             models.window = super::fallback::switch_scratch_model(
                                 client,
                                 session,
@@ -401,7 +404,7 @@ fn final_report(text: &str) -> Result<String> {
 fn review_prompt(document: &PlanDocument) -> String {
     use std::fmt::Write;
     let mut prompt = String::new();
-    // reviewer 只审阅已保存（revision>=1）的计划；路径必然可解析。
+    // The reviewer only reviews saved (revision>=1) plans; the path is always resolvable.
     let path = document
         .path()
         .expect("reviewed plan has a saved lifecycle path");

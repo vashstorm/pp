@@ -74,14 +74,14 @@ fn approved_session_read_off_and_probe_degradation() {
                 }
             },
         );
-        assert_eq!(probes, 0, "mode=off 不得调用平台探测");
+        assert_eq!(probes, 0, "mode=off must not call the platform probe");
         let status = off.status();
         assert_eq!(status.configured, SandboxMode::Off);
         assert_eq!(status.effective, EffectiveMode::Off);
         assert_eq!(status.degraded_reason, None);
         assert!(off.policy().unwrap().is_none());
 
-        // 同一个探测入口在启用模式下必须恰好调用一次：跳过逻辑不能变成探测整体失效。
+        // The same probe entry must be called exactly once in an enabled mode: the skip logic must not disable probing entirely.
         let mut probes = 0;
         let enabled = Sandbox::build_with_probe(
             SandboxSettings {
@@ -228,15 +228,15 @@ fn policy_defaults_lexical_fast_path_and_resolved_denials() {
         assert_eq!(
             crate::guard::canonicalize_calls(),
             0,
-            "与拒绝根不相交的绝对路径不得触发 canonicalize"
+            "an absolute path disjoint from the deny roots must not trigger canonicalize"
         );
 
-        // 词法上可能命中（拒绝根后代）时必须回退到规范化，且判定仍为拒绝。
+        // A lexically possible match (descendant of a deny root) must fall back to normalization and still be denied.
         crate::guard::reset_canonicalize_calls();
         assert!(policy.is_read_denied(&home.join(".ssh/id_rsa")));
         assert!(
             crate::guard::canonicalize_calls() > 0,
-            "可能命中时必须走 normalize_path"
+            "a lexical possible match must go through normalize_path"
         );
     }
     {
@@ -273,8 +273,8 @@ fn policy_defaults_lexical_fast_path_and_resolved_denials() {
         assert!(policy.is_read_denied_resolved(&relative));
         assert!(!policy.is_read_denied_resolved(&cwd.join("src/main.rs")));
 
-        // 系统别名（macOS `/tmp` ↔ `/private/tmp`、TMPDIR 的 `/var` ↔ `/private/var`）
-        // 不得因词法不相交而被放行。
+        // System aliases (macOS `/tmp` ↔ `/private/tmp`, TMPDIR's `/var` ↔ `/private/var`)
+        // must not be allowed merely because they are lexically disjoint.
         assert!(policy.is_read_denied(&alias_root.join("id_rsa")));
     }
 }
@@ -302,11 +302,11 @@ fn macos_guards_match_case_insensitively_across_protected_and_denied_paths() {
     );
     let policy = sbx.policy().unwrap().unwrap();
 
-    // 未创建的文件通过大写变体也不得绕过 protect
+    // An uncreated file must not bypass protect through an uppercase variant either
     assert!(policy.check_write(&cwd.join(".MCP.JSON")).is_err());
     assert!(policy.check_write(&cwd.join(".PP/hooks.yml")).is_err());
 
-    // 读拒绝词法快路径不得因大小写差异跳过规范化放行
+    // The read-deny lexical fast path must not skip normalization and allow through on a case difference
     assert!(policy.is_read_denied(&home.join(".SSH/id_ed25519")));
     assert!(policy.check_read(&home.join(".SSH/id_ed25519")).is_err());
     assert!(policy.can_contain_denied_read(&home.join(".SSH")));
@@ -380,7 +380,7 @@ fn command_grants_cwd_inheritance_and_scoped_protections() {
         assert_eq!(child.status().effective, EffectiveMode::WorkspaceWrite);
         assert_eq!(child.policy().unwrap().unwrap().cwd(), child_cwd);
 
-        // `/setting` 保存新配置会清除共享覆盖并更新配置模式，已有子 Agent 必须跟随新配置而非退回 off。
+        // Saving new configuration via `/setting` clears the shared override and updates the configured mode; existing subagents must follow the new configuration instead of falling back to off.
         parent.update_settings_mode(SandboxMode::ReadOnly);
         assert_eq!(parent.status().effective, EffectiveMode::ReadOnly);
         assert_eq!(child.status().effective, EffectiveMode::ReadOnly);
@@ -430,7 +430,7 @@ fn command_grants_cwd_inheritance_and_scoped_protections() {
             WriteAccessCheck::ImmutableDenied(_)
         ));
 
-        // 单文件精确批准只放行目标文件，不放行同目录其他文件。
+        // A single-file precise approval opens only the target file, not other files in the same directory.
         let approved_file = cwd.join(".agents/notes.md");
         let scoped = policy
             .with_approved_scope(&[], std::slice::from_ref(&approved_file), &[], false)
@@ -444,7 +444,7 @@ fn command_grants_cwd_inheritance_and_scoped_protections() {
             WriteAccessCheck::NeedsProtectedApproval(_)
         ));
 
-        // 禁止对 permission.toml 或 deny_read 凭据目录解除保护。
+        // Protection must not be lifted for permission.toml or a deny_read credential directory.
         assert!(
             policy
                 .with_approved_scope(&[], &[home.join(".pp/agent/permission.toml")], &[], false)
@@ -567,7 +567,7 @@ fn command_grants_cwd_inheritance_and_scoped_protections() {
             ReadAccessCheck::NeedsOutsideApproval(outside_home_notes.clone())
         );
 
-        // 批准 $HOME/docs（home_allow_read）只放行该子树，不破坏 deny_read 且拒绝直接放行 .ssh/.pp/agent。
+        // Approving $HOME/docs (home_allow_read) opens only that subtree: deny_read stays intact and .ssh/.pp/agent are still refused outright.
         let approved = ws_policy
             .with_approved_reads(&[], std::slice::from_ref(&outside_home_docs_dir))
             .unwrap();
@@ -594,7 +594,7 @@ fn command_grants_cwd_inheritance_and_scoped_protections() {
                 .is_err()
         );
 
-        // Unrestricted 与 without_home_restriction 放开普通 $HOME 读，但凭据与会话路径仍受阻断。
+        // Unrestricted and without_home_restriction open ordinary $HOME reads, but credentials and session paths stay blocked.
         let unrestricted = make(SandboxReadScope::Unrestricted);
         assert_eq!(
             unrestricted.classify_read(&outside_home_notes),
@@ -676,7 +676,7 @@ fn os_sandbox_blocks_home_python_read_until_approved_or_unrestricted() {
         "python3 must not read $HOME file by default"
     );
 
-    // 批准单文件后允许该文件，同级 $HOME 文件仍被拦截。
+    // After approving a single file, that file is allowed while sibling $HOME files are still blocked.
     let approved = ws_policy
         .with_approved_reads(&[], std::slice::from_ref(&home_secret))
         .unwrap();
@@ -687,7 +687,7 @@ fn os_sandbox_blocks_home_python_read_until_approved_or_unrestricted() {
     );
     assert!(!run_py(&approved, &home_other).status.success());
 
-    // Unrestricted 允许 $HOME 普通文件，但凭据仍拦截。
+    // Unrestricted allows ordinary $HOME files, but credentials are still blocked.
     let unrestricted = make(SandboxReadScope::Unrestricted);
     assert!(run_py(&unrestricted, &home_other).status.success());
     assert!(!run_py(&unrestricted, &ssh_key).status.success());

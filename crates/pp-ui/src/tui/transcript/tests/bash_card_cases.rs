@@ -179,7 +179,7 @@ fn bash_pipeline_fragments_update_card_and_final_output_replaces_preview() {
         "bash",
         json!({"command":"work | tail -30"}),
     );
-    for preview in ["中", "中文", "中文片段"] {
+    for preview in ["growth", "growth-two", "growth-three"] {
         transcript.progress(AgentEvent::ToolPipelineSnapshot {
             id: "p".into(),
             pipes: json!({}),
@@ -191,33 +191,33 @@ fn bash_pipeline_fragments_update_card_and_final_output_replaces_preview() {
     }
     transcript.progress(AgentEvent::ToolOutputSnapshot {
         id: "p".into(),
-        output: "真实输出".into(),
+        output: "real-output".into(),
     });
     let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
     assert!(
-        text.contains("真实输出") && !text.contains("中文片段"),
+        text.contains("real-output") && !text.contains("growth-three"),
         "{text}"
     );
     transcript.progress(AgentEvent::ToolPipelineSnapshot {
         id: "p".into(),
         pipes: json!({}),
-        preview: Some("继续增长".into()),
+        preview: Some("keep-growing".into()),
     });
     let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
-    assert!(text.contains("继续增长"), "{text}");
+    assert!(text.contains("keep-growing"), "{text}");
     transcript.progress(AgentEvent::ToolFinished {
         id: "p".into(),
-        result: json!({"ok":true,"exit_code":0,"output":"最终结果\n"}),
+        result: json!({"ok":true,"exit_code":0,"output":"final-result\n"}),
     });
     transcript.progress(AgentEvent::ToolPipelineSnapshot {
         id: "p".into(),
         pipes: json!({}),
-        preview: Some("迟到片段".into()),
+        preview: Some("late-fragment".into()),
     });
     let text = screen(&render(&mut transcript, 100, 20)).replace(' ', "");
-    assert!(text.contains("最终结果"), "{text}");
+    assert!(text.contains("final-result"), "{text}");
     assert!(
-        !text.contains("继续增长") && !text.contains("迟到片段"),
+        !text.contains("keep-growing") && !text.contains("late-fragment"),
         "{text}"
     );
 }
@@ -443,7 +443,7 @@ fn bash_card_and_thinking_match_reference_and_keep_full_output() {
         result: json!({"ok":true,"stdout":output,"exit_code":0}),
     });
     transcript.progress(AgentEvent::ThinkingDelta {
-        text: "Check the diff 中😀".into(),
+        text: "Check the diff 😀".into(),
     });
     let buffer = render(&mut transcript, 100, 30);
     let text = screen(&buffer);
@@ -459,7 +459,7 @@ fn bash_card_and_thinking_match_reference_and_keep_full_output() {
         "Wall:",
         "Timeout: 60s",
         "╰─",
-        "Check the diff 中",
+        "Check the diff 😀",
     ] {
         assert!(text.contains(expected), "{text}");
     }

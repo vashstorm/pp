@@ -64,7 +64,7 @@ fn desktop_notifications_focus_reporting_preserves_ask_and_permission_roundtrip(
     );
     ask_wait_panel(&mut pty, "Which database should the project use?");
     if linux {
-        pty.wait_for("等待回答的通知", |_| {
+        pty.wait_for("a notification while waiting for the answer", |_| {
             std::fs::read_to_string(&notice_log).is_ok_and(|text| text.contains("answer"))
         });
     }
@@ -88,14 +88,14 @@ fn desktop_notifications_focus_reporting_preserves_ask_and_permission_roundtrip(
             })
         )]),
     );
-    pty.wait_for("真实的权限审批对话", |screen| {
+    pty.wait_for("the real permission approval dialog", |screen| {
         let text = screen.contents();
         text.contains("Permission required") && text.contains("Allow once")
     });
     let written = cwd.path().join("approved.txt");
     assert!(!written.exists());
     if linux {
-        pty.wait_for("等待审批的通知", |_| {
+        pty.wait_for("a notification while waiting for approval", |_| {
             std::fs::read_to_string(&notice_log).is_ok_and(|text| text.contains("approval"))
         });
     }
@@ -105,7 +105,7 @@ fn desktop_notifications_focus_reporting_preserves_ask_and_permission_roundtrip(
     final_reply(request, "background result");
     pty.completed_after("background result");
     if linux {
-        pty.wait_for("后台任务完成通知", |_| {
+        pty.wait_for("a background task completion notification", |_| {
             std::fs::read_to_string(&notice_log).is_ok_and(|text| text.contains("completed"))
         });
         assert_eq!(

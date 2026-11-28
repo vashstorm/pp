@@ -1,4 +1,4 @@
-//! 退出停止、服务断开与 `/mcp enable|disable|reconnect|reload` 的变更流程。
+//! Shutdown stop, server disconnect and the change flows for `/mcp enable|disable|reconnect|reload`.
 
 use anyhow::{Result, ensure};
 use pp_core::cancellation::CancellationToken;
@@ -8,19 +8,19 @@ use std::sync::Arc;
 use super::client::{SharedConnection, stop_locked};
 use super::{Access, Action, McpManager, SharedServer, config};
 
-// 退出停止的工作集：槽用于 slot 级急停，服务句柄在停止后才释放，
-// 避免 `Client::drop` 的优雅回收路径与显式停止互相干扰。
+// Working set for shutdown: slots drive a slot-level hard stop and server handles are released only afterwards,
+// so `Client::drop`'s graceful reaping path cannot interfere with an explicit stop.
 struct Tracked {
     slots: Vec<(String, SharedConnection)>,
     servers: Vec<SharedServer>,
 }
 
-// slot 级停止：只取连接槽锁，不等待 `ServerState`，因此能打断正在进行的请求。
+// Slot-level stop: takes only the connection slot lock and never waits for `ServerState`, so it can interrupt an in-flight request.
 fn stop_slots(slots: &[(String, SharedConnection)]) -> Result<()> {
     let mut failures = Vec::new();
     for (label, connection) in slots {
         let mut slot = connection.lock().unwrap_or_else(|error| error.into_inner());
-        // 槽级关闭标记：清理完成后派发线程不能复活进程。
+        // Slot-level close flag: dispatch threads cannot revive the process once cleanup finished.
         slot.closing = true;
         if let Err(error) = stop_locked(&mut slot) {
             failures.push(format!("{label}: {error:#}"));
@@ -34,14 +34,14 @@ fn stop_slots(slots: &[(String, SharedConnection)]) -> Result<()> {
 }
 
 impl McpManager {
-    /// 退出路径：先让空闲服务优雅退出，再按连接槽急停剩余连接。
-    /// 调用后管理器进入关闭状态，不再接受新连接；失败聚合成 typed `CleanupError`。
+    /// Exit path: let idle servers exit gracefully first, then hard-stop the remaining connections slot by slot.
+    /// Afterwards the manager is closing and accepts no new connections; failures are aggregated into a typed `CleanupError`.
     pub fn shutdown(&self) -> Result<()> {
         self.stop_tracked()
     }
 
     pub(super) fn stop_tracked(&self) -> Result<()> {
-        // 先取消启动期建连：worker 在服务之间检查 token，control 随后能尽快释放。
+        // Cancel the startup connect first: the worker checks the token between servers, so control is released quickly afterwards.
         let token = self.lock_state().connect_token.clone();
         if let Some(token) = token {
             token.cancel();
@@ -49,15 +49,15 @@ impl McpManager {
         let result = {
             let _control = self.lock_control();
             let tracked = self.take_tracked();
-            // 先释放服务句柄：空闲的 stdio 服务在 `Client::drop` 中关闭 stdin 并得到
-            // 有界宽限，服务端可自行收尾（退出后仍能观察到 fixture 的 `.closed`）。
-            // 正被占用的服务仍由 worker 持有句柄，这里不会等待它。
+            // Release server handles first: an idle stdio server closes stdin in `Client::drop` and gets a
+            // bounded grace period to finish up (after exit the fixture's `.closed` is still observable).
+            // A server in use is still held by the worker, so this does not wait for it.
             drop(tracked.servers);
-            // 再按槽位急停剩余连接：不等待 `ServerState` 锁，能打断活动请求，
-            // 并在槽级标记 closing，禁止清理完成后由 worker 复活进程。
+            // Then hard-stop the remaining connections slot by slot: without waiting for the `ServerState` lock it can interrupt
+            // active requests, and it marks the slot as closing so the worker cannot revive the process after cleanup.
             stop_slots(&tracked.slots)
         };
-        // 控制锁释放后再 join：worker 起手需要 control，先 join 会死锁。
+        // Join only after the control lock is released: a starting worker needs control, so joining first would deadlock.
         let thread = self
             .connect_thread
             .lock()
@@ -69,7 +69,7 @@ impl McpManager {
         result
     }
 
-    // 在 state 下标记关闭并摘出全部槽与服务句柄；实际停止在锁外完成。
+    // Mark closing under state and take out all slots and server handles; the actual stop happens outside the lock.
     fn take_tracked(&self) -> Tracked {
         let mut state = self.lock_state();
         state.closing = true;
@@ -100,7 +100,7 @@ impl McpManager {
         }
     }
 
-    // 调用方必须已持有 control。
+    // The caller must already hold control.
     pub(super) fn manage_locked(
         &self,
         action: &Action,
@@ -110,13 +110,13 @@ impl McpManager {
         match action {
             Action::Help | Action::List => {}
             Action::Reload => {
-                // 内存实例的 Reload 是空操作，绝不读取外部来源。
+                // Reload on the in-memory instance is a no-op and never reads external sources.
                 let Some(path) = self.config.clone() else {
                     return Ok(());
                 };
-                // 解析失败保留旧连接与工具，直接返回错误。
+                // A parse failure keeps the old connections and tools and returns the error directly.
                 let directory = config::Directory::load(&path, self.discover_user_sources)?;
-                // state 级停止：失败保留 servers/tools 供重试，不假装成功。
+                // state-level stop: on failure keep servers/tools for retry instead of pretending success.
                 self.stop_all_servers()?;
                 {
                     let mut state = self.lock_state();
@@ -127,7 +127,7 @@ impl McpManager {
             }
             Action::Enable(name) | Action::Disable(name) => {
                 let enabled = matches!(action, Action::Enable(_));
-                // 名称必须在已加载的目录里：内存实例因此报 unknown MCP server。
+                // The name must exist in the loaded directory, so an in-memory instance reports unknown MCP server.
                 let directory = {
                     let state = self.lock_state();
                     ensure!(
@@ -136,7 +136,7 @@ impl McpManager {
                     );
                     state.directory.clone()
                 };
-                // 文件锁与原子替换可能等待其他进程，绝不持 state。
+                // The file lock and atomic replacement may wait on other processes, so never hold state.
                 directory.save_enabled(name, enabled, token)?;
                 if let Some(entry) = self.lock_state().directory.entries.get_mut(name) {
                     entry.enabled = enabled;
@@ -167,16 +167,16 @@ impl McpManager {
         Ok(())
     }
 
-    // 停止单个服务并摘除其工具：启停与重连前先断开旧连接。
+    // Stops a single server and removes its tools: enable/disable and reconnect disconnect the old connection first.
     fn disconnect(&self, name: &str) -> Result<()> {
         let server = { self.lock_state().servers.get(name).cloned() };
         if let Some(server) = server {
             let mut state = server.lock().unwrap_or_else(|error| error.into_inner());
             state.client.stop().map_err(CleanupError)?;
-            // 永久关闭旧引用，旧子 Agent 快照不能重新启动它。
+            // Permanently close the old reference so an old subagent snapshot cannot start it again.
             state.restart_after_cancel = false;
         }
-        // 旧句柄在 state 锁外释放；`_removed` 在函数结束时触发 `Client::drop`。
+        // The old handle is released outside the state lock; `_removed` triggers `Client::drop` at the end of the function.
         let _removed = {
             let mut state = self.lock_state();
             let removed = state.servers.remove(name);
@@ -201,8 +201,8 @@ impl McpManager {
         });
     }
 
-    // 显式停止全部服务（`/mcp reload` 使用）：逐 server 调用 client.stop() 并检查
-    // 结果；任何失败都保留 servers/tools 供重试，全部确认回收后才清空并清理残留槽。
+    // Explicitly stops every server (used by `/mcp reload`): calls client.stop() per server and checks the
+    // result; any failure keeps servers/tools for retry, and only after every stop is confirmed does it clear them and prune leftover slots.
     pub(super) fn stop_all_servers(&self) -> Result<()> {
         let servers: Vec<(String, SharedServer)> = {
             let state = self.lock_state();
@@ -218,13 +218,13 @@ impl McpManager {
             if let Err(error) = state.client.stop() {
                 failures.push(format!("{name}: {error:#}"));
             }
-            // 清理后旧快照不能再重建进程。
+            // An old snapshot cannot rebuild the process after cleanup.
             state.restart_after_cancel = false;
         }
         if !failures.is_empty() {
             return Err(CleanupError(anyhow::anyhow!("{}", failures.join("; "))).into());
         }
-        // 发现失败的连接可能还未注册工具，但仍留在跟踪列表里。
+        // A connection that failed discovery may not have registered tools yet but is still tracked.
         let connections = { self.lock_state().connections.clone() };
         for (index, connection) in connections.iter().enumerate() {
             let mut slot = connection.lock().unwrap_or_else(|error| error.into_inner());
@@ -278,10 +278,10 @@ mod integration {
         }
         assert_eq!(manager.test_connection_count(), 0);
         for process in &processes {
-            // 全部进程组已被回收，slot 不再持有句柄。
+            // Every process group has been reaped and the slot no longer holds a handle.
             assert!(process.lock().unwrap().child.is_none());
         }
-        // 清空后重复停止仍是成功，不误报。
+        // Repeated stop after clearing still succeeds and reports nothing falsely.
         manager.test_stop_servers().unwrap();
     }
 
@@ -293,14 +293,14 @@ mod integration {
         plan_register(&manager, "a", healthy);
         let (faulty, faulty_process) = plan_spawn_client(&plan_server_config(&["-c", "true"]));
         plan_register(&manager, "b", faulty);
-        // 登记槽，验证失败时连接跟踪不被丢弃。
+        // Register the slots so connection tracking is not lost when validation fails.
         {
             let mut state = manager.test_state();
             state.connections.push(healthy_process.clone());
             state.connections.push(faulty_process.clone());
         }
 
-        // 故障注入：外部先回收子进程，使后续 kill/wait 无法确认回收。
+        // Fault injection: reap the child externally first so the later kill/wait cannot confirm the reaping.
         let pid = faulty_process.lock().unwrap().child.as_ref().unwrap().id() as i32;
         waitid(
             WaitId::Pid(Pid::from_raw(pid).expect("test child has a pid")),
@@ -310,24 +310,24 @@ mod integration {
         assert!(faulty_process.lock().unwrap().is_live());
 
         let error = manager.test_stop_servers().err().unwrap();
-        // 聚合错误保持 typed CleanupError，且逐服务保留明细。
+        // The aggregated error stays a typed CleanupError and keeps per-server detail.
         assert!(error.downcast_ref::<CleanupError>().is_some());
         assert!(format!("{error:#}").contains("b: stopping MCP process failed"));
-        // 任一失败保留整个 servers/tools 与跟踪槽。
+        // Any single failure keeps the whole servers/tools set and the tracking slots.
         {
             let state = manager.test_state();
             assert_eq!(state.servers.len(), 2);
             assert_eq!(state.tools.len(), 2);
         }
         assert_eq!(manager.test_connection_count(), 2);
-        // 重试不假成功：故障未清除前停止仍然失败。
+        // A retry must not fake success: stopping still fails until the fault is cleared.
         assert!(manager.test_stop_servers().is_err());
         {
             let state = manager.test_state();
             assert!(!state.servers.is_empty() && !state.tools.is_empty());
         }
 
-        // 故障清除后（句柄回收完成）重试才真正成功并清空。
+        // Only after the fault is cleared (handle reaped) does a retry really succeed and clear everything.
         faulty_process.lock().unwrap().child.take();
         manager.test_stop_servers().unwrap();
         {

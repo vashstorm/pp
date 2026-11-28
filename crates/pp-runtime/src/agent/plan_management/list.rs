@@ -17,10 +17,11 @@ use std::path::Path;
 use std::time::SystemTime;
 
 impl Agent {
-    /// 项目计划列表：只扫描三个生命周期目录的直接 `.md` 普通文件，缺失
-    /// 目录为空，不递归、不跨项目。正文仍是唯一内容/进度来源；列表同时
-    /// 完成未登记文件的纳管（仅取登记表锁，不加计划 lease）。CAS 冲突
-    /// 向上报告，不自动重试或覆盖。
+    /// Project plan list: only scans the direct `.md` regular files of the three lifecycle
+    /// directories, a missing directory counts as empty, and it never recurses or crosses
+    /// projects. The body is still the only source of content/progress; the listing also adopts
+    /// unregistered files (taking only the registry lock, not a plan lease). A CAS conflict is
+    /// reported upward and never retried or overwritten automatically.
     pub fn list_plans(&mut self) -> Result<PlanListing> {
         let workspace = self.tools.plan_workspace();
         let mut diagnostics: Vec<String> = Vec::new();
@@ -48,7 +49,8 @@ impl Agent {
                 .map(|file| (path_for(&file.file_name, file.location), file))
                 .collect();
 
-            // 登记条目：登记位置存在文件时按扫描展示；缺失时错误条目。
+            // Registered entries: shown per the scan when a file exists at the registered
+            // location, an error entry otherwise.
             for registered in catalog.entries.iter().filter(|entry| !entry.deleted) {
                 let path = path_for(&registered.file_name, registered.location);
                 entries.push(match by_path.get(&path) {
@@ -73,12 +75,14 @@ impl Agent {
             let mut adoptions: Vec<Adoption<'_>> = Vec::new();
             for file in &scanned {
                 let Some(active) = catalog.active_by_file_name(&file.file_name) else {
-                    // 无法安全 stat 的未登记文件：错误条目，禁用操作，不纳管。
+                    // Unregistered file that cannot be stat'ed safely: error entry, operations
+                    // disabled, not adopted.
                     if file.stat.is_err() {
                         entries.push(entry_from_scan("", file, workspace));
                         continue;
                     }
-                    // 删除残留：tombstone 同路径且同 inode，保留旧 ID 供显式重试。
+                    // Deletion leftover: same path and same inode as the tombstone; keep the old ID
+                    // for an explicit retry.
                     let identity = file.stat.as_ref().ok().map(|(identity, _)| *identity);
                     if let Some(tombstone) = identity.and_then(|identity| {
                         catalog.entries.iter().find(|entry| {
@@ -91,7 +95,8 @@ impl Agent {
                         entries.push(entry_from_scan(&tombstone.id, file, workspace));
                         continue;
                     }
-                    // 同一刷新内已纳管同名文件：跨目录同名按冲突展示。
+                    // Same-name files already adopted by this refresh: same-name files across
+                    // directories are shown as a conflict.
                     if adoptions
                         .iter()
                         .any(|adoption| adoption.entry.file_name == file.file_name)
@@ -105,9 +110,9 @@ impl Agent {
                         ));
                         continue;
                     }
-                    // 新纳管：原生 32hex 文件名在无任何同 ID 记录（含
-                    // tombstone）时沿用该 ID；其余生成新 ID。tombstone 路径
-                    // 上的新文件按新 ID 纳管，旧 ID 不复活。
+                    // New adoption: a native 32hex file name keeps its ID when no record (including
+                    // tombstones) exists for that ID; otherwise a new ID is generated. A new file at
+                    // a tombstone path is adopted under a new ID and the old ID is not revived.
                     let stem = file
                         .file_name
                         .strip_suffix(".md")
@@ -141,11 +146,12 @@ impl Agent {
                     continue;
                 };
                 if active.location == file.location {
-                    // 已按登记条目展示。
+                    // Already shown as the registered entry.
                     continue;
                 }
-                // 同 ID 多路径：同 inode 的交接残留只展示登记位置一条；
-                // 不同 inode 的同名文件是冲突，错误条目并禁用操作。
+                // Same ID on multiple paths: a same-inode handoff leftover is shown only at the
+                // registered location; a same-name file with a different inode is a conflict,
+                // reported as an error entry with operations disabled.
                 let registered_path = path_for(&active.file_name, active.location);
                 let stray = file.stat.as_ref().ok().map(|(identity, _)| *identity);
                 let registered_identity =
@@ -177,7 +183,8 @@ impl Agent {
                 plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog)?;
             }
         }
-        // modified 降序、file_name 升序；缺失文件的条目按最早时间沉底。
+        // modified descending, file_name ascending; entries with a missing file sink to the
+        // bottom by earliest time.
         entries.sort_by(|left, right| {
             right
                 .modified
@@ -191,9 +198,10 @@ impl Agent {
     }
 }
 
-/// NOFOLLOW 目录 fd 扫描单个生命周期目录的直接 `.md` 子项；缺失目录为空，
-/// 不跟随符号链接、不递归。非 UTF-8 名称与非法计划文件名写入 diagnostics，
-/// 不进入列表；每个合法名称保留一次 stat（符号链接/特殊文件在 stat 报错）。
+/// Scan the direct `.md` children of one lifecycle directory through a NOFOLLOW directory fd;
+/// a missing directory is empty, symlinks are not followed and nothing is recursive. Non-UTF-8
+/// names and invalid plan file names go to diagnostics and stay out of the list; each valid name
+/// keeps one stat (symlinks/special files fail at stat).
 fn scan_location(
     workspace: &Workspace,
     location: PlanLocation,
@@ -258,8 +266,9 @@ fn scan_location(
     Ok(files)
 }
 
-/// 由扫描结果构建列表条目；正文/身份读取失败降级为禁用操作的错误条目，
-/// 保留文件名与目录分类，不虚构进度或标题。
+/// Build a list entry from the scan result; a failed body/identity read degrades to an error
+/// entry with operations disabled, keeping the file name and directory category and inventing no
+/// progress or title.
 fn entry_from_scan(id: &str, file: &ScannedFile, workspace: &Workspace) -> PlanListEntry {
     let build = |title: String,
                  completed: usize,
@@ -334,7 +343,7 @@ mod tests {
             "fix-config-loading.md",
             "# Fix config\n\n- [x] done task\n- [ ] pending task\n",
         );
-        // 原生 32hex 文件名沿用该 ID。
+        // A native 32hex file name keeps that ID.
         let native_id = "0123456789abcdef0123456789abcdef";
         write_plan(
             &root,
@@ -342,22 +351,23 @@ mod tests {
             &format!("{native_id}.md"),
             "# Native\n\n- [ ] task\n",
         );
-        // 旧 Unicode 名称保留并按新 ID 纳管。
+        // Legacy Unicode names are preserved and adopted under a new ID.
         write_plan(&root, PlanLocation::Done, "旧计划.md", "# 旧计划\n");
-        // 非法名称、非计划文件、目录与围栏示例不进入列表。
-        // stored 规则非法的名称（含反斜杠）写入诊断，不进入列表。
+        // Invalid names, non-plan files, directories and fenced examples stay out of the list.
+        // A name the stored rules reject (containing a backslash) is written to diagnostics and
+        // stays out of the list.
         write_plan(&root, PlanLocation::Drafts, "back\\slash.md", "# bad\n");
         write_plan(&root, PlanLocation::Drafts, "notes.txt", "hello");
         std::fs::create_dir_all(root.join(".pp/drafts/nested.md")).unwrap();
         std::fs::write(root.join(".pp/drafts/nested.md/inner.md"), "# inner\n").unwrap();
-        // 符号链接：错误条目、禁用操作、不跟随。
+        // Symlink: error entry, operations disabled, not followed.
         std::os::unix::fs::symlink(
             root.join(".pp/drafts/fix-config-loading.md"),
             root.join(".pp/drafts/link.md"),
         )
         .unwrap();
-        // 非 UTF-8 名称：仅诊断。macOS 文件系统拒绝非法 UTF-8 名称
-        // （EILSEQ），此时跳过该场景。
+        // Non-UTF-8 name: diagnostics only. The macOS filesystem rejects invalid UTF-8 names
+        // (EILSEQ), in which case this scenario is skipped.
         use std::os::unix::ffi::OsStrExt;
         let weird = std::ffi::OsStr::from_bytes(b"bad\xff.md");
         let weird_written =
@@ -411,7 +421,8 @@ mod tests {
                 .all(|entry| entry.file_name != "notes.txt")
         );
 
-        // 纳管已持久化；重复刷新冗等且不产生重复 ID/条目。
+        // Adoption is persisted; a repeated refresh is idempotent and produces no duplicate IDs or
+        // entries.
         assert_eq!(registered(&agent, "fix-config-loading.md").id, named.id);
         let again = agent.list_plans().unwrap();
         assert_eq!(again.entries.len(), listing.entries.len());
@@ -433,7 +444,7 @@ mod tests {
         let listing = agent.list_plans().unwrap();
         let id = entry(&listing, "registered-plan.md").id.clone();
 
-        // 登记文件消失：错误条目，不是空表假象。
+        // The registered file disappeared: an error entry, not an empty-list illusion.
         std::fs::remove_file(root.join(".pp/drafts/registered-plan.md")).unwrap();
         let listing = agent.list_plans().unwrap();
         let missing = entry(&listing, "registered-plan.md");
@@ -446,7 +457,8 @@ mod tests {
                 .contains("missing at its registered path")
         );
 
-        // 登记名称在另一目录出现不同 inode 的同名文件：冲突条目。
+        // A same-name file with a different inode appears in another directory for a registered
+        // name: conflict entry.
         write_plan(
             &root,
             PlanLocation::Plans,
@@ -462,7 +474,8 @@ mod tests {
         assert_eq!(stray.id, "");
         assert_eq!(stray.file_name, "registered-plan.md");
 
-        // 同 inode 的交接残留：只展示登记位置一条，不重复计数。
+        // Same-inode handoff leftover: only the registered location is shown and nothing is
+        // double-counted.
         std::fs::remove_file(root.join(".pp/plans/registered-plan.md")).unwrap();
         write_plan(
             &root,
@@ -497,7 +510,8 @@ mod tests {
         let listing = agent.list_plans().unwrap();
         let id = entry(&listing, "gone-plan.md").id.clone();
 
-        // 手工提交墓碑但不 unlink：列表保留旧 ID 的条目供显式重试删除。
+        // Commit a tombstone by hand without unlinking: the list keeps the entry with the old ID
+        // for an explicit deletion retry.
         let workspace = agent.tools.plan_workspace();
         let identity = {
             let _lock = PlanCatalogLock::acquire(workspace).unwrap();
@@ -524,8 +538,8 @@ mod tests {
         assert_eq!(leftover.id, id);
         assert!(leftover.error.is_none());
 
-        // 同 inode 的残留不被纳管成新 ID；真正后来另建的不同 inode 文件
-        // 得到新 ID。
+        // A same-inode leftover is not adopted as a new ID; a genuinely new file with a different
+        // inode created later does get a new ID.
         let listing = agent.list_plans().unwrap();
         assert_eq!(entry(&listing, "gone-plan.md").id, id);
         std::fs::remove_file(root.join(".pp/drafts/gone-plan.md")).unwrap();
@@ -554,7 +568,8 @@ mod tests {
         let root = dir.path().join("work");
         write_plan(&root, PlanLocation::Drafts, "aaa-first.md", "# A\n");
         write_plan(&root, PlanLocation::Drafts, "zzz-second.md", "# Z\n");
-        // 首次刷新完成纳管，再单独设置修改时间验证排序。
+        // The first refresh performs the adoption; modify times are then set separately to verify
+        // ordering.
         agent.list_plans().unwrap();
         let set_modified = |name: &str, seconds: u64| {
             let path = root.join(".pp/drafts").join(name);

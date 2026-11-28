@@ -1,4 +1,4 @@
-//! 上下文用量估算与会话累计输出的清理边界。
+//! Context usage estimation and the cleanup boundary for session cumulative output.
 use super::{Agent, Session};
 use anyhow::Result;
 use async_openai::types::chat::ChatCompletionRequestMessage;
@@ -8,19 +8,20 @@ use pp_core::context::{
 };
 use pp_core::events::AgentEvent;
 
-/// 原生请求的增量字节记账：请求骨架（模型、工具定义等）+ 逐条消息。
+/// Incremental byte accounting for the native request: request skeleton (model, tool definitions, …) plus per-message bytes.
 ///
-/// 只有新增消息会逐条序列化；骨架每次重新估算，因此工具表、模型与请求配置的变化
-/// 自动生效。整段替换历史（压缩、树导航、跨协议转换、恢复）必须 [`Self::invalidate`]，
-/// 追加消息不需要——追加只影响尾部。
+/// Only new messages are serialized one by one; the skeleton is re-estimated every time, so changes to the
+/// tool table, model and request configuration take effect automatically. Wholesale history replacement
+/// (compaction, tree navigation, cross-protocol conversion, restore) must call [`Self::invalidate`];
+/// appending messages needs no invalidation—appends only touch the tail.
 #[derive(Default)]
 pub(in crate::agent) struct SessionEstimate {
     messages: MessageBytes,
-    /// 计入用量的消息数：Completion 跳过 system／developer，Response 计全部 item。
+    /// Number of messages counted for usage: Completion skips system/developer, Response counts every item.
     session_messages: u64,
-    /// 缓存的请求骨架字节数；[`Self::invalidate`] 或骨架指纹变化时失效。
+    /// Cached request skeleton byte count; invalidated by [`Self::invalidate`] or a skeleton fingerprint change.
     skeleton: Option<(SkeletonKey, u64)>,
-    /// 下一次记账必须丢弃全部累计并重算。
+    /// The next accounting pass must drop all accumulated values and recompute.
     stale: bool,
 }
 
@@ -52,22 +53,22 @@ impl SkeletonKey {
 }
 
 impl SessionEstimate {
-    /// 历史被整段替换后丢弃累计；下一次 [`Self::tokens`] 全量重算。
+    /// Drop the accumulated values after a wholesale history replacement; the next [`Self::tokens`] recomputes fully.
     pub(in crate::agent) fn invalidate(&mut self) {
         self.stale = true;
         self.skeleton = None;
     }
 
-    /// 返回原生请求当前的估算 token 数；只序列化请求骨架与新增消息。
+    /// Return the current estimated token count of the native request; only the request skeleton and new messages are serialized.
     ///
-    /// 口径与 [`Agent::context_usage`] 完全相同：空会话（Completion 只有
-    /// system／developer，Response 没有 input item）为 0，其余按原生 JSON 字节数 / 3。
+    /// The metric matches [`Agent::context_usage`] exactly: an empty session (Completion with only
+    /// system/developer, Response without input items) yields 0; otherwise native JSON bytes / 3.
     pub(in crate::agent) fn tokens(&mut self, session: &mut Session) -> Result<u64> {
         let count = match &*session {
             Session::Completion(request) => request.messages.len(),
             Session::Response(request) => match &request.input {
                 InputParam::Items(items) => items.len(),
-                // 运行时只追加数组项；文本输入不进增量缓存，保持与全量估算一致。
+                // At runtime only array items are appended; text input bypasses the incremental cache to stay consistent with the full estimate.
                 InputParam::Text(text) => {
                     self.invalidate();
                     return Ok(if text.is_empty() {
@@ -123,10 +124,10 @@ impl SessionEstimate {
         ))
     }
 
-    /// 消息数组为空时的请求字节数（含 `[]` 方括号）。
+    /// Request bytes with an empty message array (including the `[]` brackets).
     ///
-    /// 请求结构不可分片序列化，只能临时移出消息数组；移出与放回都是 O(1)，
-    /// 序列化失败也先放回再返回错误。
+    /// The request structure cannot be serialized piecewise, so the message array is temporarily moved out;
+    /// moving it out and back are both O(1), and a serialization failure still puts it back before returning the error.
     fn skeleton_bytes(session: &mut Session) -> Result<u64> {
         match session {
             Session::Completion(request) => {
@@ -170,7 +171,7 @@ fn calibrate_tokens(
 
 impl Agent {
     pub fn context_usage(&self) -> Result<ContextUsage> {
-        // 空会话尚未发送上下文；有对话后才计入系统提示和工具等完整请求开销。
+        // An empty session has not sent any context yet; only once a conversation exists do system prompt and tools count toward the full request overhead.
         let estimated_tokens = match &self.session {
             Session::Completion(request)
                 if request.messages.iter().all(|message| {
@@ -197,9 +198,9 @@ impl Agent {
         Ok(self.usage_snapshot(estimated_tokens))
     }
 
-    /// 与 [`Self::context_usage`] 同口径，但复用调用方持有的增量记账。
+    /// Same metric as [`Self::context_usage`], but reuses caller-held incremental accounting.
     ///
-    /// `ContextUpdated` 与自动压缩阈值取这一个数值，同一轮请求不再各自重算。
+    /// `ContextUpdated` and the auto-compaction threshold read this single value, so one turn no longer recomputes it twice.
     pub(in crate::agent) fn context_usage_cached(
         &mut self,
         estimate: &mut SessionEstimate,
@@ -219,30 +220,30 @@ impl Agent {
         }
     }
 
-    /// 利用最近一次服务端真实上报的 `input_tokens` 与当时本地原始估算的差值，
-    /// 对当前增量估算做有界校准，用于触发自动裁剪与自动压缩阈值判定。
+    /// Use the gap between the last server-reported `input_tokens` and the local raw estimate of that
+    /// moment to boundedly calibrate the current incremental estimate, which drives auto-prune and auto-compaction thresholds.
     ///
-    /// 若服务端上报值与原始估算比例落在物理合理区间 `[0.4, 3.0]` 之外（例如异常上报或
-    /// 测试桩固定值），则直接回退到 `raw_tokens`，避免误触发或漏触发。
+    /// If the ratio between the reported value and the raw estimate falls outside the physically sane
+    /// `[0.4, 3.0]` range (anomalous reports or fixed test-stub values), fall back to `raw_tokens` to avoid spurious or missed triggering.
     pub(in crate::agent) fn calibrated_context_tokens(&self, raw_tokens: u64) -> u64 {
         calibrate_tokens(raw_tokens, self.last_request, self.last_request_raw_tokens)
     }
 
-    /// 实时同步 `/setting` 修改的自动压缩策略与阈值（下一次请求与 `/context` 立即生效）。
+    /// Sync the auto-compaction policy and threshold changed in `/setting` (effective immediately for the next request and `/context`).
     pub fn set_compaction_policy(&mut self, auto_compact: bool, threshold_percent: u8) {
         self.auto_compact = auto_compact;
         self.auto_compact_threshold_percent = threshold_percent;
     }
 
-    /// 会话根变化（新建、恢复、树导航、Plan 交接）同时丢弃最近请求指标与
-    /// 会话累计输出；切模型、effort 和压缩只清最近请求指标。
+    /// A session-root change (new, restore, tree navigation, Plan handoff) drops both the last-request
+    /// metrics and the cumulative session output; switching model, effort or compaction clears only the last-request metrics.
     pub(in crate::agent) fn clear_session_usage(&mut self) {
         self.last_request = None;
         self.last_request_raw_tokens = None;
         self.session_output_tokens = 0;
     }
 
-    /// 恢复会话时从 `stats.db` 回填最近一次普通请求用量与会话累计输出。
+    /// Backfill the last normal request usage and cumulative session output from `stats.db` when restoring a session.
     pub(in crate::agent) fn restore_session_usage(&mut self) {
         let Some(id) = self.journal.id() else {
             self.clear_session_usage();
@@ -290,7 +291,7 @@ mod tests {
         )
     }
 
-    /// 与增量路径无关的全量参考值：整棵原生请求重新序列化一次。
+    /// Full reference value independent of the incremental path: the whole native request serialized once.
     fn full_tokens(session: &Session) -> u64 {
         match session {
             Session::Completion(request) => estimate_tokens(request).unwrap(),
@@ -339,7 +340,7 @@ mod tests {
         );
     }
 
-    /// 工具批次失败后的尾部回滚：消息条数变少，缓存必须自行丢弃。
+    /// Tail rollback after a failed tool batch: the message count shrinks, so the cache must discard itself.
     fn pop_last(session: &mut Session) {
         match session {
             Session::Completion(request) => {
@@ -351,7 +352,7 @@ mod tests {
         }
     }
 
-    /// compact／tree 的同长度整段替换：条数不变，只有显式失效才能发现内容已换。
+    /// Same-length wholesale replacement by compact/tree: the count is unchanged, so only explicit invalidation reveals the swapped content.
     fn rewrite_history(session: &mut Session, protocol: Protocol) {
         match session {
             Session::Completion(request) => {
@@ -398,14 +399,14 @@ mod tests {
             let mut session = new_session(protocol);
             let mut estimate = SessionEstimate::default();
 
-            // 空会话尚未发送上下文：只有系统提示与工具定义时为 0。
+            // An empty session has not sent context yet: 0 with only the system prompt and tool definitions.
             assert_eq!(
                 estimate.tokens(&mut session).unwrap(),
                 0,
                 "{protocol} empty session"
             );
 
-            // append 边界：用户文本、含图片的输入、assistant 回复与 developer 注入。
+            // Append boundaries: user text, input with an image, assistant reply and developer injection.
             append_user_to(&mut session, "first question");
             assert_matches_full(&mut estimate, &mut session, "append user");
             append_image_input(&mut session);
@@ -415,11 +416,11 @@ mod tests {
             append_developer_to(&mut session, "hook context".into());
             assert_matches_full(&mut estimate, &mut session, "append developer");
 
-            // 尾部回滚：条数变少时缓存丢弃旧累计并重算。
+            // Tail rollback: when the count shrinks the cache drops the old accumulation and recomputes.
             pop_last(&mut session);
             assert_matches_full(&mut estimate, &mut session, "roll back tail");
 
-            // compact／tree：整段替换后必须显式失效，不得残留旧值。
+            // compact/tree: a wholesale replacement must be invalidated explicitly, never leaving stale values.
             let before = estimate.tokens(&mut session).unwrap();
             rewrite_history(&mut session, protocol);
             estimate.invalidate();
@@ -486,20 +487,20 @@ mod tests {
                 reasoning_tokens: None,
             })
         };
-        // 正常英文（真实 token 约为 bytes/3 的 0.75x）：增量校准保留真实基线 + 新增差值。
+        // Plain English (real tokens are about 0.75x of bytes/3): incremental calibration keeps the true baseline plus the new delta.
         assert_eq!(calibrate_tokens(12_000, usage(7_500), Some(10_000)), 9_500);
-        // 密集 CJK/符号（真实 token 高于 bytes/3 的 1.5x）：校准向上修正避免漏触阈值。
+        // Dense CJK/symbols (real tokens above 1.5x of bytes/3): calibration revises upward so the threshold is not missed.
         assert_eq!(
             calibrate_tokens(11_000, usage(15_000), Some(10_000)),
             16_000
         );
-        // 测试桩或异常极小/极大上报值超出 [0.4, 3.0] 合理区间，回退原始估算。
+        // Test stubs or anomalous tiny/huge reported values outside the sane [0.4, 3.0] range fall back to the raw estimate.
         assert_eq!(calibrate_tokens(12_000, usage(200), Some(10_000)), 12_000);
         assert_eq!(
             calibrate_tokens(12_000, usage(50_000), Some(10_000)),
             12_000
         );
-        // 未收到服务端用量时直接返回原始估算。
+        // Without server usage, return the raw estimate directly.
         assert_eq!(calibrate_tokens(12_000, None, Some(10_000)), 12_000);
     }
 }

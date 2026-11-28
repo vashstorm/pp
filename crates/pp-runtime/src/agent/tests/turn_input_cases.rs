@@ -16,7 +16,7 @@ mod integration {
             let serving = protocol.to_owned();
             let worker = Arc::clone(&server);
             let server_thread = std::thread::spawn(move || {
-                // 第一轮：最终回复结束；补充在请求进行中入队，须在完整提交边界后消费。
+                // First turn: the final reply ends it; supplementary input enqueued while the request is in flight must be consumed at the next full commit boundary.
                 for text in ["first reply", "second reply", "resumed reply"] {
                     let request = worker
                         .recv_timeout(std::time::Duration::from_secs(10))
@@ -65,7 +65,7 @@ mod integration {
                 "follow-on request must replay the committed native history"
             );
             assert_eq!(queue.snapshot_since(None).unwrap().unwrap().steering(), 0);
-            // 任务结束已关闭队列：此后入队的补充不得被 continue_session 领取。
+            // The task ended and closed the queue: supplementary input enqueued afterwards must not be claimed by continue_session.
             queue
                 .enqueue(
                     input::PendingKind::Steering,
@@ -89,7 +89,7 @@ mod integration {
             );
             assert_eq!(queue.snapshot_since(None).unwrap().unwrap().steering(), 1);
             server_thread.join().unwrap();
-            // 已应用的输入各以普通 User 记录持久化一次，事件不入 journal。
+            // Each applied input is persisted once as an ordinary User record; events are not journaled.
             let id = agent.session_id().unwrap().to_owned();
             drop(agent);
             let restored = persistence::load_test(
@@ -263,11 +263,11 @@ mod integration {
             let server = Arc::new(TestServer::start().unwrap());
             let mut agent =
                 runtime_input_agent(dir.path(), protocol, &server.addr().to_string(), "");
-            // 首个完整交换是可压缩内容；最后的完整交换与待回复后缀必须保留。
+            // The first full exchange is compactable content; the last full exchange and the not-yet-answered suffix must be kept.
             let big = "filler ".repeat(20000);
             seed_exchange(&mut agent, &big, "ack");
             seed_exchange(&mut agent, "warmup", "ready");
-            // 压缩后用量 = 会话减去首个交换加摘要，必须低于阈值且留出余量。
+            // Post-compaction usage = session minus the first exchange plus the summary; it must sit below the threshold with margin to spare.
             let total_bytes = serde_json::to_value(&agent.session)
                 .unwrap()
                 .to_string()
@@ -279,7 +279,7 @@ mod integration {
             );
             let prompt_bytes = serde_json::to_string("final question").unwrap().len() as u64;
             let pre_tokens = (total_bytes + prompt_bytes).div_ceil(3);
-            // 摘要请求本身加输出上限必须放进窗口，且阈值仍要触发压缩。
+            // The summary request itself plus the output cap must fit the window, and the threshold must still trigger compaction.
             let window = pre_tokens + 5120;
             agent.current_model.context_window = Some(window);
             let queue = InputQueue::default();
@@ -288,7 +288,7 @@ mod integration {
             let serving = protocol.to_owned();
             let worker = Arc::clone(&server);
             let server_thread = std::thread::spawn(move || {
-                // 请求 1：临时摘要请求，不得包含摘要期间入队的补充。
+                // Request 1: the temporary summary request must not include supplementary input enqueued during summarization.
                 let request = worker
                     .recv_timeout(std::time::Duration::from_secs(10))
                     .unwrap()
@@ -300,7 +300,7 @@ mod integration {
                 );
                 tx.send(body).unwrap();
                 final_for(&serving, request, "compact summary", true);
-                // 请求 2：摘要后的普通请求，补充在该边界应用。
+                // Request 2: the normal request after summarization, where supplementary input is applied at this boundary.
                 let request = worker
                     .recv_timeout(std::time::Duration::from_secs(10))
                     .unwrap()

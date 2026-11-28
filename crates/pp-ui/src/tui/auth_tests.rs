@@ -65,7 +65,7 @@ fn auth_panel_status_logout_scope_and_mouse_urls() {
         let mut panel = Panel::new(false);
         panel.listed(Vec::new());
         render(&mut panel, 100, 30);
-        // 面板顶边 y=1，首条项目位于 y=2。
+        // The panel's top border is y=1, so the first item sits at y=2.
         let click = |x, y| {
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -98,7 +98,7 @@ fn auth_key_panels_mask_input_route_links_and_submit() {
         panel.handle(key(KeyCode::Down));
         let url = match panel.handle(key(KeyCode::Enter)) {
             Action::Open(url) => url,
-            _ => panic!("必须打开密钥管理页"),
+            _ => panic!("the key management page must open"),
         };
         assert_eq!(url, Provider::Zai.key_url().unwrap());
         panel.handle(Event::Paste("private-key-marker".into()));
@@ -125,7 +125,7 @@ fn auth_key_panels_mask_input_route_links_and_submit() {
         }
         let url = match panel.handle(key(KeyCode::Enter)) {
             Action::Open(url) => url,
-            _ => panic!("必须打开 Command Code 控制台"),
+            _ => panic!("the Command Code console must open"),
         };
         assert_eq!(url, Provider::CommandCode.key_url().unwrap());
         assert!(matches!(panel.handle(key(KeyCode::Enter)), Action::None));
@@ -161,7 +161,7 @@ fn auth_key_panels_mask_input_route_links_and_submit() {
         }
         let url = match panel.handle(key(KeyCode::Enter)) {
             Action::Open(url) => url,
-            _ => panic!("必须打开 OpenCode 授权页"),
+            _ => panic!("the OpenCode authorization page must open"),
         };
         assert_eq!(url, "https://opencode.ai/auth");
         panel.handle(Event::Paste("sk-private-opencode-key".into()));
@@ -260,7 +260,7 @@ fn auth_first_login_bootstraps_agent_without_restarting_ui_or_losing_draft() {
     app.receive();
     let factory = match requests.recv().unwrap().0 {
         Request::Bootstrap(factory) => factory,
-        _ => panic!("首次授权必须初始化 Agent"),
+        _ => panic!("the first authorization must initialize the Agent"),
     };
     replies
         .send(Reply::Bootstrapped(factory.build().map(Box::new)))

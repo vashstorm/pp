@@ -17,16 +17,19 @@ fn tui_notification_error_scrolls_into_native_history_and_preserves_draft() {
     let mut pty = Pty::start_with_existing_files(home.path());
     pty.ready();
     pty.input("/help extra\r");
-    pty.wait_for("错误以完整红框进入消息区", |screen| {
-        notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
-            && screen.contents().contains("usage: /help")
-    });
+    pty.wait_for(
+        "the error enters the message area inside a complete red frame",
+        |screen| {
+            notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
+                && screen.contents().contains("usage: /help")
+        },
+    );
     pty.input("\x01\x0b草稿🙂");
     pty.draft("草稿🙂");
     let cursor = pty.parser.screen().cursor_position();
     let since = Instant::now();
     pty.wait_for_timeout(
-        "错误超过旧过期时长仍保留",
+        "the error is kept past the old expiry duration",
         Duration::from_secs(4),
         |screen| {
             since.elapsed() >= Duration::from_millis(1100)
@@ -37,12 +40,13 @@ fn tui_notification_error_scrolls_into_native_history_and_preserves_draft() {
     pty.resize(12, 35);
     pty.draft("草稿🙂");
     pty.resize(30, 100);
-    pty.wait_for("恢复窗口后错误仍完整显示", |screen| {
-        notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some()
-    });
+    pty.wait_for(
+        "the error still shows completely after the window is restored",
+        |screen| notification_bounds(screen, "Error", vt100::Color::Rgb(224, 108, 117)).is_some(),
+    );
     pty.draft("草稿🙂");
     pty.input("\x03");
-    pty.wait_for("退出后终端恢复", |screen| {
+    pty.wait_for("the terminal is restored after exit", |screen| {
         !screen.bracketed_paste() && !screen.hide_cursor()
     });
     let (history, _) = pty.native_history();
@@ -72,15 +76,18 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     pty.input("startup draft");
     pty.draft("startup draft");
     pty.resize(24, 80);
-    pty.wait_for("80 列仍显示双列且保留草稿", |screen| {
-        let text = screen.contents();
-        tips_headers_on_one_row(&text)
-            && text.contains("startup draft")
-            && !input_bar_above_draft(&text)
-    });
+    pty.wait_for(
+        "80 columns still show two columns and keep the draft",
+        |screen| {
+            let text = screen.contents();
+            tips_headers_on_one_row(&text)
+                && text.contains("startup draft")
+                && !input_bar_above_draft(&text)
+        },
+    );
     pty.resize(30, 60);
     pty.wait_for(
-        "窄屏提示切换为单列并保留完整入口",
+        "the narrow screen switches tips to one column and keeps every entry",
         |screen| {
             let text = screen.contents();
             !tips_headers_on_one_row(&text)
@@ -94,7 +101,7 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     );
     pty.resize(30, 38);
     pty.wait_for(
-        "宽度不足时使用紧凑品牌并保留版本号",
+        "an insufficient width uses the compact brand and keeps the version",
         |screen| {
             let text = screen.contents();
             let mut lines = text.lines();
@@ -110,20 +117,23 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
         },
     );
     pty.resize(12, 40);
-    pty.wait_for("小窗口显示紧凑欢迎页并保留草稿", |screen| {
-        let text = screen.contents();
-        text.lines()
-            .next()
-            .is_some_and(|line| line.trim() == "\u{f1d9}  PP")
-            && text.contains("startup draft")
-            && text.contains("/tips  All shortcuts")
-            && text.contains("/help  Commands")
-            && !text.contains("Session & workflow")
-            && !text.contains("Keyboard")
-            && !text.contains("\u{e62a} ")
-    });
+    pty.wait_for(
+        "a small window shows the compact welcome page and keeps the draft",
+        |screen| {
+            let text = screen.contents();
+            text.lines()
+                .next()
+                .is_some_and(|line| line.trim() == "\u{f1d9}  PP")
+                && text.contains("startup draft")
+                && text.contains("/tips  All shortcuts")
+                && text.contains("/help  Commands")
+                && !text.contains("Session & workflow")
+                && !text.contains("Keyboard")
+                && !text.contains("\u{e62a} ")
+        },
+    );
     pty.resize(6, 20);
-    pty.wait_for("极小窗口保留输入草稿", |screen| {
+    pty.wait_for("a tiny window keeps the input draft", |screen| {
         let text = screen.contents();
         text.contains("startup draft") && text.lines().any(|line| line.starts_with('❯'))
     });
@@ -150,13 +160,13 @@ fn tui_startup_centers_brand_and_keeps_footer_colors() {
     no_more(&server);
 }
 
-// 双列欢迎页：两组标题同处一行。
+// Two-column welcome page: both header groups share one row.
 fn tips_headers_on_one_row(text: &str) -> bool {
     text.lines()
         .any(|line| line.contains("Session & workflow") && line.contains("Keyboard"))
 }
 
-// 单列欢迎页：`Keyboard` 落到 `Session & workflow` 之后的行。
+// One-column welcome page: `Keyboard` lands on a row after `Session & workflow`.
 fn tips_headers_stack(text: &str) -> bool {
     let session = text
         .lines()
@@ -165,7 +175,7 @@ fn tips_headers_stack(text: &str) -> bool {
     matches!((session, keyboard), (Some(session), Some(keyboard)) if session < keyboard)
 }
 
-// 输入栏上沿的 Ctx 字段仍紧贴 `❯` 草稿行。
+// The Ctx field on the top edge of the input bar still sits next to the `❯` draft row.
 fn input_bar_above_draft(text: &str) -> bool {
     let lines: Vec<&str> = text.lines().collect();
     lines
@@ -177,7 +187,7 @@ fn input_bar_above_draft(text: &str) -> bool {
 const TIPS_ACCENT: vt100::Color = vt100::Color::Rgb(127, 166, 106);
 const TIPS_HEADER: vt100::Color = vt100::Color::Rgb(215, 175, 95);
 
-// `/tips` 命令组等于命令注册表的可见项，按用户看到的键名忽略大小写排序。
+// The `/tips` command group equals the command registry's visible entries, sorted case-insensitively by the key name users see.
 const TIPS_COMMANDS: &[&str] = &[
     "/agents",
     "/compact",
@@ -225,8 +235,8 @@ const TIPS_COMMANDS: &[&str] = &[
     "/tree",
 ];
 
-// 快捷键组按显示键名递增；`⌥` 等非 ASCII 键名排在 ASCII 之后，两个 `Ctrl + S`
-// 分别是模型与思考档位的默认值保存。
+// The shortcut group ascends by displayed key name; non-ASCII keys such as `⌥` sort after ASCII, and the two `Ctrl + S`
+// entries save the model and the thinking-effort defaults respectively.
 fn tips_shortcuts() -> Vec<&'static str> {
     if cfg!(target_os = "macos") {
         vec![
@@ -303,7 +313,7 @@ fn tips_commands() -> Vec<&'static str> {
         .collect()
 }
 
-// 键名对齐宽度：最长可见键名，下限 12 列。
+// Key-name alignment width: the longest visible key name, with a floor of 12 columns.
 fn tips_key_width() -> u16 {
     let widest = tips_commands()
         .into_iter()
@@ -314,12 +324,13 @@ fn tips_key_width() -> u16 {
     u16::try_from(widest.max(12)).unwrap()
 }
 
-// 双列时右列的屏幕起始列：左侧两列边框，左列宽 `(正文宽 - 4) / 2`，列间四列空白。
+// Screen start column of the right column in two-column mode: two border columns on the left, left column width
+// `(body width - 4) / 2`, and four blank columns between.
 fn tips_right_column(cols: u16) -> u16 {
     2 + (cols - 2 - 4) / 2 + 4
 }
 
-// 逐行读取指定键名列的键名，跳过标题行、分隔细线与空白行。
+// Read the key names of the given key column row by row, skipping header rows, separator rules and blank rows.
 fn tips_visible_keys(screen: &vt100::Screen, column: u16, key_width: u16) -> Vec<String> {
     (0..screen.size().0)
         .filter(|&row| {

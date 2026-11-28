@@ -10,7 +10,7 @@ fn wait_exact(transcript: &mut Transcript, width: u16) -> Buffer {
         }) {
             return buffer;
         }
-        assert!(Instant::now() < deadline, "后台排版应完成");
+        assert!(Instant::now() < deadline, "background layout must finish");
         std::thread::yield_now();
     }
 }
@@ -65,7 +65,7 @@ fn streaming_table_keeps_viewport_stable_until_row_is_complete() {
             assert_eq!(
                 wait_exact(&mut transcript, width),
                 pending,
-                "同一半行在后台排版前后的画面应相同"
+                "the same half-finished line must look identical before and after background layout"
             );
         }
 
@@ -308,7 +308,7 @@ fn wait_exact_native(transcript: &mut Transcript, width: u16, height: u16) -> Bu
         }) {
             return buffer;
         }
-        assert!(Instant::now() < deadline, "后台排版应完成");
+        assert!(Instant::now() < deadline, "background layout must finish");
         std::thread::yield_now();
     }
 }
@@ -331,7 +331,7 @@ fn streaming_think_and_assistant_preview_matches_exact_without_jumping_upper_row
         };
         let width = 36;
         let height = 10;
-        // 预先填满超过视口的历史段，确保底部对齐下任何高度抖动都会暴露在整屏 diff 中。
+        // Pre-fill a history segment longer than the viewport so any height jitter under bottom alignment shows up in the full-screen diff.
         let seed = (0..8)
             .map(|i| format!("Earlier thought block {i} with enough text to wrap.\n\n"))
             .collect::<String>();
@@ -339,7 +339,7 @@ fn streaming_think_and_assistant_preview_matches_exact_without_jumping_upper_row
         let mut prev_native = wait_exact_native(&mut transcript, width, height);
         let mut prev_height = transcript.entries[0].layout.as_ref().unwrap().height;
 
-        // 依次覆盖：未结束的列表长行折行、单换行 SoftBreak、双换行分段、引用折行。
+        // Cover in turn: a long unfinished list line wrapping, a single-newline SoftBreak, a double-newline paragraph break and a wrapping quote.
         let chunks = [
             "- Analyzing the ",
             "streaming layout ",
@@ -363,27 +363,27 @@ fn streaming_think_and_assistant_preview_matches_exact_without_jumping_upper_row
             let exact_alt = wait_exact(&mut transcript, width);
             let exact_height = transcript.entries[0].layout.as_ref().unwrap().height;
 
-            // 预览帧与后台完成帧必须逐单元格一致：不刷新上方行、不上下跳动。
+            // The preview frame and the finished background frame must match cell by cell: no refresh of the rows above and no vertical jumping.
             assert_eq!(
                 pending_native, exact_native,
-                "主屏幕预览与后台回写不一致：thinking={thinking}, chunk={chunk:?}"
+                "main-screen preview differs from the background writeback: thinking={thinking}, chunk={chunk:?}"
             );
             assert_eq!(
                 pending_alt,
                 render(&mut transcript, width, height),
-                "备用屏幕预览与后台回写不一致：thinking={thinking}, chunk={chunk:?}"
+                "alternate-screen preview differs from the background writeback: thinking={thinking}, chunk={chunk:?}"
             );
             let _ = exact_alt;
             assert_eq!(
                 pending_height, exact_height,
-                "预览与后台总高度不一致：thinking={thinking}, chunk={chunk:?}"
+                "preview and background total heights differ: thinking={thinking}, chunk={chunk:?}"
             );
             assert!(
                 exact_height >= prev_height,
-                "纯追加流式输出不应高度回缩：prev={prev_height}, now={exact_height}, chunk={chunk:?}"
+                "append-only streaming output must not shrink in height: prev={prev_height}, now={exact_height}, chunk={chunk:?}"
             );
 
-            // 若本帧高度未增行（同一行内继续输出），只有当前活跃行允许变更，上方行 0 刷新。
+            // If this frame added no line (output continues on the same line), only the active row may change and zero rows above may refresh.
             if exact_height == prev_height {
                 let changed_rows: Vec<u16> = prev_native
                     .diff(&exact_native)
@@ -393,7 +393,7 @@ fn streaming_think_and_assistant_preview_matches_exact_without_jumping_upper_row
                 let active_y = height - 1;
                 assert!(
                     changed_rows.iter().all(|&y| y == active_y),
-                    "行未结束且未增行时不应刷新上方行：changed_rows={changed_rows:?}, chunk={chunk:?}"
+                    "no row above may refresh while the line is unfinished and no line was added: changed_rows={changed_rows:?}, chunk={chunk:?}"
                 );
             }
             prev_native = exact_native;
@@ -418,8 +418,11 @@ fn streaming_table_transition_to_paragraph_does_not_collapse_into_tail_line() {
     pause.wait();
     drop(pause);
     let exact = wait_exact(&mut transcript, 30);
-    // render/wait_exact 默认 height=8，用同一高度对比。
+    // render/wait_exact default to height=8, so compare at the same height.
     let _ = exact;
     let exact = render(&mut transcript, 30, 10);
-    assert_eq!(pending, exact, "表格后起新段落时预览应与后台一致");
+    assert_eq!(
+        pending, exact,
+        "the preview must match the background layout once a new paragraph starts after a table"
+    );
 }

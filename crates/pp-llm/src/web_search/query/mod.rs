@@ -1,7 +1,7 @@
 use super::SearchSource;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 查询中的单个自由文本词条（非指令部分）。
+/// A single free-text term of the query (the part that is not a directive).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryTerm {
     pub text: String,
@@ -10,7 +10,7 @@ pub struct QueryTerm {
     pub group: Option<usize>,
 }
 
-/// 从原始查询解析出的结构化查询。
+/// Structured query parsed out of the raw query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructuredQuery {
     pub raw: String,
@@ -33,7 +33,7 @@ pub struct StructuredQuery {
     pub has_constraints: bool,
 }
 
-/// 搜索引擎原生支持的查询语法集合。
+/// Query syntax natively supported by search engines.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QuerySyntax {
     pub phrases: bool,
@@ -300,7 +300,7 @@ pub fn parse_date_value(value: &str) -> Option<String> {
     }
 }
 
-/// Howard Hinnant 算法：将公历年月日转换为自 1970-01-01 起的天数。
+/// Howard Hinnant's algorithm: convert a proleptic Gregorian year/month/day into days since 1970-01-01.
 fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let y = year - i64::from(month <= 2);
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -311,7 +311,7 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// 将公历天数转回 `(year, month, day)`。
+/// Convert Gregorian days back into `(year, month, day)`.
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;

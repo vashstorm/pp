@@ -1,4 +1,4 @@
-//! 名额获取、空闲 worker 摘除与 worker 主循环。
+//! Permit acquisition, idle worker detach and the worker main loop.
 
 use anyhow::{Context, Result, ensure};
 use pp_core::cancellation;
@@ -29,8 +29,8 @@ impl Binding {
             task::{Context as TaskContext, Poll, Waker},
         };
 
-        // 保留同一个 acquire future，让 Semaphore 管理 FIFO 和取消后的名额归还。
-        // 同步 worker 通过 unpark 唤醒，不需要额外的 Tokio runtime。
+        // Keep the same acquire future so the Semaphore handles FIFO order and permit return after cancellation.
+        // The synchronous worker is woken through unpark and needs no extra Tokio runtime.
         let mut acquire = std::pin::pin!(self.inner.semaphore.clone().acquire_owned());
         let waker = Waker::from(Arc::new(PermitWake(thread::current())));
         let mut context = TaskContext::from_waker(&waker);
@@ -40,7 +40,7 @@ impl Binding {
             }
             match acquire.as_mut().poll(&mut context) {
                 Poll::Ready(permit) => return Ok(permit?),
-                // 取消 token 不唤醒当前线程，保留有界 tick 检查取消与关闭。
+                // The cancellation token does not wake this thread, so a bounded tick checks cancellation and shutdown.
                 Poll::Pending => thread::park_timeout(IDLE_POLL_INTERVAL),
             }
         }
@@ -73,8 +73,8 @@ impl std::task::Wake for PermitWake {
     }
 }
 
-/// 空闲 worker 退出前在状态锁内摘除自己的 Live 槽：只有确认没有排队工作时才
-/// 允许退出，`launch`/`followup` 因此不会把新任务排进无人消费的通道。
+/// An idle worker removes its own Live slot under the state lock before exiting: it may exit only
+/// once no queued work remains, so `launch`/`followup` never enqueue into an unconsumed channel.
 fn detach_idle_worker(inner: &Inner, id: &str, generation: u64) -> bool {
     let mut state = lock(&inner.state);
     let queued = state
@@ -137,7 +137,7 @@ pub(super) fn worker(
                 }
                 self.inner.changed.notify_all();
             }
-            // 只在实际状态转换时发布一次 parked。
+            // Publish parked only on a real state transition.
             if parked {
                 self.inner.observe(
                     &self.id,
@@ -170,11 +170,11 @@ pub(super) fn worker(
     };
     let mut agent: Option<Agent> = None;
     let mut workspace_ready = !record.spec.isolated;
-    // 空闲 TTL 从最后一次真实 work 结束开始计算；50ms 诊断 tick 不能续命。
+    // The idle TTL counts from the end of the last real work; the 50ms diagnostic tick cannot extend it.
     let idle_ttl = (binding.inner.settings.idle_ttl_ms != 0)
         .then(|| Duration::from_millis(binding.inner.settings.idle_ttl_ms));
     let mut idle_since = Instant::now();
-    // 迟到诊断沿用其所属 run 的 id，并延续该 run 的 event sequence。
+    // Late diagnostics keep the id of the run they belong to and continue that run's event sequence.
     let mut late_sequences: BTreeMap<String, u64> = BTreeMap::new();
     loop {
         let work = match receiver.recv_timeout(IDLE_POLL_INTERVAL) {
@@ -186,7 +186,7 @@ pub(super) fn worker(
                     break;
                 }
                 if let Some(native) = agent.as_mut() {
-                    // 只追加报告事件：不改 run 状态/结果/请求数，也不向父模型投递。
+                    // Append report events only: no run status/result/request changes and nothing delivered to the parent model.
                     let polled = native.poll_lsp_diagnostics_with_run(&mut |origin, event| {
                         let sequence = origin.map(|run| {
                             let sequence = late_sequences.entry(run.to_owned()).or_insert(0);
@@ -216,7 +216,7 @@ pub(super) fn worker(
         let mut run_sequence = 0u64;
         let _ = input.begin_run();
         let mut last = String::new();
-        // 名额覆盖初始化、全部模型轮次、工具执行与结果收尾；出错也由 RAII 释放。
+        // The permit covers initialization, every model round, tool execution and result settlement; RAII releases it even on error.
         let mut permit = None;
         let outcome = (|| -> Result<Value> {
             permit = Some(binding.permit(&work.cancellation)?);
@@ -317,7 +317,7 @@ pub(super) fn worker(
                     }
                     binding.inner.bump_revision();
                 }
-                // 整条 JSON + 换行在同一把 agent 追加锁内写出，控制线程不会与之交错。
+                // The whole JSON line plus newline is written inside one agent append lock, so control threads never interleave with it.
                 binding.inner.observe(
                     &record.id,
                     Some(&work.run),
@@ -413,7 +413,7 @@ pub(super) fn worker(
         ) {
             tracing::error!(error=%e,"subagent result persist failed");
         }
-        // 只有真实 work 结束才重置空闲基线；诊断 tick 不能延长 TTL。
+        // Only the end of real work resets the idle baseline; a diagnostic tick cannot extend the TTL.
         idle_since = Instant::now();
         late_sequences.insert(work.run.clone(), run_sequence);
         let state = lock(&binding.inner.state);
@@ -430,7 +430,7 @@ pub(super) fn worker(
         drop(permit);
     }
     if let Some(native) = agent.as_mut() {
-        // park/退出时取消该 owner 的等待；共享父 Registry 的 worker 不停父进程。
+        // Cancel that owner's wait on park/exit; a worker sharing the parent Registry never stops the parent process.
         native.cancel_lsp_diagnostics();
         if record.spec.isolated
             && let Err(error) = native.stop_lsp()

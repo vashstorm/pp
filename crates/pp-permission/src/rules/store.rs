@@ -1,4 +1,4 @@
-//! `permission.toml` 原子读写、文件指纹缓存与跨进程排他锁管理。
+//! `permission.toml` atomic read/write, file-fingerprint cache and cross-process exclusive lock management.
 
 use super::codec::{
     check_private_meta, encode_document, normalize_against_existing_ancestor, platform_path_eq,
@@ -80,7 +80,7 @@ impl Store {
                 .is_some_and(|parent| platform_path_eq(&parent, &dir))
     }
 
-    /// 按文件指纹（dev/ino/size/mtime/ctime）按需重载持久规则；文件未变直接复用内存快照。
+    /// Reloads persistent rules on demand by file fingerprint (dev/ino/size/mtime/ctime); reuses the in-memory snapshot when the file is unchanged.
     pub(crate) fn load(&self) -> Result<Arc<Document>> {
         let meta = match fs::symlink_metadata(&self.path) {
             Ok(meta) => meta,

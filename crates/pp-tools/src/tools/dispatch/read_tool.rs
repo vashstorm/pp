@@ -1,4 +1,4 @@
-//! `read` 分支：本地分页读取与 `agent://`、`pipe://`、`artifact://` 资源。
+//! `read` branch: local paged reads and `agent://`, `pipe://`, `artifact://` resources.
 
 use super::*;
 

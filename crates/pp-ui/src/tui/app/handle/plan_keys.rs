@@ -1,4 +1,5 @@
-//! 计划面板按键：面板存在时独占输入，返回是否已消费。
+//! Plan panel keys: the panel owns input while present and reports whether the key was
+//! consumed.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -13,10 +14,11 @@ impl App {
         match panel.key(key) {
             plan::Action::None => {}
             plan::Action::Close => {
-                // Esc 仅关闭面板：保留模式、正文与 pending 暂停。
+                // Esc only closes the panel: mode, body and the pending pause are kept.
                 self.plan_panel = None;
                 self.menu_dismissed = true;
-                // 列表只读预览可能改写过进度缓存；恢复当前绑定计划。
+                // A list read-only preview may have overwritten the progress cache; restore the
+                // currently bound plan.
                 if let Some(plan) = &self.workflow.plan {
                     self.plan_progress = pp_core::plan::task_progress(&plan.content);
                 }

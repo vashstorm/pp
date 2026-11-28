@@ -1,4 +1,4 @@
-//! 工具结果到卡片正文的投影，以及后台任务状态行。
+//! Projection of tool results into the card body, plus background task status lines.
 
 use super::{EntryKind, Value};
 
@@ -28,7 +28,7 @@ pub(super) fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String
         return content.to_owned();
     }
     if name == "todo" {
-        // 失败正文已按“诊断 → 可信调用前列表”排列；缺 content 时退回诊断。
+        // The failure body is already ordered "diagnostics -> trusted pre-call list"; fall back to diagnostics when content is missing.
         if let Some(content) = result["content"].as_str() {
             return content.to_owned();
         }
@@ -50,7 +50,7 @@ pub(super) fn tool_result(kind: EntryKind, name: &str, result: &Value) -> String
         if !notice.is_empty() {
             lines.push(notice);
         }
-        // 后台状态已在 Bash footer 展示，不占用输出正文和尾窗行数。
+        // The background status already shows in the Bash footer, so it does not consume output body and tail-window lines.
         for (field, label) in [("stdout", "stdout"), ("stderr", "stderr")] {
             if let Some(text) = result
                 .get(field)

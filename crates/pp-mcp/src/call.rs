@@ -1,4 +1,4 @@
-//! 工具调用：短临界区解析句柄，再在 server 锁内转发 `tools/call`。
+//! Tool calls: resolve handles in a short critical section, then forward `tools/call` under the server lock.
 
 use anyhow::{Context, Result, bail, ensure};
 use pp_core::cancellation;
@@ -19,7 +19,7 @@ impl McpManager {
         cancellation: &CancellationToken,
     ) -> Result<Value> {
         cancellation::check(cancellation)?;
-        // worker 持独立 Arc 与新 transport token：父连接不因子 Agent 取消而中断。
+        // The worker holds its own Arc and a fresh transport token, so the parent connection is not interrupted by subagent cancellation.
         let manager = Arc::clone(self);
         let request_token = cancellation.clone();
         let name = name.to_owned();
@@ -59,8 +59,8 @@ impl McpManager {
         cancellation: &CancellationToken,
         proxy: bool,
     ) -> Result<Value> {
-        // 短临界区：解析工具、校验 access、克隆服务句柄与该服务的定义快照；
-        // 之后阻塞获取 server 锁，绝不在持 state 锁时等待网络或进程。
+        // Short critical section: resolve the tool, validate access and clone the server handle plus that server's definition snapshot;
+        // afterwards we block on the server lock and never wait on the network or a process while holding the state lock.
         let (server, server_name, original_name, expected) = {
             let state = self.lock_state();
             let tool = state.tools.get(name).context("unknown tool")?;
@@ -109,7 +109,7 @@ impl McpManager {
         ) {
             Ok(result) => result,
             Err(error) => {
-                // 仅任务取消赋予下一次实际调用时的重建资格；普通故障保持不可用。
+                // Only task cancellation grants rebuild eligibility on the next real call; ordinary failures stay unavailable.
                 if error.downcast_ref::<Cancelled>().is_some() {
                     state.restart_after_cancel = true;
                 }
@@ -120,7 +120,7 @@ impl McpManager {
             result["content"].is_array() && result.get("isError").is_none_or(Value::is_boolean),
             "invalid MCP tools/call result"
         );
-        // 保留 MCP 内容块和结构化结果，工具级失败仍作为正常协议响应处理。
+        // Keep the MCP content blocks and structured result; tool-level failures are still handled as normal protocol responses.
         Ok(json!({"ok":result["isError"] != true, "result":result}))
     }
 }
@@ -157,8 +157,8 @@ mod integration {
             )
             .unwrap(),
         );
-        let server = manager.test_server("local").expect("已连接的服务");
-        // 先占住 server 锁，让代理调用停在 `call_inner` 的阻塞获取上。
+        let server = manager.test_server("local").expect("connected server");
+        // Take the server lock first so the proxy call stalls on the blocking acquire inside `call_inner`.
         let guard = server.lock().unwrap();
         let proxy = manager.clone();
         let token = CancellationToken::new();
@@ -172,8 +172,8 @@ mod integration {
             )
         });
         let deadline = Instant::now() + Duration::from_secs(2);
-        // worker 在 state 下克隆服务句柄后 strong_count 才达到 3；
-        // 此时取消才能证明“取到锁后才发现已取消”，而不是压根没进入调用。
+        // strong_count reaches 3 only after the worker cloned the server handle under state;
+        // cancelling now proves "cancellation noticed after acquiring the lock" rather than never entering the call.
         while Arc::strong_count(&server.state) < 3 {
             assert!(Instant::now() < deadline);
             thread::sleep(POLL);
@@ -185,7 +185,7 @@ mod integration {
             assert!(Instant::now() < deadline);
             thread::sleep(POLL);
         }
-        // 取消不关闭共享连接：同一 manager 的后继调用照常成功。
+        // Cancellation does not close the shared connection: later calls on the same manager still succeed.
         assert!(
             manager
                 .call(

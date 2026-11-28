@@ -1,4 +1,4 @@
-//! 任务内备用模型与任务边界的模型回落；只在完整消息边界切换模型。
+//! In-task fallback model and model reversion at task boundaries; models switch only on complete message boundaries.
 use super::*;
 
 impl Agent {
@@ -17,7 +17,7 @@ impl Agent {
             .checkpoint(&metadata, (&self.session).into(), &self.workflow)
     }
 
-    /// 任务开始：只有上一个任务停在 fallback 时才回到 `resolve()`（`a` → `b`）。
+    /// Task start: return to `resolve()` (`a` → `b`) only if the previous task stopped on the fallback.
     pub(super) fn restore_resolved(&mut self, emit: &mut dyn FnMut(AgentEvent)) -> Result<()> {
         if !self.model_source.is_fallback() {
             return Ok(());
@@ -27,9 +27,9 @@ impl Agent {
         self.switch_role_model(&selection.reference, selection.effort, source, emit)
     }
 
-    /// 当前生效角色：运行时绑定（TUI 主会话、子 Agent）→ 与当前模型匹配的角色路由
-    /// （PLAN 模式、按角色路由的子 Agent）→ DEFAULT。
-    /// `-p`／行模式没有运行时绑定，必须回落到 `role_route`，否则角色备用模型会退化成 DEFAULT。
+    /// Active role: runtime binding (TUI main session, subagent) → role route matching the current model
+    /// (PLAN mode, role-routed subagents) → DEFAULT.
+    /// `-p`/line mode has no runtime binding and must fall back to `role_route`, otherwise a role fallback model would degrade to DEFAULT.
     fn active_role(&self) -> ModelRole {
         self.runtime_models
             .as_ref()
@@ -43,8 +43,9 @@ impl Agent {
             .unwrap_or(ModelRole::Default)
     }
 
-    /// 当前角色已启用的备用模型，连同该角色的主模型一起返回；后者供摘要路径判断
-    /// “只在角色主模型上切备用”。返回自有值，避免调用方长期借用 `self`。
+    /// The enabled fallback model of the active role, returned together with that role's main model; the
+    /// latter lets the summarization path decide to "switch to the fallback only on the role's main model". Owned values are
+    /// returned so callers do not borrow `self` for long.
     pub(super) fn role_fallback(&self) -> Option<(String, RoleModel)> {
         let assignment = self
             .catalog
@@ -54,12 +55,12 @@ impl Agent {
         Some((assignment.model.clone(), assignment.fallback.clone()?))
     }
 
-    /// 请求失败后的任务内备用模型：只切一次，任务结束时由 [`Self::restore_resolved`] 回落。
+    /// In-task fallback model after a request failure: switches once, and [`Self::restore_resolved`] reverts at task end.
     pub(super) fn activate_fallback(&mut self, emit: &mut dyn FnMut(AgentEvent)) -> Result<bool> {
         if self.model_source.is_fallback() {
             return Ok(false);
         }
-        // 子 Agent 用自己角色的备用模型；主 Agent 用当前角色（通常为 DEFAULT）的备用模型。
+        // A subagent uses its own role's fallback model; the main Agent uses the active role's (usually DEFAULT) fallback model.
         let Some((_, fallback)) = self.role_fallback() else {
             return Ok(false);
         };
@@ -116,7 +117,7 @@ impl Agent {
     }
 }
 
-/// 临时审阅／摘要只替换自己的客户端和请求，不修改主会话。
+/// Scratch review/summarization replaces only its own client and request, never the main session.
 pub(super) fn switch_scratch_model(
     client: &mut OpenAiClient,
     session: &mut Session,
@@ -129,7 +130,7 @@ pub(super) fn switch_scratch_model(
     Ok(window)
 }
 
-/// 构造指向目标模型的新客户端并按需转换临时会话历史，不要求源模型仍在目录中。
+/// Build a new client pointing at the target model and convert the scratch session history as needed; the source model need not still be in the catalog.
 pub(super) fn create_scratch_model(
     source: &OpenAiClient,
     session: &mut Session,

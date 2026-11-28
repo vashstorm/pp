@@ -1,4 +1,4 @@
-//! LLM 思考（Thinking / Reasoning）记录的采集、回放提取与诊断条目构建。
+//! Collection, replay extraction and diagnostic entry construction for LLM thinking (Thinking / Reasoning) records.
 
 use super::DiagnosticItem;
 use super::sections::{first_line_preview, truncate_preview};
@@ -9,7 +9,7 @@ use async_openai::types::responses::{
 };
 use pp_core::{context::estimate_bytes, events::AgentEvent};
 
-/// 会话内单轮已提交的 LLM 思考记录（覆盖流式与 `/resume` 回放）。
+/// Committed LLM thinking records of single turns within the session (covers streaming and `/resume` replay).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ThinkingEntry {
     pub(crate) thinking: String,
@@ -22,7 +22,7 @@ impl ThinkingEntry {
     }
 }
 
-/// 从会话 `replay` 记录中提取已提交轮次的思考内容（排除失败重试和未提交中断）。
+/// Extract the thinking content of committed turns from session `replay` records (excluding failed retries and uncommitted interruptions).
 pub(crate) fn extract_thinking_from_replay(records: &[ReplayRecord]) -> Vec<ThinkingEntry> {
     let mut entries = Vec::new();
     let mut current_thinking = String::new();
@@ -97,7 +97,7 @@ pub(crate) fn extract_thinking_from_replay(records: &[ReplayRecord]) -> Vec<Thin
     entries
 }
 
-/// 压缩历史后对齐保留的助手轮次，裁剪已被摘要替代的早期思考记录。
+/// Align the retained assistant turns after compaction and trim early thinking records already replaced by the summary.
 pub(crate) fn trim_for_retained_turns(
     history: &mut Vec<ThinkingEntry>,
     retained_assistant_turns: usize,
@@ -170,7 +170,7 @@ fn build_response_thinking(
         });
     }
 
-    // 若会话中尚无原生 Reasoning 项但采集到了流式思考（如部分不回传 Reasoning 项的兼容网关），补入展示。
+    // If the session has no native Reasoning items yet but streamed thinking was collected (some compatible gateways omit Reasoning items), add it for display.
     if count == 0 && !history.is_empty() {
         return build_completion_thinking(history);
     }

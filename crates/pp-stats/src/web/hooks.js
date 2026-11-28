@@ -1,5 +1,6 @@
 /**
- * Hooks 页面：生命周期 Hook 执行概览、时间分布、按事件及按项目统计表。
+ * Hooks page: lifecycle Hook execution overview, time distribution, and stats tables by event and by
+ * project.
  */
 
 import {
@@ -304,7 +305,7 @@ function hookProjectTable(projects) {
 }
 
 /**
- * 渲染 Hooks 页面。
+ * Renders the Hooks page.
  * @returns {string}
  */
 export function hooksPage() {
@@ -398,7 +399,7 @@ export function hooksPage() {
 }
 
 /**
- * 处理 Hooks 页排序与事件行展开点击。
+ * Handles sorting and event-row expansion clicks on the Hooks page.
  * @param {Element} target
  * @returns {boolean}
  */

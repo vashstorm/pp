@@ -1,4 +1,5 @@
-//! 图片只在后台解码、缩放与编码；主线程复用完整缓冲，避免消耗 Kitty 的首次传输状态。
+//! Images are decoded, scaled and encoded only in the background; the main thread reuses
+//! the full buffer so Kitty's first-transfer state is not consumed.
 use super::attachment_edit::color as attachment_color;
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -97,7 +98,7 @@ impl Worker {
                     }
                 }
             })
-            .context("无法启动图片预览线程")?;
+            .context("starting the image preview thread")?;
         Ok(Self {
             requests: Some(requests),
             replies,
@@ -111,7 +112,8 @@ impl Drop for Worker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.requests.take();
-        // 先释放有界回复接收端，避免工作线程在发送完成结果时阻塞退出。
+        // Release the bounded reply receiver first so the worker cannot block on exit
+        // while sending a completed result.
         let (_, empty) = mpsc::channel();
         drop(std::mem::replace(&mut self.replies, empty));
         if let Some(thread) = self.thread.take() {
@@ -121,15 +123,16 @@ impl Drop for Worker {
 }
 
 fn encode(source: &str, picker: &Picker, key: Key) -> Result<Rendered> {
-    let (_, payload) = source.split_once(',').context("无效的图片快照")?;
+    let (_, payload) = source.split_once(',').context("invalid image snapshot")?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(payload)
-        .context("无效的图片编码")?;
-    let image = image::load_from_memory(&bytes).context("无法读取图片快照")?;
+        .context("invalid image encoding")?;
+    let image = image::load_from_memory(&bytes).context("could not read image snapshot")?;
     let area = Rect::new(0, 0, key.width, key.height);
     let mut encoder = picker.clone();
     if picker.protocol_type() == ProtocolType::Kitty {
-        // 复用原生 PNG 编码及相同的缩放、透明边距，避免向 tmux 发送整幅 RGBA。
+        // Reuse the native PNG encoding plus the same scaling and transparent margins to
+        // avoid sending a full RGBA image to tmux.
         encoder.set_protocol_type(ProtocolType::Iterm2);
     }
     let mut protocol = encoder.new_protocol(
@@ -145,7 +148,7 @@ fn encode(source: &str, picker: &Picker, key: Key) -> Result<Rendered> {
     let mut buffer = Buffer::empty(protocol.area());
     if picker.protocol_type() == ProtocolType::Kitty {
         let Protocol::ITerm2(png) = protocol else {
-            anyhow::bail!("无法编码图片预览");
+            anyhow::bail!("could not encode image preview");
         };
         kitty_png(&png, &mut buffer)?;
     } else {
@@ -165,11 +168,15 @@ fn encode(source: &str, picker: &Picker, key: Key) -> Result<Rendered> {
 }
 
 fn iterm2_cells(png: &mut Iterm2) -> Result<()> {
-    let (prefix, dimensions) = png.data.split_once(";width=").context("无效的 PNG 预览")?;
+    let (prefix, dimensions) = png
+        .data
+        .split_once(";width=")
+        .context("invalid PNG preview")?;
     let (_, suffix) = dimensions
         .split_once(";doNotMoveCursor=")
-        .context("无效的 PNG 预览")?;
-    // PNG 已等比缩放并补齐字符格；按格显示，避免 Retina 像素与布局尺寸不一致。
+        .context("invalid PNG preview")?;
+    // The PNG is already scaled proportionally and padded to whole cells; displaying it by
+    // cell keeps Retina pixels and layout sizes consistent.
     png.data = format!(
         "{prefix};width={};height={};preserveAspectRatio=0;doNotMoveCursor={suffix}",
         png.area.width, png.area.height,
@@ -178,14 +185,15 @@ fn iterm2_cells(png: &mut Iterm2) -> Result<()> {
 }
 
 fn kitty_png(png: &Iterm2, buffer: &mut Buffer) -> Result<()> {
-    let (_, payload) = png.data.split_once(':').context("无效的 PNG 预览")?;
+    let (_, payload) = png.data.split_once(':').context("invalid PNG preview")?;
     let payload = payload
         .strip_suffix(if png.is_tmux { "\x07\x1b\\" } else { "\x07" })
-        .context("无效的 PNG 预览")?;
+        .context("invalid PNG preview")?;
     let mut id = [0; 4];
-    getrandom::fill(&mut id).context("无法生成图片编号")?;
+    getrandom::fill(&mut id).context("could not generate an image id")?;
     let id = u32::from_ne_bytes(id).max(1);
-    // 依赖库只负责生成占位符；替换其锚点中的示例像素，实际发送缩放后的 PNG。
+    // The dependency only generates placeholders; replace the sample pixel in its anchor
+    // with the actually transmitted, scaled PNG.
     let protocol = Protocol::Kitty(Kitty::new(
         image::DynamicImage::new_rgba8(1, 1),
         buffer.area,
@@ -203,14 +211,14 @@ fn kitty_png(png: &Iterm2, buffer: &mut Buffer) -> Result<()> {
             transmission.push_str(&format!("i={id},a=T,U=1,f=100,t=d,"));
         }
         let more = u8::from(index + 1 < count);
-        let chunk = std::str::from_utf8(chunk).context("无效的 PNG 预览")?;
+        let chunk = std::str::from_utf8(chunk).context("invalid PNG preview")?;
         transmission.push_str(&format!("m={more};{chunk}{escape}\\{end}"));
     }
     let anchor = &mut buffer[(0, 0)];
     let (_, placeholders) = anchor
         .symbol()
         .split_once("\x1b[s")
-        .context("无效的图片占位符")?;
+        .context("invalid image placeholder")?;
     transmission.push_str("\x1b[s");
     transmission.push_str(placeholders);
     anchor.set_symbol(&transmission);
@@ -221,8 +229,9 @@ fn prepare_graphics(buffer: &mut Buffer) {
     for cell in &mut buffer.content {
         if cell.symbol().contains('\x1b') {
             if cell.symbol().starts_with("\x1bPtmux;\x1b\x1b_G") {
-                // ratatui-image 10.0.0 将全部 Kitty 分块包在同一条 tmux 透传中，
-                // 大图会超过 tmux 的控制串上限；让每个分块独立透传，保留末尾占位符。
+                // ratatui-image 10.0.0 wraps every Kitty chunk in one tmux passthrough; a
+                // large image would exceed tmux's control-string limit. Let each chunk pass
+                // through on its own while keeping the trailing placeholders.
                 let symbol = cell.symbol().replace(
                     "\x1b\x1b\\\x1b\x1b_G",
                     "\x1b\x1b\\\x1b\\\x1bPtmux;\x1b\x1b_G",
@@ -231,7 +240,8 @@ fn prepare_graphics(buffer: &mut Buffer) {
             } else if let Some(symbol) = iterm2_tmux(cell.symbol()) {
                 cell.set_symbol(&symbol);
             }
-            // 协议控制串占据一个锚点单元，不能把转义序列按普通文字计算宽度。
+            // A protocol control string occupies one anchor cell, so escape sequences must
+            // not be measured as plain text width.
             cell.set_diff_option(ratatui::buffer::CellDiffOption::ForcedWidth(
                 std::num::NonZeroU16::MIN,
             ));
@@ -247,12 +257,14 @@ fn iterm2_tmux(symbol: &str) -> Option<String> {
     if !erase.is_empty() {
         output.push_str(&format!("\x1bPtmux;{erase}\x1b\\"));
     }
-    // 原生多段协议避免把整张 PNG 放在一条 tmux 控制串内。
+    // The native multipart protocol avoids putting the whole PNG inside one tmux control
+    // string.
     output.push_str(&format!(
         "\x1bPtmux;\x1b\x1b]1337;MultipartFile={arguments}\x07\x1b\\"
     ));
     for chunk in payload.as_bytes().chunks(4096) {
-        // payload 是依赖库生成的 ASCII base64，按字节切分不会拆开 UTF-8。
+        // The payload is ASCII base64 generated by the dependency, so splitting by bytes
+        // never breaks UTF-8.
         let chunk = std::str::from_utf8(chunk).ok()?;
         output.push_str(&format!(
             "\x1bPtmux;\x1b\x1b]1337;FilePart={chunk}\x07\x1b\\"
@@ -307,7 +319,8 @@ impl View {
         })
     }
 
-    /// 只在读取首个终端事件之前配置一次，缓存中不会混用不同协议。
+    /// Only configured once before the first terminal event is read, so the cache never
+    /// mixes protocols.
     pub fn configure(&mut self, picker: Picker) {
         self.picker = picker;
     }
@@ -443,7 +456,7 @@ impl View {
                 }
             } else {
                 frame.render_widget(
-                    Paragraph::new("预览不可用").alignment(Alignment::Center),
+                    Paragraph::new("preview unavailable").alignment(Alignment::Center),
                     area,
                 );
             }
@@ -562,7 +575,8 @@ impl View {
             &image,
             Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2),
         );
-        // 将浮层与卡片间的空隙也作为命中区域，鼠标可连续移入大图。
+        // Treat the gap between the popup and the card as a hit area too, so the mouse can
+        // move continuously into the enlarged image.
         self.popup = Some(Rect::new(
             area.x,
             area.y,
@@ -608,22 +622,26 @@ mod tests {
         }
     }
 
-    /// 环境提示为 tmux 时 prepare_graphics 会把原生 iTerm2 帧拆成 MultipartFile/FilePart，
-    /// 两种封装携带同一份 base64 负载。
+    /// When the environment hint is tmux, prepare_graphics splits the native iTerm2 frame
+    /// into MultipartFile/FilePart; both wrappers carry the same base64 payload.
     fn iterm2_payload(symbol: &str) -> String {
         if symbol.contains("MultipartFile=") {
             symbol
                 .split("FilePart=")
                 .skip(1)
-                .map(|part| part.split_once('\x07').expect("FilePart 缺少终止符").0)
+                .map(|part| {
+                    part.split_once('\x07')
+                        .expect("FilePart is missing its terminator")
+                        .0
+                })
                 .collect()
         } else {
             symbol
                 .split_once(':')
-                .expect("iTerm2 负载缺少分隔符")
+                .expect("iTerm2 payload is missing its separator")
                 .1
                 .split_once('\x07')
-                .expect("iTerm2 负载缺少终止符")
+                .expect("iTerm2 payload is missing its terminator")
                 .0
                 .to_owned()
         }
@@ -927,7 +945,11 @@ mod tests {
             let mut chunks = 0;
             while let Some(body) = remaining.strip_prefix("\x1bPtmux;") {
                 let (chunk, rest) = body.split_once("\x1b\x1b\\\x1b\\").unwrap();
-                assert!(chunk.len() < 8192, "tmux 透传块过大：{} 字节", chunk.len());
+                assert!(
+                    chunk.len() < 8192,
+                    "tmux passthrough chunk too large: {} bytes",
+                    chunk.len()
+                );
                 assert!(chunk.starts_with("\x1b\x1b_G"));
                 unwrapped.push_str(chunk);
                 unwrapped.push_str("\x1b\x1b\\");

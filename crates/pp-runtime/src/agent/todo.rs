@@ -1,10 +1,11 @@
-//! 完成提醒（上游 todo-tracker 的 awaiting-user-answer 移植）。
+//! Completion reminders (a port of the awaiting-user-answer logic from the upstream
+//! todo-tracker).
 //!
-//! 本模块只提供纯函数：状态预算（[`TodoReminderState`]）、资格判定
-//! （[`eligible`]）、open 项收集（[`open_todos`]）、提醒正文
-//! （[`reminder_text`]) 以及终答文本的等待用户识别
-//! （[`is_awaiting_user_answer`])。run_loop 的预算重置、门闩解除、
-//! developer 历史追加与事件发布由 agent 主流程负责。
+//! This module only provides pure functions: the state budget ([`TodoReminderState`]),
+//! eligibility ([`eligible`]), open-item collection ([`open_todos`]), the reminder body
+//! ([`reminder_text`]) and awaiting-user detection on the final answer text
+//! ([`is_awaiting_user_answer`]). Budget resets, latch release, developer history appends
+//! and event emission in run_loop are the agent main flow's responsibility.
 
 use std::fmt::Write as _;
 use std::sync::LazyLock;
@@ -18,20 +19,21 @@ use pp_core::todo::TodoItem;
 use pp_core::todo::TodoPhase;
 use pp_core::todo::TodoStatus;
 
-/// 每个 run/continue 最多发送的完成提醒次数（上游默认 3）。
+/// Maximum completion reminders sent per run/continue (3 by default upstream).
 pub(super) const TODO_REMINDERS_MAX: u8 = 3;
 
-/// 单次 run_loop 局部的提醒预算：已发次数与门闩。
-/// 已发提醒置 `awaiting_progress`；任何完成的工具结果（含错误/view）解除。
+/// Reminder budget local to a single run_loop: emitted count and latch.
+/// A sent reminder sets `awaiting_progress`; any completed tool result (including errors and
+/// view) releases it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) struct TodoReminderState {
     pub(super) count: u8,
     pub(super) awaiting_progress: bool,
 }
 
-/// 终答前判定是否候选提醒：仅 Execute 模式下普通清单或仍绑定当前
-/// Executed 计划的投影；存在 pending/in_progress、未等用户回答、
-/// 门闩未闭且预算未用尽。
+/// Decide whether a reminder is a candidate before the final answer: only a plain list in
+/// Execute mode or a projection still bound to the current Executed plan, with a
+/// pending/in_progress item, no awaiting user answer, the latch closed and budget left.
 pub(super) fn eligible(
     workflow: &WorkflowState,
     state: &TodoReminderState,
@@ -53,8 +55,9 @@ pub(super) fn eligible(
     !open_todos(&workflow.todos).is_empty()
 }
 
-/// 按阶段顺序收集 open（pending/in_progress）任务，供提醒事件使用。
-/// blocked 是外部等待、completed/abandoned 已关闭，均不算提醒对象。
+/// Collect open (pending/in_progress) tasks in phase order for the reminder event.
+/// blocked is an external wait, completed/abandoned are closed, so none of them is a reminder
+/// target.
 pub(super) fn open_todos(phases: &[TodoPhase]) -> Vec<TodoItem> {
     phases
         .iter()
@@ -64,7 +67,8 @@ pub(super) fn open_todos(phases: &[TodoPhase]) -> Vec<TodoItem> {
         .collect()
 }
 
-/// 完整提醒正文（含 `<system-reminder>` 包裹），按阶段逐行列出 open 项。
+/// Full reminder body (wrapped in `<system-reminder>`) listing open items line by line per
+/// phase.
 pub(super) fn reminder_text(phases: &[TodoPhase], attempt: u8) -> String {
     let mut count = 0usize;
     let mut lines = String::new();
@@ -87,15 +91,15 @@ pub(super) fn reminder_text(phases: &[TodoPhase], attempt: u8) -> String {
 }
 
 // =============================================================================
-// Awaiting-user-answer detection（上游 todo-tracker.ts 逐条移植）
+// Awaiting-user-answer detection (ported line by line from the upstream todo-tracker.ts)
 // =============================================================================
 
-/// JS `\s` 含 BOM；`char::is_whitespace` 之外单独补上。
+/// JS `\s` includes the BOM; add it on top of `char::is_whitespace`.
 fn is_js_whitespace(c: char) -> bool {
     c.is_whitespace() || c == '\u{feff}'
 }
 
-/// JS `.` 的排除集：换行及相关行终结符。
+/// Exclusion set for JS `.`: newline and related line terminators.
 fn is_js_line_terminator(c: char) -> bool {
     matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')
 }
@@ -127,7 +131,8 @@ static USER_RESPONSE_CUE_RE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
-/// 连接词本体；后随的 lookahead 由 [`CONNECTIVE_CUE_RE`] 在剩余文本上等价实现。
+/// The connective itself; the trailing lookahead is implemented equivalently by
+/// [`CONNECTIVE_CUE_RE`] over the remaining text.
 static LEADING_CONNECTIVE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(?:and|or|so|then|also|otherwise|alternatively|separately|finally)\b,?\s*")
         .unwrap()
@@ -142,8 +147,9 @@ static QUESTION_TAIL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[?？]\
 static PARAGRAPH_SPLIT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\r?\n\s*\r?\n").unwrap());
 
-/// `/(\*\*|__)(.*?)\1/g` → `"$2"`：反引引用用字符串扫描等价实现。
-/// `.*?` 不跨行（JS `.` 排除行终结符），匹配不重叠、从左到右。
+/// `/(\*\*|__)(.*?)\1/g` → `"$2"`: implemented equivalently with a string scan.
+/// `.*?` never crosses lines (JS `.` excludes line terminators); matches are
+/// non-overlapping and go left to right.
 fn strip_inline_emphasis(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
@@ -160,7 +166,8 @@ fn strip_inline_emphasis(text: &str) -> String {
             i += 1;
             continue;
         };
-        // 懒惰内层：每个位置先试闭合标记，再消费一个字符。
+        // Lazy inner part: try the closing marker at every position first, then consume one
+        // character.
         let mut j = i + 2;
         let mut matched = false;
         while j + 1 < n {
@@ -178,7 +185,7 @@ fn strip_inline_emphasis(text: &str) -> String {
             j += 1;
         }
         if !matched {
-            // 该起点无匹配：引擎前进一个字符后重试。
+            // No match at this start: the engine advances one character and retries.
             out.push(chars[i]);
             i += 1;
         }
@@ -186,8 +193,9 @@ fn strip_inline_emphasis(text: &str) -> String {
     out
 }
 
-/// `^(\*\*\*|\*\*|\*|___|__|_)([\s\S]+)\1$` → `"$2"`：按上游备选顺序，
-/// 首个可完整包裹的标记生效；删除线刻意不解包。
+/// `^(\*\*\*|\*\*|\*|___|__|_)([\s\S]+)\1$` → `"$2"`: in the upstream alternative order
+/// the first marker that wraps the whole text wins; strikethrough is deliberately not
+/// unwrapped.
 fn unwrap_wrapped_emphasis(text: &str) -> String {
     const MARKERS: [&str; 6] = ["***", "**", "*", "___", "__", "_"];
     for marker in MARKERS {
@@ -243,7 +251,8 @@ fn is_response_cue_line(line: &str) -> bool {
     USER_RESPONSE_CUE_RE.is_match(candidate.trim())
 }
 
-/// lookahead 等价：先匹配连接词前缀，再验证剩余文本以 cue 起始。
+/// lookahead equivalent: match the connective prefix first, then verify the remaining text
+/// starts with a cue.
 fn strip_leading_connective(text: &str) -> String {
     if let Some(m) = LEADING_CONNECTIVE_RE.find(text) {
         let rest = &text[m.end()..];
@@ -254,8 +263,8 @@ fn strip_leading_connective(text: &str) -> String {
     text.to_string()
 }
 
-/// 结尾段落如何交还控制权：cue（指示用户行动）> request（明确提问）>
-/// question（仅问句形状）。
+/// How the closing paragraph hands control back: cue (asks the user to act) > request
+/// (explicit question) > question (question shape only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClosingAsk {
     None,
@@ -282,9 +291,9 @@ fn ask_of(span: &str) -> ClosingAsk {
     }
 }
 
-/// `(?<=[.!?…])\s+|(?<=[。！？])` 的字符串扫描等价：西文终结符吞掉
-/// 其后的空白串（`foo?: string` 的 `?` 后是 `:`，不会断句），CJK
-/// 终结符之后零宽断开、终结符留在前段。
+/// String-scan equivalent of `(?<=[.!?…])\s+|(?<=[。！？])`: a Western terminator swallows
+/// the whitespace run after it (the `?` in `foo?: string` is followed by `:`, so no sentence
+/// break), while a CJK terminator breaks with zero width and stays in the preceding segment.
 fn split_sentences(line: &str) -> Vec<String> {
     let chars: Vec<char> = line.chars().collect();
     let mut sentences: Vec<String> = Vec::new();
@@ -313,7 +322,7 @@ fn split_sentences(line: &str) -> Vec<String> {
     sentences
 }
 
-/// 结尾段落的最后两句；遇到列表项即停。
+/// The last two sentences of the closing paragraph; stops at a list item.
 fn closing_sentences(paragraph: &str) -> Vec<String> {
     let mut sentences: Vec<String> = Vec::new();
     for line in paragraph.split('\n').rev() {
@@ -342,7 +351,8 @@ fn closing_ask(paragraph: &str) -> ClosingAsk {
     if let Some(last) = sentences.last() {
         asks.push(ask_of(last));
     }
-    // 无词典能识别非英文追问或非英文自答；漏掉未决请求代价更高。
+    // No dictionary can recognize a non-English follow-up question or a non-English
+    // self-answer; missing a pending request costs more.
     let foreign_question =
         sentences.len() == 2 && !sentences[0].is_ascii() && is_question_prompt_line(&sentences[0]);
     if asks.contains(&ClosingAsk::Cue) {
@@ -358,8 +368,8 @@ fn closing_ask(paragraph: &str) -> ClosingAsk {
     }
 }
 
-/// 终答文本是否在等待用户回答。`text` 是本次终答的 assistant 文本
-/// （调用方提取，不扫描全部历史）。
+/// Whether the final answer text is awaiting a user answer. `text` is this turn's assistant
+/// text (extracted by the caller; the whole history is not scanned).
 pub(super) fn is_awaiting_user_answer(text: &str) -> bool {
     if text.is_empty() {
         return false;
@@ -369,7 +379,8 @@ pub(super) fn is_awaiting_user_answer(text: &str) -> bool {
     if closing_ask(last_paragraph) != ClosingAsk::None {
         return true;
     }
-    // 单行收尾备注不撤回前一段的指示；那里的问句可能是被备注自答的。
+    // A single-line closing note does not retract the previous paragraph's directive; the
+    // question there may have been answered by the note itself.
     if paragraphs.len() >= 2 {
         let previous = paragraphs[paragraphs.len() - 2];
         if !previous.is_empty()
@@ -380,7 +391,8 @@ pub(super) fn is_awaiting_user_answer(text: &str) -> bool {
             return true;
         }
     }
-    // 选项加推荐不代表替用户回答；遇到其他正文即停，自答问句允许继续。
+    // Options plus a recommendation do not answer on the user's behalf; stop at any other
+    // body text, while a self-answered question may continue.
     let mut option_count = 0usize;
     let mut has_recommendation = false;
     for line in text.split('\n').rev() {
@@ -445,45 +457,45 @@ mod tests {
     #[test]
     fn todo_awaiting_user_answer_positive_cases() {
         for text in [
-            // 英文问句与明确询问 cue
+            // English question sentences and explicit response cues
             "Which file do you want me to edit?",
             "What's next?",
             "Done with the refactor. Let me know if you want the details.",
             "Please confirm the database credentials.",
             "So please confirm the port number.",
-            // 中文问句（需带中文问号）
+            // Chinese questions (require a Chinese question mark)
             "还需要我补充测试吗？",
             "你选哪个方案？",
-            // Q/Ask 标签
+            // Q/Ask labels
             "Q: Should we proceed?",
             "Ask 2: which database?",
             "Question: what's the status?",
-            // 强调标记剥离后仍识别
+            // Still recognized after emphasis markers are stripped
             "*Which approach should we take?*",
             "**Should we proceed?**",
             "***Which one do you prefer?***",
             "__Should I continue?__",
             "**Heads up**: Should we proceed?",
-            // Markdown 前缀剥离
+            // Markdown prefix stripping
             "> - Which file do you need?",
             "1. Should I proceed?",
             "- Can you deploy tonight?",
-            // 选择确认问句
+            // Choice confirmation questions
             "Stick with SQLite?",
             "Go with option B?",
             "Proceed with the migration?",
-            // 选项列表 + 推荐方案
+            // Option list plus a recommendation
             "What next?\n- A: SQLite\n- B: Postgres\nI'd recommend option A.",
             "What next?\n- A: SQLite\n- B: Postgres\nMy recommendation: option A.",
-            // 许可请求在单行备注后保留
+            // Permission requests survive a single-line note
             "If you confirm, I'll run the migration.",
             "Deployment is ready.\n\nIf you approve, I'll proceed.",
             "If you approve, I'll proceed.\n\nRepository unchanged, no commits.",
-            // 末两句规则正例
+            // Positive cases for the last-two-sentences rule
             "We shipped the feature. Tell me if you want a follow-up.",
             "Tell me if you want a follow-up. We shipped the feature.",
             "Feel free to skip.\nWhich format do you prefer?",
-            // 非英文问句
+            // Non-English question
             "Хотите продолжить? Отдельно скажите, как оформить доступ.",
         ] {
             assert!(is_awaiting_user_answer(text), "expected awaiting: {text}");
@@ -493,30 +505,31 @@ mod tests {
     #[test]
     fn todo_awaiting_user_answer_negative_and_boundaries() {
         for text in [
-            // 普通陈述与空白
+            // Plain statements and whitespace
             "All tasks complete.",
             "",
             "   \n  ",
             "Finally, answer validation is complete.",
             "Finished the refactor. Build passes.",
-            // 无中文问号 / 无标签问句
+            // No Chinese question mark / untagged question
             "需要我再补充一些测试吗",
             "全部任务已完成。",
             "Q: proceed",
-            // 代码中的 `?:`
+            // `?:` inside code
             "Added the field `enabled?: boolean` and ran the suite.",
             "The type uses `retries?: number`. Tests pass.",
-            // 删除线表示已撤回
+            // Strikethrough means retracted
             "~~Should we proceed?~~",
             "Stick with SQLite.",
-            // 无推荐、单选项或自答选项
+            // No recommendation, a single option, or an option already answered
             "What next?\n- A: SQLite\n- B: Postgres",
             "What next?\n- A: SQLite",
             "What next?\n- A: SQLite\n- B: Postgres\nWent with option A, committed.",
-            // 自答或多行收尾笔记覆盖前段 cue
+            // A self-answer or multi-line closing note overrides the earlier cue
             "Do you need the report?\n\nNo, the report is already saved.",
             "If you approve, I'll proceed.\n\nNotes:\n- build ok\n- tests ok",
-            // 仅看末两句 / 后句收尾覆盖前句问句
+            // Only the last two sentences are examined / the trailing sentence overrides an
+            // earlier question
             "The refactor is done. Tell me if you want a follow-up. We shipped the feature.",
             "Which format do you prefer?\nFeel free to skip.",
         ] {
@@ -590,13 +603,13 @@ mod tests {
                 ],
             )]
         };
-        // Execute 普通清单且有 open 项。
+        // Execute with a plain list that has open items.
         assert!(eligible(
             &workflow(WorkMode::Execute, open()),
             &TodoReminderState::default(),
             false
         ));
-        // blocked 不催。
+        // blocked is not reminded.
         assert!(!eligible(
             &workflow(
                 WorkMode::Execute,
@@ -605,13 +618,13 @@ mod tests {
             &TodoReminderState::default(),
             false
         ));
-        // Plan 模式一律不催。
+        // Plan mode is never reminded.
         assert!(!eligible(
             &workflow(WorkMode::Plan, open()),
             &TodoReminderState::default(),
             false
         ));
-        // 门闩、等待用户、预算用尽。
+        // Latch, awaiting user, budget exhausted.
         assert!(!eligible(
             &workflow(WorkMode::Execute, open()),
             &TodoReminderState {
@@ -645,14 +658,14 @@ mod tests {
             location: PlanLocation::Plans,
             approved_tasks: None,
         };
-        // Executed 且仍绑定当前计划：可催。
+        // Executed and still bound to the current plan: remind.
         let bound = WorkflowState {
             plan: Some(executed_plan.clone()),
             todo_plan_id: Some("plan-1".into()),
             ..workflow(WorkMode::Execute, open())
         };
         assert!(eligible(&bound, &TodoReminderState::default(), false));
-        // 只读历史计划（Completed）与来源不匹配均不催。
+        // A read-only historical plan (Completed) or a mismatched source is not reminded.
         let mut completed = executed_plan.clone();
         completed.status = PlanStatus::Completed;
         let readonly = WorkflowState {
@@ -663,7 +676,7 @@ mod tests {
         let mut detached = bound.clone();
         detached.todo_plan_id = Some("other".into());
         assert!(!eligible(&detached, &TodoReminderState::default(), false));
-        // 无来源（脱离后普通清单）不受旧计划影响。
+        // No source (a plain list after detaching) is unaffected by the old plan.
         let standalone = WorkflowState {
             plan: Some(executed_plan),
             ..workflow(WorkMode::Execute, open())

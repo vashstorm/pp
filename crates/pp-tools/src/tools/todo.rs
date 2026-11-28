@@ -1,9 +1,9 @@
-//! 普通 todo 工具：沿用 oh-my-pi 的 schema、诊断与 summary，支持多个进行项。
+//! Plain todo tool: reuses the oh-my-pi schema, diagnostics and summary, and supports multiple in-progress items.
 //!
-//! 参数解析/目标定位（`resolve_params`/`resolve`）与按序数的状态转换
-//! （`apply_operation`）刻意分离：普通路径先按完整原文定位出
-//! [`TaskOrdinal`]，计划适配器后续直接传入按文档顺序解析出的全局序数，
-//! 不再通过首条同文案匹配定位。
+//! Argument parsing/target resolution (`resolve_params`/`resolve`) is deliberately separate from ordinal-based
+//! state transitions (`apply_operation`): the plain path first resolves a [`TaskOrdinal`] from the complete
+//! original text, while the plan adapter later passes the global ordinal resolved in document order directly,
+//! instead of locating the item by matching the first occurrence of the same text.
 
 use pp_core::todo::TodoPhase;
 use serde_json::{Value, json};

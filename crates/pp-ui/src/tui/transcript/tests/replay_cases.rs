@@ -33,7 +33,7 @@ fn replay_restores_visible_history_and_marks_interruption() {
         EntryStatus::Failed
     );
 
-    // 完整结束的记录不会误报中断。
+    // A fully finished record does not report a false interruption.
     let mut transcript = Transcript::new();
     let error = transcript.replay(vec![
         ReplayRecord::User("done task".into()),

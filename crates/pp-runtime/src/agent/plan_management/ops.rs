@@ -17,10 +17,12 @@ use std::ffi::OsString;
 use std::path::Path;
 
 impl Agent {
-    /// 重命名：核验 selection 后检查新名（严格 kebab 规则、三个目录磁盘
-    /// 重名与登记表活动重名），同名直接成功；否则 link→CAS 更新登记→同步
-    /// 当前绑定→清理旧名链接。只改文件名，不改 H1/正文/checkbox/ID/正文
-    /// revision；旧 path token 因路径变化自然失效。
+    /// Rename: after verifying the selection, check the new name (strict kebab rules, on-disk
+    /// name clashes across the three directories and active name clashes in the registry); an
+    /// identical name succeeds directly, otherwise link → CAS-update the registry → sync the
+    /// current binding → clean up the old-name link. Only the file name changes, never the
+    /// H1/body/checkbox/ID/body revision; the old path token naturally expires because the path
+    /// changed.
     pub fn rename_listed_plan(
         &mut self,
         selection: PlanSelection,
@@ -42,8 +44,9 @@ impl Agent {
                 snapshot.catalog.active_by_file_name(&file_name).is_none(),
                 "{NAME_EXISTS}"
             );
-            // 三个生命周期目录的磁盘重名预检；缺失目录视为无重名，预检后
-            // 的并发碰撞由 `link_plan` 的同 inode 确认兜底，绝不覆盖。
+            // On-disk name-clash precheck across the three lifecycle directories; a missing
+            // directory counts as no clash, and a concurrent collision after the precheck is
+            // caught by `link_plan`'s same-inode confirmation, never by overwriting.
             for location in [
                 PlanLocation::Drafts,
                 PlanLocation::Plans,
@@ -60,7 +63,8 @@ impl Agent {
                 }
             }
         }
-        // 发布新名链接并 CAS 更新登记；失败保留源名，返回真实错误。
+        // Publish the new-name link and CAS-update the registry; on failure keep the source name
+        // and return the real error.
         plan_catalog::publish_plan_move(
             workspace,
             &verified.id,
@@ -68,8 +72,9 @@ impl Agent {
             (file_name.as_str(), verified.location),
             verified.content.as_bytes(),
         )?;
-        // 同步当前绑定：仅文件名；登记已提交，journal 失败返回真实错误。
-        // 先结束上面的 workspace 借用再改 workflow，避免借用冲突。
+        // Sync the current binding: file name only; the registry is committed, so a journal
+        // failure returns the real error.
+        // End the workspace borrow above before mutating workflow to avoid a borrow conflict.
         if self
             .workflow
             .plan
@@ -84,7 +89,8 @@ impl Agent {
                 return Err(error);
             }
         }
-        // 清理旧名链接；失败交给按 ID 协调的同 inode 残留清理。
+        // Clean up the old-name link; a failure is left to ID reconciliation's same-inode
+        // leftover cleanup.
         let workspace = self.tools.plan_workspace();
         if let Err(error) = plan_catalog::commit_plan_move(
             workspace,
@@ -97,11 +103,13 @@ impl Agent {
         self.list_plans()
     }
 
-    /// 确认删除：核验 selection 后先以 CAS 提交记录删除身份的 tombstone，
-    /// 再仅删除选中普通文件及同 ID 同 inode 的生命周期残留链接；登记失败
-    /// 或正文不匹配不 unlink。删除当前绑定只解除绑定并保留模式；其他会话
-    /// 随后按 ID 得到 tombstone 错误，不从快照补回。已提交 tombstone 后的
-    /// unlink 失败报 `Delete incomplete`，可显式重试且残留不被纳管成新 ID。
+    /// Confirmed deletion: after verifying the selection, first CAS-commit a tombstone recording
+    /// the deleted identity, then delete only the selected regular file plus lifecycle leftover
+    /// links with the same ID and inode; a registration failure or body mismatch does not unlink
+    /// anything. Deleting the current binding only releases the binding and keeps the mode; other
+    /// sessions then get a tombstone error by ID and are never refilled from a snapshot. A failed
+    /// unlink after the tombstone is committed reports `Delete incomplete`, can be retried
+    /// explicitly, and the leftover is never adopted as a new ID.
     pub fn delete_listed_plan(&mut self, selection: PlanSelection) -> Result<PlanListing> {
         self.journal.check()?;
         ensure!(valid_id(&selection.id), "Invalid plan selection.");
@@ -124,7 +132,8 @@ impl Agent {
                 let content = std::str::from_utf8(&bytes)
                     .map_err(|_| anyhow!("Plan file is not valid UTF-8."))?;
                 ensure!(content == selection.content, "{CHANGED}");
-                // CAS：先提交墓碑（记录删除身份），再 unlink；登记失败不删文件。
+                // CAS: commit the tombstone (recording the deleted identity) first, then unlink; a
+                // failed registration deletes no file.
                 let identity = target
                     .stat_optional()?
                     .context("Plan file vanished; refresh the list.")
@@ -145,7 +154,8 @@ impl Agent {
                 .iter()
                 .find(|entry| entry.id == selection.id && entry.deleted)
             {
-                // 删除残留重试：仅当路径上的文件身份与墓碑一致。
+                // Deletion-leftover retry: only when the file identity at the path matches the
+                // tombstone.
                 let identity = entry
                     .deleted_file_identity
                     .ok_or_else(|| anyhow!("{DELETED_PLAN}"))?;
@@ -169,7 +179,8 @@ impl Agent {
         };
         let mut failures: Vec<String> = Vec::new();
         remove_matching(workspace, Path::new(&primary), identity, &mut failures);
-        // 同 inode 的生命周期残留链接：只清理与被删文件确认同 inode 的名字。
+        // Lifecycle leftover links with the same inode: only names confirmed to share the deleted
+        // file's inode are cleaned up.
         for location in [
             PlanLocation::Drafts,
             PlanLocation::Plans,
@@ -192,8 +203,8 @@ impl Agent {
             failures.is_empty(),
             "Delete incomplete; retry deleting this plan from /plan-list."
         );
-        // 删除当前绑定：只解除 plan/review 绑定并保留模式；旧会话按 ID
-        // 报已删除，不从快照补回。
+        // Delete the current binding: release only the plan/review binding and keep the mode;
+        // legacy sessions report it as deleted by ID and are not refilled from a snapshot.
         if self
             .plan_lease
             .as_ref()
@@ -224,8 +235,8 @@ impl Agent {
     }
 }
 
-/// 目录直接子项中通过 stored 命名规则的 `.md` 名称；供删除残留清扫使用，
-/// 缺失目录为空。
+/// `.md` names among a directory's direct children that satisfy the stored naming rules; used by
+/// leftover sweeps, with a missing directory counted as empty.
 fn stored_names(workspace: &Workspace, location: PlanLocation) -> Result<Vec<String>> {
     let dir = match workspace.directory(
         &[
@@ -260,8 +271,9 @@ fn stored_names(workspace: &Workspace, location: PlanLocation) -> Result<Vec<Str
     Ok(names)
 }
 
-/// 身份确认后移除单个文件；缺失视为已完成，不同 inode 绝不动，其他失败
-/// 记入 failures 由调用方报 `Delete incomplete`。
+/// Remove a single file once its identity is confirmed; a missing file counts as done, a
+/// different inode is never touched, and other failures are recorded in failures for the caller
+/// to report as `Delete incomplete`.
 fn remove_matching(
     workspace: &Workspace,
     path: &Path,
@@ -327,13 +339,13 @@ mod tests {
 
         let selection = agent.read_listed_plan(&old.id).unwrap();
 
-        // 非法名称被拒绝，原文件不变。
+        // An invalid name is rejected and the original file is unchanged.
         let error =
             err_message(agent.rename_listed_plan(selection.clone(), "Bad Name.md".to_owned()));
         assert!(error.contains("kebab-case"));
         assert!(root.join(".pp/drafts/rename-me.md").exists());
 
-        // 重名被拒绝。
+        // A name clash is rejected.
         write_plan(&root, PlanLocation::Plans, "taken-name.md", "# taken\n");
         agent.list_plans().unwrap();
         let error =
@@ -342,12 +354,13 @@ mod tests {
         assert!(root.join(".pp/drafts/rename-me.md").exists());
         std::fs::remove_file(root.join(".pp/plans/taken-name.md")).unwrap();
 
-        // 同名：无操作成功。
+        // Same name: succeeds as a no-op.
         agent
             .rename_listed_plan(selection.clone(), "rename-me.md".to_owned())
             .unwrap();
 
-        // 正常重命名：旧路径消失，字节与 ID 保持，登记与绑定同步。
+        // Normal rename: the old path disappears, bytes and ID are kept, and the registry and
+        // binding stay in sync.
         let listing = agent
             .rename_listed_plan(selection.clone(), "renamed-plan.md".to_owned())
             .unwrap();
@@ -373,7 +386,8 @@ mod tests {
             Some("renamed-plan.md")
         );
 
-        // 旧 selection 的路径已失效，不能用相同正文授权新路径上的操作。
+        // The old selection's path is no longer valid; the same body cannot authorize an
+        // operation on the new path.
         assert!(err_message(agent.verify_selection(&selection)).contains("Plan changed"));
         assert!(err_message(agent.delete_listed_plan(selection.clone())).contains("Plan changed"));
         assert!(
@@ -397,7 +411,7 @@ mod tests {
         let listing = agent.list_plans().unwrap();
         let target = entry(&listing, "delete-me.md").clone();
         agent.workflow = bound_workflow(&target.id, "delete-me.md", content);
-        // 模拟旧版本载入详情后留下的计划预览缓存。
+        // Simulates the plan preview cache left behind by an older version loading the details.
         agent.workflow.todos =
             pp_tools::todo::project_plan_todos(agent.workflow.plan.as_ref().unwrap(), &[], false)
                 .unwrap();
@@ -405,14 +419,16 @@ mod tests {
         seed_session(&mut agent, "delete fixture");
         let selection = agent.read_listed_plan(&target.id).unwrap();
 
-        // 精确字节不匹配：既不提交墓碑也不删除（registered() 仅匹配活动条目）。
+        // Exact bytes do not match: neither a tombstone is committed nor anything deleted
+        // (registered() only matches active entries).
         let mut stale = selection.clone();
         stale.content = "# Stale\n".to_owned();
         assert!(err_message(agent.delete_listed_plan(stale)).contains("Plan changed"));
         assert!(root.join(".pp/drafts/delete-me.md").exists());
         let _active = registered(&agent, "delete-me.md");
 
-        // 删除当前绑定：文件与同 inode 残留链接消失，绑定解除且模式保留。
+        // Deleting the current binding: the file and the same-inode leftover link disappear, the
+        // binding is released and the mode is kept.
         let leftover_path = root.join(".pp/plans/leftover-name.md");
         std::fs::remove_file(&leftover_path).unwrap();
         std::fs::hard_link(root.join(".pp/drafts/delete-me.md"), &leftover_path).unwrap();
@@ -437,7 +453,7 @@ mod tests {
             assert!(tombstone.deleted);
             assert!(tombstone.deleted_file_identity.is_some());
         }
-        // 后续访问按 ID 报已删除，不从快照补回。
+        // Later access reports it as deleted by ID and never refills it from a snapshot.
         assert!(err_message(agent.read_listed_plan(&target.id)).contains("Plan was deleted"));
         assert!(err_message(agent.verify_selection(&selection)).contains("Plan was deleted"));
     }
@@ -454,7 +470,8 @@ mod tests {
         let id = entry(&listing, "retry-me.md").id.clone();
         let selection = agent.read_listed_plan(&id).unwrap();
 
-        // 手工提交墓碑但不 unlink（模拟首次删除的登记成功/删除失败）。
+        // Commit a tombstone by hand without unlinking (simulating a successful first-delete
+        // registration followed by a failed deletion).
         let workspace = agent.tools.plan_workspace();
         {
             let _lock = PlanCatalogLock::acquire(workspace).unwrap();
@@ -473,13 +490,15 @@ mod tests {
             );
             plan_catalog::save_catalog(workspace, snapshot.raw.as_deref(), &catalog).unwrap();
         }
-        // 残留仍能重新读取以确认删除；同 inode 的外部正文修改使旧确认失效。
+        // The leftover can still be re-read to confirm the deletion; an external body change on
+        // the same inode invalidates the old confirmation.
         assert_eq!(agent.read_listed_plan(&id).unwrap(), selection);
         std::fs::write(root.join(&selection.path), "# Updated retry\n").unwrap();
         assert!(err_message(agent.delete_listed_plan(selection.clone())).contains("Plan changed"));
         assert!(root.join(&selection.path).exists());
         let selection = agent.read_listed_plan(&id).unwrap();
-        // 重试删除：同 inode 残留被清理，登记保持墓碑，不纳管成新 ID。
+        // Retry the deletion: the same-inode leftover is cleaned up, the registration stays a
+        // tombstone and is not adopted as a new ID.
         agent.delete_listed_plan(selection).unwrap();
         assert!(!root.join(".pp/drafts/retry-me.md").exists());
         let workspace = agent.tools.plan_workspace();
@@ -507,10 +526,11 @@ mod tests {
         let id = entry(&listing, "busy-plan.md").id.clone();
         let selection = agent.read_listed_plan(&id).unwrap();
 
-        // 另一个真实 PlanLease 持有者：重命名/删除非阻塞拒绝；列表与预览仍可读。
+        // Another real PlanLease holder: rename/delete are rejected without blocking; listing
+        // and preview remain readable.
         let workspace = agent.tools.plan_workspace();
         let holder = PlanLease::acquire(workspace, &id).unwrap();
-        // 同一 ID 的第二个 lease 立即冲突（非阻塞，不等待）。
+        // A second lease for the same ID conflicts immediately (non-blocking, no wait).
         assert!(err_message(PlanLease::acquire(workspace, &id)).contains("Plan is in use"));
         let rename_error =
             err_message(agent.rename_listed_plan(selection.clone(), "renamed-plan.md".to_owned()));
@@ -521,7 +541,7 @@ mod tests {
         assert!(agent.list_plans().is_ok());
         assert!(agent.read_listed_plan(&id).is_ok());
         drop(holder);
-        // 释放后可再管理。
+        // Manageable again after release.
         let selection = agent.read_listed_plan(&id).unwrap();
         agent
             .rename_listed_plan(selection, "renamed-plan.md".to_owned())

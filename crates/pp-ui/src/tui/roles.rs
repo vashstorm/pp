@@ -53,7 +53,7 @@ fn green() -> Color {
     }
 }
 
-// 与状态栏／transcript 一致：Nerd Font Material Design 图标与 ASCII 占位均为 1 列宽。
+// Consistent with the status bar/transcript: Nerd Font Material Design icons and their ASCII placeholders are both one column wide.
 fn roles_icon() -> &'static str {
     if super::themes::is_ascii() {
         "R"
@@ -122,7 +122,7 @@ pub(super) enum Action {
     Close,
     Save(ModelRole, Option<RoleAssignment>),
     Favorite(String),
-    /// 清除主会话手动覆盖，回到配置默认。
+    /// Clear the main session's manual override and return to the configured default.
     ClearOverride,
 }
 
@@ -133,7 +133,7 @@ pub(super) struct Panel {
     providers: Vec<String>,
     default_model: String,
     default_effort: ThinkLevel,
-    /// 当前手动覆盖 `a`；只读展示，清除走 [`Action::ClearOverride`]。
+    /// Current manual override `a`; display only, clearing goes through [`Action::ClearOverride`].
     override_selection: Option<Selection>,
     view: View,
     sidebar: usize,
@@ -199,7 +199,7 @@ impl Panel {
         self.view == View::Models && !self.sidebar_focus
     }
 
-    /// 模型／档位选择器打开时，←/→ 与 Tab 归选择器，外层页签让位。
+    /// While the model/level picker is open, ←/→ and Tab belong to it and the outer tab yields.
     pub(super) fn is_picking(&self) -> bool {
         self.view != View::Roles
     }
@@ -444,7 +444,7 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }))
         else {
-            panic!("点击开关图标应切换启用状态");
+            panic!("clicking the toggle icon should flip the enabled state");
         };
         assert!(!off.enabled && off.fallback.is_some());
 
@@ -473,7 +473,7 @@ mod tests {
         assert_eq!(b3[(x3 + 13, y3 + 4)].fg, muted());
         key(&mut p3, KeyCode::Up);
         let Action::Save(ModelRole::Fast, Some(off3)) = key(&mut p3, KeyCode::Char(' ')) else {
-            panic!("空格应切换启用状态");
+            panic!("Space should flip the enabled state");
         };
         val.enabled = false;
         assert_eq!(off3, val);
@@ -490,7 +490,7 @@ mod tests {
         assert!(matches!(key(&mut p1, KeyCode::Enter), Action::None));
         assert_eq!(p1.efforts(), [ThinkLevel::None]);
         let Action::Save(ModelRole::Fast, Some(a1)) = key(&mut p1, KeyCode::Enter) else {
-            panic!("应一次保存");
+            panic!("a single save is expected");
         };
         assert_eq!(
             (a1.model.as_str(), a1.effort),
@@ -602,18 +602,18 @@ mod tests {
         key(&mut panel, KeyCode::Char('t'));
         assert_eq!(panel.efforts(), [ThinkLevel::None]);
         let Action::Save(_, Some(updated)) = key(&mut panel, KeyCode::Enter) else {
-            panic!("应保存独立 thinking");
+            panic!("an independent thinking level should be saved");
         };
         assert_eq!(updated.effort, ThinkLevel::High);
         panel.saved();
         let Action::Save(_, Some(updated)) = key(&mut panel, KeyCode::Char('x')) else {
-            panic!("应仅清除备用模型");
+            panic!("only the fallback model should be cleared");
         };
         assert!(updated.fallback.is_none());
         assert!(!updated.model.is_empty());
         key(&mut panel, KeyCode::Up);
         let Action::Save(_, Some(updated)) = key(&mut panel, KeyCode::Char('x')) else {
-            panic!("应保留备用配置");
+            panic!("the fallback configuration should be kept");
         };
         assert!(updated.model.is_empty());
         assert!(updated.fallback.is_some());
@@ -623,7 +623,7 @@ mod tests {
         key(&mut panel, KeyCode::Enter);
         key(&mut panel, KeyCode::Enter);
         let Action::Save(_, Some(updated)) = key(&mut panel, KeyCode::Enter) else {
-            panic!("应补齐主模型");
+            panic!("the primary model should be filled in");
         };
         assert!(!updated.enabled);
         assert!(updated.fallback.is_some());
@@ -656,7 +656,7 @@ mod tests {
             key(&mut ps, KeyCode::Enter);
             let Action::Save(ModelRole::Default, Some(updated)) = key(&mut ps, KeyCode::Enter)
             else {
-                panic!("主备模型相同时也应允许保存");
+                panic!("saving should be allowed when primary and fallback are equal");
             };
             assert_eq!(updated, value);
         }
@@ -666,7 +666,7 @@ mod tests {
         key(&mut pb, KeyCode::Char('f'));
         key(&mut pb, KeyCode::Enter);
         let Action::Save(ModelRole::Default, Some(ab)) = key(&mut pb, KeyCode::Enter) else {
-            panic!("缺主模型时应允许保存备用");
+            panic!("saving the fallback should be allowed without a primary model");
         };
         assert!(ab.model.is_empty() && !ab.enabled && ab.fallback.unwrap().model == "fixture/one");
     }
@@ -675,7 +675,7 @@ mod tests {
     fn override_row_is_read_only_and_backspace_clears_it_only_when_present() {
         let mut panel = panel();
         key(&mut panel, KeyCode::Tab);
-        // 无覆盖时 Backspace 不产生清除动作，也不误删角色。
+        // Without an override, Backspace produces no clear action and never deletes a role.
         assert!(matches!(key(&mut panel, KeyCode::Backspace), Action::None));
         let buffer = draw(&mut panel, 140, 24);
         let text = buffer
@@ -700,9 +700,9 @@ mod tests {
         let override_row = rows
             .iter()
             .find(|row| row.contains("Override"))
-            .expect("Override 只读行");
+            .expect("read-only Override row");
         assert!(override_row.contains("fixture/two"), "{override_row}");
-        // effort 列显示 none 档位；模型列本身不能再出现 none 占位。
+        // The effort column shows the none level; the model column itself must not repeat the none placeholder.
         let (model_part, _) = override_row
             .split_once(palette::think_icon(ThinkLevel::None))
             .unwrap_or((override_row.as_str(), ""));
@@ -711,12 +711,12 @@ mod tests {
             key(&mut panel, KeyCode::Backspace),
             Action::ClearOverride
         ));
-        // 只读行不参与角色选择：Delete 仍是删除选中角色。
+        // The read-only row takes no part in role selection: Delete still deletes the selected role.
         assert!(matches!(
             key(&mut panel, KeyCode::Delete),
             Action::Save(ModelRole::Default, None)
         ));
-        // 视图切换与窄面板不得 panic。
+        // View switches and narrow panels must not panic.
         for (width, height) in [(42, 12), (20, 6), (8, 4)] {
             draw(&mut panel, width, height);
         }

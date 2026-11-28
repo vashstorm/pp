@@ -1,4 +1,4 @@
-//! 监督器共享状态、停止原因与进程组租约。
+//! Supervisor shared state, stop reasons and process group leases.
 
 use brush_core::ManagedGroup;
 use std::{
@@ -16,8 +16,9 @@ use super::process::ProcessRecord;
 pub(super) struct Shared {
     pub(super) state: Mutex<State>,
     pub(super) wake: Condvar,
-    /// monitor 唤醒计数：每次触发唤醒都会递增。monitor 用它区分“被事件唤醒”
-    /// 与“轮询超时”，从而在状态变化后回到 5ms 基线而不是继续退避。
+    /// Monitor wakeup counter: incremented on every wakeup trigger. The monitor uses it to distinguish "woken
+    /// by an event" from "poll timeout" so a state change returns to the 5ms baseline instead of backing off
+    /// further.
     generation: AtomicU64,
 }
 
@@ -30,8 +31,9 @@ impl Shared {
         }
     }
 
-    /// 唤醒 monitor 并记下一次状态变化事件（新注册、显式停止、解释器结束、
-    /// 进程组租约释放）。只递增原子计数并唤醒条件变量，不取注册表锁。
+    /// Wake the monitor and record a state change event (new registration, explicit stop, interpreter
+    /// finished, process group lease released). Only the atomic counter is bumped and the condition variable
+    /// is signaled; the registry lock is not taken.
     pub(super) fn notify(&self) {
         self.generation.fetch_add(1, Ordering::Release);
         self.wake.notify_all();
@@ -76,13 +78,14 @@ pub(super) struct State {
     pub(super) stop: Option<StopReason>,
     pub(super) permit: Option<Arc<Permit>>,
     pub(super) grace_deadline: Option<Instant>,
-    /// SIGKILL 升级后的独立回收截止时间；到期且外部进程仍未被 SIGKILL 终止时
-    /// 放弃回收（仅剩解释器待释放的组租约/anchor 时刷新窗口继续等待，不算
-    /// 回收失败）。它不复用早已过期的 `grace_deadline`，约束 Killing 阶段的
-    /// 等待上界。
+    /// Independent reclamation deadline after the SIGKILL escalation; when it expires and the external process
+    /// still has not been terminated by SIGKILL, reclamation is abandoned (when only the interpreter's pending
+    /// group lease/anchor is left the refresh window keeps waiting and this does not count as a reclamation
+    /// failure). It does not reuse the long-expired `grace_deadline` and bounds the wait of the Killing phase.
     pub(super) kill_deadline: Option<Instant>,
-    /// SIGKILL 宽限期已过而外部进程仍未退出：注册表仍保留未回收记录，终态判定
-    /// 豁免 live work 检查，记录保持真实的观察/reaped 状态。
+    /// The SIGKILL grace period elapsed and the external process still has not exited: the registry keeps the
+    /// unreclaimed record, terminal-state decisions skip the live work check, and the record keeps its real
+    /// observed/reaped state.
     pub(super) abandoned: bool,
     pub(super) errors: BTreeSet<String>,
     pub(super) groups: BTreeMap<u64, GroupRecord>,

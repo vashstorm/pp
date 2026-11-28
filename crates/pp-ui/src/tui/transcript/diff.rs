@@ -1,4 +1,4 @@
-//! 文件变更 diff 的排版；折叠额度与行号栏宽度与命令区共用。
+//! Layout of file change diffs; the fold quota and line-number gutter width are shared with the command area.
 
 use super::*;
 
@@ -90,7 +90,7 @@ pub(in crate::tui) fn diff_layout_styled(
             rows.push(Line::styled("…", Style::default().fg(palette::dim())));
         }
         let highlights = edit_path.map(|_| crate::tui::edit_diff::highlights(&hunk.lines));
-        // 连续替换段中的行尾变化可能仅靠正文无法区分。
+        // A line-ending change inside a consecutive replaced run may be indistinguishable from the body alone.
         let mut eol_hints = std::collections::HashSet::new();
         let mut start = 0;
         while start < hunk.lines.len() {
@@ -209,7 +209,7 @@ pub(in crate::tui) fn diff_layout_styled(
             }
         }
     }
-    // 第二道限制按实际换行后的屏幕行计算，统计行不占 diff 正文额度。
+    // The second limit counts screen lines after the actual wrap; the stat rows do not consume the diff body quota.
     let mut visual_hidden = 0;
     let visual_limit = summary_rows + tool_display::DIFF_LINES;
     if !expanded && rows.len() > visual_limit {

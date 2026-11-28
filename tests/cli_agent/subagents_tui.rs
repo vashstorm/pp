@@ -1,8 +1,9 @@
-// Agent Hub（Agents 总览 / Activity / 独立 child 详情）的真实 PTY 回归。
-// 消息始终按原文发送；观察线程与 supervisor 的所有栅栏都用屏幕内容或 HTTP 请求，
-// 不用固定 sleep 推测 UI 已经就绪。
+// Real PTY regression for the Agent Hub (Agents overview / Activity / standalone child detail).
+// Messages are always sent verbatim; every barrier of the observer thread and supervisor uses screen
+// content or HTTP requests, never a fixed sleep to assume the UI is ready.
 
-/// 启动时可能同时存在 pending 目录与真实 session 目录，取已登记 Agent 最多的那份。
+/// A pending directory and a real session directory may both exist at startup; take the one with the most
+/// registered agents.
 fn hub_dir(home: &std::path::Path) -> std::path::PathBuf {
     let mut best: Option<(usize, std::path::PathBuf)> = None;
     for directory in [".pp/agent/sessions", ".pp/run/sessions"] {
@@ -47,7 +48,8 @@ fn hub_append(home: &std::path::Path, agent: &str, records: &[Value]) {
     file.flush().expect("flush record");
 }
 
-/// 两种协议的 tool call 形状不同，派发与工具回复都必须按协议构造。
+/// The tool call shapes differ between the two protocols, so dispatch and tool replies must both be built
+/// per protocol.
 fn hub_call(protocol: &str, id: &str, name: &str, args: Value) -> Value {
     if protocol == "completion" {
         call(id, name, args)
@@ -64,7 +66,7 @@ fn hub_is_child(body: &Value) -> bool {
     hub_body_text(body).contains("You are subagent")
 }
 
-/// 派发一批子 Agent，按 task 文本归位各自的第一个模型请求。
+/// Dispatch a batch of subagents and match each one's first model request by its task text.
 fn hub_dispatch(
     pty: &mut Pty,
     fixture: &TestServer,
@@ -79,7 +81,8 @@ fn hub_dispatch(
         json!([hub_call(protocol, "task", "task", tasks)]),
     );
     let mut found: Vec<Option<CapturedRequest>> = needles.iter().map(|_| None).collect();
-    // 父方在子 Agent pending 期间会自动继续，必须消费它紧随其后的请求。
+    // The parent proceeds automatically while the subagents are pending, so its immediately following
+    // request must be consumed.
     let mut parent_answered = false;
     while found.iter().any(Option::is_none) || !parent_answered {
         let (request, body) = pty.request_at(fixture, api_path(protocol));
@@ -99,7 +102,7 @@ fn hub_dispatch(
     found.into_iter().map(Option::unwrap).collect()
 }
 
-/// 结束子 Agent；只有整批完成后才消费父方继续请求。
+/// Finish a subagent; the parent's continuation request is consumed only after the whole batch is done.
 fn hub_finish_child(pty: &mut Pty, fixture: &TestServer, protocol: &str, child: CapturedRequest, text: &str) {
     ask_final_reply(child, protocol, text);
     let (request, body) = pty.request_at(fixture, api_path(protocol));
@@ -132,8 +135,10 @@ fn hub_count(haystack: &str, needle: &str) -> usize {
     haystack.matches(needle).count()
 }
 
-/// 按正文定位写出该文本的 Agent 观察日志，返回 agent id 与全部记录。
-/// 新格式每行都是独立 JSON（不再共享值表），测试侧可直接用 serde_json 解析。
+/// Find the agent observation log that contains the given text and return the agent id with all its
+/// records.
+/// In the new format every line is standalone JSON (no shared value table), so the test side can parse it
+/// directly with serde_json.
 fn hub_events_with(home: &std::path::Path, needle: &str) -> (String, Vec<Value>) {
     for entry in std::fs::read_dir(hub_dir(home))
         .expect("subagent directory")
@@ -161,7 +166,8 @@ fn hub_events_with(home: &std::path::Path, needle: &str) -> (String, Vec<Value>)
     panic!("no observation log contains {needle}");
 }
 
-/// 观察记录的种类：unit 变体是字符串，结构变体与 hub 记录是单键对象。
+/// Kinds of observation records: unit variants are strings, while struct variants and hub records are
+/// single-key objects.
 fn hub_record_kind(record: &Value) -> String {
     if let Some(hub) = record.get("hub") {
         return format!(
@@ -177,19 +183,20 @@ fn hub_record_kind(record: &Value) -> String {
     }
 }
 
-/// 单发 Esc 并等到目标页面出现，避免它与下一按键合并成 Alt 序列。
+/// Send a lone Esc and wait for the target page, so it does not merge with the next key into an Alt
+/// sequence.
 fn hub_escape(pty: &mut Pty, expect: &str) {
     pty.input("\x1b");
     pty.text(expect);
 }
 
-/// 清掉 Agents 过滤：Esc 先清过滤，再关闭。
+/// Clear the Agents filter: Esc clears the filter first and then closes.
 fn hub_clear_filter(pty: &mut Pty, expect: &str) {
     pty.input("\x1b");
     pty.text(expect);
 }
 
-/// 关闭 Hub：Esc 后主输入提示符必须恢复。
+/// Close the Hub: the main input prompt must come back after Esc.
 fn hub_close(pty: &mut Pty) {
     pty.input("\x1b");
     pty.ready();
@@ -224,7 +231,7 @@ fn agent_hub_streams_and_anchors_activity() {
             ]}),
             &["the two hub chunks", "probe.txt"],
         );
-        // LiveWriter 保持 SSE 打开；ToolFailure 走 失败工具 + 后续成功回复。
+        // LiveWriter keeps its SSE open; ToolFailure goes through a failing tool + a later successful reply.
         let mut live = children.remove(0).start_sse().unwrap();
         ask_reply_calls(
             children.remove(0),
@@ -252,10 +259,10 @@ fn agent_hub_streams_and_anchors_activity() {
         assert!(hub_body_text(&body).contains("hub-tool-fail"));
         ask_final_reply(request, protocol, "hub-recovered");
         cancel_assert_no_request(&fixture);
-        // 先发第一段，再进入详情：无需额外按键即可看到。
+        // Send the first chunk, then enter the detail view: it must be visible without any extra key.
         streaming_delta(&mut live, protocol, "hub-stream-first");
         pty.input("/agents\r");
-        pty.wait_for("运行中的子 Agent 名称前显示动态转轮", |screen| {
+        pty.wait_for("a spinner is shown before the running subagent name", |screen| {
             let text = screen.contents();
             "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
                 .chars()
@@ -264,9 +271,9 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.text("ToolFailure");
         pty.input("\r");
         pty.text("hub-stream-first");
-        pty.wait_for("子 Agent 在流式请求结束前显示正速率", context_tui_positive_speed);
+        pty.wait_for("the subagent shows a positive rate before the stream ends", context_tui_positive_speed);
         let (first_rate, _) = context_tui_speed(pty.parser.screen()).unwrap();
-        pty.wait_for("子 Agent 详情显示实时时钟", |screen| {
+        pty.wait_for("the subagent detail shows a live clock", |screen| {
             let text = screen.contents();
             WAIT_CLOCKS
                 .into_iter()
@@ -279,26 +286,27 @@ fn agent_hub_streams_and_anchors_activity() {
                 .find(|clock| text.contains(&format!("{clock} Responding")))
                 .unwrap()
         };
-        pty.wait_for("子 Agent 详情时钟继续转动", |screen| {
+        pty.wait_for("the subagent detail clock keeps ticking", |screen| {
             let text = screen.contents();
             WAIT_CLOCKS
                 .into_iter()
                 .any(|clock| clock != first_clock && text.contains(&format!("{clock} Responding")))
         });
-        // 第二段只追加一次。
-        // 分片拼接必须与最终文本一致，否则 Responses 协议会判定冲突。
+        // The second chunk is appended exactly once.
+        // The assembled fragments must match the final text, otherwise the Responses protocol reports a
+        // conflict.
         let second = format!(" hub-stream-second{}", " more".repeat(100));
         streaming_delta(&mut live, protocol, &second);
         pty.text("hub-stream-second");
         assert_eq!(hub_count(&pty.contents(), "hub-stream-second"), 1);
-        pty.wait_for("子 Agent 在后续输出到达时提高速率", |screen| {
+        pty.wait_for("the subagent rate rises when later output arrives", |screen| {
             context_tui_speed(screen).is_some_and(|(rate, _)| rate > first_rate)
         });
         streaming_complete(&mut live, protocol, &format!("hub-stream-first{second}"));
         let (request, _) = pty.request_at(&fixture, api_path(protocol));
         ask_final_reply(request, protocol, "hub-parent-stream-done");
         pty.text("✻ Completed");
-        // Activity：失败只出现在 Errors。
+        // Activity: failures appear only under Errors.
         hub_escape(&mut pty, "Roster ·");
         pty.input("2");
         pty.text("All agents");
@@ -306,17 +314,18 @@ fn agent_hub_streams_and_anchors_activity() {
         pty.text("Errors");
         let screen = pty.contents();
         assert_eq!(hub_count(&screen, "\u{f00d}"), 1, "{screen}");
-        // Enter 定位到失败工具卡片。
+        // Enter anchors on the failed tool card.
         pty.input("\r");
         pty.text("Agent Hub");
         pty.text("print(\"hub-tool-fail\")");
-        // 从磁盘历史恢复工具，使用共享配置，不把回放耗时当作 Wall。
+        // Tools restored from disk history use the shared configuration, so the replay time is not counted
+        // as Wall.
         pty.text("Timeout: 37s");
         assert!(!pty.contents().contains("Wall:"));
         pty.input("\x1b[1;5H");
         pty.text("Read · probe.txt");
         assert!(!pty.contents().contains("hub-probe-body"));
-        // Esc 回到原 scope/search/选中活动。
+        // Esc returns to the original scope/search/selected activity.
         hub_escape(&mut pty, "Errors");
         assert_eq!(hub_count(&pty.contents(), "\u{f00d}"), 1);
         hub_escape(&mut pty, "Roster ·");

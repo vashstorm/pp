@@ -346,8 +346,8 @@ mod integration {
     fn bash_deadline_watchdog_and_cancel_reap_groups() {
         {
             use std::time::{Duration, Instant};
-            // `immediate`: 解释器自己立即以 0 退出（后台子 shell 仍持有输出写端）。
-            // 工具报告 shell 的真实终态，并在收尾时回收遗留组，不因此判为超时。
+            // `immediate`: the interpreter itself exits 0 at once (a background subshell still holds the output write end).
+            // The tool reports the shell's real final state and reclaims the leftover group during teardown instead of reporting a timeout.
             for (command, immediate) in [
                 ("sleep 10; printf late > late", false),
                 (

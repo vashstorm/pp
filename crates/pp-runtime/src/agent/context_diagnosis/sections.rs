@@ -1,5 +1,5 @@
-//! 基于当前会话真实数据的半静态上下文分块构建：
-//! 系统提示词、已发送的指令文件（AGENTS.md）、技能索引、内置工具 Schema 与自定义/MCP 工具 Schema。
+//! Semi-static context section construction from the current session's real data:
+//! system prompt, sent instruction files (AGENTS.md), skills index, built-in tool schemas and custom/MCP tool schemas.
 
 use super::{DiagnosticItem, FingerprintWriter, MAX_PREVIEW_BYTES};
 use crate::agent::{Agent, Session};
@@ -20,13 +20,13 @@ pub(super) struct SectionWithRanges {
     pub tokens: u64,
     pub bytes: u64,
     pub ranges: Vec<(usize, usize)>,
-    /// 仅由 `reported_loads` 兜底补入的条目（不在 `actual_system` 中）；若该路径已由动态
-    /// developer 消息送达，则合并阶段按真实历史消息计入，避免重复统计。
+    /// Items added as a fallback purely from `reported_loads` (absent from `actual_system`); if that path already
+    /// arrived as a dynamic developer message, the merge phase counts the real history message instead to avoid double counting.
     pub fallback_items: Vec<(String, DiagnosticItem)>,
 }
 
-/// 从 `actual_system` 中剥离并构建已真实注入的 `AGENTS.md` 指令文件条目，
-/// 排除尚未随请求发送的规则。
+/// Strip from `actual_system` and build the `AGENTS.md` instruction file entries actually injected,
+/// excluding rules not yet sent with a request.
 pub(super) fn build_agent_md_items(
     cwd: &std::path::Path,
     actual_system: &str,
@@ -39,7 +39,7 @@ pub(super) fn build_agent_md_items(
     let mut bytes = 0u64;
     let mut consumed_ranges: Vec<(usize, usize)> = Vec::new();
 
-    // 提取真实存在于 actual_system 中的 `[Project root boundary: ...]` 片段
+    // Extract the `[Project root boundary: ...]` fragments that really exist in actual_system
     let boundary_prefix = "[Project root boundary: ";
     let boundary_suffix = "Ancestor project rules do not apply inside this project root.\n";
     let mut search_from = 0usize;
@@ -73,7 +73,7 @@ pub(super) fn build_agent_md_items(
         });
     }
 
-    // 优先从 actual_system 中直接提取真实注入的 `[Project instructions: <path>]...[End project instructions]` 块
+    // Prefer extracting the really injected `[Project instructions: <path>]...[End project instructions]` blocks directly from actual_system
     let instr_prefix = "[Project instructions: ";
     let instr_end_marker = "[End project instructions]";
     let mut seen_paths = std::collections::BTreeSet::new();
@@ -116,7 +116,7 @@ pub(super) fn build_agent_md_items(
         pos = end;
     }
 
-    // 兜底：对于通过 `reported_loads` 或 `doc.sent`（以及空会话初始活跃链）确认的文档
+    // Fallback: for documents confirmed via `reported_loads` or `doc.sent` (and the initial active chain of an empty session)
     for (path_str, content) in reported_loads {
         if seen_paths.contains(path_str) {
             continue;
@@ -232,7 +232,7 @@ fn parse_project_instruction_block(block: &str) -> (String, String, &str) {
     (path, root, body)
 }
 
-/// 从 `actual_system` 提取真实注入的 Skills Index 区块。
+/// Extract the really injected Skills Index block from `actual_system`.
 pub(super) fn build_skill_items(
     actual_system: &str,
     headers: &[pp_config::skills::SkillHeader],
@@ -326,7 +326,7 @@ fn parse_skill_entries(
     out
 }
 
-/// 基于 `actual_system` 扣减 `Instruction Files` 与 `Skills` 区块后，构建真实有效的 `System Prompt` 条目。
+/// Build really effective `System Prompt` items after deducting the `Instruction Files` and `Skills` blocks from `actual_system`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_system_items(
     actual_system: &str,
@@ -400,7 +400,7 @@ pub(super) fn build_system_items(
         project_instructions::MAINTENANCE,
     )?;
 
-    // 若因恢复自其它日期/模型或旧会话自定义导致仍有未匹配出的真实系统提示词残余，一并纳入确保不漏算
+    // If a restore from another date/model or old custom session content still leaves unmatched real system prompt residue, include it too so nothing is undercounted
     let leftover = strip_ranges(&residual, &matched_ranges);
     if !leftover.trim().is_empty() {
         let b = estimate_bytes(&leftover)?;
@@ -475,7 +475,7 @@ pub(super) struct SplitToolsBreakdown {
     pub mcp_bytes: u64,
 }
 
-/// 从 `self.session` 中真实持有的工具定义拆分为 Built-in Tools 与 Custom Tools（MCP）两个独立集合。
+/// Split the tool definitions actually held by `self.session` into two independent sets, Built-in Tools and Custom Tools (MCP).
 pub(super) fn build_split_tool_items(
     session: &Session,
     mcp_origins: &BTreeMap<String, (String, String)>,
@@ -583,7 +583,7 @@ pub(super) fn first_line_preview(text: &str) -> String {
         }
         out.push(ch);
     }
-    // 只探测第 73 个字符，不为超长单行统计全部字符。
+    // Probe only the 73rd character instead of counting every character of an overlong single line.
     if first.chars().nth(72).is_some() || text.contains('\n') {
         out.push('…');
     }
@@ -606,12 +606,12 @@ pub(super) fn truncate_preview(text: &str) -> String {
     )
 }
 
-/// 超过预览预算的正文摘要：不保留正文，只报告原始字节数。
+/// Summary for bodies beyond the preview budget: keep no body, report only the raw byte count.
 pub(super) fn oversized_preview(bytes: usize) -> String {
     format!("<{bytes} bytes; preview skipped: exceeds {MAX_PREVIEW_BYTES} bytes>")
 }
 
-/// 正文预览：预算内保持原样，超过预算只给字节摘要（不复制正文）。
+/// Body preview: kept as is within the budget, beyond it only a byte summary is given (the body is not copied).
 pub(super) fn body_preview(text: &str) -> String {
     if text.len() > MAX_PREVIEW_BYTES {
         return oversized_preview(text.len());
@@ -619,8 +619,8 @@ pub(super) fn body_preview(text: &str) -> String {
     text.to_owned()
 }
 
-/// JSON 形态正文预览：先按原始字节判断预算，超过预算不再解析大对象；
-/// 预算内才美化，并沿用既有截断口径。
+/// JSON body preview: judge the budget on the raw bytes first, so an oversized large object is not parsed;
+/// only within the budget is it pretty-printed, reusing the existing truncation metric.
 pub(super) fn json_body_preview(text: &str) -> String {
     if text.len() > MAX_PREVIEW_BYTES {
         return oversized_preview(text.len());
@@ -628,7 +628,7 @@ pub(super) fn json_body_preview(text: &str) -> String {
     truncate_preview(&pretty_json(text))
 }
 
-/// 多段正文按 `"\n"` 拼接后的字节数（不拼接）。
+/// Byte count of multiple bodies joined with `"\n"` (without joining them).
 pub(super) fn parts_total(parts: &[Cow<'_, str>]) -> usize {
     parts
         .iter()
@@ -644,11 +644,11 @@ fn pretty_json(text: &str) -> String {
     }
 }
 
-/// 半静态上下文分区的缓存指纹：系统提示词正文、项目指令输入、技能索引、工具表与渲染输入。
+/// Cache fingerprint of the semi-static context sections: system prompt body, project instruction input, skills index, tool table and render input.
 ///
-/// 指纹只用内存中的已发送数据计算，不读盘：相同指纹表示这些分区的分类结果可以整体复用。
-/// 项目规则变化会改变 `reported_project_load` 或作用域摘要，工具增删或 schema 变化会改变
-/// `tools`，模型／编辑模式／工作流／沙箱／限额变化会改变 `render`。
+/// The fingerprint is computed only from sent data in memory, never from disk: an identical fingerprint means these sections'
+/// classification results can be reused wholesale. Project rule changes alter `reported_project_load` or the scope summary; added/removed
+/// tools or schema changes alter `tools`; model/edit mode/workflow/sandbox/limit changes alter `render`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SectionFingerprint {
     system: u64,

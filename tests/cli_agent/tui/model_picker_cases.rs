@@ -28,7 +28,7 @@ fn tui_slash_model_picker_preserves_history() {
     pty.completed();
     pty.ready_model("a/primary");
 
-    // 用唯一前缀锁定模型命令；模糊匹配下 "/m" 也会命中 /compact。
+    // Pin the model command with a unique prefix; under fuzzy matching "/m" also hits /compact.
     pty.input("/mo");
     pty.draft("/mo");
     pty.resize(4, 20);
@@ -38,26 +38,29 @@ fn tui_slash_model_picker_preserves_history() {
     no_more(&a);
     no_more(&b);
     pty.input(" ");
-    pty.wait_for("空格展开输入框上方模型菜单", |screen| {
-        let text = screen.contents();
-        let (cursor_row, cursor_col) = screen.cursor_position();
-        text.contains("a/primary")
-            && text.contains("gateway/team/secondary")
-            && !text.contains("vendor-b")
-            && !text.contains("[completion]")
-            && text.find('').unwrap() < text.find("a/primary").unwrap()
-            && !text.contains("❯ /model")
-            && text.contains("a/primary  ")
-            && !text.contains("(current)")
-            && !text.contains("(default)")
-            && !screen.hide_cursor()
-            && cursor_col == 2
-            && text
-                .lines()
-                .nth(usize::from(cursor_row))
-                .is_some_and(|line| line.starts_with(''))
-    });
-    // 确认前检查首尾导航、翻页以及窗口缩放。
+    pty.wait_for(
+        "a space expands the model menu above the input box",
+        |screen| {
+            let text = screen.contents();
+            let (cursor_row, cursor_col) = screen.cursor_position();
+            text.contains("a/primary")
+                && text.contains("gateway/team/secondary")
+                && !text.contains("vendor-b")
+                && !text.contains("[completion]")
+                && text.find('').unwrap() < text.find("a/primary").unwrap()
+                && !text.contains("❯ /model")
+                && text.contains("a/primary  ")
+                && !text.contains("(current)")
+                && !text.contains("(default)")
+                && !screen.hide_cursor()
+                && cursor_col == 2
+                && text
+                    .lines()
+                    .nth(usize::from(cursor_row))
+                    .is_some_and(|line| line.starts_with(''))
+        },
+    );
+    // Before confirming, exercise head/tail navigation, paging and a window resize.
     pty.input("\x1b[H\x1b[5~\x1b[A\x1b[F\x1b[6~\x1b[B");
     pty.resize(4, 20);
     pty.resize(30, 100);
@@ -84,7 +87,7 @@ fn tui_slash_model_picker_preserves_history() {
     pty.completed();
     pty.ready_model("gateway/team/secondary");
 
-    // 默认选中当前模型，直接确认不能误选第一项。
+    // The current model is selected by default, so confirming directly must not pick the first item by mistake.
     pty.input("/model\r");
     pty.text("a/primary");
     pty.input("\r");
@@ -146,13 +149,13 @@ fn tui_slash_model_picker_preserves_history() {
     assert_eq!(messages.len(), 8);
     final_reply(request, "multiline slash task accepted");
     pty.text("multiline slash task accepted");
-    // 模型命令要求任务收尾完成，仅收到正文不能作为处理栅栏。
+    // The model command requires the task to settle, so seeing the body alone is no processing fence.
     pty.completed();
     pty.ready_model("a/primary");
 
     pty.input("/model\r");
     pty.text("gateway/team/secondary");
-    // 菜单不能拦截 Ctrl-C 或妨碍终端恢复。
+    // The menu must not intercept Ctrl-C or hinder terminal restoration.
     pty.input("\x03");
     pty.finish();
     no_more(&a);

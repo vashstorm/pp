@@ -1,4 +1,4 @@
-//! `todo` 工具 schema 与描述。
+//! `todo` tool schema and description.
 use async_openai::types::chat::FunctionObject;
 use serde_json::{Value, json};
 

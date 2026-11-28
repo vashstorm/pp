@@ -28,13 +28,13 @@ fn project_instructions_cache_invalidation_and_error_handling() {
         let mut state = State::new(&root);
         let first = state.refresh_shared().unwrap();
         assert_eq!(contents(&first), ["root-rule"]);
-        // 未变化的来源共享同一份快照：既不重新读盘，也不重建正文。
+        // Unchanged sources share one snapshot: no disk re-read and no body rebuild.
         assert!(Arc::ptr_eq(&first, &state.refresh_shared().unwrap()));
-        // 撤掉读权限时 mtime、长度与 inode 都不变：再读一次就必然失败。
+        // Dropping read permission leaves mtime, length and inode unchanged: the next read must fail.
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
         assert_eq!(contents(&state.refresh_shared().unwrap()), ["root-rule"]);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        // 正文变化必须重读，不能继续返回缓存。
+        // A body change must be re-read rather than served from the cache.
         fs::write(&path, "updated-rule").unwrap();
         assert_eq!(contents(&state.refresh_shared().unwrap()), ["updated-rule"]);
     }
@@ -46,7 +46,7 @@ fn project_instructions_cache_invalidation_and_error_handling() {
         fs::write(&path, "root-rule").unwrap();
         let mut state = State::new(&root);
         assert_eq!(contents(&state.refresh_shared().unwrap()), ["root-rule"]);
-        // 只改 mtime（正文、长度与 inode 都不变）也必须重新读取。
+        // Touching only the mtime (body, length and inode unchanged) must also trigger a re-read.
         let file = fs::File::options().append(true).open(&path).unwrap();
         file.set_times(
             fs::FileTimes::new()
@@ -55,7 +55,7 @@ fn project_instructions_cache_invalidation_and_error_handling() {
         .unwrap();
         drop(file);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
-        // 重读失败按读取错误上抛，不能当成“规则缺失”而静默成功。
+        // A failed re-read surfaces as a read error instead of silently passing as "rule missing".
         assert!(state.refresh_shared().is_err());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(contents(&state.refresh_shared().unwrap()), ["root-rule"]);
@@ -76,7 +76,7 @@ fn project_instructions_cache_invalidation_and_error_handling() {
         );
         fs::remove_file(&path).unwrap();
         let documents = state.refresh_shared().unwrap();
-        // 删除子规则只移除该来源，父规则保留，也不追加空正文块。
+        // Deleting the child rule removes only that source; the parent rule stays and no empty body block is appended.
         assert_eq!(contents(&documents), ["root-rule"]);
         assert!(!render(&documents).contains(&child.display().to_string()));
     }

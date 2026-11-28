@@ -53,7 +53,7 @@ fn tui_runtime_responsiveness_continuous_thinking_unicode_paste_and_cursor() {
                         break;
                     }
                     runtime_reasoning_delta(&mut stream, protocol, "x");
-                    // 模拟连续 SSE 数据；屏幕断言验证实际输入完成。
+                    // Simulate continuous SSE data; the screen assertions verify that input actually completes.
                     thread::sleep(Duration::from_millis(10));
                 }
                 stream
@@ -72,7 +72,7 @@ fn tui_runtime_responsiveness_continuous_thinking_unicode_paste_and_cursor() {
                 pty.input(input);
                 pty.draft(expected);
                 pty.wait_for(
-                    "思考输出期间输入光标保持在中文草稿末尾",
+                    "the input cursor stays at the end of the CJK draft while thinking output streams",
                     |screen| {
                         !screen.hide_cursor()
                             && cancel_cursor_on_input_row(screen)

@@ -1,22 +1,24 @@
-//! 进程内管道中继。
+//! In-process pipe relay.
 //!
-//! 每条管道边在 pp 进程内创建两对 OS pipe：
+//! Each pipe edge creates two pairs of OS pipes inside the pp process:
 //!
 //! ```text
-//! 上游阶段 ──(pipe A 写端)──▶ relay 线程 ──(pipe B 写端)──▶ 下游阶段
+//! upstream stage ──(pipe A write end)──▶ relay thread ──(pipe B write end)──▶ downstream stage
 //! ```
 //!
-//! 中继线程只做三件事：把上游字节镜像到临时环形缓存、把同一份字节原样转发给
-//! 下游、观测端点生命周期。它不写磁盘、不碰主 [`OutputSink`](pp_workspace::output::OutputSink)、
-//! 不调用 UI 回调，也不向模型 channel 投递数据；因此即使下游很慢，也只产生有限
-//! 背压，不会拖住解释器线程或监督线程。
+//! The relay thread does three things only: mirror upstream bytes into the temporary ring buffer,
+//! forward the same bytes unchanged to the downstream stage, and observe endpoint lifetimes. It does
+//! not write to disk, does not touch the main [`OutputSink`](pp_workspace::output::OutputSink), does
+//! not call UI callbacks and does not push data into the model channel; so even a very slow downstream
+//! only causes bounded backpressure and never stalls the interpreter thread or the supervisor thread.
 //!
-//! 关键语义：
-//! - 先镜像、后转发：当前块被完整转发前不再从上游读取，因此观察到的字节一定
-//!   是实际流经该边的字节前缀。
-//! - 下游 `POLLERR`/`POLLHUP`/`POLLNVAL` 立即关闭上游读端，不继续排空。
-//! - 上游 EOF 前先写完待发送字节，再关闭下游写端。
-//! - poll 最长 50ms，用于协作停止与 run 收尾；任何路径都关闭两端并由调用方 join。
+//! Key semantics:
+//! - Mirror first, forward after: no further upstream read happens before the current block is fully
+//!   forwarded, so observed bytes are always a prefix of the bytes that actually crossed the edge.
+//! - Downstream `POLLERR`/`POLLHUP`/`POLLNVAL` closes the upstream read end immediately without draining.
+//! - Before upstream EOF the pending bytes are written out, then the downstream write end is closed.
+//! - poll waits at most 50ms, which bounds cooperative stop and run shutdown; every path closes both
+//!   ends and the caller joins the thread.
 
 use super::streams::{CloseReason, StreamState};
 use brush_core::openfiles::OpenFile;
@@ -32,23 +34,27 @@ use std::{
     time::Duration,
 };
 
-/// 每次从中继侧读取/转发的最小块；也是唯一的堆缓冲大小。
+/// Smallest block read/forwarded per relay iteration; also the only heap buffer size.
 const RELAY_BUFFER: usize = 64 * 1024;
-/// poll 上限，决定协作停止与实际写端 EOF 的最长感知延迟。
+/// poll upper bound, which determines the longest detection latency for cooperative stop and a real
+/// write-end EOF.
 const POLL_INTERVAL_MS: i32 = 50;
-/// 正常收尾时等待 relay 自行观察到 EOF 的时间；超时后转为协作停止。
+/// How long normal shutdown waits for the relay to observe EOF by itself; after the timeout it switches
+/// to cooperative stop.
 pub(super) const FINISH_GRACE: Duration = Duration::from_millis(300);
 
-/// 一条管道边的两端，交给解释器；中继句柄留在 registry，收尾时 join。
+/// Both ends of one pipe edge, handed to the interpreter; the relay handle stays in the registry and is
+/// joined at shutdown.
 pub(super) struct Edge {
-    /// 下游阶段的 stdin（pipe B 读端）。
+    /// stdin of the downstream stage (pipe B read end).
     pub(super) consumer: OpenFile,
-    /// 上游阶段的 stdout（pipe A 写端）。
+    /// stdout of the upstream stage (pipe A write end).
     pub(super) producer: OpenFile,
     pub(super) relay: Relay,
 }
 
-/// relay 线程的生命周期句柄。`done` 在流封存后置位，便于收尾时避免无谓等待。
+/// Lifetime handle of the relay thread. `done` is set once the stream is sealed so shutdown avoids
+/// pointless waiting.
 pub(super) struct Relay {
     done: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
@@ -59,7 +65,7 @@ impl Relay {
         self.done.load(Ordering::Acquire)
     }
 
-    /// join 中继线程；线程 panic 视为一次捕获失败而不是成功收尾。
+    /// Join the relay thread; a panicking thread counts as a capture failure rather than a clean shutdown.
     pub(super) fn join(&mut self) {
         let Some(handle) = self.join.take() else {
             return;
@@ -73,16 +79,17 @@ impl Relay {
     }
 }
 
-/// 创建一条可观测的管道边。
+/// Create one observable pipe edge.
 ///
-/// 失败时不会留下半登记状态：所有端点与线程都在返回 `Err` 前释放。
+/// A failure leaves no half-registered state: every endpoint and thread is released before returning
+/// `Err`.
 pub(super) fn spawn(stream: Arc<StreamState>, stop: Arc<AtomicBool>) -> io::Result<Edge> {
     let (upstream_reader, upstream_writer) = io::pipe()
         .map_err(|error| io::Error::new(error.kind(), format!("creating pipe edge: {error}")))?;
     let (downstream_reader, downstream_writer) = io::pipe()
         .map_err(|error| io::Error::new(error.kind(), format!("creating pipe edge: {error}")))?;
 
-    // 只有中继侧的端点使用非阻塞；解释器侧保持正常的阻塞语义。
+    // Only the relay-side endpoints are non-blocking; the interpreter side keeps normal blocking semantics.
     if let Err(error) = nonblocking(&upstream_reader) {
         return Err(io::Error::new(
             error.kind(),
@@ -127,12 +134,14 @@ fn errno_to_io(error: rustix::io::Errno) -> io::Error {
     io::Error::from_raw_os_error(error.raw_os_error())
 }
 
-/// 中继线程若继承默认 SIGPIPE 处置，写已关闭的下游会直接杀死 pp。
+/// If the relay thread inherited the default SIGPIPE disposition, writing to a closed downstream would
+/// kill pp outright.
 ///
-/// Rust 运行时默认忽略 SIGPIPE，但这里仍在线程内阻塞它作为防御：即使宿主将来
-/// 改回默认处置，写失败也只会得到 `EPIPE`，而挂起的线程级信号随线程退出丢弃。
+/// The Rust runtime ignores SIGPIPE by default, but it is still blocked inside the thread as a defense:
+/// even if the host switches back to the default disposition, a write failure only yields `EPIPE`, and
+/// the pending thread-level signal is discarded when the thread exits.
 fn block_sigpipe() {
-    // SAFETY: `sigset_t` 是 POD；`pthread_sigmask` 是 async-signal-safe 的线程本地调用。
+    // SAFETY: `sigset_t` is POD; `pthread_sigmask` is an async-signal-safe thread-local call.
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
@@ -148,7 +157,8 @@ fn relay_loop(
     stop: &AtomicBool,
 ) -> CloseReason {
     let mut buffer = vec![0u8; RELAY_BUFFER];
-    // 当前块在 `buffer[..pending_end]` 中；`pending_start` 之前的部分已写入下游。
+    // The current block lives in `buffer[..pending_end]`; everything before `pending_start` is already
+    // written downstream.
     let mut pending_start = 0usize;
     let mut pending_end = 0usize;
 
@@ -158,9 +168,9 @@ fn relay_loop(
         }
 
         if pending_start == pending_end {
-            // 无待转发块：先用零超时探测下游是否仍存活。macOS 的 poll 只在请求
-            // POLLOUT 时才报告写端的 HUP/ERR，因此不能用 events=0 探测；同时本次
-            // 探测超时为 0，不会让正常可写状态变成忙循环。
+            // No pending block: first probe with a zero timeout whether the downstream is still alive. macOS
+            // poll only reports HUP/ERR on a write end when POLLOUT is requested, so events=0 cannot be used
+            // to probe; the probe timeout is 0, so a normally writable state does not become a busy loop.
             match poll_one(downstream.as_raw_fd(), libc::POLLOUT, 0) {
                 Ok(events) if events & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 => {
                     return CloseReason::DownstreamClosed;
@@ -168,7 +178,7 @@ fn relay_loop(
                 Ok(_) => {}
                 Err(()) => return CloseReason::Error,
             }
-            // 真正的阻塞点是上游；50ms 超时用于协作停止。
+            // The real blocking point is upstream; the 50ms timeout serves cooperative stop.
             match poll_one(upstream.as_raw_fd(), libc::POLLIN, POLL_INTERVAL_MS) {
                 Ok(0) => continue,
                 Ok(events) if events & (libc::POLLIN | libc::POLLHUP) != 0 => {}
@@ -177,12 +187,13 @@ fn relay_loop(
             }
             match upstream.read(&mut buffer) {
                 Ok(0) => {
-                    // EOF 时不会有待发送块（只有块写完后才重新读上游）。
+                    // At EOF there is never a pending block (upstream is re-read only after a block is written).
                     let _ = downstream.flush();
                     return CloseReason::Eof;
                 }
                 Ok(count) => {
-                    // 先镜像再转发：即使下游只消费了一部分，也记录实际观察到的字节。
+                    // Mirror before forwarding: record the bytes actually observed even when the downstream
+                    // consumes only part of them.
                     stream.observe(&buffer[..count]);
                     pending_start = 0;
                     pending_end = count;
@@ -194,7 +205,7 @@ fn relay_loop(
             continue;
         }
 
-        // 有待发送块：等下游可写，同时观察它是否已经关闭。
+        // A block is pending: wait until the downstream is writable while watching whether it has closed.
         let events = match poll_one(downstream.as_raw_fd(), libc::POLLOUT, POLL_INTERVAL_MS) {
             Ok(events) => events,
             Err(()) => return CloseReason::Error,
@@ -212,7 +223,7 @@ fn relay_loop(
                 Ok(Forward::Closed) => return CloseReason::DownstreamClosed,
                 Err(_) => return CloseReason::Error,
             }
-            // 完全写出后复位游标；未写出时保留剩余区间等待下一轮 POLLOUT。
+            // Reset the cursor once fully written; otherwise keep the remaining range for the next POLLOUT.
             if pending_start == pending_end {
                 pending_start = 0;
                 pending_end = 0;
@@ -221,7 +232,7 @@ fn relay_loop(
     }
 }
 
-/// 对单个 fd 做一次 poll；EINTR 视为无事件，其余错误返回 `Err`。
+/// Poll a single fd once; EINTR counts as no event and any other error returns `Err`.
 fn poll_one(fd: i32, events: i16, timeout_ms: i32) -> Result<i16, ()> {
     let mut pollfd = libc::pollfd {
         fd,
@@ -229,7 +240,7 @@ fn poll_one(fd: i32, events: i16, timeout_ms: i32) -> Result<i16, ()> {
         revents: 0,
     };
     loop {
-        // SAFETY: `pollfd` 是长度正确的单元素可变数组，调用期间一直有效。
+        // SAFETY: `pollfd` is a single-element mutable array of the right length and stays valid for the call.
         let ready = unsafe { libc::poll(&mut pollfd, 1, timeout_ms) };
         if ready < 0 {
             if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
@@ -332,7 +343,7 @@ mod tests {
             let edge = spawn(stream.clone(), stop).expect("spawn relay");
             let (reader, mut writer, mut relay) = split(edge);
 
-            // 下游 reader 关闭后，中继在没有任何新上游字节的情况下也必须退出。
+            // Once the downstream reader closes, the relay must exit even with no new upstream bytes.
             drop(reader);
             assert!(
                 wait_until(|| relay.is_done()),
@@ -341,7 +352,7 @@ mod tests {
             relay.join();
             assert_eq!(stream.close_reason(), Some(CloseReason::DownstreamClosed));
 
-            // 上游读端已释放，后续写入获得 EPIPE，而不是无限背压。
+            // The upstream read end is released, so later writes hit EPIPE instead of unbounded backpressure.
             let error = writer
                 .write_all(b"after close")
                 .expect_err("upstream read end is gone");
@@ -387,7 +398,7 @@ mod tests {
             drop(writer);
         });
 
-        // 慢下游：强制 relay 经历 partial write / EAGAIN 分支。
+        // Slow downstream: force the relay through the partial write / EAGAIN branch.
         let mut forwarded = Vec::with_capacity(TOTAL);
         let mut chunk = [0u8; 7919];
         loop {
@@ -405,7 +416,7 @@ mod tests {
         assert!(wait_until(|| relay.is_done()));
         relay.join();
         assert_eq!(stream.close_reason(), Some(CloseReason::Eof));
-        // 1MiB 环足够容纳 512KiB，观察到的字节与转发字节完全一致。
+        // The 1MiB ring easily holds 512KiB, so observed bytes equal forwarded bytes exactly.
         assert_eq!(stream.retained_range().1, TOTAL as u64);
         assert_eq!(stream.retained(), payload);
     }

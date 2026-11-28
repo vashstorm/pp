@@ -1,4 +1,4 @@
-//! `eval` 工具独立展示模块：语言识别（Python / JavaScript / 回退）、代码语法高亮与输出尾窗。
+//! Standalone display module for the `eval` tool: language detection (Python / JavaScript / fallback), code syntax highlighting and the output tail window.
 
 use super::{Context, View, palette, tail_output, wrap_block};
 use crate::tui::transcript::card::{self, CardSurface};
@@ -11,7 +11,7 @@ use serde_json::Value;
 
 const EVAL_LINES: usize = 10;
 
-/// `eval` 工具的目标语言；显式区分 Python 与 JavaScript，并为未来语言保留平滑回退。
+/// Target language of the `eval` tool; Python and JavaScript are distinguished explicitly and a smooth fallback is kept for future languages.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::tui) enum EvalLang {
     Python,
@@ -113,7 +113,7 @@ fn sanitize_for_highlight(text: &str) -> String {
     out
 }
 
-/// 布局 `eval` 卡片的标题（如有）与按语言语法高亮后的代码正文。
+/// Lay out the title (if any) of the `eval` card and the code body highlighted for its language.
 pub(in crate::tui) fn eval_code_lines(
     lang: &EvalLang,
     title: Option<&str>,
@@ -192,7 +192,7 @@ pub(in crate::tui) fn eval_code_lines(
     rows
 }
 
-/// 布局 `eval` 卡片的输出正文（stdout / `[stderr]` 分色与尾部折叠窗口）。
+/// Lay out the output body of the `eval` card (stdout / `[stderr]` coloring and the folded tail window).
 pub(in crate::tui) fn eval_body(view: &View<'_>, width: u16, style: Style) -> Vec<Line<'static>> {
     let expanded = view.expanded || view.context.full;
     tail_output(

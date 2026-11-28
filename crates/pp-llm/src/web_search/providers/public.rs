@@ -104,7 +104,7 @@ pub(crate) async fn search_with_deadlines(
     hard_deadline: Duration,
 ) -> Result<RawProviderResponse, ProviderError> {
     let num_results = clamp_num_results(limit, DEFAULT_NUM_RESULTS, MAX_NUM_RESULTS);
-    // 优先级顺序：Startpage 在前，DuckDuckGo 在后（作为并列共识的决胜顺序）。
+    // Priority order: Startpage first, DuckDuckGo second (tie-breaker for agreed consensus).
     let mut sp_fut = std::pin::pin!(startpage::search(ctx, query, parsed, recency, limit));
     let mut ddg_fut = std::pin::pin!(duckduckgo::search(ctx, query, parsed, recency, limit));
 

@@ -1,4 +1,4 @@
-//! MCP 折叠摘要优先展示实际字段值，不用容器层级消耗预览额度。
+//! MCP folded summaries prefer actual field values so container levels do not consume the preview quota.
 
 use super::{Value, clip};
 
@@ -53,7 +53,7 @@ impl Preview {
                     return;
                 }
                 let mut fields: Vec<_> = map.iter().collect();
-                // 错误优先，其余标量在容器之前；未知字段仍可见。
+                // Errors first, then the other scalars before the containers; unknown fields stay visible.
                 fields.sort_by_key(|(key, value)| {
                     (
                         priority(key) != 0,

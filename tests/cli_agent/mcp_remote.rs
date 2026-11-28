@@ -24,7 +24,13 @@ fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_prec
             let cli = Cli::start_env(
                 dir.path(),
                 dir.path(),
-                &["--yolo", "--allowed-tools", "mcp__*", "-p", "调用远程工具"],
+                &[
+                    "--yolo",
+                    "--allowed-tools",
+                    "mcp__*",
+                    "-p",
+                    "call remote tool",
+                ],
                 &[("PP_MCP_TEST_KEY", "env-secret")],
             );
             let path = if protocol == "completion" {
@@ -46,7 +52,7 @@ fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_prec
                 .find(|tool| tool["name"] == "mcp__remote__echo")
                 .unwrap_or_else(|| {
                     panic!(
-                        "未发现远程工具 {transport}/{mode}/{protocol}，RPC 方法：{:?}",
+                        "remote tool not found for {transport}/{mode}/{protocol}, RPC methods: {:?}",
                         remote
                             .log()
                             .iter()
@@ -107,9 +113,9 @@ fn mcp_remote_both_model_protocols_and_transports_preserve_results_and_auth_prec
             assert_eq!(results[0]["result"]["structuredContent"]["count"], 1);
             assert_eq!(results[1]["ok"], false);
             if protocol == "completion" {
-                final_reply(request, "完成");
+                final_reply(request, "done");
             } else {
-                response_final(request, "完成");
+                response_final(request, "done");
             }
             let output = cli.finish();
             assert!(

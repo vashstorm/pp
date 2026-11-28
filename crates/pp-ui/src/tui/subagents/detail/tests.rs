@@ -40,10 +40,10 @@ fn detail_speed_timing_ticks_and_clears_on_termination() {
         let (rate, estimated) = detail.token_speed.value().unwrap();
         assert!(
             (rate - 200.0).abs() < 0.01,
-            "按日志中的一秒输出窗口估速: {rate}"
+            "speed estimated from the one-second output window in the log: {rate}"
         );
         assert!(estimated);
-        // 重复页不能重复累计或重置采样。
+        // A repeated page must not accumulate twice or reset the sampling.
         detail.ingest(&first, &runs, &BTreeSet::new(), 10_000);
         assert_eq!(detail.token_speed.value(), Some((rate, true)));
         detail.ingest(
@@ -250,7 +250,7 @@ fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
             )
             .record
         };
-        // 页未读完时预览被丢弃，不能提前改变卡片。
+        // The preview is dropped while the page is incomplete, so the card cannot change early.
         detail.pipeline_preview(&pipeline(1, 1));
         assert!(!text(&mut detail.transcript).contains("Pipes: /pipes"));
         detail.ingest(
@@ -271,7 +271,7 @@ fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
         detail.output_preview(&main);
         detail.pipeline_preview(&pipeline(1, 1));
         let screen = text(&mut detail.transcript);
-        // 阶段快照只更新底部警示/入口，主输出预览仍是唯一正文。
+        // A stage snapshot only updates the bottom warning/entry; the main output preview remains the only body.
         assert!(screen.contains("main-preview"), "{screen}");
         assert!(screen.contains("Pipes: /pipes (F8)"), "{screen}");
         assert!(screen.contains("Non-zero stage results: 1"), "{screen}");
@@ -293,7 +293,7 @@ fn detail_task_poll_and_live_output_pipeline_previews_update_cleanly() {
             "{screen}"
         );
         assert!(screen.contains("Non-zero stage results: 2"), "{screen}");
-        // 最终结果没有 pipes 时，瞬时入口与警示不得残留。
+        // When the final result has no pipes, neither the transient entry nor the warning may linger.
         detail.ingest(
             &page(
                 vec![event(
@@ -856,11 +856,14 @@ fn detail_rebuild_and_editor_input_config() {
     for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT | KeyModifiers::SHIFT] {
         let before = drafts.draft("a1").editor.lines().len();
         let result = detail.key(KeyEvent::new(KeyCode::Enter, modifiers), &mut drafts);
-        assert!(result.is_none(), "Shift + Enter 不得提交: {modifiers:?}");
+        assert!(
+            result.is_none(),
+            "Shift + Enter must not submit: {modifiers:?}"
+        );
         assert_eq!(
             drafts.draft("a1").editor.lines().len(),
             before + 1,
-            "Shift + Enter 只换行: {modifiers:?}"
+            "Shift + Enter only inserts a newline: {modifiers:?}"
         );
     }
     let draft = drafts.draft("a1");

@@ -1,4 +1,5 @@
-//! 与会话日志独立的请求统计；数据库故障不改变模型调用结果。
+//! Request statistics kept separate from session logs; database failures do not change model call
+//! results.
 mod activity;
 mod analytics;
 mod cost;
@@ -45,13 +46,15 @@ use std::{
 #[derive(Clone)]
 pub struct RequestContext {
     pub model_reference: String,
-    /// 统计库句柄：进程内复用一个连接，`Store::open` 失败不缓存以便下次重试；
-    /// 生产由 [`database_path`] 解析后构造，测试可指向临时库以免写真实 HOME。
+    /// Stats database handle: one connection is reused within the process, and a failed `Store::open`
+    /// is not cached so the next attempt retries; production builds it from [`database_path`], while
+    /// tests can point it at a temporary database to avoid writing the real HOME.
     pub database: Database,
     pub cwd: PathBuf,
     pub purpose: &'static str,
     pub session_file: Option<PathBuf>,
-    /// 会话文件尚未分配时，保留已写入的统计键以便随后关联。
+    /// Keeps the stats keys already written while no session file is assigned yet, so they can be
+    /// linked afterwards.
     pub unlinked_requests: Option<Arc<Mutex<Vec<String>>>>,
     pub first_request: Arc<AtomicBool>,
     pub skills: Vec<pp_config::skills::SkillHeader>,
@@ -84,7 +87,8 @@ impl RequestContext {
 pub struct Observation {
     pub timestamp: i64,
     pub ttft_ms: Option<u64>,
-    /// 原生模型输出；只在请求边界用于提取工具调用，不整体落库。
+    /// Native model output; used only at the request boundary to extract tool calls and never stored
+    /// wholesale.
     pub output: Value,
     pub stop_reason: Option<String>,
     pub usage: Option<pp_core::context::TokenUsage>,
@@ -117,10 +121,11 @@ impl Default for Observation {
     }
 }
 
-/// 生产环境的统计库路径：`$HOME/.pp/stats/stats.db`。
+/// Production stats database path: `$HOME/.pp/stats/stats.db`.
 ///
-/// 采集入口不直接调用它——`main::run` 用它构造 [`Database`] 句柄，经 [`RequestContext`]
-/// 与 `link`/`tool`/`hook` 参数向下传递，测试因此能把写入限制在临时目录。
+/// Collection entry points never call it directly — `main::run` uses it to build the [`Database`]
+/// handle and passes that down through [`RequestContext`] and the `link`/`tool`/`hook` arguments,
+/// which lets tests confine writes to a temporary directory.
 pub fn database_path() -> Result<PathBuf> {
     let agent = pp_config::config::global_dir()?;
     Ok(agent
@@ -180,7 +185,7 @@ mod fixtures {
             rates: None,
         }
     }
-    /// 按给定费率写入采集时会写入的费用／费率快照。
+    /// Writes the cost/rate snapshots that collection would write for the given rates.
     pub(super) fn snapshot_for(rates: &Rates, record: &mut RequestRow) {
         let (cost, rate) = rates.snapshot(
             &record.model_reference,

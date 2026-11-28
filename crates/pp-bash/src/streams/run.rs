@@ -1,4 +1,4 @@
-//! run 级元数据、状态与终态快照。
+//! Run-level metadata, state and terminal-state snapshots.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -79,7 +79,8 @@ pub(super) struct RunMeta {
     capture_error: Option<String>,
 }
 
-/// 一次 run 的终态。`exit_code` 来自受监督 shell；中断原因只用于展示。
+/// Terminal state of one run. `exit_code` comes from the supervised shell; the interrupt reason is
+/// only used for display.
 #[derive(Clone, Debug)]
 pub(crate) struct RunEnd {
     pub(crate) exit_code: Option<i32>,
@@ -218,7 +219,8 @@ impl RunState {
     pub(super) fn record_stage_done(&self, id: u64, stage: usize, status: u8, signal: Option<i32>) {
         let mut meta = lock(&self.meta);
         if status != 0 || signal.is_some() {
-            // 即使明细已被配额淘汰，只要真实观察到非零状态就累计计数。
+            // Count a non-zero status whenever it is genuinely observed, even if the details were already
+            // evicted by quota.
             meta.nonzero_stages += 1;
         }
         let mut changed = false;
@@ -253,7 +255,7 @@ impl RunState {
                 record.status = Some(status);
                 for detail in &mut record.stages {
                     if detail.state == StageState::Running {
-                        // 未收到真实等待结果的阶段只能是 unknown，不能补 0。
+                        // A stage without a real wait result can only be unknown; never fill in 0.
                         detail.state = StageState::Unknown;
                     }
                 }
@@ -287,11 +289,12 @@ impl RunState {
         lock(&self.relays).push(relay);
     }
 
-    /// 回收已经结束的中继线程。
+    /// Reap relay threads that have already finished.
     ///
-    /// 已封存/被淘汰的流不会在 run 结束前自动释放它的中继句柄，长 run 若只保留
-    /// 到 finish 才 join 会无界积累 JoinHandle。这里在**不持有任何锁**的情况下
-    /// 逐个 join 已完成的中继；未完成的条目留在列表里由本次或收尾继续等待。
+    /// Sealed/evicted streams do not release their relay handle until the run ends, so a long run that
+    /// only joins at finish would accumulate `JoinHandle`s without bound. Here each finished relay is
+    /// joined **without holding any lock**; unfinished entries stay in the list and are awaited by this
+    /// call or by shutdown later.
     pub(super) fn reap_finished_relays(&self) {
         loop {
             let relay = {
@@ -328,7 +331,7 @@ impl RunState {
         lock(&self.meta).pipelines.len()
     }
 
-    /// 已关闭流超过每 run 保留上限时淘汰最老的那几条。
+    /// Evict the oldest streams once closed streams exceed the per-run retention limit.
     pub(super) fn stream_closed(&self) {
         let mut evicted = 0u64;
         {
@@ -341,7 +344,8 @@ impl RunState {
                 .collect();
             let remove = closed.len().saturating_sub(MAX_CLOSED_STREAMS_PER_RUN);
             if remove > 0 {
-                // 流 id 单调递增，保持插入顺序的 streams 前面就是更老的已关闭流。
+                // Stream ids increase monotonically, so earlier entries in the insertion-ordered streams
+                // list are the older closed streams.
                 for index in closed[..remove].iter().rev() {
                     streams.remove(*index);
                     evicted += 1;
@@ -352,8 +356,9 @@ impl RunState {
             lock(&self.meta).evicted_streams += evicted;
         }
         self.bump();
-        // 封存/淘汰后立即回收其它已完成的中继；当前中继尚未置 done，不会被自 join。
-        // 这样即使之后不再创建新边，句柄数量也只与并发 open 流相关。
+        // Reap other finished relays right after sealing/eviction; the current relay is not marked done
+        // yet, so it never joins itself. This keeps the handle count tied to concurrently open streams
+        // even when no new edges are created afterwards.
         self.reap_finished_relays();
     }
 
@@ -376,8 +381,8 @@ impl RunState {
             for record in &mut meta.pipelines {
                 for detail in &mut record.stages {
                     if detail.state == StageState::Running {
-                        // 解释器收尾前仍没有真实等待结果的阶段：取消为 interrupted，
-                        // 其他原因是 unknown；两者都不补造 0。
+                        // A stage with no real wait result before the interpreter shuts down: an interrupt makes
+                        // it interrupted, any other cause makes it unknown; neither fabricates a 0.
                         detail.state = if interrupted {
                             StageState::Interrupted
                         } else {
@@ -477,7 +482,8 @@ pub struct PipelineInfo {
     pub stages: Vec<StageInfo>,
 }
 
-/// run 级别的有界元数据；`pipes_json` 与列表/快照共用同一结构，不含阶段正文。
+/// Bounded run-level metadata; `pipes_json` and the list/snapshot share this structure and it carries
+/// no stage bodies.
 #[derive(Clone, Debug, Serialize)]
 pub struct RunInfo {
     pub run_id: String,
@@ -530,7 +536,8 @@ mod tests {
             assert_eq!(info.omitted_pipelines, 4);
             assert_eq!(info.nonzero_stages, 0);
             assert!(info.incomplete);
-            // 前 4 个 occurrence 的明细被淘汰，但 id 序列保持单调且不复用。
+            // Details of the first 4 occurrences are evicted, but the id sequence stays monotonic and is
+            // never reused.
             let ids = info.pipelines.iter().map(|p| p.id).collect::<Vec<_>>();
             assert_eq!(
                 ids,
@@ -547,7 +554,7 @@ mod tests {
                 .unwrap();
             let long = "λ".repeat(MAX_LABEL_BYTES);
             run.observer().label(id, 1, &long).unwrap();
-            // 超出明细容量的阶段也必须计入非零事实。
+            // Stages beyond the detail capacity must still count toward the non-zero fact.
             run.observer().stage_done(id, 1, 3, None).unwrap();
             run.observer()
                 .stage_done(id, MAX_STAGES_PER_PIPELINE + 8, 7, Some(13))
@@ -564,7 +571,7 @@ mod tests {
             assert_eq!(pipeline.status, Some(3));
             assert_eq!(info.nonzero_stages, 2);
             assert_eq!(info.omitted_stages, 8);
-            // 未报告真实等待结果的阶段残留为 unknown，绝不补 0。
+            // Stages that never reported a real wait result remain unknown; 0 is never filled in.
             let tail = pipeline.stages.last().unwrap();
             assert_eq!(tail.state, StageState::Unknown);
             assert_eq!(tail.status, None);
@@ -602,7 +609,7 @@ mod tests {
             assert_eq!(stream["uri"], stream_uri(run.id(), 1));
             assert_eq!(stream["producer_stage"], 1);
             assert_eq!(stream["consumer_stage"], 2);
-            // 快照只含元数据，绝不携带阶段正文。
+            // Snapshots carry metadata only, never stage bodies.
             assert!(stream.get("data").is_none());
             assert!(json["pipelines"][0]["stages"][0].get("data").is_none());
         }

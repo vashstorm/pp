@@ -8,15 +8,18 @@ fn context_panel_refreshes_during_main_run_and_preserves_cancellation() {
     pty.input("inspect running context\r");
     let (request, _) = pty.request_at(&server, api_path(protocol));
 
-    // 握住首个模型请求，面板必须立即显示真实上下文。
+    // Hold the first model request: the panel must show the real context immediately.
     pty.input("/context\r");
-    pty.wait_for("运行中打开上下文面板", |screen| {
-        let text = screen.contents();
-        text.contains("Context · fixture/primary")
-            && text.contains("Built-in Tools")
-            && text.contains("Auto-Compact Buffer")
-            && !text.contains("Inspecting current session context")
-    });
+    pty.wait_for(
+        "the context panel opens while the task is running",
+        |screen| {
+            let text = screen.contents();
+            text.contains("Context · fixture/primary")
+                && text.contains("Built-in Tools")
+                && text.contains("Auto-Compact Buffer")
+                && !text.contains("Inspecting current session context")
+        },
+    );
 
     let args = json!({"command":"printf ctx-snap-ok"});
     if protocol == "completion" {
@@ -29,36 +32,45 @@ fn context_panel_refreshes_during_main_run_and_preserves_cancellation() {
     }
     let (pending_request, _) = pty.request_at(&server, api_path(protocol));
 
-    // 主任务已完成一批工具并等待下一次模型响应；刷新须读到新工具调用与输出，并支持原地展开。
+    // The main task already finished a batch of tools and waits for the next model response; a refresh must pick up the new tool
+    // calls and output and support expanding in place.
     pty.input("r");
-    pty.wait_for("刷新后可见 Tool Output 非零", |screen| {
-        let text = screen.contents();
-        text.contains("Tool Output") && !text.contains("Tool Output  0  0.0%")
-    });
-    // 向下移动到 Tool Calls (index 8) 展开可见 bash(printf ctx-snap-ok) 子项。
+    pty.wait_for(
+        "Tool Output shows a non-zero value after the refresh",
+        |screen| {
+            let text = screen.contents();
+            text.contains("Tool Output") && !text.contains("Tool Output  0  0.0%")
+        },
+    );
+    // Move down to Tool Calls (index 8) and expand the visible bash(printf ctx-snap-ok) child.
     pty.input(&format!("{}\r", "\x1b[B".repeat(8)));
     pty.text("ctx-snap-ok");
     pty.input("\x7f");
-    pty.wait_for("Backspace 收起子项", |screen| {
+    pty.wait_for("Backspace collapses the child", |screen| {
         !screen.contents().contains("ctx-snap-ok") && screen.contents().contains("Tool Calls")
     });
     pty.input("\x1b");
-    pty.wait_for("关闭面板后主任务仍在运行", |screen| {
-        let text = screen.contents();
-        !text.contains("Context · fixture/primary") && live_activity_labels(&text).next().is_some()
-    });
+    pty.wait_for(
+        "the main task is still running after the panel closes",
+        |screen| {
+            let text = screen.contents();
+            !text.contains("Context · fixture/primary")
+                && live_activity_labels(&text).next().is_some()
+        },
+    );
 
-    // 别名同样可在运行中打开；关闭面板的 Esc 不应取消任务。
+    // The alias opens while running too; the Esc that closes the panel must not cancel the task.
     pty.input("/ctx\r");
     pty.text("Context · fixture/primary");
     pty.input("\x1b");
-    pty.wait_for("关闭别名打开的面板", |screen| {
+    pty.wait_for("the panel opened by the alias closes", |screen| {
         !screen.contents().contains("Context · fixture/primary")
     });
     pty.input("\x1b");
-    pty.wait_for("关闭面板后仍可取消主任务", |screen| {
-        input_is_ready(screen) && screen.contents().contains("✻ Cancelled")
-    });
+    pty.wait_for(
+        "the main task can still be cancelled after the panel closes",
+        |screen| input_is_ready(screen) && screen.contents().contains("✻ Cancelled"),
+    );
     drop(pending_request);
     pty.input("\x03");
     pty.finish();

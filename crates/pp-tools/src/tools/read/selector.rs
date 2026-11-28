@@ -107,7 +107,7 @@ impl Target {
     pub(in crate::tools) fn parse(path: &str, cwd: &Path) -> Result<Self> {
         ensure!(!path.trim().is_empty(), "path must not be blank");
         let web = path.starts_with("http://") || path.starts_with("https://");
-        // POSIX 中包含冒号的真实文件名优先，不能误删合法路径尾部。
+        // On POSIX a real file name containing a colon wins, so a valid path tail is never stripped by mistake.
         if !web
             && !path.starts_with("skill://")
             && !path.starts_with("artifact://")
@@ -247,9 +247,9 @@ fn coerce_positive_int(value: Value) -> Value {
     }
 }
 
-/// 解析并归一化 `read` 工具参数（权限预检与实际读取共用）：
-/// 兼容模型习惯传入的 `offset`/`limit`/`ranges`（及 `path_ranges` 别名，含数字字符串与 `null`），
-/// 折算为统一的 `path:<selector>` 形式；其余未知字段、冲突或非正整数仍严格拒绝。
+/// Parse and normalize `read` tool arguments (shared by the permission pre-check and the actual read):
+/// accepts the `offset`/`limit`/`ranges` the model habitually sends (plus the `path_ranges` alias, including numeric strings and `null`)
+/// and folds them into a uniform `path:<selector>` form; other unknown fields, conflicts and non-positive integers are still rejected strictly.
 pub(in crate::tools) fn parse_args(arguments: &str, cwd: &Path) -> Result<String> {
     let input: Value = serde_json::from_str(arguments).context("invalid read arguments")?;
     let Value::Object(input) = input else {
@@ -315,7 +315,7 @@ pub(in crate::tools) fn parse_args(arguments: &str, cwd: &Path) -> Result<String
     };
     let raw_suffix = if base.raw { ":raw" } else { "" };
     let normalized = suffixed(&base.source, &format!(":{selector}{raw_suffix}"));
-    // 立即校验折算后的 selector 合法性，避免非法 `ranges` 被当成字面文件名绕过预检。
+    // Validate the folded selector immediately, so an invalid `ranges` cannot slip through the pre-check as a literal file name.
     let parsed = Target::parse(&normalized, cwd).context("invalid read arguments")?;
     ensure!(
         !parsed.ranges.is_empty(),

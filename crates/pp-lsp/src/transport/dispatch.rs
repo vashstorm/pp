@@ -1,4 +1,4 @@
-//! 服务器通知与 server request 的分发。
+//! Dispatch of server notifications and server requests.
 
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -78,8 +78,8 @@ pub(super) fn handle_server_request(
             reply(Value::Null);
         }
         "client/unregisterCapability" => {
-            // LSP 规范的字段名是 `unregisterations`；部分实现写成
-            // `unregistrations`，与上游一致地两种都接受。
+            // The LSP specification spells the field `unregisterations`; some implementations write
+            // `unregistrations`, so both are accepted, matching upstream.
             let entries = params
                 .get("unregisterations")
                 .or_else(|| params.get("unregistrations"))
@@ -137,7 +137,7 @@ mod tests {
                 {"id": "watch", "method": "workspace/didChangeWatchedFiles"},
             ]}),
         );
-        // 一个 unregister 不能清掉同 method 的其他注册。
+        // A single unregister must not clear other registrations with the same method.
         assert!(shared.diagnostics_registered());
         handle_server_request(
             &shared,
@@ -176,7 +176,7 @@ mod tests {
             json!(2),
             json!({"registrations": [{"id": "diag", "method": "workspace/didChangeWatchedFiles"}]}),
         );
-        // 同 id 重新注册是替换，不是叠加。
+        // Re-registering the same id replaces rather than accumulates.
         assert!(!shared.diagnostics_registered());
         handle_server_request(
             &shared,

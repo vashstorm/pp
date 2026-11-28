@@ -73,7 +73,8 @@ impl<'a> PurgeContext<'a> {
         Ok(self.history.as_mut())
     }
 
-    /// 唯一权威的会话关联数据清理序列（不含 `.jsonl` 主文件与锁文件本身）。
+    /// The single authoritative cleanup sequence for session-associated data (excluding
+    /// the `.jsonl` main file and the lock file itself).
     fn purge_session_data(&mut self, id: &str, journal: &Path) -> Result<()> {
         self.stats
             .remove_session(journal)
@@ -204,7 +205,8 @@ fn clean_expired_session(
             metadata(&pending)?.is_none(),
             "session cleanup file already exists"
         );
-        // 先从恢复和索引入口移除，再用暂存文件记录清理进度，供中断后重试。
+        // Remove it from resume and index entry points first, then record cleanup progress
+        // in the staged file so an interrupted run can be retried.
         fs::rename(&journal, &pending).context("staging expired session")?;
     }
     ctx.purge_session_data(id, &journal)?;
@@ -227,7 +229,8 @@ fn sweep_orphans(
         };
         let journal = ctx.dir.join(format!("{id}.jsonl"));
         let pending = ctx.dir.join(format!("{id}.jsonl.gc"));
-        // 持锁后二次核对日志文件仍不存在，避免与并发新建/恢复/暂存竞争。
+        // Recheck under the lock that the journal file is still absent, so this cannot
+        // race with a concurrent create/resume/stage.
         if metadata(&journal)?.is_some() || metadata(&pending)?.is_some() {
             continue;
         }

@@ -36,7 +36,7 @@ pub(super) fn write_row(writer: &mut impl Write, buffer: &Buffer, area: Rect) ->
             text.clear();
             style = cell.style();
         }
-        // 不回放单元格内的终端控制字符；宽字符的占位单元格不重复输出。
+        // Terminal control characters inside a cell are never replayed, and wide-character placeholder cells are not emitted twice.
         text.extend(cell.symbol().chars().filter(|ch| !ch.is_control()));
         let width = Span::raw(cell.symbol()).width().max(1);
         x = x.saturating_add(u16::try_from(width).unwrap_or(u16::MAX));

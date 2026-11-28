@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// 工具消息框（read / bash / eval / search / edit / write / mcp / wait / ask / lsp）的版式风格。
+/// Layout style of the tool message boxes (read / bash / eval / search / edit / write / mcp / wait / ask / lsp).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ToolStyle {
     #[default]

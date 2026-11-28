@@ -1,4 +1,5 @@
-//! 剪贴板和资源准备在独立线程执行，回复只属于启动它的草稿。
+//! Clipboard and resource preparation run on a dedicated thread; replies belong only to
+//! the draft that started them.
 use anyhow::{Context, Result, ensure};
 use pp_config::config::ToolLimits;
 use pp_core::cancellation::CancellationToken;
@@ -110,7 +111,8 @@ impl State {
         self.redo.clear();
     }
 
-    /// 仅对来自持久历史或待处理消息的可信附件恢复位置绑定。
+    /// Restores position bindings only for trusted attachments coming from persistent
+    /// history or pending messages.
     pub fn bind_text(&mut self, text: &str) {
         self.bindings = self
             .images
@@ -132,7 +134,8 @@ impl State {
     }
 
     pub fn restore_input(&mut self, mut images: Vec<Image>, mut text: String) -> String {
-        // 旧历史只在召回草稿时转换显示，磁盘记录和协议历史保持原样。
+        // Legacy history is converted only when a draft is recalled; on-disk records and
+        // protocol history stay unchanged.
         for image in &mut images {
             if let Some(number) = image
                 .marker
@@ -151,7 +154,8 @@ impl State {
         text
     }
 
-    /// 一次用户编辑可能调用多个 textarea 原语，撤销必须回到同一事务边界。
+    /// A single user edit may call several textarea primitives, so undo must return to the
+    /// same transaction boundary.
     pub fn undo_input(
         &mut self,
         input: &mut ratatui_textarea::TextArea<'static>,
@@ -172,7 +176,8 @@ impl State {
             }
         }
         if input.lines().join("\n") != *target {
-            // 原生历史容量耗尽时仍恢复完整事务，不能留下半个附件。
+            // Restore the whole transaction even when the native history capacity runs out;
+            // a half attachment must never be left behind.
             *input = super::editor();
             input.insert_str(target);
         }
@@ -318,7 +323,7 @@ pub(super) fn start(
                         for reference in references {
                             check(&token)?;
                             let path = user_input::resolve(
-                                reference.path.as_deref().expect("图片路径"),
+                                reference.path.as_deref().expect("image path"),
                                 &cwd,
                             )?;
                             replacements.push((
@@ -334,7 +339,7 @@ pub(super) fn start(
             })();
             let _ = sender.send(result);
         })
-        .context("无法启动输入资源线程")?;
+        .context("starting the input resource thread")?;
     Ok(Job {
         reply,
         cancellation,
@@ -351,18 +356,21 @@ fn load_paths(paths: Vec<PathBuf>, token: &CancellationToken) -> Result<Vec<Imag
         .iter()
         .map(|path| {
             check(token)?;
-            user_input::image_file(path).with_context(|| format!("无法附加图片 {}", path.display()))
+            user_input::image_file(path)
+                .with_context(|| format!("cannot attach image {}", path.display()))
         })
         .collect()
 }
 
 fn clipboard(cwd: &std::path::Path, token: &CancellationToken) -> Result<Output> {
-    // SSH 中的系统剪贴板属于远端机器，不能代替用户终端剪贴板。
+    // The system clipboard in an SSH session belongs to the remote machine and cannot
+    // stand in for the user's terminal clipboard.
     ensure!(
         std::env::var_os("SSH_CONNECTION").is_none() && std::env::var_os("SSH_TTY").is_none(),
-        "远程会话请使用终端粘贴图片路径或 @图片路径"
+        "in a remote session, paste an image path or @path from the terminal"
     );
-    let mut clipboard = arboard::Clipboard::new().context("系统剪贴板不可用；可使用 @图片路径")?;
+    let mut clipboard =
+        arboard::Clipboard::new().context("system clipboard unavailable; use @path")?;
     read_clipboard(&mut clipboard, cwd, token)
 }
 
@@ -389,7 +397,7 @@ fn read_clipboard(
     cwd: &std::path::Path,
     token: &CancellationToken,
 ) -> Result<Output> {
-    // Finder 同时提供文件 URL 和图标位图，优先读取真实文件。
+    // Finder provides both file URLs and an icon bitmap, so prefer the real files.
     if let Ok(paths) = clipboard.files() {
         let images: Vec<_> = paths
             .into_iter()
@@ -408,18 +416,18 @@ fn read_clipboard(
                     && (image.width as u64)
                         .checked_mul(image.height as u64)
                         .is_some_and(|n| n <= 32_000_000),
-                "剪贴板图片超过 3200 万像素限制"
+                "clipboard image exceeds the 32-megapixel limit"
             );
             let rgba = image::RgbaImage::from_raw(
                 u32::try_from(image.width)?,
                 u32::try_from(image.height)?,
                 image.bytes.into_owned(),
             )
-            .context("剪贴板图片数据无效")?;
+            .context("clipboard image data is invalid")?;
             let mut png = std::io::Cursor::new(Vec::new());
             image::DynamicImage::ImageRgba8(rgba).write_to(&mut png, image::ImageFormat::Png)?;
             Ok(Output::Images(vec![user_input::image_bytes(
-                "剪贴板",
+                "clipboard",
                 png.get_ref(),
             )?]))
         }
@@ -427,7 +435,7 @@ fn read_clipboard(
             let text = match clipboard.text() {
                 Ok(text) => text,
                 Err(arboard::Error::ContentNotAvailable) => return Ok(Output::Empty),
-                Err(error) => return Err(error).context("读取剪贴板文本失败"),
+                Err(error) => return Err(error).context("failed to read clipboard text"),
             };
             if let Some(paths) = user_input::pasted_paths(&text, cwd) {
                 Ok(Output::Images(load_paths(paths, token)?))
@@ -435,7 +443,7 @@ fn read_clipboard(
                 Ok(Output::Text(text))
             }
         }
-        Err(error) => Err(error).context("读取剪贴板图片失败；可使用 @图片路径"),
+        Err(error) => Err(error).context("failed to read clipboard image; use @path"),
     }
 }
 
@@ -541,7 +549,9 @@ mod tests {
             if unavailable {
                 assert!(matches!(result, Ok(Output::Empty)));
             } else {
-                let actual = result.err().expect("剪贴板故障应继续上报");
+                let actual = result
+                    .err()
+                    .expect("clipboard failures must still propagate");
                 assert_eq!(
                     std::mem::discriminant(actual.downcast_ref::<arboard::Error>().unwrap()),
                     expected

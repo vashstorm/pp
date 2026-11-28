@@ -7,7 +7,8 @@ use std::{
     time::Duration,
 };
 
-/// 调用方负责将底层错误转换为不含正文或凭据的领域提示。
+/// Callers are responsible for converting underlying errors into domain messages that contain no
+/// body text or credentials.
 pub fn open(path: &Path) -> Result<Connection> {
     let dir = path
         .parent()
@@ -38,7 +39,8 @@ pub fn open(path: &Path) -> Result<Connection> {
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX
         | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-    // macOS 的 /var 等系统祖先可以是链接；只规范目录，不解析最终数据库文件。
+    // System ancestors such as /var on macOS may be links; canonicalize only the directory and never
+    // resolve the final database file.
     let resolved = dir.canonicalize()?.join(
         path.file_name()
             .ok_or_else(|| anyhow::anyhow!("Database file unavailable."))?,

@@ -23,7 +23,7 @@ fn mock(
                 let request = responder
                     .recv_timeout(Duration::from_secs(15))
                     .unwrap()
-                    .expect("认证请求必须到达");
+                    .expect("auth request must arrive");
                 let captured = Captured {
                     path: request.target().to_owned(),
                     body: String::from_utf8_lossy(request.body()).into_owned(),

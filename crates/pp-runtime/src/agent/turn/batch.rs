@@ -1,11 +1,11 @@
-//! 未执行调用合成的 `ok:false` 结果与批次失败优先级。
+//! Synthesized `ok:false` results for calls that were not executed and batch failure precedence.
 use super::super::hooks::HookHalt;
 use super::*;
 
-/// 未执行的调用仍然要产生一条 `ok:false` 结果与成对的工具事件；
-/// 合成事件同样进入展示捕获边界，使恢复与会话树能看到这些卡片。
-/// 取消导致的跳过保留 `cancelled` 标记，这样工具统计与卡片按取消归类，
-/// 不会因为 `HookHalt::Failure` 而变成错误。
+/// Calls that did not run still need an `ok:false` result and a paired tool event;
+/// the synthesized events also enter the display capture boundary so a restore and the session tree show these cards.
+/// Skips caused by cancellation keep the `cancelled` marker, so tool statistics and cards classify them as cancelled
+/// instead of turning them into errors because of `HookHalt::Failure`.
 pub(super) fn not_executed(
     journal: &mut SessionJournal,
     emit: &mut dyn FnMut(AgentEvent),
@@ -43,7 +43,7 @@ pub(super) fn not_executed(
     serialized
 }
 
-/// CleanupError 优先：既不能让 hook 反馈掩盖回收失败，也不能反过来。
+/// CleanupError takes precedence: neither can hook feedback mask the cleanup failure, nor the reverse.
 pub(super) fn batch_failure(
     hook: Option<anyhow::Error>,
     tool: Option<anyhow::Error>,

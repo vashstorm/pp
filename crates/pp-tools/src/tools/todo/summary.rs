@@ -1,4 +1,4 @@
-//! todo 结果的可读摘要。
+//! Human-readable summary of todo results.
 use pp_core::todo::{TodoItem, TodoPhase, TodoStatus};
 
 pub fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) -> String {
@@ -25,7 +25,7 @@ pub fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) 
         })
         .collect();
 
-    // 阶段摘要取最早仍有未完成工作的阶段，不限制跨阶段并发执行。
+    // The phase summary takes the earliest phase that still has unfinished work; concurrent execution across phases is not restricted.
     let current_index = phases
         .iter()
         .position(|phase| phase.tasks.iter().any(|task| task.status.is_open()))

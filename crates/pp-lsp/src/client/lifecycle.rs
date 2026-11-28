@@ -1,4 +1,4 @@
-//! 客户端类型、启动握手与受控／空闲退出。
+//! Client types, startup handshake, and controlled/idle shutdown.
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -28,21 +28,21 @@ pub(crate) struct Client {
     pub(crate) capabilities: ServerCapabilities,
     pub(crate) diagnostics: Arc<Diagnostics>,
     pub(crate) signals: Arc<Signals>,
-    /// 客户端创建时的工作区代数；registry 用它丢弃过期客户端。
+    /// Workspace generation at client creation; the registry uses it to drop stale clients.
     pub(crate) _generation: u64,
     pub(crate) _started: Instant,
     pub(crate) transport: Transport,
     pub(super) documents: Mutex<HashMap<PathBuf, DocumentState>>,
     pub(super) op_lock: Mutex<()>,
-    /// 最近一次操作开始/结束的时间；空闲回收按它计算而不是按创建时间。
+    /// Start/end time of the most recent operation; idle reaping computes from it, not from creation time.
     pub(super) last_activity: Mutex<Instant>,
     pub(super) folders: Mutex<Vec<PathBuf>>,
-    /// 追加过工作区根之后才允许 ContentModified 单次重试。
+    /// A one-time ContentModified retry is allowed only after a workspace root was appended.
     pub(super) roots_added: AtomicBool,
 }
 
-/// 跟踪 transport 的活动操作；applyEdit 始终在传输层拒绝。
-/// 即使操作体 panic 也保证计数回落。
+/// Tracks the transport's active operations; applyEdit is always rejected in the transport layer.
+/// The count is guaranteed to drop back even if the operation body panics.
 pub(super) struct ActiveOperation<'a> {
     transport: &'a Transport,
 }
@@ -61,10 +61,10 @@ impl Drop for ActiveOperation<'_> {
 }
 
 impl Client {
-    /// 启动进程并完成 initialize 握手；返回时客户端已 ready。
+    /// Spawn the process and complete the initialize handshake; the client is ready on return.
     ///
-    /// `identity` 由 registry 计算并保存，之后 reload/并发启动都以它判断能否复用；
-    /// 握手失败时先回收进程，回收失败必须随初始化错误一起返回，不能伪装成功。
+    /// `identity` is computed and stored by the registry, and later reload/concurrent starts use it to decide reuse;
+    /// when the handshake fails the process is reaped first, and a reap failure must be returned together with the initialization error, never masked as success.
     pub(crate) fn start(
         definition: &ServerDefinition,
         cwd: &Path,
@@ -106,9 +106,9 @@ impl Client {
             })
         };
         let transport = Transport::spawn(&command, &definition.spawn_args(), cwd, process, sink)?;
-        // `workspace/configuration` 与 `workspace/workspaceFolders` 可能在 initialize
-        // 期间或 `initialized` 之后立刻到达；握手之前就放入真实配置与初始工作区根，
-        // 服务器不会先看到 null/空列表。这里只是共享状态赋值，不发任何 RPC。
+        // `workspace/configuration` and `workspace/workspaceFolders` may arrive during initialize or
+        // immediately after `initialized`; installing the real configuration and initial workspace root before the handshake
+        // keeps the server from seeing null/an empty list first. This only assigns shared state and sends no RPC.
         transport.set_settings(definition.settings.clone());
         transport.set_folders(vec![folder_json(cwd)]);
         let capabilities =
@@ -153,10 +153,10 @@ impl Client {
         self.roots_added.load(Ordering::SeqCst)
     }
 
-    /// 受控退出：shutdown RPC → exit → 进程组回收。
+    /// Controlled shutdown: shutdown RPC → exit → process-group reap.
     pub(crate) fn shutdown(&self) -> Result<()> {
         self.touch();
-        // 尽量与活动操作串行，但回收不能因为等不到锁而放弃。
+        // Serialize with active operations where possible, but reaping must not be abandoned because the lock is unavailable.
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         let guard = self.acquire(deadline, &CancellationToken::new()).ok();
         let outcome = self.shutdown_transport();
@@ -164,10 +164,10 @@ impl Client {
         outcome
     }
 
-    /// 空闲回收：非阻塞地取得操作锁，确认已有操作真正结束后才关闭。
+    /// Idle reaping: acquire the operation lock non-blocking and close only once existing operations have really finished.
     ///
-    /// 持有活动操作（包括初始化）的客户端一律跳过；取到锁之后也在内部
-    /// 完成 shutdown，不再递归获取同一把操作锁。返回是否真的关闭了客户端。
+    /// Clients holding an active operation (including initialization) are always skipped; after the lock is taken, shutdown
+    /// is completed internally without recursively acquiring the same operation lock. Returns whether the client was actually closed.
     pub(crate) fn shutdown_if_idle(&self, timeout: Duration) -> Result<bool> {
         let _guard = match self.op_lock.try_lock() {
             Ok(guard) => guard,
@@ -177,12 +177,12 @@ impl Client {
         if self.idle_for() < timeout {
             return Ok(false);
         }
-        // 不刷新 last_activity：关闭失败时下一次扫描应立即重试，而不是再等一个空闲窗口。
+        // Do not refresh last_activity: when closing fails, the next scan should retry immediately instead of waiting another idle window.
         self.shutdown_transport()?;
         Ok(true)
     }
 
-    /// 已经持有操作锁时的关闭路径。
+    /// Shutdown path when the operation lock is already held.
     fn shutdown_transport(&self) -> Result<()> {
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         let cancellation = CancellationToken::new();
@@ -200,8 +200,8 @@ impl Client {
             .map_err(|error| pp_core::cancellation::CleanupError(error).into())
     }
 
-    /// 服务器 `initialize` 返回的完整 capabilities（原样，含扩展字段与
-    /// `executeCommandProvider.commands`）。显式能力查询才需要完整 JSON。
+    /// Full capabilities returned by the server's `initialize` (verbatim, including extension fields and
+    /// `executeCommandProvider.commands`). Only explicit capability queries need the full JSON.
     pub(crate) fn capabilities_json(&self) -> Value {
         self.capabilities.raw.clone()
     }
@@ -219,7 +219,7 @@ mod integration {
     #[test]
     fn lsp_client_capabilities_top_level_and_raw_extensions() {
         let (dir, client) = fixture_client(&[]);
-        // 真实服务器的导航/命令能力都在 capabilities 顶层。
+        // A real server's navigation/command capabilities live at the capabilities top level.
         assert!(client.capabilities.hover);
         assert!(client.capabilities.definition);
         assert!(client.capabilities.references);
@@ -230,7 +230,7 @@ mod integration {
         assert!(client.capabilities.workspace_folders_change_notifications);
         assert!(client.capabilities.document_formatting);
 
-        // 原始 capabilities 原样保留服务器扩展与命令列表，不重建子集。
+        // Raw capabilities preserve the server's extensions and command list verbatim without rebuilding a subset.
         let raw = client.capabilities_json();
         assert_eq!(raw["experimental"]["fixtureExtension"]["value"], json!(42));
         assert_eq!(
@@ -243,7 +243,7 @@ mod integration {
             "raw capabilities must be the server's own object"
         );
 
-        // 消费者路径：顶层 hover 声明对应真实可用的请求。
+        // Consumer path: the top-level hover declaration corresponds to a real usable request.
         let path = dir.path().join("sample.fixture");
         std::fs::write(&path, "value\n").unwrap();
         let hover = with_client(&client, |op| {

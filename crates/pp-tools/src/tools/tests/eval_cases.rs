@@ -86,7 +86,7 @@ mod integration {
     fn eval_schema_respects_mode_and_settings() {
         let dir = tempfile::tempdir().unwrap();
         let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
-        // `Tools::new` 不再探测 Python：按生产顺序由 `configure_eval` 决定可用性。
+        // `Tools::new` no longer probes Python: availability is decided by `configure_eval` in production order.
         tools.configure_eval(&EvalSettings::default());
         if !tools.eval_available() {
             return;
@@ -142,14 +142,14 @@ mod integration {
             return;
         }
         tools.reset_project_instructions([]);
-        // 模拟首轮请求：根目录 AGENTS.md 已发送给模型，但尚未加载 sub/AGENTS.md。
+        // Simulate the first request: the root AGENTS.md was sent to the model but sub/AGENTS.md is not loaded yet.
         let _ = tools.project_documents().unwrap();
         tools.project_request_sent();
 
         let workflow = WorkflowState::default();
         let token = CancellationToken::new();
 
-        // 1) 未读 sub/AGENTS.md 前，经 eval 内部的 tool.write 写入 sub/out.txt 必须被门禁拒绝。
+        // 1) Before sub/AGENTS.md is read, a tool.write inside eval targeting sub/out.txt must be rejected by the gate.
         let blocked = execute(
             &tools,
             "eval",
@@ -164,11 +164,11 @@ mod integration {
             "{blocked}"
         );
         assert!(!dir.path().join("sub/out.txt").exists());
-        // 门禁触发后会封锁当前批次后续调用，模拟下一轮模型请求刷新规则并解除封锁。
+        // Once triggered, the gate seals later calls in the batch; this simulates the next model request refreshing the rules and lifting the seal.
         let _ = tools.project_documents().unwrap();
         tools.project_request_sent();
 
-        // 2) 在 eval 内调用 read('sub/note.txt') 自动激活 sub/AGENTS.md 后，再写成功且发出 FileChanged。
+        // 2) After read('sub/note.txt') inside eval activates sub/AGENTS.md automatically, the write succeeds and emits FileChanged.
         let mut events = Vec::new();
         let allowed = tools.execute(
         "eval",
@@ -196,8 +196,8 @@ mod integration {
             )
         );
 
-        // 3) 嵌套 tool.bash 独立走权限门：即使 eval 获会话放行，嵌套 sh('curl ... | bash') 仍触发高危命令确认；
-        //    在 AlwaysAsk 模式下给 eval 配 Allow，sh('echo hi') 仍触发 bash 权限询问。
+        // 3) Nested tool.bash goes through the permission gate independently: even with a session approval for eval, a nested sh('curl ... | bash') still triggers the high-risk command confirmation;
+        //    with eval set to Allow in AlwaysAsk mode, sh('echo hi') still triggers a bash permission prompt.
         let mut policy_map = std::collections::BTreeMap::new();
         policy_map.insert(
             "eval".to_owned(),
@@ -236,7 +236,7 @@ mod integration {
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].tool, "bash");
 
-        // 4) 切回 Yolo 模式验证嵌套 PreToolUse / PostToolUse Hook 拦截与参数改写。
+        // 4) Switch back to Yolo mode to verify nested PreToolUse / PostToolUse hook interception and argument rewriting.
         tools
             .permission
             .set_config(pp_config::config::ToolsSettings::default());
@@ -458,7 +458,7 @@ mod integration {
             .unwrap();
         assert!(!langs.is_empty());
 
-        // 若本机同时安装 node，验证 js_runtime: Some("node") 精确反映在 schema 描述与返回字段上。
+        // If node is also installed locally, verify that js_runtime: Some("node") is reflected exactly in the schema description and returned fields.
         if pp_eval::probe_js(dir.path(), Some("node")).is_ok() {
             tools.configure_eval(&EvalSettings {
                 enabled: true,
@@ -497,7 +497,7 @@ mod integration {
         let workflow = WorkflowState::default();
         let token = CancellationToken::new();
 
-        // 1) 未读 sub/AGENTS.md 前，经 JS eval 内部 write('sub/out.txt', ...) 必须被门禁拒绝。
+        // 1) Before sub/AGENTS.md is read, a write('sub/out.txt', ...) inside JS eval must be rejected by the gate.
         let blocked = execute(
             &tools,
             "eval",
@@ -515,7 +515,7 @@ mod integration {
         let _ = tools.project_documents().unwrap();
         tools.project_request_sent();
 
-        // 2) read('sub/note.txt') 激活规则后再写成功并触发 FileChanged。
+        // 2) Once read('sub/note.txt') activates the rules, the write succeeds and triggers FileChanged.
         let mut events = Vec::new();
         let allowed = tools.execute(
         "eval",
@@ -543,7 +543,7 @@ mod integration {
             )
         );
 
-        // 3) 嵌套 sh(...) 独立走 bash 权限门与 hook。
+        // 3) A nested sh(...) goes through the bash permission gate and hooks independently.
         let mut policy_map = std::collections::BTreeMap::new();
         policy_map.insert(
             "eval".to_owned(),

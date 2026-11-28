@@ -1,5 +1,6 @@
 /**
- * Overview / Costs / Projects 共用的统计分桶、卡片、表格、成本拆解与堆叠柱图原语。
+ * Stats bucketing, card, table, cost breakdown and stacked bar primitives shared by Overview / Costs /
+ * Projects.
  */
 
 import {
@@ -45,7 +46,7 @@ export const componentNames = [
 ];
 
 /**
- * 按范围补齐连续空时间桶。
+ * Fills in consecutive empty time buckets for the range.
  * @template {{ timestamp: number }} T
  * @param {T[]} buckets
  * @param {import("../../web-types/api.d.ts").StatsRange} [range]
@@ -96,7 +97,7 @@ export function fillBuckets(
 }
 
 /**
- * 渲染趋势线（旧版 Overview/Requests/Costs/Projects 指标卡用）。
+ * Renders a trend line (used by the legacy Overview/Requests/Costs/Projects stat cards).
  * @param {number[]} values
  * @param {string} color
  * @param {string} [label]
@@ -129,7 +130,7 @@ export function sparkline(values, color, label = "Requests", timestamps = []) {
 }
 
 /**
- * 渲染旧版指标卡。
+ * Renders a legacy stat card.
  * @param {string} label
  * @param {string} value
  * @param {string} [note]
@@ -146,7 +147,7 @@ export function metric(label, value, note = "", spark = "", color = "var(--accen
 }
 
 /**
- * 渲染请求状态徽标。
+ * Renders the request status badge.
  * @param {Pick<RequestRow, "status" | "stop_reason">} r
  * @param {boolean} [compact]
  * @returns {string}
@@ -159,7 +160,7 @@ export function statusBadge(r, compact = false) {
 }
 
 /**
- * 渲染最近请求摘要表（供 Overview 与 Projects 详情共用）。
+ * Renders the recent requests summary table (shared by Overview and the Projects detail).
  * @param {RequestRow[]} rows
  * @returns {string}
  */
@@ -177,7 +178,7 @@ export function overviewTable(rows) {
 }
 
 /**
- * 渲染键值对网格。
+ * Renders a key/value grid.
  * @param {Array<[string, unknown]>} items
  * @returns {string}
  */
@@ -264,7 +265,7 @@ export function breakdown(g) {
  */
 
 /**
- * 渲染堆叠柱图（Costs 页用）。
+ * Renders a stacked bar chart (used by the Costs page).
  * @param {StackedSeriesGroup[]} groups
  * @param {"cost" | "requests" | "tokens"} metricName
  * @param {boolean} [share]
@@ -460,7 +461,7 @@ export const numericCells = (values) =>
   values.map((v) => `<td class="right num">${v}</td>`).join("");
 
 /**
- * 根据当前范围生成说明文字。
+ * Generates the explanatory text for the current range.
  * @returns {string}
  */
 export const currentRangeDescription = () => descriptions[app.range];

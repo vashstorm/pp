@@ -256,7 +256,7 @@ mod integration {
                 )
                 .unwrap();
             handle.join().unwrap();
-            // 失败操作不发布状态，清空必须发布空快照。
+            // Failed operations publish no state; clearing must publish an empty snapshot.
             assert_eq!(snapshots.len(), 3);
             assert_eq!(
                 snapshots[0].phases[0].tasks[0].status,

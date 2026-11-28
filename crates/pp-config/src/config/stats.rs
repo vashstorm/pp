@@ -25,7 +25,7 @@ impl StatsStyle {
         }
     }
 
-    /// 复用配置的严格校验与原子更新，只改统计页面偏好。
+    /// Reuses the configuration's strict validation and atomic update, changing only the stats page preference.
     pub fn save(self, path: &Path) -> Result<()> {
         super::update_settings(path, |mut settings| {
             settings.stats.style = self;
@@ -59,7 +59,7 @@ mod tests {
         );
         std::fs::write(
             &path,
-            "# 保留说明\ndebug: true # 调试\nextra: {value: 1}\nstats:\n  style: modern\n  extra: true\n",
+            "# preserved note\ndebug: true # debug\nextra: {value: 1}\nstats:\n  style: modern\n  extra: true\n",
         )
         .unwrap();
         StatsStyle::Default.save(&path).unwrap();
@@ -70,7 +70,7 @@ mod tests {
         assert!(
             std::fs::read_to_string(&path)
                 .unwrap()
-                .starts_with("# 保留说明\ndebug: true # 调试\nextra: {value: 1}\n")
+                .starts_with("# preserved note\ndebug: true # debug\nextra: {value: 1}\n")
         );
     }
 

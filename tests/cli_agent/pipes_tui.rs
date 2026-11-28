@@ -1,6 +1,7 @@
-// 临时管道阶段面板的 TUI 回归：真实 `pp` + portable-pty + 内嵌 shell。
-// 本地 `!` 命令不产生模型请求；断言只使用可见屏幕、门闩文件与真实终态。
-// 辅助项使用 `pipes_` 前缀，测试使用 `pipeline_` 前缀，避免与兄弟 include 冲突。
+// TUI regression for the temporary pipe stage panel: real `pp` + portable-pty + embedded shell.
+// Local `!` commands produce no model requests; assertions use only the visible screen, latch files
+// and real terminal states.
+// Helpers use the `pipes_` prefix and tests use the `pipeline_` prefix to avoid clashing with sibling includes.
 
 const PIPES_F8: &str = "\x1b[19~";
 const PIPES_PGUP: &str = "\x1b[5~";
@@ -8,19 +9,20 @@ const PIPES_END: &str = "\x1b[4~";
 
 fn pipes_open(pty: &mut Pty) {
     pty.input(PIPES_F8);
-    pty.wait_for("管道阶段面板打开", |screen| {
+    pty.wait_for("pipe stage panel opens", |screen| {
         screen.alternate_screen() && screen.contents().contains("Pipe streams")
     });
 }
 
 fn pipes_close(pty: &mut Pty) {
     pty.input("\x1b");
-    pty.wait_for("管道阶段面板关闭并恢复主屏", |screen| {
+    pty.wait_for("pipe stage panel closes and restores the main screen", |screen| {
         !screen.alternate_screen()
     });
 }
 
-/// 可见正文中的 `live-NN` 行号；命令回显只包含 `live-%02d`，不会匹配数字。
+/// `live-NN` line numbers in the visible body; the command echo only contains `live-%02d`, so it
+/// never matches a number.
 fn pipes_live_numbers(screen: &vt100::Screen) -> Vec<u32> {
     pipes_numbers(screen, "live-")
 }
@@ -50,12 +52,12 @@ fn pipes_max_live(screen: &vt100::Screen) -> Option<u32> {
     pipes_live_numbers(screen).into_iter().max()
 }
 
-/// 面板 header 中 32 位小写十六进制的 run ID。
+/// The 32-character lowercase hex run ID in the panel header.
 fn pipes_run_id(pty: &mut Pty) -> String {
     let text = pty.contents();
     text.split(|character: char| !character.is_ascii_hexdigit())
         .find(|token| token.len() == 32 && token.chars().all(|c| c.is_ascii_hexdigit()))
-        .unwrap_or_else(|| panic!("阶段面板未显示 run ID：{text}"))
+        .unwrap_or_else(|| panic!("stage panel did not show a run ID: {text}"))
         .to_owned()
 }
 
@@ -66,99 +68,101 @@ fn pipeline_pipes_panel_switches_run_stream_freezes_and_restores_draft() {
     let project = tempfile::tempdir().unwrap();
     let mut pty = bang_shell_start(&provider, home.path(), project.path(), "completion", "");
 
-    // 较早完成的 3 阶段 run：两条边正文不同，用于左右/上下切换。
+    // Earlier 3-stage run: the two edges carry different bodies, used for left/right and up/down switching.
     pty.input("!printf 'first-%s\n' edge | tr 'a-z' 'A-Z' | cat\r");
-    pty.wait_for("较早的三阶段管道 run 完成", |screen| {
+    pty.wait_for("earlier three-stage pipe run completes", |screen| {
         let text = screen.contents();
         text.contains("FIRST-EDGE") && text.contains("Pipes: /pipes (F8)")
     });
     assert!(
         !pty.contents().contains("Non-zero stage results"),
-        "全部阶段成功时不得出现警示"
+        "no warning may appear when all stages succeed"
     );
 
-    // 运行中的三阶段管道：复合阶段与下游并发，两条边都能在运行中看到字节。
+    // A running three-stage pipe: the compound stage and the downstream one run concurrently, and
+    // bytes are visible on both edges while it runs.
     pty.input("!i=0; while :; do i=$((i+1)); printf 'live-%02d\\n' \"$i\"; sleep 0.02; done | cat | tail -n 1\r");
     pty.text("Elapsed:");
     pty.input("pipes-draft");
     pty.draft("pipes-draft");
     pipes_open(&mut pty);
 
-    // 默认选择最近的运行中 run（1/2）与它唯一的边。
-    pty.wait_for("默认显示最近的管道 run 与第一条边", |screen| {
+    // By default the most recent running run (1/2) and its only edge are selected.
+    pty.wait_for("latest pipe run and its first edge are shown by default", |screen| {
         let text = screen.contents();
         text.contains("run 1/2")
             && text.contains("follow")
             && !pipes_live_numbers(screen).is_empty()
     });
-    assert!(pty.contents().contains("› s1"), "选中流必须有可见标记");
-    // 复合阶段后面的边也必须在运行中被镜像，而不是等到 EOF。
-    pty.wait_for("第二条边在运行中收到字节", |screen| {
+    assert!(pty.contents().contains("› s1"), "the selected stream must have a visible marker");
+    // The edge after the compound stage must also be mirrored while running, not only at EOF.
+    pty.wait_for("second edge receives bytes while running", |screen| {
         screen
             .contents()
             .lines()
             .any(|line| line.contains("s2 ") && !line.contains("kept 0..0 / 0 "))
     });
     pty.input("\x1b[B");
-    pty.wait_for("Down 选中运行中 run 的第二条边", |screen| {
+    pty.wait_for("Down selects the second edge of the running run", |screen| {
         let text = screen.contents();
         text.lines().any(|line| line.contains("› s2"))
             && !pipes_live_numbers(screen).is_empty()
     });
     pty.input("\x1b[A");
-    pty.wait_for("Up 回到运行中 run 的第一条边", |screen| {
+    pty.wait_for("Up returns to the first edge of the running run", |screen| {
         let text = screen.contents();
         text.lines().any(|line| line.contains("› s1"))
             && !pipes_live_numbers(screen).is_empty()
     });
 
-    // Right/Left 在两个 run 间切换。
+    // Right/Left switch between the two runs.
     pty.input("\x1b[C");
-    pty.wait_for("Right 切到较早完成的三阶段 run", |screen| {
+    pty.wait_for("Right switches to the earlier completed three-stage run", |screen| {
         let text = screen.contents();
         text.contains("run 2/2") && text.contains("first-edge")
     });
-    // Down/Up 在该 run 的相邻边间切换：第二条边是 tr 转换后的字节。
+    // Down/Up switch between adjacent edges of that run: the second edge holds the bytes after the tr
+    // conversion.
     pty.input("\x1b[B");
-    pty.wait_for("Down 选中第二条边并显示转换后的字节", |screen| {
+    pty.wait_for("Down selects the second edge and shows the converted bytes", |screen| {
         let text = screen.contents();
         text.lines().any(|line| line.contains("› s2"))
             && text.contains("FIRST-EDGE")
             && !text.lines().any(|line| line.trim() == "first-edge")
     });
     pty.input("\x1b[A");
-    pty.wait_for("Up 回到第一条边", |screen| {
+    pty.wait_for("Up returns to the first edge", |screen| {
         let text = screen.contents();
         text.lines().any(|line| line.contains("› s1"))
             && text.lines().any(|line| line.trim() == "first-edge")
     });
     pty.input("\x1b[D");
-    pty.wait_for("Left 回到最近的运行中 run", |screen| {
+    pty.wait_for("Left returns to the latest running run", |screen| {
         screen.contents().contains("run 1/2")
     });
 
-    // PgUp 冻结：新字节继续到达，但 viewport 不回到尾部。
-    pty.wait_for("第一条边已产生足够行以冻结滚动", |screen| {
+    // PgUp freezes: new bytes keep arriving, but the viewport does not return to the tail.
+    pty.wait_for("first edge has produced enough lines to freeze scrolling", |screen| {
         pipes_max_live(screen).is_some_and(|last| last >= 30)
     });
     pty.input(PIPES_PGUP);
-    pty.wait_for("PgUp 冻结正文", |screen| screen.contents().contains("frozen"));
+    pty.wait_for("PgUp freezes the body", |screen| screen.contents().contains("frozen"));
     let frozen = pipes_live_numbers(pty.parser.screen());
     assert!(!frozen.is_empty());
-    // 规范允许两种冻结提示：后台有新字节，或旧缓存已被覆盖。
-    pty.wait_for("冻结期间提示后台新字节或旧缓存已覆盖", |screen| {
+    // The contract allows two frozen hints: new bytes in the background, or the old cache overwritten.
+    pty.wait_for("frozen view reports new background bytes or overwritten cache", |screen| {
         let text = screen.contents();
         text.contains("new +") || text.contains("cached bytes overwritten")
     });
     assert_eq!(
         pipes_live_numbers(pty.parser.screen()),
         frozen,
-        "冻结后新输出不得把 viewport 拉回底部"
+        "new output after freezing must not pull the viewport back to the bottom"
     );
 
-    // resize 保留选中流与冻结锚点。
+    // Resize keeps the selected stream and the freeze anchor.
     pty.resize(30, 80);
-    pty.wait_for("resize 后保持冻结与 run 选择", |screen| {
+    pty.wait_for("freeze and run selection survive resize", |screen| {
         screen.alternate_screen()
             && screen.contents().contains("run 1/2")
             && screen.contents().contains("frozen")
@@ -166,13 +170,13 @@ fn pipeline_pipes_panel_switches_run_stream_freezes_and_restores_draft() {
     assert_eq!(
         pipes_live_numbers(pty.parser.screen()),
         frozen,
-        "resize 不得改变冻结锚点"
+        "resize must not change the freeze anchor"
     );
 
-    // End 恢复跟随，并显示包含新字节的尾部。
+    // End resumes following and shows the tail including the new bytes.
     let frozen_last = *frozen.last().unwrap();
     pty.input(PIPES_END);
-    pty.wait_for("End 恢复跟随并前进到新输出", |screen| {
+    pty.wait_for("End resumes following and advances to new output", |screen| {
         let text = screen.contents();
         text.contains("follow")
             && pipes_live_numbers(screen)
@@ -180,9 +184,9 @@ fn pipeline_pipes_panel_switches_run_stream_freezes_and_restores_draft() {
                 .is_some_and(|last| *last > frozen_last)
     });
 
-    // Esc 只关闭面板：shell 仍在运行、草稿保留，不触发取消。
+    // Esc only closes the panel: the shell keeps running, the draft is kept and no cancellation is triggered.
     pipes_close(&mut pty);
-    pty.wait_for("Esc 关闭面板但不取消 shell", |screen| {
+    pty.wait_for("Esc closes the panel without cancelling the shell", |screen| {
         let text = screen.contents();
         !screen.alternate_screen()
             && text.contains("Elapsed:")
@@ -190,8 +194,8 @@ fn pipeline_pipes_panel_switches_run_stream_freezes_and_restores_draft() {
     });
     pty.draft("pipes-draft");
 
-    // 第二次 Esc 才取消 shell，作为收尾。取消中的提示可能在两次轮询间消失，
-    // 以输入恢复和取消终态为栅栏，不依赖瞬时文案。
+    // Only the second Esc cancels the shell, as cleanup. The cancelling hint may vanish between two
+    // polls, so the barrier is the restored input and the terminal cancelled state, not transient copy.
     pty.input("\x1b");
     bang_shell_wait_done(&mut pty);
     pty.text("Command cancelled; side effects were not rolled back.");
@@ -199,7 +203,7 @@ fn pipeline_pipes_panel_switches_run_stream_freezes_and_restores_draft() {
     cancel_assert_no_request(&provider);
     assert!(
         !bang_shell_sessions_dir(home.path()).exists(),
-        "本地 shell 不得创建会话"
+        "the local shell must not create a session"
     );
     pty.input("\x03");
     pty.finish();

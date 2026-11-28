@@ -264,8 +264,8 @@ pub(super) fn tool_accent(name: &str) -> Color {
     }
 }
 
-// 与底部状态栏一致，默认使用 Nerd Font 私用区单列字形；ASCII 模式切换为可打印 ASCII 字符。
-// rg 取 Font Awesome 放大镜（nf-fa-search，U+F002），其余为 Material Design 字形。
+// Matches the bottom status bar: single-column Nerd Font private use glyphs by default; ASCII mode switches to printable ASCII characters.
+// rg takes the Font Awesome magnifier (nf-fa-search, U+F002); everything else uses Material Design glyphs.
 pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
     match icons {
         IconMode::Nerd => match name {
@@ -362,14 +362,14 @@ fn capitalized_name(name: &str) -> Cow<'_, str> {
     name
 }
 
-/// 拆出 MCP 卡片中分别着色的服务名与工具名。
+/// Split the separately colored server name and tool name out of an MCP card name.
 pub(super) fn mcp_display_parts(name: &str) -> Option<(Cow<'_, str>, Cow<'_, str>)> {
     let (server, tool) = name.strip_prefix("mcp__")?.split_once("__")?;
     (!server.is_empty() && !tool.is_empty())
         .then(|| (pp_core::text::display_text(server), capitalized_name(tool)))
 }
 
-// 思考级别统一使用 Nerd Font 图标，状态栏与角色面板共用同一组字形；ASCII 模式使用阶梯字符。
+// Thinking levels use Nerd Font icons throughout and the status bar and role panel share the same glyph set; ASCII mode uses step characters.
 pub(super) fn think_icon_for(level: ThinkLevel, icons: IconMode) -> &'static str {
     match icons {
         IconMode::Nerd => match level {

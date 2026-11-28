@@ -25,7 +25,7 @@ fn stopped(dir: &std::path::Path, log: &str) {
     let pid = rustix::process::Pid::from_raw(pid).unwrap();
     assert!(
         rustix::process::test_kill_process(pid).is_err(),
-        "{log} MCP 子进程未清理"
+        "{log} MCP child process was not cleaned up"
     );
 }
 
@@ -40,7 +40,7 @@ fn mcp_roundtrip_both_protocols_preserves_schema_results_order_and_events() {
         let dir = tempfile::tempdir().unwrap();
         let cli = Cli::start_with(
             dir.path(),
-            Some("调用 MCP"),
+            Some("call MCP"),
             &settings("").to_string(),
             &response_models(&provider, Some(protocol)),
         );
@@ -119,9 +119,9 @@ fn mcp_roundtrip_both_protocols_preserves_schema_results_order_and_events() {
         assert_eq!(results[2]["ok"], false);
         assert_eq!(results[2]["result"]["isError"], true);
         if protocol == "completion" {
-            final_reply(request, "完成");
+            final_reply(request, "done");
         } else {
-            response_final(request, "完成");
+            response_final(request, "done");
         }
         let output = cli.finish();
         assert!(
@@ -159,10 +159,11 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
     let home = tempfile::tempdir().unwrap();
     let mut configured = settings("");
     configured["mcpServers"]["broken"] = json!({"command":"/nonexistent/pp-mcp-fixture"});
-    // 与 `local` 共用 fixture，但写入独立日志与返回值，便于区分两条连接。
+    // Shares the fixture with `local` but writes its own log and return value so the two connections are
+    // distinguishable.
     let mut extra = configured["mcpServers"]["local"].clone();
     extra["env"]["MCP_LOG"] = json!("extra-log");
-    extra["env"]["MCP_VALUE"] = json!("外部新增结果");
+    extra["env"]["MCP_VALUE"] = json!("externally added result");
     let mut cli = Cli::start_with(
         home.path(),
         None,
@@ -174,8 +175,10 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
     } else {
         "/v1/chat/completions"
     };
-    // 索引 3 只改 mcp.json、不发 `/mcp reload`：同一行模式会话必须沿用内存中的旧定义。
-    // 索引 4 的 reload 才接入 `extra`；索引 5 用解析失败的配置验证旧工具保留。
+    // Index 3 only rewrites mcp.json without sending `/mcp reload`: the same line-mode session must keep the
+    // old definitions in memory.
+    // The reload of index 4 is the first to bring in `extra`; index 5 uses a configuration that fails to parse
+    // to verify the old tools are retained.
     for (index, (command, expected)) in [
         ("/mcp list\n/mcp disable local", None),
         ("/mcp enable local", Some("mcp__local__echo")),
@@ -218,7 +221,8 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
             None => assert!(!definitions.contains("mcp__local__")),
         }
         match index {
-            // 外部新增的服务只有在 `/mcp reload` 后才进入工具表，`local` 也保持旧定义。
+            // A newly added external service enters the tool table only after `/mcp reload`, and `local` keeps its old
+            // definitions too.
             3 => {
                 assert!(
                     !definitions.contains("mcp__extra__"),
@@ -226,10 +230,11 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
                 );
                 assert!(
                     !definitions.contains("mcp__local__tool_"),
-                    "外部配置不应在 reload 前改写 local 定义: {index}: {definitions}"
+                    "external configuration must not rewrite the local definitions before reload: {index}: {definitions}"
                 );
             }
-            // reload 成功接入 `extra`；随后解析失败的 reload 保留旧工具。
+            // A successful reload brings in `extra`; a later reload with a configuration that fails to parse keeps the
+            // old tools.
             4 | 5 => assert!(
                 definitions.contains("mcp__extra__echo"),
                 "{index}: {definitions}"
@@ -256,7 +261,7 @@ fn mcp_management_updates_both_protocols_and_reload_failure_preserves_tools() {
     stopped(home.path(), "extra-log");
     assert!(
         home.path().join("extra-log.closed").is_file(),
-        "extra MCP 子进程未写入退出标记"
+        "the extra MCP child process did not write its exit marker"
     );
     let journal = std::fs::read_dir(config_path(home.path(), "sessions"))
         .unwrap()

@@ -1,9 +1,10 @@
-//! 模型目录与路由事件：重载快照、切换、默认值保存与角色保存。
+//! Model catalog and routing events: reload snapshots, switching, default saving and role
+//! saving.
 
 use crate::tui::{App, Level, Selection, State, WorkerEvent};
 
 impl App {
-    /// 模型事件族；`ModelState` 只在修订号命中时置脏。
+    /// Model event family; `ModelState` is marked dirty only when the revision matches.
     pub(super) fn on_model_event(&mut self, event: WorkerEvent) -> bool {
         let mut changed = false;
         match event {
@@ -38,7 +39,8 @@ impl App {
                     Ok((choice, level)) => {
                         self.current_model = Some(choice);
                         self.think_level = level;
-                        // 容量随模型变化；等待紧随的新快照，不显示旧分母。
+                        // Capacity follows the model; wait for the snapshot that immediately
+                        // follows instead of showing the old denominator.
                         self.usage = None;
                         self.token_speed.clear();
                     }
@@ -65,7 +67,8 @@ impl App {
                             effort,
                         }),
                         pp_core::model::ModelSource::Default => None,
-                        // 角色/fallback 只覆盖当前路由，不改变手动覆盖槽。
+                        // Role/fallback only override the current route and leave the manual
+                        // override slot untouched.
                         pp_core::model::ModelSource::Role
                         | pp_core::model::ModelSource::Fallback => self.override_selection.clone(),
                     };

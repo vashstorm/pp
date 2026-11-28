@@ -1,5 +1,6 @@
 /**
- * 跨页面复用的 x-table 表头排序、列表排序、分页脚注、空态与进度条原语。
+ * Cross-page primitives for `x-table` header sorting, list sorting, paging footer, empty state and
+ * progress bars.
  */
 
 import { h, number, TOOL_ARROW_DOWN, TOOL_ARROW_UP, TOOL_INBOX } from "./format.js";
@@ -21,7 +22,8 @@ import { h, number, TOOL_ARROW_DOWN, TOOL_ARROW_UP, TOOL_INBOX } from "./format.
  */
 
 /**
- * 渲染可排序的 `<th>` 表头单元格，按调用方指定的数据属性约定输出标记。
+ * Renders a sortable `<th>` header cell, emitting markup with the data-attribute convention chosen
+ * by the caller.
  * @template T
  * @param {TableColumn<T>} column
  * @param {SortState} sort
@@ -46,7 +48,7 @@ export function renderSortHeader(column, sort, attrs) {
 }
 
 /**
- * 按列定义与当前排序状态返回排序后的新数组。
+ * Returns a new sorted array based on the column definitions and the current sort state.
  * @template T
  * @param {T[]} rows
  * @param {TableColumn<T>[]} columns
@@ -70,7 +72,7 @@ export function sortRows(rows, columns, sort) {
 }
 
 /**
- * 渲染分页展开/收起控制条。
+ * Renders the paging expand/collapse control.
  * @param {{
  *   total: number,
  *   shown: number,
@@ -98,7 +100,8 @@ export function renderTableMore(options) {
 }
 
 /**
- * 渲染 `x-empty` 空状态块；注意 `hint` 传纯文本并在此统一转义。
+ * Renders an `x-empty` empty-state block; note that `hint` is plain text and is escaped centrally
+ * here.
  * @param {string} title
  * @param {string} [hint]
  * @returns {string}
@@ -108,7 +111,7 @@ export function xEmpty(title, hint = "") {
 }
 
 /**
- * 渲染带右侧数值与背景进度条的 `x-meter-cell`。
+ * Renders an `x-meter-cell` with a right-aligned value and a background progress bar.
  * @param {number} value
  * @param {number} max
  * @param {string} display

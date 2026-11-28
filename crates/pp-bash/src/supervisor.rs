@@ -95,7 +95,8 @@ pub(crate) struct Supervisor {
 }
 
 impl Supervisor {
-    /// 创建带可选截止时间的监督器；None 仅关闭超时，不影响取消和显式停止。
+    /// Create a supervisor with an optional deadline; None disables the timeout only and does not affect
+    /// cancellation or explicit stop.
     pub(crate) fn new_with_stop(
         deadline: Option<Instant>,
         parent_cancellation: CancellationToken,
@@ -684,7 +685,7 @@ mod integration {
                 .spawn(command("trap '' TERM; sleep 30"), SpawnGroup::New, None)
                 .expect("spawn");
             let pid = spawned.process.pid();
-            // 静置到退避上限：子进程一直不退出，注册表没有任何变化。
+            // Idle up to the backoff ceiling: the child never exits and the registry never changes.
             thread::sleep(Duration::from_millis(300));
 
             supervisor.request_stop();
@@ -698,7 +699,8 @@ mod integration {
                 );
                 thread::sleep(Duration::from_millis(1));
             };
-            // 宽限期内的 TERM 被 trap 吸收，升级仍由基线轮询驱动到 SIGKILL。
+            // TERM during the grace period is absorbed by the trap, so the escalation is still driven to SIGKILL
+            // by baseline polling.
             wait_until(|| permit.is_revoked());
 
             drop(spawned.group);
@@ -785,7 +787,7 @@ mod integration {
             let elapsed = started.elapsed();
             assert_eq!(outcome.termination, Termination::Stopped);
             assert!(outcome.cleanup_error.is_none());
-            // 正常响应 SIGTERM 的子进程退出后应远早于 1s GRACE 窗口结束。
+            // A child that handles SIGTERM normally must exit well before the 1s GRACE window ends.
             assert!(
                 elapsed < Duration::from_millis(600),
                 "expected prompt exit in Stopping phase, got {elapsed:?}"
@@ -804,8 +806,9 @@ mod integration {
                 None,
             )
             .expect("supervisor");
-            // 模拟“组长已观察退出、租约已释放、组内仍有存活成员”的顽固状态：
-            // 宿主进程组必然有存活成员，注册表永远不会自行清空。
+            // Simulate the stubborn state "leader already observed as exited, lease released, members still alive
+            // in the group": the host process group always has live members, so the registry never clears
+            // itself.
             let pid = 2_000_000_000;
             let cell = Arc::new(ProcessCell {
                 pid,
@@ -817,7 +820,7 @@ mod integration {
                 let mut state = lock(&supervisor.shared.state);
                 state.phase = Phase::Stopping;
                 state.interpreter_done = true;
-                // TERM 宽限期已过，monitor 下一轮就会升级到 SIGKILL。
+                // The TERM grace period has elapsed, so the monitor escalates to SIGKILL on its next round.
                 state.grace_deadline = Some(Instant::now() - Duration::from_millis(1));
                 state.groups.insert(
                     0,

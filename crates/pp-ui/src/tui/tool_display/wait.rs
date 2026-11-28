@@ -1,4 +1,4 @@
-//! 等待消息框只绘制 worker 发布的任务概况，不展示结果正文、不查询任务或读取日志。
+//! The wait box only draws the task overview published by the worker; it never shows result bodies, queries tasks or reads logs.
 use super::*;
 
 pub(in crate::tui) fn render_inner(
@@ -102,7 +102,7 @@ pub(in crate::tui) fn render_inner(
         let kind = job["type"].as_str().unwrap_or("job");
         let id = job["id"].as_str().unwrap_or("?");
         let injected = kind == "task" && !active && job["injected"] == true;
-        // 等待中的卡片提前显示成功子任务的投递状态，终态仍以注入事件为准。
+        // A waiting card shows the delivery state of succeeded subtasks early, while the terminal state still comes from the injection event.
         let awaiting_injection = kind == "task" && waiting_for_batch && job["delivered"] == false;
         let (status, delivery) = if status == "completed" && (injected || awaiting_injection) {
             ("injected", "")
@@ -157,7 +157,7 @@ pub(in crate::tui) fn render(view: View<'_>, width: u16) -> Vec<Line<'static>> {
         ));
     }
     for line in body {
-        // 控制字符与换行先归一化，再按真实终端列宽换行。
+        // Control characters and newlines are normalized first, then wrapped by the real terminal column width.
         let safe = pp_core::text::display_text(&line.to_string()).into_owned();
         for mut row in wrap_block(Line::styled(safe, line.style), inner.max(1), "") {
             if framed {

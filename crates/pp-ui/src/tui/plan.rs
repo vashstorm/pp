@@ -1,5 +1,5 @@
-//! 计划审阅面板：只渲染 worker 发布的快照，文件/网络访问全部留在 worker。
-//! 键盘与绘制路径不做任何 IO；审批必须携带面板看到的 ReviewToken。
+//! Plan review panel: renders only worker-published snapshots, with all file/network access on the worker.
+//! Key handling and drawing paths do no I/O; approval must carry the ReviewToken the panel saw.
 
 mod keys;
 mod model;
@@ -21,7 +21,7 @@ const ACTIONS: [&str; 5] = [
     "Review Plan",
     "Save draft and leave Plan mode",
 ];
-/// 打开完整审阅面板时直接聚焦操作区，默认选中第一项可用操作。
+/// Opening the full review panel focuses the action area directly, with the first available action selected.
 const DEFAULT_ACTION: usize = 0;
 const HINT: &str = "Tab focus · ↑↓ choose/scroll · Enter run/jump/send · ←→ tabs · Esc close";
 const READONLY_HINT: &str = "Read-only view · Tab focus · ↑↓ scroll · Enter jump · Esc close";
@@ -66,7 +66,7 @@ pub(super) struct Panel {
     focus: Focus,
     action: usize,
     scroll: [usize; 2],
-    // 正文与目录锚点只在宽度或正文变化时重建。
+    // Body and outline anchors are rebuilt only when the width or the body changes.
     layouts: [Option<BodyLayout>; 2],
     toc_selected: [usize; 2],
     toc_visible: bool,

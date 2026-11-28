@@ -1,7 +1,7 @@
-//! 由 Agent 线程生成报告，UI 只读取最近一个稳定边界的内存快照。
+//! Reports are produced on the Agent thread; the UI only reads the in-memory snapshot of the latest stable boundary.
 //!
-//! 分类缓存与报告句柄一起放在 `Snapshot` 内（Agent 持有，不使用进程级静态）：
-//! 发布路径按指纹复用分类前缀，`invalidate`／诊断失败丢弃缓存并强制重算。
+//! The classification cache and the report handle live together in `Snapshot` (owned by the Agent, no process-wide static):
+//! the publishing path reuses classified prefixes by fingerprint, and `invalidate`/a diagnosis failure drops the cache and forces a recompute.
 
 use super::{Agent, ContextReport, DiagnosisCache};
 use pp_core::context::ContextUsage;
@@ -16,7 +16,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// 只复制报告句柄；不等待主任务，也不进行诊断计算或 I/O。
+    /// Copies only the report handle; waits for no main task and performs no diagnosis computation or I/O.
     pub fn read(&self) -> Option<Report> {
         self.report
             .lock()
@@ -24,7 +24,7 @@ impl Snapshot {
             .clone()
     }
 
-    /// 丢弃已缓存的分类前缀；下一次发布强制全量重算。
+    /// Drop the cached classified prefix; the next publish forces a full recompute.
     pub fn invalidate(&self) {
         self.cache
             .lock()
@@ -34,21 +34,21 @@ impl Snapshot {
 }
 
 impl Agent {
-    /// 为 TUI 启用快照；行模式与子 Agent 默认不生成额外诊断报告。
+    /// Enable the snapshot for the TUI; line mode and subagents produce no extra diagnostic report by default.
     pub fn observe_context(&mut self) -> Snapshot {
         let snapshot = Snapshot::default();
         self.context_snapshot = Some(snapshot.clone());
         snapshot
     }
 
-    /// 只在 Agent 所在线程调用；诊断失败不改变任务结果。
+    /// Call only on the Agent's own thread; a diagnosis failure does not change the task result.
     pub fn publish_context_snapshot(&self) {
         self.publish_context_snapshot_with_usage(None);
     }
 
-    /// 复用本轮请求前已算好的用量；`None` 时在发布路径重新估算。
+    /// Reuse the usage already computed before this turn's request; when `None`, the publishing path re-estimates.
     ///
-    /// 历史在用量估算之后发生变化（例如补充 developer 消息）时调用方必须传 `None`。
+    /// Callers must pass `None` when history changed after the usage estimate (for example a supplementary developer message).
     pub fn publish_context_snapshot_with_usage(&self, usage: Option<ContextUsage>) {
         let Some(snapshot) = &self.context_snapshot else {
             return;
@@ -59,7 +59,7 @@ impl Agent {
         }
         .map(Arc::new)
         .map_err(|error| {
-            // 失败不保留半份缓存，避免下一次发布复用与错误相关的旧前缀。
+            // On failure keep no partial cache, so the next publish does not reuse a prefix related to the error.
             snapshot.invalidate();
             pp_core::text::display_text(&format!("{error:#}")).into_owned()
         });

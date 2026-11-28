@@ -109,7 +109,7 @@ fn empty_session_and_reset_clear_context_diagnosis() {
             );
         }
 
-        // 只读诊断不创建会话 JSONL。
+        // A read-only diagnosis creates no session JSONL.
         assert_eq!(
             fs::read_dir(&sessions)
                 .unwrap()
@@ -193,7 +193,7 @@ fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
     fs::create_dir_all(&sessions).unwrap();
 
     fs::write(work.join("AGENTS.md"), "Root sent rule.").unwrap();
-    // 激活但尚未随请求发送的 nested/AGENTS.md 不应计入真实统计。
+    // A nested/AGENTS.md that is active but not yet sent with a request must not count toward real statistics.
     fs::write(work.join("nested/AGENTS.md"), "Unsent nested rule.").unwrap();
 
     let catalog = test_catalog(&cfg, Protocol::Response, Some(100_000));
@@ -211,7 +211,7 @@ fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
             .insert(doc.path.display().to_string(), doc.content);
     }
 
-    // 在发送后才通过 read 激活 nested 目录（模拟读了子目录文件但尚未发送下一轮请求）。
+    // Activate the nested directory through read only after sending (simulating reading a subdirectory file without sending the next request).
     fs::write(work.join("nested/file.txt"), "hello").unwrap();
     let read_res = agent.tools.execute(
         "read",
@@ -234,7 +234,7 @@ fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
     });
     agent.session_output_tokens = 1234;
 
-    // 注入一个内置之外的 MCP 工具到当前 session 的 tools 列表，验证 Built-in / Custom Tools 分离。
+    // Inject a non-built-in MCP tool into the current session's tools list to verify the Built-in / Custom Tools split.
     let mut defs = agent.tools.all_definitions(agent.workflow.mode);
     defs.push(async_openai::types::chat::FunctionObject {
         name: "mcp__docs__search".into(),
@@ -346,7 +346,7 @@ fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
         .sum();
     assert_eq!(in_ctx_sum, report.active_tokens);
 
-    // Built-in Tools 与 Custom Tools (MCP) 严格拆分
+    // Built-in Tools and Custom Tools (MCP) are split strictly
     let builtin = category(&report, CategoryKey::BuiltInTools);
     assert!(
         builtin
@@ -365,7 +365,7 @@ fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
     );
     assert!(!custom.items.iter().any(|i| i.kind_label == "Built-in"));
 
-    // 只统计已发送的 AGENTS.md，不统计未发送的 nested/AGENTS.md
+    // Count only sent AGENTS.md files, not the unsent nested/AGENTS.md
     let instr = category(&report, CategoryKey::InstructionFiles);
     assert!(
         instr
@@ -375,7 +375,7 @@ fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
     );
     assert!(!instr.items.iter().any(|i| i.title.contains("nested")));
 
-    // Thinking 独立分类，不混入 UserMessages / AssistantMessages
+    // Thinking is a separate category and does not mix into UserMessages / AssistantMessages
     let thinking = category(&report, CategoryKey::Thinking);
     assert_eq!(thinking.items.len(), 1);
     assert!(
@@ -384,7 +384,7 @@ fn non_empty_session_splits_ten_categories_and_excludes_unsent_agents_md() {
             .contains("<encrypted_content: 4500 chars")
     );
 
-    // User / Assistant / Tool Calls / Tool Output 四分法各自独立
+    // User / Assistant / Tool Calls / Tool Output are four independent categories
     let user_msgs = category(&report, CategoryKey::UserMessages);
     assert!(
         user_msgs
@@ -443,7 +443,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
         prompt_source: agent.prompt_source.as_ref(),
     };
 
-    // 构造一条真实的 Completion 历史并持久化到 JSONL + stats.db
+    // Build a real Completion history and persist it to JSONL + stats.db
     agent
         .journal
         .sent(
@@ -457,7 +457,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
     let session_id = agent.session_id().unwrap().to_owned();
     let session_file = sessions.join(format!("{session_id}.jsonl"));
 
-    // 模拟加载的项目规则事件 + 流式思考 + 带 tool_call 的助手回复 + 纯正文助手回复
+    // Simulate a loaded project rule event + streamed thinking + an assistant reply with tool_call + a plain-text assistant reply
     agent.journal.event(&AgentEvent::ProjectInstructionsLoaded {
         path: work.join("AGENTS.md").display().to_string(),
         content: "Keep completion tests accurate.".into(),
@@ -509,7 +509,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
     agent.journal.commit((&agent.session).into()).unwrap();
     drop(agent);
 
-    // 写入一条对应的服务端请求用量到 stats.db
+    // Write one matching server request usage row to stats.db
     let stats_db = sessions.join(".stats/stats.db");
     let ctx = pp_stats::RequestContext {
         model_reference: "test/demo".into(),
@@ -538,7 +538,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
         &Ok(()),
     );
 
-    // 验证通过 Agent::restore 恢复后的 /context 统计（含 Thinking、AGENTS.md、ToolCalls、服务端 Usage）
+    // Verify /context statistics after an Agent::restore (including Thinking, AGENTS.md, ToolCalls, server Usage)
     let restored = crate::agent::persistence::load(
         &sessions,
         &sessions.join(".locks"),
@@ -568,7 +568,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
             .iter()
             .any(|i| i.preview.contains("Step 1: inspect session."))
     );
-    // Thinking 不在上下文中时，不计入 active_tokens 切分。
+    // When Thinking is not in context, it is excluded from the active_tokens split.
     let in_ctx_sum: u64 = report
         .categories
         .iter()
@@ -604,7 +604,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
             .any(|i| i.kind_label == "AGENTS.md" && i.title == "AGENTS.md")
     );
 
-    // 验证显式提取函数也能正确忽略失败重试的思考
+    // Verify the explicit extraction function also ignores thinking from failed retries
     let records = vec![
         ReplayRecord::Event(AgentEvent::AssistantStarted),
         ReplayRecord::Event(AgentEvent::ThinkingDelta {
@@ -627,7 +627,7 @@ fn completion_thinking_tool_calls_and_resumed_session_usage_are_diagnosed() {
     let _ = CancellationToken::new();
 }
 
-/// 追加一次工具调用 + 结果到原生历史（两种协议共用同一形状）。
+/// Append one tool call + result to the native history (both protocols share the same shape).
 fn push_tool_exchange(agent: &mut Agent, call_id: &str, path: &str, output: &str) {
     let arguments = format!(r#"{{"path":"{path}"}}"#);
     match &mut agent.session {
@@ -706,14 +706,17 @@ fn context_diagnosis_preview_budget_cache_and_instructions() {
         assert!(within.len() < MAX_PREVIEW_BYTES);
         assert!(
             super::sections::json_body_preview(&within).contains("\n  \"content\""),
-            "预算内的 JSON 正文仍按既有口径美化"
+            "a JSON body within the budget is still pretty-printed as before"
         );
 
         let over = format!(r#"{{"content":"{}"}}"#, "a".repeat(MAX_PREVIEW_BYTES));
         assert!(over.len() > MAX_PREVIEW_BYTES);
         let preview = super::sections::json_body_preview(&over);
         assert_eq!(preview, super::sections::oversized_preview(over.len()));
-        assert!(!preview.contains('a'), "超大正文不再复制、解析或美化");
+        assert!(
+            !preview.contains('a'),
+            "an oversized body is no longer copied, parsed or pretty-printed"
+        );
     }
 
     for protocol in [Protocol::Response, Protocol::Completion] {
@@ -757,7 +760,7 @@ fn context_diagnosis_preview_budget_cache_and_instructions() {
         assert_eq!(
             big.preview,
             super::sections::oversized_preview(huge.len()),
-            "超过预算的工具输出只给字节摘要"
+            "tool output beyond the budget only gets a byte summary"
         );
         let small = outputs
             .items
@@ -766,10 +769,10 @@ fn context_diagnosis_preview_budget_cache_and_instructions() {
             .expect("small tool output item");
         assert!(
             small.preview.contains("\n  \"ok\": true"),
-            "预算内的工具输出仍按既有口径美化：{}",
+            "tool output within the budget is still pretty-printed as before: {}",
             small.preview
         );
-        // 大正文按原始字节计入分类与总额，不因预览摘要而缩水。
+        // Large bodies count into categories and totals by raw bytes and do not shrink because of the preview summary.
         assert!(outputs.tokens > MAX_PREVIEW_BYTES as u64 / 3);
         assert_eq!(in_context_tokens(&report), report.active_tokens);
     }
@@ -805,10 +808,10 @@ fn context_diagnosis_preview_budget_cache_and_instructions() {
             .clone();
         assert!(
             output_title.contains("read"),
-            "工具输出按前缀调用表标注工具名：{output_title}"
+            "tool output is labelled with the tool name from the prefix call table: {output_title}"
         );
 
-        // 相同状态再次发布：复用缓存前缀，不能重复追加同一条消息的分类。
+        // Publishing the same state again: the cached prefix is reused and the same message's classification is not appended twice.
         agent.publish_context_snapshot();
         let repeat = snapshot_read(&snapshot);
         assert_eq!(repeat.categories.len(), 10);
@@ -820,7 +823,7 @@ fn context_diagnosis_preview_budget_cache_and_instructions() {
         }
         assert_eq!(in_context_tokens(&repeat), repeat.active_tokens);
 
-        // 追加尾部：只新增尾部消息的分类，前缀里的调用表仍被复用。
+        // Append to the tail: only the new tail message is classified and the call table in the prefix is still reused.
         agent.append_user("second");
         push_tool_exchange(&mut agent, "call_2", "AGENTS.md", r#"{"ok":true,"rule":2}"#);
         agent.publish_context_snapshot();
@@ -839,7 +842,7 @@ fn context_diagnosis_preview_budget_cache_and_instructions() {
         );
         assert_eq!(in_context_tokens(&extended), extended.active_tokens);
 
-        // 工具表指纹变化（新增 MCP 工具）必须重算 Custom Tools。
+        // A tool table fingerprint change (a new MCP tool) must recompute Custom Tools.
         assert_eq!(category(&extended, CategoryKey::CustomTools).item_count, 0);
         let mut defs = agent.tools.all_definitions(agent.workflow.mode);
         defs.push(async_openai::types::chat::FunctionObject {
@@ -885,9 +888,9 @@ fn context_diagnosis_preview_budget_cache_and_instructions() {
         agent.publish_context_snapshot();
         let first = snapshot_read(&snapshot);
         let sent = category(&first, CategoryKey::InstructionFiles).item_count;
-        assert!(sent >= 1, "已发送的规则必须计入 Instruction Files");
+        assert!(sent >= 1, "sent rules must count toward Instruction Files");
 
-        // 第二轮又发送一份规则：项目指令指纹变化必须重算该分区。
+        // A second rule is sent in the second round: a project instruction fingerprint change must recompute that section.
         let nested = work.join("nested/AGENTS.md");
         fs::write(&nested, "Nested rule.").unwrap();
         agent

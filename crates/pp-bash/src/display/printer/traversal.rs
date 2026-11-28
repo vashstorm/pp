@@ -1,4 +1,4 @@
-//! 复合语句、管道与条件列表的遍历。
+//! Traversal of compound statements, pipelines and conditional lists.
 
 use brush_core::parser::ast;
 use pp_core::shell_display::{ShellSegment, ShellStyle as S};

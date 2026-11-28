@@ -1,4 +1,4 @@
-//! 单条被观察管道边（`StreamState`）及其读取快照类型。
+//! A single observed pipe edge (`StreamState`) and its read snapshot types.
 
 use serde::Serialize;
 #[cfg(test)]
@@ -12,7 +12,7 @@ use super::observer::truncate_label;
 use super::ring::{CloseReason, Ring, StreamEvent, StreamHook, lock};
 use super::store::stream_uri;
 
-/// 一条被观察的管道边。id 在 run 内单调递增且永不复用。
+/// One observed pipe edge. The id increases monotonically inside a run and is never reused.
 pub(crate) struct StreamState {
     pub(super) id: u64,
     pub(super) pipeline: u64,
@@ -21,8 +21,8 @@ pub(crate) struct StreamState {
     producer: String,
     consumer: String,
     pub(super) ring: Mutex<Ring>,
-    /// `None` 表示仍打开；封存后保存真实原因。open 与原因在同一把锁下，快照不会
-    /// 读到“已关闭但原因缺失”的中间状态。
+    /// `None` means still open; once sealed, the real reason is kept. Open state and reason share the
+    /// same lock, so a snapshot never reads the intermediate "closed but reason missing" state.
     close: Mutex<Option<CloseReason>>,
     revision: AtomicU64,
     hook: StreamHook,
@@ -52,7 +52,7 @@ impl StreamState {
         }
     }
 
-    /// 追加中继线程实际观察到的字节。先镜像、后转发由 relay 保证。
+    /// Append bytes actually observed by the relay thread. The relay guarantees mirroring before forwarding.
     pub(crate) fn observe(&self, data: &[u8]) {
         if data.is_empty() || !self.is_open() {
             return;
@@ -62,7 +62,7 @@ impl StreamState {
         (self.hook)(StreamEvent::Data);
     }
 
-    /// 封存该流。只有第一次调用生效，之后返回 `false`。
+    /// Seal the stream. Only the first call takes effect; later calls return `false`.
     pub(crate) fn finish(&self, reason: CloseReason) -> bool {
         {
             let mut close = lock(&self.close);
@@ -99,13 +99,13 @@ impl StreamState {
         (ring.start(), ring.end())
     }
 
-    /// 在单次持锁内生成一致的保留区间、总观察字节与正文。
+    /// Build a consistent retained range, total observed bytes and body within a single lock hold.
     fn retained_snapshot(&self) -> (u64, u64, u64) {
         let ring = lock(&self.ring);
         (ring.start(), ring.end(), ring.total)
     }
 
-    /// 单次持锁读取：返回的 `start`/`end` 与 `data` 一定来自同一份快照。
+    /// Single-lock read: the returned `start`/`end` and `data` always come from the same snapshot.
     pub(super) fn read_snapshot(&self, from: Option<u64>) -> StreamSlice {
         let ring = lock(&self.ring);
         let retained_start = ring.start();
@@ -154,7 +154,7 @@ pub(crate) fn detached_stream(id: u64) -> Arc<StreamState> {
     ))
 }
 
-/// 一次流读取的一致快照（区间与正文来自同一把 ring 锁）。
+/// Consistent snapshot of one stream read (range and body come from the same ring lock).
 pub(super) struct StreamSlice {
     pub(super) start: u64,
     pub(super) end: u64,
@@ -179,17 +179,18 @@ pub struct StreamMeta {
     pub close_reason: Option<String>,
 }
 
-/// 一次 `read` 的快照：正文 + 该流的保留区间、总观察字节与 revision。
+/// Snapshot of one `read`: body plus that stream's retained range, total observed bytes and revision.
 #[derive(Clone, Debug)]
 pub struct StreamRead {
-    /// 本次返回正文在流中的绝对起始偏移（已夹到当前保留区间）。
+    /// Absolute start offset in the stream of the body returned this time (clamped to the current
+    /// retained range).
     pub start: u64,
-    /// 本次返回正文的绝对结束偏移，等于此刻观察到的总字节数。
+    /// Absolute end offset of the body returned this time, equal to the total bytes observed so far.
     pub end: u64,
     pub data: Vec<u8>,
     pub open: bool,
     pub revision: u64,
     pub total_bytes: u64,
-    /// 请求起点早于保留区间：前缀已被覆盖。
+    /// The requested start is earlier than the retained range: the prefix has been overwritten.
     pub prefix_evicted: bool,
 }

@@ -1,4 +1,4 @@
-//! Chat Completions 协议的单次请求、流式收集与重试循环。
+//! Single-request, streaming collection and retry loop for the Chat Completions protocol.
 
 use anyhow::{Result, ensure};
 use async_openai::types::chat::CreateChatCompletionRequest;
@@ -132,7 +132,7 @@ impl OpenAiClient {
                 .as_ref()
                 .err()
                 .and_then(|e| e.downcast_ref::<ModelFailure>())
-                .expect("重试只接受模型错误")
+                .expect("retry only accepts model errors")
                 .reason;
             tracing::warn!(event = "ai_request_retry", pid = std::process::id(), attempt = attempts.attempt, wait_ms = elapsed_duration(delay), reason = %reason);
             emit(AgentEvent::RequestRetrying {
@@ -144,7 +144,7 @@ impl OpenAiClient {
             let waited = self
                 .runtime
                 .as_ref()
-                .expect("请求已初始化 runtime")
+                .expect("request initialized the runtime")
                 .block_on(async {
                     cancellation
                         .run_until_cancelled(tokio::time::sleep(delay))
@@ -187,8 +187,8 @@ impl OpenAiClient {
         if new_request {
             emit(AgentEvent::ModelRequestStarted);
         }
-        // 生成中的实时费用：请求体 ÷3 估算输入，已接收输出字节 ÷3 估算输出。
-        // 落定金额仍以服务端 usage 为准，估算只在落定前存在。
+        // Live cost during generation: request body ÷3 estimates input, received output bytes ÷3 estimate output.
+        // Settled amounts still follow server usage; the estimate exists only before settling.
         let accounting = self.task_accounting.clone();
         let accounting_id = attempts.accounting_id;
         let accounting_rate = attempts.accounting_rate;
@@ -261,8 +261,8 @@ impl OpenAiClient {
                     Some(Some(chunk)) => {
                         let chunk =
                             chunk.map_err(|error| provider_failure(error, "Chat Completions"))?;
-                        // 反序列化边界已保留线上原文；直接移交失败现场，
-                        // 不再对每个分片做第二次 JSON 序列化。
+                        // The deserialization boundary already kept the raw wire text; hand the failure context
+                        // over directly instead of serializing every chunk to JSON a second time.
                         failure_context.push(chunk.raw);
                         output.push(ChatChunk::decode(chunk.value)?, &mut progress)?;
                     }
@@ -327,8 +327,8 @@ impl OpenAiClient {
         }
         let save_attempt = stream_opened || attempts.delay.is_none();
         attempts.pending_open = (attempted || had_pending) && !save_attempt;
-        // 纯建连失败合并为一组；流已经打开的失败独立统计。发送前取消不计数。
-        // 计数写入先于 stats，退避中取消由 finish_backoff 收尾。
+        // Pure connect failures merge into one group; failures after the stream opened count separately. Cancellation before sending is not counted.
+        // The count is written before stats; cancellation during backoff is finalized by finish_backoff.
         if attempted && save_attempt {
             self.record_model_usage();
         }

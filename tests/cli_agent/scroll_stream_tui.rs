@@ -1,4 +1,6 @@
-// 真实 SGR 滚轮与持续 SSE 输出共同驱动；截图只比较固定历史区的文本和样式。
+// Driven by a real SGR wheel and continuous SSE output together; the screenshot compares only the text and
+// styles of the fixed history region. The row bodies end in a wide CJK character plus an emoji, and the draft
+// appended below is CJK too, so the region stability check covers wide-character layout.
 fn scroll_stream_region(screen: &vt100::Screen) -> Vec<u8> {
     screen.rows_formatted(0, 100).take(8).flatten().collect()
 }
@@ -32,7 +34,7 @@ fn scroll_stream_case(thinking: bool) {
                 }
             };
             send(&mut stream, &prefix);
-            pty.wait_for("完整 Markdown 已排版", |screen| {
+            pty.wait_for("complete Markdown is laid out", |screen| {
                 let text = screen.contents();
                 text.contains("row_0599")
                     && if code {
@@ -47,7 +49,7 @@ fn scroll_stream_case(thinking: bool) {
             });
             let raw_start = pty.raw.len();
             pty.input("\x1b[<64;20;10M\x1b[<64;20;10M\x1b[<64;20;10M");
-            pty.wait_for("滚轮进入历史浏览", |screen| {
+            pty.wait_for("the wheel enters history browsing", |screen| {
                 screen.alternate_screen()
             });
             pty.input("anchor");
@@ -65,7 +67,8 @@ fn scroll_stream_case(thinking: bool) {
                     } else {
                         streaming_delta(&mut stream, protocol, "tail\n");
                     }
-                    // 模拟供应商分片速率，正确性由终端内容与最终标记确认。
+                    // Simulate the provider fragment rate; correctness is confirmed by the terminal content and the
+                    // final marker.
                     thread::sleep(Duration::from_millis(10));
                 }
                 stream
@@ -78,7 +81,7 @@ fn scroll_stream_case(thinking: bool) {
                 assert_eq!(
                     scroll_stream_region(pty.parser.screen()),
                     before,
-                    "持续输出时历史区应稳定：{protocol} thinking={thinking} code={code}\n{}",
+                    "the history region must stay stable during continuous output: {protocol} thinking={thinking} code={code}\n{}",
                     pty.diagnostics()
                 );
                 assert!(pty.parser.screen().alternate_screen());
@@ -87,7 +90,7 @@ fn scroll_stream_case(thinking: bool) {
             let mut stream = producer.join().unwrap();
             send(&mut stream, "\nscroll-stream-final-marker\n");
             pty.input(&"\x1b[6~".repeat(100));
-            pty.wait_for("回到底部展示新增内容", |screen| {
+            pty.wait_for("returning to the bottom shows the new content", |screen| {
                 !screen.alternate_screen()
                     && screen.contents().contains("scroll-stream-final-marker")
             });
@@ -96,12 +99,12 @@ fn scroll_stream_case(thinking: bool) {
             assert_eq!(
                 bytes.matches("\x1b[?1049h").count(),
                 1,
-                "浏览中不得反复进入备用屏幕"
+                "browsing must not re-enter the alternate screen repeatedly"
             );
             assert_eq!(
                 bytes.matches("\x1b[?1049l").count(),
                 1,
-                "回到底部只退出一次备用屏幕"
+                "returning to the bottom leaves the alternate screen exactly once"
             );
             pty.input("\x1b");
             pty.text("Cancelled");

@@ -1,4 +1,4 @@
-//! `todo` 参数模型、严格解析与变更载荷。
+//! `todo` argument model, strict parsing and change payloads.
 use pp_core::todo::TodoPhase;
 use serde_json::{Map, Value};
 

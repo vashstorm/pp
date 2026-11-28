@@ -1,4 +1,4 @@
-//! Markdown 语义解析：事件流 → 语义块与解析期 builder。
+//! Markdown semantic parse: event stream -> semantic blocks plus the builder used during parsing.
 
 use super::*;
 
@@ -14,8 +14,8 @@ pub(in crate::tui) fn parse_streaming(source: &str, streaming: bool) -> Markdown
     parse_styled(source, tail_start, true)
 }
 
-/// 主线程流式预览专用解析：与 `parse_streaming` 语义完全一致，但跳过 syntect 语法高亮
-/// 以避免阻塞绘制循环。
+/// Parser for the main-thread streaming preview: identical semantics to `parse_streaming` but skips syntect highlighting
+/// so the draw loop is never blocked.
 pub(in crate::tui) fn parse_streaming_preview(source: &str, streaming: bool) -> MarkdownDocument {
     if !streaming || source.ends_with('\n') {
         return parse_styled(source, None, false);
@@ -83,7 +83,7 @@ fn parse_styled(source: &str, tail_start: Option<usize>, highlight_code: bool) -
                         if let Some(start) =
                             tail_start.filter(|&start| range.start < start && range.end >= start)
                         {
-                            // 末行仍可能改变表格结构，先按最近的换行处排版。
+                            // The last line may still change the table structure, so lay out up to the nearest newline first.
                             let mut document = parse_styled(&source[..start], None, highlight_code);
                             document.table_tail_start = Some(start);
                             return document;
@@ -306,7 +306,7 @@ impl<'a> Builder<'a> {
         st
     }
 
-    /// 标题与表头保留黄色，正文区分粗体和代码。
+    /// Headings and headers keep yellow; the body distinguishes bold and code.
     fn emphasis_fg(&self, color: Color) -> Option<Color> {
         if self.heading || self.table_head {
             None
@@ -315,7 +315,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// 内嵌代码使用绿色，保留上下文的修饰符与标题色。
+    /// Inline code uses green and keeps the surrounding modifiers and heading color.
     fn code_style(&self) -> Style {
         let mut st = self.inline_style();
         if let Some(fg) = self.emphasis_fg(md_code()) {
@@ -537,7 +537,7 @@ impl<'a> Builder<'a> {
             let raw = raw.strip_suffix('\r').unwrap_or(raw);
             lines.push(display_text(raw).into_owned());
         }
-        // tab 展开前移到解析期：span 化后无法再对 String 展开。
+        // Tab expansion moves into the parse phase: once spans exist a String can no longer be expanded.
         let expanded: Vec<String> = lines.iter().map(|l| expand_tabs(l, TAB_STOP)).collect();
         let text = expanded.join("\n");
         let lines: Arc<Vec<Arc<Vec<Span<'static>>>>> = match self

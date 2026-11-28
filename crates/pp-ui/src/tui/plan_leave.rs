@@ -1,4 +1,4 @@
-//! 未保存规划的本地放弃确认，不读取文件或调用模型。
+//! Local discard confirmation for an unsaved plan; reads no file and calls no model.
 use super::menu::{MenuEvent, MenuItem, SelectionMenu};
 use crossterm::event::KeyEvent;
 use ratatui::{

@@ -1,4 +1,4 @@
-//! 开发构建专用：`/test-web-search` 不经过大模型，直接以当前配置或指定引擎执行真实 `web_search`。
+//! Dev builds only: `/test-web-search` runs a real `web_search` with the current config or a chosen provider, bypassing the model.
 
 use std::{
     path::Path,
@@ -33,7 +33,7 @@ pub(in crate::tui) fn run_queries(
     Ok(())
 }
 
-/// 无可用 `Agent`（`State::Unavailable`）时使用的单次后台搜索 worker。
+/// One-shot background search worker used when no `Agent` is available (`State::Unavailable`).
 pub(in crate::tui) struct Worker {
     cancellation: CancellationToken,
     events: Option<Receiver<WorkerEvent>>,

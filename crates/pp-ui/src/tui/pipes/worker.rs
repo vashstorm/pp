@@ -1,7 +1,7 @@
-//! 管道阶段观察线程：每 250ms 检查一次 revision，只复制当前选中流。
+//! Pipe-stage observer thread: checks the revision every 250ms and copies only the selected stream.
 //!
-//! 线程只读取 `PipeStore` 的有界快照与保留正文，不做 shell/agent 控制。所有回复
-//! 带根 epoch、view epoch 与 run/stream id；面板关闭后旧线程直接结束。
+//! The thread only reads `PipeStore`'s bounded snapshots and retained bodies and never controls the shell/agent. Every reply
+//! carries the root epoch, view epoch and run/stream id; once the panel closes, the old thread simply exits.
 
 use super::{BodyUpdate, RunView};
 use pp_bash::PipeStore;
@@ -12,9 +12,9 @@ use std::{
     time::Duration,
 };
 
-/// 面板打开时的修订轮询间隔。
+/// Revision poll interval while the panel is open.
 const POLL: Duration = Duration::from_millis(250);
-/// 回复通道容量；阻塞发送保证正文更新不被静默丢弃。
+/// Reply channel capacity; blocking sends guarantee body updates are never silently dropped.
 const REPLY_CAPACITY: usize = 16;
 
 pub(in crate::tui) enum Request {
@@ -35,7 +35,7 @@ pub(in crate::tui) enum Request {
         run: String,
         stream: u64,
     },
-    /// `full` 为真时重建当前流的完整保留快照；否则只刷新元数据。
+    /// When `full` is true, rebuild the complete retained snapshot of the current stream; otherwise only refresh metadata.
     Refresh {
         epoch: u64,
         view: u64,
@@ -92,8 +92,8 @@ impl Worker {
     pub(in crate::tui) fn shutdown(&mut self) {
         let _ = self.requests.send(Request::Shutdown);
         if let Some(thread) = self.thread.take() {
-            // 观察线程可能阻塞在容量有限的回复通道上；关闭时由本线程排空，
-            // 不能只 join 而让发送端永久等待。
+            // The observer thread may block on the bounded reply channel; this thread drains it on close
+            // rather than joining and leaving the sender waiting forever.
             while !thread.is_finished() {
                 while self.replies.try_recv().is_ok() {}
                 thread::sleep(Duration::from_millis(1));
@@ -160,9 +160,9 @@ impl State {
         self.normalizer_key = None;
     }
 
-    /// 返回 false 表示回复通道已关闭，观察线程应退出。
+    /// Returning false means the reply channel is closed and the observer thread should exit.
     fn step(&mut self, replies: &SyncSender<Reply>) -> bool {
-        // 请求的流 id 必须在 run 解析（可能 reset_body）之前取出，避免被清掉。
+        // The requested stream id must be taken before the run is resolved (which may reset_body) so it is not cleared.
         let requested_stream = self.requested_stream.take();
         let views = views(&self.store);
         let signature = views
@@ -234,7 +234,7 @@ impl State {
         }
         let selection_changed = (self.run.clone(), self.stream) != previous;
         if self.stream.is_none() {
-            // 没有可观察的流时清掉强制正文位，避免观察线程空转。
+            // With no observable stream, clear the forced-body flag so the observer thread does not spin.
             self.force_body = false;
         }
         let selected_stream = self
@@ -342,7 +342,7 @@ impl State {
     }
 }
 
-/// 归一化一段正文；关闭流时先把本块喂入，再单独收尾，不能丢弃本块字节。
+/// Normalize a body chunk; when closing a stream, feed this chunk in first and finish separately so its bytes are not lost.
 fn feed(normalizer: &mut Normalizer, bytes: &[u8], finish: bool) -> String {
     let mut text = normalizer.feed(bytes, false);
     if finish {
@@ -351,7 +351,7 @@ fn feed(normalizer: &mut Normalizer, bytes: &[u8], finish: bool) -> String {
     text
 }
 
-/// 把不可命名的 `RunInfo` 转成 UI 自己的有界视图。
+/// Convert the unnameable `RunInfo` into the UI's own bounded view.
 fn views(store: &PipeStore) -> Vec<RunView> {
     store
         .list()

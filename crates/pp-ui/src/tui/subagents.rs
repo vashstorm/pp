@@ -1,7 +1,7 @@
-//! Agent Hub：Agents 总览、完整 Activity 与独立 child 详情。
+//! Agent Hub: the Agents overview, the full Activity view and the standalone child detail.
 //!
-//! 面板只持快照、投影与动作队列。历史读取与控制在观察线程完成，测速读取内存快照。
-//! 关闭 Hub 只停止观察，不取消任何 child。
+//! The panel only holds snapshots, projections and an action queue. History reads and control run on the observer thread, and the speed probe reads the in-memory snapshot.
+//! Closing the Hub only stops observation; it never cancels a child.
 
 mod activity;
 mod detail;
@@ -64,7 +64,7 @@ enum Focus {
     Inspector,
 }
 
-/// child 草稿：按 agent id 分组的 TextArea，只在当前根内存保留。
+/// Child draft: a TextArea per agent id, kept in memory only for the current root.
 pub(super) struct Draft {
     pub editor: TextArea<'static>,
     pub revision: u64,
@@ -96,7 +96,7 @@ impl Drafts {
         self.map.get(agent).map_or(0, |draft| draft.revision)
     }
 
-    /// 成功发送后只清掉同一份未修改的草稿。
+    /// Only the same unmodified draft is cleared after a successful send.
     pub(super) fn clear_if_unchanged(&mut self, agent: &str, revision: u64, text: &str) -> bool {
         let Some(draft) = self.map.get_mut(agent) else {
             return false;
@@ -115,7 +115,7 @@ impl Drafts {
     }
 }
 
-/// 面板请求；根/view epoch 由 App 统一补齐。
+/// Panel request; the root/view epoch is filled in by App.
 pub(super) enum Command {
     Open {
         agent: String,
@@ -272,7 +272,7 @@ impl Panel {
         }
     }
 
-    /// 控制 ACK：只把 notice 放到对应 agent，不覆盖当前另一 agent 的详情。
+    /// Control ACK: place the notice only on the matching agent and never overwrite the detail of another agent.
     pub(super) fn send_settled(&mut self, agent: &str, result: Result<(), String>) {
         if self.sending.as_deref() == Some(agent) {
             self.sending = None;
@@ -287,7 +287,7 @@ impl Panel {
                 if let Some(detail) = self.detail.as_mut().filter(|detail| detail.agent == agent) {
                     detail.notice = Some(message);
                 } else {
-                    // 详情不在该 agent 时用短 notice 汇报，不覆盖其它详情。
+                    // Report with a short notice when the detail does not belong to that agent, without overwriting other details.
                     self.notice = Some(format!("Control failed for {agent}: {error}"));
                 }
             }
@@ -330,7 +330,7 @@ impl Panel {
                 }
                 if let Some(detail) = self.detail.as_mut().filter(|detail| detail.agent == agent) {
                     if page.reset {
-                        // 文件替换后从头重建，保留草稿与 follow 偏好。
+                        // Rebuild from scratch after a file replacement, keeping the draft and the follow preference.
                         detail.rebuild();
                     }
                     detail.ingest(page, &history.runs, &history.settled, projection::now_ms());
@@ -409,7 +409,7 @@ impl Panel {
             }
             detail.tick(instant)
         });
-        // age/elapsed 每秒刷新一次，不为时钟重读全文件。
+        // age/elapsed refresh once per second instead of re-reading the whole file for the clock.
         if now_ms.saturating_sub(self.rendered) >= 1000 {
             self.rendered = now_ms;
             self.projection.refresh(now_ms);
@@ -747,7 +747,7 @@ mod fixtures {
         Event::Key(KeyEvent::from(code))
     }
 
-    /// 带 usage、模型、工作目录与费用的已打开详情；后续用例只调整尺寸。
+    /// Open detail carrying usage, model, working directory and cost; the cases that follow only change the size.
     pub(super) fn usage_detail() -> Panel {
         let mut agent = record("a1", "Main", "idle");
         agent.spec.model = "fixture/primary".into();
@@ -804,11 +804,11 @@ mod tests {
         assert_eq!(visible_start(&[5], Some(0), 2), 0);
         assert_eq!(tail_start(&[2, 2, 2, 2], 5), 2);
         assert_eq!(tail_start(&[], 5), 0);
-        // 总高度超过 u16::MAX 时不得溢出 panic。
+        // A total height above u16::MAX must not overflow and panic.
         let tall = vec![20_000u16; 5];
         assert_eq!(visible_start(&tall, Some(4), 25_000), 4);
         assert_eq!(tail_start(&tall, 25_000), 4);
-        // 0 尺寸不绘制、不越界。
+        // A zero size draws nothing and never goes out of bounds.
         let mut drafts = Drafts::default();
         let mut panel = panel(vec![], vec![]);
         render(&mut panel, &mut drafts, 0, 0);

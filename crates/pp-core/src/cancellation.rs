@@ -31,7 +31,7 @@ impl std::error::Error for CleanupError {
     }
 }
 
-/// CLI 参数、子命令搭配或运行前提使用错误（退出码 2）。
+/// CLI argument, subcommand combination or runtime precondition misuse (exit code 2).
 #[derive(Debug)]
 pub struct UsageError(pub String);
 
@@ -42,7 +42,7 @@ impl std::fmt::Display for UsageError {
 }
 impl std::error::Error for UsageError {}
 
-/// 非交互运行达到 `--max-turns` 轮次上限（退出码 3）。
+/// A non-interactive run hit the `--max-turns` turn limit (exit code 3).
 #[derive(Debug)]
 pub struct MaxTurnsExceeded {
     pub limit: usize,
@@ -55,7 +55,7 @@ impl std::fmt::Display for MaxTurnsExceeded {
 }
 impl std::error::Error for MaxTurnsExceeded {}
 
-/// 非交互运行达到 `--timeout` 时限（退出码 124）。
+/// A non-interactive run hit the `--timeout` deadline (exit code 124).
 #[derive(Debug)]
 pub struct TimedOut {
     pub duration: std::time::Duration,
@@ -73,7 +73,8 @@ impl std::fmt::Display for TimedOut {
 }
 impl std::error::Error for TimedOut {}
 
-/// 非交互运行收到 `SIGINT` / `SIGTERM` 并完成优雅取消（退出码 128 + signal）。
+/// A non-interactive run received `SIGINT` / `SIGTERM` and finished graceful cancellation (exit
+/// code 128 + signal).
 #[derive(Debug)]
 pub struct SignalCancelled {
     pub signal: i32,
@@ -91,7 +92,7 @@ impl std::fmt::Display for SignalCancelled {
 }
 impl std::error::Error for SignalCancelled {}
 
-/// 将运行时或 CLI 错误映射为语义化进程退出码。
+/// Map a runtime or CLI error to a semantic process exit code.
 pub fn exit_code_for_error(error: &anyhow::Error) -> u8 {
     if error.chain().any(|cause| cause.is::<UsageError>()) {
         return 2;
@@ -111,13 +112,15 @@ pub fn exit_code_for_error(error: &anyhow::Error) -> u8 {
     1
 }
 
-/// 合并一次运行的结论与退出时的清理结果，`label` 是清理侧的英文领域提示。
+/// Merge one run's outcome with its exit cleanup result; `label` is the English domain message from
+/// the cleanup side.
 ///
-/// 清理失败若是 `CleanupError`，合并后仍以它作为外层类型（外层 `downcast_ref` 可见），
-/// 原始失败作为内层上下文留在同一 anyhow 类型链里，`exit_code_for_error` 仍能识别
-/// `UsageError`／`MaxTurnsExceeded`／`TimedOut`／`SignalCancelled`；清理失败不是
-/// `CleanupError` 时原始错误保持外层，只追加清理上下文。合并文本同时包含原始失败与
-/// 清理失败的正文。
+/// When the cleanup failure is a `CleanupError` it stays the outer type after merging (visible via
+/// the outer `downcast_ref`), and the original failure remains inner context on the same anyhow type
+/// chain, so `exit_code_for_error` still recognizes
+/// `UsageError`/`MaxTurnsExceeded`/`TimedOut`/`SignalCancelled`; when the cleanup failure is not a
+/// `CleanupError` the original error stays outer and only cleanup context is appended. The merged
+/// text contains the bodies of both the original failure and the cleanup failure.
 pub fn merge_cleanup_result(
     result: anyhow::Result<()>,
     cleanup: anyhow::Result<()>,
@@ -127,9 +130,10 @@ pub fn merge_cleanup_result(
         (Ok(()), Ok(())) => Ok(()),
         (Ok(()), Err(error)) | (Err(error), Ok(())) => Err(error),
         (Err(error), Err(cleanup)) => match cleanup.downcast_ref::<CleanupError>() {
-            // 清理失败保持 `CleanupError` 外层类型；原始失败作为内层上下文留在同一
-            // anyhow 类型链上，`exit_code_for_error` 仍能识别语义错误。只借用内层正文，
-            // 避免在外层重复 `Failed to stop:` 前缀。
+            // The cleanup failure keeps `CleanupError` as its outer type; the original failure stays
+            // inner context on the same anyhow type chain, so `exit_code_for_error` still recognizes
+            // semantic errors. Only the inner body is borrowed to avoid repeating the outer
+            // `Failed to stop:` prefix.
             Some(CleanupError(inner)) => {
                 Err(CleanupError(error.context(format!("{label}: {inner:#}"))).into())
             }

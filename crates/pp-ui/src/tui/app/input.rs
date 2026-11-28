@@ -6,7 +6,7 @@ use crate::tui::{
 const COMMAND_PREFIX_RANK: u8 = 1;
 
 impl App {
-    /// 补全跟随主输入框焦点，不以后台任务状态作为开关。
+    /// Completion follows main input box focus and is never gated on background task state.
     pub(in crate::tui) fn completion_input_focused(&self) -> bool {
         self.auth_panel.is_none()
             && self.permission_overlay.is_none()
@@ -31,7 +31,8 @@ impl App {
     }
 
     pub(in crate::tui) fn refresh_candidates(&mut self, edited: bool) {
-        // 普通编辑取消等待中的翻页；迟到的页仍会缓存，不丢已加载内容。
+        // A regular edit cancels the pending page request; a late page is still cached, so
+        // loaded content is never lost.
         if edited {
             self.history_waiting_up = false;
         }
@@ -65,8 +66,9 @@ impl App {
             self.menu = None;
             return;
         }
-        // 补全只编辑草稿；是否允许执行仍由提交入口按当前状态判断。
-        // 计划讨论输入是正文，只补全资源；普通命令补全要求单行草稿。
+        // Completion only edits the draft; whether execution is allowed is still decided by the
+        // submission entry point from the current state. Plan discussion input is a body and
+        // completes only resources; regular command completion requires a single-line draft.
         let input = if self.plan_panel.is_none() && self.input.lines().len() == 1 {
             self.input.lines()[0].trim_start()
         } else {
@@ -549,7 +551,8 @@ impl App {
         if !self.shell_mode && self.at_input_prefix() {
             let trimmed = text.trim_start_matches(|ch: char| ch.is_whitespace() && ch != '\n');
             if trimmed.starts_with('!') {
-                // 在交给编辑器前消费前缀，撤销与重做也不会重新插入切换键。
+                // Consume the prefix before handing off to the editor, so undo and redo never
+                // re-insert the mode switch key.
                 text.remove(text.len() - trimmed.len());
                 self.shell_mode = true;
             }
@@ -589,7 +592,8 @@ impl App {
     }
 
     pub(in crate::tui) fn navigate_history(&mut self, previous: bool) {
-        // 请求进行中重复 Up 合并成一次等待导航，不重复发同一页。
+        // Repeated Up during a request collapses into one pending navigation without sending
+        // the same page twice.
         if previous && self.history_waiting_up {
             return;
         }
@@ -600,14 +604,15 @@ impl App {
                 self.input_history.len() - 1
             }
             (None, true) => {
-                // 初始页仍在路上（或还有更老页）时，等这一页到达再完成本次 Up。
+                // While the initial page is still in flight (or older pages remain), wait for it
+                // before completing this Up.
                 if self.history_page_pending.is_some() || self.history_has_more {
                     self.wait_for_history_page();
                 }
                 return;
             }
             (Some(0), true) => {
-                // 到达已加载最老条目：向更老的一页请求并挂起这次 Up。
+                // Reached the oldest loaded entry: request an older page and suspend this Up.
                 if self.history_has_more || self.history_page_pending.is_some() {
                     self.wait_for_history_page();
                 }
@@ -615,7 +620,7 @@ impl App {
             }
             (Some(index), true) => index - 1,
             (Some(index), false) if index + 1 < self.input_history.len() => {
-                // Down 取消等待导航，但已返回的页仍作为缓存保留。
+                // Down cancels the pending navigation, but pages already returned stay cached.
                 self.history_waiting_up = false;
                 index + 1
             }
@@ -775,7 +780,8 @@ impl App {
         if !matches!(self.state, State::Ready) || !self.has_pending() {
             return;
         }
-        // Plan/Ready 暂停了自动派发；恢复队列操作是显式继续，后端会把 Ready 降为 Draft。
+        // Plan/Ready suspends automatic dispatch; resuming the queue is an explicit continue, and
+        // the backend demotes Ready to Draft.
         if !self.queue_paused && !self.plan_awaiting_review() {
             return;
         }
@@ -810,8 +816,9 @@ impl App {
             .is_some_and(|snapshot| !snapshot.items.is_empty())
     }
 
-    /// 派发下一条待处理消息；返回是否真的派发（状态离开 Ready）。
-    /// Plan/Ready 自动派发直接拒绝；显式提交/恢复队列操作仍可派发（后端先降 Draft）。
+    /// Dispatches the next pending message; returns whether it really dispatched (state left
+    /// Ready). Plan/Ready rejects automatic dispatch, while an explicit submit/resume still
+    /// dispatches (the backend demotes to Draft first).
     pub(in crate::tui) fn dispatch_next(&mut self, explicit: bool) -> bool {
         if !matches!(self.state, State::Ready)
             || self.queue_paused
@@ -899,7 +906,8 @@ impl App {
         if self.send(command, State::Running) {
             self.active_cancellation = Some(cancellation);
             self.conversation.begin_run();
-            // 启动期建连提示只服务启动阶段；首个任务开始后不再占用对话高度。
+            // Startup connect hints serve only the startup phase; once the first task begins they
+            // no longer take conversation height.
             self.dismiss_mcp_tip();
             true
         } else {
@@ -938,8 +946,9 @@ impl App {
         }
     }
 
-    /// 手动压缩入口：命令本身不进对话、不伪造普通任务；沿用 slash 命令的
-    /// 提交语义（成功后清空初始输入），压缩期间新输入的草稿不受影响。
+    /// Manual compaction entry point: the command itself does not enter the conversation and
+    /// never fakes a regular task; it reuses slash-command submission semantics (clearing the
+    /// initial input on success), and drafts typed during compaction are unaffected.
     pub(in crate::tui) fn send_compaction(&mut self) {
         let cancellation = CancellationToken::new();
         if self.send_submission(

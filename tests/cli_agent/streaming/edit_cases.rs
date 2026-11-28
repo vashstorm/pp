@@ -30,7 +30,7 @@ fn hashline_edit_roundtrip_and_stale_snapshot_recovery() {
             ["one", "two", "three"]
         );
         let header = hashline_header(content).to_owned();
-        // 故意打乱操作顺序，所有行号仍属于原始快照。
+        // Deliberately scramble the operation order; all line numbers still belong to the original snapshot.
         protocol.calls_reply(request,json!([protocol.call("edit-multi","edit",json!({"input":format!("{header}\nPUT 2.=2:\n+TWO\nPUT <1:\n+zero\nPUT >3:\n+four")}))]));
         let (request, body) = protocol.receive(&server);
         let result = protocol.tool_result(&body, "edit-multi");
@@ -43,7 +43,7 @@ fn hashline_edit_roundtrip_and_stale_snapshot_recovery() {
             std::fs::read(&demo).unwrap(),
             b"zero\none\nTWO\nthree\nfour\n"
         );
-        // 成功后旧快照失效，重新读取才能继续。
+        // After success the old snapshot is stale, so a fresh read is required to continue.
         protocol.calls_reply(
             request,
             json!([

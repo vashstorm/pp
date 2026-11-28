@@ -1,4 +1,4 @@
-//! 文本编辑的 UTF-16 应用与版本证明。
+//! UTF-16 application of text edits and version proof.
 
 use crate::position::position_offset;
 use crate::types::Position;
@@ -14,12 +14,12 @@ use super::{NodeState, Planner};
 
 const SNIPPET_EDIT: &str = "snippet-formatted LSP edits are unsupported";
 
-/// 一次 `WorkspaceEdit` 的文本编辑在内存中应用。
+/// Apply the text edits of one `WorkspaceEdit` in memory.
 ///
-/// 位置是 UTF-16 编码的；越界、反向范围、落在代理对中间的位置、snippet
-/// 编辑与真实重叠一律拒绝。范围与替换文本都完全相同的编辑（包括同一位置
-/// 的相同插入）只保留第一次出现的一条；不同文本的同位置插入各自保留，
-/// 并按声明顺序应用。
+/// Positions are UTF-16 encoded; out-of-range and reversed ranges, positions inside a surrogate pair, snippet
+/// edits and genuine overlaps are all rejected. Edits with identical range and replacement text (including identical
+/// insertions at the same position) keep only the first occurrence; insertions of different text at the same position are each kept
+/// and applied in declaration order.
 pub(crate) fn apply_text_edits(content: &str, edits: &[TextEdit]) -> Result<String> {
     if edits.is_empty() {
         return Ok(content.to_owned());
@@ -34,8 +34,8 @@ pub(crate) fn apply_text_edits(content: &str, edits: &[TextEdit]) -> Result<Stri
             format_range(edit.range)
         );
     }
-    // 先按声明顺序去重：完全相同的编辑只保留第一次出现的那一条。去重放在
-    // 排序之前，避免同位置的其它插入把它们隔开后漏掉重复。
+    // Deduplicate in declaration order first: identical edits keep only the first occurrence. Deduplication runs
+    // before sorting, so other insertions at the same position cannot split them apart and hide a duplicate.
     let mut seen: BTreeSet<(Position, Position, &str)> = BTreeSet::new();
     let mut unique: Vec<(usize, &TextEdit)> = Vec::with_capacity(edits.len());
     for (index, edit) in edits.iter().enumerate() {
@@ -43,7 +43,7 @@ pub(crate) fn apply_text_edits(content: &str, edits: &[TextEdit]) -> Result<Stri
             unique.push((index, edit));
         }
     }
-    // 再从下到上应用；同一位置按原始下标降序，使数组声明顺序成为插入顺序。
+    // Then apply bottom-up; at the same position apply in descending original index, so array declaration order becomes insertion order.
     unique.sort_by(|(left_index, left), (right_index, right)| {
         right
             .range
@@ -102,13 +102,13 @@ fn format_range(range: Range) -> String {
 }
 
 impl<'a> Planner<'a> {
-    /// 版本非 null 时只能由**本次编辑的发起客户端**证明：
-    /// - 使用本次查询的发起服务器验证；
-    /// - 该文档必须仍处于打开状态，版本精确匹配；
-    /// - 文档文本必须等于事务开始前的磁盘基线（不是本批次已 staged 的虚拟内容，
-    ///   否则基于旧版本计算的范围会落到新内容上）。
+    /// A non-null version can only be proven by **the client that initiated this edit**:
+    /// - validate with the originating server of this query;
+    /// - the document must still be open, with an exact version match;
+    /// - the document text must equal the on-disk baseline from before the transaction began (not the virtual content already staged in this batch,
+    ///   otherwise ranges computed against the old version would land on the new content).
     ///
-    /// `null`/缺失版本不要求匹配。
+    /// A `null`/absent version requires no match.
     pub(super) fn check_version(&self, document: &TextDocumentEdit) -> Result<()> {
         let Some(Some(expected)) = document.text_document.version else {
             return Ok(());
@@ -143,8 +143,8 @@ impl<'a> Planner<'a> {
         Ok(())
     }
 
-    /// 版本证明：(发起服务器打开过的路径, 事务开始前的原始字节)。
-    /// 同一批次早先的文本编辑只改虚拟 `current`，不能作为版本基线。
+    /// Version proof: (path opened by the originating server, original bytes from before the transaction began).
+    /// Earlier text edits in the same batch only change the virtual `current` and cannot serve as a version baseline.
     pub(super) fn version_baseline(
         &self,
         path: &Path,

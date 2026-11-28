@@ -3,7 +3,8 @@ use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::borrow::Cow;
 
-// 在两种协议共用的工具边界归一化 provider 参数；内部结构与持久化格式保持一致。
+// Normalizes provider arguments at the tool boundary shared by both protocols; the internal shape
+// stays identical to the persisted format.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Args {
@@ -69,13 +70,15 @@ enum Recommendation {
 
 pub(super) fn parse(arguments: &str) -> Result<AskArgs> {
     let invalid = || anyhow::anyhow!("invalid ask arguments");
-    // 部分 provider 把 JSON 参数再次编码为字符串；最多解包一层，不修补截断 JSON。
+    // Some providers encode the JSON arguments as a string again; unwrap at most one layer and never
+    // repair truncated JSON.
     let arguments = if arguments.trim_start().starts_with('"') {
         Cow::Owned(serde_json::from_str::<String>(arguments).map_err(|_| invalid())?)
     } else {
         Cow::Borrowed(arguments)
     };
-    // 直接按严格结构反序列化，避免 Value 中转吞掉重复字段。
+    // Deserialize straight into the strict shape so the `Value` round trip cannot swallow duplicate
+    // fields.
     let input: Args = serde_json::from_str(&arguments).map_err(|_| invalid())?;
     let questions = input
         .questions

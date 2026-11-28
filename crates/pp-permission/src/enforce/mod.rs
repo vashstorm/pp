@@ -1,4 +1,4 @@
-//! 常规工具、文件路径写入、联网与 Bash AST 的权限决策实现。
+//! Permission decisions for regular tools, file path writes, network and the Bash AST.
 
 mod bash;
 
@@ -27,7 +27,7 @@ pub struct ApprovedBashScope {
 }
 
 impl crate::Gate {
-    /// 确认由沙盒识别出的受保护会话文件读取权限。
+    /// Confirms read permission for a protected session file identified by the sandbox.
     pub fn authorize_session_read(
         &self,
         target: &Path,
@@ -45,10 +45,10 @@ impl crate::Gate {
         )
     }
 
-    /// 统一的文件/目录读取审批门禁（供 `read` / `rg` / `glob` / `lsp` 共用）：
-    /// - 受保护会话路径按精确路径复用只读授权，首次需要人工确认。
-    /// - 普通工作区外路径按目录范围复用授权，未获批时
-    ///   经可选 `auto_review` 审批（支持单次 / 本会话 / 全局只读写入 `permission.toml`）。
+    /// Unified file/directory read approval gate (shared by `read` / `rg` / `glob` / `lsp`):
+    /// - Protected session paths reuse read-only grants by exact path and need human confirmation the first time.
+    /// - Ordinary paths outside the workspace reuse grants by directory scope; when not yet granted they go
+    ///   through the optional `auto_review` approval (one-off / this session / global read-only write to `permission.toml`).
     #[allow(clippy::too_many_arguments)]
     pub fn authorize_path_reads(
         &self,
@@ -204,7 +204,7 @@ impl crate::Gate {
             .read_path_grants
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // 普通父目录的读取授权不能涵盖受保护的会话数据。
+        // A read grant for an ordinary parent directory cannot cover protected session data.
         let mut pending = Vec::new();
         for path in paths {
             let access = active
@@ -479,8 +479,8 @@ impl crate::Gate {
         Ok(ApprovedBashScope::default())
     }
 
-    /// 写/改路径工具（`write` / `edit`）的细粒度权限门禁：
-    /// 区分工作区普通文件、受保护路径（`.git` / `.agents` / `.pp`）与工作区外路径。
+    /// Fine-grained permission gate for write/modify path tools (`write` / `edit`):
+    /// distinguishes ordinary files inside the workspace, protected paths (`.git` / `.agents` / `.pp`) and paths outside the workspace.
     #[allow(clippy::too_many_arguments)]
     pub fn authorize_path_write(
         &self,
@@ -541,7 +541,7 @@ impl crate::Gate {
             None => {}
         }
 
-        // 检查 permission.toml 中的 `[profile.filesystem]` 显式路径设置
+        // Check the explicit path settings of `[profile.filesystem]` in permission.toml
         if let Some(access) = self.lookup_fs_access(doc.as_deref(), cwd, target_path) {
             match access {
                 FsAccess::None => bail!(
@@ -550,7 +550,7 @@ impl crate::Gate {
                 ),
                 FsAccess::Write => return Ok(()),
                 FsAccess::Read => {
-                    // 显式设为 read 时即便是工作区普通文件也必须走审批
+                    // When explicitly set to read, even an ordinary workspace file must go through approval
                 }
             }
         } else if matches!(kind, PathWriteKind::WorkspaceRegular)
@@ -562,8 +562,8 @@ impl crate::Gate {
             return Ok(());
         }
 
-        // 只有在“普通工作区内路径 + ReadOnly 模式”才允许工具级 preapproved/grants 放行；
-        // 受保护目录（.git/.agents/.pp）与工作区外文件必须精确路径授权！
+        // Tool-level preapproved/grants may only open an "ordinary in-workspace path + ReadOnly mode";
+        // protected directories (.git/.agents/.pp) and files outside the workspace need an exact path grant!
         if matches!(kind, PathWriteKind::WorkspaceRegular)
             && (self.is_preapproved(tool)
                 || self
@@ -664,7 +664,7 @@ impl crate::Gate {
         )
     }
 
-    /// 联网工具（`web_search` 与 URL `read`）在断网沙盒下的互联网访问审批。
+    /// Internet access approval for network tools (`web_search` and URL `read`) under a network-isolated sandbox.
     #[allow(clippy::too_many_arguments)]
     pub fn authorize_network(
         &self,

@@ -331,7 +331,7 @@ fn auth_provider_constraints_and_discovery_guards() {
             fs::write(&models, format!("providers:\n  test:\n{auth}{extra}    models:\n      main:\n        model: fixture\n")).unwrap();
             let error = crate::models::load_models(&models)
                 .err()
-                .expect("必须拒绝配置");
+                .expect("must reject the configuration");
             assert!(!format!("{error:#}").contains("secret"));
         }
     }

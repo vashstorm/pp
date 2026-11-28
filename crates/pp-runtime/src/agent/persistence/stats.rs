@@ -1,7 +1,8 @@
 use super::*;
 use std::sync::atomic::Ordering;
 
-/// `ToolFinished` 已确认、但最终回填模型的文本尚未确定的工具统计。
+/// Tool stats whose `ToolFinished` is confirmed but whose final model-facing text is not yet
+/// determined.
 pub(super) struct PendingToolStat {
     tool: String,
     request_key: String,
@@ -33,11 +34,13 @@ impl SessionJournal {
             },
         }
     }
-    /// 统计库路径；只读查询（`session_usage`／`session_cost`）与 `pp gc` 仍按路径使用。
+    /// Stats database path; read-only queries (`session_usage`/`session_cost`) and `pp gc`
+    /// still use the path.
     pub(in crate::agent) fn stats_database(&self) -> &Path {
         self.stats.path()
     }
-    /// 进程内复用的统计库句柄；请求、工具、hook 与标题共享同一个连接。
+    /// Stats database handle reused within the process; requests, tools, hooks and titles
+    /// share one connection.
     pub(in crate::agent) fn stats_handle(&self) -> &pp_stats::Database {
         &self.stats
     }
@@ -64,7 +67,8 @@ impl SessionJournal {
 
     pub(in crate::agent) fn track_stats(&mut self, key: Option<String>, success: bool) {
         self.link_unassigned_stats();
-        // 工具执行记录只跟随最近一次实际保存的请求；失败或缺键时不能沿用旧请求。
+        // Tool execution records only follow the most recently saved request; on failure or
+        // a missing key the previous request must not be reused.
         self.last_stats = key.clone();
         if !success {
             self.pending_stats = None;
@@ -74,9 +78,9 @@ impl SessionJournal {
         }
     }
 
-    /// 在 `ToolFinished` 边界冻结状态、错误与耗时；结果字符数要等最终
-    /// 回填模型的文本确定后由 [`Self::record_tool_output`] 写入——
-    /// post hook 的 `updatedToolOutput` 会改写模型看到的正文。
+    /// Freeze status, error and duration at the `ToolFinished` boundary; the result character
+    /// count is written by [`Self::record_tool_output`] once the final model-facing text is
+    /// known — a post hook's `updatedToolOutput` rewrites the body the model sees.
     pub(super) fn tool_finished(
         &mut self,
         tool: &str,
@@ -119,7 +123,8 @@ impl SessionJournal {
         );
     }
 
-    /// 用最终回填模型的 JSON 文本记录结果字符数；未调用则保持不写库。
+    /// Record the result character count from the final JSON text fed back to the model; when
+    /// not called, nothing is written to the database.
     pub(in crate::agent) fn record_tool_output(&mut self, call_id: &str, output: &str) {
         let Some(pending) = self.pending_tool_stats.remove(call_id) else {
             return;

@@ -1,5 +1,5 @@
 /**
- * Requests 页面：全量请求检索、状态过滤、列排序与分页加载。
+ * Requests page: full request search, status filtering, column sorting and paged loading.
  */
 
 import { metric, pricingNotice, statusBadge } from "./analytics-shared.js";
@@ -39,7 +39,7 @@ const columns = [
 ];
 
 /**
- * 提取请求行排序键。
+ * Extracts the sort key of a request row.
  * @param {RequestRow} r
  * @param {string} key
  */
@@ -49,7 +49,7 @@ function sortValue(r, key) {
 }
 
 /**
- * 按搜索词、状态与排序字段过滤 Requests 列表。
+ * Filters the Requests list by search term, status and sort field.
  * @returns {RequestRow[]}
  */
 export function filteredRows() {
@@ -76,7 +76,7 @@ export function filteredRows() {
 }
 
 /**
- * 汇总已加载请求的计数、总 token 与延迟分位数。
+ * Aggregates count, total tokens and latency quantiles of the loaded requests.
  * @param {RequestRow[]} rows
  */
 export function requestSummary(rows) {
@@ -126,7 +126,7 @@ function requestTable(rows) {
 }
 
 /**
- * 渲染 Requests 页面。
+ * Renders the Requests page.
  * @returns {string}
  */
 export function requests() {

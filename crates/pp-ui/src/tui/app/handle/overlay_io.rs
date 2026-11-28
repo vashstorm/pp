@@ -1,4 +1,5 @@
-//! 非按键事件：粘贴、滚轮与尺寸变化；面板独占时只标记重绘。
+//! Non-key events: paste, wheel and resize; with a panel owning input they only mark a
+//! redraw.
 
 use crate::tui::{App, Event, MOUSE_SCROLL_LINES, MouseEventKind};
 
@@ -39,7 +40,12 @@ impl App {
                 }
             }
             Event::Paste(text) if self.plan_panel.is_some() => {
-                if !self.plan_panel.as_mut().expect("当前计划面板").paste(&text) {
+                if !self
+                    .plan_panel
+                    .as_mut()
+                    .expect("current plan panel")
+                    .paste(&text)
+                {
                     if pp_runtime::user_input::possible_image_paste(&text)
                         && self.resource_input_available()
                     {
@@ -128,7 +134,8 @@ impl App {
                 *dirty = true;
             }
             Event::Mouse(mouse) if self.session_panel.is_some() => {
-                // 滚轮只改变列表选择，不滚动背后的对话。
+                // The wheel only changes the list selection and never scrolls the conversation
+                // behind it.
                 if let MouseEventKind::ScrollUp | MouseEventKind::ScrollDown = mouse.kind {
                     let up = matches!(mouse.kind, MouseEventKind::ScrollUp);
                     if let Some(panel) = &mut self.session_panel {
@@ -157,7 +164,8 @@ impl App {
                 if self.resource_input_available()
                     && pp_runtime::user_input::possible_image_paste(&text)
                 {
-                    // 路径识别也访问文件系统，统一放入后台线程。
+                    // Path detection also touches the filesystem, so it always runs on the
+                    // background thread.
                     self.paste_resource_input(text);
                     *dirty = true;
                     return;
@@ -194,7 +202,8 @@ impl App {
                     *dirty = true;
                 }
                 MouseEventKind::ScrollDown => {
-                    // 与 PageDown 一致：按当前显示的转录判断是否回到底部。
+                    // Same as PageDown: decide whether the bottom was reached from the currently
+                    // displayed transcript.
                     self.active_transcript().scroll_down(MOUSE_SCROLL_LINES);
                     if self.active_transcript().following() {
                         self.history_browser = false;

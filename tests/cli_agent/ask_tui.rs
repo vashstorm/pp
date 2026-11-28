@@ -1,14 +1,15 @@
-// ask 端到端 TUI 回归（计划 Verification 的 ask 各行）：多题 Review 修改与
-// 精确答案、空选项自由回答与空多选提交、畸形参数不开面板、Esc 取消保留草稿
-// 并跳过同批 write、等待时 Ctrl-C 退出、/new 与跨协议 /model 与 -r 恢复后
-// schema 仍在、replay 只还原问答卡片。全部通过真实 PTY、loopback HTTP 与
-// 屏幕/HTTP 栅栏观察，不用 sleep 猜阶段。辅助项均以 `ask_` 前缀命名，复用
-// 同作用域内 cancel_/resume_ 既有 harness（cancel_tool_outputs、
-// cancel_wait_cancelled_ready、saved_session_id、api_path、notification_bounds）。
+// End-to-end ask TUI regression (each ask row of the plan's verification): multi-question Review editing
+// and exact answers, free-form answers with empty options and explicit submission of empty multi-select,
+// malformed arguments opening no panel, Esc cancelling while keeping the draft and skipping the write in
+// the same batch, Ctrl-C exit while waiting, schema surviving /new, cross-protocol /model and -r restore,
+// and replay restoring only the Q&A cards. Everything is observed through the real PTY, loopback HTTP
+// and screen/HTTP barriers, never by guessing stages with sleep. Helpers are all named with the `ask_`
+// prefix and reuse the existing cancel_/resume_ harness in the same scope (cancel_tool_outputs,
+// cancel_wait_cancelled_ready, saved_session_id, api_path, notification_bounds).
 
-// —— 共享 fixture ——
+// --- Shared fixtures ---
 
-// 两题批次：storage 单选（recommended=0 是 SQLite）、checks 多选。
+// Two-question batch: storage single-select (recommended=0 is SQLite), checks multi-select.
 fn ask_batch_arguments() -> Value {
     json!({"questions":[
         {"id":"storage","header":"Storage","question":"Which database should the project use?",
@@ -25,7 +26,8 @@ fn ask_single_arguments() -> Value {
     ]})
 }
 
-// 摘要不影响模型正文；恢复、预览配置和原生历史均不显示 read 正文。
+// The summary does not affect the model body; restore, preview configuration and native scrollback all
+// hide the read body.
 #[test]
 fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
     let protocol = "response";
@@ -50,7 +52,7 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
         let outputs = cancel_tool_outputs(&body, protocol);
         assert!(outputs[0].1["content"].as_str().unwrap().contains("body-one-19"));
         assert!(outputs[1].1["content"].as_str().unwrap().starts_with("body-two-01"));
-        pty.wait_for("默认 read 本地摘要", |screen| {
+        pty.wait_for("default local read summary", |screen| {
             let text = screen.contents();
             text.contains("Read (2)") && text.contains("one:1-20") && text.contains("two:2-20") && !text.contains("body-one-")
         });
@@ -88,7 +90,7 @@ fn tool_folding_omp_read_default_summary_resume_and_native_scrollback() {
         let mut resumed = Pty::start_with_args(project.path(), home.path(), &["-r", &id]);
         resumed.resize(80, 100);
         resumed.ready();
-        resumed.wait_for("恢复后仍只显示 read 摘要", |screen| {
+        resumed.wait_for("restore still shows only the read summary", |screen| {
             let text = screen.contents();
             text.contains("Read (2)") && !text.contains("body-one-") && !text.contains("Ctrl + O to expand")
         });
@@ -108,7 +110,7 @@ fn ask_call_json(protocol: &str, id: &str, arguments: Value) -> Value {
     }
 }
 
-// arguments 为原始字符串（畸形参数用）。
+// arguments is a raw string (used for malformed arguments).
 fn ask_call_raw(protocol: &str, id: &str, arguments: &str) -> Value {
     if protocol == "completion" {
         json!({"id":id,"type":"function","function":{"name":"ask","arguments":arguments}})
@@ -128,7 +130,8 @@ fn ask_reply_calls(request: CapturedRequest, protocol: &str, calls: Value) {
     }
 }
 
-// 覆盖完整参数快照与分片 SSE；Responses 起始项省略 arguments 的格式也必须可用。
+// Covers the full argument snapshot and fragmented SSE; the Responses variant that omits arguments on
+// its opening item must work as well.
 fn ask_provider_reply(request: CapturedRequest, protocol: &str, id: &str, arguments: &str, fragmented: bool) {
     if !fragmented {
         ask_reply_calls(request, protocol, json!([ask_call_raw(protocol, id, arguments)]));
@@ -176,7 +179,7 @@ fn ask_final_reply(request: CapturedRequest, protocol: &str, text: &str) {
 }
 
 fn ask_tui_start(server: &TestServer, home: &Path, project: &Path, protocol: &str) -> Pty {
-    // 弹窗一秒淡出，避免与 5 秒栅栏竞争。
+    // The popup fades out within a second so it does not race the 5-second barrier.
     crate::write_settings(home,
         r#"{"default_model":"fixture/primary","notification_timeout_seconds":1,"read":{"toolResultPreview":true}}"#,
     )
@@ -189,7 +192,8 @@ fn ask_tui_start(server: &TestServer, home: &Path, project: &Path, protocol: &st
     Pty::start_with_args(project, home, &[])
 }
 
-// 消息区没有自定义入口；圆角 Ask 标题和 Other 同时出现才代表面板打开。
+// The message area has no custom entry point; only a rounded Ask title and Other appearing together mean
+// the panel is open.
 fn ask_wait_panel(pty: &mut Pty, _question: &str) {
     pty.wait_for("ask panel opened", |screen| {
         let text = screen.contents();
@@ -211,7 +215,8 @@ fn ask_wait_editor(pty: &mut Pty) {
     });
 }
 
-// 面板位于 transcript 下方，从底部定位，避免误读 transcript 中重复的题目和选项。
+// The panel sits below the transcript, so locate it from the bottom to avoid misreading duplicated
+// questions and options inside the transcript.
 fn ask_panel_find(screen: &vt100::Screen, needle: &str) -> (u16, u16) {
     let (rows, cols) = screen.size();
     for row in (0..rows).rev() {
@@ -226,7 +231,7 @@ fn ask_panel_find(screen: &vt100::Screen, needle: &str) -> (u16, u16) {
             return (row, line[..index].chars().count() as u16);
         }
     }
-    panic!("面板未显示 {needle}: {}", screen.contents());
+    panic!("panel did not show {needle}: {}", screen.contents());
 }
 
 fn ask_page_active(screen: &vt100::Screen, index: usize, total: usize) -> bool {
@@ -238,7 +243,8 @@ fn ask_clear_draft(pty: &mut Pty) {
     pty.draft("");
 }
 
-// 光标必须停在输入行草稿末尾：❯ 前缀占 2 列，排队草稿 四个宽字符占 8 列。
+// The cursor must rest at the end of the draft on the input row: the ❯ prefix takes 2 columns and a
+// four-wide-character queued draft takes 8.
 fn ask_assert_cursor_at_draft_end(pty: &Pty) {
     let screen = pty.parser.screen();
     let (row, column) = screen.cursor_position();
@@ -251,7 +257,7 @@ fn ask_assert_cursor_at_draft_end(pty: &Pty) {
     assert_eq!(column, 10, "{}", pty.diagnostics());
 }
 
-// —— 验证项：多题、Review 修改、精确 answers（两协议）——
+// --- Verification items: multiple questions, Review edits, exact answers (both protocols) ---
 
 #[test]
 fn ask_tui_two_questions_review_modify_and_exact_answers() {
@@ -269,7 +275,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
             json!([ask_call_json(protocol, "ask-review", ask_batch_arguments())]),
         );
         ask_wait_panel(&mut pty, "Which database should the project use?");
-        // 推荐只是焦点：SQLite 带 (Recommended) 徽标但未被预选。
+        // The recommendation is only the focus: SQLite carries a (Recommended) badge but is not preselected.
         {
             let text = pty.parser.screen().contents();
             assert!(
@@ -278,22 +284,23 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
             );
             assert!(
                 ask_page_active(pty.parser.screen(), 1, 2),
-                "Ask 标题应显示图标与多题进度\n{text}"
+                "the Ask title must show its icon and the multi-question progress\n{text}"
             );
         }
 
-        // Q1：焦点移到 Postgres 后 Enter 选中并前进。
+        // Q1: after the focus moves to Postgres, Enter selects it and advances.
         pty.input("\x1b[B\r");
         pty.wait_for("second question page", |screen| {
             ask_page_active(screen, 2, 2)
         });
-        // Q2：Space 只勾选，Enter 只前进。
+        // Q2: Space only toggles and Enter only advances.
         pty.input(" ");
         pty.wait_for("unit checked", |screen| screen.contents().contains("󰄲 unit"));
         pty.input("\x1b[B ");
         pty.wait_for("lint checked", |screen| screen.contents().contains("󰄲 lint"));
 
-        // 短屏 resize 不清选集：紧凑模式（去边框）仍显示选中摘要。
+        // A short-screen resize does not clear the selection set: compact mode (no borders) still shows
+        // the selected summary.
         pty.resize(8, 40);
         pty.wait_for("compact panel keeps summary", |screen| {
             screen.contents().contains("unit, lint")
@@ -312,7 +319,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
             );
         }
 
-        // Review 回题修改：Q1 保持 Postgres 选中、SQLite 仍未选。
+        // Review returning to a question: Q1 keeps Postgres selected and SQLite still unselected.
         pty.input("\t");
         pty.wait_for("back to first question", |screen| {
             ask_page_active(screen, 1, 2)
@@ -331,7 +338,8 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         pty.wait_for("back to second question", |screen| {
             ask_page_active(screen, 2, 2)
         });
-        // 焦点仍在 lint：Space 先取消再重新勾选，提交前可以反复修改。
+        // The focus is still on lint: Space unchecks and then rechecks, so answers can be changed
+        // repeatedly before submitting.
         pty.input(" ");
         pty.wait_for("lint unchecked", |screen| screen.contents().contains("󰄱 lint"));
         pty.input(" ");
@@ -342,22 +350,24 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
             screen.contents().contains("unit, lint")
         });
 
-        // Q2 添加自定义回答：Enter 打开编辑器，Ctrl-J 换行，Enter 接受非空白。
+        // Add a custom answer to Q2: Enter opens the editor, Ctrl-J inserts a newline and Enter accepts
+        // non-blank content.
         pty.input("\t\t");
         pty.wait_for("back to second question again", |screen| {
             ask_page_active(screen, 2, 2)
         });
         pty.input("\x1b[B\x1b[B\r");
         ask_wait_editor(&mut pty);
-        pty.input("再检查中文\x0a第二行");
+        pty.input("check chinese again\x0aand second line");
         pty.input("\r");
         pty.wait_for("review shows custom answer", |screen| {
-            screen.contents().contains("custom: 再检查中文")
+            screen.contents().contains("custom: check chinese again")
         });
         pty.input("\r");
 
-        // 下一轮请求包含原 call id 的精确 answers：问题原序、label 原文
-        // （不带 Recommended 徽标）、多选按原选项顺序、custom 保留换行。
+        // The next request carries the exact answers for the original call id: questions in original
+        // order, labels verbatim (without the Recommended badge), multi-select in original option order
+        // and custom keeping its newline.
         let (request, body) = pty.request_at(&server, api_path(protocol));
         assert_eq!(
             cancel_tool_outputs(&body, protocol),
@@ -365,7 +375,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
                 "ask-review".to_owned(),
                 json!({"ok":true,"answers":[
                     {"id":"storage","selected_options":["Postgres"],"custom_input":null},
-                    {"id":"checks","selected_options":["unit","lint"],"custom_input":"再检查中文\n第二行"}
+                    {"id":"checks","selected_options":["unit","lint"],"custom_input":"check chinese again\nand second line"}
                 ]})
             )],
             "protocol {protocol}"
@@ -378,7 +388,7 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
                 && text.contains("󰐾 Postgres")
                 && text.contains("󰄲 unit")
                 && text.contains("󰄲 lint")
-                && text.contains("Other: 再检查中文")
+                && text.contains("Other: check chinese again")
                 && !text.contains("Other (type your own)")
         });
         pty.ready();
@@ -387,8 +397,8 @@ fn ask_tui_two_questions_review_modify_and_exact_answers() {
         no_more(&server);
 }
 
-// —— 验证项：空 options 自由回答 + 空多选显式提交 ——
+// --- Verification items: free-form answer with empty options + explicit submission of empty multi-select ---
 
-// —— 验证项：畸形参数不开面板、不挂起、正常工具错误 ——
+// --- Verification items: malformed arguments open no panel and do not hang; normal tool error ---
 
 include!("ask_tui/lifecycle_cases.rs");

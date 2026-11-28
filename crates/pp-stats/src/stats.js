@@ -1,5 +1,6 @@
 /**
- * pp-stats Web 控制台入口：外壳、主题/风格持久化、路由、刷新、详情抽屉与事件总控。
+ * Entry point of the pp-stats Web console: shell, theme/style persistence, routing, refresh, detail
+ * drawer and central event handling.
  */
 
 import {
@@ -303,7 +304,8 @@ export async function refresh() {
     const liveEl = $("live");
     if (errorEl) errorEl.hidden = true;
     liveEl?.classList.remove("error");
-    // Traces 页保留画布视口、抽屉与滚动位置：数据未变时只刷新 Live 计数，不重绘。
+    // The Traces page keeps its canvas viewport, drawer and scroll position: when the data is unchanged
+    // only the Live count is refreshed and nothing is redrawn.
     if (app.page === "traces" && signature === getTraceRenderedSignature()) {
       updateLive();
       return;
@@ -366,12 +368,13 @@ export function onRoute() {
 }
 
 /**
- * 渲染当前激活页面并保留表格单元格、筛选控件焦点。
+ * Renders the currently active page and preserves table cell and filter control focus.
  */
 export function render() {
   const pageEl = $("page");
   if (!pageEl) return;
-  // 进入动画只在切页或切时间范围时播放；页内交互与定时刷新直接更新内容。
+  // The enter animation plays only when switching pages or time ranges; in-page interactions and the
+  // periodic refresh update the content directly.
   const enter = app.page !== renderedPage || app.range !== renderedRange;
   renderedPage = app.page;
   renderedRange = app.range;
@@ -568,7 +571,7 @@ function drawerContent(detail) {
 }
 
 /**
- * 打开右侧请求详情抽屉并加载请求明细。
+ * Opens the right-side request detail drawer and loads the request detail.
  * @param {number} id
  * @param {Element | null} [element]
  */
@@ -644,7 +647,7 @@ export function toast(text) {
 let booted = false;
 
 /**
- * 装配外壳、事件委托与定时刷新并启动首屏路由。
+ * Assembles the shell, event delegation and periodic refresh, then starts the first-screen route.
  */
 export function boot() {
   registerHooks({ render, refresh, openDrawer, toast, hideTooltip });

@@ -12,7 +12,7 @@ const GITHUB_CLIENT: &str = "Ov23li8tweQw6odWQebz";
 const CODEX_TOKEN: &str = "https://auth.openai.com/oauth/token";
 const KIMI_TOKEN: &str = "https://auth.kimi.com/api/oauth/token";
 
-// 保持认证网络的同步入口；Tokio 封装在此认证 HTTP 边界。
+// Keep the synchronous entry points of auth networking; Tokio is wrapped inside this auth HTTP boundary.
 pub(crate) struct Http {
     runtime: tokio::runtime::Runtime,
     client: reqwest::Client,
@@ -157,7 +157,7 @@ fn discovered_models(
                 }
             }
         } else if let Some(endpoints) = value["supported_endpoints"].as_array() {
-            // 同一目录中的模型可能使用不同协议，优先采用明确声明的 Responses。
+            // Models in the same catalog may use different protocols, so an explicit Responses declaration wins.
             if matches!(provider, Provider::GithubCopilot | Provider::CommandCode)
                 && endpoints.iter().any(|v| v.as_str() == Some("/responses"))
             {
@@ -179,7 +179,7 @@ fn discovered_models(
         }
         .filter(|id| !id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
         .ok_or_else(|| anyhow::anyhow!("invalid model identifier"))?;
-        // 供应商明确声明必须思考的模型无法走当前非思考 Chat 适配。
+        // Models a provider explicitly declares as always thinking cannot use the current non-thinking Chat adapter.
         if matches!(provider, Provider::KimiCode | Provider::Glm | Provider::Zai)
             && value["always_thinking"] == true
         {
@@ -435,7 +435,7 @@ async fn device_login_with_poll_unit(
         };
         credential.device_id = device_id;
         if !kimi {
-            // 账号套餐决定 API 域名；只接受 GitHub Copilot 的 HTTPS 域名。
+            // The account plan decides the API host; only HTTPS GitHub Copilot domains are accepted.
             let (status, user) = response_json(
                 client
                     .get(github_user_url)
@@ -726,7 +726,7 @@ pub fn wire_request<T: serde::Serialize>(
                 if item["role"] == "system" {
                     item["role"] = json!("developer");
                 }
-                // store=false 的上下文完整重放，不引用服务端存储的输出项。
+                // A store=false context is replayed in full and never references server-stored output items.
                 if let Some(item) = item.as_object_mut() {
                     item.remove("id");
                 }
@@ -737,10 +737,10 @@ pub fn wire_request<T: serde::Serialize>(
         let object = body
             .as_object_mut()
             .ok_or_else(|| anyhow::anyhow!("invalid model request format"))?;
-        // 非 OpenAI 订阅源不接受 OpenAI 专有的 prompt_cache_key / prompt_cache_retention。
+        // Non-OpenAI subscription sources reject the OpenAI-specific prompt_cache_key / prompt_cache_retention.
         object.remove("prompt_cache_key");
         object.remove("prompt_cache_retention");
-        // SDK 原生历史不保存供应商专有 reasoning_content；明确使用非思考模式。
+        // Native SDK history does not keep provider-specific reasoning_content; use non-thinking mode explicitly.
         ensure!(
             object
                 .get("reasoning_effort")
@@ -763,7 +763,7 @@ pub fn wire_request<T: serde::Serialize>(
     ) && body["reasoning_effort"] == "none"
     {
         body.as_object_mut()
-            .expect("序列化的请求是对象")
+            .expect("the serialized request is an object")
             .remove("reasoning_effort");
     }
     Ok(WireRequest::Adapted(body))

@@ -400,7 +400,7 @@ pub(crate) fn compile_args(spec: &BwrapSpec<'_>) -> Result<(Vec<OsString>, Vec<S
         }
     }
 
-    // 必须在所有子挂载（allowRead）建立完成后再 remount-ro，否则 bwrap 无法在只读 tmpfs 中创建挂载点。
+    // `--remount-ro` must come after every submount (allowRead) is in place, otherwise bwrap cannot create mount points inside the read-only tmpfs.
     for dir in tmpfs_dirs.into_iter().rev() {
         args.push(OsString::from("--remount-ro"));
         args.push(dir.as_os_str().to_os_string());
@@ -525,7 +525,7 @@ mod tests {
             assert!(strs.contains(&"--unshare-net".to_owned()));
             assert!(strs.contains(&"--die-with-parent".to_owned()));
 
-            // 可写根浅到深且不丢失含引号/换行的完整路径。
+            // Writable roots go shallow to deep without losing full paths that contain quotes or newlines.
             let root_pos = strs
                 .iter()
                 .position(|s| s == &root.to_string_lossy())
@@ -542,7 +542,7 @@ mod tests {
             assert!(cwd_pos < prot_pos, "{strs:?}");
             assert!(!strs.iter().any(|s| s.ends_with(".git/hooks")));
 
-            // 含 allow_read 的 .ssh 用 0111，不含例外的 .aws 用 0000。
+            // .ssh with an allow_read exception uses 0111; .aws without one uses 0000.
             let ssh_pos = strs
                 .iter()
                 .position(|s| s == &deny_dir.to_string_lossy())
@@ -554,7 +554,7 @@ mod tests {
                 .unwrap();
             assert_eq!(strs[aws_pos - 2], "0000", "{strs:?}");
 
-            // known_hosts 绑定在 .ssh tmpfs 之后、--remount-ro .ssh 之前。
+            // known_hosts is bound after the .ssh tmpfs and before `--remount-ro .ssh`.
             let allow_pos = strs
                 .iter()
                 .position(|s| s == &allow_file.to_string_lossy())
@@ -565,7 +565,7 @@ mod tests {
                 .unwrap();
             assert!(ssh_pos < allow_pos && allow_pos < remount_pos, "{strs:?}");
 
-            // deny_file 与 docker_sock 覆盖 /dev/null。
+            // deny_file and docker_sock mask /dev/null.
             assert!(strs.windows(3).any(|w| w[0] == "--ro-bind"
                 && w[1] == "/dev/null"
                 && w[2] == deny_file.to_string_lossy()));
@@ -573,7 +573,7 @@ mod tests {
                 && w[1] == "/dev/null"
                 && w[2] == docker_sock.to_string_lossy()));
 
-            // ReadOnly 模式下，落在可写 root 下的 cwd 被 --ro-bind 覆盖，子根 .pp-cache 恢复 --bind-try。
+            // In ReadOnly mode, a cwd under a writable root is masked by --ro-bind, and the .pp-cache sub-root is restored with --bind-try.
             let ro_writable = vec![root.clone(), cache.clone()];
             let ro_spec = BwrapSpec {
                 mode: EffectiveMode::ReadOnly,
@@ -664,7 +664,7 @@ mod tests {
         std::fs::write(&allow_file, b"known-ok").unwrap();
         std::fs::write(&secret_file, b"netrc-secret").unwrap();
 
-        // 故意不把 /tmp 加入 writable，以验证同在 tempdir 下的 outside 目录确实只读。
+        // /tmp is deliberately left out of writable, to verify that an outside directory in the same tempdir is indeed read-only.
         let writable = vec![workspace.clone(), cache.clone()];
         let protect = vec![protected.clone()];
         let deny_read = vec![secret_dir.clone(), secret_file.clone()];
@@ -727,7 +727,7 @@ mod tests {
         assert!(!outside.join("blocked.txt").exists());
         assert!(!protected.join("hooks.yml").exists());
 
-        // ReadOnly 模式：workspace 不可写（即使 workspace 位于 /tmp 树下）；.pp-cache 可写；network=true 可连通宿主端口。
+        // ReadOnly mode: workspace is not writable (even though it sits under /tmp); .pp-cache is writable; network=true can reach the host port.
         let ro_spec = BwrapSpec {
             mode: EffectiveMode::ReadOnly,
             cwd: &workspace,

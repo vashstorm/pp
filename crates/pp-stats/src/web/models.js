@@ -1,5 +1,6 @@
 /**
- * Models 页面：模型请求占比、排序明细表、缓存节省计算与单模型吞吐/TTFT 详情。
+ * Models page: model request share, sortable detail table, cache savings calculation and per-model
+ * throughput/TTFT detail.
  */
 
 import {
@@ -70,7 +71,8 @@ const modelDuration = (ms) =>
 const modelErrorTone = (rate) => (rate >= 0.05 ? "bad" : rate >= 0.01 ? "warn" : "ok");
 
 /**
- * 缓存节省需要能对账的写入用量与一致费率；任一缺失时返回 null。
+ * Cache savings need reconcilable write usage and a consistent rate; returns null when either is
+ * missing.
  * @param {Pick<ModelAggregate, "rates" | "cost_components" | "requests" | "priced" | "cache_write_known" | "input_tokens">} group
  * @returns {number | null}
  */
@@ -96,7 +98,8 @@ export function resetModels() {
 }
 
 /**
- * 颜色按总请求数降序固定分配，排序与筛选不改变色带。
+ * Colors are assigned by descending total request count, so sorting and filtering never change the
+ * color band.
  * @param {ModelAggregate[]} groups
  * @returns {Map<string, string>}
  */
@@ -113,7 +116,8 @@ export function modelColors(groups) {
 }
 
 /**
- * 同一模型被多个 provider 提供时才附加 provider，避免图例重复。
+ * Append the provider only when one model is served by several providers, so the legend is not
+ * duplicated.
  * @param {ModelAggregate[]} groups
  * @returns {Map<string, string>}
  */
@@ -142,7 +146,8 @@ export function modelLabels(groups) {
 }
 
 /**
- * 前 N 个模型单列，其余折叠为 Other；阈值与图例顺序一致。
+ * The first N models stay separate and the rest collapse into Other; the threshold matches the legend
+ * order.
  * @param {Array<{ timestamp: number, key: string, value: number }>} points
  * @param {number[]} buckets
  * @param {Map<string, string>} colors
@@ -180,7 +185,7 @@ function modelView() {
     points.map((point) => ({ timestamp: point.timestamp, value: point.value })),
     buckets,
   );
-  // 零值转 null，tooltip 只列出该时间桶内实际活跃的模型。
+  // Zero becomes null so the tooltip lists only the models actually active in that bucket.
   const countSeries = modelPivot(points, buckets, colors, labels, MODEL_SHARE_LIMIT).map(
     (series) => ({ ...series, values: series.values.map((value) => value || null) }),
   );
@@ -491,7 +496,7 @@ function modelsEmpty() {
 }
 
 /**
- * 处理 Models 页内图例、排序、展开与分页点击。
+ * Handles legend, sorting, expansion and paging clicks on the Models page.
  * @param {MouseEvent} e
  * @returns {boolean}
  */
@@ -547,7 +552,7 @@ export function modelsClick(e) {
 }
 
 /**
- * 渲染 Models 页面。
+ * Renders the Models page.
  * @returns {string}
  */
 export function modelsPage() {

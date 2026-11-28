@@ -1,8 +1,8 @@
-//! Agent 侧的 hook 接线：资格判定、身份信封与决定落地。
+//! Agent-side hook wiring: eligibility, identity envelope and decision landing.
 //!
-//! 只有 Execute 且非只读的路径拥有事件：根 Agent 拿到五个事件，可写子 Agent
-//! 只有三个工具事件；Plan／Review／只读子 Agent、人工 shell、标题与压缩请求
-//! 一律零事件、零进程。
+//! Only Execute and non-readonly paths own events: the root Agent gets five events, a writable child
+//! Agent only the three tool events; Plan/Review/readonly subagents, manual shell, title and compaction
+//! requests always mean zero events and zero processes.
 
 use super::persistence::{Metadata, SessionJournal, SessionRef};
 use crate::hooks::protocol::{Context, Payload};
@@ -20,8 +20,8 @@ pub(crate) enum HookRole {
     Child,
 }
 
-/// 一次运行内的静态资格与身份。全部拥有值（runner 为 `Arc` 克隆），
-/// 这样 turn 循环可以同时可变借用 Agent 的其它字段。
+/// Static eligibility and identity for one run. Everything is owned (the runner is an `Arc` clone),
+/// so the turn loop can mutably borrow other Agent fields at the same time.
 #[derive(Clone)]
 pub(crate) struct HookScope {
     pub(crate) runner: std::sync::Arc<Runner>,
@@ -32,7 +32,7 @@ pub(crate) struct HookScope {
 }
 
 impl HookScope {
-    /// 事件资格表：根 Agent 五个事件，可写子 Agent 只有工具事件。
+    /// Event eligibility table: five events for the root Agent, only tool events for a writable child Agent.
     pub(crate) fn enabled(&self, event: HookEvent) -> bool {
         match self.role {
             None => false,
@@ -41,7 +41,7 @@ impl HookScope {
         }
     }
 
-    /// 工具事件是否可能触发；用于跳过整段准备与参数克隆。
+    /// Whether tool events can fire; used to skip the whole preparation and argument cloning.
     pub(crate) fn tool_events(&self) -> bool {
         self.enabled(HookEvent::PreToolUse)
             || self.enabled(HookEvent::PostToolUse)
@@ -49,7 +49,7 @@ impl HookScope {
     }
 }
 
-/// 按当前路径资格组装 scope；`binding` 为根绑定时视为根 Agent。
+/// Build the scope for the current path's eligibility; a root binding counts as the root Agent.
 pub(crate) fn scope(
     runner: &std::sync::Arc<Runner>,
     binding: Option<&crate::subagent::Binding>,
@@ -86,7 +86,7 @@ fn permission_mode(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// 已建立有效 session 的信封来源；构造后可按事件重复执行。
+/// Envelope source with a valid session established; after construction it can run per event repeatedly.
 pub(crate) struct HookSession {
     scope: HookScope,
     session_id: String,
@@ -96,7 +96,7 @@ pub(crate) struct HookSession {
 }
 
 impl HookSession {
-    /// 只有确实要运行 hook 时才调用：首次建立有效的 header／state。
+    /// Call only when a hook will actually run: establishes a valid header/state on first use.
     pub(in crate::agent) fn prepare(
         scope: HookScope,
         journal: &mut SessionJournal,
@@ -143,15 +143,15 @@ impl HookSession {
     }
 }
 
-/// 整批预检之后、执行之前保存的逐调用决定。
+/// Per-call decisions stored after the whole-batch pre-check and before execution.
 #[derive(Default)]
 pub(crate) struct PreparedCall {
-    /// 事件级拒绝：该调用不执行，但仍产生一条 `ok:false` 结果。
+    /// Event-level denial: the call does not execute but still produces an `ok:false` result.
     pub(crate) deny_reason: Option<String>,
-    /// 单次强制审批理由，强于 allow，也不能跳过原审批。
+    /// Reason for a one-shot forced approval; stronger than allow and cannot skip the original approval.
     pub(crate) ask_reason: Option<String>,
     pub(crate) context: Vec<String>,
-    /// 最后一次有效 `updatedInput` 的完整参数；写回原生调用对象。
+    /// Full arguments of the last effective `updatedInput`; written back to the native call object.
     pub(crate) updated_arguments: Option<String>,
 }
 
@@ -162,7 +162,7 @@ pub(crate) struct PreparedBatch {
     pub(crate) halt: Option<HookHalt>,
 }
 
-/// 单次工具执行携带的 hook 上下文。
+/// Hook context carried by a single tool execution.
 pub(crate) struct ToolHookCall<'a> {
     pub(crate) session: &'a HookSession,
     pub(crate) call: &'a PreparedCall,
@@ -200,7 +200,7 @@ impl pp_tools::ToolHookCall for ToolHookCall<'_> {
             .get("error")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        // 参数不是 JSON 对象时 tool_input 为 null，不回显原文。
+        // When the arguments are not a JSON object, tool_input is null and the raw text is not echoed.
         let input: Option<Value> = serde_json::from_str(call.arguments)
             .ok()
             .filter(Value::is_object);
@@ -269,14 +269,14 @@ impl pp_tools::ToolHookCall for ToolHookCall<'_> {
     }
 }
 
-/// 执行器一侧可用的最简调用描述：名称、call ID 与原始参数。
+/// Minimal call description available to the executor side: name, call ID and raw arguments.
 pub(crate) struct BatchCall<'a> {
     pub(crate) name: &'a str,
     pub(crate) call_id: &'a str,
     pub(crate) arguments: &'a str,
 }
 
-/// 按 call 顺序为整批运行 PreToolUse；不做任何工具调用。
+/// Run PreToolUse for the whole batch in call order; performs no tool call of its own.
 pub(crate) fn prepare_batch(
     session: &HookSession,
     calls: &[BatchCall<'_>],
@@ -287,7 +287,7 @@ pub(crate) fn prepare_batch(
     let mut halt = None;
     for call in calls {
         let mut call_state = PreparedCall::default();
-        // 参数不是 JSON 对象时不运行 pre：交给原工具错误路径，不修复、不回显原文。
+        // When the arguments are not a JSON object, pre does not run: the original tool error path handles it, with no repair and no echo of the raw text.
         let input = serde_json::from_str::<Value>(call.arguments)
             .ok()
             .filter(Value::is_object);
@@ -323,7 +323,7 @@ pub(crate) fn prepare_batch(
                 break;
             }
             if let Some(reason) = effect.deny_reason {
-                // 拒绝时丢弃该调用已收集的上下文。
+                // A denial discards the context already collected for this call.
                 call_state.deny_reason = Some(reason);
                 prepared.push(call_state);
                 continue;
@@ -336,7 +336,7 @@ pub(crate) fn prepare_batch(
         }
         prepared.push(call_state);
     }
-    // 中止时后续调用仍需要一条结果，保持 call ID 一一对应。
+    // After a halt the remaining calls still need a result, keeping call IDs one-to-one.
     while prepared.len() < calls.len() {
         prepared.push(PreparedCall::default());
     }
@@ -347,7 +347,7 @@ pub(crate) fn prepare_batch(
 }
 
 impl super::Agent {
-    /// 提交前的输入检查；没有匹配 handler 或当前路径无资格时为 `None`。
+    /// Input check before submission; `None` when no handler matches or the current path is ineligible.
     pub(in crate::agent) fn hook_user_input(
         &mut self,
         prompt: &str,
@@ -367,7 +367,7 @@ impl super::Agent {
         Ok(Some(effect))
     }
 
-    /// 自然完成候选上的 Stop 检查；只有根 Execute 路径有资格。
+    /// Stop check on a natural completion candidate; only the root Execute path is eligible.
     pub(in crate::agent) fn hook_stop(
         &mut self,
         last_assistant_message: &str,
@@ -391,12 +391,12 @@ impl super::Agent {
         Ok(Some(effect))
     }
 
-    /// 需要运行该事件时才建立 session；否则不分配任何进程与日志。
+    /// Establish a session only when that event will run; otherwise allocate no process and no log.
     pub(in crate::agent) fn prepare_hook_session(
         &mut self,
         event: HookEvent,
     ) -> Result<Option<HookSession>> {
-        // 只借用 `hooks` 字段：身份与资格在 scope 构造时固定。
+        // Only the `hooks` field is borrowed: identity and eligibility are fixed when the scope is built.
         let scope = scope(
             &self.hooks,
             self.subagent.as_ref(),
@@ -647,7 +647,7 @@ mod tests {
             assert_eq!(row.4, workdir.to_string_lossy());
             assert!(row.5.ends_with(".jsonl"));
         }
-        // 不记录脚本路径与 stderr 正文。
+        // No script path and no stderr body is recorded.
         let dump: String = rows
             .iter()
             .map(|r| format!("{r:?}"))

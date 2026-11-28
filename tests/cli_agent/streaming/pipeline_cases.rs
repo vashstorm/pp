@@ -1,8 +1,8 @@
-//! Plan §3 集成回归：真实 CLI 上验证前台/后台管道阶段镜像、pipe:// 只读正文、
-//! 瞬时阶段事件不进入持久化，以及恢复会话只保留状态而不恢复正文。
+//! Plan §3 integration regression: against the real CLI, verify foreground/background pipeline stage mirroring, pipe://
+//! read-only bodies, transient stage events staying out of persistence, and a resumed session keeping only status without bodies.
 //!
-//! 用例只观察工具结果、进程间历史、会话/统计/artifact 文件与终端输出；
-//! 不断言提示词、schema 文案或源码文本。
+//! The cases observe only tool results, cross-process history, session/stats/artifact files and terminal output;
+//! they never assert prompt text, schema copy or source text.
 
 use super::*;
 use rusqlite::Connection;

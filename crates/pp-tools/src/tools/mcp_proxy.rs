@@ -1,9 +1,9 @@
-//! MCP 固定双工具代理（`mcp_search` + `mcp_call`）：
-//! 当已连接 MCP 工具数量超过阈值（默认 >12）时，仅暴露这两个固定工具，
-//! 避免数十/上百个外部 schema 挤占上下文并保证会话期间 `tools` 数组永不变化以命中 Prompt Cache。
+//! MCP fixed two-tool proxy (`mcp_search` + `mcp_call`):
+//! when the number of connected MCP tools exceeds the threshold (default >12), only these two fixed tools are exposed,
+//! so dozens or hundreds of external schemas do not crowd the context and the `tools` array never changes during the session, keeping the Prompt Cache hit.
 //!
-//! `mcp_call` 不绕过任何门禁：目标工具在执行前先解析为规范 `mcp__*` 名称，
-//! 再按与直接调用完全相同的 `AllowedTools`、`ToolPolicy`、`Access::ReadOnly` 和 `pp-permission` 规则授权。
+//! `mcp_call` bypasses no gate: the target tool is resolved to its canonical `mcp__*` name before execution
+//! and then authorized by exactly the same `AllowedTools`, `ToolPolicy`, `Access::ReadOnly` and `pp-permission` rules as a direct call.
 
 use anyhow::{Context, Result, bail, ensure};
 use async_openai::types::chat::FunctionObject;
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn mcp_proxy_switches_by_threshold_and_enforces_permission_allowed_and_readonly_gates() {
         let dir = tempfile::tempdir().unwrap();
-        // fixture 服务器暴露 2 个工具（echo / fail）：默认阈值 12 下直接暴露 mcp__*，阈值 1 下切双工具代理。
+        // The fixture server exposes 2 tools (echo / fail): at the default threshold 12 `mcp__*` is exposed directly, at threshold 1 the two-tool proxy switches on.
         let mut tools = connected_mcp_tools(dir.path(), McpSettings::default());
         let direct_names: Vec<String> = tools
             .all_definitions(WorkMode::Execute)
@@ -232,13 +232,13 @@ mod tests {
             serde_json::from_str(&res.output).unwrap()
         };
 
-        // 1. mcp_search 在 Review 模式下只返回只读工具 echo，绝不泄露非只读工具 fail。
+        // 1. In Review mode mcp_search returns only the read-only tool echo and never leaks the non-read-only tool fail.
         let search_review = exec(&tools, MCP_SEARCH_TOOL, json!({}), ToolPolicy::Review);
         assert_eq!(search_review["ok"], true, "{search_review}");
         assert_eq!(search_review["total"], 1, "{search_review}");
         assert_eq!(search_review["tools"][0]["name"], "mcp__local__echo");
 
-        // 2. mcp_call 在 Review 模式下允许只读 echo，拒绝非只读 fail。
+        // 2. In Review mode mcp_call allows the read-only echo and rejects the non-read-only fail.
         let ro_call = exec(
             &tools,
             MCP_CALL_TOOL,
@@ -256,7 +256,7 @@ mod tests {
         );
         assert_eq!(denied_review["ok"], false, "{denied_review}");
 
-        // 3. mcp_call 严格走 pp-permission 规则（针对目标规范名 mcp__local__echo 生效）。
+        // 3. mcp_call strictly follows pp-permission rules (applied to the target's canonical name mcp__local__echo).
         tools
             .permission
             .select(Some(PermissionMode::WorkspaceWrite));
@@ -274,7 +274,7 @@ mod tests {
         );
         assert_eq!(denied_perm["ok"], false, "{denied_perm}");
 
-        // 4. mcp_call 严格走 AllowedTools 过滤。
+        // 4. mcp_call strictly follows AllowedTools filtering.
         tools.permission.set_config(ToolsSettings::default());
         tools.allowed_tools =
             Some(crate::AllowedTools::parse_cli(&["mcp__local__echo".to_owned()]).unwrap());

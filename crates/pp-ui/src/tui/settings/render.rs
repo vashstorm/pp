@@ -1,4 +1,4 @@
-//! 共享顶部标签栏绘制／命中测试与 `General` 页双栏渲染。
+//! Shared top tab bar drawing/hit testing and two-column rendering of the `General` page.
 use super::*;
 use crate::tui::themes::palette;
 use ratatui::{
@@ -44,7 +44,7 @@ fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &
         .into_iter()
         .map(|tab| format!(" {} ", tab_label(tab)))
         .collect();
-    // 首尾空格、标签间分隔符，以及可选的后缀。
+    // Leading/trailing spaces, the separator between tabs and the optional suffix.
     let suffix_len = suffix.map_or(0, |s| 3 + Line::from(s).width());
     let full_width = 2
         + full_slots
@@ -75,7 +75,7 @@ fn tab_layout(active: Tab, suffix: Option<&str>, area: Rect) -> (Vec<TabSlot>, &
     if avail >= tight_width {
         return build_slots(tight_slots, " ", area.x, active);
     }
-    // 窄终端仅渲染当前激活标签名，确保在极端小屏下仍不溢出。
+    // A narrow terminal renders only the active tab name so even a tiny screen does not overflow.
     let text = tab_label(active);
     (
         vec![TabSlot {

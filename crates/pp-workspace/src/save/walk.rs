@@ -1,4 +1,4 @@
-//! 目录资源遍历：跨递归的文件数与字节预算、快照条目类型。
+//! Directory resource walk: cross-recursion file and byte budgets, snapshot entry types.
 
 use anyhow::{Context, Result, ensure};
 use pp_core::cancellation::CancellationToken;
@@ -14,7 +14,7 @@ use std::{
 
 use super::permission_bits;
 
-/// 资源节点类型：`lstat` 语义，不跟随符号链接。
+/// Resource node kind: `lstat` semantics, symlinks are not followed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EntryKind {
     File,
@@ -22,31 +22,35 @@ pub enum EntryKind {
     Missing,
 }
 
-/// 目录快照的一项：普通文件带内容，目录内容为 `None`。相对路径用于
-/// 重命名两端与递归删除的逐节点记录；`permissions` 是快照时的权限位
-/// （`st_mode & 0o7777`），重建时用来保留可执行位，不能丢。
+/// One item of a directory snapshot: regular files carry content, directories carry `None`.
+/// The relative path identifies each node for both rename sides and recursive deletion;
+/// `permissions` holds the permission bits at snapshot time (`st_mode & 0o7777`) and is
+/// required to preserve the executable bit on rebuilds.
 pub struct DirectoryEntry {
     pub relative: PathBuf,
     pub content: Option<Vec<u8>>,
     pub permissions: Option<u32>,
 }
 
-/// 资源事务递归操作的上限：普通文件最多 1000 个。目录本身不占配额——
-/// 一个普通文件配一个子目录的合法树仍要能通过；符号链接与特殊文件在
-/// 逐节点检查中直接拒绝。
+/// Recursive resource operation limit: at most 1000 regular files. Directories do not
+/// consume quota — a legal tree with one regular file per subdirectory must still pass;
+/// symlinks and special files are rejected outright by the per-node check.
 pub const RESOURCE_FILE_LIMIT: usize = 1000;
 
-/// 目录深度上限：只为防止空目录链无限递归/爆栈（文件配额已不再约束
-/// 目录），不是文件数量限制。
+/// Directory depth limit: only guards against unbounded recursion/stack exhaustion on
+/// chains of empty directories (the file quota no longer constrains directories), not a
+/// file count limit.
 const RESOURCE_MAX_DEPTH: usize = 1000;
 
-/// 目录资源操作的普通文件总字节预算：快照遍历跨递归累计，LSP 虚拟叠加
-/// 结果用同一上限复核。超限只拒绝该次建议，不提交任何文件；不新增
-/// 配置项，文件数与深度限制保持不变。
+/// Total byte budget for regular files in a directory resource operation: the snapshot
+/// walk accumulates across recursion, and the LSP virtual overlay result is checked
+/// against the same limit. Exceeding it rejects only that suggestion without writing any
+/// file; no new config key is added and the file count and depth limits are unchanged.
 pub const RESOURCE_BYTE_LIMIT: u64 = 256 * 1024 * 1024;
 
-/// 递归快照的累计用量：文件数、字节数与其上限一起下传，跨递归累计。
-/// 超限即拒绝整次操作，调用方据此放弃建议，不写入任何文件。
+/// Accumulated usage of a recursive snapshot: file count, byte count and their limits are
+/// threaded down and accumulated across recursion. Exceeding a limit rejects the whole
+/// operation, so the caller drops the suggestion without writing any file.
 pub(super) struct WalkBudget {
     file_limit: usize,
     byte_limit: u64,
@@ -64,7 +68,8 @@ impl WalkBudget {
         }
     }
 
-    /// 普通文件占一个文件额度；目录不计数，合法树不会被目录数挤爆。
+    /// A regular file consumes one file quota; directories are not counted, so a legal tree
+    /// is never rejected because of its directory count.
     fn count_file(&mut self) -> Result<()> {
         self.files += 1;
         ensure!(
@@ -75,15 +80,16 @@ impl WalkBudget {
         Ok(())
     }
 
-    /// 剩余可读字节；已用量超过预算时不再继续。
+    /// Readable bytes left; no further progress once usage exceeds the budget.
     fn remaining(&self) -> Result<u64> {
         self.byte_limit
             .checked_sub(self.bytes)
             .context("resource byte budget already exceeded")
     }
 
-    /// 读取前的 metadata 预检：文件长度超过剩余预算即拒绝，不能按超大
-    /// metadata 直接分配；通过后返回可读取的剩余字节数。
+    /// Metadata pre-check before reading: reject when the file length exceeds the remaining
+    /// budget instead of allocating straight from oversized metadata; on success, returns the
+    /// number of readable bytes left.
     fn admit(&self, len: u64) -> Result<u64> {
         let remaining = self.remaining()?;
         ensure!(
@@ -94,13 +100,13 @@ impl WalkBudget {
         Ok(remaining)
     }
 
-    /// 按实际读到的字节数累计，不信任 metadata 的长度。
+    /// Accumulate the bytes actually read; metadata length is not trusted.
     fn record(&mut self, read: u64) {
         self.bytes += read;
     }
 }
 
-/// 递归快照的公用遍历：调用方已经用 NOFOLLOW 打开目录句柄。
+/// Shared walk for recursive snapshots: the caller has already opened the directory handle with NOFOLLOW.
 pub(super) fn walk_entries(
     dir: &File,
     prefix: &Path,
@@ -133,8 +139,8 @@ pub(super) fn walk_entries(
                     OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
                     Mode::empty(),
                 )?);
-                // 读取前先做 metadata 预检（按剩余预算拒绝超限文件），实际
-                // 读取再以 `take(remaining + 1)` 有界进行。
+                // Pre-check metadata before reading (reject over-budget files by the remaining
+                // budget), then read with the bounded `take(remaining + 1)`.
                 let metadata = file.metadata()?;
                 ensure!(
                     metadata.is_file(),
@@ -176,8 +182,9 @@ pub(super) fn walk_entries(
     Ok(())
 }
 
-/// 有界的普通文件读取：最多读 `max_bytes + 1` 字节，读取过程中文件增长也
-/// 不会越过上限；分配量由实际读到的字节数决定，不按超大 metadata 预分配。
+/// Bounded regular-file read: reads at most `max_bytes + 1` bytes, so a file growing during
+/// the read still cannot pass the limit; allocation follows the bytes actually read rather than
+/// pre-allocating from oversized metadata.
 fn read_bounded_regular_file(file: File, max_bytes: u64, context: &'static str) -> Result<Vec<u8>> {
     let mut file = file;
     let mut bytes = Vec::new();

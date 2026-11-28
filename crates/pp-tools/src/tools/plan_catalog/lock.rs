@@ -1,4 +1,4 @@
-//! 计划级辅助锁与登记表短事务锁。
+//! Plan-level auxiliary lock and the registry short-transaction lock.
 use anyhow::{Context, Result, bail, ensure};
 use rustix::{
     fs::{FlockOperation, Mode, OFlags, flock},
@@ -13,7 +13,7 @@ pub(super) const PP_DIR_NAME: &str = ".pp";
 pub(super) const INDEX_LOCK_NAME: &str = "plan-index.lock";
 pub(super) const LOCKS_DIR_NAME: &str = "plan-locks";
 
-/// 非阻塞独占 `flock`；占用时报错不等待，`EINTR` 重试。
+/// Non-blocking exclusive `flock`; errors out without waiting when busy, retries on `EINTR`.
 fn acquire_flock(file: &File, busy: &'static str) -> Result<()> {
     loop {
         match flock(file, FlockOperation::NonBlockingLockExclusive) {
@@ -29,11 +29,11 @@ fn release_flock(file: &File) {
     let _ = flock(file, FlockOperation::Unlock);
 }
 
-/// 计划级辅助锁：同一计划 ID 的模型任务与管理动作互斥。fd-safe 创建
-/// （NOFOLLOW、0600），`flock` 独占非阻塞；持有普通 `File`，Drop 即关闭
-/// 解锁。锁文件常驻 `.pp/plan-locks/`，不随计划正文重命名或删除。占用时
-/// 返回错误，不阻塞等待；注意同一进程内不同 fd 也会冲突，已持有 lease 的
-/// 调用方应复用而不是重复 acquire。
+/// Plan-level auxiliary lock: model tasks and management actions for the same plan ID are mutually exclusive. fd-safe
+/// creation (NOFOLLOW, 0600), non-blocking exclusive `flock`; holds a plain `File`, so Drop closes it and
+/// unlocks. Lock files stay in `.pp/plan-locks/` and are never renamed or deleted with the plan body. When busy it
+/// returns an error instead of blocking; note that distinct fds in one process conflict too, so a caller that already
+/// holds a lease should reuse it rather than acquire again.
 #[derive(Debug)]
 pub struct PlanLease {
     id: String,
@@ -86,8 +86,8 @@ impl Drop for PlanLease {
     }
 }
 
-/// 登记表短事务锁 `.pp/plan-index.lock`：只保护登记表的读改写事务，
-/// 列表纳管也只取此锁。锁顺序固定：先取得目标计划的 `PlanLease`，再取本锁。
+/// Registry short-transaction lock `.pp/plan-index.lock`: protects only registry read-modify-write transactions,
+/// and listing intake takes only this lock. Order is fixed: acquire the target plan's `PlanLease` first, then this lock.
 #[derive(Debug)]
 pub struct PlanCatalogLock(File);
 
@@ -141,7 +141,7 @@ mod tests {
         let lease = PlanLease::acquire(&ws, &id).unwrap();
         assert_eq!(lease.id(), id);
 
-        // 其他计划的 lease 不冲突。
+        // Another plan's lease does not conflict.
         PlanLease::acquire(&ws, &sample_id(2)).unwrap();
 
         let error = PlanLease::acquire(&ws, &id).unwrap_err();
@@ -151,7 +151,7 @@ mod tests {
         );
 
         drop(lease);
-        // 锁文件常驻，不随正文删除；释放后可重新取得。
+        // The lock file stays put and is not deleted with the body; it can be reacquired after release.
         assert!(
             dir.path()
                 .join(".pp/plan-locks")

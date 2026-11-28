@@ -1,4 +1,4 @@
-//! 正文排版服务。队列按消息合并，UI 只读取已经完成的不可变结果。
+//! Body layout service. The queue merges by message; the UI only reads completed immutable results.
 use super::markdown::TailMeta;
 use super::transcript::{EntryLayout, LayoutContent, LayoutLine};
 use pp_config::config::{IconMode, Theme};
@@ -16,7 +16,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-/// 主线程活跃尾块同步 Markdown 预览的字节上限，超过则退回有界尾行续接。
+/// Byte cap for the main thread's synchronous Markdown preview of the active tail block; beyond it, fall back to bounded tail-row continuation.
 const PREVIEW_MARKDOWN_LIMIT: usize = 8192;
 
 thread_local! { static CURRENT: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) }; }
@@ -78,7 +78,7 @@ impl TestPause {
     pub fn wait(&self) {
         self.entered
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("后台排版应进入暂停点");
+            .expect("background layout should reach the pause point");
     }
 }
 
@@ -153,7 +153,7 @@ impl Worker {
                         if state.stopped.load(Ordering::Acquire) {
                             break;
                         }
-                        jobs.pop_front().expect("排版任务已经就绪")
+                        jobs.pop_front().expect("the layout job is ready")
                     };
                     let Some(slot) = job.slot.upgrade() else {
                         continue;
@@ -163,8 +163,8 @@ impl Worker {
                         let gate = state.gate.lock().unwrap_or_else(|e| e.into_inner()).take();
                         if let Some(gate) = gate {
                             let _ = gate.entered.send(());
-                            // 暂停点不能永久等待：测试漏 drop(TestPause) 时让后台继续，
-                            // 由断言报错，而不是把 drop(Worker) 的 join 拖死。
+                            // A pause point must not wait forever: when a test leaks drop(TestPause), let the background continue
+                            // so an assertion reports the error instead of hanging the drop(Worker) join.
                             let _ = gate.release.recv_timeout(std::time::Duration::from_secs(5));
                         }
                     }
@@ -227,7 +227,7 @@ impl Worker {
                             };
                             (rows, false, None, meta)
                         });
-                    // 已完成的追加版本仍可用于展示；最新版本资格由 Ticket 单独判断。
+                    // A completed appended version is still displayable; latest-version eligibility is decided by Ticket alone.
                     let mut result = slot.lock().unwrap_or_else(|e| e.into_inner());
                     if result
                         .as_ref()
@@ -286,9 +286,9 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         CURRENT.with(|current| *current.borrow_mut() = None);
-        // Condvar::wait 注册 waiter 与释放锁是原子的：只有持锁发布 stopped，
-        // 才能保证唤醒不会落在 worker 通过 predicate 检查与注册之间而丢失。
-        // 无锁 notify 会让 join 永久阻塞。
+        // Condvar::wait registers the waiter and releases the lock atomically: only publishing stopped while
+        // holding the lock guarantees the wake-up cannot be lost between the worker's predicate check and registration.
+        // A lock-free notify would block join forever.
         {
             let jobs = self.shared.jobs.lock().unwrap_or_else(|e| e.into_inner());
             self.shared.stopped.store(true, Ordering::Release);
@@ -318,7 +318,7 @@ pub(super) struct Ticket {
     displayed: Option<Rendered>,
     width: u16,
     streaming: bool,
-    /// 已交给排版线程但尚未回写的版本；非空时不再排队新任务。
+    /// Version handed to the layout thread but not yet written back; while non-empty, no new job is queued.
     in_flight: Option<u64>,
     slot: Arc<Mutex<Option<Rendered>>>,
     pub exact: bool,
@@ -380,7 +380,7 @@ impl Ticket {
         let appearance_changed = self.theme != theme || self.icons != icons;
         let mode_changed = self.streaming != streaming;
         self.streaming = streaming;
-        // 结束时把仍在预览的末行排入表格。正文已经完整排版时直接复用。
+        // At the end, lay out the still-previewed trailing line into the table; reuse it directly when the body is already fully laid out.
         let needs_layout_for_mode = mode_changed
             && (streaming
                 || !self.exact
@@ -410,8 +410,8 @@ impl Ticket {
             self.exact = false;
         }
         self.absorb(width);
-        // 上一任务未回写前不排队：版本仍递增，避免把每次流式增量都排成一次
-        // 全量重解析；回写后同一帧内立即补发最新版本。
+        // Do not queue while the previous job awaits write-back: the version keeps increasing so each streaming
+        // delta does not schedule a full re-parse, and the latest version is dispatched in the same frame after write-back.
         if self.in_flight.is_none() && self.unrendered() {
             self.spawn(muted);
         }
@@ -424,11 +424,11 @@ impl Ticket {
         if let Some(layout) = &self.fallback {
             return layout.clone();
         }
-        // 已排版稳定前缀零拷贝共享 Arc，活跃尾块使用同一套 Markdown 排版规则，
-        // 避免预览与后台回写之间因折行/缩进/换行规则不同而反复刷新跳动。
+        // The already-laid-out stable prefix shares an Arc with zero copies, and the active tail uses the same Markdown
+        // layout rules so preview and background write-back do not keep refreshing between differing wrap/indent/newline rules.
         let layout: Arc<EntryLayout> = match &self.displayed {
             Some(result) if is_streaming_table_tail(result, text) => {
-                // 表格布局只包含已收齐的行，预览始终另外占一行。
+                // The table layout holds only fully collected rows; the preview always occupies a separate row.
                 let start = result.table_tail_start.unwrap_or(result.source.len());
                 match table_tail_preview(&text[start..], width, muted) {
                     Some(line) => Arc::new(EntryLayout::appended(
@@ -455,7 +455,7 @@ impl Ticket {
         layout
     }
 
-    /// 吸收后台回写：更新的结果成为预览基线，并释放排队位。
+    /// Absorb background write-back: the newer result becomes the preview baseline and the queue slot is released.
     fn absorb(&mut self, width: u16) {
         if self.in_flight.is_none() && self.exact {
             return;
@@ -480,7 +480,7 @@ impl Ticket {
             }
             self.displayed = Some(result.clone());
         }
-        // 排队位只看版本：替换与换宽都会让旧回写失效，但任务确实已经结束。
+        // The queue slot only looks at the version: replacement and width changes invalidate an old write-back, but the job has indeed ended.
         if let Some(in_flight) = self.in_flight
             && result
                 .as_ref()
@@ -490,7 +490,7 @@ impl Ticket {
         }
     }
 
-    /// 最新版本还没有交给排版线程，也还没有回写。
+    /// The latest version has not been handed to the layout thread and has not been written back.
     fn unrendered(&self) -> bool {
         self.displayed
             .as_ref()
@@ -599,7 +599,7 @@ fn apply_muted(lines: &mut [Line<'static>], muted: bool) {
     }
 }
 
-/// 预览尾部：稳定前缀跨帧共享 `Arc`，活跃尾块复用同一套 Markdown 排版规则。
+/// Preview tail: the stable prefix is shared across frames via `Arc`, and the active tail reuses the same Markdown layout rules.
 fn append_preview(
     result: &Rendered,
     text: &str,
@@ -645,7 +645,7 @@ fn append_preview(
     append_tail_fallback(result, suffix, width, muted)
 }
 
-/// 未闭合代码块流式续接：保留已语法高亮的前缀行，仅对新增尾部按字符折行并补齐缩进前缀。
+/// Streaming continuation of an unclosed code block: keep the syntax-highlighted prefix rows and wrap only the new tail by character, padding in the indent prefix.
 fn append_code_preview(
     result: &Rendered,
     suffix: &str,
@@ -737,7 +737,7 @@ fn append_code_preview(
     ))
 }
 
-/// 超大活跃块（> 8 KiB）的有界续接回退：保留词级换行、悬挂缩进与无尾空行语义。
+/// Bounded continuation fallback for an oversized active block (> 8 KiB): keeps word wrapping, hanging indents and no trailing blank row.
 fn append_tail_fallback(
     result: &Rendered,
     suffix: &str,

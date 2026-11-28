@@ -27,7 +27,7 @@ fn has_modifier(line: &Line<'_>, idx: usize, m: Modifier) -> bool {
         .is_some_and(|s| s.style.add_modifier.contains(m))
 }
 
-/// 首个包含 `needle` 的 span 的前景色，用于语义高亮断言。
+/// Foreground color of the first span containing `needle`, used for semantic highlight assertions.
 fn span_fg(line: &Line<'_>, needle: &str) -> Option<Color> {
     line.spans
         .iter()
@@ -45,7 +45,7 @@ fn headings_inline_styles_links_and_unicode_wrapping() {
     assert_eq!(texts(&setext), vec!["Title"]);
     assert_eq!(fg(&setext[0], 0), Some(md_heading()));
 
-    let source = "# **Overview**\n\nA long paragraph that wraps over several terminal lines.\n\n```md\n# Not a heading\n```\n\n## 重复章节 `code`\n\n| Column | Value |\n| --- | --- |\n| long content | more content |\n\n重复章节\n--------\n\n### Final\n";
+    let source = "# **Overview**\n\nA long paragraph that wraps over several terminal lines.\n\n```md\n# Not a heading\n```\n\n## Repeated section `code`\n\n| Column | Value |\n| --- | --- |\n| long content | more content |\n\nRepeated section\n--------\n\n### Final\n";
     let document = parse(source);
     for width in [8, 25, 80] {
         let (lines, headings) = document.layout_with_headings(width);
@@ -56,8 +56,8 @@ fn headings_inline_styles_links_and_unicode_wrapping() {
             [1, 2, 2, 3]
         );
         assert_eq!(headings[0].title, "Overview");
-        assert_eq!(headings[1].title, "重复章节 code");
-        assert_eq!(headings[2].title, "重复章节");
+        assert_eq!(headings[1].title, "Repeated section code");
+        assert_eq!(headings[2].title, "Repeated section");
         for heading in &headings {
             assert!(heading.title.starts_with(&text(&lines[heading.row])));
         }
@@ -159,9 +159,9 @@ fn code_block_rendering_wrapping_and_combining_graphemes() {
     assert_eq!(span_fg(&wrapped[2], "1"), Some(edit_number()));
     assert!(wrapped.iter().all(|line| line.width() <= 9));
 
-    let unicode = layout("```rust\n\tlet s = \"中文🙂\";\n```\n", 40);
-    assert_eq!(text(&unicode[1]), "    let s = \"中文🙂\";");
-    assert_eq!(span_fg(&unicode[1], "中文🙂"), Some(edit_string()));
+    let unicode = layout("```rust\n\tlet s = \"hello🙂\";\n```\n", 40);
+    assert_eq!(text(&unicode[1]), "    let s = \"hello🙂\";");
+    assert_eq!(span_fg(&unicode[1], "hello🙂"), Some(edit_string()));
 
     let huge = format!("```rust\n{}\n```\n", "let x = 1;\n".repeat(500));
     let huge_ls = layout(&huge, 40);
@@ -190,7 +190,7 @@ fn code_block_rendering_wrapping_and_combining_graphemes() {
             let mut rendered = String::new();
             for y in 1..body_end as u16 {
                 let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
-                // 仅去除最后一行的填充，保留换行前代码自身的空格。
+                // Only the padding of the last line is removed, keeping the code's own spaces before the newline.
                 if y + 1 == body_end as u16 {
                     rendered.push_str(row.trim_end());
                 } else {
@@ -250,15 +250,15 @@ fn streaming_emphasis_lists_quotes_and_table_tail_formatting() {
     for (prefix, tail) in [
         (
             "| A | B |\r\n| --- | --- |\r\n| x | y |\r\n",
-            "| 中 | 🙂 |\r",
+            "| x | 🙂 |\r",
         ),
         (
             "> | A | B |\n> | --- | --- |\n> | x | y |\n",
-            "> | 中 | 🙂 |",
+            "> | x | 🙂 |",
         ),
         (
             "- | A | B |\n  | --- | --- |\n  | x | y |\n",
-            "  | 中 | 🙂 |",
+            "  | x | 🙂 |",
         ),
         ("| A | B |\n", "| --- | --- |"),
     ] {

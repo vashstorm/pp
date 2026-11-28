@@ -1,4 +1,4 @@
-//! 持久化、有状态 Python 与 JavaScript REPL 内核宿主与运行期探针。
+//! Persistent, stateful Python and JavaScript REPL kernel host and runtime probes.
 
 mod js_runtime;
 mod kernel;
@@ -22,7 +22,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// 单个 Agent 会话独占的持久 Python / JavaScript 内核控制器；Drop 时自动回收子进程组。
+/// Persistent Python / JavaScript kernel controller owned by a single agent session; drops the child process group on Drop.
 #[derive(Default)]
 pub struct Session {
     python: Arc<Mutex<KernelState>>,
@@ -41,7 +41,7 @@ impl Session {
         }
     }
 
-    /// 停止并回收当前常驻内核，保留会话对象可供下次调用重新拉起。
+    /// Stop and reap the current long-running kernels, keeping the session usable so the next call can start them again.
     pub fn stop(&self) -> Result<()> {
         let mut first_err: Result<()> = Ok(());
         for slot in [&self.python, &self.javascript] {
@@ -58,7 +58,7 @@ impl Session {
         first_err
     }
 
-    /// 执行单个 Python / JavaScript 单元格；需要时惰性启动或按 `reset` 重建对应内核。
+    /// Execute a single Python / JavaScript cell; lazily start the matching kernel or rebuild it when `reset` is set.
     pub fn execute(
         &self,
         req: CellRequest<'_>,
@@ -240,7 +240,7 @@ mod integration {
             assert!(text.contains("raw-fd-line"), "{text}");
             assert!(text.contains("eof= True"), "{text}");
 
-            // 确认内嵌内核仍健康可读后续变量，且上一个 cell 的 raw fd 输出不会泄漏到下一个 cell。
+            // Confirm the embedded kernel is still healthy and can read later variables, and that the previous cell's raw fd output does not leak into the next cell.
             let next = h.run("eof", false, 10);
             assert_eq!(next.value["ok"], true);
             assert_eq!(next.value["output"], "True\n");
@@ -300,7 +300,7 @@ print(a["content"], b["matches"], caught)
             assert_eq!(interrupted.value["ok"], false);
             assert_eq!(interrupted.value["cancelled"], true);
 
-            // 内核被 SIGINT 软中断后仍存活，变量 kept 仍然存在。
+            // The kernel survives the SIGINT soft interrupt, and the variable kept still exists.
             let after = h.run("kept + 1", false, 10);
             assert_eq!(after.value["ok"], true);
             assert_eq!(after.value["output"], "100\n");
@@ -309,7 +309,7 @@ print(a["content"], b["matches"], caught)
             let h = Harness::new(65_536);
 
             let start = Instant::now();
-            // 屏蔽 SIGINT 模拟卡在 C 扩展或子进程阻塞，逼迫超时后升级强杀进程组。
+            // Ignoring SIGINT simulates being stuck in a C extension or a blocking child process, forcing the kill escalation after timeout.
             let timed = h.run(
                 "import signal, time\nsignal.signal(signal.SIGINT, signal.SIG_IGN)\ntime.sleep(10)",
                 false,
@@ -349,7 +349,7 @@ print(a["content"], b["matches"], caught)
                     .contains("hi-from-load")
             );
 
-            // 构造真实 1x1 PNG 图片通过 print(omp_image_dict) 触发捕获。
+            // Build a real 1x1 PNG and trigger capture through print(omp_image_dict).
             let mut png = Vec::new();
             image::DynamicImage::new_rgba8(2, 2)
                 .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -364,7 +364,7 @@ print(a["content"], b["matches"], caught)
             assert_eq!(img_res.images.len(), 1);
             assert_eq!(img_res.images[0].bytes, png);
 
-            // 输出超过 spill threshold 自动落盘 artifact://。
+            // Output beyond the spill threshold is automatically spilled to an artifact:// file.
             let spill = h.run("print('A' * 512)", false, 10);
             assert_eq!(spill.value["ok"], true);
             assert_eq!(spill.value["truncated"], true);
@@ -430,7 +430,7 @@ print(a["content"], b["matches"], caught)
                 .unwrap()
         };
 
-        // cwd 写入 + 桥接往返 + PP_SANDBOX 均正常（控制 FD 未污染）
+        // cwd write + bridge round trip + PP_SANDBOX all work (control FDs are not polluted)
         let ok = run_with_policy(
             "import os\nopen('ok.txt', 'w').write('hello')\nres = tool.read(path='ok.txt')\nprint(os.environ.get('PP_SANDBOX'), res['ok'])",
             Some(ws_policy.clone()),
@@ -438,7 +438,7 @@ print(a["content"], b["matches"], caught)
         assert_eq!(ok.value["ok"], true, "{}", ok.value);
         assert_eq!(ok.value["output"], format!("{backend} True\n"));
 
-        // 写受保护路径与读凭据路径被拦截，并带 sandbox 元数据
+        // Writing a protected path and reading a credentials path are blocked and carry sandbox metadata
         let blocked_write = run_with_policy(
             "open('.pp/hooks.yml', 'w').write('bad')",
             Some(ws_policy.clone()),
@@ -461,7 +461,7 @@ print(a["content"], b["matches"], caught)
             blocked_read.value
         );
 
-        // 切换沙盒模式自动重启内核
+        // Switching the sandbox mode restarts the kernel automatically
         sbx.set_mode_override(Some(pp_config::config::SandboxMode::ReadOnly));
         let ro_policy = sbx.policy().unwrap().unwrap();
         let ro_res = run_with_policy("print(1 + 1)", Some(ro_policy));
@@ -475,7 +475,7 @@ print(a["content"], b["matches"], caught)
             ro_res.value
         );
 
-        // 同模式下策略叠加变更（例如 allow_read / permission overlay）亦触发重启
+        // Changing the policy stack under the same mode (e.g. allow_read / permission overlay) also restarts it
         sbx.set_permission_overlay(pp_sandbox::SandboxOverlay {
             read_only: vec![home.join("overlay_ro")],
             ..Default::default()
@@ -498,7 +498,7 @@ print(a["content"], b["matches"], caught)
         {
             let h = Harness::new(65_536);
 
-            // 1. 后台线程在无活动 cell 时直接写入 fd 2，不得自回环死锁。
+            // 1. A background thread writing fd 2 with no active cell must not self-deadlock through the loopback.
             let idle_err = h.run(
                 r#"import os, threading, time
 def bg():
@@ -515,13 +515,13 @@ print('before-idle')"#,
             assert_eq!(after_idle.value["ok"], true, "{}", after_idle.value);
             assert_eq!(after_idle.value["output"], "after-idle\n");
 
-            // 2. 正常响应 SIGINT 的超时单元格，timed_out 为 true 且 cancelled 为 false。
+            // 2. For a timeout that responds normally to SIGINT, timed_out is true and cancelled is false.
             let timed = h.run("import time\ntime.sleep(5)", false, 1);
             assert_eq!(timed.value["ok"], false, "{}", timed.value);
             assert_eq!(timed.value["timed_out"], true, "{}", timed.value);
             assert_eq!(timed.value["cancelled"], false, "{}", timed.value);
 
-            // 3. 后台协程发送 > 512 帧填满通道后 reset，shutdown 不得死锁。
+            // 3. A background coroutine sends > 512 frames to fill the channel, then reset; shutdown must not deadlock.
             let flood = h.run(
                 r#"import asyncio
 async def spam():
@@ -542,8 +542,8 @@ print('scheduled')"#,
         {
             let h = Harness::new(65_536);
 
-            // 4 次宿主 bridge 合计约 2.4s 墙钟必须全部豁免计算预算；
-            // 随后纯 Python sleep(3) 超出 2s 计算额度，必须在额度处超时中断。
+            // The ~2.4s of wall clock spent in 4 host bridges must all be exempt from the compute budget;
+            // the following pure Python sleep(3) then exceeds the 2s compute allowance and must be interrupted at the limit.
             let res = h.run_with(
                 r#"
 import time
@@ -566,7 +566,7 @@ print('never')
             assert_eq!(res.value["cancelled"], false, "{}", res.value);
             assert_eq!(res.value["kernel_restarted"], Value::Null, "{}", res.value);
 
-            // 超时走软中断路径：内核存活，后续 cell 可继续执行。
+            // Timeout takes the soft-interrupt path: the kernel survives and later cells keep running.
             let after = h.run("print('alive')", false, 10);
             assert_eq!(after.value["ok"], true, "{}", after.value);
             assert_eq!(after.value["output"], "alive\n");
@@ -574,8 +574,8 @@ print('never')
         {
             let h = Harness::new(64);
 
-            // 注入一次循环内内核回收故障：artifact 已产生后清理失败，
-            // 资源仍必须在错误上浮前封存（finish 幂等收尾），不伪造 cell 成功。
+            // Inject one in-loop kernel reap failure: cleanup fails after the artifact exists,
+            // but resources must still be sealed before the error surfaces (idempotent finish), without faking cell success.
             lock(&h.session.python).fail_next_shutdown_for_test();
 
             let result = h.session.execute(
@@ -605,8 +605,8 @@ print('never')
             );
             assert!(format!("{err:#}").contains("injected for test"), "{err:#}");
 
-            // live 捕获已被摘除并可从磁盘完整读回：等价断言 live_is_empty_for_test()，
-            // 捕获 metadata 已封存发布（complete 为 true 仅在 meta.json 发布后成立）。
+            // The live capture has been detached and can be read back in full from disk: equivalent to asserting live_is_empty_for_test(),
+            // and the capture metadata has been sealed and published (complete is true only once meta.json is published).
             let snapshot = h
                 .store
                 .snapshot("artifact://0", &CancellationToken::new())

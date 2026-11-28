@@ -128,15 +128,15 @@ mod integration {
         let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
         seed_session(&mut agent, EXPLORATION);
         agent.workflow.mode = pp_core::plan::WorkMode::Plan;
-        // 空待命下的空任务（continue/steering 边界）不分配文档。
+        // An empty task while idle (the continue/steering boundary) allocates no document.
         agent.prepare_plan_task("").unwrap();
         assert!(agent.workflow.plan.is_none());
-        // 首条非空任务建立绑定并记录 origin。
+        // The first non-blank task creates the binding and records the origin.
         agent.prepare_plan_task("Research the toggle flow").unwrap();
         let plan = agent.workflow.plan.as_ref().unwrap();
         assert_eq!(plan.revision, 0);
         assert_eq!(plan.origin_prompt, "Research the toggle flow");
-        // 后续空任务沿用当前绑定，不新建、不重置 origin。
+        // Later empty tasks keep the current binding, creating nothing and never resetting the origin.
         agent.prepare_plan_task("").unwrap();
         assert_eq!(
             agent.workflow.plan.as_ref().unwrap().origin_prompt,

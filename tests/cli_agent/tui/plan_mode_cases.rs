@@ -25,7 +25,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
     pty.input("/plan Research the login flow\r");
     let (request, body) = pty.request_at(&fixture, api_path(protocol));
     plan_wait_mode(&mut pty, "Plan");
-    // 进入 Plan 后复用 MCP 进程，并向模型提供发现的工具。
+    // After entering Plan the MCP process is reused and the discovered tools are offered to the model.
     cancel_mcp_assert_pid_alive(&project.path().join("mcp-log.pid"));
     assert_eq!(
         cancel_user_messages(&body, protocol),
@@ -61,7 +61,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
             "{body}"
         );
     }
-    // 即使模型返回隐藏的写入调用，也必须已经启用 Plan 执行门禁。
+    // Even if the model returns a hidden write call, the Plan execution gate must already be in force.
     plan_calls(
         request,
         protocol,
@@ -94,7 +94,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
     );
     assert!(!project.path().join("forbidden.txt").exists());
     plan_final(request, protocol, "Research complete");
-    pty.wait_for("首个规划请求完成", |screen| {
+    pty.wait_for("the first planning request completes", |screen| {
         screen.contents().contains("Research complete")
     });
     pty.ready();
@@ -105,7 +105,7 @@ fn plan_tui_prompt_enters_before_request_and_reuses_plan_mode() {
         ["Research the login flow", "Continue the research"]
     );
     plan_final(request, protocol, "Follow-up complete");
-    pty.wait_for("追加规划请求完成", |screen| {
+    pty.wait_for("the follow-up planning request completes", |screen| {
         screen.contents().contains("Follow-up complete")
     });
     pty.ready();

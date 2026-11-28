@@ -1,5 +1,6 @@
 /**
- * Traces 纯数学与布局计算：轨道纵向布局、分段线性时间轴压缩与刻度生成（无 DOM 依赖）。
+ * Pure Traces math and layout: vertical track layout, piecewise-linear time axis compression and tick
+ * generation (no DOM dependency).
  */
 
 import { TRACE_LANES, traceClock, traceOffset } from "./traces-state.js";
@@ -16,7 +17,7 @@ export const LANE_GAP = 3;
 export const TRACK_GAP = 14;
 
 /**
- * 计算轨道与泳道纵向布局。
+ * Computes the vertical layout of tracks and lanes.
  * @param {TraceTrack[]} tracks
  * @param {Set<string>} collapsed
  * @returns {TraceLayout}
@@ -53,7 +54,8 @@ export function traceLayout(tracks, collapsed) {
       y1: y,
     };
     y += HEADER_H;
-    // 折叠的轨道只保留标题行；主轨道始终展开，其箭头只控制子轨道。
+    // A collapsed track keeps only its header row; the main track is always expanded and its arrow
+    // only controls child tracks.
     const collapsedSelf = collapsed.has(track.id) && track.id !== "main";
     for (const lane of collapsedSelf ? [] : TRACE_LANES) {
       const spans = byKind[lane.kind];
@@ -73,7 +75,8 @@ export function traceLayout(tracks, collapsed) {
 }
 
 /**
- * 预计算每条泳道在虚拟轴上的边界与前缀最大终点，供视口二分剔除。
+ * Precomputes each lane's bounds on the virtual axis and its prefix maximum end so the viewport can
+ * be pruned by binary search.
  * @param {TraceLayout} layout
  * @param {TraceScale} scale
  */
@@ -97,7 +100,8 @@ export function traceLaneAxes(layout, scale) {
 }
 
 /**
- * 二分查找第一个与视口左界 `u0` 相交或在其右侧的 span 下标。
+ * Binary search for the index of the first span that intersects the viewport left edge `u0` or lies
+ * to its right.
  * @param {number[]} maxEndU
  * @param {number} u0
  * @returns {number}
@@ -114,7 +118,7 @@ export function traceFirstVisible(maxEndU, u0) {
 }
 
 /**
- * 构造单调分段线性双向映射 `toU` / `toT`。
+ * Builds the monotonic piecewise-linear bidirectional mapping `toU` / `toT`.
  * @param {number[]} tPoints
  * @param {number[]} uPoints
  * @returns {TraceScale}
@@ -160,7 +164,7 @@ export function tracePiecewise(tPoints, uPoints) {
 }
 
 /**
- * 计算全部轨道跨度的最小与最大时间戳。
+ * Computes the minimum and maximum timestamps across all tracks.
  * @param {TraceTrack[]} tracks
  * @returns {[number, number]}
  */
@@ -178,7 +182,7 @@ export function traceBounds(tracks) {
 }
 
 /**
- * 为每个锚点分配等宽虚拟坐标。
+ * Assigns equal-width virtual coordinates to each anchor.
  * @param {number[]} anchors
  * @param {number} tMin
  * @param {number} tMax
@@ -197,7 +201,7 @@ export function traceEqualWidth(anchors, tMin, tMax) {
 }
 
 /**
- * 折叠超过 30 秒的空白间隙并保留间隙摘要标记。
+ * Collapses blank gaps longer than 30 seconds and keeps a gap summary marker.
  * @param {TraceTrack[]} tracks
  * @param {number} tMin
  * @param {number} tMax
@@ -257,7 +261,7 @@ export function traceCompressed(tracks, tMin, tMax) {
 }
 
 /**
- * 按当前轴模式构建时间轴比例尺。
+ * Builds the time axis scale for the current axis mode.
  * @param {TraceTrack[]} tracks
  * @param {"duration" | "requests" | "calls"} mode
  * @param {boolean} compress
@@ -297,7 +301,7 @@ function traceNiceStep(raw) {
 }
 
 /**
- * 生成时间轴标尺刻度列表。
+ * Generates the time axis ruler ticks.
  * @param {TraceScale} scale
  * @param {number} u0
  * @param {number} u1

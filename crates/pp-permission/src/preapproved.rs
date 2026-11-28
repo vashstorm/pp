@@ -1,15 +1,15 @@
-//! CLI `--allowed-tools` / `--disallowed-tools` 预批准集合与 Bash AST 命令规则校验。
+//! CLI `--allowed-tools` / `--disallowed-tools` pre-approval sets and Bash AST command rule validation.
 
 use crate::bash_ast::{self, LeafCommand};
 use anyhow::{Result, bail};
 use std::collections::HashSet;
 
-/// Bash 命令级白名单/黑名单匹配规则。
+/// Bash command-level allowlist/denylist matching pattern.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum BashCommandPattern {
-    /// 命令前缀匹配，例如 `Bash(git status:*)` -> `["git", "status"]`。
+    /// Command prefix match, e.g. `Bash(git status:*)` -> `["git", "status"]`.
     Prefix(Vec<String>),
-    /// 精确命令词序列匹配，例如 `Bash(git status)` -> `["git", "status"]`。
+    /// Exact command word sequence match, e.g. `Bash(git status)` -> `["git", "status"]`.
     Exact(Vec<String>),
 }
 
@@ -51,7 +51,7 @@ impl PreapprovedTools {
     }
 }
 
-/// 基于 `brush-core` AST 检查整段 Bash 脚本的每个叶子命令是否满足 `--allowed-tools` / `--disallowed-tools` 规则。
+/// Uses the `brush-core` AST to check whether every leaf command in a whole Bash script satisfies the `--allowed-tools` / `--disallowed-tools` rules.
 pub fn check_bash_command_rules(
     arguments: &str,
     allowed: Option<&[BashCommandPattern]>,

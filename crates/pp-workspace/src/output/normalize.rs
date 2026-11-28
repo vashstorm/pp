@@ -1,7 +1,7 @@
-//! 终端转义与 CR 归一化：只保留可展示正文，折叠原地覆写的进度条帧。
+//! Terminal escape and CR normalization: keep only displayable text and collapse in-place overwritten progress frames.
 use crate::stream_text::StreamText;
 
-/// 单条 `\r` 覆写缓冲的安全上限，防止无换行巨行导致内存无界增长。
+/// Safety cap for a single `\r` overwrite buffer, preventing unbounded memory growth from huge lines without newlines.
 const CR_LINE_CAP: usize = 32 * 1024;
 
 #[derive(Clone, Copy, Default)]
@@ -21,13 +21,13 @@ enum EscapeState {
 pub struct Normalizer {
     decoder: StreamText,
     escape: EscapeState,
-    /// 最近一次收到 `\r` 且尚未见到后续字符（等待区分 `\r\n` 与原地覆写）。
+    /// A `\r` was just received and no following character has been seen yet (waiting to distinguish `\r\n` from in-place overwrite).
     cr_pending: bool,
-    /// 当前是否处于 `\r` 原地覆写缓冲模式（收到独立 `\r` 后持续覆写直到 `\n` 或流结束）。
+    /// Whether in-place `\r` overwrite buffering is active (after a standalone `\r`, keep overwriting until `\n` or end of stream).
     cr_active: bool,
-    /// 最近一帧 `\r` 覆写后的行正文。
+    /// Line body after the most recent `\r` overwrite frame.
     cr_buf: String,
-    /// 已输出到下游的流当前是否处于行中（非空且未以 `\n` 结束）。
+    /// Whether the stream already emitted downstream is currently mid-line (non-empty and not ending with `\n`).
     mid_line: bool,
 }
 
@@ -53,7 +53,9 @@ impl Normalizer {
         }
         let mut text = String::with_capacity(decoded.len());
         let started_mid_line = self.mid_line;
-        // 若本次 feed 内遇到 `\r`，先记录同行起止偏移，仅在确认下一字符非 `\n` 时才裁掉同行前帧，避免误伤 `\r\n`。
+        // If this feed sees a `\r`, record the start offset of the current line first and only
+        // trim the earlier frame on the same line once the next character is known not to be `\n`,
+        // so `\r\n` is not damaged.
         let mut cr_overwrite_offset: Option<usize> = None;
         for ch in decoded.chars() {
             if let EscapeState::ControlString { bell, escaped } = self.escape {
@@ -100,7 +102,9 @@ impl Normalizer {
                     }
                     continue;
                 }
-                EscapeState::ControlString { .. } => unreachable!("控制字符串已在前面处理"),
+                EscapeState::ControlString { .. } => {
+                    unreachable!("control strings are handled above")
+                }
                 EscapeState::Text => {}
             }
             let control = match ch {

@@ -1,4 +1,4 @@
-//! 工具图片在原生协议中的适配。Chat 的附件必须放在完整结果批次之后。
+//! Adaptation of tool images to the native protocols. Chat attachments must come after the complete result batch.
 use anyhow::{Result, bail, ensure};
 use async_openai::types::{chat as c, responses as r};
 use pp_tools::read::ToolImage;
@@ -94,7 +94,7 @@ pub(super) fn chat_images(message: &c::ChatCompletionRequestMessage) -> Result<V
         .collect()
 }
 
-/// 只认可紧接完整 read 工具批次、成功结果和唯一 call ID 的内部附件。
+/// Accept only internal attachments immediately following a complete read tool batch, successful results and a single call ID.
 pub(super) fn validate_chat(messages: &[c::ChatCompletionRequestMessage]) -> Result<()> {
     let mut attached = std::collections::HashSet::new();
     for (index, message) in messages.iter().enumerate() {
@@ -131,7 +131,7 @@ pub(super) fn validate_chat(messages: &[c::ChatCompletionRequestMessage]) -> Res
             bail!("orphan read image attachment");
         };
         ensure!(found && assistant.tool_calls.iter().flatten().any(|call| matches!(call, c::ChatCompletionMessageToolCalls::Function(call) if call.id == id && call.function.name == "read")), "orphan read image attachment");
-        // 不克隆载荷，仅校验数据形状。
+        // The payload is not cloned, only the data shape is validated.
         let c::ChatCompletionRequestMessage::User(user) = message else {
             unreachable!()
         };

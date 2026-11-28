@@ -326,7 +326,7 @@ fn slimming_message_snapshot_matches_live_card_order_diff_lsp_and_folded_body() 
         },
         late.clone(),
     ];
-    // 冻结新 wire fixture；附属事件先于 assistant 快照写盘，读取时按 order 归并。
+    // Freeze the new wire fixture; auxiliary events are written before the assistant snapshot and merged by order on read.
     let payloads = vec![
         json!({"type":"custom","customType":"pp.event","data":{"event":"assistant_started"}}),
         json!({"type":"custom","customType":"pp.event","data":{"event":changed}}),

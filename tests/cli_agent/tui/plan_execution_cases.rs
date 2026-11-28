@@ -1,6 +1,6 @@
 use super::*;
 
-// 新会话执行起点：完成审批、执行与 -r 恢复。
+// New-session execution start point: approval, execution and -r resume.
 fn plan_tui_approval_case(fresh: bool) {
     let protocol = "response";
     let fixture = server();
@@ -114,7 +114,7 @@ fn plan_tui_approval_case(fresh: bool) {
         cancel_tool_outputs(&body, protocol).last().unwrap().1["content"],
         "reviewed bytes"
     );
-    // 批准后正文已从 drafts 移入 plans；按当前位置重新取路径。
+    // After approval the body has moved from drafts to plans; take the path again from its current location.
     let path = plan_path(project.path());
     let relative = path.strip_prefix(project.path()).unwrap().to_str().unwrap();
     plan_calls(

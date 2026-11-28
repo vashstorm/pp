@@ -1,4 +1,4 @@
-//! 多传输 JSON-RPC 客户端、消息读写与连接回收。
+//! Multi-transport JSON-RPC client, message read/write and connection reaping.
 
 use anyhow::{Context, Result, bail, ensure};
 use rustix::{
@@ -129,7 +129,7 @@ impl Client {
                     "invalid MCP response"
                 );
                 if message.get("error").is_some() {
-                    // 服务端错误体可能包含凭证，禁止传递原文。
+                    // A server error body may contain credentials, so never forward the raw text.
                     return Ok(Err(anyhow::anyhow!("MCP request failed")));
                 }
                 ensure!(message["result"].is_object(), "invalid MCP result");
@@ -146,7 +146,7 @@ impl Client {
         match response {
             Ok(result) => result,
             Err(error) => {
-                // 任意传输故障都必须确认进程已回收；失败不能降为普通工具错误。
+                // Any transport failure must confirm the process is reaped; the failure must not degrade into an ordinary tool error.
                 match self.stop() {
                     Ok(()) => Err(error),
                     Err(stop_error) => Err(CleanupError(stop_error).into()),
@@ -208,7 +208,7 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        // stdio 后端保留先关闭 stdin 的既有优雅退出逻辑。
+        // The stdio backend keeps the existing graceful exit that closes stdin first.
         if matches!(self.transport, Transport::Remote(_)) {
             let _ = self.stop();
         }
@@ -224,7 +224,7 @@ pub(super) struct StdioClient {
 }
 
 impl StdioClient {
-    // 稳定 slot 保证退出清理能覆盖重建后的新进程；closing 拒绝清理完成后的复活。
+    // A stable slot guarantees shutdown cleanup covers the rebuilt process; `closing` refuses resurrection after cleanup finishes.
     pub(super) fn spawn(
         config: &ServerConfig,
         cwd: &Path,
@@ -274,7 +274,7 @@ impl StdioClient {
         if let Err(error) = nonblocking(client.input.as_ref().expect("MCP stdin captured"))
             .and_then(|_| nonblocking(&client.output))
         {
-            // 尚未注册的进程也通过同一 slot 回收，不泄漏。
+            // A not-yet-registered process is reaped through the same slot, so it never leaks.
             client.stop().map_err(CleanupError)?;
             return Err(error);
         }
@@ -338,8 +338,8 @@ impl StdioClient {
     pub(super) fn stop(&mut self) -> Result<()> {
         if !self.stopped {
             self.input.take();
-            // 仅在确认回收成功后置 stopped；失败保留 slot 供重试，
-            // 避免 shutdown 重试或退出清理误报成功。
+            // `stopped` is set only after reaping is confirmed; a failure keeps the slot for retry so a shutdown retry or exit cleanup
+            // cannot report success falsely.
             let result = stop_connection(&self.connection);
             if result.is_ok() {
                 self.stopped = true;
@@ -355,7 +355,7 @@ impl Drop for StdioClient {
     fn drop(&mut self) {
         if !self.stopped {
             self.input.take();
-            // 正常退出先关闭 stdin，再给服务短暂的清理机会；故障路径直接终止。
+            // Normal exit closes stdin first and gives the service a brief chance to clean up; failure paths terminate directly.
             {
                 let slot = self
                     .connection
@@ -372,7 +372,7 @@ impl Drop for StdioClient {
                         }
                         let deadline = Instant::now() + Duration::from_millis(100);
                         while Instant::now() < deadline {
-                            // 保留子进程等待状态，清理整个组前避免进程号被复用。
+                            // Keep the child's wait status so the pid is not reused before the whole group is cleaned up.
                             match waitid(
                                 WaitId::Pid(group),
                                 WaitIdOptions::EXITED
@@ -388,7 +388,7 @@ impl Drop for StdioClient {
                 }
             }
         }
-        // Drop 仅做 best-effort 收尾，显式忽略停止失败。
+        // Drop only does best-effort teardown and explicitly ignores stop failures.
         let _ = self.stop();
     }
 }
@@ -398,7 +398,7 @@ pub(super) fn stop_connection(process: &SharedConnection) -> Result<()> {
     stop_locked(&mut slot)
 }
 
-// 仅在已持有 slot 锁时调用；锁内禁止再调用会重取锁的 stop_connection。
+// Only call while already holding the slot lock; inside the lock, never call stop_connection, which re-takes it.
 pub(super) fn stop_locked(slot: &mut ConnectionSlot) -> Result<()> {
     if let Some(mut remote) = slot.remote.take() {
         remote.stop()?;
@@ -415,7 +415,7 @@ pub(super) fn stop_locked(slot: &mut ConnectionSlot) -> Result<()> {
         Ok(())
     })();
     if let Err(error) = stopped {
-        // 未确认终止时保留未回收句柄，避免进程号被复用后误杀新进程组。
+        // Keep the unreaped handle when termination is unconfirmed, so a reused pid cannot make us kill a new process group.
         slot.child = Some(child);
         return Err(error);
     }
@@ -425,7 +425,7 @@ pub(super) fn stop_locked(slot: &mut ConnectionSlot) -> Result<()> {
 fn signal_group(group: Pid, signal: Signal) -> io::Result<()> {
     match kill_process_group(group, signal) {
         Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
-        // macOS 对仅剩僵尸进程的组返回 EPERM，确认直接子进程已退出后视为清理完成。
+        // macOS returns EPERM for a group of only zombies; once the direct child has exited this counts as cleaned up.
         Err(rustix::io::Errno::PERM) if cfg!(target_os = "macos") && group_exited(group)? => Ok(()),
         Err(error) => Err(error.into()),
     }

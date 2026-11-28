@@ -1,5 +1,5 @@
 /**
- * 首请求上下文桌面阅读器（Context / Tools / Skills 分类查看、搜索与复制）。
+ * First-request context desktop reader (browse, search and copy by Context / Tools / Skills category).
  */
 
 import { toolCard, toolStat } from "./web/charts.js";
@@ -16,7 +16,8 @@ const ERROR_LIMITS = [50, 200, 1000];
 const ERROR_SIGNATURE_LENGTH = 180;
 const ERROR_SIGNATURE_ROWS = 12;
 const ERROR_FAILURE_ROWS = 50;
-// 归一化顺序与参考实现一致：UUID、带前缀的 ID、长十六进制串先换成占位符，数字再换成 N。
+// Normalization order matches the reference implementation: UUIDs, prefixed IDs and long hex strings
+// become placeholders first, then numbers become N.
 const ERROR_UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const ERROR_PREFIXED_ID = /\b(?:req|msg|call|toolu|chatcmpl|resp|run|gen)[-_][A-Za-z0-9_-]{6,}/g;
 const ERROR_LONG_HEX = /\b[0-9a-f]{12,}\b/gi;
@@ -39,7 +40,8 @@ let errorSignatureShown = ERROR_SIGNATURE_ROWS;
 let errorFailureShown = ERROR_FAILURE_ROWS;
 
 /**
- * 返回当前 Errors 页请求分页上限，供 `refresh()` 拼装查询参数。
+ * Returns the current request paging limit of the Errors page, used by `refresh()` to assemble the
+ * query parameters.
  * @returns {number}
  */
 export function getErrorLimit() {
@@ -47,7 +49,7 @@ export function getErrorLimit() {
 }
 
 /**
- * 在路由切换或时间范围变化时重置 Errors 页筛选与分页状态。
+ * Resets the Errors page filtering and paging state on route or time range changes.
  */
 export function resetActivity() {
   errorLimit = ERROR_LIMITS[0];
@@ -61,7 +63,8 @@ export function resetActivity() {
 }
 
 /**
- * 归一化错误消息签名：逐行处理时同一条归一化文本即为分组键。
+ * Normalizes an error message signature: when processing line by line, the normalized text itself is
+ * the grouping key.
  * @param {string | null | undefined} message
  * @returns {string}
  */
@@ -80,14 +83,14 @@ export function errorSignatureText(message) {
 }
 
 /**
- * 返回失败请求的模型标识（与后端 `model_reference` 同源）。
+ * Returns the model identifier of a failed request (same source as the backend `model_reference`).
  * @param {RequestRow} row
  * @returns {string}
  */
 const errorModelKey = (row) => row.model_reference;
 
 /**
- * 按归一化错误签名聚合已加载的失败请求行。
+ * Aggregates the loaded failed request rows by normalized error signature.
  * @param {RequestRow[]} rows
  */
 export function errorGroups(rows) {
@@ -143,7 +146,7 @@ export function errorGroups(rows) {
 }
 
 /**
- * 按模型聚合已加载的失败请求计数。
+ * Aggregates the loaded failed request counts by model.
  * @param {RequestRow[]} rows
  * @returns {Array<{ key: string, model: string, provider: string, count: number }>}
  */
@@ -165,7 +168,8 @@ const errorTokens = (row) =>
     ? null
     : row.input_tokens + row.output_tokens;
 
-// 费用按请求记录时的快照展示；未定价（无费率快照）与参考页一样显示 N/A。
+// Costs are displayed from the snapshot recorded with the request; unpriced requests (no rate
+// snapshot) show N/A as on the reference page.
 /** @param {RequestRow} row */
 const errorCost = (row) => (row.cost == null ? "N/A" : fixedCost(row.cost, 4));
 
@@ -362,7 +366,7 @@ function errorFilterChip(kind, label) {
 }
 
 /**
- * 渲染 Errors 页面。
+ * Renders the Errors page.
  * @returns {string}
  */
 export function errorsPage() {
@@ -377,7 +381,8 @@ export function errorsPage() {
       !found || row.timestamp > found.timestamp ? row : found,
     null,
   );
-  // 刷新后已消失的筛选值不再生效，但状态保留：行重新出现时同名筛选自动恢复。
+  // A filter value that disappeared after a refresh is no longer active, but the state is kept: when
+  // the row comes back the filter with the same name applies again.
   const signature = groups.some((group) => group.signature === errorSignature)
     ? errorSignature
     : null;
@@ -398,7 +403,8 @@ export function errorsPage() {
   const limitIndex = ERROR_LIMITS.indexOf(errorLimit);
   const next =
     limitIndex >= 0 && limitIndex + 1 < ERROR_LIMITS.length ? ERROR_LIMITS[limitIndex + 1] : null;
-  // 完整性仅由服务端 has_more 决定；已加载行数恰好等于上限时仍可能是完整一页。
+  // Completeness depends only on the server-side has_more; a loaded row count equal to the limit can
+  // still be a complete page.
   const complete = !payload.has_more;
   const selectedModel = models.find((item) => item.key === model);
   const filteredSignature = groups.find((group) => group.signature === signature);
@@ -489,7 +495,7 @@ export function errorsPage() {
 }
 
 /**
- * 处理 Errors 页搜索框输入事件。
+ * Handles input events of the Errors page search box.
  * @param {Event} e
  * @returns {boolean}
  */
@@ -508,7 +514,7 @@ export function activityInput(e) {
 }
 
 /**
- * 处理 Errors 页表格排序、分页、过滤与查看最新失败点击。
+ * Handles table sorting, paging, filtering and "view latest failure" clicks on the Errors page.
  * @param {MouseEvent} e
  * @returns {boolean}
  */

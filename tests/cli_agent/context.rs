@@ -1016,7 +1016,8 @@ fn context_auto_grow_batches(
             protocol,
             request,
             &format!("bulk-{index}"),
-            // 显式 `:raw` 绕过同会话 `read` 去重，以刻意累积超过容量阈值的原始历史。
+            // An explicit `:raw` bypasses in-session `read` deduplication so raw history deliberately accumulates past
+            // the capacity threshold.
             "auto-old.txt:raw",
             None,
         );

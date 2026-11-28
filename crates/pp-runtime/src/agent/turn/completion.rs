@@ -1,4 +1,4 @@
-//! Chat Completions 协议的模型／工具轮次。
+//! Model/tool turn for the Chat Completions protocol.
 use super::super::hooks::{BatchCall, HookHalt, HookSession, PreparedBatch, prepare_batch};
 use super::batch::{batch_failure, not_executed};
 use super::plan_progress::{apply_plan_change, plan_file_touched, tracked_plan_path};
@@ -121,8 +121,8 @@ pub(in crate::agent) fn completion_turn(
             text,
         });
     }
-    // 整批 PreToolUse 先于项目指令预检与任何执行；参数改写要写回原生调用，
-    // 这样预检、审批、ToolStarted 与已提交历史看到同一份有效参数。
+    // The whole-batch PreToolUse runs before the project instruction pre-check and any execution; argument rewrites must go back into
+    // the native call so the pre-check, approval, ToolStarted and committed history all see the same effective arguments.
     let mut hook_session = None;
     let mut prepared: Option<PreparedBatch> = None;
     if hooks.tool_events() {
@@ -249,10 +249,10 @@ pub(in crate::agent) fn completion_turn(
                     },
                 )
             };
-            // 结果字符数取最终回填模型的文本：post hook 可能已改写正文。
+            // The result character count follows the text finally fed back to the model: the post hook may have rewritten the body.
             journal.record_tool_output(&call.id, &content.output);
             reminder.awaiting_progress = false;
-            // 前置 hook 的上下文已在工具执行器里随 `hook_context` 返回，不重复追加。
+            // Pre-hook context already comes back with `hook_context` from the tool executor and is not appended twice.
             hook_context.extend(content.hook_context);
             if hook_halt.is_none() {
                 hook_halt = content.hook_halt;

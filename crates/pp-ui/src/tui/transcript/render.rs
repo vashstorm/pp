@@ -94,7 +94,7 @@ impl Transcript {
         self.read_groups_key = Some(key);
     }
 
-    /// 完整查看器回放使用：从历史开头整段排版，不经过几何定位。
+    /// Used by full viewer replay: lay out the whole history from the beginning without geometry positioning.
     #[cfg(test)]
     pub(super) fn render(&self, buffer: &mut Buffer, area: Rect, skip: usize) {
         Self::render_entries(

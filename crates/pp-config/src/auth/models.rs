@@ -79,7 +79,7 @@ impl Catalog {
                 if entry.generation != credential.generation {
                     return Vec::new();
                 }
-                // 复用同名供应商分组，让模型选择与请求路由沿用统一的协议解析。
+                // Reuse the same-provider group so model selection and request routing share one protocol resolution.
                 let mut providers: Vec<ValidatedProvider> = Vec::new();
                 for (model_id, model) in entry.models {
                     let protocol = model.protocol.unwrap_or(entry.protocol);

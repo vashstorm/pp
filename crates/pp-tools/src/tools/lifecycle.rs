@@ -1,10 +1,10 @@
-//! 单次工具调用的启动指标、结束收尾日志、冗余展示字段剥离还原、全局大输出落盘护栏与 post hook。
+//! Per-call start metrics, finish logging, stripping and restoring redundant display fields, the global large-output spill guard and the post hook.
 use super::*;
 use pp_config::config::OutputSettings;
 use pp_core::events::OutputStream;
 
-/// 全局工具输出护栏上限：对未自带分页/artifact 的工具（如 MCP/LSP/web_search）
-/// 超过该字节数时自动落盘到 `artifact://` 并仅向模型返回有界头尾预览。
+/// Global tool-output guard cap: for tools without built-in paging/artifacts (such as MCP/LSP/web_search)
+/// anything above this byte count spills to `artifact://` and the model only gets a bounded head/tail preview.
 const GLOBAL_SPILL_CAP_BYTES: usize = 32 * 1024;
 
 pub(super) fn tool_metric_name(name: &str) -> &'static str {
@@ -48,8 +48,8 @@ pub(super) fn finalize_tool_execution(
     let elapsed_ms = started.elapsed().as_millis() as u64;
     log_tool_finished(pid, tool, status, elapsed_ms, value, call.arguments);
     let projection = ModelProjection::strip(tool, value);
-    // post hook 在模型输出序列化前、UI 展示与冗余字段已剥离时运行；
-    // `value` 始终保留真实结果，只有序列化文本可被替换。
+    // The post hook runs before the model output is serialized, with UI display and redundant fields already stripped;
+    // `value` always keeps the real result and only the serialized text can be replaced.
     let mut hook_context = hook.map_or_else(Vec::new, |hook| hook.pre_context().to_vec());
     let mut hook_halt = None;
     let mut model_value = None;
@@ -178,7 +178,7 @@ fn run_post_tool_hook(
             }
         }
         Ok(None) => {}
-        // 取消与无法回收的进程直接停止任务，不能降级为工具失败。
+        // Cancellation and an unreclaimable process stop the task outright and must not degrade into a tool failure.
         Err(error) => *hook_halt = Some(HookHalt::Failure(error)),
     }
 }
@@ -196,7 +196,7 @@ mod tests {
         let value = json!({"ok": true, "content": big_body});
         let raw = value.to_string();
 
-        // MCP/LSP 等无内置落盘的工具超过 32 KiB 时落盘为 artifact:// 并返回有界预览。
+        // Tools without built-in spilling, such as MCP/LSP, spill to artifact:// above 32 KiB and return a bounded preview.
         let spilled_str = spill_oversized_model_output(
             "mcp__demo__fetch",
             &value,
@@ -215,7 +215,7 @@ mod tests {
         let snapshot = store.snapshot(uri, &CancellationToken::new()).unwrap();
         assert_eq!(std::fs::read_to_string(snapshot.path).unwrap(), raw);
 
-        // 已自带分页/artifact 的内置工具（如 read/bash/rg/eval）不重复二次包裹。
+        // Built-in tools with their own paging/artifacts (such as read/bash/rg/eval) are not wrapped a second time.
         let untouched = spill_oversized_model_output(
             "read",
             &value,

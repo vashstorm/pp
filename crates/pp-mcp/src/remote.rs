@@ -1,4 +1,4 @@
-//! HTTP／SSE 传输。工作线程独占网络状态，稳定清理句柄可以随时取消 I/O。
+//! HTTP/SSE transport. The worker thread owns network state and a stable cleanup handle can cancel I/O at any time.
 
 use super::{MESSAGE_LIMIT, RemoteConfig};
 use anyhow::{Context, Result, bail, ensure};
@@ -80,13 +80,13 @@ impl RemoteClient {
                     };
                     let failed = result.is_err();
                     if result.as_ref().is_err_and(|e| e.is::<Cancelled>()) {
-                        // 只做有界尽力通知；连接关闭并不表示服务端已经停止工作。
+                        // Bounded best-effort notification only; a closed connection does not mean the server stopped working.
                         let _ = tokio::time::timeout(Duration::from_millis(100), io.cancel()).await;
                     }
                     let _ = command.reply.send(result);
                     if failed { break; }
                 }
-                // 调用方在 send／receive 之间取消时，仍通知已经发送的请求。
+                // Still notify an already-sent request when the caller cancels between send and receive.
                 let _ = tokio::time::timeout(Duration::from_millis(100), io.cancel()).await;
                 io.stream.take();
                 let _ = tokio::time::timeout(Duration::from_millis(100), io.close()).await;
@@ -410,7 +410,7 @@ struct Decoder {
 }
 impl Decoder {
     fn feed(&mut self, bytes: &[u8]) {
-        // 每个网络分块只压缩一次，避免多行事件反复移动整个剩余缓冲。
+        // Compact once per network chunk instead of repeatedly moving the whole remaining buffer for multiline events.
         self.pending.drain(..self.offset);
         self.scanned -= self.offset;
         self.offset = 0;
@@ -457,7 +457,7 @@ impl Decoder {
                 let kind = std::mem::take(&mut self.kind);
                 let mut data = std::mem::take(&mut self.data);
                 self.size = 0;
-                // 空 data 的 priming 事件与心跳不作为 JSON 交给上层。
+                // Priming events with empty data and heartbeats are not handed to the caller as JSON.
                 if data.ends_with('\n') {
                     data.pop();
                 }

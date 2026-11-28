@@ -1,16 +1,16 @@
-//! 每文件 LSP `FormattingOptions` 解析。
+//! Per-file LSP `FormattingOptions` resolution.
 //!
-//! 复刻 oh-my-pi 固定提交
-//! `1c291b87e4b889398cc4b8e4ccdfa650b56a0486` 的
-//! `packages/coding-agent/src/lsp/format-options.ts` 与
-//! `packages/utils/src/tab-spacing.ts`。优先级由高到低：
-//! 1. 文件所在目录链上的 `.editorconfig`（`indent_style`、`indent_size`、`tab_width`）；
-//! 2. 待写内容里第一个缩进行揭示的缩进风格，以及所有空格缩进宽度的 GCD；
-//! 3. 固定回退：2 空格。
+//! Mirrors oh-my-pi at the pinned commit
+//! `1c291b87e4b889398cc4b8e4ccdfa650b56a0486`,
+//! files `packages/coding-agent/src/lsp/format-options.ts` and
+//! `packages/utils/src/tab-spacing.ts`. Priority, highest first:
+//! 1. `.editorconfig` on the file's directory chain (`indent_style`, `indent_size`, `tab_width`);
+//! 2. the indent style revealed by the first indented line of the content to write, and the GCD of all space-indent widths;
+//! 3. fixed fallback: 2 spaces.
 //!
-//! `.editorconfig` 发现只读文件所在目录向上的父链，不扩大任何写权限；配置
-//! 不存在、不可读或内容无效时静默忽略并继续回退，不阻止保存。解析结果按
-//! 配置路径的 mtime 与长度缓存，文件变化后自动失效。
+//! `.editorconfig` discovery only reads the parent chain above the file's directory and grants no extra write permission; when
+//! the configuration is missing, unreadable or invalid it is silently ignored and the fallback continues, never blocking the save. Results are cached by
+//! the config path's mtime and length, and invalidate automatically once the file changes.
 
 use globset::GlobMatcher;
 use rustix::fs::{Mode, OFlags};
@@ -22,18 +22,18 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
-/// 父链中的 EditorConfig 文件名。
+/// EditorConfig file name on the parent chain.
 const EDITORCONFIG_NAME: &str = ".editorconfig";
-/// `tabSize` 允许范围：EditorConfig 值解析与最终结果都钳制到该区间。
+/// Allowed `tabSize` range: both EditorConfig value parsing and the final result clamp to it.
 const MIN_TAB_SIZE: u64 = 1;
 const MAX_TAB_SIZE: u64 = 16;
-/// EditorConfig 与内容都无法确定时的回退值：2 空格。
+/// Fallback when neither EditorConfig nor the content decides: 2 spaces.
 const FALLBACK_TAB_SIZE: u64 = 2;
 const FALLBACK_INSERT_SPACES: bool = true;
-/// 单个路径组件上限（Linux ext4 / macOS APFS / NTFS 的 `NAME_MAX`）。
-/// 超过后文件本身无法打开，直接跳过 EditorConfig 发现。
+/// Upper bound for a single path component (the `NAME_MAX` of Linux ext4 / macOS APFS / NTFS).
+/// Beyond it the file cannot be opened at all, so EditorConfig discovery is skipped outright.
 const NAME_MAX_BYTES: usize = 255;
-/// 解析缓存上限；达到后整体清空，避免长时间运行后无界增长。
+/// Parse cache cap; once reached the whole cache is cleared, so a long-running process cannot grow it unboundedly.
 const MAX_CACHE_ENTRIES: usize = 128;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,7 +48,7 @@ enum IndentSize {
     Tab,
 }
 
-/// 由 `.editorconfig` 链解析出的缩进提示；`None` 表示该链未固定这一项。
+/// Indentation hints resolved from the `.editorconfig` chain; `None` means that chain does not pin this item.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct EditorConfigFormatting {
     tab_size: Option<u64>,
@@ -62,10 +62,10 @@ struct EditorConfigMatch {
     tab_width: Option<u64>,
 }
 
-/// 一个 `[pattern]` 小节。
+/// One `[pattern]` section.
 ///
-/// glob 在解析时编译并随缓存复用；无斜杠 pattern 额外生成递归候选，
-/// 使 `*.rs` 匹配任意深度的文件（EditorConfig 语义）。
+/// Globs are compiled at parse time and reused with the cache; a pattern without a slash also generates a recursive candidate, so
+/// `*.rs` matches files at any depth (EditorConfig semantics).
 #[derive(Debug)]
 struct Section {
     primary: Option<GlobMatcher>,
@@ -95,7 +95,7 @@ struct ParsedEditorConfig {
     sections: Vec<Section>,
 }
 
-/// 单份配置的解析缓存项：mtime + 长度变化即失效。
+/// Parse cache entry for one configuration file: invalidated when mtime or length changes.
 #[derive(Clone, Debug)]
 struct CacheEntry {
     modified: Option<SystemTime>,
@@ -106,9 +106,9 @@ struct CacheEntry {
 static EDITORCONFIG_CACHE: LazyLock<Mutex<HashMap<PathBuf, CacheEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 解析 `path` 对应文件的 LSP `FormattingOptions`。
+/// Resolve the LSP `FormattingOptions` for the file at `path`.
 ///
-/// `path` 可以不存在，只用于定位所在目录；相对路径按当前工作目录解析。
+/// `path` need not exist; it only locates the containing directory, and a relative path is resolved against the current working directory.
 pub(crate) fn resolve(path: &Path, content: &str) -> Value {
     let absolute = absolute_lexical(path);
     let from_config = resolve_editor_config_formatting(&absolute);
@@ -133,7 +133,7 @@ pub(crate) fn resolve(path: &Path, content: &str) -> Value {
     })
 }
 
-/// 从待写内容推断缩进；不补齐默认值，让调用方继续向外层回退。
+/// Infer indentation from the content to write; defaults are left unset so the caller can keep falling back.
 fn detect_indent_from_content(content: &str) -> EditorConfigFormatting {
     if content.is_empty() {
         return EditorConfigFormatting::default();
@@ -143,7 +143,7 @@ fn detect_indent_from_content(content: &str) -> EditorConfigFormatting {
     let mut unit = 0u64;
 
     for line in content.split('\n') {
-        // 空白行不携带缩进信号。
+        // Blank lines carry no indentation signal.
         if line.is_empty() || line.trim().is_empty() {
             continue;
         }
@@ -153,12 +153,12 @@ fn detect_indent_from_content(content: &str) -> EditorConfigFormatting {
             continue;
         }
 
-        // 第一个缩进行决定空格还是制表符；后续行不会改写它。
+        // The first indented line decides spaces or tabs; later lines cannot override it.
         if insert_spaces.is_none() {
             insert_spaces = Some(first == b' ');
         }
 
-        // 制表符缩进时宽度是显示问题，交给 EditorConfig/回退值。
+        // For tab indentation the width is a display matter, left to EditorConfig or the fallback value.
         if first == b'\t' {
             continue;
         }
@@ -178,8 +178,8 @@ fn detect_indent_from_content(content: &str) -> EditorConfigFormatting {
     }
 
     EditorConfigFormatting {
-        // 只有首个缩进行是空格时才用 GCD 作为步进；制表符文件的
-        // `tabSize` 由 EditorConfig 或固定回退值决定。
+        // Only use the GCD as the step when the first indented line uses spaces; for tab files the
+        // `tabSize` comes from EditorConfig or the fixed fallback.
         tab_size: (unit > 0 && insert_spaces == Some(true)).then_some(unit),
         insert_spaces,
     }
@@ -194,7 +194,7 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
-/// 解析文件自己的 `.editorconfig` 链（远到近），得到格式化提示。
+/// Resolve the file's own `.editorconfig` chain (far to near) into formatting hints.
 fn resolve_editor_config_formatting(file: &Path) -> EditorConfigFormatting {
     if has_overlong_component(file) {
         return EditorConfigFormatting::default();
@@ -226,7 +226,7 @@ fn resolve_editor_config_formatting(file: &Path) -> EditorConfigFormatting {
     }
 }
 
-/// 合并父链上所有匹配小节；越靠近文件的配置越晚应用，从而覆盖外层。
+/// Merge all matching sections along the parent chain; configuration closer to the file is applied later and thus overrides the outer ones.
 fn resolve_editor_config_match(file: &Path) -> Option<EditorConfigMatch> {
     let dir = file.parent()?;
     let chain = collect_editor_config_chain(dir);
@@ -235,7 +235,7 @@ fn resolve_editor_config_match(file: &Path) -> Option<EditorConfigMatch> {
     }
 
     let mut matched = EditorConfigMatch::default();
-    // 链已在收集时反转为远 → 近。
+    // The chain was reversed to far → near while collecting.
     for (base, parsed) in chain {
         let relative_path = relative_path_unified(&base, file);
         for section in &parsed.sections {
@@ -282,7 +282,7 @@ fn apply_section_properties(section: &Section, matched: &mut EditorConfigMatch) 
     }
 }
 
-/// 收集从文件目录到命中 `root = true`（或文件系统根）的配置，按远 → 近排列。
+/// Collect configurations from the file's directory up to a `root = true` hit (or the filesystem root), ordered far → near.
 fn collect_editor_config_chain(start_dir: &Path) -> Vec<(PathBuf, Arc<ParsedEditorConfig>)> {
     let mut chain = Vec::new();
     let mut cursor = start_dir.to_path_buf();
@@ -308,13 +308,13 @@ fn collect_editor_config_chain(start_dir: &Path) -> Vec<(PathBuf, Arc<ParsedEdit
     chain
 }
 
-/// 读取并缓存单份 EditorConfig。
+/// Read and cache a single EditorConfig.
 ///
-/// 缓存键是配置路径本身，命中条件是 mtime 与长度都未变化。先用
-/// `O_NONBLOCK | O_CLOEXEC` 打开 fd，再确认它是普通文件并读取：即使路径在
-/// 打开后从普通文件被换成 FIFO，`read` 也不会永久挂住；mtime/长度与内容都
-/// 来自同一个 fd，避免 stat→read 之间的路径竞态。任何失败（不存在、是
-/// 目录/FIFO/设备、无权限、非 UTF-8）都不写缓存，也绝不向上报错。
+/// The cache key is the config path itself, and a hit requires both mtime and length unchanged. The fd is first opened with
+/// `O_NONBLOCK | O_CLOEXEC`, then confirmed to be a regular file before reading: even if the path is swapped from a regular file to a
+/// FIFO after opening, `read` will not hang forever; mtime/length and content all
+/// come from the same fd, avoiding a path race between stat→read. Any failure (missing, a
+/// directory/FIFO/device, no permission, non-UTF-8) writes no cache entry and never reports an error upward.
 fn parse_cached(path: &Path) -> Option<Arc<ParsedEditorConfig>> {
     let fd = rustix::fs::open(
         path,
@@ -406,7 +406,7 @@ fn parse_editor_config(content: &str) -> ParsedEditorConfig {
             Some(index) => {
                 parsed.sections[index].properties.insert(key, value);
             }
-            // `root` 只在任何小节之前生效。
+            // `root` only takes effect before any section.
             None if key == "root" => parsed.root = value == "true",
             None => {}
         }
@@ -415,7 +415,7 @@ fn parse_editor_config(content: &str) -> ParsedEditorConfig {
     parsed
 }
 
-/// 为小节 pattern 编译 glob；无斜杠 pattern 同时生成递归候选。
+/// Compile globs for a section pattern; a pattern without a slash also gets a recursive candidate.
 fn compile_section_matchers(pattern: &str) -> (Option<GlobMatcher>, Option<GlobMatcher>) {
     let normalized = pattern.trim_start_matches('/');
     if normalized.is_empty() {
@@ -431,7 +431,7 @@ fn compile_section_matchers(pattern: &str) -> (Option<GlobMatcher>, Option<GlobM
     (primary, recursive)
 }
 
-/// 复刻上游 `buildGlobPattern`：统一分隔符、为无斜杠 pattern 加递归前缀。
+/// Mirror the upstream `buildGlobPattern`: unify separators and add a recursive prefix for patterns without a slash.
 fn build_glob_pattern(glob: &str, recursive: bool) -> String {
     let normalized = glob.replace('\\', "/");
     let mut pattern = if !recursive || normalized.contains('/') || normalized.starts_with("**") {
@@ -453,20 +453,20 @@ fn fix_unclosed_braces(pattern: &mut String) {
 
 fn compile_glob(pattern: &str) -> Option<GlobMatcher> {
     globset::GlobBuilder::new(pattern)
-        // EditorConfig 的 `*` 不跨 `/`；无斜杠 pattern 的递归匹配由
-        // 额外的 `**/` 候选负责，而不是让 `*` 吞掉分隔符。
+        // EditorConfig's `*` does not cross `/`; recursive matching for patterns without a slash is handled by
+        // the extra `**/` candidate instead of letting `*` swallow separators.
         .literal_separator(true)
         .build()
         .ok()
         .map(|glob| glob.compile_matcher())
 }
 
-/// `parsePositiveInteger`：只接受纯十进制数字，0 视为无效，结果钳制到 1..=16。
+/// `parsePositiveInteger`: accepts only plain decimal digits, treats 0 as invalid, and clamps the result to 1..=16.
 fn parse_positive_integer(raw: &str) -> Option<u64> {
     if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    // 超长数字按 JS `parseInt` 的饱和行为处理，再钳制到上限。
+    // Overlong numbers behave like JS `parseInt` saturation, then clamp to the upper bound.
     let parsed = raw.parse::<u64>().unwrap_or(u64::MAX);
     if parsed == 0 {
         return None;
@@ -474,7 +474,7 @@ fn parse_positive_integer(raw: &str) -> Option<u64> {
     Some(parsed.clamp(MIN_TAB_SIZE, MAX_TAB_SIZE))
 }
 
-/// 计算相对路径并统一为 `/` 分隔；不在基准目录下时返回 `.`。
+/// Compute the relative path with unified `/` separators; returns `.` when the file is not under the base directory.
 fn relative_path_unified(base: &Path, file: &Path) -> String {
     match file.strip_prefix(base) {
         Ok(relative) => relative
@@ -491,7 +491,7 @@ fn has_overlong_component(path: &Path) -> bool {
         .any(|component| component.as_os_str().as_encoded_bytes().len() > NAME_MAX_BYTES)
 }
 
-/// 词法绝对化 + 规范化（不解析符号链接），对应 `path.resolve`/`path.normalize`。
+/// Lexical absolutize + normalize (without resolving symlinks), matching `path.resolve`/`path.normalize`.
 fn absolute_lexical(path: &Path) -> PathBuf {
     let base = if path.is_absolute() {
         path.to_path_buf()
@@ -533,14 +533,14 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime};
 
-    /// 隔离目录：内置 `root = true`，阻止向上读取开发者机器上的配置。
+    /// Isolated directory: built-in `root = true`, blocking any upward read of configuration on the developer machine.
     fn project() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(dir.path().join(EDITORCONFIG_NAME), "root = true\n").expect("root marker");
         dir
     }
 
-    /// 每次场景使用独立临时目录，避免全局缓存与真实父目录配置干扰。
+    /// Each scenario uses its own temp directory, so the global cache and real parent-directory configuration cannot interfere.
     fn scenario(editorconfig: &str, file: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::write(

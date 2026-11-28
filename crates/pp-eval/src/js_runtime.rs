@@ -1,4 +1,4 @@
-//! JavaScript 运行时发现（Bun 优先，Node.js 兜底）与轻量探测缓存。
+//! JavaScript runtime discovery (Bun preferred, Node.js fallback) and lightweight probe cache.
 
 use crate::runtime::{PROBE_TIMEOUT, expand_tilde, filter_env, is_executable_file};
 use anyhow::{Context, Result, bail};
@@ -96,8 +96,8 @@ fn resolve_explicit_candidate(
     if expanded.is_absolute() {
         return vec![expanded];
     }
-    // 支持仅填二进制名（如 "node" / "bun"）直接从 PATH 查找；
-    // 若同时含路径分隔符或本地存在对应可执行文件则走相对 cwd 解析。
+    // A bare binary name (such as "node" / "bun") is looked up on PATH directly;
+    // a name containing a path separator, or matching a local executable, is resolved against cwd.
     let has_separator = trimmed.contains('/') || trimmed.contains('\\');
     if !has_separator && !trimmed.starts_with('~') {
         let cwd_candidate = cwd.join(&expanded);
@@ -130,7 +130,7 @@ fn collect_candidates(
         }
     };
 
-    // 1. 优先 Bun：$BUN_INSTALL/bin/bun → PATH 中的 bun → $HOME/.bun/bin/bun
+    // 1. Bun first: $BUN_INSTALL/bin/bun → bun on PATH → $HOME/.bun/bin/bun
     if let Some(bun_install) = base_env.get("BUN_INSTALL").filter(|s| !s.is_empty()) {
         push_if_exec(PathBuf::from(bun_install).join("bin/bun"));
     }
@@ -141,7 +141,7 @@ fn collect_candidates(
         push_if_exec(PathBuf::from(home).join(".bun/bin/bun"));
     }
 
-    // 2. 回退 Node.js（>= 18）：PATH 中的 node
+    // 2. Node.js fallback (>= 18): node on PATH
     for candidate in find_on_path("node", base_env.get("PATH").map(String::as_str)) {
         push_if_exec(candidate);
     }
@@ -205,7 +205,7 @@ fn probe_candidate(
     }
 }
 
-/// 探测可用 JavaScript 运行时（优先 Bun，不可用时回退 Node.js >= 18）；成功结果按环境键缓存。
+/// Probe for an available JavaScript runtime (Bun preferred, Node.js >= 18 fallback); successful results are cached per environment key.
 pub fn probe_js(cwd: &Path, runtime_override: Option<&str>) -> Result<JsRuntime> {
     let base_env = filter_env(env::vars());
     probe_js_with_env(cwd, runtime_override, base_env, true)

@@ -2,41 +2,43 @@ use std::ops::Range;
 
 use anyhow::{Result, anyhow, ensure};
 
-/// 一个真实 Markdown 任务项：去掉 checkbox 标记后的首段正文及勾选状态，
-/// 以及所属阶段与源文件中的 checkbox 标记位置。
+/// A single real Markdown task item: the first-paragraph body and check state after the checkbox
+/// marker is removed, plus the owning phase and the checkbox marker position in the source file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanTask {
     pub text: String,
     pub completed: bool,
-    /// 所属 H2 阶段的完整显示文本；未归属 H2（文档开头或 H1 重置后）为
-    /// `Tasks`。H3-H6 标题继承当前 H2。
+    /// Full display text of the owning H2 phase; tasks without an H2 (document start or after an H1
+    /// reset) get `Tasks`. H3-H6 headings inherit the current H2.
     pub phase: String,
-    /// 物理阶段区域序号：每个 H1/H2 标题都开启新区域，重复标题不合并；
-    /// 仅用于按物理区域分组，不序列化为任务 ID。
+    /// Physical phase region index: every H1/H2 heading opens a new region and repeated headings are
+    /// not merged; used only for grouping by physical region and never serialized as a task ID.
     pub phase_index: usize,
-    /// 源文件中 checkbox 的字节区间；起点在 checkbox 的 `[` 之前
-    /// （可能含少量前导空白），终点在 `]` 之后。回写时必须在区间内定位
-    /// 唯一勾选标记，不能假定整个区间就是标记本身。
+    /// Byte range of the checkbox in the source file; it starts before the checkbox `[` (and may
+    /// include a little leading whitespace) and ends after `]`. Write-back must locate the unique
+    /// check marker inside the range and must not assume the whole range is the marker itself.
     pub marker: Range<usize>,
 }
 
-/// 按正文顺序提取 H3 任务标题及旧式 Markdown 列表任务，保留勾选标记的源位置。
-/// 只检查 Markdown 解析器识别的标题和任务项，因此围栏示例及普通说明不计数。
-/// 松散列表取项内首个段落，紧凑列表取 marker 后到该项首个换行为止。
-/// 同一次遍历捕获 H2 阶段标题（ATX 与 setext 均可）：H1 重置阶段，
-/// H3-H6 继承当前 H2，未归属 H2 的任务归入 `Tasks`；每个新的阶段区域有新的
-/// `phase_index`，重复标题不合并、不重排文档任务。
+/// Extract H3 task headings and legacy Markdown list tasks in body order, preserving the source
+/// position of each check marker. Only headings and task items recognized by the Markdown parser are
+/// inspected, so fenced examples and ordinary prose do not count. Loose lists take the item's first
+/// paragraph, tight lists take everything from the marker to the item's first newline. The same pass
+/// captures H2 phase headings (ATX and setext alike): an H1 resets the phase, H3-H6 inherit the
+/// current H2 and tasks without an H2 fall into `Tasks`; every new phase region gets a new
+/// `phase_index`, repeated headings are not merged and document tasks are never reordered.
 pub fn plan_tasks(content: &str) -> Vec<PlanTask> {
     use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
     let parser =
         pulldown_cmark::Parser::new_ext(content, pulldown_cmark::Options::ENABLE_TASKLISTS)
             .into_offset_iter();
     let mut tasks = Vec::new();
-    // (任务, 是否已进入段落)
+    // (task, whether a paragraph has started)
     let mut open: Option<(PlanTask, bool)> = None;
     let mut phase = String::from("Tasks");
     let mut phase_index = 0usize;
-    // 打开的标题内已聚合的显示文本，以及 H3 任务的勾选标记。
+    // Display text already accumulated inside the open heading, plus the checked marker of an H3
+    // task.
     let mut heading: Option<String> = None;
     let mut heading_check = None;
     for (event, range) in parser {
@@ -157,9 +159,10 @@ fn checkbox_prefix(text: &str) -> Option<(usize, bool)> {
     }
 }
 
-/// 将任务勾选状态回写到源正文：仅对状态变化的任务，在其 marker 源区间内
-/// 定位唯一勾选标记，验证旧状态与解析状态一致后替换标记。全部无变化返回
-/// `None`；有变化时保留 CRLF、缩进、内联 Markdown 及标记以外的所有字节。
+/// Write task check state back into the source body: only for tasks whose state changed, locate the
+/// unique check marker inside its marker source range, verify the old state matches the parsed state
+/// and then replace the marker. Returns `None` when nothing changed; otherwise every byte outside the
+/// markers is preserved, including CRLF, indentation and inline Markdown.
 pub fn patch_task_checks(
     content: &str,
     tasks: &[PlanTask],
@@ -282,7 +285,7 @@ mod task_tests {
                     ("Loose item first paragraph.", false, "Phase two"),
                 ]
             );
-            // marker 恰好指向源文件中的 checkbox 本体。
+            // The marker points exactly at the checkbox in the source file.
             assert_eq!(&body[tasks[0].marker.clone()], "[ ]");
             assert_eq!(&body[tasks[1].marker.clone()], "[x]");
             assert_eq!(&body[tasks[2].marker.clone()], "[ ]");
@@ -316,7 +319,8 @@ mod task_tests {
                     ("setext task", false, "Setext phase", 4),
                 ]
             );
-            // 重复标题的两个区域拥有不同的 phase_index，任务保持文档顺序。
+            // Two regions of the repeated heading get different phase_index values and tasks keep
+            // document order.
             assert_ne!(tasks[1].phase_index, tasks[2].phase_index);
             assert_eq!(task_progress(body), (0, 6));
         }
@@ -336,7 +340,7 @@ mod task_tests {
             let patched = patch_task_checks(body, &tasks, &checked)
                 .unwrap()
                 .expect("checked states changed");
-            // 除两个 checkbox 的中间状态字节外逐字节相等。
+            // Byte-for-byte equality except for the state bytes of the two checkboxes.
             let diff: Vec<usize> = body
                 .bytes()
                 .zip(patched.bytes())
@@ -349,10 +353,10 @@ mod task_tests {
             );
             assert_eq!(patched.as_bytes()[diff[0]], b'x');
             assert_eq!(patched.as_bytes()[diff[1]], b' ');
-            // 与逐字 replacen 的期望一致（含 CRLF、制表符、中文与其他字节）。
+            // Matches the literal replacen expectation (CRLF, tabs, CJK and other bytes included).
             let expected = body.replacen("[ ]", "[x]", 1).replacen("[X]", "[ ]", 1);
             assert_eq!(patched, expected);
-            // 状态无变化时不复制正文。
+            // An unchanged state does not copy the body.
             assert!(
                 patch_task_checks(body, &tasks, &[false, true])
                     .unwrap()
@@ -362,13 +366,13 @@ mod task_tests {
         {
             let body = "- [ ] one\n- [ ] two\n";
             let tasks = plan_tasks(body);
-            // 长度不一致。
+            // Length mismatch.
             assert!(patch_task_checks(body, &tasks, &[true]).is_err());
-            // marker 区间越界。
+            // Marker range out of bounds.
             let mut out_of_bounds = tasks.clone();
             out_of_bounds[0].marker = 100..110;
             assert!(patch_task_checks(body, &out_of_bounds, &[true, false]).is_err());
-            // 区间内出现两个 checkbox：拒绝猜测位置。
+            // Two checkboxes inside the range: refuse to guess the position.
             let ambiguous = PlanTask {
                 text: "one".into(),
                 completed: false,
@@ -377,7 +381,7 @@ mod task_tests {
                 marker: 0..9,
             };
             assert!(patch_task_checks("- [ ] [ ] one", &[ambiguous], &[true]).is_err());
-            // 区间内没有标准 checkbox。
+            // No standard checkbox inside the range.
             let absent = PlanTask {
                 text: "one".into(),
                 completed: false,
@@ -386,7 +390,8 @@ mod task_tests {
                 marker: 0..5,
             };
             assert!(patch_task_checks("hello world", &[absent], &[true]).is_err());
-            // 旧状态与解析状态不符（stale）：正文仍是 [ ]，解析状态却被标为已勾选。
+            // Old state disagrees with the parsed state (stale): the body still has [ ] while the
+            // parsed state claims it is checked.
             let mut stale = plan_tasks("- [ ] pending\n");
             stale[0].completed = true;
             assert!(patch_task_checks("- [ ] pending\n", &stale, &[false]).is_err());
@@ -403,7 +408,7 @@ mod task_tests {
                 );
             };
             check(
-                "# 计划\n\nIntro [ ] not a task.\n\n```md\n- [ ] fenced\n```\n\n## 阶段一\n- [ ] 第一项\n  - [ ] 嵌套项\n- [X] 已完成项\n\n## 阶段二\n- [ ] loose\n\n  second paragraph\n",
+                "# Plan\n\nIntro [ ] not a task.\n\n```md\n- [ ] fenced\n```\n\n## Phase one\n- [ ] first item\n  - [ ] nested item\n- [X] completed item\n\n## Phase two\n- [ ] loose\n\n  second paragraph\n",
             );
             check(
                 "# Plan\r\n\r\n## Write\r\n- [ ] write bytes\r\n  - Acceptance: read-back\r\n- [x] verify\r\n\r\n## Verify\r\n- [ ] read back\r\n",
@@ -411,15 +416,15 @@ mod task_tests {
         }
         {
             let body = concat!(
-                "## 并行实现\r\n",
-                "### [] **实现** `API` ###\r\n",
-                "- [ ] 旧格式任务\r\n",
-                "### [X] b. 补充测试\r\n",
-                "### 普通标题\r\n",
+                "## Parallel implementation\r\n",
+                "### [] **Implement** `API` ###\r\n",
+                "- [ ] legacy task\r\n",
+                "### [X] b. Add tests\r\n",
+                "### Plain heading\r\n",
                 "### [] ###\r\n",
-                "```markdown\r\n### [] 围栏内示例\r\n```\r\n",
-                "## 集成\r\n",
-                "### [] 验收\r\n",
+                "```markdown\r\n### [] fenced example\r\n```\r\n",
+                "## Integration\r\n",
+                "### [] Acceptance\r\n",
             );
             let tasks = plan_tasks(body);
             let summary = |tasks: &[PlanTask]| {
@@ -431,10 +436,10 @@ mod task_tests {
             assert_eq!(
                 summary(&tasks),
                 vec![
-                    ("实现 API".into(), 1),
-                    ("旧格式任务".into(), 1),
-                    ("b. 补充测试".into(), 1),
-                    ("验收".into(), 2),
+                    ("Implement API".into(), 1),
+                    ("legacy task".into(), 1),
+                    ("b. Add tests".into(), 1),
+                    ("Acceptance".into(), 2),
                 ]
             );
             assert_eq!(task_progress(body), (1, 4));
@@ -443,10 +448,10 @@ mod task_tests {
                 .unwrap();
             assert_eq!(
                 patched,
-                body.replace("[] **实现**", "[x] **实现**")
-                    .replace("- [ ] 旧格式任务", "- [x] 旧格式任务")
+                body.replace("[] **Implement**", "[x] **Implement**")
+                    .replace("- [ ] legacy task", "- [x] legacy task")
                     .replace("[X] b.", "[] b.")
-                    .replace("[] 验收", "[x] 验收")
+                    .replace("[] Acceptance", "[x] Acceptance")
             );
             assert_eq!(summary(&plan_tasks(&patched)), summary(&tasks));
             assert_eq!(task_progress(&patched), (3, 4));

@@ -1,4 +1,4 @@
-//! 面板外框、紧凑模式与题目页的绘制。
+//! Panel frame, compact mode and question-page drawing.
 
 use super::*;
 
@@ -137,7 +137,7 @@ impl Panel {
         };
 
         let question = self.question_lines(index, content_area.width);
-        // 短屏至少为当前选项或编辑器保留一行。
+        // A short screen keeps at least one row for the current options or the editor.
         let question_budget = content_h.saturating_sub(1);
         let question_h = question.len().min(usize::from(question_budget)) as u16;
         for (row, line) in question.iter().take(usize::from(question_h)).enumerate() {

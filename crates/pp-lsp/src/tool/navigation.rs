@@ -1,4 +1,4 @@
-//! 导航与 hover：definition / typeDefinition / implementation / references / hover。
+//! Navigation and hover: definition / typeDefinition / implementation / references / hover.
 
 use crate::Registry;
 use anyhow::{Result, bail, ensure};
@@ -16,14 +16,14 @@ use super::position::position_json;
 use super::servers::{display_path, real_servers_for, resolve_path, wait_for_project};
 use super::{Action, Params, deny_service, done, project_aware, with_server, with_useless};
 
-/// 显式 `symbol` 是必需的动作（project-aware 服务器上）。
+/// Actions that require an explicit `symbol` (on project-aware servers).
 const SYMBOL_REQUIRED_ACTIONS: &[&str] = &["definition", "references", "rename"];
 
-/// `references` 带上下文展示的条数上限。
+/// Cap on `references` entries shown with context.
 const REFERENCE_CONTEXT_LIMIT: usize = 50;
-/// `references` 最多展示的总条数（超出部分仅回报总数，避免高频符号撑爆上下文）。
+/// Total `references` entries displayed at most (the remainder is only reported as a count, so a high-traffic symbol cannot blow up the context).
 const MAX_REFERENCES: usize = 200;
-/// project-aware 服务器只返回声明时额外查询次数与间隔。
+/// Extra query count and delay when a project-aware server only returns declarations.
 const REFERENCES_RETRY_COUNT: u32 = 2;
 const REFERENCES_RETRY_DELAY: Duration = Duration::from_millis(250);
 

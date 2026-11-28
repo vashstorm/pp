@@ -66,7 +66,8 @@ impl std::fmt::Display for RequestRetryReason {
     }
 }
 
-/// 仅供运行时展示的任务快照，不包含计划正文，也不是新的持久化权威。
+/// Runtime-only display snapshot of the task list; it carries no plan body and is not a new
+/// persistence authority.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TodoState {
     pub phases: Vec<crate::todo::TodoPhase>,
@@ -121,7 +122,8 @@ pub enum AgentEvent {
         plan_id: String,
         revision: u64,
         content: String,
-        /// 归档等纯状态变化的当前值；旧事件缺字段时接收端保留当前值。
+        /// Current value for pure state changes such as archiving; when an older event lacks the
+        /// field the receiver keeps its current value.
         #[serde(default)]
         file_name: Option<String>,
         #[serde(default)]
@@ -143,13 +145,15 @@ pub enum AgentEvent {
         id: u64,
         text: String,
     },
-    /// 提交前的输入 hook 明确拒绝：不进入历史、不请求模型，`text` 仅供展示原文。
+    /// A pre-submit input hook rejected the input explicitly: nothing enters history, no model
+    /// request is made, and `text` is only for displaying the raw text.
     UserInputRejected {
         id: u64,
         text: String,
         reason: String,
     },
-    /// hook 诊断：只用于展示与日志，不进入模型上下文，不持久化。
+    /// Hook diagnostic: for display and logs only, never part of the model context, never
+    /// persisted.
     HookDiagnostic {
         event: String,
         message: String,
@@ -178,7 +182,8 @@ pub enum AgentEvent {
     ModelRouteChanged {
         model: String,
         effort: crate::model::ThinkLevel,
-        /// 切换来源：手动覆盖、配置默认、角色主模型或任务内备用模型。
+        /// Switch source: manual override, config default, role main model or in-task fallback
+        /// model.
         #[serde(default)]
         source: crate::model::ModelSource,
         temporary: bool,
@@ -197,7 +202,8 @@ pub enum AgentEvent {
     AssistantFinished {
         text: String,
     },
-    /// 模型生成中的文件工具参数，仅用于临时预览，不代表工具已执行或文件已保存。
+    /// File tool arguments while the model is generating; for temporary preview only and neither
+    /// proof that the tool ran nor that the file was saved.
     ToolArgumentsDelta {
         tool: String,
         index: u32,
@@ -226,17 +232,18 @@ pub enum AgentEvent {
         id: String,
         output: String,
     },
-    /// 已提交到父会话原生上下文的子 Agent 结果。
+    /// Subagent results already committed to the parent session's native context.
     SubagentResultsInjected {
         run_ids: Vec<String>,
     },
-    /// 瞬时命令展示；最终快照由工具结果的 shell 字段冻结。
+    /// Transient command display; the final snapshot is frozen by the tool result's shell field.
     ToolShellSnapshot {
         id: String,
         snapshot: crate::shell_display::ShellPresentation,
     },
-    /// 运行中的管道阶段预览。瞬时正文只用于卡片，不写 journal 或工具结果；
-    /// 调用完成后的 `result.pipes` 才是恢复权威。
+    /// Preview of pipeline stages while running. The transient body only feeds the card and is
+    /// written to neither the journal nor the tool result; `result.pipes` after the call completes is
+    /// the recovery authority.
     ToolPipelineSnapshot {
         id: String,
         pipes: serde_json::Value,
@@ -247,14 +254,16 @@ pub enum AgentEvent {
         id: String,
         result: serde_json::Value,
     },
-    /// LSP 诊断的展示副本。`id` 为当前工具调用时是内联报告；`None` 表示
-    /// 保存后迟到完成的后台报告。事件只冻结展示，不触发新的模型请求。
+    /// Display copy of LSP diagnostics. When `id` is the current tool call this is an inline report;
+    /// `None` means a background report that finished late after saving. The event only freezes
+    /// display and triggers no new model request.
     LspDiagnostics {
         #[serde(default)]
         id: Option<String>,
         report: crate::lsp_report::DiagnosticReport,
     },
-    /// `auto_review` 模式下由 REVIEW Role 执行独立安全审阅时的瞬时事件，不写 journal。
+    /// Transient event for the independent security review performed by the REVIEW role under
+    /// `auto_review` mode; not written to the journal.
     AutoReviewStarted {
         tool: String,
     },
@@ -302,7 +311,7 @@ mod tests {
                 report,
             };
             let AgentEvent::LspDiagnostics { report, .. } = event else {
-                unreachable!("刚构造的事件必定是 LspDiagnostics");
+                unreachable!("a just-constructed event must be LspDiagnostics");
             };
             assert_eq!(report.path, "src/a.rs");
             assert!(report.has_issues());

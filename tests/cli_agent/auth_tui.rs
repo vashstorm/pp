@@ -23,7 +23,7 @@ fn auth_tui_logout_refreshes_models_and_blocks_current_authorization() {
     pty.input("/model\r");
     pty.text("No matching models");
     pty.input("\x1b");
-    pty.wait_for("模型面板退出后再输入任务", |screen| !screen.alternate_screen() && input_is_ready(screen));
+    pty.wait_for("the model panel closed before the task is typed", |screen| !screen.alternate_screen() && input_is_ready(screen));
     pty.input("authorization must block this request\r");
     pty.text("is not signed in");
     assert!(!String::from_utf8_lossy(&pty.raw).contains("private-key-marker"));

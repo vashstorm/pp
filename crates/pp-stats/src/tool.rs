@@ -2,7 +2,8 @@ use super::{Database, warn};
 use serde_json::Value;
 use std::path::Path;
 
-/// 工具执行的采集状态；错误与耗时只在 runtime 实际执行工具后写入。
+/// Collection status of a tool execution; errors and durations are written only after the runtime
+/// actually runs the tool.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
     Ok,
@@ -20,7 +21,8 @@ impl ToolStatus {
     }
 }
 
-/// 一条工具执行记录。`request_key` 关联发起该调用的模型请求，缺失时只能按工具聚合。
+/// One tool execution record. `request_key` links the model request that started the call; without
+/// it the call can only be aggregated per tool.
 pub struct ToolCall<'a> {
     pub request_key: Option<&'a str>,
     pub session_file: &'a Path,
@@ -30,11 +32,13 @@ pub struct ToolCall<'a> {
     pub error_message: Option<&'a str>,
     pub timestamp: i64,
     pub duration_ms: f64,
-    /// 回填模型的结果文本字符数；历史或未采集结果为 None，不保存正文。
+    /// Character count of the result text fed back to the model; None for history or uncollected
+    /// results, and the body itself is never stored.
     pub result_chars: Option<u64>,
 }
 
-/// 工具调用参数的字符数：字符串按字符、null 为 0、其余按 JSON 文本，与旧聚合口径一致。
+/// Character count of tool call arguments: strings count characters, null is 0 and everything else
+/// counts the JSON text, matching the previous aggregation.
 fn args_chars(args: &Value) -> u64 {
     match args {
         Value::String(args) => args.chars().count() as u64,
@@ -43,10 +47,11 @@ fn args_chars(args: &Value) -> u64 {
     }
 }
 
-/// 从原生模型输出中提取本请求发出的工具调用，不按 id 去重。
+/// Extracts the tool calls issued by this request from the native model output; calls are not
+/// deduplicated by id.
 ///
-/// Chat 读 `tool_calls`；Responses 读输出数组（或 `output` 数组）里
-/// `type == "function_call"` 的项。
+/// Chat reads `tool_calls`; Responses reads the items with `type == "function_call"` in the output
+/// array (or the `output` array).
 pub(super) fn call_tools(output: &Value) -> Vec<(String, u64)> {
     if let Some(calls) = output["tool_calls"].as_array() {
         return calls
@@ -70,10 +75,12 @@ pub(super) fn call_tools(output: &Value) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// 从旧库的已提交会话条目快照里提取工具调用，仅在迁移时使用。
+/// Extracts tool calls from a committed session entry snapshot in a legacy database; only used during
+/// migration.
 ///
-/// 与迁移前的聚合顺序一致：`message.content` 中 `type == "toolCall"` 的块优先；
-/// [`maintain`] 在快照为空时回退到 [`call_tools`] 的模型输出。
+/// Matches the pre-migration aggregation order: blocks with `type == "toolCall"` in
+/// `message.content` come first; [`maintain`] falls back to the model output of [`call_tools`] when
+/// the snapshot is empty.
 pub(super) fn saved_tool_calls(entry: &Value) -> Vec<(String, u64)> {
     entry
         .as_array()
@@ -88,7 +95,8 @@ pub(super) fn saved_tool_calls(entry: &Value) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// 记录一次工具执行；复用句柄内的连接，存储失败只提示，不改变工具结果。
+/// Records one tool execution; reuses the connection in the handle, and a storage failure only warns
+/// without changing the tool result.
 pub fn tool(database: &Database, call: &ToolCall<'_>) {
     if database.with_store(|store| store.tool(call)).is_err() {
         warn();

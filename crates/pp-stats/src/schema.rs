@@ -1,7 +1,8 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 
-/// 表、索引与补列的期望形态；`schema_current` 据此只读判断是否需要补结构。
+/// Expected shape of tables, indexes and added columns; `schema_current` uses it to decide read-only
+/// whether the structure needs upgrading.
 const TABLES: [&str; 5] = [
     "requests",
     "request_contexts",
@@ -31,14 +32,16 @@ const COLUMNS: [(&str, &[&str]); 2] = [
     ),
     ("tool_calls", &["result_chars"]),
 ];
-/// 已退役、需要在旧库里删除的索引。
+/// Retired indexes that must be dropped from legacy databases.
 const DEPRECATED_INDEXES: [&str; 1] = ["tool_calls_error_time"];
 
-/// 建表、补列、建索引并在结构发生变化时刷新 planner 统计。
+/// Creates tables and indexes, adds columns and refreshes planner statistics when the structure
+/// changes.
 ///
-/// 不读写 `PRAGMA user_version`：旧库按缺列／缺索引幂等补齐，历史行保持不变。
-/// 结构齐全时整段降级为只读探测——不取写锁、不执行 DDL、不写 `ANALYZE`，
-/// 因此每次写库打开统计库都不再进入写事务。
+/// `PRAGMA user_version` is never read or written: legacy databases are idempotently repaired by
+/// missing column/index, and historical rows stay untouched. When the structure is complete the whole
+/// function degrades to a read-only probe — no write lock, no DDL, no `ANALYZE` — so opening the stats
+/// database before every write no longer enters a write transaction.
 pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
     if schema_current(conn)? {
         return Ok(());
@@ -119,8 +122,9 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
         changed |= !index_exists(&tx, name)?;
         tx.execute_batch(ddl)?;
     }
-    // `tool_calls_error_time` 曾服务于 Errors 页的工具失败列表；该列表与聚合删除后无消费者，
-    // 旧库在这里幂等删除，不留下只会拖慢写入的废弃索引。
+    // `tool_calls_error_time` once served the tool failure list of the Errors page; that list and its
+    // aggregation are gone, so legacy databases drop it here idempotently instead of keeping a
+    // deprecated index that only slows writes down.
     if index_exists(&tx, "tool_calls_error_time")? {
         tx.execute_batch("DROP INDEX IF EXISTS tool_calls_error_time;")?;
         changed = true;
@@ -151,16 +155,19 @@ pub(super) fn ensure_schema(conn: &mut Connection) -> Result<()> {
         "INTEGER",
     )?;
     if changed {
-        // 只在新结构第一次出现时给 planner 补统计，之后每次打开不写库。
+        // Give the planner statistics only when the new structure first appears; later opens never
+        // write to the database.
         tx.execute_batch("ANALYZE requests; ANALYZE tool_calls; ANALYZE hook_runs;")?;
     }
     tx.commit()?;
     Ok(())
 }
 
-/// 只读判断建表、索引与补列是否都已就绪，并确认退役索引已被删除。
+/// Read-only check that tables, indexes and added columns are all ready and that retired indexes are
+/// gone.
 ///
-/// 与 [`ensure_schema`] 的慢路径共用同一组期望形态常量，因此两者不会漂移。
+/// Shares the same expected-shape constants with the slow path of [`ensure_schema`], so the two can
+/// never drift apart.
 fn schema_current(conn: &Connection) -> Result<bool> {
     let mut tables = Vec::with_capacity(TABLES.len());
     let mut indexes = Vec::with_capacity(INDEXES.len());
@@ -312,7 +319,7 @@ mod tests {
             store
                 .insert(&fixture("legacy", 1001), &Value::Null)
                 .unwrap();
-            // 采集时写入的快照可被列表与详情读取。
+            // Snapshots written at collection time can be read by the list and the detail views.
             assert_eq!(
             store
                 .conn
@@ -357,7 +364,8 @@ mod tests {
                     duration_ms: 4.0,
                 })
                 .unwrap();
-            // 模拟旧库：新索引、废弃索引与费用快照列都不在预期状态。
+            // Simulate a legacy database: the new indexes, the deprecated index and the cost snapshot
+            // columns are all in an unexpected state.
             store
             .conn
             .execute_batch(
@@ -401,10 +409,10 @@ mod tests {
             };
             assert!(indexes("requests").contains(&"requests_session".to_owned()));
             assert!(indexes("requests").contains(&"requests_time".to_owned()));
-            // 废弃的部分索引在重开时被删除，不重建。
+            // The deprecated partial index is dropped when reopening and is never recreated.
             assert!(
                 !indexes("tool_calls").contains(&"tool_calls_error_time".to_owned()),
-                "旧库里的废弃索引必须被删除"
+                "a deprecated index in a legacy database must be dropped"
             );
             assert!(indexes("tool_calls").contains(&"tool_calls_time".to_owned()));
             assert!(indexes("hook_runs").contains(&"hook_runs_time".to_owned()));
@@ -421,7 +429,8 @@ mod tests {
                     .unwrap(),
                 2
             );
-            // 历史行保留；补列后旧行的费用快照全为 NULL，按未定价统计。
+            // Historical rows are kept; after adding the columns their cost snapshots are all NULL and
+            // count as unpriced.
             assert_eq!(
                 store
                     .conn
@@ -446,7 +455,7 @@ mod tests {
             assert_eq!(summary["summary"]["priced"], 0);
             assert_eq!(summary["summary"]["unpriced"], 2);
             assert!(summary["summary"]["cost"].is_null());
-            // 补齐结构的那次 open 会给 planner 补统计。
+            // The open that completes the structure gives the planner statistics.
             for table in ["requests", "tool_calls", "hook_runs"] {
                 assert!(
                     store
@@ -458,10 +467,10 @@ mod tests {
                         )
                         .unwrap()
                         > 0,
-                    "{table} 缺少 ANALYZE 统计"
+                    "{table} is missing ANALYZE statistics"
                 );
             }
-            // 版本号不再被读写。
+            // The version number is no longer read or written.
             assert_eq!(
                 store
                     .conn
@@ -490,7 +499,7 @@ mod tests {
             let before = structure(&store);
             drop(store);
             let store = open_store(&path).unwrap();
-            // 结构齐全时再次 open 不改变 schema。
+            // Reopening with a complete structure does not change the schema.
             assert_eq!(structure(&store), before);
         }
     }
@@ -503,7 +512,8 @@ mod tests {
                 let store = open_store(&dir.path().join("stats.db")).unwrap();
                 (dir, store)
             };
-            // 新建库的形态必须被探测认定完整；常量与 DDL 漂移会让稳态打开重新写库。
+            // The shape of a fresh database must be detected as complete; drifting constants or DDL
+            // would make steady-state opens write to the database again.
             let (_dir, store) = fresh();
             assert!(schema_current(&store.conn).unwrap());
             drop(store);
@@ -532,7 +542,8 @@ mod tests {
             let child = "root.subagents/sessions/child.jsonl";
             for n in 0..200 {
                 let mut record = fixture(&format!("request-{n}"), now - n * 60_000);
-                // 真实库中一个会话只占少数行；根会话与子 Agent 各保留几条，其余归入其它会话。
+                // A real database holds only a few rows per session; keep a few for the root session and
+                // its subagent each and put the rest into other sessions.
                 record.session_file = Some(match n {
                     0..=3 => root.to_owned(),
                     4..=7 => child.to_owned(),
@@ -608,7 +619,8 @@ mod tests {
             );
             assert!(!trace_tools.contains("SCAN tool_calls"), "{trace_tools}");
 
-            // `range=all` 从时间下界 0 开始；记录实际计划，由报告说明是否退化为全表读取。
+            // `range=all` starts from the lower time bound 0; record the actual plan so the report can say
+            // whether it degrades to a full table scan.
             for (name, plan) in [
                 (
                     "latest",
@@ -628,7 +640,7 @@ mod tests {
         }
     }
 
-    /// 取 `EXPLAIN QUERY PLAN` 的计划文本（`detail` 列）。
+    /// Fetches the plan text of `EXPLAIN QUERY PLAN` (the `detail` column).
     fn query_plan(conn: &Connection, sql: &str, parameters: impl rusqlite::Params) -> String {
         let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         statement

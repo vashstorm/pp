@@ -6,7 +6,8 @@ use std::process::{Command, Stdio};
 
 mod http;
 
-/// 同步工作端不可用时的固定响应体，HTTP 层与 [`dispatch`] 共用同一份字面量。
+/// Fixed response body used when the synchronous worker is unavailable; the HTTP layer and
+/// [`dispatch`] share the same literal.
 pub(super) const DATABASE_UNAVAILABLE: &str = r#"{"error":"statistics database unavailable"}"#;
 
 pub fn run(
@@ -21,7 +22,8 @@ pub fn run(
     );
     let mut store = Store::open(&database_path()?).context("opening statistics database")?;
     let settings_path = pp_config::config::global_dir()?.join("settings.yml");
-    // 旧库退役在服务启动时执行；失败只告警，服务照常启动并在下次重试。
+    // Legacy retirement runs at server startup; a failure only warns, and the server starts anyway
+    // and retries on the next start.
     if let Err(error) = maintain(&mut store.conn) {
         tracing::warn!(event = "statistics_migration_failed", error = %error);
     }
@@ -34,7 +36,8 @@ pub fn run(
     if open && std::io::stdout().is_terminal() {
         open_browser(url);
     }
-    // 查询串行化在启动线程上：`Store` 只被这里使用，标题回调也只在这里执行。
+    // Query serialization happens on the startup thread: `Store` is used only here and the title
+    // callback runs only here as well.
     while let Some(query) = queries.blocking_recv() {
         if query.reply.is_closed() {
             continue;
@@ -127,7 +130,8 @@ pub(super) fn dispatch(
     }
 }
 
-/// 内嵌文本资源表：HTTP 层与 [`dispatch`] 共用同一份精确 request-target 匹配。
+/// Embedded text resource table: the HTTP layer and [`dispatch`] share the same exact request-target
+/// matching.
 pub(super) fn static_text(target: &str) -> Option<(&'static str, &'static str)> {
     Some(match target {
         "/" | "/index.html" => ("text/html", include_str!("index.html")),
@@ -297,9 +301,10 @@ fn api(
         json!({"requests":rows,"has_more":has_more,"limit":limit,"updated_at":now,"range":range.label()}),
     ))
 }
-/// 失败列表按页加载的档位：Errors 页先取最新 50 条，再按 200／1000 递增。
+/// Paging steps of the failure list: the Errors page first takes the latest 50 rows, then steps up
+/// through 200/1000.
 const ERROR_LIMITS: [usize; 3] = [50, 200, 1000];
-/// 请求日志与 Traces 列表的档位。
+/// Paging steps of the request log and the Traces list.
 const ROW_LIMITS: [usize; 2] = [500, 2000];
 
 fn ensure_limit(errors: bool, limit: usize) -> Result<()> {
@@ -414,7 +419,7 @@ mod integration {
         }
         {
             let (_, html) = server::static_text("/index.html").expect("index.html");
-            // CSP `script-src 'self'` 下禁止内联脚本或内联事件属性。
+            // CSP `script-src 'self'` forbids inline scripts and inline event attributes.
             assert!(!html.contains("onclick="));
             assert!(!html.contains("<style"));
             for chunk in html.split("<script").skip(1) {

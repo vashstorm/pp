@@ -71,7 +71,8 @@ fn system_prompt_sources_stay_fixed_across_tools_new_and_model_switch_both_proto
     let (request, body) = receive_for(&server, protocol);
     assert_live(&body, protocol, "execute");
     let text = system(&body, protocol);
-    // 已有历史后新写入的 AGENTS.md 以尾部 developer 消息增量送达，保持 system 前缀不变。
+    // An AGENTS.md written after history exists is delivered as a trailing developer-message increment, keeping the
+    // system prefix unchanged.
     assert!(body.to_string().contains("fresh project rule"));
     assert_eq!(text.matches("fixed append {{model}}").count(), 1);
     assert!(!text.contains("changed append"));

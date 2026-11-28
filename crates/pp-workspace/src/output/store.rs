@@ -1,4 +1,4 @@
-//! 会话 `artifact://` 资源：绑定、分配、快照与删除。
+//! Session `artifact://` resources: binding, allocation, snapshots and deletion.
 use anyhow::{Context, Result, ensure};
 use pp_core::cancellation::CancellationToken;
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,7 @@ fn regular(path: &Path) -> Result<File> {
 }
 
 fn directory(path: &Path) -> Result<()> {
-    // 检查所有现有祖先，避免资源目录或祖先被替换为链接。
+    // Check every existing ancestor so the resource directory or an ancestor cannot be swapped for a symlink.
     for ancestor in path.ancestors() {
         match fs::symlink_metadata(ancestor) {
             Ok(metadata) => ensure!(
@@ -262,8 +262,8 @@ impl Store {
         Ok(())
     }
 
-    /// 完成收尾：摘除 live 句柄并冻结窗口。保持既有的「先持 capture 锁、
-    /// 再取 state 锁」顺序，与 `snapshot` 的读取边界一致。
+    /// Finish: drop the live handle and freeze the window. Keep the existing
+    /// "capture lock first, then state lock" order so it matches `snapshot`'s read boundary.
     pub(super) fn release(&self, capture: &mut Capture) {
         lock(&self.0).live.remove(&capture.id);
         capture.sealed = true;
@@ -320,7 +320,8 @@ impl Capture {
         {
             let (content, omitted) = window.render(true);
             self.metadata.elided_bytes = omitted;
-            // 超出保存容量时在原文件写回头尾窗口；完整落盘后才发布完成元数据。
+            // Past the save budget, write the head/tail window back into the original file;
+            // the completed metadata is published only after the full content is durable.
             self.file.seek(SeekFrom::Start(0))?;
             self.file.write_all(content.as_bytes())?;
             self.file.set_len(content.len() as u64)?;
@@ -358,7 +359,7 @@ impl Capture {
         self.metadata.complete
     }
 
-    /// 已省略字节数：活动捕获以窗口的当前渲染为准。
+    /// Elided byte count: for a live capture this follows the window's current render.
     pub(super) fn elided_bytes(&self) -> u64 {
         self.window
             .as_ref()

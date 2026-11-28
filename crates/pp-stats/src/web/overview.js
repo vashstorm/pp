@@ -1,5 +1,5 @@
 /**
- * Overview 页面渲染与活动柱图。
+ * Overview page rendering and activity bar chart.
  */
 
 import {
@@ -28,7 +28,7 @@ import { app } from "./state.js";
 /** @typedef {import("../../web-types/api.d.ts").AnalyticsResponse} AnalyticsResponse */
 
 /**
- * 渲染 Overview 活动柱图 SVG。
+ * Renders the Overview activity bar chart SVG.
  * @param {Array<Partial<import("../../web-types/api.d.ts").AggregateBucket> & { timestamp: number }>} buckets
  * @param {"requests" | "tokens" | "cost" | "tokens_per_second" | "avg_ttft_ms"} [mode]
  * @returns {string}
@@ -84,7 +84,7 @@ export function chart(buckets, mode = app.activity) {
 }
 
 /**
- * 渲染 Overview 页面。
+ * Renders the Overview page.
  * @returns {string}
  */
 export function overview() {

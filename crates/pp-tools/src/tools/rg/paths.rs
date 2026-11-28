@@ -1,4 +1,4 @@
-//! `rg` 搜索范围解析：路径、glob、排除与行区间选择器。
+//! `rg` search scope resolution: paths, globs, excludes and line-range selectors.
 use anyhow::{Context, Result, ensure};
 use globset::{GlobBuilder, GlobMatcher};
 use pp_core::cancellation::CancellationToken;
@@ -42,9 +42,9 @@ fn glob_path(path: &str) -> bool {
     path.contains(['*', '?', '[', '{'])
 }
 
-/// 遍历剪枝：普通 entry 在与拒绝根不相交的遍历根下直接放行，否则走词法快路径；
-/// symlink 与无法取得类型的 entry 取规范化结果，避免链接指向拒绝根时被词法前缀误放行
-/// （`follow_links(false)` 已保证不跨越目录链接）。
+/// Traversal pruning: regular entries pass directly under a traversal root disjoint from every denied root, otherwise
+/// they take the lexical fast path; symlinks and entries without a file type use the resolved result so a link into a
+/// denied root is not wrongly allowed by a lexical prefix (`follow_links(false)` already guarantees directory links are not crossed).
 fn sandbox_denied_entry(
     policy: Option<&pp_sandbox::Policy>,
     can_contain_denied: bool,
@@ -320,7 +320,7 @@ fn split_entry_selector(cwd: &Path, entry: &str) -> Result<(String, Vec<(usize, 
     Ok((entry.to_owned(), vec![]))
 }
 
-/// 预解析 `rg` 参数指向的搜索根路径，供权限门在执行遍历前分类并审批会话/外部路径。
+/// Pre-resolve the search root paths referenced by `rg` arguments, so the permission gate can classify and approve session/external paths before traversal runs.
 pub(in crate::tools) fn inspect_roots(cwd: &Path, arguments: &str) -> Result<Vec<PathBuf>> {
     let Ok(args) = super::Args::parse(arguments) else {
         return Ok(Vec::new());
@@ -357,12 +357,12 @@ pub(in crate::tools) fn inspect_roots(cwd: &Path, arguments: &str) -> Result<Vec
     Ok(roots)
 }
 
-/// 缺失路径的纠错候选上限与遍历预算：只在报错路径上运行，必须有界。
+/// Suggestion candidate cap and traversal budget for missing paths: only runs on the erroring path and must stay bounded.
 const SUGGEST_LIMIT: usize = 3;
 const SUGGEST_SCAN: usize = 20_000;
 
-/// 为不存在的工作区内路径找同名（或同 stem）的文件/目录，按与原路径的公共前缀深度排序。
-/// 尽力而为：遍历遵守 ignore 文件与沙盒读拒绝，超出预算、取消或超时即返回已有结果。
+/// Find files/directories with the same name (or stem) for a missing workspace path, ordered by common-prefix depth with the original path.
+/// Best effort: traversal honours ignore files and sandbox read denials, returning what it has on budget exhaustion, cancellation or timeout.
 fn suggest_paths(
     cwd: &Path,
     entry: &str,
@@ -700,11 +700,11 @@ mod tests {
             .filter(|entry| entry.depth() > 0)
             .collect();
 
-        // 普通 entry 不得被词法误杀；拒绝根祖先目录仍可继续遍历。
+        // A regular entry must not be killed lexically; ancestor directories of a denied root can still be traversed.
         assert!(!denied(&entries, &sandbox, "a.rs"));
         assert!(!denied(&entries, &sandbox, "public.txt"));
         assert!(!denied(&entries, &sandbox, "home"));
-        // symlink 与悬空链接必须取规范化结果并仍被拒绝。
+        // Symlinks and dangling links must use the resolved result and still be denied.
         let secret_link = entries
             .iter()
             .find(|entry| entry.file_name() == "secret-link")
@@ -713,7 +713,7 @@ mod tests {
             secret_link
                 .file_type()
                 .is_some_and(|kind| kind.is_symlink()),
-            "fixture 必须是 symlink entry"
+            "fixture must be a symlink entry"
         );
         assert!(denied(&entries, &sandbox, "secret-link"));
         assert!(denied(&entries, &sandbox, "dangling"));

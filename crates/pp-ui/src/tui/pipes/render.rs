@@ -1,4 +1,4 @@
-//! `/pipes` 面板绘制：run／流列表、分隔行与有界正文。
+//! `/pipes` panel drawing: run/stream list, separator rows and the bounded body.
 
 use crate::tui::transcript::wrap_block;
 use crate::tui::transcript_style::{accent, activity, added, ask_bg, muted, removed};

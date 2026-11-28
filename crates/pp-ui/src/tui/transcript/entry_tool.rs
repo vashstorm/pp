@@ -1,14 +1,14 @@
-//! 工具卡片的标题、页脚、路径与连续读取摘要。
+//! Titles, footers, paths and consecutive read summaries of tool cards.
 
 use super::*;
 
-/// 只缩短工作目录内的路径；不访问磁盘，也不改变工具调用的原始参数。
+/// Shorten only paths inside the working directory; never touches the disk and does not alter the original tool call arguments.
 pub(super) fn display_path<'a>(cwd: Option<&std::path::Path>, path: &'a str) -> &'a str {
     let Some(cwd) = cwd else { return path };
     let Ok(relative) = std::path::Path::new(path).strip_prefix(cwd) else {
         return path;
     };
-    // 保留可能越出工作目录的路径，避免把外部文件显示为项目内文件。
+    // Keep paths that may escape the working directory so external files are not shown as project files.
     let mut depth = 0usize;
     for component in relative.components() {
         match component {
@@ -34,7 +34,7 @@ impl TranscriptEntry {
     }
 
     pub(super) fn is_collapsible_tool(&self) -> bool {
-        // 迟到诊断没有工具调用 ID，但同样可以用 Ctrl + O 展开完整报告。
+        // Late diagnostics carry no tool call ID but can still be expanded to the full report with Ctrl + O.
         self.kind == EntryKind::Lsp
             || (self.tool.is_some() && self.kind != EntryKind::Ask && !self.is_file_read())
     }
@@ -180,7 +180,7 @@ impl TranscriptEntry {
         self.apply_footer(parts.join(" · "), footer_warning)
     }
 
-    /// 以最终 `result.pipes` 为准重建 `/pipes` 入口；没有真实管道时清空。
+    /// Rebuild the `/pipes` entry from the final `result.pipes`; clear it when there is no real pipeline.
     pub(super) fn sync_pipes_badge(&mut self, restored: bool) {
         self.pipes_badge = self
             .result
@@ -198,13 +198,13 @@ impl TranscriptEntry {
         self.tool.as_deref() == Some("edit")
     }
 
-    /// 生成中的文件工具参数预览：正文是未提交的 JSON 分片。
+    /// Argument preview of a file tool being generated: the body is the uncommitted JSON chunks.
     pub(super) fn is_argument_preview(&self) -> bool {
         matches!(self.body, EntryBody::ArgumentsPreview { .. })
     }
 
-    /// 已提交 `edit` 卡片与生成中的 `write` 预览共用文件卡片标题；
-    /// 已提交 `write` 卡片仍走通用工具标题。
+    /// A committed `edit` card and an in-progress `write` preview share the file card title;
+    /// a committed `write` card still uses the generic tool title.
     pub(super) fn has_file_header(&self) -> bool {
         self.is_edit() || (self.tool.as_deref() == Some("write") && self.is_argument_preview())
     }
@@ -243,7 +243,7 @@ impl TranscriptEntry {
             .unwrap_or_default()
     }
 
-    /// 参数预览与已提交 `edit` 卡片共用的文件卡片标题。
+    /// File card title shared by the argument preview and the committed `edit` card.
     pub(super) fn file_header(&self) -> Line<'static> {
         let tool = self.tool.as_deref().unwrap_or_default();
         let style = card::surface_style(card::CardSurface::Edit, palette::tool_accent(tool));
@@ -389,7 +389,7 @@ impl TranscriptEntry {
     }
 
     pub(super) fn read_summary(entries: &[Self]) -> Vec<Line<'static>> {
-        // 分组中仍有读取未完成时，组首跟随该条目的时钟帧。
+        // While reads in the group are still unfinished, the group head follows that entry's clock frame.
         let status_entry = entries
             .iter()
             .find(|entry| entry.status == EntryStatus::Running)

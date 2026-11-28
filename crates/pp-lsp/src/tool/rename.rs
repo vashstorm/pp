@@ -1,4 +1,4 @@
-//! rename：符号重命名建议。
+//! rename: symbol rename suggestions.
 
 use crate::Registry;
 use crate::client::Client;
@@ -15,7 +15,7 @@ use super::servers::{display_path, real_servers_for, resolve_path, wait_for_proj
 use super::suggestion::{parse_workspace_edit, suggestion_result};
 use super::{Action, LspToolHost, Params, deny_service, done, project_aware, with_server};
 
-/// 在已持有的 operation 里发起 `textDocument/rename`，不重新进入 operation。
+/// Issue `textDocument/rename` inside the operation already held, without re-entering it.
 fn rename_request(
     op: &mut crate::client::Op<'_>,
     client: &Client,

@@ -128,13 +128,14 @@ impl App {
         }
     }
 
-    // /init 回显用户命令本身；其余展开命令回显展开正文。
+    // /init echoes the user command itself; other expanding commands echo the expanded body.
     pub(in crate::tui) fn echoes_source(prompt: &str) -> bool {
         matches!(prompt.trim(), "/init")
     }
 
     pub(in crate::tui) fn submit(&mut self, kind: PendingKind) -> bool {
-        // 权限命令独立于任务、队列与加载守卫，先于其他面板／资源阻塞分支解析执行。
+        // Permission commands are independent of the task, queue and loading guard, so they
+        // are parsed and run before the other panel/resource blocking branches.
         if self.try_submit_permission_command() {
             return false;
         }
@@ -167,10 +168,12 @@ impl App {
             None
         };
         if matches!(command, Some(Command::Unknown)) {
-            // 未知命令静默忽略：不报错、不清空输入、不请求模型。
+            // Unknown commands are silently ignored: no error, no input cleared, no model
+            // request.
             return false;
         }
-        // 提交时恢复对话区，让命令结果和后续输出可见。
+        // Submitting restores the conversation area so command results and later output are
+        // visible.
         self.mcp_panel = None;
         #[cfg(debug_assertions)]
         if matches!(command, Some(Command::TestPermission)) {
@@ -220,7 +223,8 @@ impl App {
         if let Some(Command::TestWebSearch(test)) = &command {
             return self.submit_test_web_search(test.clone());
         }
-        // `/test-*` 是开发构建的隔离场景：配置不可用时也允许运行，绝不进入模型请求。
+        // `/test-*` are isolated scenarios of dev builds: they run even when configuration is
+        // unavailable and never enter a model request.
         #[cfg(debug_assertions)]
         if let Some(Command::MockTest(test)) = &command {
             let test = *test;
@@ -250,7 +254,8 @@ impl App {
             }
             return false;
         }
-        // /pipes 是纯本地面板：运行、取消与空闲都可打开，不进入 steering。
+        // /pipes is a purely local panel: it opens while running, cancelling or idle and never
+        // enters steering.
         if let Some(Command::Pipes(run)) = &command {
             let run = *run;
             self.remember_input();
@@ -304,8 +309,8 @@ impl App {
         }
         if matches!(self.state, State::ReviewingPlan) {
             match command {
-                // 退出、帮助与提示不经过 worker；其余提交（含 steering/followup）
-                // 一律拒绝，草稿原样保留。
+                // Quit, help and tips do not go through the worker; every other submission
+                // (including steering/followup) is rejected and the draft is kept as-is.
                 Some(Command::Quit | Command::Help | Command::Tips) => {}
                 _ => {
                     self.notify(
@@ -316,8 +321,9 @@ impl App {
                 }
             }
         }
-        // 切档不是 worker 命令：运行、取消与各种转换态都可提交，
-        // 不进入阻塞状态、不排进命令队列，草稿与光标保持原位。
+        // Effort switching is not a worker command: it can be submitted while running,
+        // cancelling or in any transition state without blocking, queueing a command or moving
+        // the draft and cursor.
         if let Some(Command::Think(Some(level))) = &command {
             let level = *level;
             if self.submit_think_level(level) {
@@ -376,7 +382,8 @@ impl App {
                     self.active_cancellation = Some(cancellation);
                     self.clear_input();
                     self.secondary_status = Some("Managing MCP servers…".into());
-                    // 启动期总状态只描述那一轮建连；变更后不再展示旧结果。
+                    // The startup overall status describes that connect round only; stale
+                    // results are not shown after a change.
                     self.dismiss_mcp_tip();
                 }
             }
@@ -582,7 +589,8 @@ impl App {
                     if self.skill_panel.is_some() || self.skills_pending {
                         return false;
                     }
-                    // 记入输入历史并清空输入；保留当前 Transcript 与欢迎页状态。
+                    // Recorded in the input history and cleared from the input; the current
+                    // Transcript and welcome-page state are kept.
                     self.remember_input();
                     self.clear_input();
                     self.file_directory.clear();
@@ -608,7 +616,8 @@ impl App {
                 }
                 Some(Command::Prompt(expanded)) => {
                     self.queue_paused = false;
-                    // /init 回显用户命令；文件命令继续回显展开正文，输入历史均保留原文。
+                    // /init echoes the user command; file commands keep echoing the expanded
+                    // body, and the input history always keeps the original text.
                     let display = self
                         .resources
                         .ready
@@ -646,7 +655,7 @@ impl App {
                     unreachable!()
                 }
                 Some(Command::Unknown) => unreachable!("ignored before the state match"),
-                // Plan 子命令在状态检查前已处理。
+                // Plan subcommands are already handled before the state checks.
                 Some(Command::Plan(_)) => unreachable!("handled before the state match"),
                 Some(Command::PlanList) => unreachable!("handled before the state match"),
             },
@@ -654,13 +663,16 @@ impl App {
         false
     }
 
-    /// 启动命令：与按 Enter 提交走同一路径；未知命令或解析错误只提示并保留草稿。
+    /// Startup command: same path as pressing Enter to submit; an unknown command or a parse
+    /// error only notifies and keeps the draft.
     ///
-    /// 返回 `true` 表示该命令要求退出（`/quit`），由 TUI 主循环走既有退出收尾。
+    /// Returning `true` means the command asked to quit (`/quit`), and the TUI main loop runs
+    /// the existing shutdown cleanup.
     pub(in crate::tui) fn submit_initial_command(&mut self, command: &str) -> bool {
         self.input = editor();
         self.shell_mode = false;
-        // 复用输入入口：`!` 启动命令与手写一致地消费模式前缀，斜杠命令原样保留。
+        // Reuse the input entry point: a `!` startup command consumes the mode prefix exactly
+        // like typed input, while slash commands are kept as-is.
         self.insert_input(command.to_owned());
         self.refresh_candidates(true);
         match commands::parse(command, &self.file_commands) {
@@ -846,7 +858,8 @@ impl App {
     }
 
     pub(in crate::tui) fn shutdown_background_tasks(&mut self) -> Result<()> {
-        // 隔离测试 worker 由其 owner 取消；正常 Agent 清理链路保持不变。
+        // The isolated test worker is cancelled by its owner; the normal Agent cleanup path
+        // stays unchanged.
         #[cfg(debug_assertions)]
         if let Some(worker) = self.mock_worker.as_ref() {
             worker.cancel();
@@ -864,7 +877,8 @@ impl App {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        // 每条链路都要尝试回收；首个错误保留 CleanupError 类型返回给退出码。
+        // Every chain is attempted; the first error keeps its CleanupError type and is returned
+        // for the exit code.
         let mut failure: Option<anyhow::Error> = None;
         if let Some(binding) = binding
             && let Err(error) = binding.shutdown()

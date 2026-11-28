@@ -6,19 +6,22 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 固定每页 100 条；与持久输入回忆的翻页约定一致，不新增配置项。
+/// Fixed at 100 entries per page; matches the paging convention of persistent input recall
+/// and adds no configuration key.
 const HISTORY_PAGE: usize = 100;
 
-/// `history.db` 不可用时唯一的用户可见提示：启动期与运行期共用，只提示一次。
+/// The only user-visible hint when `history.db` is unavailable: shared by startup and
+/// runtime and shown once.
 const HISTORY_UNAVAILABLE: &str = "Input history is unavailable; recall is limited to this run.";
 
 impl App {
-    /// 构造期启动 history worker 并投递第一页 LoadInputs。
+    /// Starts the history worker at construction time and submits the first LoadInputs page.
     ///
-    /// 必须在任何 `remember_text` 之前调用，FIFO 保证启动加载不包含本进程追加。
-    /// 不阻塞主线程：`Store::open` 在 worker 内完成，失败经 `Reply::Unavailable`
-    /// 由 [`App::handle_history_reply`] 转成同一句提示。
-    /// 返回启动提示：失败时明确只保留进程内回忆，绝不改用其他 HOME。
+    /// Must run before any `remember_text`, so FIFO ordering keeps this process's appends out
+    /// of the startup load. Never blocks the main thread: `Store::open` runs inside the worker
+    /// and a failure becomes the same hint through `Reply::Unavailable` handled by
+    /// [`App::handle_history_reply`]. Returns the startup hint: on failure recall is explicitly
+    /// limited to this process and no other HOME is ever used.
     pub(in crate::tui) fn start_history(&mut self, path: Option<PathBuf>) -> Option<String> {
         let Some(path) = path else {
             return Some("Input history is not persisted; recall is limited to this run.".into());
@@ -41,8 +44,9 @@ impl App {
         None
     }
 
-    /// 关闭 history worker：取消未完成的索引扫描并 join 已排队的追加。
-    /// join 后继续排空 FIFO 中的回复：退出前才发现的追加/加载失败也要提示。
+    /// Shuts the history worker down: cancels an unfinished index scan and joins queued
+    /// appends. Replies still in the FIFO are drained after the join, so append/load failures
+    /// discovered only at exit are reported too.
     pub(in crate::tui) fn shutdown_history(&mut self) {
         self.history_page_pending = None;
         let Some(mut worker) = self.history_worker.take() else {
@@ -63,7 +67,8 @@ impl App {
         }
     }
 
-    /// 排空 history worker 的全部回复；会话搜索结果交给搜索面板安装。
+    /// Drains every history worker reply; session-search results go to the search panel to
+    /// install.
     pub(in crate::tui) fn poll_history(&mut self) -> bool {
         let mut replies = Vec::new();
         if let Some(worker) = &self.history_worker {
@@ -80,7 +85,8 @@ impl App {
         true
     }
 
-    /// 单条 history 回复的落地；`Unavailable` 之外的变体保持既有处理。
+    /// Applies a single history reply; variants other than `Unavailable` keep the existing
+    /// handling.
     fn handle_history_reply(&mut self, reply: Reply) {
         match reply {
             Reply::Unavailable => self.receive_history_unavailable(),
@@ -109,8 +115,9 @@ impl App {
         }
     }
 
-    /// `history.db` 打开失败：停用持久回忆并释放 worker，避免追加继续排队；
-    /// 已接受的输入仍在进程内历史，提示文案与启动期失败完全一致。
+    /// `history.db` failed to open: disable persistent recall and release the worker so appends
+    /// stop queueing; already accepted input stays in the in-process history, and the hint
+    /// wording matches the startup failure exactly.
     fn receive_history_unavailable(&mut self) {
         self.history_page_pending = None;
         self.history_waiting_up = false;
@@ -119,7 +126,8 @@ impl App {
         self.notify_history_failure(HISTORY_UNAVAILABLE);
     }
 
-    /// 发往 history worker 的会话搜索；worker 不可用时只提示，不阻塞 UI。
+    /// Session search sent to the history worker; when the worker is unavailable it only
+    /// notifies and never blocks the UI.
     pub(in crate::tui) fn history_search(
         &mut self,
         panel_generation: u64,
@@ -182,7 +190,7 @@ impl App {
         }
     }
 
-    /// 打开/删除后先同步 JSONL 索引再搜索。
+    /// After opening/deleting, the JSONL index is synced before searching.
     pub(in crate::tui) fn history_sync_and_search(
         &mut self,
         panel_generation: u64,
@@ -198,7 +206,8 @@ impl App {
         })
     }
 
-    /// 会话面板代次单调递增；关闭后的迟到回复因代次过期被丢弃。
+    /// The session panel generation increases monotonically; late replies after closing are
+    /// dropped as stale.
     pub(in crate::tui) fn next_session_generation(&mut self) -> u64 {
         self.session_generation = self.session_generation.wrapping_add(1);
         self.session_generation
@@ -223,14 +232,16 @@ impl App {
         self.notify(Level::Error, message.into());
     }
 
-    /// 安装一页持久输入；启动页/翻页均前置到本地追加的尾部。
+    /// Installs one page of persistent input; both the startup page and paging prepend to the
+    /// locally appended tail.
     fn apply_history_page(
         &mut self,
         request_id: u64,
         _before_id: Option<i64>,
         result: Result<Vec<pp_runtime::history::InputEntry>>,
     ) {
-        // 同一时刻只允许一个加载请求；非当前请求的回复不得重复安装同一页。
+        // Only one load request may be in flight; replies to a non-current request must not
+        // install the same page twice.
         if self.history_page_pending != Some(request_id) {
             return;
         }
@@ -264,7 +275,8 @@ impl App {
                         entry.text
                     })
                     .collect();
-                // 前置会整体右移既有条目，修正当前导航下标。
+                // Prepending shifts every existing entry right, so correct the current
+                // navigation index.
                 if let Some(index) = &mut self.history_index {
                     *index += count;
                 }
@@ -274,7 +286,7 @@ impl App {
                 }
                 self.history_has_more = count == HISTORY_PAGE;
                 if self.history_waiting_up {
-                    // 完成这次被挂起的 Up：显示刚载入页中最新的那一条。
+                    // Complete this suspended Up: show the newest entry of the page just loaded.
                     self.history_waiting_up = false;
                     self.show_history(count - 1);
                 }
@@ -282,7 +294,7 @@ impl App {
         }
     }
 
-    /// 请求下一页（更老的 100 条）；没有 pending 页时才会发起。
+    /// Requests the next page (100 older entries); only issued when no page is pending.
     fn request_history_page(&mut self) {
         if self.history_page_pending.is_some() {
             return;
@@ -309,12 +321,13 @@ impl App {
         }
     }
 
-    /// Up 触底时等待下一页；重复 Up 合并成同一次等待。
+    /// Up at the bottom waits for the next page; repeated Up collapses into the same wait.
     pub(in crate::tui) fn wait_for_history_page(&mut self) {
         if self.history_waiting_up {
             return;
         }
-        // 已经开始浏览历史时 draft 早已捕获，不能被最老一条覆盖。
+        // The draft was captured long before browsing started and must not be overwritten by
+        // the oldest entry.
         if self.history_index.is_none() {
             self.resources.history_draft = Some(self.resources.snapshot_draft());
             self.history_draft = Some((self.input.clone(), self.shell_mode));
@@ -323,7 +336,8 @@ impl App {
         self.request_history_page();
     }
 
-    /// 回填内存历史中的一条，保留多行与 shell_mode 判定。
+    /// Refills one entry of the in-memory history, keeping multi-line text and the shell_mode
+    /// decision.
     pub(in crate::tui) fn show_history(&mut self, index: usize) {
         if index >= self.input_history.len() {
             return;
@@ -343,13 +357,15 @@ impl App {
             .restore_input(images, self.input_history[index].clone());
         self.insert_input(text);
         self.history_index = Some(index);
-        // 回填命令时先保持菜单关闭，让上下键可以连续浏览历史。
+        // Keep the menu closed while refilling so the up/down keys can browse history
+        // continuously.
         self.menu = None;
         self.menu_dismissed = true;
     }
 }
 
-/// 排空已结束 worker 的回复；只报告输入追加/加载失败（会话搜索退出后无需提示）。
+/// Drains the replies of a worker that has finished; only input append/load failures are
+/// reported (no hint is needed after session search exits).
 fn drain_input_failures(worker: &mut history::Worker) -> bool {
     let mut failed = false;
     while let Ok(reply) = worker.replies.try_recv() {
@@ -361,18 +377,21 @@ fn drain_input_failures(worker: &mut history::Worker) -> bool {
     failed
 }
 
-/// 正常退出与析构都保证 join；扫描取消后仍会处理已排队的追加。
+/// Both normal exit and drop guarantee the join; queued appends are still handled after the
+/// scan is cancelled.
 impl Drop for App {
     fn drop(&mut self) {
         if let Some(mut worker) = self.history_worker.take() {
             let _ = worker.shutdown();
-            // 退出路径不绘制：丢弃剩余回复，但必须等 worker 处理完队列再释放连接。
+            // The exit path does not draw: remaining replies are discarded, but the worker
+            // must finish its queue before the connection is released.
             let _ = drain_input_failures(&mut worker);
         }
     }
 }
 
-/// 时间戳使用整数 UTC 毫秒；系统时钟异常时退化为 0，不伪造未来时间。
+/// Timestamps use integer UTC milliseconds; a broken system clock degrades to 0 and never
+/// fakes a future time.
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -381,7 +400,8 @@ fn now_ms() -> i64 {
 }
 
 impl App {
-    /// 已接受的原始输入统一入口：追加内存历史并投递持久追加请求。
+    /// Single entry point for accepted raw input: appends to the in-memory history and
+    /// submits the persistent append request.
     pub(in crate::tui) fn remember_text(&mut self, text: String) {
         if text.trim().is_empty() {
             return;

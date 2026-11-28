@@ -8,7 +8,10 @@ fn slash_builtin_commands_parse_and_validate_usage() {
     for (input, expected) in [
         (" /plan \t", PlanCommand::Toggle),
         ("/plan view", PlanCommand::View),
-        ("/plan  调研登录流程  ", PlanCommand::Prompt("调研登录流程")),
+        (
+            "/plan  investigate login flow  ",
+            PlanCommand::Prompt("investigate login flow"),
+        ),
         ("/plan\tview logs", PlanCommand::Prompt("view logs")),
         (
             "/plan first line\nsecond line",
@@ -223,7 +226,8 @@ fn slash_builtin_commands_parse_and_validate_usage() {
     }
 }
 
-/// 16 个内嵌 mock 场景命令名：仅含 debug assertions 的构建注册并解析。
+/// The 16 embedded mock scenario command names: registered and parsed only in builds
+/// with debug assertions.
 const TEST_COMMAND_NAMES: [&str; 16] = [
     "/test-task",
     "/test-ui",

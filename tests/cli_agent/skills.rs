@@ -15,7 +15,7 @@ pub(super) fn install(home: &std::path::Path, folder: &str, name: &str) -> std::
         .collect::<String>();
     std::fs::write(
         &file,
-        format!("---\nname: {name}\ndescription: Rust 测试指导\n---\n{body}"),
+        format!("---\nname: {name}\ndescription: Rust testing guidance\n---\n{body}"),
     )
     .unwrap();
     file
@@ -118,12 +118,12 @@ fn skills_load_on_demand_disable_persist_and_reset_in_both_protocols() {
     let mut cli = Cli::start_with(
         home.path(),
         None,
-        "# 保留配置注释\nthink_level: high\nread_max_lines: 2\nread_max_bytes: 8\n",
+        "# Kept configuration comment\nthink_level: high\nread_max_lines: 2\nread_max_bytes: 8\n",
         &response_models(&server, Some(protocol)),
     );
     cli.input("first\n");
     let (request, body) = receive_at(&server, path);
-    assert!(system(&body, protocol).contains("Rust 测试指导"));
+    assert!(system(&body, protocol).contains("Rust testing guidance"));
     assert!(!body.to_string().contains("secret-skill-line"));
     send_skill_read(request, protocol, "rust");
     let (request, body) = receive_at(&server, path);
@@ -132,7 +132,7 @@ fn skills_load_on_demand_disable_persist_and_reset_in_both_protocols() {
     finish_request(request, protocol);
     cli.input("/skills disable rust\nsecond\n");
     let (request, body) = receive_at(&server, path);
-    assert!(!system(&body, protocol).contains("Rust 测试指导"));
+    assert!(!system(&body, protocol).contains("Rust testing guidance"));
     assert!(body.to_string().contains("secret-skill-line-19"));
     send_skill_read(request, protocol, "rust");
     let (request, body) = receive_at(&server, path);
@@ -142,7 +142,7 @@ fn skills_load_on_demand_disable_persist_and_reset_in_both_protocols() {
     cli.input("/new\nthird\n");
     let (request, body) = receive_at(&server, path);
     assert!(!body.to_string().contains("secret-skill-line"));
-    assert!(!system(&body, protocol).contains("Rust 测试指导"));
+    assert!(!system(&body, protocol).contains("Rust testing guidance"));
     send_skill_read(request, protocol, "rust");
     let (request, body) = receive_at(&server, path);
     assert_eq!(loaded(&body, protocol)["ok"], false);
@@ -157,7 +157,7 @@ fn skills_load_on_demand_disable_persist_and_reset_in_both_protocols() {
     );
     assert_eq!(output.stdout, b"ok\nok\nok\n");
     let settings = std::fs::read_to_string(config_path(home.path(), "settings.yml")).unwrap();
-    assert!(settings.contains("# 保留配置注释"));
+    assert!(settings.contains("# Kept configuration comment"));
     assert!(settings.contains("read_max_lines: 2"));
     assert!(settings.contains("read_max_bytes: 8"));
     assert!(!settings.contains("think_level"));
@@ -177,7 +177,7 @@ fn skills_load_on_demand_disable_persist_and_reset_in_both_protocols() {
     let mut cli = Cli::start_with_existing_files(home.path(), None);
     cli.input("restart\n");
     let (request, body) = receive_at(&server, path);
-    assert!(!system(&body, protocol).contains("Rust 测试指导"));
+    assert!(!system(&body, protocol).contains("Rust testing guidance"));
     send_skill_read(request, protocol, "rust");
     let (request, body) = receive_at(&server, path);
     assert_eq!(loaded(&body, protocol)["ok"], false);

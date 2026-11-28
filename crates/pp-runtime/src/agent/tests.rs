@@ -14,7 +14,7 @@ mod session_task_cases;
 mod tree_todo_cases;
 mod turn_input_cases;
 
-/// 第四个参数是用户级 `hooks.yml` 的正文；空串表示不写该文件。
+/// The fourth argument is the body of the user-level `hooks.yml`; an empty string means the file is not written.
 pub(super) fn runtime_input_agent(
     dir: &std::path::Path,
     protocol: &str,
@@ -25,7 +25,7 @@ pub(super) fn runtime_input_agent(
     runtime_agent(dir, protocol, address, "", hooks)
 }
 
-/// 在 `settings.yml` 里追加正文的变体：测旧配置迁移与普通设置字段。
+/// Variant that appends a body to `settings.yml`: tests old config migration and plain settings fields.
 pub(super) fn runtime_settings_agent(
     dir: &std::path::Path,
     protocol: &str,
@@ -35,7 +35,7 @@ pub(super) fn runtime_settings_agent(
     runtime_agent(dir, protocol, address, settings_extra, None)
 }
 
-/// 同时需要 settings 正文与 hooks 正文的构造入口（如同时配审批与 hooks）。
+/// Constructor for cases that need both a settings body and a hooks body (for example approvals plus hooks).
 pub(super) fn runtime_agent(
     dir: &std::path::Path,
     protocol: &str,
@@ -47,7 +47,7 @@ pub(super) fn runtime_agent(
     let models = dir.join("models.yml");
     std::fs::write(
         &settings,
-        format!("# 测试设置\nrate_limit_retry_budget_seconds: 0\n{settings_extra}"),
+        format!("# test settings\nrate_limit_retry_budget_seconds: 0\n{settings_extra}"),
     )
     .unwrap();
     if let Some(hooks) = hooks {
@@ -73,7 +73,7 @@ pub(super) fn runtime_agent(
     .unwrap()
 }
 
-/// 测试构造的 Agent 只写临时工作区内的统计库，绝不落到开发者真实 `~/.pp/stats`。
+/// Test-built Agents write only to the stats database inside the temporary workspace, never to the developer's real `~/.pp/stats`.
 #[test]
 fn test_constructor_keeps_statistics_inside_the_session_workspace() {
     let dir = tempfile::tempdir().unwrap();
@@ -98,7 +98,7 @@ fn test_constructor_keeps_statistics_inside_the_session_workspace() {
     if let Ok(production) = pp_stats::database_path() {
         assert_ne!(
             production, stats,
-            "测试 Agent 不得写真实统计库；隔离由 Agent::new 的临时路径保证"
+            "test Agents must not write the real stats database; isolation comes from Agent::new's temporary paths"
         );
     }
 }
@@ -153,7 +153,7 @@ pub(super) fn plan_workflow(
     }
     document.origin_prompt = origin.into();
     document.status = status;
-    // 旧会话语义：无 AI 文件名，位于 Plans，走 <id>.md 兜底路径。
+    // Legacy session semantics: no AI file name, located under Plans, falling back to the <id>.md path.
     document.location = pp_core::plan::PlanLocation::Plans;
     pp_core::plan::WorkflowState {
         mode: pp_core::plan::WorkMode::Plan,
@@ -318,7 +318,7 @@ pub(super) fn tool_call_for(protocol: &str, request: CapturedRequest, name: &str
     }
 }
 
-/// 一轮多个工具调用：call ID 依次为 call-1..call-N。
+/// Multiple tool calls in one turn: call IDs are call-1..call-N in order.
 pub(super) fn tool_batch_for(protocol: &str, request: CapturedRequest, calls: &[(&str, &str)]) {
     match protocol {
         "completion" => completion_stream(

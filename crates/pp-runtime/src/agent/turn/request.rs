@@ -1,4 +1,4 @@
-//! 请求前的项目指令发布、用量记账与两种协议原生历史追加。
+//! Pre-request project instruction publishing, usage accounting and native history appends for both protocols.
 use super::*;
 
 pub(in crate::agent) type ReportedProjectLoads = std::collections::BTreeMap<String, String>;
@@ -49,7 +49,7 @@ pub(super) fn push_developer(request: &mut CreateChatCompletionRequest, text: St
         ));
 }
 
-/// 记录一次普通请求的用量：`last_request` 只保存最近一次，会话累计只增不减。
+/// Record the usage of one normal request: `last_request` keeps only the most recent, the session total only grows.
 pub(super) fn record_usage(
     last_request: &mut Option<TokenUsage>,
     session_output_tokens: &mut u64,
@@ -61,7 +61,7 @@ pub(super) fn record_usage(
     }
 }
 
-/// 收集流式事件中的思考内容，重试/失败时重置。
+/// Collect thinking content from streaming events, resetting on retry/failure.
 pub(super) fn collect_thinking_event(
     event: &AgentEvent,
     thinking: &mut String,
@@ -78,7 +78,7 @@ pub(super) fn collect_thinking_event(
     }
 }
 
-/// 记录本轮已提交的 LLM 思考数据。
+/// Record the LLM thinking data committed in this turn.
 pub(super) fn record_thinking(
     history: &mut Vec<super::super::context_diagnosis::ThinkingEntry>,
     thinking: String,

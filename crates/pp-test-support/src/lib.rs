@@ -1,7 +1,8 @@
-//! 测试夹具用的回环 HTTP 传输：真实 TCP、同步测试线程、异步 Axum 服务。
+//! Loopback HTTP transport for test fixtures: real TCP, synchronous test threads, async Axum server.
 //!
-//! 测试线程按顺序领取 [`CapturedRequest`] 并同步写回响应；HTTP 服务跑在独立的
-//! OS 线程里，用单线程 runtime 承载 `axum::serve`，不把 async 泄漏给调用方。
+//! The test thread takes [`CapturedRequest`] values in order and writes responses back synchronously;
+//! the HTTP server runs on a dedicated OS thread, driving `axum::serve` with a single-threaded runtime
+//! so async never leaks to the caller.
 
 use std::{
     io,
@@ -25,7 +26,7 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::sync::{mpsc as async_mpsc, oneshot};
 
-/// 回环服务 owner：监听器、服务线程与请求队列都随它一起结束。
+/// Loopback server owner: listener, server thread and request queue all end with it.
 pub struct TestServer {
     addr: SocketAddr,
     requests: Mutex<Receiver<CapturedRequest>>,
@@ -34,7 +35,7 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    /// 在 `127.0.0.1:0` 上启动，返回时 runtime／listener／router 均已就绪。
+    /// Starts on `127.0.0.1:0`; the runtime, listener and router are all ready when it returns.
     pub fn start() -> io::Result<Self> {
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let addr = listener.local_addr()?;
@@ -70,7 +71,7 @@ impl TestServer {
         self.addr
     }
 
-    /// 等待下一个请求；超时返回 `Ok(None)`，服务端队列断开返回 `BrokenPipe`。
+    /// Waits for the next request; returns `Ok(None)` on timeout and `BrokenPipe` when the server queue disconnects.
     pub fn recv_timeout(&self, timeout: Duration) -> io::Result<Option<CapturedRequest>> {
         let requests = self.lock();
         match requests.recv_timeout(timeout) {
@@ -80,7 +81,7 @@ impl TestServer {
         }
     }
 
-    /// 非阻塞领取，队列为空返回 `Ok(None)`。
+    /// Non-blocking receive; returns `Ok(None)` when the queue is empty.
     pub fn try_recv(&self) -> io::Result<Option<CapturedRequest>> {
         let requests = self.lock();
         match requests.try_recv() {
@@ -108,7 +109,7 @@ impl Drop for TestServer {
     }
 }
 
-/// 捕获到的请求；未 [`respond`](CapturedRequest::respond) 前客户端收不到响应头。
+/// A captured request; the client sees no response headers until [`respond`](CapturedRequest::respond).
 pub struct CapturedRequest {
     method: Method,
     target: String,
@@ -122,7 +123,7 @@ impl CapturedRequest {
         &self.method
     }
 
-    /// 原始 request-target：不解码、不丢 query。
+    /// Raw request-target: not decoded, query preserved.
     pub fn target(&self) -> &str {
         &self.target
     }
@@ -139,12 +140,12 @@ impl CapturedRequest {
         serde_json::from_slice(&self.body)
     }
 
-    /// 交还完整响应；返回时服务端尚未保证网络字节已写出。
+    /// Hands back a complete response; on return the server has not yet guaranteed the bytes are on the wire.
     pub fn respond(self, response: Response) -> io::Result<()> {
         self.reply.send(response).map_err(|_| closed())
     }
 
-    /// 以流式 body 响应；每次 [`BodyWriter::send`] 受容量 1 的通道背压。
+    /// Responds with a streaming body; each [`BodyWriter::send`] is backpressured by a capacity-1 channel.
     pub fn start_stream(self, status: StatusCode, headers: HeaderMap) -> io::Result<BodyWriter> {
         let (sender, mut receiver) = async_mpsc::channel(1);
         let stream = futures_util::stream::poll_fn(move |context| receiver.poll_recv(context))
@@ -160,7 +161,7 @@ impl CapturedRequest {
         Ok(BodyWriter { sender })
     }
 
-    /// `text/event-stream` 响应，帧格式固定为 `data: {payload}\n\n`。
+    /// `text/event-stream` response; the frame format is fixed as `data: {payload}\n\n`.
     pub fn start_sse(self) -> io::Result<SseWriter> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -173,7 +174,7 @@ impl CapturedRequest {
     }
 }
 
-/// 流式响应写端；`finish` 或 Drop 关闭 body。
+/// Streaming response writer; `finish` or Drop closes the body.
 pub struct BodyWriter {
     sender: async_mpsc::Sender<Bytes>,
 }
@@ -186,7 +187,7 @@ impl BodyWriter {
     pub fn finish(self) {}
 }
 
-/// SSE 写端：只编码 `data` 帧，不添加事件名、心跳或终止标记。
+/// SSE writer: encodes `data` frames only, adding no event names, heartbeats or terminal markers.
 pub struct SseWriter {
     writer: BodyWriter,
 }

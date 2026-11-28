@@ -1,4 +1,4 @@
-//! 追加消息（follow-up）与 `agent://` 控制动作。
+//! Follow-up messages and `agent://` control actions.
 
 use anyhow::{Context, Result, ensure};
 use pp_core::cancellation::CancellationToken;

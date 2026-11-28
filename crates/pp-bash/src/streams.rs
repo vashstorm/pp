@@ -1,39 +1,46 @@
-//! 管道阶段镜像与临时正文保留（`PipeStore`）。
+//! Pipe stage mirroring and temporary body retention (`PipeStore`).
 //!
-//! 该模块是 plan §2.4–2.6 与 §3.1–3.4 的存储层：每次 bash 调用创建一个 run，
-//! run 内观察到的多阶段管道、每条边的阶段状态和真实流经字节都保存在根会话共享
-//! 的一棵有界 registry 里。它不依赖解释器实现细节，只实现
-//! [`brush_core::PipelineObserver`] 并通过 [`relay`](super::relay) 创建进程内管道。
+//! This module is the storage layer of plan §2.4–2.6 and §3.1–3.4: each bash call creates a run, and
+//! the multi-stage pipelines, per-edge stage states and real bytes flowing through them are kept in a
+//! bounded registry shared by the root session. It does not depend on interpreter implementation
+//! details; it only implements [`brush_core::PipelineObserver`] and creates in-process pipes through
+//! [`relay`](super::relay).
 //!
-//! 有界规则（全部为内部常量，不暴露设置）：
-//! - 每流只保留最新 1 MiB 原始字节；
-//! - 每 run 最多 16 条缓存流，流关闭后只保留最近 4 条已关闭流；
-//! - 根会话合计最多 64 条缓存流 / 64 MiB 正文，最近 8 个已完成且有管道的 run；
-//! - 每 run 保留最近 16 个 pipeline occurrence，每个最多 32 个阶段明细；
-//! - 明细被淘汰不会丢掉“观察到过非零阶段”这一事实，计数始终累计；
-//! - 淘汰优先最老已完成 run / 最老已关闭流，永不淘汰 open 流；没有可淘汰槽位时
-//!   该边直接不捕获（`untapped_edges`），命令仍按普通管道执行。
+//! Bounded rules (all internal constants, not exposed as settings):
+//! - each stream keeps only the newest 1 MiB of raw bytes;
+//! - at most 16 cached streams per run, keeping only the latest 4 closed streams;
+//! - the root session holds at most 64 cached streams / 64 MiB of body and the latest 8 completed runs
+//!   that have pipelines;
+//! - each run keeps the latest 16 pipeline occurrences with at most 32 stage details each;
+//! - evicting details never loses the fact that a non-zero stage was observed; counts keep
+//!   accumulating;
+//! - eviction prefers the oldest completed run / oldest closed stream and never evicts open streams;
+//!   when no slot can be evicted the edge is simply not captured (`untapped_edges`) and the command
+//!   still runs as a normal pipeline.
 
-/// 单条流的保留正文上限。
+/// Retained body limit for a single stream.
 pub(crate) const STREAM_RING_CAP: usize = 1024 * 1024;
 const MAX_STREAMS_PER_RUN: usize = 16;
 const MAX_CLOSED_STREAMS_PER_RUN: usize = 4;
 const MAX_TOTAL_STREAMS: usize = 64;
 const MAX_TOTAL_BODY: usize = 64 * 1024 * 1024;
-/// 已完成仍有管道的 run 保留上限；后台任务回归也按此边界构造用例。
+/// Retention limit for completed runs that still have pipelines; background-task regressions also
+/// build cases against this boundary.
 pub(super) const MAX_COMPLETED_RUNS: usize = 8;
-/// 已完成但没有管道的 run 仍然可被 `/pipes`/状态查询看到（例如宿主启动失败），
-/// 但单独限界，绝不挤占“最近 8 个有管道的 run”历史。
+/// Completed runs without pipelines remain visible to `/pipes`/status queries (for example when host
+/// startup failed), but they are bounded separately and never crowd out the "latest 8 runs with
+/// pipelines" history.
 const MAX_EMPTY_RUNS: usize = 8;
 const MAX_PIPELINES_PER_RUN: usize = 16;
 const MAX_STAGES_PER_PIPELINE: usize = 32;
 const MAX_LABEL_BYTES: usize = 512;
-/// 卡片只复制最近一小段正文，避免每次刷新复制整个流缓存。
+/// Cards copy only a small recent body fragment so each refresh does not copy the whole stream cache.
 const PREVIEW_BYTES: u64 = 50 * 1024;
 
-/// 临时管道 URI 的 scheme。
+/// Scheme of temporary pipe URIs.
 pub(crate) const PIPE_URI_PREFIX: &str = "pipe://";
-/// 未知、已淘汰或来自另一会话时的固定提示；空流绝不能伪装成这个状态。
+/// Fixed hint for unknown, evicted or other-session streams; an empty stream must never masquerade as
+/// this state.
 pub(crate) const PIPES_UNAVAILABLE: &str =
     "Temporary pipe output is unavailable (evicted or from another session).";
 

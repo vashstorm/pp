@@ -110,7 +110,10 @@ fn plan_exit_restore_and_override_routing() {
         assert_eq!(agent.current_model.reference, "fixture/one");
         assert_eq!(agent.think_level, ThinkLevel::Low);
         assert_eq!(agent.model_source(), pp_core::model::ModelSource::Default);
-        assert!(agent.role_route.is_none(), "退出 Plan 不保留角色路由");
+        assert!(
+            agent.role_route.is_none(),
+            "leaving Plan does not keep the role route"
+        );
         assert_eq!(user_texts(&agent), [EXPLORATION]);
         assert!(
             !agent
@@ -120,7 +123,8 @@ fn plan_exit_restore_and_override_routing() {
         );
         drop(agent);
 
-        // checkpoint 只记录实际生效的模型；角色路由不再参与默认模型推导。
+        // The checkpoint records only the effective model; role routing no longer takes part in
+        // default model derivation.
         let restored = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
         assert_eq!(restored.checkpoint.workflow.mode, WorkMode::Execute);
         assert_eq!(restored.checkpoint.model_reference, "fixture/one");
@@ -135,7 +139,8 @@ fn plan_exit_restore_and_override_routing() {
         agent.enter_plan(&CancellationToken::new()).unwrap();
         agent.workflow = WorkflowState::default();
         if !has_plan_route {
-            // 手动选择写入进程级覆盖 `a`：恢复后仍应生效。
+            // The manual selection writes process-level override `a`: it must still apply after
+            // restore.
             agent.switch_model("planner/one").unwrap();
         }
         seed_session(&mut agent, EXPLORATION);
@@ -146,7 +151,8 @@ fn plan_exit_restore_and_override_routing() {
         let models = agent.models();
         drop(agent);
 
-        // 旧 checkpoint 仍带 PLAN 路由（仅审计），恢复后的模型 = resolve()。
+        // The old checkpoint still carries the PLAN route (audit only); the restored model =
+        // resolve().
         let restored = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
         assert_eq!(
             restored
@@ -159,16 +165,19 @@ fn plan_exit_restore_and_override_routing() {
         let tools = Tools::new(dir.path().to_owned(), EditMode::Replace).unwrap();
         let agent = Agent::restore(models, tools, restored).unwrap();
         if has_plan_route {
-            // 无覆盖：`b` = DEFAULT 角色 fixture/one。
+            // No override: `b` = DEFAULT role fixture/one.
             assert_eq!(agent.current_model.reference, "fixture/one");
             assert_eq!(agent.model_source(), pp_core::model::ModelSource::Default);
         } else {
-            // 手动覆盖 planner/one 在恢复后仍是同一个模型。
+            // The manual planner/one override is still the same model after restore.
             assert_eq!(agent.current_model.reference, "planner/one");
             assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
         }
         assert_eq!(user_texts(&agent), [EXPLORATION]);
-        assert!(agent.role_route.is_none(), "恢复不还原 checkpoint 路由");
+        assert!(
+            agent.role_route.is_none(),
+            "restore does not reapply the checkpoint route"
+        );
         drop(agent);
         let saved = persistence::load_test(&sessions, &locks, Some(&id), true).unwrap();
         assert_eq!(
@@ -179,27 +188,32 @@ fn plan_exit_restore_and_override_routing() {
                 "planner/one"
             }
         );
-        assert!(saved.checkpoint.role_route.is_none(), "恢复后清理旧路由");
+        assert!(
+            saved.checkpoint.role_route.is_none(),
+            "old route cleared after restore"
+        );
     }
 
     {
         let dir = tempfile::tempdir().unwrap();
         let mut agent = runtime_input_agent(dir.path(), "completion", "127.0.0.1:1", "");
         install_distinct_plan_model(&mut agent, dir.path());
-        // 手动覆盖 fixture/spare，区别于 DEFAULT 角色（fixture/one）与 PLAN 角色（planner/one）。
+        // Manual override fixture/spare, distinct from the DEFAULT role (fixture/one) and the
+        // PLAN role (planner/one).
         agent.switch_model("fixture/spare").unwrap();
         assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
         let expected = agent.current_model.reference.clone();
         let expected_level = agent.think_level;
 
-        // 进入 Plan：手动覆盖优先于 PLAN 角色。
+        // Entering Plan: the manual override wins over the PLAN role.
         agent.enter_plan(&CancellationToken::new()).unwrap();
         assert_eq!(agent.current_model.reference, expected);
         assert_eq!(agent.think_level, expected_level);
         assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
         assert_eq!(agent.workflow.mode, WorkMode::Plan);
 
-        // 批准执行按 resolve() 交接，不切回配置默认。
+        // Approval hands over through resolve() and does not switch back to the configured
+        // default.
         let token = ready_plan_token(&mut agent);
         let approval = agent
             .approve_plan(
@@ -215,7 +229,7 @@ fn plan_exit_restore_and_override_routing() {
         assert_eq!(agent.think_level, expected_level);
         assert_eq!(agent.model_source(), pp_core::model::ModelSource::Override);
 
-        // 再次进出 Plan：同一条手动覆盖保持生效。
+        // Entering and leaving Plan again: the same manual override stays effective.
         agent.enter_plan(&CancellationToken::new()).unwrap();
         assert_eq!(agent.current_model.reference, expected);
         agent.leave_plan(&CancellationToken::new(), None).unwrap();
@@ -232,13 +246,14 @@ fn plan_toggle_leave_and_save_boundaries() {
         seed_session(&mut agent, EXPLORATION);
         let session_id = agent.session_id().unwrap().to_owned();
 
-        // 进入 Plan 只待命：Plan+None，不分配文档也不创建文件。
+        // Entering Plan only stands by: Plan+None, no document allocated and no file created.
         let workflow = agent.enter_plan(&CancellationToken::new()).unwrap();
         assert_eq!(workflow.mode, WorkMode::Plan);
         assert!(workflow.plan.is_none());
         assert_eq!(journal_workflow(dir.path(), &session_id), workflow);
 
-        // 已提交任务但 revision-0 尚未首存：退出被拒绝且工作流不变。
+        // Tasks were committed but revision-0 is not saved yet: leaving is rejected and the
+        // workflow is unchanged.
         let mut unsaved = pp_core::plan::PlanDocument::new().unwrap();
         unsaved.origin_prompt = "first task".into();
         agent.workflow.plan = Some(unsaved);
@@ -271,14 +286,15 @@ fn plan_toggle_leave_and_save_boundaries() {
             preparation.workflow
         );
 
-        // 已保存草稿退出：解除绑定而非 Abandoned；文件保留在磁盘。
+        // Leaving with a saved draft releases the binding instead of marking Abandoned; the file
+        // stays on disk.
         agent.workflow = plan_workflow(PLAN_CONTENT, ORIGIN, PlanStatus::Draft);
         write_plan_file(&agent, PLAN_CONTENT);
         let path = plan_path(
             dir.path(),
             &agent.workflow.plan.as_ref().unwrap().id.clone(),
         );
-        // 原确认不能用于已经首存的文档。
+        // The earlier confirmation cannot be used for an already saved document.
         assert_eq!(
             err_message(agent.leave_plan(
                 &CancellationToken::new(),
@@ -415,8 +431,8 @@ fn plan_keep_and_fresh_approval_handoff() {
             journal_workflow(dir.path(), &session_id),
             preparation.workflow
         );
-        // 审批交接：execution prompt 指向 plans 路径；Drafts 源链接已
-        // 清理；登记表条目指向 Plans。
+        // Approval handoff: the execution prompt points at the plans path; the Drafts source
+        // link has been cleaned up; the registry entry points at Plans.
         let id = agent.workflow.plan.as_ref().unwrap().id.clone();
         assert!(texts[1].contains(&format!(".pp/plans/{id}.md")));
         assert_eq!(
@@ -466,8 +482,9 @@ fn plan_keep_and_fresh_approval_handoff() {
             &CancellationToken::new(),
             &mut |_| {},
         ));
-        // journal 只读后审批在首次持久化点失败：workflow 保持 Plan/Ready，
-        // 已发布的目标链接保留，源链接与登记/绑定状态如实保留。
+        // After the journal becomes read-only, approval fails at the first persistence point:
+        // the workflow stays Plan/Ready, the published target link is kept, and the source link
+        // plus registry/binding state are preserved as-is.
         assert_eq!(agent.workflow.mode, WorkMode::Plan);
         assert_eq!(
             agent.workflow.plan.as_ref().unwrap().status,
@@ -507,7 +524,8 @@ fn plan_keep_and_fresh_approval_handoff() {
                 &mut |_| {},
             )
             .unwrap();
-        // Fresh 交接换会话根：规划会话的临时管道不迁移到执行会话。
+        // A Fresh handoff switches the session root: the planning session's temporary pipes do
+        // not migrate to the execution session.
         assert!(!planning_store.same_instance(&agent.pipe_store()));
         // A fresh session with an empty replay was handed over.
         assert!(matches!(&preparation.replay, Some(replay) if replay.is_empty()));
@@ -542,7 +560,7 @@ fn plan_keep_and_fresh_approval_handoff() {
             journal_workflow(dir.path(), &execution_id),
             preparation.workflow
         );
-        // 两个绑定都指向同一 Plans 路径；Drafts 源链接已清理。
+        // Both bindings point at the same Plans path; the Drafts source link has been cleaned up.
         let id = source.plan.as_ref().unwrap().id.clone();
         assert!(texts[0].contains(&format!(".pp/plans/{id}.md")));
         assert!(
@@ -570,15 +588,16 @@ fn plan_keep_and_fresh_approval_handoff() {
             &CancellationToken::new(),
             &mut |_| {},
         ));
-        // journal 只读后审批在首次持久化点失败：workflow 保持 Plan/Ready，
-        // 已发布的目标链接保留，源规划会话未被替换。
+        // After the journal becomes read-only, approval fails at the first persistence point:
+        // the workflow stays Plan/Ready, the published target link is kept and the source
+        // planning session was not replaced.
         assert_eq!(agent.workflow.mode, WorkMode::Plan);
         assert_eq!(
             agent.workflow.plan.as_ref().unwrap().status,
             PlanStatus::Ready
         );
         assert_eq!(user_texts(&agent), vec![EXPLORATION.to_owned()]);
-        // 失败交接未换根：临时管道实例保持原样。
+        // A failed handoff did not switch roots: the temporary pipe instance is unchanged.
         assert!(planning_store.same_instance(&agent.pipe_store()));
         let id = agent.workflow.plan.as_ref().unwrap().id.clone();
         assert_eq!(

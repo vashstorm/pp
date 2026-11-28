@@ -1,8 +1,10 @@
-//! 提问面板：多题单选／多选／自定义回答与 Review 一次提交。
+//! Ask panel: multiple questions with single choice/multi choice/custom answers, and a
+//! single Review submit.
 //!
-//! Panel 只维护交互状态与绘制；请求通道、答案回传与 transcript 记录块由
-//! `App`（src/tui.rs）负责。所有展示文本经过 `display_text` 清洗，原始答案
-//! 始终使用未经改写的 label／custom 文本。
+//! The Panel only owns interaction state and drawing; the request channel, answer
+//! replies and transcript record blocks belong to `App` (src/tui.rs). All displayed text
+//! is sanitized through `display_text`, while the raw answers always keep the
+//! unmodified label/custom text.
 
 use std::sync::Arc;
 
@@ -51,7 +53,7 @@ enum Page {
     Review,
 }
 
-/// 每题独立的焦点、选集、custom 答案与列表位置。
+/// Focus, selection, custom answer and list position of a single question.
 struct QuestionState {
     selected: Vec<usize>,
     custom: String,
@@ -215,13 +217,13 @@ mod tests {
             assert!(matches!(p1.key(key(KeyCode::Esc)), Action::None));
             assert!(p1.editor.is_none() && p1.states[0].custom.is_empty());
             p1.key(key(KeyCode::Enter));
-            p1.paste("第一行");
+            p1.paste("first line");
             p1.key(ctrl('j'));
             p1.paste("second");
             let Action::Submit(a1) = p1.key(key(KeyCode::Enter)) else {
                 panic!("expected submit after custom answer");
             };
-            assert_eq!(a1[0].custom_input, Some("第一行\nsecond".to_string()));
+            assert_eq!(a1[0].custom_input, Some("first line\nsecond".to_string()));
             assert!(a1[0].selected_options.is_empty());
 
             let mut p2 = panel(vec![
@@ -271,7 +273,7 @@ mod tests {
                 assert!(p3.states[0].custom.is_empty());
                 p3.paste("accepted");
                 let Action::Submit(ans) = p3.key(key(KeyCode::Enter)) else {
-                    panic!("原位输入应可提交");
+                    panic!("in-place input must submit");
                 };
                 assert_eq!(ans[0].custom_input.as_deref(), Some("accepted"));
             }
@@ -318,13 +320,13 @@ mod tests {
             p3.key(key(KeyCode::Char(' ')));
             p3.key(key(KeyCode::End));
             p3.key(key(KeyCode::Enter));
-            p3.paste("再检查中文");
+            p3.paste("review again");
             p3.key(key(KeyCode::Enter));
             let Action::Submit(a3) = p3.key(key(KeyCode::Enter)) else {
                 panic!("expected submit with selection and custom answer");
             };
             assert_eq!(a3[0].selected_options, vec!["unit".to_string()]);
-            assert_eq!(a3[0].custom_input, Some("再检查中文".to_string()));
+            assert_eq!(a3[0].custom_input, Some("review again".to_string()));
         }
 
         {
@@ -374,7 +376,7 @@ mod tests {
             assert_eq!(space.states[0].selected, [1]);
             space.key(key(KeyCode::Char(' ')));
             let Action::Submit(ans) = space.key(key(KeyCode::Enter)) else {
-                panic!("按 Enter 后应提交已选答案");
+                panic!("must submit the selected answer after Enter");
             };
             assert_eq!(ans[0].selected_options, ["A"]);
         }
@@ -436,7 +438,8 @@ mod tests {
                     terminal.draw(|frame| p.draw(frame, frame.area())).unwrap();
                     let buffer = terminal.backend().buffer();
                     let row = p.overlay.unwrap().y + 1;
-                    // 宽字符的后续单元格只是占位，不属于显示文本。
+                    // Trailing cells of a wide character are placeholders only and are not
+                    // part of the displayed text.
                     let columns = (0..width).filter(|&x| {
                         x == 0 || Span::raw(buffer[(x - 1, row)].symbol()).width() <= 1
                     });
@@ -448,11 +451,15 @@ mod tests {
                     assert_eq!(
                         highlighted,
                         format!(" {label} "),
-                        "高亮背景应覆盖当前页签及其左右各一个空格"
+                        "highlight must cover the active tab and one space each side"
                     );
                     for x in 2..width.saturating_sub(2) {
                         let cell = &buffer[(x, row)];
-                        assert_ne!(cell.bg, accent(), "页签不应使用亮黄色背景");
+                        assert_ne!(
+                            cell.bg,
+                            accent(),
+                            "tabs must not use the bright yellow background"
+                        );
                         if cell.bg == ask_tab_bg() {
                             assert_eq!(cell.fg, activity());
                             assert!(!cell.modifier.contains(Modifier::BOLD));
@@ -462,7 +469,7 @@ mod tests {
                         let text: String = columns.map(|x| buffer[(x, row)].symbol()).collect();
                         assert!(
                             text.contains(" 范围   mode   Review "),
-                            "页签之间应正好留三个空格：{text}"
+                            "tab labels must be separated by exactly three spaces: {text}"
                         );
                     }
                 }
@@ -484,22 +491,24 @@ mod tests {
                 question
             };
 
-            // 单题没有 Review 页签，高度只由题干折行决定。
+            // A single question has no Review tab, so the height depends only on the
+            // wrapped prompt.
             let mut single = panel(vec![wrapped("first")]);
             let wide = render(&mut single, 80, 30);
             let wide_height = single.overlay.unwrap().height;
-            // TestBackend 为双宽字符保留空白占位单元格。
+            // TestBackend keeps blank placeholder cells for double-width characters.
             assert!(wide.replace(' ', "").contains(LONG));
             let narrow = render(&mut single, 32, 30);
             assert!(
                 single.overlay.unwrap().height > wide_height,
-                "窄屏题干折行应撑高面板"
+                "a wrapped prompt on a narrow screen must make the panel taller"
             );
             assert!(narrow.replace(' ', "").contains("请选择本次操作"));
             assert!(narrow.replace(' ', "").contains("确认后继续"));
             assert!(narrow.contains("󰐽 A"));
 
-            // 多题同一高度下切换页签只换正文。
+            // With several questions at the same height, switching tabs only swaps the
+            // body.
             let mut pages = panel(vec![
                 wrapped("first"),
                 question("second", false, None, &["B"]),
@@ -525,20 +534,24 @@ mod tests {
         }
         let mut panel = panel(vec![long, question("short", false, None, &["D"])]);
 
-        // 宽屏：最高的「long」页决定共用高度，切到「short」和 Review 都不变。
+        // Wide screen: the tallest `long` page sets the shared height, and switching to
+        // `short` or Review does not change it.
         render(&mut panel, 100, 40);
         let shared = panel.overlay.unwrap().height;
-        assert_eq!(shared, 13, "题干、三项名称与说明、Other 和五行框架");
+        assert_eq!(
+            shared, 13,
+            "prompt, three option names/descriptions, Other and the five-row frame"
+        );
         panel.key(key(KeyCode::Tab));
         let screen = render(&mut panel, 100, 40);
         assert!(screen.contains("Choose for short?"));
         assert_eq!(
             panel.overlay.unwrap().height,
             shared,
-            "切换页签不应改变面板高度"
+            "switching tabs must not change the panel height"
         );
 
-        // 校验错误在共用高度之外单独占一行。
+        // The validation error occupies its own row outside the shared height.
         panel.error = Some(REQUIRED_MESSAGE.into());
         let screen = render(&mut panel, 100, 40);
         assert_eq!(panel.overlay.unwrap().height, shared + 1);
@@ -550,25 +563,29 @@ mod tests {
         assert_eq!(
             panel.overlay.unwrap().height,
             shared,
-            "Review 页沿用最高页高度"
+            "the Review page keeps the tallest page height"
         );
         panel.key(key(KeyCode::BackTab));
         panel.key(key(KeyCode::BackTab));
         assert_eq!(panel.page, Page::Question(0));
 
-        // 窄屏：说明折行抬高共用高度，矮页跟随。
+        // Narrow screen: wrapped descriptions raise the shared height and short pages
+        // follow it.
         render(&mut panel, 32, 40);
         let wrapped = panel.overlay.unwrap().height;
-        assert_eq!(wrapped, 16, "说明折行应计入实际高度");
+        assert_eq!(
+            wrapped, 16,
+            "wrapped descriptions must count toward the real height"
+        );
         panel.key(key(KeyCode::Tab));
         render(&mut panel, 32, 40);
         assert_eq!(
             panel.overlay.unwrap().height,
             wrapped,
-            "窄屏切换页签同样保持高度"
+            "switching tabs on a narrow screen keeps the height too"
         );
 
-        // 短页的多行输入仍在共用高度内展开。
+        // Multi-line input on a short page is still laid out inside the shared height.
         panel.key(key(KeyCode::End));
         panel.key(key(KeyCode::Enter));
         panel.paste("one\ntwo\nthree");
@@ -576,13 +593,14 @@ mod tests {
         assert_eq!(
             panel.overlay.unwrap().height,
             wrapped,
-            "短页三行输入不应超过共用高度"
+            "three input lines on a short page must not exceed the shared height"
         );
         assert!(screen.contains("three"));
         panel.key(key(KeyCode::Esc));
         assert!(panel.states[1].custom.is_empty());
 
-        // Review 的折行答案超过最高题库时，面板按其自身高度增长并受 70% 上限约束。
+        // When the wrapped Review answers exceed the tallest question page, the panel
+        // grows to its own height, capped at 70%.
         panel.key(key(KeyCode::BackTab));
         panel.key(key(KeyCode::End));
         panel.key(key(KeyCode::Enter));
@@ -592,11 +610,14 @@ mod tests {
         assert_eq!(panel.page, Page::Review);
         render(&mut panel, 32, 40);
         let review_height = panel.overlay.unwrap().height;
-        assert!(review_height > wrapped, "Review 高度应包含答案折行");
+        assert!(
+            review_height > wrapped,
+            "the Review height must include wrapped answers"
+        );
         render(&mut panel, 32, 12);
         assert!(
             panel.overlay.unwrap().height <= 8,
-            "面板不应超过屏幕高度的 70%"
+            "the panel must not exceed 70% of the screen height"
         );
     }
 }

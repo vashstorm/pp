@@ -224,7 +224,8 @@ impl Store {
                 hour,
             );
             let rate = r.rates();
-            // 同一配置引用可能在历史上指向不同实际模型或缺少费率快照，仅显示一致的费率。
+            // The same config reference may have pointed at different actual models historically or may
+            // lack a rate snapshot, so only consistent rates are shown.
             model_rates
                 .entry(r.model_reference.clone())
                 .and_modify(|previous| {
@@ -305,7 +306,8 @@ mod tests {
         }
     }
 
-    /// 模型费率取范围内记录的快照：一致时展示四个费率字段，缺失或漂移即为 null。
+    /// Model rates use the snapshots recorded within the range: when consistent, all four rate fields
+    /// are shown; a missing or drifting snapshot yields null.
     #[test]
     fn stats_analytics_model_rates_grouping_and_cost_totals() {
         {
@@ -372,7 +374,7 @@ mod tests {
             let mut store = open_store(&dir.path().join("stats.db")).unwrap();
             fs::write(
                 dir.path().join("models.yml"),
-                r#"# 价格与普通模型配置共用
+                r#"# Pricing is shared with the regular model config
 providers:
   fixture:
     api_key: secret-marker-fixture-key
@@ -415,7 +417,7 @@ providers:
             store
                 .insert(&fixture("outside", now + 1), &Value::Null)
                 .unwrap();
-            // 配置引用了没有价格的 model 时既无费用也无费率快照。
+            // A config reference to a model without a price has neither cost nor rate snapshot.
             let (alias_cost, alias_rate) = rates.snapshot(
                 "fixture/unpriced",
                 "fixture-model",
@@ -524,7 +526,7 @@ providers:
             assert_eq!(analytics["models"][0]["reasoning_tokens"], 180);
             assert_eq!(analytics["providers"][0]["reasoning_tokens"], 180);
 
-            // 会话恢复路径同时还原 reasoning_tokens。
+            // The session restore path also restores reasoning_tokens.
             let restored = store.session_usage(&session).unwrap();
             assert_eq!(restored.last_request.unwrap().reasoning_tokens, Some(180));
         }

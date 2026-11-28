@@ -1,9 +1,9 @@
-//! 会话级本地文本 `read` 去重缓存：避免模型重复读取未改动的同一大段文件内容浪费 token。
+//! Session-level dedup cache for local text `read`: keeps the model from re-reading the same unchanged large body and wasting tokens.
 //!
-//! 仅作用于普通本地文本文件（跳过 `:raw`、URL、`skill://`/`artifact://`/`pipe://`/`agent://`、
-//! 图片与目录），且正文达到 `MIN_DEDUP_CONTENT_BYTES` 才参与去重。
-//! 命中时要求元数据指纹 `(dev, ino, len, mtime)` 完全一致；在 `Hashline` 模式下额外要求
-//! 对应的可编辑快照仍处于激活状态，确保模型绝不会拿到无法编辑的失效引用。
+//! It applies only to plain local text files (skipping `:raw`, URLs, `skill://`/`artifact://`/`pipe://`/`agent://`,
+//! images and directories), and only once the body reaches `MIN_DEDUP_CONTENT_BYTES`.
+//! A hit requires the metadata fingerprint `(dev, ino, len, mtime)` to match exactly; in `Hashline` mode it additionally requires
+//! the matching editable snapshot to still be active, so the model never gets a stale reference it cannot edit.
 
 use pp_config::config::{EditMode, ToolLimits};
 use serde_json::{Value, json};
@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// 仅对正文达到该阈值的读取启用去重，小文件直接返回正文以免引入额外指代成本。
+/// Dedup is enabled only for reads whose body reaches this threshold; smaller files return the body directly to avoid extra indirection cost.
 pub(crate) const MIN_DEDUP_CONTENT_BYTES: usize = 1024;
 const MAX_DEDUP_ENTRIES: usize = 256;
 
@@ -269,7 +269,7 @@ mod tests {
         });
         cache.record(probe, &result);
 
-        // 相同文件与选择器命中去重，并保留分页元信息。
+        // The same file and selector hits dedup while keeping the paging metadata.
         let probe2 = build_probe(
             &target,
             &cwd,
@@ -284,10 +284,10 @@ mod tests {
         assert_eq!(hit["lines_read"], 120);
         assert!(hit["content"].as_str().unwrap().contains("Unchanged"));
 
-        // Hashline 快照失效时不命中，强制重新读取刷新快照。
+        // A stale Hashline snapshot misses, forcing a re-read that refreshes it.
         assert!(cache.check(&probe2, |_| false).is_none());
 
-        // 重新写入记录后，文件内容变更会改变指纹并失配。
+        // After recording again, a content change alters the fingerprint and misses.
         cache.record(probe2, &result);
         fs::write(&file, format!("{body}extra\n")).unwrap();
         let probe3 = build_probe(
@@ -300,7 +300,7 @@ mod tests {
         .unwrap();
         assert!(cache.check(&probe3, |_| true).is_none());
 
-        // `:raw` 不走去重。
+        // `:raw` does not use dedup.
         let raw_target = Target::parse("large.txt:raw", &cwd).unwrap();
         assert!(
             build_probe(
@@ -345,7 +345,7 @@ mod tests {
         .unwrap();
         assert!(cache.check(&probe2, |_| true).is_none());
 
-        // 大文件记录后按路径失效。
+        // A recorded large file is invalidated by path.
         let big = cwd.join("big.txt");
         let body = "x".repeat(MIN_DEDUP_CONTENT_BYTES + 16);
         fs::write(&big, &body).unwrap();

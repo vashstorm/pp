@@ -1,4 +1,4 @@
-//! 有界输出窗口：头部保留 + 尾部环形缓冲。
+//! Bounded output window: retained head plus a tail ring buffer.
 use std::collections::VecDeque;
 
 #[derive(Clone)]

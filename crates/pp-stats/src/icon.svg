@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
   <title>Pager Plane</title>
-  <!-- 以矢量双翼和中央留白折线呼应 TUI welcome 页的金蓝纸飞机。 -->
+  <!-- Vector wings and the blank fold through the middle echo the gold-and-blue paper plane on the TUI welcome page. -->
   <path fill="#d7af5f" d="M5 14.4 27 5 12 17.6 12 24.2 9.4 17Z"/>
   <path fill="#7aa2f7" d="M15.2 18.4 27 5 21.8 26Z"/>
 </svg>

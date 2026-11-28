@@ -17,36 +17,43 @@ fn tui_effort_and_shift_tab_apply_to_each_continuation_while_busy() {
     pty.input("first\r");
     let (request, body) = pty.request(&server);
     assert_eq!(body["reasoning_effort"], "xhigh");
-    // 不回复本轮请求：运行中提交的 `/effort` 只登记期望值，下一个请求必须已在
-    // 边界领取新档位，且状态栏在边界前仍显示已应用的 xhi。
+    // Do not reply to this round: an `/effort` submitted while running only registers the expected level, and the next request must
+    // already pick up the new level at the boundary, while the status bar still shows the applied xhi before it.
     pty.input("/effort none\r");
-    pty.wait_for("运行中登记 /effort 待生效档位", |screen| {
-        let text = screen.contents();
-        text.contains("pending next request")
-            && text
-                .lines()
-                .last()
-                .is_some_and(|line| line.contains(" xhi ·"))
-    });
+    pty.wait_for(
+        "submitting /effort while running registers a pending level",
+        |screen| {
+            let text = screen.contents();
+            text.contains("pending next request")
+                && text
+                    .lines()
+                    .last()
+                    .is_some_and(|line| line.contains(" xhi ·"))
+        },
+    );
     calls_reply(
         request,
         json!([call("effort-one", "read", json!({"path":"draft.txt"}))]),
     );
     let (request, body) = pty.request(&server);
     assert_eq!(body["reasoning_effort"], "none");
-    pty.wait_for("边界后状态栏切到 no think", |screen| {
-        input_is_ready(screen)
-            && screen
-                .contents()
-                .lines()
-                .last()
-                .is_some_and(|line| line.contains(" off ·"))
-    });
-    // Shift + Tab 在同一任务的下一轮输出期间同样只登记期望值。
+    pty.wait_for(
+        "the status bar switches to no think after the boundary",
+        |screen| {
+            input_is_ready(screen)
+                && screen
+                    .contents()
+                    .lines()
+                    .last()
+                    .is_some_and(|line| line.contains(" off ·"))
+        },
+    );
+    // Shift + Tab registers only the expected level too, while the same task's next round is streaming.
     pty.input("\u{1b}[Z");
-    pty.wait_for("运行中 Shift + Tab 登记待生效档位", |screen| {
-        screen.contents().contains("pending next request")
-    });
+    pty.wait_for(
+        "Shift + Tab while running registers a pending level",
+        |screen| screen.contents().contains("pending next request"),
+    );
     calls_reply(
         request,
         json!([call("effort-two", "read", json!({"path":"draft2.txt"}))]),
@@ -56,7 +63,7 @@ fn tui_effort_and_shift_tab_apply_to_each_continuation_while_busy() {
     final_reply(request, "busy effort done");
     pty.completed_after("busy effort done");
     pty.ready_effort("low");
-    // 菜单的“当前”标记跟已应用档位走。
+    // The menu's "current" marker follows the applied level.
     pty.input("/effort ");
     pty.text("Light thinking (current)");
     pty.input("\x01\x0b");

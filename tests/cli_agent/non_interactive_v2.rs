@@ -37,7 +37,8 @@ fn phase2_cd_and_relative_output_file_and_piped_stdin() {
     )
     .unwrap();
 
-    // 1. -C 切换工作目录，但 -o 相对路径仍按调用方 cwd 解析；显式 prompt + piped stdin 拼接。
+    // 1. -C switches the working directory, but a relative -o path is still resolved against the caller's cwd; an
+    //    explicit prompt and piped stdin are concatenated.
     let cli = spawn_with_stdin(
         caller.path(),
         home.path(),
@@ -79,7 +80,7 @@ fn phase2_cd_and_relative_output_file_and_piped_stdin() {
     );
     assert!(!work.join("report.txt").exists());
 
-    // 2. 纯 stdin 驱动（无位置 prompt）。
+    // 2. Pure stdin driving (no positional prompt).
     let cli = spawn_with_stdin(caller.path(), home.path(), &["-p"], "piped-only-prompt\n");
     let (request, body) = receive(&server);
     let user_msg = body["messages"]
@@ -108,7 +109,8 @@ fn phase2_guardrails_max_turns_timeout_signals_and_exit_codes() {
     )
     .unwrap();
 
-    // 1. --max-turns 1：首轮返回 tool_call 需进第 2 轮时立即终止，退出码 3 且 JSON 写出终态 error。
+    // 1. --max-turns 1: when the first turn returns a tool_call that needs a second turn, it terminates
+    //    immediately with exit code 3 and writes the terminal error to JSON.
     let max_turns = Cli::spawn(
         dir.path(),
         &["-p", "--max-turns", "1", "--mode", "json", "need two turns"],
@@ -127,7 +129,7 @@ fn phase2_guardrails_max_turns_timeout_signals_and_exit_codes() {
     assert_eq!(max_json["status"], "error");
     assert!(max_json["error"].as_str().unwrap().contains("--max-turns"));
 
-    // 2. --timeout 250ms：请求挂起超过时限，退出码 124 且 JSON 写出终态 error。
+    // 2. --timeout 250ms: the request hangs past the limit, so exit code 124 and the terminal error in JSON.
     let timed = Cli::spawn(
         dir.path(),
         &["-p", "--timeout", "250ms", "--mode", "json", "slow request"],
@@ -142,7 +144,8 @@ fn phase2_guardrails_max_turns_timeout_signals_and_exit_codes() {
     assert!(timed_json["error"].as_str().unwrap().contains("Timed out"));
     drop(_held_request);
 
-    // 3. SIGTERM 与 SIGINT 优雅取消，stream-json 补写终态 result 且退出码分别为 143 / 130。
+    // 3. SIGTERM and SIGINT cancel gracefully, stream-json appends the terminal result and the exit codes are
+    //    143 / 130 respectively.
     for (signal, expected_code) in [
         (rustix::process::Signal::TERM, 143),
         (rustix::process::Signal::INT, 130),
@@ -170,7 +173,7 @@ fn phase2_guardrails_max_turns_timeout_signals_and_exit_codes() {
         drop(_held);
     }
 
-    // 4. 用法错误统一返回退出码 2。
+    // 4. Usage errors always return exit code 2.
     for args in [
         &["-p", "--timeout", "0s", "bad"][..],
         &["-p", "-C", "/nonexistent-pp-dir", "bad"][..],
@@ -200,7 +203,8 @@ fn phase2_output_schema_retries_buffering_and_output_file() {
     )
     .unwrap();
 
-    // 1. --mode text + --output-schema：第 1 轮违规不透出到 stdout，第 2 轮纠错通过后干净输出并写 -o。
+    // 1. --mode text with --output-schema: a first-round violation never reaches stdout, and after the second round
+    //    corrects it the clean output is written and -o is populated.
     let out_file = dir.path().join("result.json");
     let cli = Cli::spawn(
         dir.path(),
@@ -231,7 +235,7 @@ fn phase2_output_schema_retries_buffering_and_output_file() {
         "{\"status\":\"ok\",\"count\":2}\n"
     );
 
-    // 2. --mode json 下 1 期 result 字段保持零变化，通过校验的 JSON 落在 result.text。
+    // 2. Under --mode json the result fields of phase 1 stay unchanged, and the validated JSON lands in result.text.
     let json_cli = Cli::spawn(
         dir.path(),
         &[
@@ -272,7 +276,7 @@ fn phase2_output_schema_retries_buffering_and_output_file() {
     );
     assert_eq!(summary["text"], r#"{"status":"done","count":5}"#);
 
-    // 3. 重试耗尽仍不合 schema：失败退出（码 1）且不覆盖已有 -o 文件。
+    // 3. Retries exhausted and still not matching the schema: fail (code 1) without overwriting the existing -o file.
     std::fs::write(&out_file, "keep-previous\n").unwrap();
     let fail_cli = Cli::spawn(
         dir.path(),

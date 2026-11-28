@@ -197,7 +197,7 @@ impl From<SandboxModeCli> for pp_config::config::SandboxMode {
 enum Command {
     /// Remove expired sessions and related data, old logs, statistics, and unused locks (default 90 days, max 36500)
     Gc {
-        // 100 年上限：远低于 chrono DateTime 可表示的年代下限，避免 cutoff 运算溢出。
+        // 100-year cap: far below the earliest year chrono DateTime can represent, so the cutoff arithmetic cannot overflow.
         #[arg(
             default_value_t = 90,
             value_parser = clap::value_parser!(u32).range(1..=36_500)
@@ -256,7 +256,7 @@ fn main() -> ExitCode {
     host_defaults::install(host_defaults::capture());
     let args = parse_args();
     let output_mode: cli::OutputMode = args.mode.into();
-    // 清理和配置初始化无需额外创建诊断日志。
+    // Cleanup and config bootstrap do not need an extra diagnostic log.
     let logging = if matches!(
         args.subcommand,
         Some(Command::Gc { .. } | Command::InitConfig)
@@ -336,9 +336,10 @@ fn main() -> ExitCode {
     }
 }
 
-/// Traces 列表的会话标题取自 history.db 的派生索引；`pp stats` 只读摘要。
-/// TUI 只在打开会话选择器时增量同步索引，所以首次取标题时补一次同步，
-/// 否则最新会话没有摘要可显示；同步失败不阻止服务，已索引的摘要仍可用。
+/// Session titles for the traces list come from the derived index in history.db; `pp stats` only reads summaries.
+/// The TUI syncs the index incrementally only when the session picker opens, so the first title lookup
+/// forces one sync; otherwise the newest session has no summary yet. A failed sync does not block the
+/// service: already indexed summaries stay usable.
 fn session_titles() -> impl FnMut() -> Vec<(String, String)> {
     let mut store: Option<pp_runtime::history::Store> = None;
     let mut unavailable = false;
@@ -566,7 +567,8 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
                 "unexpected positional COMMAND with -r/-c without -p",
             ));
         }
-        // 位置参数按单空格拼回一条斜杠命令；参数校验先于配置与网络，脚本能立即拿到失败。
+        // Positional arguments are joined back into one slash command with single spaces; argument
+        // validation runs before config and network access so scripts fail fast.
         let joined = args.command.join(" ");
         let trimmed = joined.trim();
         let initial = if trimmed.is_empty() {
@@ -632,8 +634,8 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
     // configuration for a fresh `pp`. Load the journal before tools, skills, and
     // the TUI workspace so everything runs from the saved working directory.
     let global_dir = config::global_dir();
-    // 进程级统计库句柄：请求、工具、hook 与标题复用同一个连接；
-    // 解析失败不在这里致命，由既有配置错误路径呈现。
+    // Process-wide stats database handle: requests, tools, hooks and titles reuse one connection;
+    // a parse failure is not fatal here and is surfaced by the existing config error path.
     let stats_database = pp_stats::database_path().map(pp_stats::Database::new);
     let mut initialized_store = match &global_dir {
         Ok(dir) => {
@@ -646,9 +648,11 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
     };
     let migration_error = initialized_store.1;
     logging::perf::mark("agent_db_ready");
-    // 启动期只解析一次 settings.yml：TUI 外观、费用显示、技能发现与模型目录共用同一份快照。
-    // 一次性迁移已在上一步完成（旧字段已从文件剥离），所以这里读到的是迁移后的配置；
-    // 读取失败仍按既有方式呈现：外观回落默认值，错误进入技能 diagnostics 与配置错误路径。
+    // Parse settings.yml once at startup: TUI appearance, cost display, skill discovery and the model
+    // catalog share one snapshot. The one-time migration already ran in the previous step (legacy fields
+    // were stripped from the file), so this reads the migrated config. Read failures still surface the
+    // existing way: appearance falls back to defaults, the error joins skill diagnostics and the config
+    // error path.
     let settings = match &global_dir {
         Ok(dir) => (|| {
             if migration_error.is_none() {
@@ -697,7 +701,7 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
                 &sessions_dir,
                 &locks_dir,
                 resume_id,
-                // 加载记录用于会话级去重，CLI 恢复同样需要有效回放。
+                // Loaded records drive per-session deduplication; CLI resume also needs a valid replay.
                 true,
                 stats_path,
             )?
@@ -721,16 +725,19 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
     } else {
         caller_cwd
     };
-    // 进程级 MCP 单例：根 Agent、子 Agent 与恢复会话共享同一实例，所有模式返回后统一收尾。
+    // Process-wide MCP singleton: the root agent, subagents and resumed sessions share one instance,
+    // shut down once after every mode returns.
     let mcp = std::sync::Arc::new(match global_dir.as_ref() {
         Ok(dir) => pp_mcp::McpManager::new(dir.join("mcp.json"), cwd.clone()),
         Err(_) => pp_mcp::McpManager::empty(),
     });
-    // 提示词错误必须在交互兜底之前返回，不能静默禁用或替换用户设定。
+    // Prompt errors must return before the interactive fallback; never silently disable or replace what
+    // the user configured.
     let manager = mcp.clone();
-    // 模型目录启动期只装载一次：迁移与 settings 解析都已完成，这里复用同一份快照，
-    // 不再重读 settings.yml、也不再打开 agent.db 做第二遍迁移检查。
-    // 装载失败不在这里呈现，交给既有启动路径（`Bootstrap::model_state`）重新加载并上报同一错误。
+    // Load the model catalog once at startup: migration and settings parsing are done, so this reuses
+    // the same snapshot instead of re-reading settings.yml or reopening agent.db for a second migration
+    // check. Load failures are not reported here; the existing startup path (`Bootstrap::model_state`)
+    // reloads and reports the same error.
     let models = pp_config::model_state::SharedModels::default();
     if migration_error.is_none()
         && let Ok((dir, catalog_settings)) = &settings
@@ -894,8 +901,9 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
             error_ctx.model = Some(agent.current_model().reference.clone());
             error_ctx.effort = Some(agent.think_level().as_str().to_owned());
         }
-        // `--model` 只在本次运行生效；显式给出却无法解析时必须致命，不静默回退默认模型。
-        // 配置本身不可用时 `agent` 为 Err，此时没有 catalog 可校验，沿用既有交互修复流程。
+        // `--model` applies to this run only; an explicit value that cannot be resolved is fatal and must
+        // never fall back to the default model silently. When config itself is unusable `agent` is Err,
+        // so there is no catalog to validate against and the existing interactive repair flow runs.
         if let Ok(agent) = agent.as_mut() {
             if let Some(query) = args.model.as_deref() {
                 let selection = agent.select_model(query)?;
@@ -940,7 +948,7 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
             );
         }
         if let Ok(agent) = &mut agent {
-            // 去重状态已从有效回放重建；CLI 不保留展示正文。
+            // Deduplication state was rebuilt from the valid replay; the CLI keeps no display transcript.
             drop(agent.take_replay());
         }
         let resumed_id = if resume_id.is_some() || continue_requested {
@@ -958,7 +966,8 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
             let mut agent = agent?;
             let guard = cli::RunGuard::install(timeout_duration)?;
             let has_schema = output_schema.is_some();
-            // -p 不启动空闲轮询，也不等待迟到诊断；任务结束即显式回收服务器。
+            // -p starts no idle polling and waits for no late diagnostics; servers are reclaimed as soon
+            // as the task ends.
             let task = cli::run_cli_task_with_options(
                 &mut agent,
                 Some(&prompt),
@@ -1002,8 +1011,9 @@ fn run(args: Args, error_ctx: &mut ErrorContext) -> Result<()> {
     stop_mcp(&mcp, result)
 }
 
-/// 所有模式返回后停止进程级 MCP 服务；合并走 core 的共享清理结果，`CleanupError`
-/// 保持类型并保留原语义退出码，不能只依赖 `McpManager::Drop` 兜底。
+/// Stop the process-wide MCP servers once every mode has returned. Merging goes through core's shared
+/// cleanup result so `CleanupError` keeps its type and semantic exit code; `McpManager::Drop` alone is
+/// not an acceptable fallback.
 fn stop_mcp(mcp: &pp_mcp::McpManager, result: Result<()>) -> Result<()> {
     cancellation::merge_cleanup_result(result, mcp.shutdown(), "stopping MCP servers")
 }

@@ -54,7 +54,7 @@ pub(super) use wrap::{block_line, visit_wrapped_rows, wrap_block};
 
 static NEXT_NATIVE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// 已提交的源位置与仍留在屏幕上的冻结行；不复制完整历史。
+/// Committed source position plus the frozen lines still on screen; the full history is not copied.
 #[derive(Clone, Default)]
 struct NativeState {
     entry: usize,
@@ -107,10 +107,10 @@ pub(super) enum EntryKind {
     Ask,
     Data,
     Error,
-    /// 醒目提示卡片：黄色边框，用于会改变后续请求的运行时切换（如备用模型）。
+    /// Highlight notice card: yellow border, for runtime switches that change later requests (for example the fallback model).
     Notice,
     Activity,
-    /// LSP 专用卡片：内联工具结果或迟到的独立诊断。
+    /// LSP-only card: an inline tool result or a late standalone diagnostic.
     Lsp,
 }
 
@@ -147,7 +147,7 @@ enum EntryBody {
     Markdown(super::markdown::MarkdownDocument),
     Diff(FileDiff),
     Ask(AskBlock),
-    /// LSP 工具卡片：可读正文与按路径累积的多文件变更。
+    /// LSP tool card: readable body plus per-path accumulated multi-file changes.
     Lsp(super::lsp::Block),
 }
 
@@ -173,11 +173,11 @@ struct TranscriptEntry {
     layout: Option<Arc<EntryLayout>>,
     expanded: bool,
     footer: String,
-    /// 非零阶段/观测不完整等警示，绘制为底部边框的 warning 色 span。
+    /// Warnings such as a non-zero stage or incomplete observation, drawn as a warning-colored span on the bottom border.
     footer_warning: String,
-    /// 有管道时保留有界元数据。
+    /// Keeps bounded metadata when there is a pipeline.
     pipes_badge: Option<PipesBadge>,
-    /// 运行中的阶段正文；与命令真实输出独立，完成时丢弃。
+    /// In-flight stage body; independent of the real command output and dropped on completion.
     pipeline_preview: Option<String>,
     shell: Option<pp_core::shell_display::ShellPresentation>,
     started: Option<Instant>,
@@ -186,7 +186,7 @@ struct TranscriptEntry {
     read_clock: &'static str,
     arguments: Value,
     result: Option<Value>,
-    /// 内联或迟到报告；每个路径保留最新一份，按出现顺序展示在正文之后。
+    /// Inline or late reports; only the latest one per path is kept, shown after the body in order of appearance.
     diagnostics: Vec<pp_core::lsp_report::DiagnosticReport>,
     display: DisplayContext,
     display_title: Option<Vec<Line<'static>>>,
@@ -194,11 +194,11 @@ struct TranscriptEntry {
     hidden: bool,
 }
 
-/// Bash 卡片的管道入口：只保留有界元数据，不复制阶段正文。
+/// Pipeline entry of a Bash card: bounded metadata only, no copy of the stage body.
 #[derive(Clone, PartialEq, Eq)]
 struct PipesBadge {
     status: pp_workspace::output::PipesStatus,
-    /// 恢复的历史结果不再保留临时正文，仅保留阶段状态。
+    /// Restored history results keep no transient body, only the stage state.
     restored: bool,
 }
 
@@ -249,18 +249,18 @@ pub(super) struct Transcript {
     native_preview: Option<NativeState>,
     entries: Vec<TranscriptEntry>,
     read_groups_key: Option<(usize, bool, bool)>,
-    // 运行阶段显示在输入框上方，结束摘要显示在对话尾部。
+    // The running stage shows above the input box; the final summary shows at the tail of the conversation.
     activity: Option<Activity>,
     assistant: Option<usize>,
     thinking: Option<usize>,
     running_tools: Vec<(String, usize)>,
     argument_previews: BTreeMap<u32, usize>,
-    // 同一轮用户任务中的后台进程共用原始 Bash 卡片。
+    // Background processes of the same user turn share the original Bash card.
     background_bash: BTreeMap<String, usize>,
     injected_subagent_runs: BTreeSet<String>,
     offset: usize,
     browse_anchor: Option<BrowseAnchor>,
-    // 备用屏幕几何按布局身份增量同步；树视图接管时清空，返回后强制全量重算。
+    // Alternate-screen geometry syncs incrementally by layout identity; the tree view clears it on takeover and forces a full recompute afterwards.
     geometry: geometry::Geometry,
     total: usize,
     viewport_height: usize,
@@ -269,7 +269,7 @@ pub(super) struct Transcript {
     follow_bottom: bool,
     tools_expanded: bool,
     display: DisplayContext,
-    // 重放恢复时不伪造 bash 卡片的 wall duration。
+    // Replay restore does not forge the wall duration of a bash card.
     replaying: bool,
     bash_timeout_seconds: u64,
     tree_layout: Option<TreeLayout>,
@@ -360,7 +360,7 @@ impl Transcript {
         self.entries.push(entry);
     }
 
-    /// 本地错误仅进入可见历史，不生成模型消息或持久事件。
+    /// Local errors only enter the visible history; they produce no model message or persisted event.
     pub(super) fn append_error(&mut self, text: &str) {
         if text.trim().is_empty() {
             return;
@@ -374,7 +374,7 @@ impl Transcript {
         ));
     }
 
-    /// 需要用户立刻注意的运行时提示：卡片形式，不进入模型消息。
+    /// Runtime notice that needs the user's immediate attention: card form, never entering model messages.
     pub(super) fn append_notice(&mut self, title: &str, text: &str) {
         if text.trim().is_empty() {
             return;
@@ -511,7 +511,7 @@ impl Transcript {
         self.finish_run_with_timing(label, Some(elapsed), Some(finished_at));
     }
 
-    /// 主会话和观察日志共用完成状态；缺失的历史时间保持未知。
+    /// The main session and the observation log share the completion state; a missing history time stays unknown.
     pub(super) fn finish_run_with_timing(
         &mut self,
         label: &str,
@@ -538,8 +538,8 @@ impl Transcript {
         activity.entry.layout = None;
     }
 
-    /// 按日志顺序恢复可见对话，仅报告未完成请求，不重放旧错误提醒。
-    /// 输入回忆是独立持久数据：回放只重建可见正文，不生成输入记录。
+    /// Restore the visible conversation in log order, only reporting unfinished requests without replaying old error notices.
+    /// Input recall is separate persisted data: replay only rebuilds the visible body and creates no input records.
     pub(super) fn replay(&mut self, records: Vec<ReplayRecord>) -> Option<String> {
         self.replaying = true;
         let mut assistant_running = false;
@@ -580,12 +580,12 @@ impl Transcript {
         records: Vec<ReplayRecord>,
         fallback: &str,
     ) -> Range<usize> {
-        // 树节点独立预览，不能让后一个节点改写前一个节点的卡片。
+        // Tree nodes are previewed independently; a later node must not rewrite an earlier node's card.
         self.background_bash.clear();
         let start = self.entries.len();
         self.replay(records);
         self.read_groups_key = None;
-        // 树预览使用完整展示，不受交互预览配置或额度影响。
+        // Tree previews show everything in full, ignoring the interactive preview setting and quotas.
         for entry in &mut self.entries[start..] {
             entry.display.full = true;
             entry.expanded = true;
@@ -613,7 +613,7 @@ impl Transcript {
         start..self.entries.len()
     }
 
-    /// 仅用于验证完整查看器的投影，不是生产环境的退出输出路径。
+    /// Only used to verify the projection of the full viewer; not the production exit output path.
     #[cfg(test)]
     pub(super) fn write_full_for_test(
         &mut self,
@@ -622,7 +622,7 @@ impl Transcript {
     ) -> io::Result<()> {
         let footer_y = self.viewport_bottom;
         self.display.full = true;
-        // 完整查看器使用原始保留输出，独立于主屏幕历史的折叠快照。
+        // The full viewer uses the raw retained output, independent of the main screen history's folded snapshot.
         for entry in &mut self.entries {
             if entry.is_collapsible_tool() && !entry.expanded {
                 entry.expanded = true;
@@ -631,7 +631,7 @@ impl Transcript {
         }
         self.prepare_layout(snapshot.area.width);
         self.sync_geometry();
-        // 分块回放全部历史，避免把整个会话分配成一个巨大的屏幕缓冲区。
+        // Replay all history in chunks to avoid allocating the whole session as one huge screen buffer.
         for offset in (0..self.total).step_by(64) {
             let height = (self.total - offset).min(64) as u16;
             let area = Rect::new(0, 0, snapshot.area.width, height);
@@ -774,7 +774,7 @@ impl Transcript {
         self.entries.len()
     }
 
-    /// 定位到指定条目；隐藏的 read 组落到其可见组首。返回是否可用。
+    /// Position at the given entry; a hidden read group falls back to its first visible group. Returns whether positioning is possible.
     pub(super) fn reveal_entry(&mut self, index: usize) -> bool {
         if index >= self.entries.len() || self.viewport_width == 0 {
             return false;
@@ -793,8 +793,8 @@ impl Transcript {
         true
     }
 
-    /// 换宽后按"条目索引 + 条目内行偏移"恢复可见锚点；follow 时保持底部。
-    /// 只重排派生布局，不重建条目或正文。
+    /// After a width change, restore the visible anchor by "entry index + line offset within the entry"; stay at the bottom when following.
+    /// Only the derived layout is re-laid out; entries and bodies are not rebuilt.
     pub(super) fn resize_preserving_anchor(&mut self, width: u16) {
         let width = width.max(1);
         if width == self.viewport_width {
@@ -867,13 +867,13 @@ impl Transcript {
         self.render_visible(frame.buffer_mut(), area);
     }
 
-    /// 从几何定位的首个可见条目开始渲染备用屏幕窗口。
+    /// Render the alternate-screen window starting at the first visible entry located by the geometry.
     fn render_visible(&self, buffer: &mut Buffer, area: Rect) {
         let Some((first, skip)) = self.geometry.locate(self.offset) else {
             return;
         };
-        // 槽位总数 = entries + 可选的结束摘要槽；first 超出 entries 时切片为空，
-        // 摘要槽紧接其后，不会错位。
+        // Total slots = entries + the optional final summary slot; first beyond entries yields an empty slice,
+        // and the summary slot follows directly without misalignment.
         let entries = &self.entries[first.min(self.entries.len())..];
         Self::render_entry_layouts(
             entries.iter().map(|entry| (entry, None, false)).chain(

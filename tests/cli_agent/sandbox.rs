@@ -12,8 +12,8 @@ fn runtime_sandbox_available(cwd: &Path) -> bool {
 
 #[test]
 fn sandbox_default_blocks_protected_write_and_flag_off_allows_it() {
-    // 默认配置（不显式写 tools.sandbox）在平台可用时启用 workspace-write；
-    // 验证受保护的 .pp/ 目录拒绝写入，且 --sandbox off 可显式关闭。
+    // The default configuration (no explicit tools.sandbox) enables workspace-write when the platform supports it;
+    // verify that writes to the protected .pp/ directory are refused and that --sandbox off explicitly disables it.
     let server = server();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -62,7 +62,7 @@ fn sandbox_default_blocks_protected_write_and_flag_off_allows_it() {
     assert!(output.status.success(), "{output:?}");
     no_more(&server);
 
-    // 显式关闭沙盒后，写入受保护目录仍需权限门授权。
+    // With the sandbox explicitly disabled, writing to a protected directory still needs permission-gate approval.
     let perm_path = config_path(&root, "permission.toml");
     std::fs::write(
         &perm_path,

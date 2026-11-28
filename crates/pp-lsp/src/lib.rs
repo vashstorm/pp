@@ -1,7 +1,7 @@
-//! LSP 支持：服务器发现、受管理 stdio 客户端、`lsp` 工具、保存联动与诊断投递。
+//! LSP support: server discovery, managed stdio clients, the `lsp` tool, save linkage and diagnostic delivery.
 //!
-//! 上层保持同步：每个语言服务器有自己的 I/O 线程，Agent/TUI 不引入 Tokio。
-//! LSP 仅提供信息与修改建议，文件修改交给普通工具；服务器进程本身没有文件系统沙箱。
+//! Upper layers stay synchronous: each language server has its own I/O thread, and the agent/TUI never pull in Tokio.
+//! LSP only provides information and suggested edits; file modifications go through the regular tools; language-server processes have no filesystem sandbox of their own.
 
 use pp_config::config::LspSettings;
 
@@ -31,7 +31,7 @@ mod integration;
 
 pub(crate) use client::Client;
 
-/// 确定性初始化失败缓存时长。
+/// Cache lifetime for deterministic initialization failures.
 const NEGATIVE_CACHE: Duration = Duration::from_secs(180);
 const LOCK_POLL: Duration = Duration::from_millis(20);
 
@@ -43,7 +43,7 @@ pub(crate) enum ClientState {
     Failed(String),
 }
 
-/// 一个工作区的客户端注册表；可 clone 的句柄共享同一批受管理进程。
+/// Client registry for one workspace; cloned handles share the same set of managed processes.
 #[derive(Clone)]
 pub struct Registry {
     inner: Arc<Inner>,
@@ -51,25 +51,25 @@ pub struct Registry {
 
 struct Inner {
     cwd: PathBuf,
-    /// 用户级 `lsp.json` 的实际路径；由 Agent 从配置目录注入，测试不读真实 HOME。
+    /// Actual path of the user-level `lsp.json`; injected by the agent from the config directory, so tests never read the real HOME.
     config_path: Option<PathBuf>,
     settings: LspSettings,
-    /// 惰性配置与发现快照：`None` 表示还没有任何查询。首次查询在锁内装载
-    /// 用户/项目 `lsp.json` 并做本地发现，之后复用同一快照，只有 `reload`
-    /// 才会重新读盘。
+    /// Lazy configuration and discovery snapshot: `None` means no query has happened yet. The first query loads the
+    /// user/project `lsp.json` under the lock and does local discovery, then the same snapshot is reused and only `reload`
+    /// re-reads from disk.
     config: Mutex<Option<Result<Arc<config::Config>, String>>>,
-    /// 保存联动与迟到诊断的受管协调器；生命周期跟随本 Registry。
+    /// Managed coordinator for save linkage and late diagnostics; its lifetime follows this Registry.
     diagnostics: writethrough::Coordinator,
-    /// 身份 → 客户端：同一工作区内同身份（无论配置里用哪个名字）共享一个进程。
+    /// Identity → client: clients with the same identity in one workspace share a single process (whatever name the config uses).
     clients: Mutex<HashMap<String, Arc<Client>>>,
-    /// 身份 → 包括初始化中的进程；只有确认回收后才能移除。
+    /// Identity → process, including ones still initializing; only removable once reaping is confirmed.
     slots: Mutex<HashMap<String, Arc<Mutex<transport::ProcessSlot>>>>,
-    /// 当前配置的服务器名 → 身份；reload 时随配置一起替换。
+    /// Configured server name → identity; replaced together with the configuration on reload.
     names: Mutex<HashMap<String, String>>,
     lifecycle: Mutex<()>,
     maintenance_stop: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     statuses: Mutex<HashMap<String, String>>,
-    /// 身份 → 启动锁；并发同身份（含别名）只启动一次。
+    /// Identity → startup lock; concurrent requests for the same identity (including aliases) start only once.
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     negative: Mutex<HashMap<String, (String, Instant)>>,
     closing: AtomicBool,
@@ -77,9 +77,9 @@ struct Inner {
 }
 
 impl Inner {
-    /// 读取用户/项目 `lsp.json`、合并内置定义并做本地发现。
+    /// Read the user/project `lsp.json`, merge built-in definitions and do local discovery.
     ///
-    /// 首次查询或 `reload` 才执行；错误保持脱敏后的说明。
+    /// Only runs on the first query or on `reload`; errors stay redacted descriptions.
     fn load_config(&self) -> Result<Arc<config::Config>, String> {
         if !self.settings.enabled {
             return Ok(Arc::new(config::Config {
@@ -95,16 +95,16 @@ impl Inner {
 }
 
 impl Registry {
-    /// `user_config` 是用户级 `lsp.json` 的完整路径；由 Agent 依据配置目录注入，
-    /// 不能在 Registry 内部再次读取 HOME。
+    /// `user_config` is the full path of the user-level `lsp.json`; the agent injects it from the config directory, so
+    /// the Registry must not read HOME again internally.
     ///
-    /// 构造只保留发现输入（cwd、用户配置路径与 settings）：`lsp.json` 的读取、
-    /// 合并与本地发现推迟到首次查询，结果按这三项缓存到 `reload` 为止。
+    /// Construction only records the discovery inputs (cwd, user config path and settings): reading and merging `lsp.json`
+    /// and local discovery are deferred to the first query, and the result is cached on those three inputs until `reload`.
     pub fn new(cwd: PathBuf, user_config: Option<PathBuf>, settings: LspSettings) -> Self {
         Self::assemble(cwd, user_config, settings, None)
     }
 
-    /// 测试入口：显式提供已经解析好的配置，且不读取任何用户级文件。
+    /// Test entry point: supply an already parsed configuration and read no user-level file.
     #[cfg(test)]
     fn from_config(
         cwd: PathBuf,
@@ -185,7 +185,7 @@ impl Registry {
         self.inner.settings
     }
 
-    /// 保存联动与迟到诊断协调器；生命周期与客户端进程一致。
+    /// Coordinator for save linkage and late diagnostics; its lifetime matches the client processes.
     pub fn diagnostics(&self) -> &writethrough::Coordinator {
         &self.inner.diagnostics
     }
@@ -202,9 +202,9 @@ impl Registry {
         self.inner.settings.lazy
     }
 
-    /// reload 成功后清除该服务器名对应身份的确定性初始化失败缓存。
+    /// After a successful reload, clear the deterministic initialization failure cache for this server name's identity.
     ///
-    /// 只影响负缓存，不启动或停止任何进程；返回是否确实移除了一条记录。
+    /// Affects only the negative cache and starts or stops no process; returns whether a record was actually removed.
     pub(crate) fn clear_failure(&self, name: &str) -> bool {
         let identity = self
             .inner
@@ -224,8 +224,8 @@ impl Registry {
             .is_some()
     }
 
-    /// 当前配置；首次调用装载并做一次本地发现，之后复用同一快照。
-    /// 配置错误时返回同一个脱敏说明。
+    /// Current configuration; the first call loads it and does local discovery once, then the same snapshot is reused.
+    /// A configuration error returns the same redacted description.
     pub(crate) fn config(&self) -> Result<Arc<config::Config>> {
         self.cached_config()
             .map_err(|message| anyhow::anyhow!("{message}"))
@@ -235,10 +235,10 @@ impl Registry {
         self.cached_config().err()
     }
 
-    /// 惰性配置槽：只有首次查询与 `reload` 会读盘，并发查询共用一次装载。
+    /// Lazy configuration slot: only the first query and `reload` read from disk, and concurrent queries share one load.
     ///
-    /// 装载成功时同步重建服务器名 → 身份的索引，使 `ensure_client` 不再依赖
-    /// 构造期解析。
+    /// A successful load also rebuilds the server name → identity index, so `ensure_client` no longer depends on
+    /// construction-time parsing.
     fn cached_config(&self) -> Result<Arc<config::Config>, String> {
         let mut slot = self.inner.config.lock().unwrap_or_else(|e| e.into_inner());
         let state = slot.get_or_insert_with(|| {
@@ -267,13 +267,13 @@ impl Registry {
             .unwrap_or_default()
     }
 
-    /// 后台预热所有已发现的真实 language server。
+    /// Prewarm all discovered real language servers in the background.
     ///
-    /// 只处理 `lazy=false` 且已启用的注册表；CLI adapter（Biome/SwiftLint）
-    /// 与工作区 checker 不在 `servers` 中，不会被启动。每个服务器使用自己的
-    /// `warmupTimeoutMs`（缺省取 `requestTimeout`），并与正常 `ensure_client`
-    /// 共用单飞初始化；单个失败只记录在返回值中，不影响其他服务器或普通读写。
-    /// 返回 `(server, error)` 失败列表，空表示全部成功或无需启动。
+    /// Only handles enabled registries with `lazy=false`; CLI adapters (Biome/SwiftLint)
+    /// and workspace checkers are not in `servers` and are not started. Each server uses its own
+    /// `warmupTimeoutMs` (falling back to `requestTimeout`) and shares the single-flight initialization with a normal
+    /// `ensure_client`; an individual failure is only recorded in the return value and does not affect other servers or ordinary read/write.
+    /// Returns the `(server, error)` failure list; empty means everything succeeded or nothing needed starting.
     pub fn warmup(
         &self,
         cancellation: &pp_core::cancellation::CancellationToken,
@@ -294,7 +294,7 @@ impl Registry {
                 .filter(|value| *value > 0)
                 .map(Duration::from_millis)
                 .unwrap_or_else(|| self.inner.settings.request_budget());
-            // 配置中的超大毫秒值会让 Instant 溢出；退化为立即失败而不是 panic。
+            // An oversized millisecond value in the config would overflow Instant; degrade to immediate failure instead of panicking.
             let deadline = Instant::now()
                 .checked_add(budget)
                 .unwrap_or_else(Instant::now);
@@ -375,7 +375,7 @@ impl Registry {
             .cloned()
     }
 
-    /// 当前配置里的服务器名对应的完整身份；未发现的服务器仍然是错误。
+    /// Full identity for the server name in the current configuration; a server that was not discovered is still an error.
     fn identity_for(&self, name: &str) -> Result<String> {
         self.config()?;
         self.inner
@@ -405,7 +405,7 @@ impl Registry {
             .insert(name.to_owned(), identity.to_owned());
     }
 
-    /// 只在 slot 仍是本次登记的那一个时移除，避免覆盖或误删并发登记。
+    /// Remove only when the slot is still the one registered here, avoiding overwriting or wrongly deleting a concurrent registration.
     fn remove_slot_if(&self, identity: &str, process: &Arc<Mutex<transport::ProcessSlot>>) {
         let mut slots = self.inner.slots.lock().unwrap_or_else(|e| e.into_inner());
         if slots
@@ -416,8 +416,8 @@ impl Registry {
         }
     }
 
-    /// 清除映射到该身份的所有配置名的状态，避免别名共享客户端后留下
-    /// 永久的 `initializing` 或旧失败文案。
+    /// Clear the status of every configured name mapped to this identity, so aliases sharing a client leave no
+    /// permanent `initializing` or stale failure text behind.
     fn clear_statuses_for_identity(&self, identity: &str) {
         let names: Vec<String> = {
             let names = self.inner.names.lock().unwrap_or_else(|e| e.into_inner());
@@ -440,11 +440,11 @@ impl Registry {
         }
     }
 
-    /// 当前配置中与该客户端同身份的所有服务器是否覆盖 `path`。
+    /// Whether any server sharing this client's identity in the current configuration covers `path`.
     ///
-    /// 共享客户端只保存启动它的第一个定义；其他别名可能声明了额外
-    /// fileTypes，且 reload 可以在身份不变时修改 fileTypes。因此覆盖范围
-    /// 必须只看当前配置，不能沿用客户端自己保存的旧定义。
+    /// A shared client only keeps the definition that started it; other aliases may declare extra
+    /// fileTypes, and a reload can change fileTypes while the identity stays the same. So the coverage
+    /// must look only at the current configuration and not at the stale definition stored on the client.
     pub(crate) fn covers(&self, client: &Client, path: &Path) -> bool {
         let aliases: Vec<String> = {
             let names = self.inner.names.lock().unwrap_or_else(|e| e.into_inner());
@@ -504,10 +504,10 @@ impl Registry {
         }
     }
 
-    /// 取得（必要时启动）一个服务器客户端；同 identity 单飞初始化。
+    /// Get (starting if needed) a server client; initialization is single-flight per identity.
     ///
-    /// 名称只用于状态展示与配置路由：客户端、启动锁与进程 slot 都以完整
-    /// identity 为键，因此同一工作区里同初始化的多个别名共享一个进程。
+    /// The name is used only for status display and configuration routing: the client, startup lock and process slot are all keyed by the full
+    /// identity, so several aliases with the same initialization in one workspace share a single process.
     pub(crate) fn ensure_client(
         &self,
         name: &str,
@@ -517,8 +517,8 @@ impl Registry {
         pp_core::cancellation::check(cancellation)?;
         ensure!(self.inner.settings.enabled, "LSP support is disabled.");
         loop {
-            // reload 可能在取得生命周期锁前替换配置；身份不一致时释放锁重来，
-            // 绝不用旧身份启动进程或写入新的 slot。
+            // A reload may replace the configuration before the lifecycle lock is acquired; retry when the identity differs,
+            // and never start a process or write a new slot with a stale identity.
             let identity = self.identity_for(name)?;
             let lock = self.lock_for(&identity);
             let _guard = acquire(&lock, deadline, cancellation)?;
@@ -552,7 +552,7 @@ impl Registry {
                     {
                         bail!("{message}");
                     }
-                    // 上次回收失败而保留的 slot 必须先重试，不能插入新 slot 覆盖它。
+                    // A slot retained from a failed reap must be retried first; a new slot must not be inserted over it.
                     let retained = self
                         .inner
                         .slots
@@ -682,14 +682,14 @@ impl Registry {
         }
     }
 
-    /// 移除并回收一个客户端（身份过期、reload 或配置切换）。
+    /// Remove and reap a client (stale identity, reload or configuration switch).
     pub(crate) fn evict(&self, name: &str, client: &Arc<Client>) -> Result<()> {
         self.evict_identity(&client.identity, client)?;
         self.set_status(name, None);
         Ok(())
     }
 
-    /// 按身份回收客户端；只有确认回收成功才移除 map 与 slot。
+    /// Reap a client by identity; the map entry and slot are removed only once reaping is confirmed.
     fn evict_identity(&self, identity: &str, client: &Arc<Client>) -> Result<()> {
         client.shutdown()?;
         {
@@ -706,7 +706,7 @@ impl Registry {
         Ok(())
     }
 
-    /// reload：先读并验证完整候选配置，失败时保持现有配置与客户端不变。
+    /// reload: read and validate the complete candidate configuration first, keeping the current configuration and clients unchanged on failure.
     pub(crate) fn reload_config(&self) -> Result<Vec<String>> {
         ensure!(self.inner.settings.enabled, "LSP support is disabled.");
         let candidate = Arc::new(
@@ -726,7 +726,7 @@ impl Registry {
             !self.inner.closing.load(Ordering::SeqCst),
             "LSP support is shutting down"
         );
-        // 新鲜的键是身份集合，不是名字：别名改名只要身份不变就继续复用进程。
+        // The freshness key is the set of identities, not names: an alias rename reuses the process as long as the identity is unchanged.
         let fresh = alias_index(&candidate, &self.inner.cwd);
         let fresh_identities: HashSet<&str> = fresh.values().map(String::as_str).collect();
         let mut stale = Vec::new();
@@ -773,7 +773,7 @@ impl Registry {
         Ok(stale)
     }
 
-    /// 仅取得句柄；停止从显式 stop 或兜底 Drop 开始。
+    /// Only takes the handle; stopping starts from an explicit stop or the fallback Drop.
     pub fn cleanup(&self) -> Cleanup {
         Cleanup {
             registry: self.clone(),
@@ -784,7 +784,7 @@ impl Registry {
     pub fn stop_all(&self) -> Result<()> {
         self.inner.closing.store(true, Ordering::SeqCst);
         self.inner.generation.fetch_add(1, Ordering::SeqCst);
-        // worker 初始化的收尾也需要 lifecycle；join 时不能持有它。
+        // Tearing down worker initialization also needs the lifecycle lock; it cannot be held while joining.
         let mut errors = Vec::new();
         if let Err(error) = self.inner.diagnostics.stop() {
             errors.push(error);
@@ -826,14 +826,14 @@ impl Registry {
         cleanup_result(errors)
     }
 
-    /// 空闲回收：超过配置 `idleTimeoutMs` 且无活动操作的客户端被关闭。
+    /// Idle reaping: clients exceeding the configured `idleTimeoutMs` with no active operation are closed.
     pub(crate) fn idle_sweep(&self) -> Result<Vec<String>> {
         let _lifecycle = self
             .inner
             .lifecycle
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // 没有已启动客户端时无需超时配置：也避免惰性发现被后台扫描提前触发。
+        // No timeout configuration is needed when no client has started: this also keeps lazy discovery from being triggered early by the background scan.
         let clients = self.started();
         if clients.is_empty() {
             return Ok(Vec::new());
@@ -894,7 +894,7 @@ fn identity_of(definition: &config::ServerDefinition, cwd: &Path) -> String {
     )
 }
 
-/// 已发现服务器名 → 完整身份。名称不参与身份，同一身份可以有多个别名。
+/// Discovered server name → full identity. The name does not participate in the identity, and one identity may have several aliases.
 fn alias_index(config: &config::Config, cwd: &Path) -> HashMap<String, String> {
     config
         .servers
@@ -924,14 +924,14 @@ fn acquire<'a>(
     }
 }
 
-/// 退出清理句柄；显式 `stop` 返回错误，`Drop` 尽力而为。
+/// Exit cleanup handle; explicit `stop` returns errors, `Drop` does a best effort.
 pub struct Cleanup {
     registry: Registry,
     armed: bool,
 }
 
 impl Cleanup {
-    /// 资源被明确转移给新的持有者时，旧句柄不再回收同一批客户端。
+    /// When resources are explicitly handed to a new owner, the old handle no longer reaps the same clients.
     pub fn supersede(&mut self, replacement: &Self) {
         if Arc::ptr_eq(&self.registry.inner, &replacement.registry.inner) {
             self.armed = false;
@@ -955,4 +955,4 @@ impl Drop for Cleanup {
     }
 }
 
-// 内置服务器定义来源于 oh-my-pi 的 packages/coding-agent/src/lsp/defaults.json，遵循 MIT License。
+// Built-in server definitions come from oh-my-pi's packages/coding-agent/src/lsp/defaults.json, under the MIT License.

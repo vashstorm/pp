@@ -1,8 +1,8 @@
-//! `run_test` 的真实 Agent 场景回归。
+//! Regression for the real Agent scenarios of `run_test`.
 //!
-//! 每场使用独立的 loopback mock server 和随机 run id；本文件不安装全局
-//! endpoint，也不修改进程环境、HOME 或工作目录。工具结果断言只检查真实
-//! `ToolFinished` 数据，不合成事件或结果。
+//! Each scenario uses its own loopback mock server and a random run id; this file installs no
+//! global endpoint and modifies neither the process environment, HOME nor the working directory.
+//! Tool result assertions only inspect real `ToolFinished` data and never synthesize events or results.
 
 mod integration {
     use std::{
@@ -72,7 +72,7 @@ mod integration {
     }
 
     fn assert_all_suites(recorder: &Recorder) {
-        // read：固定 main.rs 的完整、range、raw，以及 hashline 场景的注册读取。
+        // read: full, range and raw reads of the fixed main.rs, plus the hashline registration read.
         let reads = recorder.calls("read");
         assert_eq!(reads.len(), 4);
         assert_eq!(reads[0]["ok"], true);
@@ -103,8 +103,8 @@ mod integration {
             "{header}"
         );
 
-        // write：固定 `/tmp` 工作区上的两次覆盖写入成功，越界写入作为普通工具
-        // 失败返回。
+        // write: two overwrite writes on the fixed `/tmp` workspace succeed, and the escaping write
+        // comes back as an ordinary tool failure.
         let writes = recorder.calls("write");
         assert_eq!(writes.len(), 3);
         assert_eq!(writes[0]["ok"], true);
@@ -121,8 +121,8 @@ mod integration {
                 .is_some_and(|error| !error.is_empty())
         );
 
-        // edit：replace 两处成功 + missing oldText 失败；hashline 两处 PUT 成功
-        // + 旧 TAG CUT stale 失败。
+        // edit: replace succeeds twice and fails on missing oldText; hashline succeeds with two PUTs
+        // and fails with a stale CUT on the old TAG.
         let edits = recorder.calls("edit");
         assert_eq!(edits.len(), 4);
         assert_eq!(edits[0]["ok"], true);
@@ -175,8 +175,8 @@ mod integration {
                 .is_some_and(|text| text.contains("No files found"))
         );
 
-        // bash 顺序：write 场景的删除、前台输出、exit 7、管道、400 行大输出，
-        // 然后是 bash-task 与 wait 两个场景各自启动的后台任务。
+        // bash order: the removal from the write scenario, foreground output, exit 7, a pipe, a 400-line output,
+        // then the background tasks started by the bash-task and wait scenarios.
         let bash = recorder.calls("bash");
         assert_eq!(bash.len(), 8);
         assert_eq!(bash[0]["ok"], true);
@@ -352,7 +352,7 @@ mod integration {
         .expect("write mock scenario");
         recorder.finish();
         assert_eq!(report.calls, recorder.started);
-        // 打字机效果来自逐片送达的正文 delta；整段一次性到达会退化成一条。
+        // The typewriter effect comes from message deltas delivered chunk by chunk; the whole text arriving at once degenerates into one delta.
         assert!(deltas > 20, "write fixture streamed {deltas} deltas");
         assert!(
             streamed.contains("Streaming this reply one mock token at a time"),
@@ -365,8 +365,8 @@ mod integration {
         assert_eq!(writes[0]["ok"], true);
         assert_eq!(writes[1]["ok"], true);
         assert_eq!(writes[2]["ok"], false);
-        // 正文行数超过 write 卡片 16 行的折叠窗口，生成期间尾部才有东西可滚。
-        // 参数分片按 mock token 逐字符到达；整段一次到达会退化成 1 个分片。
+        // The message has more lines than the 16-line fold window of the write card, so the tail only has something to scroll while generating.
+        // Argument chunks arrive character by character per mock token; the whole text arriving at once degenerates into 1 chunk.
         let streamed_lines = write_arguments.matches("\\n").count();
         assert!(
             streamed_lines > 16,
@@ -436,7 +436,7 @@ mod integration {
                     let binding = guard
                         .as_ref()
                         .expect("subagent registry installed during the run");
-                    // 在 Agent 清理之前抓取注册表：结果必须已经交付并消费。
+                    // Grab the registry before the Agent is cleaned up: the result must already be delivered and consumed.
                     observed_registry = Some(binding.snapshots());
                     summary = Some(text);
                 }

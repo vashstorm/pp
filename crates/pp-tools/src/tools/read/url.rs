@@ -161,7 +161,7 @@ fn convert_web(response: HttpResponse, raw: bool) -> Result<WebText> {
     })
 }
 
-/// Readability 失败回退整页 HTML 时，先剥离常见非正文噪声标签块，降低无效 token。
+/// When Readability fails and the whole HTML page is the fallback, strip common non-content noise tag blocks first to cut wasted tokens.
 fn strip_html_noise(html: &str) -> String {
     const NOISE_TAGS: &[&str] = &[
         "script", "style", "noscript", "svg", "nav", "footer", "aside", "header",
@@ -195,7 +195,7 @@ fn strip_html_noise(html: &str) -> String {
                 }
             }
         }
-        // 非噪声标签：仅推进 `<`，保留原字符（保证 UTF-8 字符边界）。
+        // Non-noise tag: advance past `<` only and keep the original characters (preserving UTF-8 char boundaries).
         let next = tag_start + 1;
         out.push('<');
         cursor = if next < bytes.len() { next } else { html.len() };
@@ -203,7 +203,7 @@ fn strip_html_noise(html: &str) -> String {
     out
 }
 
-/// 折叠行尾空白与连续 3 个以上空行，保留正文段落与代码块结构。
+/// Collapse trailing whitespace and runs of 3+ blank lines while keeping body paragraphs and code block structure.
 fn compact_web_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut blank_run = 0usize;
@@ -326,11 +326,11 @@ mod tests {
     fn strip_html_noise_and_compact_web_text_remove_boilerplate_and_extra_blank_lines() {
         let html = "<html><head><style>.a{color:red}</style></head><body>\
             <header>Top Banner</header><nav>Menu Item</nav>\
-            <div class='main'>Keep Chinese 正文 &amp; code</div>\
+            <div class='main'>Keep Main Body &amp; code</div>\
             <aside>Sidebar Ad</aside><svg><path d='M0 0'/></svg>\
             <script>alert(1)</script><footer>Copyright 2099</footer></body></html>";
         let stripped = strip_html_noise(html);
-        assert!(stripped.contains("Keep Chinese 正文"), "{stripped}");
+        assert!(stripped.contains("Keep Main Body"), "{stripped}");
         for noise in [
             "Top Banner",
             "Menu Item",

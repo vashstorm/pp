@@ -1,14 +1,17 @@
-// TUI 上下文压缩生命周期（计划验证项 4）：真实 100 列 PTY 驱动 —— 状态栏
-// Ctx 可见、手动或自动压缩被服务端握住摘要 SSE 时的 Compacting 状态、Esc
-// 取消后草稿与已接受输入/工具结果保留且不继续普通请求、成功压缩后旧对话
-// 保留而用量下降且 Compact Note 先于任务 assistant、下一个普通请求只含
-// 摘要包装与原生近期后缀、窄屏 resize 的上下文字段优先与 Ctrl-C 终端标志
-// 恢复、达到配置阈值和超过容量时上下文字段仍为白色，以及 ulimit -f 下压缩 state 写入
-// 留下 partial tail 后恢复读取此前完整快照。此外覆盖输入栏上沿的实时 token
-// 指标：流中不带前缀的估算速度、权威 usage 后的平均速度与 In/Out/CRead/CWrite 配色、
-// 缺失 usage 与 /new 的清理、取消后的速率停止，以及 60/40/20 列下 Ctx 优先
-// 与指标整块降级。辅助项与测试名均以 context_ 开头；不新增 use 声明，直接
-// 复用同模块私有 Pty 与既有 HTTP fixture。
+// TUI context compaction lifecycle (plan verification item 4): a real 100-column PTY drives — the Ctx
+// field visible in the status line; the Compacting state while the server holds the summary SSE for a
+// manual or automatic compaction; the draft, accepted input and tool results kept after an Esc cancel
+// without continuing ordinary requests; the old conversation kept after a successful compaction while
+// usage drops and Compact Note precedes the task assistant; the next ordinary request carrying only the
+// summary wrapper plus the native recent suffix; the Ctx field taking priority on a narrow resize and
+// the Ctrl-C terminal flags restored; the Ctx field staying white at the configured threshold and
+// above capacity; and, under ulimit -f, compaction state writes leaving a partial tail while the
+// previously complete snapshot is still read back. It also covers the live token metrics at the top
+// edge of the input area: the unprefixed estimated speed mid-stream, the average speed after
+// authoritative usage with In/Out/CRead/CWrite coloring, missing usage and the /new reset, the rate
+// stopping after cancellation, and Ctx priority with the metrics block degrading at 60/40/20 columns.
+// Helpers and test names all start with context_; no use declaration is added, the same module's
+// private Pty and the existing HTTP fixture are reused directly.
 
 const CONTEXT_TUI_SUMMARY: &str = "SUMMARY: kept constraint";
 const CONTEXT_TUI_INSTRUCTION: &str = "Summarize the preceding conversation";
@@ -21,8 +24,9 @@ fn context_tui_settings(auto_compact: bool, threshold_percent: u8) -> String {
     )
 }
 
-// 首次启动仍由旧四字段经迁移导入 agent.db；迁移完成后 settings.yml 只保留
-// 非偏好字段，后续重启改写策略时不得再写 default_model。
+// The first start still imports the old four fields into agent.db through migration; after migration
+// settings.yml keeps only non-preference fields, and later restarts that rewrite the policy must not
+// write default_model again.
 fn context_tui_live_settings(auto_compact: bool, threshold_percent: u8) -> String {
     format!(
         "{{\"auto_compact\":{auto_compact},\
@@ -44,7 +48,7 @@ fn context_tui_models(server: &TestServer, protocol: &str, window: u64) -> Strin
     .to_string()
 }
 
-// 独立 HOME 的双配置：默认自动压缩关闭、通知 2 秒。
+// Dual config for a standalone HOME: automatic compaction off by default, 2-second notifications.
 fn context_tui_start_with_policy(
     server: &TestServer,
     protocol: &str,
@@ -86,7 +90,7 @@ fn context_tui_start_auto(
     context_tui_start_with_policy(server, protocol, window, threshold_percent, true)
 }
 
-// 括号粘贴一次送达大段文本，避免逐键事件。
+// Bracketed paste delivers a large block at once, avoiding per-key events.
 fn context_tui_paste(pty: &mut Pty, text: &str) {
     pty.input(&format!("\x1b[200~{text}\x1b[201~"));
 }
@@ -107,7 +111,7 @@ fn context_tui_filler(marker: &str, bytes: usize) -> String {
     text
 }
 
-// 一轮交互：粘贴提示词、回答请求、等待回答与空闲输入框。
+// One exchange: paste the prompt, answer the request, wait for the answer and the idle input box.
 fn context_tui_exchange(
     pty: &mut Pty,
     server: &TestServer,
@@ -127,11 +131,12 @@ fn context_tui_exchange(
     pty.completed_after(&answer);
 }
 
-// 从状态栏的百分比和容量读取用量，允许界面的一位小数舍入。
+// Read usage from the status line percentage and capacity, allowing for the interface's single-decimal
+// rounding.
 fn context_tui_ctx_tokens(screen: &vt100::Screen) -> f64 {
     let contents = screen.contents();
-    let rest = contents.split_once("\u{e62a} ").expect("上下文字段").1;
-    let (percent, capacity) = rest.split_once("%/").expect("百分比与容量");
+    let rest = contents.split_once("\u{e62a} ").expect("context field").1;
+    let (percent, capacity) = rest.split_once("%/").expect("percentage and capacity");
     let number: String = capacity
         .chars()
         .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
@@ -148,7 +153,7 @@ fn context_tui_ctx_percent(screen: &vt100::Screen) -> u128 {
     screen
         .contents()
         .split_once("\u{e62a} ")
-        .expect("上下文字段")
+        .expect("context field")
         .1
         .split_once('%')
         .unwrap()
@@ -157,8 +162,9 @@ fn context_tui_ctx_percent(screen: &vt100::Screen) -> u128 {
         .unwrap() as u128
 }
 
-// 在真实屏幕单元格中定位文本，返回 (行, 起始列)。列号必须来自 cell 扫描：
-// Nerd 图标与宽字符的显示宽度既不等于 UTF-8 字节数，也不等于 chars().count()。
+// Locate text in real screen cells, returning (row, start column). The column must come from a cell
+// scan: the display width of Nerd icons and wide characters equals neither the UTF-8 byte count nor
+// chars().count().
 fn context_tui_locate(screen: &vt100::Screen, needle: &str) -> Option<(u16, u16)> {
     let (rows, columns) = screen.size();
     for row in 0..rows {
@@ -183,7 +189,7 @@ fn context_tui_locate(screen: &vt100::Screen, needle: &str) -> Option<(u16, u16)
 
 fn context_tui_assert_ctx_white(pty: &Pty) {
     let screen = pty.parser.screen();
-    let (row, column) = context_tui_locate(screen, "\u{e62a} ").expect("缺少上下文字段");
+    let (row, column) = context_tui_locate(screen, "\u{e62a} ").expect("missing context field");
     for column in [column, column + 2] {
         assert_eq!(screen.cell(row, column).unwrap().fgcolor(), vt100::Color::Idx(15));
     }
@@ -197,7 +203,8 @@ fn context_tui_metrics_hidden(screen: &vt100::Screen) -> bool {
         && !contents.contains("\u{f01bc}")
 }
 
-// 速度字段的数值与是否带前缀：字段自身格式为 `N.N[k|m] tok/s`，未知时只有 `— tok/s`。
+// The speed field's value and whether it is prefixed: the field itself is formatted as `N.N[k|m]
+// tok/s`, and only `— tok/s` when unknown.
 fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
     let (row, column) = context_tui_locate(screen, "tok/s")?;
     let head: String = (0..column)
@@ -234,13 +241,14 @@ fn context_tui_speed(screen: &vt100::Screen) -> Option<(f64, bool)> {
     ))
 }
 
-// 非零速度必须直接显示数值，不带 ~ 前缀。
+// A non-zero speed must be shown as a bare number, without the ~ prefix.
 fn context_tui_positive_speed(screen: &vt100::Screen) -> bool {
     context_tui_speed(screen).is_some_and(|(rate, marked)| !marked && rate > 0.0)
 }
 
-// 流式请求的权威收尾：Chat 用 usage-only 尾块 + DONE，Responses 用 completed
-// 事件携带同一 usage；文本与已发送的增量一致，供速率按服务端 output 校正。
+// Authoritative tail of a streaming request: Chat uses a usage-only tail chunk + DONE, Responses uses a
+// completed event carrying the same usage; the text matches the deltas already sent so the rate can be
+// calibrated against the server's output.
 fn context_tui_stream_usage(stream: &mut SseWriter, protocol: &str, text: &str) {
     if protocol == "completion" {
         stream.event(&chat_chunk(json!({}), Some("stop"))).unwrap();
@@ -270,7 +278,8 @@ fn context_tui_stream_usage(stream: &mut SseWriter, protocol: &str, text: &str) 
     }
 }
 
-// 摘要请求的回复：与普通流一样收尾，但压缩流不进入指标（由空回调隔离）。
+// Reply to the summary request: it terminates like an ordinary stream, but compaction streams do not
+// feed the metrics (isolated by an empty callback).
 fn context_tui_summary_reply(stream: &mut SseWriter, protocol: &str) {
     if protocol == "completion" {
         stream.event(&chat_chunk(
@@ -290,8 +299,8 @@ fn context_tui_summary_reply(stream: &mut SseWriter, protocol: &str) {
     }
 }
 
-// 摘要请求的形状：取消工具配置、携带输出上限、只含旧前缀与一条固定
-// 摘要指令；近期后缀绝不发送给摘要模型。
+// Shape of the summary request: no tool configuration, an output cap, and only the old prefix plus one
+// fixed summary instruction; the recent suffix is never sent to the summary model.
 fn context_tui_assert_summary_body(
     body: &Value,
     protocol: &str,
@@ -300,11 +309,11 @@ fn context_tui_assert_summary_body(
 ) {
     let text = serde_json::to_string(body).unwrap();
     assert!(text.contains(CONTEXT_TUI_INSTRUCTION));
-    assert!(text.contains(old_marker), "旧前缀必须参与摘要");
-    assert!(!text.contains(recent_marker), "近期后缀不得发给摘要模型");
+    assert!(text.contains(old_marker), "the old prefix must take part in the summary");
+    assert!(!text.contains(recent_marker), "the recent suffix must not be sent to the summary model");
     assert!(
         body["tools"].as_array().is_none() || body["tool_choice"] == "none",
-        "摘要请求必须禁止工具调用（无 tools 或 tool_choice=none）"
+        "summary requests must disable tool calls (no tools or tool_choice=none)"
     );
     if protocol == "completion" {
         assert_eq!(body["max_completion_tokens"], json!(4096));
@@ -324,8 +333,8 @@ fn context_tui_assert_summary_body(
     }
 }
 
-// 三个 8KB 交互使旧前缀超过 40000/5 token 的保留预算，
-// 摘要只覆盖第一个交互，最近交互始终原生保留。
+// Three 8KB exchanges push the old prefix past the 40000/5-token retention budget, so the summary
+// covers only the first exchange and the most recent exchange is always kept natively.
 fn context_tui_fill_three_exchanges(pty: &mut Pty, server: &TestServer, protocol: &str) {
     for marker in ["context-old-one", "context-old-two", "context-recent-keep"] {
         context_tui_exchange(
@@ -338,9 +347,10 @@ fn context_tui_fill_three_exchanges(pty: &mut Pty, server: &TestServer, protocol
     }
 }
 
-// 首个 35KB 批次低于 32768 的 80% 阈值；第二个 40KB 批次完成后完整历史
-// 越过阈值，但保留的最近批次加系统/工具仍低于阈值，下一次普通请求前必须
-// 自动摘要且候选可被接受。
+// The first 35KB batch stays below the 80% threshold of 32768; once the second 40KB batch completes
+// the full history crosses the threshold, but the kept recent batch plus system/tools is still below it,
+// so the next ordinary request must be preceded by an automatic summary and the candidate must be
+// accepted.
 const CONTEXT_TUI_AUTO_FIRST_BYTES: usize = 35_000;
 const CONTEXT_TUI_AUTO_SECOND_BYTES: usize = 40_000;
 
@@ -365,7 +375,8 @@ fn context_tui_final(request: CapturedRequest, protocol: &str, text: &str) {
     }
 }
 
-// 向上翻页直到旧对话标记可见；失败时如实返回 false，调用方仍可翻回底部。
+// Page up until the old conversation marker is visible; return false honestly on failure, and the
+// caller can still page back to the bottom.
 fn context_tui_page_to(pty: &mut Pty, needle: &str) -> bool {
     for _ in 0..80 {
         if pty.parser.screen().contents().contains(needle) {

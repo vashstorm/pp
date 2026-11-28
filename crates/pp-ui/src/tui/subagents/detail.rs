@@ -1,8 +1,8 @@
-//! 独立全屏 child 详情：fresh Transcript、按 Run 导入历史、锚点定位与输入框。
+//! Standalone full-screen child detail: a fresh Transcript, history imported per Run, anchor positioning and an input box.
 //!
-//! 详情只在 Hub 内显示，不把主聊天界面切换成 child 会话；主会话继续运行并
-//! 保留草稿、viewport 与用量归属。输入的提交通过观察线程调用既有
-//! `Binding::control`，不在 UI 线程做 I/O。
+//! The detail is only shown inside the Hub and never switches the main chat surface to the child session; the main session keeps running and
+//! keeps its draft, viewport and usage attribution. Input submission calls the existing
+//! `Binding::control` through the observer thread and performs no I/O on the UI thread.
 
 use super::super::statusline;
 use super::super::transcript_style::{accent, activity, dim, removed};
@@ -27,10 +27,10 @@ use ratatui::{
 use ratatui_textarea::{CursorMove, TextArea};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// 没有 notice 时的固定编辑提示；与主输入框的换行语义保持一致。
+/// Fixed editing hint shown when there is no notice; matches the newline semantics of the main input box.
 const HINT: &str = "Enter send · Shift+Enter newline · Ctrl+J newline · PgUp/PgDn scroll · Ctrl+O tools · Esc back";
 
-/// Activity 行到详情正文的锚点。
+/// Anchor from an Activity row to a detail body line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::tui) struct Anchor {
     pub run: Option<String>,
@@ -43,17 +43,17 @@ pub(super) struct Detail {
     pub view: u64,
     transcript: Transcript,
     token_speed: statusline::TokenSpeed,
-    /// 当前模型请求的 worker 代次及起始事件序号。
+    /// Worker generation and starting event sequence number of the current model request.
     speed_request: Option<(u64, u64)>,
-    /// run -> 首个 user 卡片条目索引。
+    /// run -> index of the first user card entry.
     by_run: BTreeMap<String, usize>,
-    /// 源行起始偏移 -> 条目索引。
+    /// Starting source line offset -> entry index.
     by_offset: BTreeMap<u64, usize>,
-    /// (run, 工具调用 id) -> 卡片条目索引。
+    /// (run, tool call id) -> card entry index.
     by_tool: BTreeMap<(String, String), usize>,
-    /// 已追加过 user 卡片的 Run。
+    /// Runs whose user card was already appended.
     started: BTreeSet<String>,
-    /// 已应用终态的 Run。
+    /// Runs whose terminal state was already applied.
     terminal: BTreeMap<String, Terminal>,
     active_run: Option<String>,
     accepted: BTreeSet<(String, u64)>,
@@ -84,7 +84,7 @@ impl Detail {
         }
     }
 
-    /// 管道阶段预览与主输出快照分开到达，不能互相替换。
+    /// The pipeline stage preview and the main output snapshot arrive separately and must not replace each other.
     pub(super) fn pipeline_preview(&mut self, record: &pp_runtime::subagent::ObservedRecord) {
         if self.caught_up
             && self.active_run.as_ref() == record.run_id.as_ref()
@@ -154,7 +154,7 @@ impl Detail {
         }
     }
 
-    /// settled 是 worker 读页前冻结的终态；只有读完本页历史后才可用它补齐。
+    /// settled is the terminal state frozen before the worker read the page; it may only be used to complete after the whole page was read.
     pub(super) fn ingest(
         &mut self,
         page: &EventPage,
@@ -200,7 +200,7 @@ impl Detail {
             && self.active_run.as_deref() != Some(&run)
             && !self.terminal.contains_key(&run)
         {
-            // 旧日志可能缺少终态标记；新 Run 的记录证明上一轮已读完。
+            // Old logs may lack the terminal marker; a record of a new Run proves the previous turn was fully read.
             if let Some(previous) = runs.iter().find(|candidate| {
                 self.active_run.as_deref() == Some(&candidate.id)
                     && !matches!(candidate.status.as_str(), "queued" | "running")
@@ -227,7 +227,7 @@ impl Detail {
             self.started.insert(run.clone());
         }
         match (&record.event, &record.hub) {
-            // 已接受的输入单独生成一次 user 卡片；progress 明确忽略该事件。
+            // Accepted input produces one user card of its own; progress explicitly ignores that event.
             (Some(AgentEvent::UserInputAccepted { id, text }), _) => {
                 if !self.accepted.insert((run.clone(), *id)) {
                     return;
@@ -252,7 +252,7 @@ impl Detail {
                 if let AgentEvent::ToolStarted { id, .. } = event
                     && let Some(index) = self.transcript.tool_index(id)
                 {
-                    // 后台查询可复用已有卡片，锚点跟随真实工具索引。
+                    // A background query can reuse the existing card, and the anchor follows the real tool index.
                     self.by_offset.insert(entry.start_offset, index);
                     self.by_tool.insert((run.clone(), id.clone()), index);
                 }
@@ -283,7 +283,7 @@ impl Detail {
         now_ms: u64,
         now: std::time::Instant,
     ) {
-        // 旧日志按事件时间回放采样，避免把分页读取的速度误当成模型速度。
+        // Old logs are replayed by event time for sampling so a slow paged read is not mistaken for model speed.
         let recorded_at = || {
             record
                 .timestamp_ms
@@ -328,10 +328,10 @@ impl Detail {
         }
     }
 
-    /// 只有对应 Run 已读完（或读到终态 lifecycle）才应用终态。
+    /// Apply the terminal state only once the corresponding Run was fully read (or reached a terminal lifecycle).
     fn apply_terminal(&mut self, run: &str, status: &str, timestamp_ms: Option<u64>) {
         if let Some(terminal) = self.terminal.get_mut(run) {
-            // 快照补齐后，迟到的 lifecycle 仍能补回真实完成时间。
+            // After the snapshot is completed, a late lifecycle can still restore the real completion time.
             terminal.timestamp_ms = terminal.timestamp_ms.or(timestamp_ms);
             return;
         }
@@ -432,7 +432,7 @@ impl Detail {
         }
     }
 
-    /// 返回 Some(原文) 表示需要提交；返回 None 表示只处理了本地编辑。
+    /// Returning Some(raw text) means it must be submitted; None means only local editing was handled.
     pub(super) fn key(&mut self, key: KeyEvent, drafts: &mut Drafts) -> Option<String> {
         if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
             return None;
@@ -481,7 +481,7 @@ impl Detail {
                 _ => return None,
             }
         }
-        // Shift + Enter 与主输入框一致：只换行，不提交（含 Alt + Shift）。
+        // Shift + Enter matches the main input box: newline only, no submit (including Alt + Shift).
         if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT) {
             drafts.draft(&self.agent).editor.insert_newline();
             drafts.touch(&self.agent);
@@ -494,7 +494,7 @@ impl Detail {
                 if text.trim().is_empty() {
                     return None;
                 }
-                // 只有真正提交的原文返回给 App；全空白拒绝。
+                // Only the raw text that is really submitted is returned to App; all-whitespace input is rejected.
                 Some(text)
             }
             KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete | KeyCode::Tab => {
@@ -552,7 +552,7 @@ impl Detail {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        // 断行预算全部用 saturating / checked 运算：0、1、2 行与 1 列都不越界。
+        // Every line budget uses saturating / checked arithmetic: 0, 1 and 2 rows and 1 column never go out of bounds.
         let status_height = u16::from(area.height >= 2);
         let body_height = area.height - status_height;
         let header_height = u16::from(body_height > 0);
@@ -573,7 +573,7 @@ impl Detail {
             u16::from(activity_height > 0 && input_space > input_height + activity_height + 1);
         let transcript_height =
             input_space.saturating_sub(input_height + activity_height + activity_spacing);
-        // 单行身份与真实状态；模型、effort 与用量由输入框指标行及底部状态栏承载。
+        // Single-line identity and real status; model, effort and usage are carried by the input metric row and the bottom status bar.
         let status_color = super::status_color(view.status);
         let status_icon = super::status_icon(view.status, now_ms);
         let parked = if view.parked && view.status == super::AgentStatus::Completed {
@@ -643,11 +643,11 @@ impl Detail {
         self.transcript.set_terminal_rows(area.height);
         self.transcript
             .resize_preserving_anchor(transcript_area.width);
-        // 首批历史可能在首帧获得宽度前读完，定位不能等待下一批事件。
+        // The first batch of history may finish loading before the first frame knows the width, so positioning cannot wait for the next batch.
         self.resolve_pending();
         self.transcript.draw(frame, transcript_area);
         if transcript_height > 0 && self.transcript.entry_count() == 0 {
-            // 首帧使用已有任务快照，正文由有序日志接管。Activity 锚点可能指向旧任务。
+            // The first frame uses the existing task snapshot and the body is taken over by the ordered log. The Activity anchor may point at an old task.
             let mut lines = Vec::new();
             if history_loading {
                 lines.push(Line::styled(
@@ -680,7 +680,7 @@ impl Detail {
                 .border_style(Style::default().fg(statusline::accent()));
             let inner = block.inner(input_area);
             frame.render_widget(block, input_area);
-            // 指标行写在顶边框行右侧，必须在边框之后覆盖，左侧边框字符保留。
+            // The metric row is written to the right of the top border row and must be covered after the border, keeping the left border glyph.
             let metrics = statusline::subagent_metrics(
                 statusline::SubagentUsage {
                     speed: self.token_speed.value().map(|(rate, _)| rate),
@@ -795,7 +795,7 @@ pub(super) fn format_clock(timestamp: Option<u64>) -> String {
         )
 }
 
-/// child 编辑器沿用主编辑器配置：TEXT 文本色、词级折行与 1000 步 undo 历史。
+/// The child editor reuses the main editor configuration: TEXT for the body, word-level wrapping and 1000 undo steps.
 pub(super) fn editor() -> TextArea<'static> {
     super::super::editor()
 }

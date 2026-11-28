@@ -1,10 +1,11 @@
-//! 当前会话上下文的只读诊断快照：严格基于已发送/已恢复的真实会话数据，
-//! 按 10 个固定分类拆分统计：`System Prompt`、`Instruction Files`、`Skills`、`Built-in Tools`、
-//! `Custom Tools`、`User / Developer Messages`、`Assistant Messages`、`Assistant Thinking`、
-//! `Tool Calls` 与 `Tool Output`。
+//! Read-only diagnostic snapshot of the current session context: strictly based on the real session data that was
+//! sent/restored, split into 10 fixed categories: `System Prompt`, `Instruction Files`, `Skills`, `Built-in Tools`,
+//! `Custom Tools`, `User / Developer Messages`, `Assistant Messages`, `Assistant Thinking`,
+//! `Tool Calls` and `Tool Output`.
 //!
-//! 半静态分区按指纹缓存、逐条消息分类按消息身份缓存：追加消息只重算新增尾部，
-//! 整段替换历史时从头重算。缓存由 Agent 持有的 [`Snapshot`] 内 `Mutex` 保护，不使用进程级静态。
+//! Semi-static sections are cached by fingerprint and per-message classification is cached by message identity: appended
+//! messages only recompute the new tail, and a wholesale history replacement recomputes from scratch. The cache is guarded
+//! by a `Mutex` inside the Agent-owned [`Snapshot`] and uses no process-wide static.
 
 mod history;
 mod sections;
@@ -106,7 +107,7 @@ pub struct CategorySummary {
     pub tokens: u64,
     pub bytes: u64,
     pub item_count: usize,
-    /// 为 true 表示计入下一次请求上下文窗口；为 false 表示历史产出（如 Chat Completions 思考）。
+    /// True means it counts toward the next request's context window; false means it is history output (such as Chat Completions thinking).
     pub in_context: bool,
     pub items: Vec<DiagnosticItem>,
 }
@@ -121,7 +122,7 @@ pub struct DiagnosticItem {
     pub preview: String,
 }
 
-/// 流式指纹写入器：只累计字节数与哈希，不分配序列化副本。
+/// Streaming fingerprint writer: accumulates only the byte count and the hash, allocating no serialized copy.
 #[derive(Default)]
 pub(super) struct FingerprintWriter {
     hasher: DefaultHasher,
@@ -129,7 +130,7 @@ pub(super) struct FingerprintWriter {
 }
 
 impl FingerprintWriter {
-    /// 已写入的字节数（等于同样内容的原生 JSON 长度）。
+    /// Bytes written so far (equal to the native JSON length of the same content).
     pub(super) fn bytes(&self) -> u64 {
         self.bytes
     }
@@ -138,7 +139,7 @@ impl FingerprintWriter {
         self.hasher.finish()
     }
 
-    /// 写入一段文本：先写长度，避免相邻字段的边界歧义。
+    /// Write a text chunk: its length goes first to avoid boundary ambiguity between adjacent fields.
     pub(super) fn text(&mut self, text: &str) {
         Hasher::write(&mut self.hasher, b"t");
         Hasher::write(&mut self.hasher, &(text.len() as u64).to_le_bytes());
@@ -171,9 +172,9 @@ pub(super) fn hash_text(text: &str) -> u64 {
     hasher.finish()
 }
 
-/// 上下文诊断的缓存状态：历史分类前缀 + 半静态分区 + 思考分类。
+/// Cache state of context diagnosis: history classification prefix + semi-static sections + thinking classification.
 ///
-/// 由 Agent 持有的 [`Snapshot`] 内 `Mutex` 保护；面板强制刷新与诊断失败会丢弃它。
+/// Guarded by a `Mutex` inside the Agent-owned [`Snapshot`]; a forced panel refresh and a diagnosis failure drop it.
 #[derive(Default)]
 pub(super) struct DiagnosisCache {
     history: Option<history::HistoryState>,
@@ -182,7 +183,7 @@ pub(super) struct DiagnosisCache {
 }
 
 impl DiagnosisCache {
-    /// 丢弃全部缓存；下一次发布强制全量重算。
+    /// Drop the whole cache; the next publish forces a full recompute.
     pub(super) fn invalidate(&mut self) {
         *self = Self::default();
     }
@@ -196,7 +197,7 @@ struct ClassifiedSections {
     tools: SplitToolsBreakdown,
 }
 
-/// 思考分类的缓存键：原生消息身份 + 已采集思考记录指纹。
+/// Cache key of the thinking classification: native message identity + fingerprint of the collected thinking records.
 #[derive(Clone, PartialEq, Eq)]
 struct ThinkingKey {
     items: Vec<history::MessageId>,
@@ -240,7 +241,7 @@ struct Classified {
     thinking: thinking::ThinkingBreakdown,
 }
 
-/// 报告装配的入参：分类结果之外只剩本轮的用量与协议信息。
+/// Inputs of report assembly: beyond the classification results only this turn's usage and protocol information remain.
 struct ReportInputs {
     usage: ContextUsage,
     protocol: &'static str,
@@ -252,16 +253,16 @@ struct ReportInputs {
 }
 
 impl Agent {
-    /// 生成当前会话上下文的只读诊断报告。
+    /// Produce the read-only diagnostic report of the current session context.
     ///
-    /// 这是强制重算入口（面板 `r` 刷新走这里），不读取也不写入任何缓存：
-    /// 仅基于当前会话已发送/已恢复的真实数据统计；
-    /// 尚未开始对话的空会话返回零用量及全零分类，不把未发送的配置基线计入上下文，也不创建会话日志。
+    /// This is the forced-recompute entry (the panel `r` refresh goes here); it reads and writes no cache:
+    /// it counts only the real data the current session has sent/restored;
+    /// a fresh empty session returns zero usage and all-zero categories, counting no unsent config baseline into the context and creating no session log.
     pub fn diagnose_context(&self) -> Result<ContextReport> {
         self.diagnose_context_with(&mut DiagnosisCache::default(), None)
     }
 
-    /// 诊断发布路径：`usage` 已由调用方在本轮请求前算好时可复用，避免重复全量估算。
+    /// Diagnosis publishing path: `usage` already computed by the caller before this turn's request is reused to avoid a second full estimate.
     pub(super) fn diagnose_context_with(
         &self,
         cache: &mut DiagnosisCache,
@@ -278,7 +279,7 @@ impl Agent {
         let thinking_in_context = matches!(&self.session, Session::Response(_));
 
         if usage.estimated_tokens == 0 {
-            // 空会话不读盘、不建缓存：零用量语义与既有一致。
+            // An empty session reads no disk and builds no cache: zero-usage semantics stay as before.
             cache.invalidate();
             let categories = CategoryKey::ALL
                 .into_iter()
@@ -394,7 +395,7 @@ impl Agent {
             ),
         ];
 
-        // 将总占用 `Used` 按各在上下文分类的原始估算份额切分，使分类合计与 `Used` 对账一致。
+        // Split the total `Used` by each in-context category's raw estimated share so the category sum reconciles with `Used`.
         let share_inputs: Vec<Option<u64>> = categories
             .iter()
             .map(|cat| cat.in_context.then_some(cat.tokens))

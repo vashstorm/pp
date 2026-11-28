@@ -1,8 +1,8 @@
-//! 摘要文本辅助：大小写不敏感子序列、单行截断与参数摘要。
+//! Summary text helpers: case-insensitive subsequence matching, single-line truncation and argument summaries.
 
 use super::*;
 
-/// 大小写不敏感的子序列匹配（两侧均已小写）。
+/// Case-insensitive subsequence match (both sides already lowercased).
 pub(super) fn fuzzy(needle: &str, haystack: &str) -> bool {
     let mut characters = haystack.chars();
     needle
@@ -10,7 +10,7 @@ pub(super) fn fuzzy(needle: &str, haystack: &str) -> bool {
         .all(|wanted| characters.any(|found| found == wanted))
 }
 
-/// 单行摘要：折叠换行/Tab，并限制 Unicode 标量数量。
+/// Single-line summary: fold newlines/tabs and cap the number of Unicode scalars.
 pub(in crate::tui::subagents) fn truncate(text: &str) -> String {
     let mut out = String::new();
     for (count, character) in text.chars().enumerate() {

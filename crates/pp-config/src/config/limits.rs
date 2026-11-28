@@ -38,7 +38,7 @@ impl Default for RgSettings {
     }
 }
 
-/// settings.yml 的 `tools:` 小节；字段语义由 `pp-permission` 与 `pp-sandbox` 解释。
+/// The `tools:` section of settings.yml; field semantics are interpreted by `pp-permission` and `pp-sandbox`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "ToolsSettingsFields")]
 pub struct ToolsSettings {
@@ -50,8 +50,8 @@ pub struct ToolsSettings {
     pub sandbox: SandboxSettings,
 }
 
-// 直接读取已知键，让带 YAML 标签的未知值也能跳过。
-// flatten 反序列化会先缓存未知值，缓存格式不支持 YAML 标签。
+// Read known keys directly so unknown values carrying YAML tags can still be skipped.
+// flatten deserialization caches unknown values first, and the cache format does not support YAML tags.
 #[derive(Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct ToolsSettingsFields {
@@ -182,8 +182,8 @@ impl<'de> Deserialize<'de> for ToolLimits {
         }
 
         let saved = SavedLimits::deserialize(deserializer)?;
-        // 旧 checkpoint 没有上限字段，沿用其已保存的默认时限，避免历史会话无法恢复。
-        // 新配置与带显式上限的 checkpoint 仍严格校验默认值不得超过上限。
+        // Old checkpoints have no limit field, so keep their saved timeout to avoid making history sessions unrecoverable.
+        // New configurations and checkpoints with an explicit limit still strictly require the default not to exceed the limit.
         let bash_max = saved
             .bash_max_timeout_seconds
             .unwrap_or_else(|| default_bash_max_timeout_seconds().max(saved.bash_timeout_seconds));

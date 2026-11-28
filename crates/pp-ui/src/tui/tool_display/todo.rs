@@ -1,12 +1,12 @@
-//! TODO 固定区的阶段／任务树状清单布局。
+//! Tree checklist layout of phases and tasks for the fixed TODO area.
 
 use super::*;
 
 // =============================================================================
-// TODO 固定区的完整清单布局
+// Full checklist layout of the fixed TODO area
 // =============================================================================
 
-/// 阶段编号采用上游 ROMAN_PAIRS 的罗马数字，仅用于显示。
+/// Phase numbers use the Roman numerals of upstream ROMAN_PAIRS and serve display only.
 fn phase_roman(mut number: usize) -> String {
     const PAIRS: [(usize, &str); 13] = [
         (1000, "M"),
@@ -33,7 +33,7 @@ fn phase_roman(mut number: usize) -> String {
     roman
 }
 
-/// 使用三列选择框，状态标记与正文统一着色，完成项仅勾选、不划线。
+/// Three-column checkbox where the status marker and the body share one color; completed items are checked but never struck through.
 pub(in crate::tui) fn todo_task_styles(
     status: pp_core::todo::TodoStatus,
 ) -> (&'static str, Style, Style) {
@@ -74,7 +74,7 @@ pub(in crate::tui) fn todo_task_styles(
     (symbol, Style::default().fg(marker), text)
 }
 
-/// 阶段行：`I. Name (closed/total)`，颜色跟随阶段状态。
+/// Phase row: `I. Name (closed/total)`, colored by the phase status.
 pub(in crate::tui) fn todo_phase_line(
     phase: &pp_core::todo::TodoPhase,
     index: usize,
@@ -116,12 +116,12 @@ pub(in crate::tui) fn todo_phase_line(
     ])
 }
 
-/// 阶段行首行树枝：展开清单与收起窗口共用，窄窗口缩短分支。
+/// Tree branch of the phase row's first line: shared by the expanded checklist and folded window; narrow windows shorten the branch.
 pub(in crate::tui) fn todo_phase_prefix(width: u16) -> &'static str {
     if width >= 5 { "├─ " } else { "├" }
 }
 
-/// 任务行首行树枝：按可用宽度给正文留列，`last` 表示阶段内最后一个可见任务。
+/// Tree branch of the task row's first line: leaves columns for the body by available width, `last` marks the last visible task in the phase.
 pub(in crate::tui) fn todo_task_prefix(width: u16, last: bool) -> &'static str {
     match (width, last) {
         (12.., true) => "│  └─ ",
@@ -134,7 +134,7 @@ pub(in crate::tui) fn todo_task_prefix(width: u16, last: bool) -> &'static str {
     }
 }
 
-/// 折行续行缩进，与首行树枝一起对齐任务正文。
+/// Indent of a wrapped continuation line, aligned with the first-line branch to the task body.
 fn todo_task_continuation(width: u16, last: bool) -> &'static str {
     match (width, last) {
         (12.., true) => "│         ",
@@ -148,7 +148,7 @@ fn todo_task_continuation(width: u16, last: bool) -> &'static str {
     }
 }
 
-/// 先按正文宽度折行，再逐行补齐树枝，显式换行也保留连线。
+/// Wrap by body width first, then add the branch line by line; explicit newlines keep the connector as well.
 fn todo_tree_rows(
     content: Line<'static>,
     width: u16,
@@ -171,8 +171,8 @@ fn todo_tree_rows(
         .collect()
 }
 
-/// 结构化完整清单：阶段头 `I. Name (closed/total)`，任务行按状态着色。
-/// 动态文本全部经 display_text 折行安全展示，重复文案附 phase+occurrence 寻址提示。
+/// Structured full checklist: phase headers `I. Name (closed/total)` and task rows colored by status.
+/// All dynamic text is wrapped through display_text for safe display, and duplicate copy gets a phase+occurrence disambiguation hint.
 pub(in crate::tui) struct TodoChecklist {
     pub(in crate::tui) rows: Vec<Line<'static>>,
     pub(in crate::tui) task_rows: Vec<usize>,
@@ -241,7 +241,7 @@ pub(in crate::tui) fn todo_checklist(
                 ));
             }
             let last = task_index + 1 == phase.tasks.len();
-            // 缩短窄窗口的树枝，至少为中文正文保留两列。
+            // Shorten the branch on narrow windows, keeping at least two columns for the CJK body.
             let mut prefix = Line::styled(
                 todo_task_prefix(width, last),
                 Style::default().fg(palette::dim()),
@@ -263,7 +263,7 @@ pub(in crate::tui) fn todo_checklist(
     TodoChecklist { rows, task_rows }
 }
 
-/// 失败只展示诊断，不把随结果携带的旧清单再次展开。
+/// Failures show the diagnosis only and never expand the old checklist carried with the result again.
 pub(super) fn todo_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     if !view.failed {
         return Vec::new();

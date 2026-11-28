@@ -1,7 +1,9 @@
-//! 统计服务的 Axum 传输层：监听、Host/Origin 策略、静态资源与同步工作端桥接。
+//! Axum transport layer of the statistics server: listening, Host/Origin policy, static assets and
+//! the bridge to the synchronous worker.
 //!
-//! SQLite 与配置文件读写只属于 `server.rs` 的调用线程；这里只把原始
-//! request-target 与已校验的风格选择交给同步工作端并等待一次性响应。
+//! SQLite and config file access belong exclusively to the calling thread of `server.rs`; this module
+//! only hands the raw request-target and the validated style choice to the synchronous worker and
+//! waits for the one-shot response.
 
 use std::{
     io,
@@ -21,13 +23,14 @@ use axum::{
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 
-/// 内嵌字体的精确 request-target。
+/// Exact request-target of the embedded font.
 const FONT: &str = "/fonts/InterVariable.woff2";
-/// 内嵌字体的响应类型。
+/// Response type of the embedded font.
 const FONT_TYPE: &str = "font/woff2";
-/// 所有响应共用的安全策略，保持既有字面量。
+/// Security policy shared by all responses; keeps the existing literal.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'";
-/// 同步工作端不可用时的固定响应体，与 `dispatch` 共用同一份字面量。
+/// Fixed response body used when the synchronous worker is unavailable; shares the same literal as
+/// `dispatch`.
 const UNAVAILABLE_TYPE: &str = "application/json";
 
 pub(super) const STYLE_PATH: &str = "/api/stats/style";
@@ -38,14 +41,15 @@ struct StyleUpdate {
     style: pp_config::config::StatsStyle,
 }
 
-/// 同步工作端的一次请求：原始 request-target、可选风格写入与一次性响应槽。
+/// One request for the synchronous worker: raw request-target, optional style write and the one-shot
+/// response slot.
 pub(super) struct Query {
     pub(super) target: String,
     pub(super) style: Option<pp_config::config::StatsStyle>,
     pub(super) reply: oneshot::Sender<(u16, &'static str, String)>,
 }
 
-/// 监听器与 runtime 的唯一 owner；Drop 立即取消并回收服务线程。
+/// Sole owner of the listener and runtime; Drop cancels immediately and reclaims the service thread.
 pub(super) struct Transport {
     address: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
@@ -58,7 +62,8 @@ impl Transport {
         self.address
     }
 
-    /// 收尾服务线程并返回 `axum::serve` 的结果，不吞后台错误。
+    /// Winds down the service thread and returns the result of `axum::serve` without swallowing
+    /// background errors.
     pub(super) fn join(mut self) -> Result<()> {
         self.stop();
         match self.result.recv() {
@@ -84,7 +89,8 @@ impl Drop for Transport {
     }
 }
 
-/// 绑定、启动单线程 runtime 与 router，就绪后才返回可用地址。
+/// Binds, starts the single-threaded runtime and the router, and returns the usable address only once
+/// ready.
 pub(super) fn start(address: SocketAddr) -> Result<(Transport, mpsc::Receiver<Query>)> {
     let listener = std::net::TcpListener::bind(address).context("starting statistics server")?;
     let address = listener
@@ -149,7 +155,8 @@ async fn handle(State(shared): State<Shared>, request: Request) -> Response {
     }
     let mut style = None;
     if target == STYLE_PATH && parts.method == Method::POST {
-        // 风格偏好是唯一写入口，要求显式同源 JSON，拒绝跨站表单与无 Origin 写入。
+        // The style preference is the only write entry point: it requires explicit same-origin JSON and
+        // rejects cross-site forms and writes without an Origin header.
         if !parts.headers.contains_key(header::ORIGIN) {
             return json(
                 StatusCode::FORBIDDEN,
@@ -230,7 +237,8 @@ async fn handle(State(shared): State<Shared>, request: Request) -> Response {
     }
 }
 
-/// Host 必须等于实际绑定地址；Origin 可缺省，存在时只允许同源（非 ASCII 头同样拒绝）。
+/// Host must equal the actual bound address; Origin may be absent, and when present only the same
+/// origin is allowed (non-ASCII headers are rejected as well).
 fn allowed_hosts_and_origins(address: std::net::SocketAddr) -> (Vec<String>, Vec<String>) {
     let mut hosts = vec![address.to_string()];
     if address.port() == 80 {

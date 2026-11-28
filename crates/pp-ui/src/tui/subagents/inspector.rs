@@ -1,4 +1,4 @@
-//! Inspector 栏：选中 agent 的详情、指标与降级文本辅助。
+//! Inspector bar: details, metrics and degraded-text helpers for the selected agent.
 
 use super::activity::activity_icon;
 use super::*;
@@ -132,7 +132,7 @@ impl Panel {
             )));
         }
         section(&mut lines, "Recent activity");
-        // 概要始终保留最新几项，独立 Activity 页可查看更早事件。
+        // The summary always keeps the newest items; the separate Activity page shows earlier events.
         let limit = (area.height as usize)
             .saturating_sub(lines.len())
             .clamp(1, 20);
@@ -215,7 +215,7 @@ pub(super) fn status_icon(status: AgentStatus, clock: u64) -> &'static str {
         }
         AgentStatus::Queued => waiting_clock(u128::from(clock)),
         AgentStatus::Completed => done_icon(icons),
-        // Material Design 实心圆，与运行中的时钟图标同字体族、同尺寸。
+        // Solid Material Design circle, same font family and size as the running clock icon.
         AgentStatus::Idle | AgentStatus::Parked => {
             if super::super::themes::is_ascii() {
                 "*"
@@ -348,7 +348,7 @@ mod tests {
                 settled: std::collections::BTreeSet::from(["r1".into(), "r2".into()]),
             },
         });
-        // 历史可在首帧取得宽度前读完；此后没有新事件也必须定位。
+        // The history may finish loading before the first frame knows the width; positioning must still work with no new events afterwards.
         let mut drafts = Drafts::default();
         let screen = render(&mut panel, &mut drafts, 100, 12).join("\n");
         assert!(
@@ -514,7 +514,7 @@ mod tests {
             .iter()
             .position(|line| line.contains("subagent"))
             .unwrap_or_else(|| panic!("{screen:#?}"));
-        // 顶边框行：标识、速度、ctx、io 对与费用；左侧边框字符保留。
+        // Top border row: identity, speed, ctx, io pair and cost; the left border glyph is kept.
         assert!(screen[banner].starts_with('─'), "{}", screen[banner]);
         for expected in ["subagent", "61.5 tok/s", "12.3K/45.7K", "0.012"] {
             assert!(
@@ -528,17 +528,17 @@ mod tests {
         assert_eq!(
             buffer[(column as u16, banner as u16)].fg,
             Color::Rgb(254, 188, 56),
-            "标识琥珀色"
+            "identity is amber"
         );
-        // 提示行在输入框上方。
+        // The notice row sits above the input box.
         assert!(
             screen[banner - 1].contains("Shift+Enter newline"),
             "{}",
             screen[banner - 1]
         );
-        // 底边框整行是 ─。
+        // The bottom border is a full row of ─.
         assert_eq!(screen[banner + 2], "─".repeat(120));
-        // 末行状态栏复用主结构，不带旧摘要。
+        // The last status-bar row reuses the main structure without the old summary.
         for expected in ["fixture/primary", "hig", "/work/app"] {
             assert!(screen[29].contains(expected), "{expected}: {}", screen[29]);
         }
@@ -555,14 +555,20 @@ mod tests {
         unfocused
             .draw(|frame| panel.draw(frame, frame.area(), &mut drafts, &Default::default()))
             .unwrap();
-        assert!(!unfocused.backend().cursor_visible(), "未聚焦不显示光标");
+        assert!(
+            !unfocused.backend().cursor_visible(),
+            "an unfocused panel shows no cursor"
+        );
         panel.focus_editor();
         let mut focused = Terminal::new(TestBackend::new(100, 30)).unwrap();
         focused
             .draw(|frame| panel.draw(frame, frame.area(), &mut drafts, &Default::default()))
             .unwrap();
-        assert!(focused.backend().cursor_visible(), "聚焦后显示光标");
-        // 前 2 列为 ❯ 提示，下面依次是底边框与状态栏。
+        assert!(
+            focused.backend().cursor_visible(),
+            "a focused panel shows the cursor"
+        );
+        // The first 2 columns hold the ❯ prompt; below come the bottom border and the status bar.
         assert_eq!(
             focused.backend().cursor_position(),
             ratatui::layout::Position::new(2, 30 - 3)
@@ -594,13 +600,13 @@ mod tests {
         assert!(counts[0] > counts[counts.len() - 1], "{counts:?}");
         assert!(
             counts.windows(2).all(|pair| pair[0] >= pair[1]),
-            "指标图标数量随宽度单调不增: {counts:?}"
+            "the number of metric icons is monotonically non-increasing with width: {counts:?}"
         );
         for width in [40u16, 20] {
             let screen = render(&mut panel, &mut drafts, width, 24).join("\n");
             assert!(screen.contains("subagent"), "{width}: {screen}");
         }
-        // 极矮或极窄的终端不得越界或 panic。
+        // A very short or very narrow terminal must not go out of bounds or panic.
         for (width, height) in [
             (1u16, 1u16),
             (2, 2),

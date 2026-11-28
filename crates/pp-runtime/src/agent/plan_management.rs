@@ -1,8 +1,10 @@
-//! 项目级计划管理：三个生命周期目录的列表、纳管、重命名与确认删除。
+//! Project-level plan management: listing, adopting, renaming and confirmed deletion across the
+//! three lifecycle directories.
 //!
-//! 所有 I/O 在 worker 侧完成；正文仍是唯一的内容/进度来源，登记表只提供
-//! 稳定身份与位置，绝不授予执行权限。UI 只持有 `PlanSelection` 操作令牌，
-//! worker 按 ID 重查登记并核对当前路径/精确正文，不按列表下标操作磁盘。
+//! All I/O happens on the worker side; the body remains the only source of content/progress and
+//! the registry only provides stable identity and location, never execution permission. The UI
+//! only holds a `PlanSelection` operation token; the worker re-reads the registration by ID and
+//! verifies the current path/exact body, never operating on disk by list index.
 
 mod list;
 mod ops;
@@ -17,13 +19,14 @@ use rustix::io::Errno;
 use std::path::Path;
 use std::time::SystemTime;
 
-/// 列表中的一个计划条目；`error` 非空时禁用进入/重命名/删除。
+/// One plan entry in the list; a non-empty `error` disables entering/renaming/deleting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanListEntry {
     pub id: String,
     pub file_name: String,
     pub location: PlanLocation,
-    /// 首个 H1 文本，缺失时为文件名；约束为合法的 1..120 字符显示标题。
+    /// The first H1 text, or the file name when absent; constrained to a valid 1..120 character
+    /// display title.
     pub title: String,
     pub completed: usize,
     pub total: usize,
@@ -37,7 +40,7 @@ pub struct PlanListing {
     pub diagnostics: Vec<String>,
 }
 
-/// 操作令牌：ID、当时的项目相对路径与精确正文。
+/// Operation token: the ID, the project-relative path at that moment and the exact body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanSelection {
     pub id: String,
@@ -59,29 +62,32 @@ const REGISTER_CONFLICT: &str =
     "Plan file conflicts with the registered plan of the same name; resolve it in /plan-list.";
 const PP_DIR_NAME: &str = ".pp";
 
-/// `verify_selection` 的核验结果：登记表解析出的稳定身份、canonical 路径与
-/// 已核对字节的正文，以及调用方须持有到操作结束的计划 lease（Drop 即释放，
-/// 不存回 `Agent::plan_lease`）。
+/// Result of `verify_selection`: the stable identity resolved from the registry, the canonical
+/// path and the verified body bytes, plus the plan lease the caller must hold until the
+/// operation ends (released on Drop, not stored back into `Agent::plan_lease`).
 pub(crate) struct VerifiedSelection {
     pub(crate) id: String,
     pub(crate) file_name: String,
     pub(crate) location: PlanLocation,
-    /// 登记表解析出的 canonical 项目相对路径，已核对与 `selection.path` 一致。
+    /// The canonical project-relative path resolved from the registry, verified to match
+    /// `selection.path`.
     pub(crate) path: String,
-    /// 当前磁盘上的精确字节（已验证与 `selection.content` 一致）。
+    /// The exact bytes currently on disk (verified to match `selection.content`).
     pub(crate) content: String,
     pub(crate) _lease: PlanLease,
 }
 
-/// 目录扫描到的单个合法 `.md` 直接子项；stat 失败（符号链接、特殊文件、
-/// 身份读取错误）保留为错误，由列表降级为禁用操作的条目。
+/// A single valid `.md` direct child found by the directory scan; a stat failure (symlink,
+/// special file, identity read error) is kept as an error and the list degrades it to an entry
+/// with operations disabled.
 struct ScannedFile {
     file_name: String,
     location: PlanLocation,
     stat: Result<(PlanFileIdentity, SystemTime)>,
 }
 
-/// NOFOLLOW 安全读取单个计划正文；上限 `PLAN_MAX_BYTES`，要求 UTF-8。
+/// NOFOLLOW-safe read of a single plan body; bounded by `PLAN_MAX_BYTES` and required to be
+/// UTF-8.
 fn read_plan_bytes(workspace: &Workspace, path: &Path) -> Result<String> {
     let target = workspace.target(path, false)?;
     let bytes = target.read_bounded(PLAN_MAX_BYTES)?;
@@ -93,7 +99,8 @@ fn read_plan_bytes(workspace: &Workspace, path: &Path) -> Result<String> {
 
 pub(crate) use pp_core::plan::plan_display_title;
 
-/// 判断错误链中是否只是“路径不存在”；生命周期目录缺失表示该分类为空。
+/// Whether the error chain is only "path does not exist"; a missing lifecycle directory means
+/// that category is empty.
 pub(super) fn is_missing(error: &anyhow::Error) -> bool {
     error
         .chain()
@@ -115,7 +122,8 @@ mod fixtures {
     pub(super) fn fixture_agent(cwd: &std::path::Path, sessions: &std::path::Path) -> Agent {
         std::fs::create_dir_all(cwd).unwrap();
         let global = sessions.parent().unwrap();
-        // 生产会在启动时建立全局 sessions 目录；fixture 先建好再写配置。
+        // Production creates the global sessions directory at startup; the fixture creates it
+        // before writing config.
         std::fs::create_dir_all(sessions).unwrap();
         let settings = global.join("settings.yml");
         let models = global.join("models.yml");

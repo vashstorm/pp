@@ -28,10 +28,10 @@ fn activity_reasoning_summary_selection_headings_and_caps() {
     assert_eq!(live_activity_label(&transcript), "Requesting model");
     for (text, expected) in [
         (" \n", "Thinking"),
-        ("**检查", "Thinking"),
-        ("状态**\n\n这里是摘要正文。", "检查状态"),
-        ("\n正文继续更新。\n\n**修复", "检查状态"),
-        ("状态**\n\n新的正文。", "修复状态"),
+        ("**check", "Thinking"),
+        ("status**\n\nHere is the summary body.", "checkstatus"),
+        ("\nThe body keeps updating.\n\n**fix", "checkstatus"),
+        ("status**\n\nA new body.", "fixstatus"),
     ] {
         transcript.progress(AgentEvent::ReasoningSummaryDelta { text: text.into() });
         publish_pending_summary(&mut transcript);
@@ -42,24 +42,24 @@ fn activity_reasoning_summary_selection_headings_and_caps() {
         name: "read".into(),
         arguments: r#"{"path":"test.txt"}"#.into(),
     });
-    assert_eq!(live_activity_label(&transcript), "修复状态");
+    assert_eq!(live_activity_label(&transcript), "fixstatus");
     transcript.progress(AgentEvent::ToolFinished {
         id: "read-summary".into(),
         result: json!({"ok":true,"content":"file content"}),
     });
     transcript.progress(AgentEvent::AssistantStarted);
-    assert_eq!(live_activity_label(&transcript), "修复状态");
+    assert_eq!(live_activity_label(&transcript), "fixstatus");
     for event in [
         AgentEvent::ThinkingDelta {
-            text: "本次请求只有思考正文，没有摘要。".into(),
+            text: "This request only carried thinking text, no summary.".into(),
         },
         AgentEvent::ReasoningSummaryDelta { text: " \n".into() },
         AgentEvent::AssistantDelta {
-            text: "继续检查".into(),
+            text: "Keep checking".into(),
             refusal: false,
         },
         AgentEvent::AssistantFinished {
-            text: "继续检查".into(),
+            text: "Keep checking".into(),
         },
         AgentEvent::ToolStarted {
             id: "read-without-summary".into(),
@@ -73,18 +73,18 @@ fn activity_reasoning_summary_selection_headings_and_caps() {
         AgentEvent::AssistantStarted,
     ] {
         transcript.progress(event);
-        assert_eq!(live_activity_label(&transcript), "修复状态");
+        assert_eq!(live_activity_label(&transcript), "fixstatus");
     }
     transcript.progress(AgentEvent::ReasoningSummaryDelta {
-        text: "确认修复结果".into(),
+        text: "Confirm the fix result".into(),
     });
     publish_pending_summary(&mut transcript);
-    assert_eq!(live_activity_label(&transcript), "确认修复结果");
+    assert_eq!(live_activity_label(&transcript), "Confirm the fix result");
     transcript.progress(AgentEvent::AssistantDelta {
-        text: "修复完成".into(),
+        text: "Fix complete".into(),
         refusal: false,
     });
-    assert_eq!(live_activity_label(&transcript), "确认修复结果");
+    assert_eq!(live_activity_label(&transcript), "Confirm the fix result");
     transcript.finish_run_with_timing("Completed", None, None);
     assert!(transcript.live_activity_line().is_none());
     assert!(screen(&render(&mut transcript, 100, 30)).contains("✻ Completed · —"));
@@ -94,19 +94,22 @@ fn activity_reasoning_summary_selection_headings_and_caps() {
     let mut headings = Transcript::new();
     headings.begin_run();
     for (text, expected) in [
-        ("检查", "检查"),
-        ("输入🙂\n\n", "检查输入🙂"),
-        ("## 验证结果\n正文不替换标题。", "验证结果"),
+        ("Check", "Check"),
+        ("input🙂\n\n", "Checkinput🙂"),
+        (
+            "## Verification results\nThe body does not replace the title.",
+            "Verification results",
+        ),
     ] {
         headings.progress(AgentEvent::ReasoningSummaryDelta { text: text.into() });
         publish_pending_summary(&mut headings);
         assert_eq!(live_activity_label(&headings), expected);
     }
     headings.progress(AgentEvent::ReasoningSummaryDelta {
-        text: format!("{}\n\n**完成验证**\n", "中🙂".repeat(4096)),
+        text: format!("{}\n\n**Verification complete**\n", "中🙂".repeat(4096)),
     });
     publish_pending_summary(&mut headings);
-    assert_eq!(live_activity_label(&headings), "完成验证");
+    assert_eq!(live_activity_label(&headings), "Verification complete");
     assert!(headings.activity.as_ref().unwrap().summary_line.len() <= 1024);
     headings.fail();
     assert!(headings.live_activity_line().is_none());
@@ -120,7 +123,7 @@ fn activity_reasoning_summary_selection_headings_and_caps() {
     ] {
         let mut capped = Transcript::new();
         capped.begin_run();
-        let body = format!("**{text}**\n正文仍完整保留。\n");
+        let body = format!("**{text}**\nThe body is still preserved in full.\n");
         capped.progress(AgentEvent::ReasoningSummaryDelta { text: body.clone() });
         let label = live_activity_label(&capped);
         assert!(Line::raw(&label).width() <= 60, "{label}");
@@ -152,58 +155,61 @@ fn activity_summary_throttling_settling_and_stop_dropping() {
         .activity
         .as_mut()
         .unwrap()
-        .push_reasoning_summary("**检查状态**\n", started);
-    assert_eq!(live_activity_label(&transcript), "检查状态");
+        .push_reasoning_summary("**Checking status**\n", started);
+    assert_eq!(live_activity_label(&transcript), "Checking status");
     for second in 1..5 {
         let now = started + Duration::from_secs(second);
         transcript
             .activity
             .as_mut()
             .unwrap()
-            .push_reasoning_summary(&format!("**分析步骤 {second}**\n"), now);
+            .push_reasoning_summary(&format!("**Analysis step {second}**\n"), now);
         transcript.tick(now);
-        assert_eq!(live_activity_label(&transcript), "检查状态");
+        assert_eq!(live_activity_label(&transcript), "Checking status");
     }
     transcript.tick(started + Duration::from_millis(4999));
-    assert_eq!(live_activity_label(&transcript), "检查状态");
+    assert_eq!(live_activity_label(&transcript), "Checking status");
     assert!(transcript.tick(started + Duration::from_secs(5)));
-    assert_eq!(live_activity_label(&transcript), "分析步骤 4");
+    assert_eq!(live_activity_label(&transcript), "Analysis step 4");
     transcript.tick(started + Duration::from_secs(20));
-    assert_eq!(live_activity_label(&transcript), "分析步骤 4");
+    assert_eq!(live_activity_label(&transcript), "Analysis step 4");
 
     for prefix in ["", "## "] {
         let mut partial = Activity::new(started);
-        partial.push_reasoning_summary(&format!("{prefix}检查"), started);
+        partial.push_reasoning_summary(&format!("{prefix}Check"), started);
         partial.tick(started + Duration::from_millis(400));
         assert!(partial.summary_label.is_none());
-        partial.push_reasoning_summary("输入🙂", started + Duration::from_millis(400));
+        partial.push_reasoning_summary("input🙂", started + Duration::from_millis(400));
         partial.tick(started + Duration::from_millis(899));
         assert!(partial.summary_label.is_none());
         assert!(partial.tick(started + Duration::from_millis(900)));
-        assert_eq!(partial.summary_label.as_deref(), Some("检查输入🙂"));
+        assert_eq!(partial.summary_label.as_deref(), Some("Checkinput🙂"));
 
         let mut completed = Activity::new(started);
-        completed.push_reasoning_summary(&format!("{prefix}检查输入🙂\n"), started);
-        assert_eq!(completed.summary_label.as_deref(), Some("检查输入🙂"));
+        completed.push_reasoning_summary(&format!("{prefix}Checkinput🙂\n"), started);
+        assert_eq!(completed.summary_label.as_deref(), Some("Checkinput🙂"));
     }
 
     let mut stopped = Activity::new(started);
-    stopped.push_reasoning_summary("**检查状态**\n", started);
-    stopped.push_reasoning_summary("**检查状态**\n", started + Duration::from_secs(4));
-    stopped.push_reasoning_summary("**完成检查**\n", started + Duration::from_secs(5));
-    assert_eq!(stopped.summary_label.as_deref(), Some("完成检查"));
-    stopped.push_reasoning_summary("**延迟摘要**\n", started + Duration::from_secs(6));
+    stopped.push_reasoning_summary("**Checking status**\n", started);
+    stopped.push_reasoning_summary("**Checking status**\n", started + Duration::from_secs(4));
+    stopped.push_reasoning_summary("**Finished checking**\n", started + Duration::from_secs(5));
+    assert_eq!(stopped.summary_label.as_deref(), Some("Finished checking"));
+    stopped.push_reasoning_summary("**Delayed summary**\n", started + Duration::from_secs(6));
     stopped.stop("Completed");
     assert!(!stopped.tick(started + Duration::from_secs(20)));
-    assert_eq!(stopped.summary_label.as_deref(), Some("完成检查"));
+    assert_eq!(stopped.summary_label.as_deref(), Some("Finished checking"));
 
     let mut cancelled = Activity::new(started);
-    cancelled.push_reasoning_summary("**检查状态**\n", started);
-    cancelled.push_reasoning_summary("**延迟摘要**\n", started + Duration::from_secs(1));
+    cancelled.push_reasoning_summary("**Checking status**\n", started);
+    cancelled.push_reasoning_summary("**Delayed summary**\n", started + Duration::from_secs(1));
     cancelled.phase("Cancelling");
     cancelled.tick(started + Duration::from_secs(5));
-    cancelled.push_reasoning_summary("**取消后摘要**\n", started + Duration::from_secs(6));
-    assert_eq!(cancelled.summary_label.as_deref(), Some("检查状态"));
+    cancelled.push_reasoning_summary(
+        "**Summary after cancel**\n",
+        started + Duration::from_secs(6),
+    );
+    assert_eq!(cancelled.summary_label.as_deref(), Some("Checking status"));
 }
 
 #[test]
@@ -413,8 +419,8 @@ fn live_activity_phases_and_sweep_rendering() {
         assert_eq!(buffer[(4, 0)].symbol(), "R");
     }
     let activity = transcript.activity.as_mut().unwrap();
-    activity.phase("读取 e\u{301} 中😀");
-    assert_eq!(live_activity_label(&transcript), "读取 e\u{301} 中😀");
+    activity.phase("Reading e\u{301} 中😀");
+    assert_eq!(live_activity_label(&transcript), "Reading e\u{301} 中😀");
     transcript.cancel();
     assert!(!transcript.tick(started + Duration::from_secs(90)));
 }

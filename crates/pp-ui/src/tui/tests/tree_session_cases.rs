@@ -27,7 +27,7 @@ fn tree_double_escape_deadline_and_empty_scan_keep_main_screen() {
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert!(matches!(requests.try_recv(), Ok(WorkerCommand::ReadTree)));
         assert!(!app.needs_alternate());
-        // 主屏幕与历史浏览的绘制路径都不能暂时替换输入框。
+        // Neither the main-screen nor the history-browsing draw path may temporarily replace the input box.
         for native in [false, true] {
             app.native_render = native;
             assert_eq!(draw_buffer(&mut app, 100, 30), before);
@@ -213,7 +213,7 @@ fn resume_search_guards_stale_replies_and_error_preserves_draft() {
         let mut dirty = false;
         app.handle(Event::Paste("/resume".into()), &mut dirty);
         app.handle(key(KeyCode::Enter), &mut dirty);
-        // 会话检索走独立 history worker：面板开启期间不向 Agent worker 发送命令。
+        // Session search uses the dedicated history worker: no commands go to the Agent worker while the panel is open.
         assert!(matches!(requests.try_recv(), Err(TryRecvError::Empty)));
         assert!(app.needs_alternate());
         let generation = app
@@ -228,7 +228,7 @@ fn resume_search_guards_stale_replies_and_error_preserves_draft() {
         app.handle(key(KeyCode::Esc), &mut dirty);
         assert!(!app.needs_alternate());
         assert!(draw(&mut app, 100, 30).contains("original conversation"));
-        // 关闭后到达的同代次检索结果不能重开面板，也不能覆盖主屏幕。
+        // Search results from the same generation arriving after close must neither reopen the panel nor overwrite the main screen.
         app.receive_session_search(
             generation,
             1,
@@ -298,22 +298,22 @@ fn resume_search_guards_stale_replies_and_error_preserves_draft() {
             .expect("panel")
             .refresh_request()
             .0;
-        // 更旧面板代次的迟到结果被整体丢弃。
+        // Late results from an older panel generation are discarded entirely.
         app.receive_session_search(generation.wrapping_sub(1), second, Ok(listing("old-panel")));
         assert_eq!(first_id(&app), None);
-        // 同代次但非最新请求的结果被丢弃，失败回复同样不能清空新请求。
+        // Results from the same generation but an older request are discarded, and a failure reply must not clear the newer request either.
         app.receive_session_search(generation, first, Ok(listing("old-request")));
         assert_eq!(first_id(&app), None);
         app.receive_session_search(generation, first, Err(anyhow::anyhow!("stale")));
         assert_eq!(first_id(&app), None);
-        // 只有最新请求安装结果。
+        // Only the latest request installs results.
         app.receive_session_search(generation, second, Ok(listing("current")));
         assert_eq!(first_id(&app).as_deref(), Some("current"));
-        // 关闭后即使代次和请求都匹配也绝不重开面板。
+        // After close, the panel never reopens even when both generation and request match.
         app.session_panel = None;
         app.receive_session_search(generation, second, Ok(listing("after-close")));
         assert!(app.session_panel.is_none());
-        // 新面板代次拒绝旧面板的迟到回复。
+        // A new panel generation rejects late replies from the old panel.
         let next = app.next_session_generation();
         let current = open(&mut app, next);
         app.receive_session_search(generation, second, Ok(listing("previous-panel")));

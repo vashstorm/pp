@@ -43,7 +43,7 @@ fn starts(dir: &Path) -> usize {
         .count()
 }
 
-/// 同一工作区里的多个服务器别名共享 fixture 脚本；只有 `fileTypes` 可不同。
+/// Several server aliases in the same workspace share the fixture script; only `fileTypes` may differ.
 fn fixture_aliases(aliases: &[(&str, &[&str])]) -> (tempfile::TempDir, Registry) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".pp")).unwrap();
@@ -407,7 +407,7 @@ fn lsp_diagnostics_malformed_pull_never_clean() {
     }
 }
 
-/// 惰性项目只依赖根标记与 PATH 上的命令：发现不启动任何进程。
+/// A lazy project depends only on root markers and commands on PATH: discovery starts no process.
 fn lazy_project() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("marker.toml"), "").unwrap();

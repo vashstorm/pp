@@ -183,7 +183,7 @@ fn remote_config(
 }
 
 fn json_value(text: &str) -> Result<Value> {
-    // JSON 负责语法边界，YAML 的映射解析负责拒绝所有层级的重复键。
+    // JSON covers syntax boundaries and YAML mapping parsing rejects duplicate keys at every level.
     let _: Value = serde_json::from_str(text).map_err(|_| anyhow::anyhow!(INVALID))?;
     pp_config::yaml::parse(text, "MCP").map_err(|_| anyhow::anyhow!(INVALID))
 }
@@ -198,8 +198,8 @@ fn read_native(path: &Path) -> Result<Native> {
 }
 
 impl Directory {
-    /// `discover_user_sources` 由 `McpManager` 构造方式决定：生产实例发现 HOME 下的
-    /// Claude/Codex 来源，隔离实例只读 `path`；测试依赖编译时不会带 `cfg(test)`。
+    /// `discover_user_sources` is decided by how `McpManager` is constructed: production instances discover Claude/Codex
+    /// sources under HOME, isolated instances only read `path`; the test dependency is compiled without `cfg(test)`.
     pub fn load(path: &Path, discover_user_sources: bool) -> Result<Self> {
         let home = discover_user_sources
             .then(|| std::env::var_os("HOME").map(PathBuf::from))
@@ -398,7 +398,7 @@ impl Directory {
             );
             std::thread::sleep(Duration::from_millis(25));
         }
-        // 持锁后重新读取，保留其他进程刚保存的服务和启停设置。
+        // Re-read after taking the lock so services and enable/disable settings just saved by another process are kept.
         let mut config = read_native(&self.path)?;
         config.enabled_servers.retain(|n| n != name);
         config.disabled_servers.retain(|n| n != name);
@@ -426,7 +426,7 @@ impl Directory {
 
 fn normalize_codex(value: &Value) -> Result<Value> {
     let map = value.as_object().ok_or_else(|| anyhow::anyhow!(INVALID))?;
-    // 未支持的限制、授权或传输选项不能被静默丢弃后启动。
+    // Unsupported limit, authorization or transport options must not be silently dropped before starting.
     let allowed = [
         "command",
         "args",
@@ -455,7 +455,7 @@ fn normalize_codex(value: &Value) -> Result<Value> {
         }
         result.insert("env".into(), json!(env));
     }
-    // 当前实现统一请求截止时间；显式不同的启动/工具超时不降级处理。
+    // The current implementation uses a single request deadline; explicitly different startup/tool timeouts are not downgraded.
     let tool = result.remove("tool_timeout_sec");
     let startup = result.remove("startup_timeout_sec");
     ensure!(
@@ -478,7 +478,7 @@ mod tests {
     use super::*;
     fn stdio(entry: &Entry) -> &StdioConfig {
         let TransportConfig::Stdio(config) = &entry.config.as_ref().unwrap().transport else {
-            panic!("预期 stdio")
+            panic!("expected stdio")
         };
         config
     }
@@ -788,11 +788,11 @@ mod lifecycle_tests {
             .unwrap();
         assert!(log.exists());
         assert!(!manager.definitions(Access::Full).is_empty());
-        // 退出权在连接前并不存在：shutdown 仍必须关闭此后新建的进程。
-        let server = manager.test_server("local").expect("已连接的服务");
+        // An exit grant does not exist before connecting: shutdown must still close processes created afterwards.
+        let server = manager.test_server("local").expect("connected server");
         manager.shutdown().unwrap();
         assert!(server.connection.lock().unwrap().child.is_none());
-        // shutdown 后重连不得复活进程：状态停在失败终态，工具表为空。
+        // A reconnect after shutdown must not revive the process: the state stays in the failed terminal state and the tool table is empty.
         manager
             .manage(&Action::Reconnect("local".into()), &token, Access::Full)
             .unwrap();

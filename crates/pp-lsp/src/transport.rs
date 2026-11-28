@@ -1,9 +1,9 @@
-//! Content-Length 帧、I/O 线程与受管理 stdio 进程。
+//! Content-Length framing, I/O threads and managed stdio processes.
 //!
-//! 每个语言服务器拥有一个专用 reader 线程（分发 response/通知/server
-//! request）、一个 writer 线程与一个 stderr drain 线程。上层同步等待，不
-//! 使用 async。reader 线程从不执行磁盘编辑，也不等待 UI：`workspace/applyEdit`
-//! 在 reader 中立即回复拒绝，不等待模型或执行文件操作。
+//! Each language server owns a dedicated reader thread (dispatching responses/notifications/server
+//! requests), a writer thread and a stderr drain thread. Upper layers wait synchronously and do not
+//! use async. The reader thread never performs disk edits and never waits on the UI: `workspace/applyEdit`
+//! is rejected immediately in the reader, without waiting for the model or performing any file operation.
 
 mod dispatch;
 mod io;
@@ -22,28 +22,28 @@ use self::io::reply_message;
 
 pub(crate) use self::process::terminate_slot;
 
-/// header 上限 8 KiB、body 上限 16 MiB：超限直接判定连接失效，不尝试按行容错。
+/// header limit 8 KiB, body limit 16 MiB: exceeding either fails the connection outright; no line-by-line tolerance.
 pub(crate) const HEADER_LIMIT: usize = 8 * 1024;
 pub(crate) const BODY_LIMIT: usize = 16 * 1024 * 1024;
 const STDERR_LIMIT: usize = 64 * 1024;
 const WRITE_QUEUE: usize = 64;
 const POLL: Duration = Duration::from_millis(20);
-/// 组内进程响应 TERM 的窗口；超时后升级为 KILL。
+/// Window for processes in the group to answer TERM; escalates to KILL on timeout.
 const TERM_GRACE: Duration = Duration::from_millis(1000);
-/// KILL 后等待进程组彻底消失（含被 init/launchd 回收僵尸）的窗口。
+/// Window after KILL to wait until the process group is completely gone (including zombies reaped by init/launchd).
 const KILL_GRACE: Duration = Duration::from_millis(1000);
-/// 未授权 server 自主编辑时的统一拒绝文案。
+/// Uniform rejection text for unauthorized server-initiated edits.
 pub(crate) const UNAUTHORIZED_EDIT: &str =
     "LSP is an information source; server edits are never applied. Use edit/write/bash.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Failure {
     Cancelled,
-    /// 等待超出绝对 deadline。
+    /// The wait exceeded the absolute deadline.
     Timeout,
-    /// 服务器响应了 JSON-RPC error。
+    /// The server answered with a JSON-RPC error.
     Rpc(i64),
-    /// 传输已关闭、写阻塞或协议失效。
+    /// The transport is closed, writes are blocked, or the protocol failed.
     Closed,
 }
 
@@ -64,8 +64,8 @@ impl std::fmt::Display for RpcError {
     }
 }
 
-/// 操作服务接口使用的响应句柄。`workspace/applyEdit` 在 reader 中立即拒绝，
-/// 不会经由该接口执行文件修改或等待模型决策。
+/// Response handle used by the operation service interface. `workspace/applyEdit` is rejected immediately in the reader
+/// and never performs file modifications or waits for model decisions through this interface.
 pub(crate) struct ServerRequest {
     id: Value,
     shared: Arc<Shared>,
@@ -73,7 +73,7 @@ pub(crate) struct ServerRequest {
 
 impl ServerRequest {
     pub(crate) fn respond(self, value: Value) {
-        // 连接已关闭时写入必然是 best-effort；这里不把错误升级为工具失败。
+        // Writes on a closed connection are necessarily best-effort; the error is not escalated to a tool failure here.
         let _ = reply_message(&self.shared, &self.id, value);
     }
 }
@@ -83,21 +83,21 @@ type NotificationSink = Arc<dyn Fn(&str, Value) + Send + Sync>;
 type Pending = Arc<Mutex<HashMap<i64, SyncSender<Result<Value, RpcError>>>>>;
 
 struct Shared {
-    /// 唯一的写入队列；writer 线程消费，reader 线程回复 server request 也用它。
+    /// The single write queue; consumed by the writer thread, and also used by the reader thread to answer server requests.
     writer: Mutex<Option<SyncSender<Vec<u8>>>>,
     pending: Pending,
     callbacks: Mutex<VecDeque<ServerRequest>>,
-    /// 当前等待 RPC 的操作数；applyEdit 不依赖此值，始终拒绝。
+    /// Number of operations currently waiting on an RPC; applyEdit does not depend on it and is always rejected.
     active: AtomicUsize,
     closed: AtomicBool,
-    /// 配置值，供 `workspace/configuration` 的 section 查询。
+    /// Configuration values, for `workspace/configuration` section queries.
     settings: Mutex<Value>,
     folders: Mutex<Vec<Value>>,
-    /// 动态注册的能力：registration id → method。按 id 记录，单个 unregister
-    /// 只移除它自己的注册，不影响其他注册（包括同 method 的注册）。
+    /// Dynamically registered capabilities: registration id → method. Keyed by id, so a single unregister
+    /// removes only its own registration and leaves others (including ones with the same method) untouched.
     registrations: Mutex<HashMap<String, String>>,
     stderr: Mutex<Vec<u8>>,
-    /// 传输关闭原因（脱敏），供错误信息使用。
+    /// Redacted transport close reason, used in error messages.
     reason: Mutex<Option<String>>,
 }
 
@@ -110,7 +110,7 @@ impl Shared {
             }
         }
         self.closed.store(true, Ordering::SeqCst);
-        // 先取出再发送：发送失败可能再次进入 note_close，不能持锁重入。
+        // Take the senders out before sending: a failed send may re-enter note_close, so the lock must not be re-entered.
         let pending: Vec<SyncSender<Result<Value, RpcError>>> = {
             let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             guard.drain().map(|(_, sender)| sender).collect()
@@ -186,9 +186,9 @@ pub(crate) struct Transport {
     next_id: AtomicI64,
 }
 
-/// 原子递减并返回递减前的值；计数已为 0 时不写入并返回 `None`。
-/// `try_update` 超出 MSRV 1.88，`fetch_update` 已在其后更名弃用，
-/// 所以用 CAS 循环手工完成这次“有值才减”的更新。
+/// Atomically decrement and return the pre-decrement value; when the count is already 0 nothing is written and `None` is returned.
+/// `try_update` is beyond MSRV 1.88 and `fetch_update` was renamed and deprecated after it,
+/// so a CAS loop performs this "decrement only if present" update by hand.
 fn decrement_active(active: &AtomicUsize) -> Option<usize> {
     let mut expected = active.load(Ordering::SeqCst);
     loop {

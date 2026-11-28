@@ -7,7 +7,7 @@ fn sqlite_input_history_survives_restart_with_original_text_and_pages() {
     let cwd_a = a.path().canonicalize().unwrap().to_string_lossy().into_owned();
     std::fs::write(config_path(home.path(), "settings.yml"), fixture_settings()).unwrap();
     std::fs::write(config_path(home.path(), "models.yml"), fixture_models(&server)).unwrap();
-    let original = "sqlite 多行原文\n第二行 retained";
+    let original = "sqlite multiline original\nsecond line retained";
     let mut first = Pty::start_with_args(a.path(), home.path(), &["--yolo"]);
     first.ready_model("fixture/primary");
     first.input(&format!("\x1b[200~{original}\x1b[201~\r"));
@@ -19,7 +19,7 @@ fn sqlite_input_history_survives_restart_with_original_text_and_pages() {
     first.input("/help\r");
     first.text("bash has no directory isolation");
     first.input("!printf sqlite-shell\r");
-    bang_shell_wait_footer(&mut first, "SQLite shell 正常完成", "Timeout:");
+    bang_shell_wait_footer(&mut first, "SQLite shell finished normally", "Timeout:");
     bang_shell_wait_done(&mut first);
     first.input("\x03");
     first.finish();
@@ -33,11 +33,11 @@ fn sqlite_input_history_survives_restart_with_original_text_and_pages() {
     second.input("\x1b[A");
     second.draft("/help");
     second.input("\x1b[A");
-    second.wait_for("重启后恢复原始多行输入", |screen| {
+    second.wait_for("the original multiline input is restored after restart", |screen| {
         let rows: Vec<_> = screen.rows(0, screen.size().1).collect();
         rows.iter().rposition(|line| line.starts_with('❯')).is_some_and(|index| {
-            rows[index].trim_start_matches('❯').trim() == "sqlite 多行原文"
-                && rows.get(index + 1).is_some_and(|line| line.trim() == "第二行 retained")
+            rows[index].trim_start_matches('❯').trim() == "sqlite multiline original"
+                && rows.get(index + 1).is_some_and(|line| line.trim() == "second line retained")
         })
     });
     second.input("\x1b[B\x1b[B\x1b[B");
@@ -52,7 +52,7 @@ fn sqlite_input_history_survives_restart_with_original_text_and_pages() {
             "SELECT COUNT(*) FROM input_history WHERE cwd=?1 AND text=?2",
             rusqlite::params![cwd_a, text], |row| row.get(0),
         ).unwrap();
-        assert_eq!(events, 1, "已接受输入必须只保存一次");
+        assert_eq!(events, 1, "an accepted input must be saved exactly once");
     }
     {
         let transaction = database.transaction().unwrap();
@@ -86,7 +86,7 @@ fn sqlite_input_history_survives_restart_with_original_text_and_pages() {
     isolated.text("bash has no directory isolation");
     isolated.draft("");
     assert!(!isolated.parser.screen().contents().contains("sqlite-page-"));
-    assert!(!isolated.parser.screen().contents().contains("sqlite 多行原文"));
+    assert!(!isolated.parser.screen().contents().contains("sqlite multiline original"));
     isolated.input("\x03");
     isolated.finish();
     no_more(&server);

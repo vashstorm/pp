@@ -15,7 +15,7 @@ fn write_executable(path: &Path) {
     fs::set_permissions(path, permissions).unwrap();
 }
 
-/// 只包含一个自定义服务器的项目配置，避免依赖真实语言服务器二进制。
+/// Project configuration containing only a custom server, so no real language-server binary is needed.
 fn custom_project(dir: &Path, extra: &str) {
     write(
         &dir.join(".pp").join("lsp.json"),
@@ -303,7 +303,7 @@ fn lsp_file_type_matching_prefers_non_linters_and_keeps_order() {
         .map(|server| server.name.as_str())
         .collect();
     assert_eq!(names, vec!["zeta", "alpha", "lint"]);
-    // 完整 basename 也能匹配。
+    // A full basename also matches.
     write(
         &dir.path().join(".pp").join("lsp.json"),
         r#"{"servers":{"exact":{"command":"fake-lsp","fileTypes":["Makefile"],"rootMarkers":["fake.toml"]}}}"#,

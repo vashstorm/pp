@@ -1,28 +1,29 @@
-//! hook 的 stdin 输入信封与 stdout 决策协议。
+//! Hook stdin input envelope and stdout decision protocol.
 //!
-//! 兼容 Claude Code 的字段名与退出码语义，但工具名、工具参数与结果保持 pp
-//! 原生格式。未知控制字段一律按协议错误处理，不静默放行。
+//! Field names and exit-code semantics are Claude Code compatible, but tool names, tool
+//! arguments and results keep pp's native format. Unknown control fields are always treated
+//! as protocol errors, never silently allowed.
 
 use anyhow::{Result, bail};
 use pp_config::config::HookEvent;
 use serde_json::{Map, Value};
 
-/// 注入模型上下文的单条文本上限（Unicode 字符）。
+/// Limit of a single text injected into model context (Unicode chars).
 pub(super) const TEXT_LIMIT: usize = 10_000;
 const TRUNCATED: &str = "…[truncated]";
 
-/// 一次 hook 调用的公共信封。
+/// Common envelope of one hook invocation.
 pub(crate) struct Context<'a> {
     pub(crate) session_id: &'a str,
     pub(crate) transcript_path: &'a std::path::Path,
     pub(crate) cwd: &'a std::path::Path,
-    /// `bypassPermissions`／`auto_review`／`default`／`read-only`，由生效审批档位映射而来。
+    /// `bypassPermissions`/`auto_review`/`default`/`read-only`, mapped from the effective approval tier.
     pub(crate) permission_mode: &'a str,
     pub(crate) agent_id: Option<&'a str>,
     pub(crate) agent_type: Option<&'a str>,
 }
 
-/// 事件专属载荷；序列化时只写入该事件允许的字段。
+/// Event-specific payload; serialization writes only the fields allowed for that event.
 pub(crate) enum Payload<'a> {
     UserPrompt {
         prompt: &'a str,
@@ -107,7 +108,7 @@ pub(crate) fn input(event: HookEvent, context: &Context<'_>, payload: &Payload<'
             );
         }
     }
-    // 子工具事件额外带真实身份；根 Agent 不伪造 agent_id。
+    // Tool subevents additionally carry the real identity; the root agent never fakes agent_id.
     if event.is_tool_event() {
         if let Some(agent_id) = context.agent_id {
             object.insert("agent_id".into(), Value::from(agent_id));
@@ -125,25 +126,25 @@ fn tool_fields(object: &mut Map<String, Value>, name: &str, input: Option<&Value
     object.insert("tool_use_id".into(), Value::from(call_id));
 }
 
-/// 一个 handler 的规范化结果；合并顺序由调用方按事件规则处理。
+/// Normalized result of one handler; merge order is handled by the caller per event rules.
 #[derive(Debug, Default)]
 pub(super) struct Output {
-    /// 事件级否决理由：UserPromptSubmit／PreToolUse 拒绝，Stop 请求续跑。
+    /// Event-level denial reason: UserPromptSubmit/PreToolUse rejection, Stop requesting another turn.
     pub(super) deny: Option<String>,
-    /// PreToolUse 的单次强制审批理由。
+    /// Forced single approval reason for PreToolUse.
     pub(super) ask: Option<String>,
     pub(super) updated_input: Option<Value>,
     pub(super) updated_output: Option<Value>,
-    /// 按 handler 顺序累计的上下文；空串不进入。
+    /// Context accumulated in handler order; empty strings are not included.
     pub(super) context: Vec<String>,
-    /// `continue:false` 的任务停止理由。
+    /// Task stop reason for `continue:false`.
     pub(super) stop: Option<String>,
     pub(super) system_message: Option<String>,
 }
 
-/// 按事件、退出码与 stdout/stderr 解析一个 handler 的决定。
+/// Parses one handler's decision from the event, exit code and stdout/stderr.
 ///
-/// `response` 只在 post 事件里用于校验 `updatedToolOutput` 的 `ok`／`cancelled`。
+/// `response` is used only for post events, to validate `ok`/`cancelled` of `updatedToolOutput`.
 pub(super) fn parse(
     event: HookEvent,
     code: Option<i32>,
@@ -192,7 +193,7 @@ fn parse_success(
         return Ok(Output::default());
     }
     if !looks_like_json(trimmed) {
-        // 普通文本只对 UserPromptSubmit 有意义：作为额外上下文注入。
+        // Plain text is meaningful only for UserPromptSubmit: it is injected as extra context.
         return Ok(match event {
             HookEvent::UserPromptSubmit => Output {
                 context: vec![bound(trimmed)],
@@ -210,8 +211,8 @@ fn parse_success(
     interpret(event, &object, stderr, response)
 }
 
-/// exit 2：拒绝语义按事件固定，stdout 的 JSON 仍可提供上下文与消息，
-/// 但不能抵消拒绝，也不能把拒绝变成允许。
+/// exit 2: denial semantics are fixed per event; JSON on stdout may still provide context and messages,
+/// but it can neither cancel the denial nor turn a denial into an allow.
 fn parse_blocking(
     event: HookEvent,
     stdout: &str,
@@ -239,7 +240,7 @@ fn parse_blocking(
         HookEvent::UserPromptSubmit | HookEvent::PreToolUse | HookEvent::Stop => {
             output.deny = Some(reason);
         }
-        // post 无法撤销已发生的副作用：stderr 只作为反馈上下文。
+        // post cannot undo side effects that already happened: stderr is feedback context only.
         HookEvent::PostToolUse | HookEvent::PostToolUseFailure => {
             output.context.insert(0, reason);
         }
@@ -262,13 +263,13 @@ fn interpret(
 ) -> Result<Output> {
     let mut output = Output::default();
     let mut specific: Option<&Map<String, Value>> = None;
-    // `stopReason` 只是 `continue:false` 的停止理由，不能独立触发停止。
+    // `stopReason` is only the stop reason for `continue:false` and cannot trigger a stop on its own.
     let mut stop_reason: Option<String> = None;
-    // `decision:"block"` 即使省略 reason 也必须阻止执行，不能静默放行。
+    // `decision:"block"` must block execution even when reason is omitted; it is never silently allowed.
     let mut blocked = false;
     for (key, value) in object {
         match key.as_str() {
-            // 这些字段由 r#continue# 之外的分支处理。
+            // This field is handled by the branch outside r#continue#.
             "continue" => {}
             "stopReason" => {
                 stop_reason = Some(bound(&as_text(event, key, value)?));
@@ -317,7 +318,7 @@ fn interpret(
         }
     }
     if blocked {
-        // post 无法撤销副作用，block 的默认理由只作为模型反馈；其它事件是事件级否决。
+        // post cannot undo side effects, so the default block reason is model feedback only; other events deny at event level.
         match event {
             HookEvent::PostToolUse => {
                 if output.context.is_empty() {
@@ -336,12 +337,12 @@ fn interpret(
         None => None,
     };
     if continued == Some(false) {
-        // 空白理由等同于缺省理由：停止必须带可读的失败原因。
+        // A blank reason equals the default reason: a stop must carry a readable failure cause.
         output.stop = Some(match stop_reason {
             Some(reason) if !reason.is_empty() => reason,
             _ => bound("A hook stopped this task."),
         });
-        // continue:false 是任务级停止，吸收其它决定。
+        // continue:false is a task-level stop that absorbs other decisions.
         output.deny = None;
         output.ask = None;
         return Ok(output);
@@ -378,7 +379,7 @@ fn apply_specific(
                             "a PreToolUse hook requires permission for this tool call.",
                         )));
                     }
-                    // `allow` 只表示 hook 不拦截；不跳过 pp 原有权限检查。
+                    // `allow` only means the hook does not intercept; it never skips pp's existing permission checks.
                     "allow" => {}
                     other => bail!(
                         "{} hook returned unsupported permissionDecision {other:?}",
@@ -399,7 +400,7 @@ fn apply_specific(
                 output.updated_input = Some(value.clone());
             }
             "updatedToolOutput" => {
-                // 后置失败只接受 additionalContext：失败的模型结果不能被改写。
+                // Post-failure accepts only additionalContext: a failed model result must not be rewritten.
                 if event != HookEvent::PostToolUse {
                     bail!("{} hook does not support updatedToolOutput", event.as_str());
                 }
@@ -435,13 +436,13 @@ fn apply_specific(
         ),
     }
     .map(|()| {
-        // exit 2 的理由优先于 JSON 里的上下文顺序；stderr 已由调用方处理。
+        // The exit-2 reason takes priority over context order in JSON; the caller already handled stderr.
         let _ = stderr;
     })
 }
 
-/// 只有输入、后置成功与 Stop 使用顶层 `decision`／`reason`；
-/// 工具前置用 `permissionDecision`，后置失败只接受 `additionalContext`。
+/// Only input, post-success and Stop use top-level `decision`/`reason`;
+/// tool pre-use uses `permissionDecision`, and post-failure accepts only `additionalContext`.
 fn supports_decision(event: HookEvent, key: &str) -> Result<()> {
     if matches!(
         event,
@@ -468,8 +469,8 @@ fn fallback_reason(value: Option<&Value>, default: &str) -> String {
         .unwrap_or_else(|| default.to_owned())
 }
 
-/// `updatedToolOutput` 只能改模型看到的内容：`ok`／`cancelled` 必须保留原值，
-/// 原结果没有的状态字段也不能凭空新增。
+/// `updatedToolOutput` may change only what the model sees: `ok`/`cancelled` must keep their original values,
+/// and status fields absent from the original result must not be invented.
 fn validated_tool_output(
     event: HookEvent,
     value: &Value,
@@ -483,7 +484,7 @@ fn validated_tool_output(
     };
     if let Some(Value::Object(original)) = response {
         for key in ["ok", "cancelled"] {
-            // 状态字段必须与真实结果一致：既不能改值，也不能凭空新增。
+            // Status fields must match the real result: they can be neither changed nor invented.
             match (original.get(key), object.get(key)) {
                 (Some(expected), Some(actual)) if actual == expected => {}
                 (Some(_), Some(_)) => bail!(
@@ -500,8 +501,8 @@ fn validated_tool_output(
                 (None, None) => {}
             }
         }
-        // `kind:"image"` 是图片结果与真实附件的关联标识：正文可以被改写，
-        // 但它不能丢失或被改值，否则跨协议历史转换会拒绝仍然存在的附件。
+        // `kind:"image"` links an image result to the real attachment: the body may be rewritten,
+        // but it must not be dropped or changed, or cross-protocol history conversion rejects an attachment that still exists.
         if original.get("kind").and_then(Value::as_str) == Some("image") {
             match object.get("kind") {
                 Some(Value::String(kind)) if kind == "image" => {}
@@ -525,13 +526,13 @@ fn as_text(event: HookEvent, key: &str, value: &Value) -> Result<String> {
     }
 }
 
-/// 诊断文本先遮蔽凭据，再净化控制字符与终端转义。
+/// Diagnostic text is first redacted for credentials, then sanitized of control characters and terminal escapes.
 fn diagnostic(text: &str) -> String {
     let redacted = pp_core::logging::diagnostic_text(text);
     pp_core::text::display_text(&redacted).into_owned()
 }
 
-/// 单条注入文本按 Unicode 字符边界截断，并保留明确标记。
+/// A single injected text is truncated on Unicode char boundaries and keeps an explicit marker.
 pub(crate) fn bound(text: &str) -> String {
     let text = diagnostic(text.trim());
     if text.chars().count() <= TEXT_LIMIT {

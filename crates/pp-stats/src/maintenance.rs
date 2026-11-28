@@ -8,14 +8,17 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-/// 一次性退役旧 `request_payloads`：复制首请求快照、回填工具调用、删表并回收空间。
+/// One-time retirement of the legacy `request_payloads`: copies the first-request snapshot,
+/// backfills tool calls, drops the table and reclaims space.
 ///
-/// 幂等：旧表不存在时只提交一个空事务后返回，不建表、不 `VACUUM`。迁移只写
-/// `request_contexts`／`request_tools`，不改动 `requests` 的任一字段。仅在
-/// `server::run` 启动与 `pp gc` 中调用，运行期写路径与 `Store::open` 不执行。
+/// Idempotent: when the legacy table is absent it commits an empty transaction and returns without
+/// creating tables or running `VACUUM`. The migration only writes `request_contexts`/`request_tools`
+/// and touches no field of `requests`. It is called only from `server::run` startup and `pp gc`;
+/// the runtime write path and `Store::open` never run it.
 pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
-    // 迁移与其它连接的写事务竞争，临时放宽锁等待；无论成败都恢复 `Store::open`
-    // 的 250ms，避免把一次性迁移的等待时间留在常驻连接上。
+    // The migration competes with write transactions on other connections, so the lock wait is
+    // widened temporarily; success or failure, the 250ms wait of `Store::open` is restored so the
+    // one-off migration wait does not stay on a long-lived connection.
     conn.busy_timeout(Duration::from_secs(5))?;
     let result = (|| -> Result<bool> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -28,8 +31,9 @@ pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
             tx.commit()?;
             return Ok(false);
         }
-        // 更早的旧库可能缺这两列（旧版 `ensure_schema` 会补）；迁移前就地补齐，
-        // 随后整表删除，不改变永久 schema。
+        // Older databases may lack these two columns (the previous `ensure_schema` added them); add
+        // them in place before migrating, then drop the whole table without changing the permanent
+        // schema.
         let mut columns = table_columns(&tx, "request_payloads")?;
         ensure_column(
             &tx,
@@ -45,7 +49,8 @@ pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
              WHERE request_json IS NOT NULL",
             [],
         )?;
-        // 先取一次已回填的请求集合，重试时整行跳过，避免逐行查询。
+        // Fetch the already-backfilled request set once so retries skip whole rows instead of
+        // querying per row.
         let existing = {
             let mut statement = tx.prepare("SELECT DISTINCT request_id FROM request_tools")?;
             statement
@@ -54,7 +59,7 @@ pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
         };
         let mut insert =
             tx.prepare("INSERT INTO request_tools(request_id,tool,args_chars) VALUES (?1,?2,?3)")?;
-        // 逐行流式读取旧正文，避免把整库文本同时读进内存。
+        // Stream the legacy bodies row by row instead of loading the whole database text into memory.
         let mut payloads =
             tx.prepare("SELECT request_id,output_json,session_entry_json FROM request_payloads")?;
         let mut rows = payloads.query([])?;
@@ -63,8 +68,9 @@ pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
             if existing.contains(&request_id) {
                 continue;
             }
-            // 与迁移前的聚合口径一致：已提交会话条目里的 toolCall 优先，缺失时回退到
-            // 旧包装 `{"native":…}` 的原生输出；损坏的快照按空处理，不中断整次迁移。
+            // Matches the pre-migration aggregation: a toolCall in the committed session entry wins,
+            // falling back to the native output of the legacy `{"native":…}` wrapper when missing; a
+            // corrupt snapshot counts as empty and does not abort the whole migration.
             let entry = row
                 .get::<_, Option<String>>(2)?
                 .as_deref()
@@ -94,7 +100,8 @@ pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
         tx.commit()?;
         Ok(true)
     })();
-    // 大库迁移提交后立即回收空间；`VACUUM` 仍在放宽后的锁等待内执行。
+    // Reclaim space right after a large migration commits; `VACUUM` still runs within the widened
+    // lock wait.
     let outcome = match result {
         Ok(true) => (|| -> Result<()> {
             let page_count: i64 = conn.query_row("PRAGMA page_count", [], |row| row.get(0))?;
@@ -107,7 +114,8 @@ pub(crate) fn maintain(conn: &mut Connection) -> Result<()> {
         Ok(false) => Ok(()),
         Err(error) => Err(error),
     };
-    // 无论迁移或回收成败，都恢复 `Store::open` 的默认超时。
+    // Whether the migration or reclamation succeeds or fails, restore the default wait of
+    // `Store::open`.
     let restored = conn.busy_timeout(Duration::from_millis(250));
     outcome?;
     restored?;
@@ -143,7 +151,7 @@ impl GarbageCollection {
         })
     }
 
-    /// 在会话锁保护下清理根会话及其子 Agent 的统计。
+    /// Removes the stats of a root session and its subagents under the session lock.
     pub fn remove_session(&mut self, root: &Path) -> Result<()> {
         let Some(store) = &mut self.store else {
             return Ok(());
@@ -155,7 +163,8 @@ impl GarbageCollection {
         Ok(())
     }
 
-    /// 轻量清理单个会话（及其子 Agent）的统计，不执行 `VACUUM` 且统计库缺失时不建空库。
+    /// Lightweight cleanup of a single session (and its subagents); it does not run `VACUUM` and does not
+    /// create an empty database when the stats database is missing.
     pub fn delete_session(database: &super::Database, root: &Path) -> Result<()> {
         let scope = SessionScope::for_root(root)?;
         database.with_existing_store(|store| {
@@ -165,7 +174,8 @@ impl GarbageCollection {
         Ok(())
     }
 
-    /// 枚举统计库中路径落在 `sessions_dir` 内的根会话文件名 ID（子 Agent 路径归并到根）。
+    /// Enumerates the root session file name IDs whose paths fall inside `sessions_dir` (subagent paths
+    /// fold into the root).
     pub fn orphan_session_ids(&self, sessions_dir: &Path) -> Result<Vec<String>> {
         let Some(store) = &self.store else {
             return Ok(Vec::new());
@@ -191,7 +201,7 @@ impl GarbageCollection {
         Ok(ids.into_iter().collect())
     }
 
-    /// 清理按时间过期的统计，并在本次 GC 结束时统一回收空间。
+    /// Removes time-expired stats and reclaims space once at the end of this GC.
     pub fn finish(self, cutoff: i64) -> Result<(u64, u64)> {
         let Some(mut store) = self.store else {
             return Ok((0, 0));
@@ -399,7 +409,7 @@ mod tests {
                 .join("sessions/root.subagents/sessions/child.jsonl");
             let keep = dir.path().join("sessions/keep.jsonl");
 
-            // 统计库不存在时绝不建空库。
+            // Never create an empty database when the stats database is missing.
             GarbageCollection::delete_session(&database, &root).unwrap();
             assert!(!db_path.exists());
 

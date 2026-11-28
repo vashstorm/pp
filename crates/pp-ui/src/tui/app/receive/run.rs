@@ -1,11 +1,11 @@
-//! 运行终态事件：shell、mock、任务完成、压缩与重置。
+//! Run terminal events: shell, mock, task completion, compaction and reset.
 
 use crate::tui::{
     App, CompactionOutcome, Level, RunOutcome, State, WorkerEvent, desktop_notifications::Kind,
 };
 
 impl App {
-    /// 运行事件族；`MockPrepared`／`MockCompleted` 只在 dev/test 构建存在。
+    /// Run event family; `MockPrepared`/`MockCompleted` exist only in dev/test builds.
     pub(super) fn on_run_event(&mut self, event: WorkerEvent) -> bool {
         let mut changed = false;
         match event {
@@ -92,14 +92,16 @@ impl App {
                 self.conversation.finish_run(label, elapsed, finished_at);
                 self.state = State::Ready;
                 if awaiting_review {
-                    // 模型提交后自动打开审阅；worker 此时已空闲，安全读取磁盘。
+                    // The worker submits and review opens automatically; it is idle by then, so
+                    // the disk read is safe.
                     self.request_plan_read();
                 }
                 changed = true;
             }
 
             WorkerEvent::Compacted(result) => {
-                // 压缩不是普通任务：不收尾 Transcript、不显示任务 Completed。
+                // Compaction is not a regular task: Transcript is not finished and no task
+                // Completed is shown.
                 self.active_cancellation = None;
                 self.secondary_status = None;
                 self.state = State::Ready;
@@ -128,9 +130,11 @@ impl App {
                 self.show_welcome = true;
                 self.state = State::Ready;
                 self.session_id = None;
-                // /new 清掉计划绑定资格；旧计划文件保留，面板不再指向它。
+                // /new drops the plan binding eligibility; the old plan file is kept and the
+                // panel no longer points at it.
                 self.plan_panel = None;
-                // 新快照紧随其后；先丢弃旧会话用量，避免短暂显示旧占比。
+                // A new snapshot follows immediately; drop the old session usage first so a
+                // stale ratio is never shown briefly.
                 self.usage = None;
                 self.token_speed.clear();
                 changed = true;

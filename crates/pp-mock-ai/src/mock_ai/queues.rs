@@ -110,7 +110,7 @@ impl Queues {
     }
 }
 
-/// 单一 fallback 入口：路由、方法与队列策略都按原始 request-target 判定。
+/// Single fallback entry point: routing, method and queue policy all derive from the raw request-target.
 pub(super) async fn handle(State(endpoint): State<MockEndpoint>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let target = parts
@@ -145,7 +145,7 @@ pub(super) async fn handle(State(endpoint): State<MockEndpoint>, request: Reques
     };
     let busy = BusyGuard(Arc::clone(&queue));
     if needs_script {
-        // 只有未耗尽的队列才读取并解析正文；其余请求在 busy 检查后立即收尾。
+        // Only a queue that is not yet exhausted reads and parses the body; other requests finish right after the busy check.
         let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
             return error(
                 StatusCode::BAD_REQUEST,
@@ -170,7 +170,7 @@ pub(super) async fn handle(State(endpoint): State<MockEndpoint>, request: Reques
                 return error(StatusCode::BAD_REQUEST, failure.code, failure.message);
             }
             Err(join) => {
-                // 内部失败：诊断不含脚本或凭据，且不改动 cursor 与 generation。
+                // Internal failure: the diagnosis contains no script or credentials and leaves cursor and generation untouched.
                 tracing::error!(event = "mock_ai_script_parse_failed", error = %join);
                 return empty(StatusCode::INTERNAL_SERVER_ERROR);
             }
@@ -207,7 +207,7 @@ pub(super) async fn handle(State(endpoint): State<MockEndpoint>, request: Reques
         "{run}-{lane}-{}-{}",
         reservation.generation, reservation.steps.start
     );
-    // 失败指令只占一个步骤：直接用供应商错误收尾，客户端据此进入自动重试。
+    // A failure instruction occupies one step only: finish with the provider error directly so the client starts its automatic retry.
     if let Some(status) = reservation.script[reservation.steps.start].status {
         return error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
@@ -216,7 +216,7 @@ pub(super) async fn handle(State(endpoint): State<MockEndpoint>, request: Reques
         );
     }
     let (sender, receiver) = mpsc::channel(1);
-    // producer 只持预留的脚本 Arc 与 range，不复制整个脚本、不持队列锁。
+    // The producer only holds the reserved script Arc and range; it never copies the whole script and never holds the queue lock.
     let script = Arc::clone(&reservation.script);
     let steps = reservation.steps.clone();
     let shutdown = endpoint.shutdown.clone();
@@ -261,7 +261,7 @@ fn empty(status: StatusCode) -> Response {
         .expect("static mock AI response")
 }
 
-/// 响应 body：直到 EOF 或 body 被 Drop 才释放队列的 busy 标记。
+/// Response body: the queue's busy flag is released only at EOF or when the body is dropped.
 struct BodyStream {
     receiver: mpsc::Receiver<Bytes>,
     _busy: BusyGuard,

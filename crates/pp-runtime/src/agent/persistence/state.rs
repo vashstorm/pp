@@ -108,7 +108,8 @@ impl SessionJournal {
     ) -> Result<()> {
         let mut state = StateRef::new(metadata, session, workflow);
         state.tree = tree;
-        // 导航失败时保留此前完整提交，避免半条或未同步的 state 在恢复时生效。
+        // Keep the previous full commit when navigation fails, so a half-written or
+        // unsynchronized state never takes effect on resume.
         self.synced_custom(CustomRef::State(state))?;
         self.committed = session.len();
         self.model_reference.clear();
@@ -146,7 +147,8 @@ impl SessionJournal {
                 .set_len(offset)
                 .and_then(|()| active.file.sync_data())
         {
-            // 回滚失败不改变已登记的持久化错误：重复失败必须返回同一信息。
+            // A failed rollback does not change the already-recorded persistence error:
+            // repeated failures must return the same message.
             eprintln!("Failed to roll back failed session state write: {rollback}");
         }
         error
@@ -172,7 +174,8 @@ impl SessionJournal {
         self.synced_custom(CustomRef::Workflow(WorkflowRef { workflow }))
     }
 
-    /// 退出 Plan 时一次提交模式和模型；空会话仍等首条请求才落盘。
+    /// Commit mode and model together when leaving Plan; an empty session still waits for
+    /// its first request before writing.
     pub(in crate::agent) fn commit_plan_exit(
         &mut self,
         metadata: &Metadata<'_>,
@@ -233,8 +236,9 @@ impl SessionJournal {
         Ok(())
     }
 
-    /// 第一次 hook 前建立有效 session：header 与 state 都是完整日志的前提。
-    /// 返回真实 session ID 与共享值表 transcript 路径。
+    /// Establish a valid session before the first hook: header and state are both
+    /// prerequisites for a complete journal.
+    /// Returns the real session ID and the transcript path of the shared value table.
     pub(in crate::agent) fn prepare_hooks(
         &mut self,
         metadata: &Metadata<'_>,

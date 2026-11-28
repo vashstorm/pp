@@ -1,16 +1,16 @@
-//! 进程内唯一的模型决议权威：`a`（手动覆盖，仅内存）优先于 `b`（配置默认）。
+//! The single in-process authority for model resolution: `a` (manual override, memory only) takes precedence over `b` (configuration default).
 //!
-//! 单例由 `main::run` 构造 `Arc<ModelState>`（或经 [`SharedModels`] 延迟安装）并显式注入
-//! `Bootstrap`、`Agent` 与 UI；不使用全局静态。
+//! `main::run` builds the single instance as `Arc<ModelState>` (or installs it lazily through [`SharedModels`]) and injects it explicitly into
+//! `Bootstrap`, `Agent` and the UI; no global statics are used.
 //!
-//! 约束：
-//! - `a` 不落盘，进程退出即丢弃；重启回到 `b`。
-//! - 读侧（`resolve`/`catalog_snapshot`/`revision`）只拿读锁拷贝结果，绝不持锁做 I/O。
-//! - 写入口（`set_override`/`clear_override`/`set_default`/`set_role`/`reload_models`）
-//!   先在锁外完成校验与 `agent.db` 事务，再短拿写锁发布；必须由单一写者串行调用
-//!   （`model_control::Service` 线程或 CLI 主线程）。
-//! - 不变量：`resolve() == a.unwrap_or(b)`；`a.is_some() ⇒ a != b`；
-//!   `a.is_none()` 时 `resolve()` 随 `b` 变化。
+//! Constraints:
+//! - `a` is never written to disk and is dropped when the process exits; a restart falls back to `b`.
+//! - Readers (`resolve`/`catalog_snapshot`/`revision`) only copy the result under the read lock and never do I/O while holding it.
+//! - Write entry points (`set_override`/`clear_override`/`set_default`/`set_role`/`reload_models`)
+//!   validate and run the `agent.db` transaction outside the lock, then publish under a short write lock; a single writer must call them
+//!   serially (the `model_control::Service` thread or the CLI main thread).
+//! - Invariants: `resolve() == a.unwrap_or(b)`; `a.is_some() ⇒ a != b`;
+//!   while `a.is_none()`, `resolve()` follows `b`.
 
 use std::{
     path::Path,
@@ -22,7 +22,7 @@ use pp_core::model::{ModelSource, ThinkLevel};
 
 use crate::config::{ModelCatalog, ModelRole, ModelRoles, RoleAssignment};
 
-/// 一次模型选择的完整快照：完整配置引用 + 已解析档位。
+/// Complete snapshot of one model selection: the full configuration reference plus the resolved effort level.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Selection {
     pub reference: String,
@@ -31,7 +31,7 @@ pub struct Selection {
 
 struct Inner {
     catalog: ModelCatalog,
-    /// `a`：手动覆盖；仅内存。
+    /// `a`: manual override; memory only.
     override_selection: Option<Selection>,
     revision: u64,
 }
@@ -76,7 +76,7 @@ impl ModelState {
         self.read().revision
     }
 
-    /// 配置快照；调用方在请求边界自行刷新，不逐请求 clone。
+    /// Configuration snapshot; callers refresh it at request boundaries instead of cloning per request.
     pub fn catalog_snapshot(&self) -> ModelCatalog {
         self.read().catalog.clone()
     }
@@ -93,7 +93,7 @@ impl ModelState {
         self.read().catalog.favorite_models().to_vec()
     }
 
-    /// `b`：配置默认（启用的 DEFAULT 角色 → `preferences.default_model` → 首个可用模型）。
+    /// `b`: configuration default (enabled DEFAULT role → `preferences.default_model` → first available model).
     pub fn default_selection(&self) -> Result<Selection> {
         Self::default_selection_of(&self.read().catalog)
     }
@@ -109,7 +109,7 @@ impl ModelState {
         })
     }
 
-    /// `a`：手动覆盖；`None` 表示跟随配置默认。
+    /// `a`: manual override; `None` means following the configuration default.
     pub fn override_selection(&self) -> Option<Selection> {
         self.read().override_selection.clone()
     }
@@ -122,7 +122,7 @@ impl ModelState {
         }
     }
 
-    /// 唯一决议出口：`a.unwrap_or(b)`；模型不可用时返回错误，不静默降级。
+    /// The single resolution exit: `a.unwrap_or(b)`; returns an error when the model is unavailable instead of silently degrading.
     pub fn resolve(&self) -> Result<Selection> {
         let inner = self.read();
         if let Some(selection) = &inner.override_selection {
@@ -136,8 +136,8 @@ impl ModelState {
         Self::default_selection_of(&inner.catalog)
     }
 
-    /// 把一次切换解析成完整选择，沿用既有的目标档位策略：
-    /// 模型显式 `defaultLevel` 优先 → 保留当前档位（目标模型支持时）→ 该模型的有效默认档。
+    /// Resolves a switch into a full selection, reusing the existing target-effort policy:
+    /// the model's explicit `defaultLevel` first → keep the current level (when the target model supports it) → that model's effective default level.
     pub fn resolve_reference(
         &self,
         reference: &str,
@@ -160,7 +160,7 @@ impl ModelState {
         })
     }
 
-    /// 写入 `a`；与 `b` 完全相同时不保留覆盖。返回是否记录了覆盖。
+    /// Writes `a`; an override identical to `b` is not recorded. Returns whether an override was recorded.
     pub fn set_override(&self, selection: Selection) -> Result<bool> {
         {
             let inner = self.read();
@@ -190,7 +190,7 @@ impl ModelState {
         Ok(true)
     }
 
-    /// 清除 `a`（回到 `b`）。返回是否真的有覆盖被清除。
+    /// Clears `a` (back to `b`). Returns whether an override was actually cleared.
     pub fn clear_override(&self) -> Result<bool> {
         let mut inner = self.write();
         let changed = inner.override_selection.take().is_some();
@@ -200,7 +200,7 @@ impl ModelState {
         Ok(changed)
     }
 
-    /// 手动档位：只改内存中的覆盖档位，不写配置文件。
+    /// Manual effort level: changes only the in-memory override level, never writes the configuration file.
     pub fn set_override_effort(&self, effort: ThinkLevel) -> Result<()> {
         let mut inner = self.write();
         let Some(selection) = inner.override_selection.clone() else {
@@ -222,17 +222,17 @@ impl ModelState {
         Ok(())
     }
 
-    /// 保存全局默认模型（写 `b`，落 `agent.db`）。
+    /// Saves the global default model (writes `b`, persists to `agent.db`).
     pub fn set_default(&self, reference: &str) -> Result<()> {
         self.mutate(|catalog| catalog.save_default_model(reference))
     }
 
-    /// 保存全局默认档位（写 `b`）。
+    /// Saves the global default effort level (writes `b`).
     pub fn save_default_think_level(&self, level: ThinkLevel) -> Result<()> {
         self.mutate(|catalog| catalog.save_default_think_level(level))
     }
 
-    /// 保存角色配置；DEFAULT 角色即 `b`。
+    /// Saves a role configuration; the DEFAULT role is `b`.
     pub fn set_role(
         &self,
         role: ModelRole,
@@ -255,7 +255,7 @@ impl ModelState {
         self.read().catalog.model_usage()
     }
 
-    /// 写入口：锁外校验/持久化，锁内只换快照并递增 revision。
+    /// Write entry point: validate/persist outside the lock, and only swap the snapshot and bump the revision inside it.
     fn mutate(&self, update: impl FnOnce(&mut ModelCatalog) -> Result<()>) -> Result<()> {
         let mut next = self.catalog_snapshot();
         update(&mut next)?;
@@ -266,7 +266,7 @@ impl ModelState {
         Ok(())
     }
 
-    /// 目录/默认值变化后修正 `a`：模型不可用或与 `b` 重合时丢弃覆盖。
+    /// Fixes `a` up after the catalog or defaults change: the override is dropped when the model is unavailable or matches `b`.
     fn reconcile_override(inner: &mut Inner) {
         let Some(selection) = inner.override_selection.clone() else {
             return;
@@ -283,7 +283,7 @@ impl ModelState {
     }
 }
 
-/// 进程内唯一模型状态的安装槽：首次成功加载后一直复用，认证/登录重建 Agent 不丢失 `a`。
+/// Install slot for the single in-process model state: reused once loading succeeds, so rebuilding the Agent during auth/login never loses `a`.
 #[derive(Clone, Default)]
 pub struct SharedModels {
     slot: Arc<RwLock<Option<Arc<ModelState>>>>,
@@ -301,7 +301,7 @@ impl SharedModels {
             .clone()
     }
 
-    /// 已安装则复用；否则加载并安装。加载失败不安装，调用方可重试。
+    /// Reuses the installed state; otherwise loads and installs it. A failed load installs nothing and callers may retry.
     pub fn get_or_load(&self, settings_path: &Path, models_path: &Path) -> Result<Arc<ModelState>> {
         if let Some(state) = self.current() {
             return Ok(state);
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(state.source(), ModelSource::Override);
         assert_eq!(state.resolve().unwrap(), two);
 
-        // 与配置默认一致时不保留覆盖。
+        // An override identical to the configuration default is not recorded.
         assert!(
             !state
                 .set_override(selection("fixture/one", ThinkLevel::None))
@@ -393,7 +393,7 @@ mod tests {
                 .set_override(selection("fixture/two", ThinkLevel::Low))
                 .unwrap()
         );
-        // 新默认与覆盖不同：覆盖保留并继续生效。
+        // The new default differs from the override: the override survives and keeps applying.
         state.set_default("fixture/one").unwrap();
         assert_eq!(state.source(), ModelSource::Override);
         assert_eq!(
@@ -401,7 +401,7 @@ mod tests {
             selection("fixture/two", ThinkLevel::Low)
         );
 
-        // 新默认与覆盖相同：覆盖被清除，来源回到配置默认。
+        // The new default equals the override: the override is cleared and the source falls back to the configuration default.
         state.set_default("fixture/two").unwrap();
         assert_eq!(state.source(), ModelSource::Default);
         assert_eq!(
@@ -446,7 +446,7 @@ mod tests {
         );
         fs::write(dir.path().join("models.yml"), "providers: []\n").unwrap();
         assert!(state.reload_models().is_err());
-        // 失败不改内存快照：覆盖继续生效，不会被静默替换。
+        // A failure leaves the in-memory snapshot untouched: the override keeps applying and is never silently replaced.
         assert_eq!(
             state.resolve().unwrap(),
             selection("fixture/two", ThinkLevel::Low)
@@ -469,7 +469,7 @@ mod tests {
         assert_eq!(state.revision(), start + 2);
         clone.clear_override().unwrap();
         assert_eq!(state.revision(), start + 3);
-        // 无变化不递增。
+        // No change means no revision bump.
         clone.clear_override().unwrap();
         assert_eq!(state.revision(), start + 3);
     }
@@ -478,7 +478,7 @@ mod tests {
     fn concurrent_readers_observe_consistent_snapshots() {
         let (_dir, state) = fixture();
         let writer = Arc::clone(&state);
-        // 写侧只在两个候选之间切换：覆盖 fixture/two@low，或回到配置默认 fixture/one@none。
+        // The writer only alternates between two candidates: the override fixture/two@low, or the configuration default fixture/one@none.
         let overridden = selection("fixture/two", ThinkLevel::Low);
         let default = selection("fixture/one", ThinkLevel::None);
         let workers: Vec<_> = (0..4)
@@ -490,9 +490,9 @@ mod tests {
                         let resolved = state.resolve().unwrap();
                         assert!(
                             resolved == overridden || resolved == default,
-                            "{resolved:?} 不是写侧发布的候选快照"
+                            "{resolved:?} is not a candidate snapshot published by the writer"
                         );
-                        // 覆盖只写 `a`，配置快照 `b` 始终指向配置默认。
+                        // An override only writes `a`; the catalog snapshot `b` always points at the configuration default.
                         assert_eq!(state.catalog_snapshot().default_reference(), "fixture/one");
                     }
                 })
@@ -539,12 +539,12 @@ mod tests {
     #[test]
     fn set_override_effort_clears_override_when_matching_default() {
         let (dir, state) = fixture();
-        // 将默认模型设为支持多档位的 fixture/two（默认档位 low）
+        // Make the default model fixture/two, which supports multiple effort levels (default level low)
         state.set_default("fixture/two").unwrap();
         state.save_default_think_level(ThinkLevel::Low).unwrap();
         assert_eq!(state.source(), ModelSource::Default);
 
-        // 先设置与默认模型同款但不同档位的覆盖，随后把档位调回默认 low
+        // First set an override with the same model as the default but a different level, then move the level back to the default low
         state
             .set_override(selection("fixture/two", ThinkLevel::High))
             .unwrap();
@@ -553,7 +553,7 @@ mod tests {
         state.set_override_effort(ThinkLevel::Low).unwrap();
         assert_eq!(state.source(), ModelSource::Default);
 
-        // 验证不会残留假覆盖劫持后续全局默认变更
+        // Verify no phantom override is left behind to hijack later global default changes
         state.set_default("fixture/one").unwrap();
         assert_eq!(
             state.resolve().unwrap(),

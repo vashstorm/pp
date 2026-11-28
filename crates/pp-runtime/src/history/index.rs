@@ -38,7 +38,7 @@ impl Store {
         Ok(orphans)
     }
 
-    /// Best-effort 回收 WAL 与空闲页；若库正被其它连接占用则告警并跳过，不阻塞 GC。
+    /// Best-effort reclaim of the WAL and free pages; if another connection holds the database, warn and skip without blocking GC.
     pub(crate) fn compact(&mut self, vacuum: bool) -> Result<()> {
         if let Err(error) = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
             if is_busy(&error) {
@@ -57,8 +57,8 @@ impl Store {
         Ok(())
     }
 
-    /// 同步会话目录投影：委托 persistence 索引模块在同一连接上执行逐文件事务，
-    /// 返回逐文件脱敏诊断。取消时由索引模块回滚当前文件事务并返回 Cancelled。
+    /// Syncs the session catalog projection: delegates to the persistence index module, which runs per-file transactions on the same connection,
+    /// returning per-file redacted diagnostics. On cancellation the index module rolls back the current file's transaction and returns Cancelled.
     pub fn sync_sessions(
         &mut self,
         dir: &Path,
@@ -67,9 +67,9 @@ impl Store {
         crate::agent::persistence::index::sync(&mut self.conn, dir, cancellation)
     }
 
-    /// 验收帮助（仅测试）：删除派生表数据后重新同步，验证投影可完整重建
-    /// 且不触碰 input_history。DELETE sessions 经外键级联清空 prompts，
-    /// 触发器同步移除 FTS 文档。
+    /// Acceptance helper (test only): drop derived table data then resync to verify the projection rebuilds completely
+    /// without touching input_history. DELETE sessions empties prompts through the foreign-key cascade,
+    /// and triggers remove the FTS documents in step.
     #[cfg(test)]
     pub(crate) fn rebuild_sessions(&mut self, dir: &Path) -> Result<Vec<String>> {
         let tx = self
@@ -131,7 +131,7 @@ mod tests {
             )
             .unwrap();
 
-        // trigram 短语匹配：长词命中（含仅出现在第二条 prompt 的词）。
+        // Trigram phrase matching: long terms hit (including a term present only in the second prompt).
         assert_eq!(match_rows(&store.conn, "prompt_fts", "\"模型切\""), [2]);
         assert_eq!(match_rows(&store.conn, "session_fts", "\"示例标题\""), [1]);
         assert_eq!(match_rows(&store.conn, "session_fts", "\"预览内容\""), [1]);
@@ -140,7 +140,7 @@ mod tests {
             1
         );
 
-        // 更新触发器：先删 OLD 再插 NEW，新旧内容检索一致。
+        // Update trigger: delete OLD then insert NEW, so old and new content stay searchable.
         store
             .conn
             .execute(
@@ -161,7 +161,7 @@ mod tests {
         assert!(match_rows(&store.conn, "prompt_fts", "\"无关键词\"").is_empty());
         assert_eq!(match_rows(&store.conn, "prompt_fts", "\"改写后\""), [1]);
 
-        // 直接删除单条 prompt：FTS 文档同步移除。
+        // Deleting a single prompt directly: the FTS document is removed in step.
         store
             .conn
             .execute(
@@ -171,7 +171,7 @@ mod tests {
             .unwrap();
         assert!(match_rows(&store.conn, "prompt_fts", "\"needle_42\"").is_empty());
 
-        // 删除会话：FK 级联清空 prompts，两个 FTS 索引无残留；input_history 不受影响。
+        // Deleting the session: the FK cascade empties prompts, both FTS indexes are left empty, and input_history is unaffected.
         store
             .conn
             .execute("DELETE FROM sessions WHERE rowid=?1", [session_rowid])
@@ -187,7 +187,7 @@ mod tests {
             "修复模型切换失败 needle_42"
         );
 
-        // 重建派生投影后的索引一致性验收：外部内容 FTS 的 integrity-check 必须通过。
+        // Index consistency acceptance after rebuilding the derived projection: the external-content FTS integrity-check must pass.
         store
             .conn
             .execute(

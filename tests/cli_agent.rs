@@ -43,8 +43,8 @@ mod subagents;
 #[path = "cli_agent/web_search_cases.rs"]
 mod web_search_cases;
 
-// 全部 `/test-*` 命令只在 debug assertions 构建中注册，因此这些用例随同一
-// profile 边界编译，release 测试构建不再要求命令存在。
+// Every `/test-*` command is registered only in debug-assertions builds, so these tests compile
+// behind the same profile boundary and release test builds no longer require the commands.
 #[cfg(debug_assertions)]
 #[path = "cli_agent/mock_test.rs"]
 mod mock_test;
@@ -55,7 +55,7 @@ fn config_path(home: &std::path::Path, name: &str) -> std::path::PathBuf {
     dir.join(name)
 }
 
-// 夹具允许把 MCP 与其他设置一起传入；实际落盘始终使用独立 JSON。
+// The fixture lets MCP settings arrive alongside other settings; the on-disk file is always separate JSON.
 fn write_settings(home: &std::path::Path, text: impl AsRef<str>) -> std::io::Result<()> {
     let text = text.as_ref();
     if let Ok(mut value) = serde_json::from_str::<Value>(text)
@@ -72,7 +72,7 @@ fn write_settings(home: &std::path::Path, text: impl AsRef<str>) -> std::io::Res
     std::fs::write(config_path(home, "settings.yml"), text)
 }
 
-// 用户级 hooks 与 settings.yml 同在 `~/.pp/agent`，JSON 也是合法 YAML。
+// User-level hooks live in `~/.pp/agent` next to settings.yml; JSON is valid YAML too.
 fn write_hooks(home: &std::path::Path, text: impl AsRef<str>) -> std::io::Result<()> {
     std::fs::write(config_path(home, "hooks.yml"), text.as_ref())
 }
@@ -121,7 +121,8 @@ impl Cli {
         }
         Self::start_env(cwd, cwd, &args, &[])
     }
-    // 独立 HOME 与工作目录，或向行模式子进程注入代理等环境变量的入口。
+    // Entry point for an isolated HOME and working directory, or for injecting environment variables
+    // such as proxies into a line-mode child process.
     fn start_env(
         cwd: &std::path::Path,
         home: &std::path::Path,
@@ -175,7 +176,8 @@ impl Cli {
     fn finish(self) -> Output {
         self.finish_within(Duration::from_secs(5))
     }
-    // Mock 场景包含多次真实 Agent 运行与工具调用，宽限只用于这些显式入口。
+    // Mock scenarios run several real agent turns and tool calls; the grace period applies only to these
+    // explicit entry points.
     fn finish_within(mut self, timeout: Duration) -> Output {
         self.0.as_mut().unwrap().stdin.take();
         let deadline = Instant::now() + timeout;
@@ -201,12 +203,12 @@ impl Drop for Cli {
 }
 
 fn fixture_settings() -> &'static str {
-    "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n"
+    "# Application settings for this test process\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n"
 }
 
 fn fixture_settings_with_tools(tools_yaml: &str) -> String {
     format!(
-        "# 此测试进程的应用设置\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n{tools_yaml}"
+        "# Application settings for this test process\nrate_limit_retry_budget_seconds: 0\ntools:\n  sandbox:\n    mode: off\n{tools_yaml}"
     )
 }
 
@@ -225,7 +227,7 @@ fn task_fixture_settings_with_tools(tools_yaml: &str) -> String {
 
 fn fixture_models(server: &TestServer) -> String {
     format!(
-        "# 此测试进程的回环服务\nproviders:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: fixture-model\n",
+        "# Loopback service for this test process\nproviders:\n  fixture:\n    protocol: completion\n    api_key: fixture-key\n    base_url: http://{}/v1\n    models:\n      primary:\n        model: fixture-model\n",
         server.addr()
     )
 }
@@ -240,7 +242,8 @@ fn receive_raw(server: &TestServer) -> (CapturedRequest, Value) {
     receive_raw_within(server, Duration::from_secs(10))
 }
 fn receive_raw_within(server: &TestServer, timeout: Duration) -> (CapturedRequest, Value) {
-    // 默认并行档会同时运行多个真实二进制与 PTY；冷启动可超过 5s，但请求仍应确定到达。
+    // The default parallel profile runs several real binaries and PTYs at once; cold start can exceed
+    // 5s while the request still has to arrive deterministically.
     let request = server
         .recv_timeout(timeout)
         .unwrap()
@@ -323,7 +326,7 @@ fn authorization(request: &CapturedRequest) -> String {
     request
         .headers()
         .get("authorization")
-        .expect("认证请求必须带 Authorization")
+        .expect("authenticated requests must carry Authorization")
         .to_str()
         .unwrap()
         .to_owned()
@@ -558,8 +561,8 @@ fn slash_assert_merged_response_batch(message: &Value) {
 
 const PROCESS_DEADLINE: Duration = Duration::from_secs(10);
 
-// 等待 bash 写出 PID marker 文件：进入执行阶段的确定性栅栏。
-// CLI 与 TUI 测试共用，后台与取消路径都以它为进程级屏障。
+// Wait for bash to write the PID marker files: the deterministic barrier into the execution stage.
+// CLI and TUI tests share it; background and cancellation paths use it as a process-level barrier.
 fn cancel_wait_pid_files(project: &std::path::Path, names: &[&str]) {
     let deadline = Instant::now() + PROCESS_DEADLINE;
     loop {
@@ -568,7 +571,7 @@ fn cancel_wait_pid_files(project: &std::path::Path, names: &[&str]) {
         }
         assert!(
             Instant::now() < deadline,
-            "bash PID marker 未出现：{names:?}"
+            "bash PID marker did not appear: {names:?}"
         );
         thread::sleep(Duration::from_millis(10));
     }
@@ -583,12 +586,15 @@ fn cancel_wait_pid_dead(path: &std::path::Path) {
     let pid = rustix::process::Pid::from_raw(pid).unwrap();
     let deadline = Instant::now() + PROCESS_DEADLINE;
     while rustix::process::test_kill_process(pid).is_ok() {
-        assert!(Instant::now() < deadline, "进程 {pid:?} 仍在运行");
+        assert!(
+            Instant::now() < deadline,
+            "process {pid:?} is still running"
+        );
         thread::sleep(Duration::from_millis(10));
     }
 }
 
-// bash scratch 目录建在任务 cwd 下；结束或取消收尾必须清理干净。
+// The bash scratch directory is created under the task cwd; finishing or cancelling must clean it up.
 fn cancel_assert_no_scratch(project: &std::path::Path) {
     let deadline = Instant::now() + PROCESS_DEADLINE;
     loop {
@@ -602,14 +608,14 @@ fn cancel_assert_no_scratch(project: &std::path::Path) {
         }
         assert!(
             Instant::now() < deadline,
-            "bash scratch 目录未清理：{leftover:?}"
+            "bash scratch directory was not cleaned up: {leftover:?}"
         );
         thread::sleep(Duration::from_millis(10));
     }
 }
 
-// 会话日志按每行一个共享值表记录写盘；这些 helper 是测试侧唯一的解码与再编码
-// 入口，断言必须看逻辑记录，不能直接解析磁盘行。
+// Session logs are written one shared-value table per line; these helpers are the test side's only
+// decode/encode entry points, so assertions must inspect logical records, never raw disk lines.
 fn session_text(path: &std::path::Path) -> String {
     let mut reader = pp_core::session_jsonl::Reader::new(std::io::BufReader::new(
         std::fs::File::open(path).unwrap(),
@@ -622,7 +628,7 @@ fn session_text(path: &std::path::Path) -> String {
     String::from_utf8(result).unwrap()
 }
 
-// 未以换行结尾的尾部记录是唯一允许忽略的损坏，读取时直接排除。
+// A trailing record without a final newline is the only tolerated corruption and is dropped on read.
 fn records(path: &std::path::Path) -> Vec<Value> {
     let text = session_text(path);
     let terminated = match text.rfind('\n') {
@@ -639,7 +645,8 @@ fn records(path: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
-// 重写整份日志：首行头部原样保留，其余逻辑行用新的共享值表重新编码。
+// Rewrite the whole log: keep the header line verbatim and re-encode the remaining logical lines with
+// the new shared-value table.
 fn write_session_text(path: &std::path::Path, text: &str) {
     let mut storage = pp_core::session_jsonl::Storage::default();
     let mut output = Vec::new();
@@ -658,8 +665,9 @@ fn write_session_text(path: &std::path::Path, text: &str) {
     std::fs::write(path, output).unwrap();
 }
 
-// 工作区外夹具：受管临时根（`/tmp`）内的目录对保存层仍是可写目标，逃逸断言必须
-// 落在两个受管根之外；`/var/tmp` 在 macOS 与 Linux 上均可写且不在受管根内。
+// Outside-workspace fixture: directories under the managed temp root (`/tmp`) are still writable targets
+// for the save layer, so escape assertions must land outside both managed roots; `/var/tmp` is writable
+// on macOS and Linux and sits outside them.
 fn outside_tempdir() -> tempfile::TempDir {
     tempfile::Builder::new().tempdir_in("/var/tmp").unwrap()
 }

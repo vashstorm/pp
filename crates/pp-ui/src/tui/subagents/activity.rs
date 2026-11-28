@@ -1,4 +1,4 @@
-//! Activity 页：分类／范围过滤后的行选择与绘制。
+//! Activity page: row selection and drawing after the category/scope filter.
 
 use super::*;
 
@@ -13,7 +13,7 @@ impl Panel {
         )
     }
 
-    /// 当前可见列表中的选中位置；跟随模式下最后一行就是选中项。
+    /// Selection position within the currently visible list; in follow mode the last row is the selected one.
     pub(super) fn activity_index(&self, rows: &[usize]) -> Option<usize> {
         if self.activity.selected.is_none() {
             return rows.len().checked_sub(1);
@@ -207,11 +207,11 @@ mod tests {
             });
         }
         panel.handle(key(KeyCode::Char('2')), &mut drafts);
-        // 默认跟随最新：最后一行的选中 id 就是末行。
+        // Follow the newest by default: the selected id of the last row is the final row.
         let rows = panel.activity_rows();
         let last = panel.projection.rows()[*rows.last().unwrap()].id();
         assert!(panel.activity.follow);
-        // 手动上移暂停跟随并固定 id。
+        // Moving up manually pauses following and pins the id.
         panel.handle(key(KeyCode::Char('k')), &mut drafts);
         assert!(!panel.activity.follow);
         let pinned = panel.activity.selected.clone().unwrap();
@@ -230,10 +230,10 @@ mod tests {
             });
         }
         assert_eq!(panel.activity.selected.as_deref(), Some(pinned.as_str()));
-        // Space 恢复跟随并跳最新。
+        // Space resumes following and jumps to the newest row.
         panel.handle(key(KeyCode::Char(' ')), &mut drafts);
         assert!(panel.activity.follow);
-        // 搜索编辑优先于普通字符快捷键，Esc 先清空查询。
+        // Search editing takes priority over plain character shortcuts, and Esc clears the query first.
         panel.handle(key(KeyCode::Char('/')), &mut drafts);
         for character in "retry".chars() {
             panel.handle(key(KeyCode::Char(character)), &mut drafts);
@@ -243,7 +243,7 @@ mod tests {
         assert!(panel.activity.query.is_empty());
         assert!(!panel.activity.editing);
         assert_eq!(panel.page, Page::Activity);
-        // 再按 Esc 回到 Agents 页。
+        // Pressing Esc again returns to the Agents page.
         panel.handle(key(KeyCode::Esc), &mut drafts);
         assert_eq!(panel.page, Page::Agents);
     }

@@ -1,4 +1,5 @@
-//! 行模式执行单元：正常 Agent 任务与 dev 构建的内嵌 mock 场景。
+//! Line-mode execution unit: normal Agent tasks and the embedded mock scenarios of dev
+//! builds.
 
 use anyhow::{Context, Result};
 use std::{io::Write, path::Path};
@@ -13,7 +14,8 @@ use pp_core::events;
 use pp_mock_ai as mock_ai;
 use pp_runtime::agent;
 
-/// 非交互任务运行选项（输出模式、恢复标记、Schema 缓冲、输出文件与取消守卫）。
+/// Non-interactive task options (output mode, resume marker, schema buffer, output file
+/// and cancellation guard).
 #[derive(Default)]
 pub struct NonInteractiveOptions<'a> {
     pub mode: super::json::OutputMode,
@@ -23,7 +25,8 @@ pub struct NonInteractiveOptions<'a> {
     pub guard: Option<&'a RunGuard>,
 }
 
-/// 行模式下单个执行单元：正常 Agent 任务，或 dev 构建的内嵌 mock 场景。
+/// A single execution unit in line mode: a normal Agent task, or the embedded mock
+/// scenario of a dev build.
 enum CliExecution<'a> {
     Agent {
         agent: &'a mut agent::Agent,
@@ -74,7 +77,8 @@ pub fn run_cli_task_with_options(
     }
 }
 
-/// dev/test 专用入口：用内嵌 mock server 运行真实 Agent 场景，不触碰正常会话。
+/// dev/test-only entry point: runs a real Agent scenario against the embedded mock
+/// server without touching the normal session.
 #[cfg(debug_assertions)]
 pub fn run_cli_mock_test(
     test: mock_ai::MockTest,
@@ -102,7 +106,8 @@ fn run_cli_execution(
     use events::{AgentEvent, OutputStream};
     match &execution {
         CliExecution::Agent { agent, .. } => {
-            // 启动期建连可能仍在后台进行：首个任务前滚动输出逐服务结果与总状态。
+            // Startup connects may still be running in the background: print the
+            // per-server results and the overall status before the first task.
             mcp_status::wait(agent, stderr, guard.map(RunGuard::token));
             for warning in agent.mcp_view().warnings() {
                 writeln!(stderr, "{warning}")?;
@@ -121,7 +126,8 @@ fn run_cli_execution(
     let mut final_text = String::new();
     let mut current_delta_text = String::new();
     let mut emit = |event: AgentEvent| {
-        // 运行时指标事件只服务 TUI，CLI 不输出，也不得触发思考换行。
+        // Runtime metrics events only serve the TUI; the CLI prints none of them and
+        // must not trigger a thinking newline.
         if matches!(
             &event,
             AgentEvent::ModelRequestStarted
@@ -379,7 +385,8 @@ fn run_cli_execution(
                         &mut first_error,
                     );
                 }
-                // 内联 LspDiagnostics 只来自 write/edit；lsp 工具正文在这里展示。
+                // Inline LspDiagnostics only come from write/edit; the lsp tool body is
+                // displayed here.
                 let lsp_content = current_tool
                     .as_ref()
                     .is_some_and(|(current_id, name)| current_id == &id && name.as_str() == "lsp");
@@ -436,7 +443,7 @@ fn run_cli_execution(
                 attempt,
                 max_attempts,
             } => {
-                // stderr 提醒与 open 项；stdout 仍只保留助手文本。
+                // stderr notice plus the open items; stdout keeps only assistant text.
                 let open: Vec<&pp_core::todo::TodoItem> = todos
                     .iter()
                     .filter(|item| {
@@ -497,7 +504,8 @@ fn run_cli_execution(
                     &mut first_error,
                 );
             }
-            // hook 诊断只写 stderr：stdout 仍是模型正文，也不是模型上下文。
+            // Hook diagnostics go to stderr only: stdout is still model prose and is not
+            // model context either.
             AgentEvent::HookDiagnostic { event, message } => {
                 cli_write(
                     stderr,

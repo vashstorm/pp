@@ -35,7 +35,7 @@ pub fn format_age(age_seconds: Option<i64>) -> Option<String> {
     Some(format!("{}y ago", age / 31_536_000))
 }
 
-/// 将统一搜索响应格式化为模型易读的紧凑文本。
+/// Format a unified search response into compact text that is easy for the model to read.
 pub fn format_for_llm(answer: Option<&str>, sources: &[SearchSource], notes: &[String]) -> String {
     let mut parts = Vec::new();
     for note in notes {
