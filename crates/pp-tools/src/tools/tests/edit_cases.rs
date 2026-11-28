@@ -412,9 +412,18 @@ fn replace_edit_and_file_changed_events() {
                 json!({"path":"demo.txt","edits":[{"op":"replace","start":"1:0","end":"1:0","lines":["x"]}]}),
             ),
             (
-                "classic top-level oldText",
-                json!({"path":"demo.txt","oldText":"one","newText":"two"}),
+                "mixed edits and top-level oldText",
+                json!({"path":"demo.txt","oldText":"one","newText":"two","edits":[{"oldText":"one","newText":"two"}]}),
             ),
+            (
+                "top-level oldText missing newText",
+                json!({"path":"demo.txt","oldText":"one"}),
+            ),
+            (
+                "top-level newText missing oldText",
+                json!({"path":"demo.txt","newText":"two"}),
+            ),
+            ("missing both edits and oldText", json!({"path":"demo.txt"})),
             (
                 "string instead of edits array",
                 json!({"path":"demo.txt","edits":"one"}),
@@ -429,6 +438,23 @@ fn replace_edit_and_file_changed_events() {
             assert_eq!(result["ok"], false, "{name}: {result}");
             assert_eq!(fs::read(&path).unwrap(), original, "{name}");
         }
+
+        // 顶层扁平 `{path, oldText, newText}` 作为单次编辑的等价写法必须生效。
+        let flat = execute(
+            &tools,
+            "edit",
+            json!({"path":"demo.txt","oldText":"one","newText":"ONE"}),
+        );
+        assert_eq!(flat["ok"], true, "{flat}");
+        assert_eq!(flat["edits_applied"], 1, "{flat}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "ONE\ntwo\nthree\n");
+        let revert = execute(
+            &tools,
+            "edit",
+            json!({"path":"demo.txt","oldText":"ONE","newText":"one","edits":null}),
+        );
+        assert_eq!(revert["ok"], true, "{revert}");
+        assert_eq!(fs::read(&path).unwrap(), original);
 
         fs::write(dir.path().join("empty.txt"), "").unwrap();
         let empty = execute(

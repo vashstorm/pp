@@ -629,4 +629,42 @@ mod integration {
             execution.hook_context
         );
     }
+
+    #[test]
+    fn eval_omitted_language_falls_back_to_default_kernel() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools = Tools::new(dir.path().into(), EditMode::Replace).unwrap();
+        tools.configure_eval(&EvalSettings::default());
+        if !tools.eval_py_available {
+            return;
+        }
+        let res = execute(
+            &tools,
+            "eval",
+            json!({"code": "1 + 2", "timeout_seconds": "15", "reset": "false", "title": null}),
+        );
+        assert_eq!(res["ok"], true, "{res}");
+        assert_eq!(res["language"], "py");
+        assert_eq!(res["output"], "3\n");
+    }
+}
+
+#[test]
+fn eval_args_normalize_scalars_and_allow_omitted_language() {
+    use super::*;
+
+    let parsed = EvalArgs::parse(
+        &json!({"code": "1 + 1", "timeout_seconds": "30", "reset": "true", "language": null})
+            .to_string(),
+    )
+    .unwrap();
+    assert!(parsed.language.is_none());
+    assert_eq!(parsed.timeout_seconds, Some(30));
+    assert!(parsed.reset);
+
+    let py3 = EvalArgs::parse(&json!({"language": "python3", "code": "1"}).to_string()).unwrap();
+    assert_eq!(py3.language, Some(EvalLanguage::Py));
+
+    assert!(EvalArgs::parse(&json!({"code": "1", "extra": true}).to_string()).is_err());
+    assert!(EvalArgs::parse(&json!({"code": "1", "reset": "maybe"}).to_string()).is_err());
 }

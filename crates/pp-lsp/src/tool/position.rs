@@ -67,26 +67,65 @@ fn parse_symbol_spec(spec: &str) -> (String, usize) {
     (spec.to_owned(), 1)
 }
 
+/// 在目标行未找到符号时扫描相邻 ±5 行，返回按距离排序的最多 3 个候选行号（1-based）。
+fn nearby_symbol_lines(text: &str, line: u32, symbol: &str) -> Vec<u32> {
+    const WINDOW: u32 = 5;
+    let start = line.saturating_sub(WINDOW).max(1);
+    let end = line.saturating_add(WINDOW);
+    let mut hits = Vec::new();
+    for (idx, raw) in text
+        .split('\n')
+        .enumerate()
+        .skip((start - 1) as usize)
+        .take((end - start + 1) as usize)
+    {
+        let current = idx as u32 + 1;
+        if current == line {
+            continue;
+        }
+        let body = raw.strip_suffix('\r').unwrap_or(raw);
+        if !find_matches(body, symbol, false).is_empty()
+            || !find_matches(body, symbol, true).is_empty()
+        {
+            hits.push(current);
+        }
+    }
+    hits.sort_by_key(|&candidate| (candidate.abs_diff(line), candidate));
+    hits.truncate(3);
+    hits
+}
+
 /// 解析 `line` 上的 UTF-16 列；无 `symbol` 时取首个非空白字符。
 pub(super) fn resolve_column(text: &str, line: u32, spec: Option<&str>) -> Result<u32> {
     let line = line.max(1);
-    let text = line_text(text, line);
+    let current = line_text(text, line);
     let byte = match spec {
-        None => text
+        None => current
             .char_indices()
             .find(|(_, ch)| !ch.is_whitespace())
             .map_or(0, |(index, _)| index),
         Some(spec) => {
             let (symbol, occurrence) = parse_symbol_spec(spec);
             ensure!(!symbol.is_empty(), "symbol must not be empty");
-            let mut matches = find_matches(text, &symbol, false);
+            let mut matches = find_matches(current, &symbol, false);
             if matches.is_empty() {
-                matches = find_matches(text, &symbol, true);
+                matches = find_matches(current, &symbol, true);
             }
-            ensure!(
-                !matches.is_empty(),
-                "Symbol \"{symbol}\" was not found on line {line}"
-            );
+            if matches.is_empty() {
+                let nearby = nearby_symbol_lines(text, line, &symbol);
+                if nearby.is_empty() {
+                    anyhow::bail!("Symbol \"{symbol}\" was not found on line {line}");
+                }
+                let list = nearby
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let label = if nearby.len() == 1 { "line" } else { "lines" };
+                anyhow::bail!(
+                    "Symbol \"{symbol}\" was not found on line {line} (found on nearby {label} {list})"
+                );
+            }
             ensure!(
                 occurrence <= matches.len(),
                 "Symbol \"{symbol}\" occurrence {occurrence} is out of bounds on line {line} (found {})",
@@ -95,7 +134,7 @@ pub(super) fn resolve_column(text: &str, line: u32, spec: Option<&str>) -> Resul
             matches[occurrence - 1]
         }
     };
-    let prefix = text.get(..byte).unwrap_or("");
+    let prefix = current.get(..byte).unwrap_or("");
     Ok(prefix.encode_utf16().count() as u32)
 }
 

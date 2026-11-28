@@ -19,7 +19,7 @@ mod url;
 
 pub use file::open as open_local_file;
 use file::{FileInput, FileReader};
-pub(super) use selector::Target;
+pub(super) use selector::{Target, parse_args};
 use text::{count_lines, page_text, read_from};
 pub(crate) use url::WebCache;
 use url::{UrlInput, UrlReader};

@@ -1,4 +1,6 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
+use serde::Deserialize;
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,6 +224,104 @@ impl Target {
             &format!(":{selection}{}", if self.raw { ":raw" } else { "" }),
         )
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawReadArgs {
+    path: String,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    ranges: Option<String>,
+}
+
+fn coerce_positive_int(value: Value) -> Value {
+    match &value {
+        Value::String(text) => serde_json::from_str::<serde_json::Number>(text.trim())
+            .map(Value::Number)
+            .unwrap_or(value),
+        _ => value,
+    }
+}
+
+/// 解析并归一化 `read` 工具参数（权限预检与实际读取共用）：
+/// 兼容模型习惯传入的 `offset`/`limit`/`ranges`（及 `path_ranges` 别名，含数字字符串与 `null`），
+/// 折算为统一的 `path:<selector>` 形式；其余未知字段、冲突或非正整数仍严格拒绝。
+pub(in crate::tools) fn parse_args(arguments: &str, cwd: &Path) -> Result<String> {
+    let input: Value = serde_json::from_str(arguments).context("invalid read arguments")?;
+    let Value::Object(input) = input else {
+        bail!("invalid read arguments: expected a JSON object");
+    };
+    let mut map = Map::new();
+    for (key, value) in input {
+        if value.is_null() {
+            continue;
+        }
+        let canonical = match key.as_str() {
+            "path_ranges" => "ranges",
+            other => other,
+        };
+        let value = if matches!(canonical, "offset" | "limit") {
+            coerce_positive_int(value)
+        } else {
+            value
+        };
+        if let Some(previous) = map.get(canonical) {
+            ensure!(
+                *previous == value,
+                "invalid read arguments: `{key}` conflicts with `{canonical}`"
+            );
+            continue;
+        }
+        map.insert(canonical.to_owned(), value);
+    }
+    let args: RawReadArgs =
+        serde_json::from_value(Value::Object(map)).context("invalid read arguments")?;
+    if let Some(offset) = args.offset {
+        ensure!(offset > 0, "invalid read arguments: offset must be >= 1");
+    }
+    if let Some(limit) = args.limit {
+        ensure!(limit > 0, "invalid read arguments: limit must be >= 1");
+    }
+    if args.offset.is_none() && args.limit.is_none() && args.ranges.is_none() {
+        return Ok(args.path);
+    }
+    ensure!(
+        args.ranges.is_none() || (args.offset.is_none() && args.limit.is_none()),
+        "invalid read arguments: cannot combine ranges with offset/limit"
+    );
+    let base = Target::parse(&args.path, cwd)?;
+    ensure!(
+        base.ranges.is_empty(),
+        "invalid read arguments: path already contains a line selector; omit offset/limit/ranges"
+    );
+    let selector = if let Some(ranges) = args.ranges {
+        let trimmed = ranges.trim().trim_start_matches(':');
+        ensure!(
+            !trimmed.is_empty(),
+            "invalid read arguments: ranges must not be empty"
+        );
+        trimmed.to_owned()
+    } else {
+        match (args.offset, args.limit) {
+            (Some(offset), Some(limit)) => format!("{offset}+{limit}"),
+            (Some(offset), None) => offset.to_string(),
+            (None, Some(limit)) => format!("1+{limit}"),
+            (None, None) => unreachable!(),
+        }
+    };
+    let raw_suffix = if base.raw { ":raw" } else { "" };
+    let normalized = suffixed(&base.source, &format!(":{selector}{raw_suffix}"));
+    // 立即校验折算后的 selector 合法性，避免非法 `ranges` 被当成字面文件名绕过预检。
+    let parsed = Target::parse(&normalized, cwd).context("invalid read arguments")?;
+    ensure!(
+        !parsed.ranges.is_empty(),
+        "invalid read arguments: invalid line range selector"
+    );
+    Ok(normalized)
 }
 
 fn expand_local_path(raw: &str, cwd: &Path) -> PathBuf {

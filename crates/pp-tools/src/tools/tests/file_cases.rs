@@ -66,15 +66,46 @@ mod integration {
             fs::read_to_string(dir.path().join("file")).unwrap(),
             "one\nedited\nthree\n"
         );
+        // 兼容模型常见的 offset/limit/ranges（及字符串数字与 null），折算为 path selector。
+        let by_offset_limit = execute(
+            &tools,
+            "read",
+            json!({"path":"file","offset":"2","limit":1}),
+        );
+        assert_eq!(by_offset_limit["ok"], true, "{by_offset_limit}");
+        assert_eq!(by_offset_limit["lines_read"], 1);
+        assert!(
+            by_offset_limit["content"]
+                .as_str()
+                .unwrap()
+                .contains("2:edited"),
+            "{by_offset_limit}"
+        );
+        let by_limit_only = execute(&tools, "read", json!({"path":"file","limit":1}));
+        assert!(
+            by_limit_only["content"].as_str().unwrap().contains("1:one"),
+            "{by_limit_only}"
+        );
+        let by_ranges = execute(&tools, "read", json!({"path":"file","path_ranges":"2-3"}));
+        assert_eq!(by_ranges["ok"], true, "{by_ranges}");
+        assert!(
+            by_ranges["content"].as_str().unwrap().contains("2:edited"),
+            "{by_ranges}"
+        );
+        let with_null = execute(&tools, "read", json!({"path":"file","limit":null}));
+        assert_eq!(with_null["ok"], true, "{with_null}");
         for args in [
             json!({"path":"file","offset":0}),
             json!({"path":"file","offset":-1}),
             json!({"path":"file","limit":0}),
-            json!({"path":"file","limit":2}),
-            json!({"path":"file","offset":"2"}),
-            json!({"path":"file","limit":null}),
+            json!({"path":"file","offset":"abc"}),
+            json!({"path":"file","offset":1.5}),
+            json!({"path":"file:1-2","limit":2}),
+            json!({"path":"file","offset":1,"ranges":"1-2"}),
+            json!({"path":"file","ranges":"invalid"}),
+            json!({"path":"file","path2":"other"}),
         ] {
-            assert_eq!(execute(&tools, "read", args)["ok"], false);
+            assert_eq!(execute(&tools, "read", args.clone())["ok"], false, "{args}");
         }
         let outside = tempfile::NamedTempFile::new().unwrap();
         fs::write(outside.path(), "readable").unwrap();

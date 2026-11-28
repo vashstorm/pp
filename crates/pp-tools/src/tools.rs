@@ -167,8 +167,6 @@ pub(super) fn is_plan_tool(name: &str) -> bool {
     PLAN_WRITE_TOOLS.contains(&name)
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ReadArgs {
     path: String,
 }
@@ -239,7 +237,8 @@ enum BashTaskAction {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EvalArgs {
-    language: EvalLanguage,
+    #[serde(default)]
+    language: Option<EvalLanguage>,
     code: String,
     #[serde(default)]
     title: Option<String>,
@@ -248,10 +247,41 @@ struct EvalArgs {
     #[serde(default)]
     reset: bool,
 }
+impl EvalArgs {
+    /// 归一化 `eval` 参数：忽略 `null`、还原字符串化数字/布尔，其余字段仍严格校验。
+    fn parse(arguments: &str) -> Result<Self> {
+        let input: Value = serde_json::from_str(arguments).context("invalid eval arguments")?;
+        let Value::Object(input) = input else {
+            anyhow::bail!("invalid eval arguments: expected a JSON object");
+        };
+        let mut map = serde_json::Map::new();
+        for (key, value) in input {
+            if value.is_null() {
+                continue;
+            }
+            let value = match (key.as_str(), &value) {
+                ("timeout_seconds", Value::String(text)) => {
+                    serde_json::from_str::<serde_json::Number>(text.trim())
+                        .map(Value::Number)
+                        .unwrap_or(value)
+                }
+                ("reset", Value::String(text)) if text.trim().eq_ignore_ascii_case("true") => {
+                    Value::Bool(true)
+                }
+                ("reset", Value::String(text)) if text.trim().eq_ignore_ascii_case("false") => {
+                    Value::Bool(false)
+                }
+                _ => value,
+            };
+            map.insert(key, value);
+        }
+        serde_json::from_value(Value::Object(map)).context("invalid eval arguments")
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum EvalLanguage {
-    #[serde(alias = "python")]
+    #[serde(alias = "python", alias = "python3")]
     Py,
     #[serde(alias = "javascript")]
     Js,
@@ -289,7 +319,8 @@ const HASHLINE_EDIT_DESC: &str = concat!(
 );
 const REPLACE_EDIT_DESC: &str = concat!(
     r#"Atomically edit an existing UTF-8 file (no symlinks) using exact non-overlapping `oldText` -> `newText` replacements matched against last read. "#,
-    r#"Each `oldText` must be unique (include surrounding context). Example: {"path":"demo.txt","edits":[{"oldText":"old","newText":"new"}]}"#,
+    r#"Each `oldText` must be unique (include surrounding context). "#,
+    r#"Pass top-level `oldText` + `newText` for one edit (e.g. {"path":"demo.txt","oldText":"old","newText":"new"}), or `edits`: [{"oldText":"...","newText":"..."}] for multiple edits."#,
 );
 const WRITE_DESC: &str = "Atomically create or overwrite a UTF-8 file (creating parent dirs; no symlinks). Prefer `edit` for partial changes.";
 const AGENT_WRITE_SUFFIX: &str = " Also accepts `agent://<id>` (`content` = follow-up message) and `proc://<run_id>/kill` (cancels a running subagent).";
@@ -390,9 +421,12 @@ fn edit_definition(edit_mode: EditMode) -> FunctionObject {
             object_schema(
                 json!({
                     "path": {"type": "string"},
+                    "oldText": {"type": "string", "minLength": 1, "description": "Single edit target (omit `edits`)."},
+                    "newText": {"type": "string", "description": "Single edit replacement (with top-level `oldText`)."},
                     "edits": {
                         "type": "array",
                         "minItems": 1,
+                        "description": "Batch of non-overlapping edits (omit top-level `oldText`/`newText`).",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -404,7 +438,7 @@ fn edit_definition(edit_mode: EditMode) -> FunctionObject {
                         }
                     }
                 }),
-                &["path", "edits"],
+                &["path"],
             ),
         ),
     }

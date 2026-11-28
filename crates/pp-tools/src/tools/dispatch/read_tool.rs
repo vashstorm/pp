@@ -15,7 +15,8 @@ impl Tools {
         read_policy: Option<std::sync::Arc<pp_sandbox::Policy>>,
         hook_ask: Option<&str>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
-        let args: ReadArgs = serde_json::from_str(arguments).context("invalid read arguments")?;
+        let path = read::parse_args(arguments, &self.cwd)?;
+        let args = ReadArgs { path };
         if args.path.starts_with("agent://") {
             let binding = self
                 .subagent

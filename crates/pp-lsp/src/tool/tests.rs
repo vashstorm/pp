@@ -283,6 +283,23 @@ fn lsp_tool_gates_access_tiers_validation_and_targets() {
         assert!(resolve_column(text, 1, Some("value#3")).is_err());
         assert_eq!(resolve_column("😀 value\n", 1, Some("value")).unwrap(), 3);
         assert_eq!(resolve_column("  \n", 2, None).unwrap(), 0);
+        // 目标行未命中时，附带 ±5 行内按距离排序的候选行号。
+        let multiline = "fn alpha() {}\n// 2\n// 3\nfn target() {}\n// 5\nfn target() {}\n";
+        let near_one = resolve_column(multiline, 2, Some("alpha"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            near_one.contains("was not found on line 2") && near_one.contains("nearby line 1"),
+            "{near_one}"
+        );
+        let near_many = resolve_column(multiline, 5, Some("target"))
+            .unwrap_err()
+            .to_string();
+        assert!(near_many.contains("nearby lines 4, 6"), "{near_many}");
+        let far = resolve_column("fn far() {}\n\n\n\n\n\n\n\n", 8, Some("far"))
+            .unwrap_err()
+            .to_string();
+        assert!(!far.contains("nearby"), "{far}");
     }
 
     {

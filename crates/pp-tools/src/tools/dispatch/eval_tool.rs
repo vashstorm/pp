@@ -13,9 +13,14 @@ impl Tools {
         images: &mut Vec<read::ToolImage>,
         sandbox: pp_sandbox::SandboxView<'_>,
     ) -> Result<(Value, Option<PlanChange>, Option<todo::TodoChange>)> {
-        let args: EvalArgs =
-            serde_json::from_str(call.arguments).context("invalid eval arguments")?;
-        let (language, interpreter, call_tag) = match args.language {
+        let args = EvalArgs::parse(call.arguments)?;
+        let selected = match args.language {
+            Some(language) => language,
+            None if self.eval_py_available => EvalLanguage::Py,
+            None if self.eval_js_available.is_some() => EvalLanguage::Js,
+            None => EvalLanguage::Py,
+        };
+        let (language, interpreter, call_tag) = match selected {
             EvalLanguage::Py => {
                 ensure!(
                     self.eval_py_available,

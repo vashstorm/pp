@@ -446,9 +446,9 @@ impl Tools {
             let sandboxed = sandbox_checked_tool && policy.is_some();
             let network_enabled = policy.as_ref().is_none_or(|p| p.network());
             let read_target = (name == "read")
-                .then(|| serde_json::from_str::<super::ReadArgs>(arguments).ok())
+                .then(|| super::read::parse_args(arguments, &self.cwd).ok())
                 .flatten()
-                .and_then(|args| super::read::Target::parse(&args.path, &self.cwd).ok());
+                .and_then(|path| super::read::Target::parse(&path, &self.cwd).ok());
             let deferred_to_dispatch = matches!(call.policy, ToolPolicy::Execute { .. })
                 && (matches!(name, "bash" | "write" | "edit" | "web_search")
                     || read_target.as_ref().is_some_and(|target| target.is_url()));

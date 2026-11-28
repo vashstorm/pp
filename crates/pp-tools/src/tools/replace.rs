@@ -10,6 +10,11 @@ pub(super) struct Edit {
     old_text: String,
     new_text: String,
 }
+impl Edit {
+    pub(super) fn new(old_text: String, new_text: String) -> Self {
+        Self { old_text, new_text }
+    }
+}
 
 struct Replacement<'a> {
     index: usize,
@@ -41,15 +46,41 @@ pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
         );
         let mut candidates = fuzzy.match_indices(normalized.as_str());
         let candidate = candidates.next();
-        ensure!(
-            candidates.next().is_none(),
-            "edits[{index}].oldText is not unique; provide more context"
-        );
+        if let Some((second, _)) = candidates.next() {
+            let first = candidate.expect("checked above").0;
+            let mut lines = vec![line_number_at(fuzzy, first), line_number_at(fuzzy, second)];
+            let mut total = 2usize;
+            for (pos, _) in candidates {
+                total += 1;
+                if lines.len() < 5 {
+                    lines.push(line_number_at(fuzzy, pos));
+                }
+            }
+            let list = lines
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let suffix = if total > lines.len() {
+                format!(", ... ({total} total)")
+            } else {
+                String::new()
+            };
+            anyhow::bail!(
+                "edits[{index}].oldText is not unique (matches at lines {list}{suffix}); provide more context"
+            );
+        }
         let range = if let Some(start) = original.find(old.as_ref()) {
             start..start + old.len()
         } else {
             let start = candidate.map(|(start, _)| start).ok_or_else(|| {
-                anyhow::anyhow!("could not find edits[{index}].oldText; read the file again")
+                if let Some(hint) = missing_edit_hint(&original, &old) {
+                    anyhow::anyhow!(
+                        "could not find edits[{index}].oldText ({hint}); read the file again"
+                    )
+                } else {
+                    anyhow::anyhow!("could not find edits[{index}].oldText; read the file again")
+                }
             })?;
             mapped.original_range(start..start + normalized.len())?
         };
@@ -94,6 +125,45 @@ pub(super) fn apply(source: &str, edits: &[Edit]) -> Result<String> {
         restored.push_str(&output);
     }
     Ok(restored)
+}
+
+fn line_number_at(text: &str, byte_offset: usize) -> usize {
+    text[..byte_offset]
+        .bytes()
+        .filter(|&byte| byte == b'\n')
+        .count()
+        + 1
+}
+
+/// 当 `oldText` 整段未命中时，用首条有区分度的非空行定位原文附近行号，帮助模型缩小重读范围。
+fn missing_edit_hint(original: &str, old: &str) -> Option<String> {
+    let anchor = old.lines().map(str::trim).find(|line| line.len() >= 6)?;
+    let multiline = old.contains('\n');
+    let mut lines = Vec::new();
+    for (idx, line) in original.lines().enumerate() {
+        let trimmed = line.trim();
+        let matched = if multiline {
+            trimmed == anchor
+        } else {
+            trimmed == anchor || trimmed.contains(anchor)
+        };
+        if matched {
+            lines.push(idx + 1);
+            if lines.len() > 3 {
+                return None;
+            }
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let label = if lines.len() == 1 { "line" } else { "lines" };
+    let list = lines
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("first line matches near {label} {list}"))
 }
 
 fn normalize_newlines(text: &str) -> Cow<'_, str> {
@@ -423,5 +493,31 @@ mod tests {
         ] {
             assert_eq!(MappedText::new(text).text, normalize_fuzzy(text));
         }
+    }
+
+    #[test]
+    fn replace_diagnostics_report_duplicate_and_near_match_lines() {
+        let duplicate = apply_edits(
+            "alpha\nneedle\nbeta\nneedle\ngamma\n",
+            &[("needle", "fixed")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            duplicate.contains("is not unique") && duplicate.contains("lines 2, 4"),
+            "{duplicate}"
+        );
+
+        let missing = apply_edits(
+            "fn one() {}\nfn target_anchor() {\n    old_body();\n}\n",
+            &[("fn target_anchor() {\n    wrong_body();\n}", "x")],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            missing.contains("could not find edits[0].oldText")
+                && missing.contains("first line matches near line 2"),
+            "{missing}"
+        );
     }
 }
