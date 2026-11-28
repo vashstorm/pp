@@ -721,8 +721,25 @@ pub(crate) const SHELL_COMMAND_USAGE: &str = "!command";
 pub(crate) const SHELL_COMMAND_DESCRIPTION: &str =
     "Run a local shell command without sending it to the model";
 pub(crate) const BASH_DISPLAY_TITLE: &str = "Bash Command Display";
-pub(crate) const BASH_DISPLAY_INTRO: &str = "The Bash tool card uses these display shortcuts. Enter commands using the Bash syntax shown here.";
+pub(crate) const BASH_DISPLAY_INTRO: &str = "Effect badges show possible side effects inferred from command syntax. Enter commands using normal Bash syntax.";
 pub(crate) const BASH_DISPLAY_ROWS: &[(&str, &str)] = &[
+    (
+        "✎",
+        "Possible file or state change. The read-only git branch --show-current can also show this badge.",
+    ),
+    ("⇅", "Possible network access (e.g. curl or git fetch)"),
+    ("× (effect)", "Potentially destructive command (e.g. rm)"),
+    ("⇪", "Privilege or permission change (e.g. sudo or chmod)"),
+    ("⇉", "Docker operation (e.g. docker run)"),
+    (
+        "◆",
+        "Possible credential access (e.g. reading a .env file with source)",
+    ),
+    ("▶", "Command is running"),
+    ("× (status)", "Command or pipeline stage failed"),
+    ("exit N", "Nonzero exit code"),
+    ("45ms / 1.20s", "Elapsed command time"),
+    ("↻ N", "The number of loop iterations"),
     ("and", "&& runs the next command only on success"),
     ("or", "|| runs the next command only on failure"),
     ("not", "! inverts the exit status or test result"),
@@ -770,19 +787,6 @@ pub(crate) const BASH_DISPLAY_ROWS: &[(&str, &str)] = &[
     (
         "f\"{name}\" / capture(…)",
         "Variable interpolation such as \"$name\" or command substitution with $(…)",
-    ),
-    (
-        "▶ / ×",
-        "A running command or a failure marker beside a command or pipeline stage",
-    ),
-    ("↻ N", "The number of loop iterations"),
-    (
-        "⇅ / ✎ / ×",
-        "Badges for network access, changes, or potentially destructive commands",
-    ),
-    (
-        "⇪ / ⇉ / ◆",
-        "Badges for privilege or permission changes, Docker operations, or credential access",
     ),
 ];
 pub(crate) const HELP_USAGE_COLUMN: usize = 28;
