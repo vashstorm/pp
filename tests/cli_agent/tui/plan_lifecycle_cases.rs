@@ -40,7 +40,7 @@ fn plan_tui_model_compaction_new_and_tree_never_restore_execute_authority() {
     pty.wait_for("closing review for tree", |screen| {
         !screen.contents().contains("Execute with context")
     });
-    tree_tui_open(&mut pty, "plan_submit");
+    tree_tui_open(&mut pty, "Plan submit");
     tree_tui_rewind(
         &mut pty,
         &[TREE_TUI_HOME],

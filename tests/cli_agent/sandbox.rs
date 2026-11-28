@@ -62,9 +62,13 @@ fn sandbox_default_blocks_protected_write_and_flag_off_allows_it() {
     assert!(output.status.success(), "{output:?}");
     no_more(&server);
 
-    // 显式 --sandbox off 关闭沙盒后，同一受保护路径写入应成功。
+    // 显式关闭沙盒后，写入受保护目录仍需权限门授权。
     let perm_path = config_path(&root, "permission.toml");
-    std::fs::write(&perm_path, "[default.tools]\nbash = \"allow\"\n").unwrap();
+    std::fs::write(
+        &perm_path,
+        "[default.tools]\nbash = \"allow\"\n[default.filesystem.\":workspace\"]\n\".pp\" = \"write\"\n",
+    )
+    .unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

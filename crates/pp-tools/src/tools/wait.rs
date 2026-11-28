@@ -369,11 +369,18 @@ mod integration {
                 .iter()
                 .any(|r| r["output"] == "completed-output" && r["status"] == "exited")
         );
+        let selected_result = outputs
+            .iter()
+            .find(|r| r["task_id"] == selected_id)
+            .unwrap();
+        assert_eq!(selected_result["status"], "stopped");
+        // 合并的输出还可能包含停止解释器时写入 stderr 的诊断。
         assert!(
-            outputs
-                .iter()
-                .any(|r| r["output"] == "partial-output" && r["status"] == "stopped"),
-            "{outputs:?}"
+            selected_result["output"]
+                .as_str()
+                .unwrap()
+                .starts_with("partial-output"),
+            "{selected_result:?}"
         );
         assert_eq!(
             tools

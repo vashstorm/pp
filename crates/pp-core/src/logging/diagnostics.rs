@@ -196,11 +196,15 @@ mod tests {
                 .unwrap()
                 .contains("panic-evidence")
         );
+        // 默认测试构建会裁剪符号，回溯仍应包含栈帧。
+        let backtrace = record["fields"]["backtrace"].as_str().unwrap();
         assert!(
-            record["fields"]["backtrace"]
-                .as_str()
-                .unwrap()
-                .contains("diagnostics_panic_hook_records_context")
+            backtrace.lines().any(|line| {
+                line.trim_start()
+                    .strip_prefix("0:")
+                    .is_some_and(|frame| !frame.trim().is_empty())
+            }),
+            "{backtrace}"
         );
     }
 }

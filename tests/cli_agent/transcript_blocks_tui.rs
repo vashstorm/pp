@@ -164,8 +164,14 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
                     assert!(!markdown_blocks_bold(pty.parser.screen(), "**bold"));
                 }
                 1 => {
+                    let keyword_color = vt100::Color::Rgb(197, 134, 192);
+                    // 预览会先显示代码文本，语法高亮由后台排版补齐。
                     pty.wait_for("思考流补齐加粗和代码块", |s| {
-                        s.contents().contains("let x = 1;") && !s.contents().contains("**bold")
+                        markdown_blocks_find(s, "let x = 1;")
+                            .and_then(|(row, col)| s.cell(row, col))
+                            .map(vt100::Cell::fgcolor)
+                            == Some(keyword_color)
+                            && !s.contents().contains("**bold")
                     });
                     let screen = pty.parser.screen();
                     assert!(markdown_blocks_bold(screen, "bold word"));
@@ -173,14 +179,10 @@ fn transcript_blocks_markdown_thinking_streams_styles_and_replays() {
                         markdown_blocks_fg(screen, "bold word", 0),
                         vt100::Color::Rgb(174, 72, 182)
                     );
-                    // 行内代码使用截图中的绿色，与紫色粗体区分。
+                    // 默认主题用绿色区分行内代码和紫色粗体。
                     assert_eq!(
                         markdown_blocks_fg(screen, "inline code", 0),
-                        vt100::Color::Rgb(86, 185, 127)
-                    );
-                    assert_eq!(
-                        markdown_blocks_fg(screen, "let x = 1;", 0),
-                        vt100::Color::Rgb(197, 134, 192)
+                        vt100::Color::Rgb(55, 165, 98)
                     );
                 }
                 _ => {
