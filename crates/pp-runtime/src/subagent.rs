@@ -142,6 +142,17 @@ pub struct Run {
     #[serde(default)]
     pub cost: Option<f64>,
 }
+
+impl Run {
+    /// The sequence number assigned when this run was registered.
+    pub fn number(&self) -> u64 {
+        self.id
+            .strip_prefix('r')
+            .and_then(|rest| rest.parse().ok())
+            .unwrap_or(0)
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Disk {
     version: u32,

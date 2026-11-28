@@ -1,6 +1,6 @@
 //! Visible windows of the list and the Activity: sorting, tree traversal, scope and search.
 
-use super::summary::{agent_number, run_number};
+use super::summary::agent_number;
 use super::text::fuzzy;
 use super::*;
 
@@ -223,7 +223,7 @@ impl Projection {
                 .iter()
                 .filter(|run| run.agent_id == agent && run.status == "completed")
                 .collect::<Vec<_>>();
-            runs.sort_by_key(|run| std::cmp::Reverse(run_number(&run.id)));
+            runs.sort_by_key(|run| std::cmp::Reverse(run.number()));
             rows.extend(runs.into_iter().take(limit).filter_map(|run| {
                 let output = run.result.as_ref()?.get("output")?;
                 let summary = match output.as_str() {

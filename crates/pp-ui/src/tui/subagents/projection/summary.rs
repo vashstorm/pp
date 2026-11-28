@@ -51,13 +51,13 @@ impl Projection {
                     .filter(|run| run.agent_id == record.id)
                     .collect::<Vec<&Run>>();
                 let stream = self.streams.get(&record.id);
-                let latest = runs.iter().copied().max_by_key(|run| run_number(&run.id));
+                let latest = runs.iter().copied().max_by_key(|run| run.number());
                 let lifecycle = record_status(record);
                 let active_run = runs
                     .iter()
                     .copied()
                     .filter(|run| matches!(run.status.as_str(), "running" | "queued"))
-                    .max_by_key(|run| (run.status == "running", run_number(&run.id)));
+                    .max_by_key(|run| (run.status == "running", run.number()));
                 let status = match (lifecycle, active_run, latest) {
                     (AgentStatus::Aborted, _, _) => AgentStatus::Aborted,
                     (_, Some(run), _) if run.status == "running" => AgentStatus::Running,
@@ -118,7 +118,7 @@ impl Projection {
                 let artifacts = runs
                     .iter()
                     .filter(|run| run.result.is_some())
-                    .max_by_key(|run| run_number(&run.id))
+                    .max_by_key(|run| run.number())
                     .map(|run| {
                         let mut artifacts = vec![format!("agent://{}", record.id)];
                         if let Some(patches) = run
@@ -261,12 +261,6 @@ pub(super) fn agent_number(id: &str) -> u64 {
     id.strip_prefix('a')
         .and_then(|rest| rest.parse().ok())
         .unwrap_or(u64::MAX)
-}
-
-pub(super) fn run_number(id: &str) -> u64 {
-    id.strip_prefix('r')
-        .and_then(|rest| rest.parse().ok())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

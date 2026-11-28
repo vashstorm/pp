@@ -223,7 +223,7 @@ fn status_duration_and_token_speed_updates() {
         1,
         pp_runtime::subagent::SubagentCounts {
             running: 0,
-            sessions: 21,
+            completed: 21,
         },
     ));
     assert_eq!(render_status(&app, 6).trim(), "\u{f0c0} 21");

@@ -18,6 +18,7 @@ use pp_core::events::AgentEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     sync::atomic::Ordering,
@@ -764,7 +765,7 @@ fn has_complete_line(file: &File, offset: u64, length: u64) -> Result<bool> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SubagentCounts {
     pub running: usize,
-    pub sessions: usize,
+    pub completed: usize,
 }
 
 impl Binding {
@@ -773,17 +774,31 @@ impl Binding {
         !lock(&self.inner.state).disk.agents.is_empty()
     }
 
-    /// In-memory snapshot of registered sessions and the subset currently running.
+    /// In-memory counts of running agents and agents whose latest run completed successfully.
     pub fn subagent_counts(&self) -> SubagentCounts {
         let state = lock(&self.inner.state);
-        let agents = &state.disk.agents;
-        SubagentCounts {
-            running: agents
-                .values()
-                .filter(|agent| agent.status == "running")
-                .count(),
-            sessions: agents.len(),
+        let mut latest_runs = BTreeMap::new();
+        for run in state.disk.runs.values() {
+            let latest = latest_runs.entry(run.agent_id.as_str()).or_insert(run);
+            if run.number() >= latest.number() {
+                *latest = run;
+            }
         }
+        let mut counts = SubagentCounts::default();
+        for (id, agent) in &state.disk.agents {
+            match agent.status.as_str() {
+                "running" => counts.running += 1,
+                "aborted" => {}
+                _ if latest_runs
+                    .get(id.as_str())
+                    .is_some_and(|run| run.status == "completed") =>
+                {
+                    counts.completed += 1;
+                }
+                _ => {}
+            }
+        }
+        counts
     }
     /// JSON shape read by the line-mode CLI and existing consumers: agents keep the flat Record fields.
     pub fn snapshots(&self) -> Value {

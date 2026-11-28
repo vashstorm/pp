@@ -231,18 +231,14 @@ fn agent_hub_streams_and_anchors_activity() {
             ]}),
             &["the two hub chunks", "probe.txt"],
         );
-        pty.wait_for("the gold running count precedes the gray session count", |screen| {
-            let Some((row, column)) = context_tui_locate(screen, "\u{f000e} 2 · \u{f000e} 2")
-            else {
+        pty.wait_for("only the gold running count appears before either subagent finishes", |screen| {
+            let Some((row, column)) = context_tui_locate(screen, "\u{f000e} 2") else {
                 return false;
             };
             let gold = vt100::Color::Rgb(254, 188, 56);
-            let gray = vt100::Color::Idx(8);
-            [(0, gold), (2, gold), (6, gray), (8, gray)].into_iter().all(|(offset, color)| {
-                screen
-                    .cell(row, column + offset)
-                    .is_some_and(|cell| cell.fgcolor() == color)
-            })
+            [0, 2].into_iter().all(|offset| {
+                screen.cell(row, column + offset).is_some_and(|cell| cell.fgcolor() == gold)
+            }) && context_tui_locate(screen, "\u{f000e} 2 · \u{f000e} 2").is_none()
         });
         // LiveWriter keeps its SSE open; ToolFailure goes through a failing tool + a later successful reply.
         let mut live = children.remove(0).start_sse().unwrap();
@@ -271,6 +267,16 @@ fn agent_hub_streams_and_anchors_activity() {
         let (request, body) = pty.request_at(&fixture, api_path(protocol));
         assert!(hub_body_text(&body).contains("hub-tool-fail"));
         ask_final_reply(request, protocol, "hub-recovered");
+        pty.wait_for("one subagent is running and one has completed", |screen| {
+            let Some((row, column)) = context_tui_locate(screen, "\u{f007} 1 · \u{f007} 1") else {
+                return false;
+            };
+            let gold = vt100::Color::Rgb(254, 188, 56);
+            let gray = vt100::Color::Idx(8);
+            [(0, gold), (2, gold), (6, gray), (8, gray)].into_iter().all(|(offset, color)| {
+                screen.cell(row, column + offset).is_some_and(|cell| cell.fgcolor() == color)
+            })
+        });
         cancel_assert_no_request(&fixture);
         // Send the first chunk, then enter the detail view: it must be visible without any extra key.
         streaming_delta(&mut live, protocol, "hub-stream-first");
@@ -343,7 +349,7 @@ fn agent_hub_streams_and_anchors_activity() {
         assert_eq!(hub_count(&pty.contents(), "\u{f00d}"), 1);
         hub_escape(&mut pty, "Roster ·");
         hub_close(&mut pty);
-        pty.wait_for("only the gray session count remains after both subagents finish", |screen| {
+        pty.wait_for("only the gray completed count remains after both subagents finish", |screen| {
             context_tui_locate(screen, "\u{f000e} 2").is_some_and(|(row, column)| {
                 screen
                     .cell(row, column)

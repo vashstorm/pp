@@ -196,7 +196,7 @@ fn subagent_fields(counts: SubagentCounts) -> [Option<Line<'static>>; 2] {
     };
     [
         badge(counts.running, subagents_color()),
-        badge(counts.sessions, Color::DarkGray),
+        badge(counts.completed, Color::DarkGray),
     ]
 }
 
@@ -663,7 +663,7 @@ mod tests {
                 Some((rate, false)),
                 SubagentCounts {
                     running: 3,
-                    sessions: 12,
+                    completed: 12,
                 },
                 None,
                 Some((task, &Default::default())),

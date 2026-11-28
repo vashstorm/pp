@@ -62,6 +62,54 @@ fn binding(dir: &std::path::Path, id: &str) -> Binding {
     .unwrap()
 }
 
+#[test]
+fn subagent_counts_use_each_agents_latest_run() {
+    let home = tempfile::tempdir().unwrap();
+    let binding = binding(home.path(), "a1");
+    {
+        let mut state = lock(&binding.inner.state);
+        let template = state.disk.agents["a1"].clone();
+        for (id, status) in [("a2", "idle"), ("a3", "running"), ("a4", "aborted")] {
+            let mut agent = template.clone();
+            agent.id = id.into();
+            agent.status = status.into();
+            state.disk.agents.insert(id.into(), agent);
+        }
+        for (id, agent_id, status) in [
+            ("r1", "a1", "completed"),
+            ("r2", "a1", "completed"),
+            ("r3", "a2", "completed"),
+            ("r4", "a3", "completed"),
+            ("r5", "a4", "completed"),
+            ("r10", "a2", "failed"),
+            ("r11", "a3", "running"),
+        ] {
+            let run = crate::subagent::Run {
+                id: id.into(),
+                agent_id: agent_id.into(),
+                owner: "Main".into(),
+                status: status.into(),
+                task: "task".into(),
+                result: (status != "running").then(|| json!({"ok": status == "completed"})),
+                consumed: false,
+                duration_ms: 0,
+                started_ms: 0,
+                requests: 0,
+                tokens: 0,
+                cost: None,
+            };
+            state.disk.runs.insert(id.into(), run);
+        }
+    }
+    assert_eq!(
+        binding.subagent_counts(),
+        SubagentCounts {
+            running: 1,
+            completed: 1,
+        }
+    );
+}
+
 fn append(binding: &Binding, id: &str, record: &str) {
     use std::io::Write;
     let path = binding.directory().join(format!("{id}.events.jsonl"));
