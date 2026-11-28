@@ -222,7 +222,10 @@ impl TranscriptEntry {
     /// File card title shared by the argument preview and the committed `edit` card.
     pub(super) fn file_header(&self) -> Line<'static> {
         let tool = self.tool.as_deref().unwrap_or_default();
-        let style = card::surface_style(card::CardSurface::Edit, palette::tool_accent(tool));
+        let style = card::surface_style(
+            card::CardSurface::from_file_tool(tool),
+            palette::tool_accent(tool),
+        );
         let meta = style.fg(palette::edit_meta());
         let label = if tool == "write" { "Write" } else { "Edit" };
         let preview_path;
@@ -350,18 +353,36 @@ impl TranscriptEntry {
             EntryStatus::Complete => (palette::done_icon(icons), palette::added()),
             EntryStatus::Failed => (palette::fail_icon(icons), palette::removed()),
         };
-        let mut header = Line::from(vec![
-            Span::raw("  "),
-            Span::styled(icon, Style::default().fg(color)),
-            Span::styled(" Read", Style::default().fg(palette::read_summary_title())),
-        ]);
-        if count > 1 {
-            header.spans.push(Span::styled(
-                format!(" ({count})"),
-                Style::default().fg(palette::read_summary_meta()),
-            ));
+        if crate::tui::themes::current_tool_style() == pp_config::config::ToolStyle::Classic2 {
+            let mut spans = vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!("{} Read", palette::tool_icon("read")),
+                    Style::default().fg(palette::read_summary_title()),
+                ),
+            ];
+            if count > 1 {
+                spans.push(Span::styled(
+                    format!(" ({count})"),
+                    Style::default().fg(palette::read_summary_meta()),
+                ));
+            }
+            spans.push(Span::styled(format!(" {icon}"), Style::default().fg(color)));
+            Line::from(spans)
+        } else {
+            let mut header = Line::from(vec![
+                Span::raw("  "),
+                Span::styled(icon, Style::default().fg(color)),
+                Span::styled(" Read", Style::default().fg(palette::read_summary_title())),
+            ]);
+            if count > 1 {
+                header.spans.push(Span::styled(
+                    format!(" ({count})"),
+                    Style::default().fg(palette::read_summary_meta()),
+                ));
+            }
+            header
         }
-        header
     }
 
     pub(super) fn read_summary(entries: &[Self]) -> Vec<Line<'static>> {

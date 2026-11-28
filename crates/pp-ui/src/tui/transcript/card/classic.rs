@@ -1,4 +1,5 @@
 use super::super::*;
+use pp_config::config::ToolStyle;
 
 pub(super) fn padding(entry: &TranscriptEntry) -> u16 {
     if entry.is_file_read() || matches!(entry.kind, EntryKind::Error | EntryKind::Notice) {
@@ -10,24 +11,61 @@ pub(super) fn padding(entry: &TranscriptEntry) -> u16 {
     }
 }
 
-pub(super) fn surface_bg(surface: super::CardSurface) -> Color {
-    match surface {
-        super::CardSurface::Bash => bash_background(),
-        super::CardSurface::Eval => eval_background(),
-        super::CardSurface::Edit => palette::edit_bg(),
-        super::CardSurface::Search => palette::rg_bg(),
+fn entry_tool_name(entry: &TranscriptEntry) -> &str {
+    if let Some(tool) = entry.tool.as_deref() {
+        tool
+    } else if entry.kind == EntryKind::Lsp {
+        "lsp"
+    } else if entry.kind == EntryKind::Eval {
+        "eval"
+    } else if entry.kind == EntryKind::Bash {
+        "bash"
+    } else if entry.kind == EntryKind::Rg {
+        "rg"
+    } else {
+        ""
     }
 }
 
-pub(super) fn background(entry: &TranscriptEntry) -> Option<Color> {
+pub(super) fn surface_bg(surface: super::CardSurface, style: ToolStyle) -> Color {
+    if style == ToolStyle::Classic2 {
+        return palette::classic2_tool_theme(surface.tool_name()).bg;
+    }
+    match surface {
+        super::CardSurface::Bash | super::CardSurface::BashTask => bash_background(),
+        super::CardSurface::Eval => eval_background(),
+        super::CardSurface::Edit | super::CardSurface::Write => palette::edit_bg(),
+        super::CardSurface::Rg | super::CardSurface::Glob | super::CardSurface::WebSearch => {
+            palette::rg_bg()
+        }
+    }
+}
+
+pub(super) fn background(entry: &TranscriptEntry, style: ToolStyle) -> Option<Color> {
     if entry.kind == EntryKind::Bash {
-        Some(bash_background())
+        Some(if style == ToolStyle::Classic2 {
+            palette::classic2_tool_theme(entry_tool_name(entry)).bg
+        } else {
+            bash_background()
+        })
     } else if entry.kind == EntryKind::Eval {
-        Some(eval_background())
+        Some(if style == ToolStyle::Classic2 {
+            palette::classic2_tool_theme("eval").bg
+        } else {
+            eval_background()
+        })
     } else if entry.is_edit() {
-        Some(palette::edit_bg())
+        Some(if style == ToolStyle::Classic2 {
+            palette::classic2_tool_theme(entry_tool_name(entry)).bg
+        } else {
+            palette::edit_bg()
+        })
     } else if entry.is_search() {
-        Some(palette::rg_bg())
+        Some(if style == ToolStyle::Classic2 {
+            palette::classic2_tool_theme(entry_tool_name(entry)).bg
+        } else {
+            palette::rg_bg()
+        })
     } else if entry.is_file_read() {
         None
     } else if matches!(entry.kind, EntryKind::Diff | EntryKind::Ask) {
@@ -85,6 +123,7 @@ pub(super) fn paint_chrome(
     row: u16,
     area: Rect,
     buffer: &mut Buffer,
+    tool_style: ToolStyle,
 ) {
     let bash = entry.kind == EntryKind::Bash;
     let eval = entry.kind == EntryKind::Eval;
@@ -93,7 +132,9 @@ pub(super) fn paint_chrome(
     let framed = matches!(entry.kind, EntryKind::Error | EntryKind::Notice);
     let search = entry.is_search();
     let think = entry.kind == EntryKind::Think;
-    let bg = background(entry);
+    let bg = background(entry, tool_style);
+    let classic2 = tool_style == ToolStyle::Classic2;
+    let tool_name = entry_tool_name(entry);
 
     if bash || eval || search {
         let (left, right, label) = match line.source() {
@@ -102,7 +143,9 @@ pub(super) fn paint_chrome(
             Some(Source::Bottom) => ("╰", "╯", ""),
             _ => ("│", "│", ""),
         };
-        let card_bg = if bash {
+        let card_bg = if classic2 {
+            palette::classic2_tool_theme(tool_name).bg
+        } else if bash {
             bash_background()
         } else if eval {
             eval_background()
@@ -111,6 +154,8 @@ pub(super) fn paint_chrome(
         };
         let border_color = if entry.status == EntryStatus::Failed {
             palette::removed()
+        } else if classic2 {
+            palette::classic2_tool_theme(tool_name).border
         } else if bash {
             bash_border()
         } else if eval {
@@ -195,11 +240,16 @@ pub(super) fn paint_chrome(
             } else {
                 "Bash"
             };
+            let (title_text, title_color) = if classic2 {
+                (
+                    format!(" {} {title} ", palette::tool_icon(tool_name)),
+                    palette::classic2_tool_theme(tool_name).title,
+                )
+            } else {
+                (format!(" {title} "), palette::bash_title())
+            };
             ratatui::text::Line::from(vec![
-                Span::styled(
-                    format!(" {title} "),
-                    Style::default().fg(palette::bash_title()).bg(card_bg),
-                ),
+                Span::styled(title_text, Style::default().fg(title_color).bg(card_bg)),
                 Span::styled(
                     format!("· {status} "),
                     Style::default().fg(color).bg(card_bg),
@@ -243,9 +293,13 @@ pub(super) fn paint_chrome(
             Some(Source::Bottom) => ("╰", "╯", true, ""),
             _ => ("│", "│", false, ""),
         };
-        let style = Style::default()
-            .fg(palette::edit_border())
-            .bg(palette::edit_bg());
+        let (border_color, card_bg) = if classic2 {
+            let theme = palette::classic2_tool_theme(tool_name);
+            (theme.border, theme.bg)
+        } else {
+            (palette::edit_border(), palette::edit_bg())
+        };
+        let style = Style::default().fg(border_color).bg(card_bg);
         if horizontal {
             Span::styled("─".repeat(usize::from(area.width)), style)
                 .render(Rect::new(area.x, row, area.width, 1), buffer);
@@ -257,9 +311,11 @@ pub(super) fn paint_chrome(
         if !label.is_empty() && area.width > 4 {
             Span::styled(
                 label,
-                Style::default()
-                    .fg(palette::read_text())
-                    .bg(palette::read_bg()),
+                Style::default().fg(palette::read_text()).bg(if classic2 {
+                    card_bg
+                } else {
+                    palette::read_bg()
+                }),
             )
             .render(Rect::new(area.x + 2, row, area.width - 4, 1), buffer);
         }
@@ -276,8 +332,15 @@ pub(super) fn paint_chrome(
                 crate::tui::themes::current_icons(),
             );
             (glyphs.rail, entry.tool_accent())
-        } else if entry.tool.is_some() {
-            ("│", palette::tool_border())
+        } else if entry.tool.is_some() || entry.kind == EntryKind::Lsp {
+            (
+                "│",
+                if classic2 {
+                    palette::classic2_tool_theme(tool_name).border
+                } else {
+                    palette::tool_border()
+                },
+            )
         } else if matches!(entry.body, EntryBody::Tips | EntryBody::Help(_)) {
             ("│", super::super::super::statusline::accent())
         } else {

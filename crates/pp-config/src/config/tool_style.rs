@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub enum ToolStyle {
     #[default]
     Classic,
+    Classic2,
     Rail,
     Slab,
     Badge,
@@ -13,8 +14,9 @@ pub enum ToolStyle {
 }
 
 impl ToolStyle {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Classic,
+        Self::Classic2,
         Self::Rail,
         Self::Slab,
         Self::Badge,
@@ -22,11 +24,12 @@ impl ToolStyle {
         Self::Ledger,
     ];
 
-    pub const ALL_NAMES: &'static str = "classic, rail, slab, badge, hanging, ledger";
+    pub const ALL_NAMES: &'static str = "classic, classic2, rail, slab, badge, hanging, ledger";
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Classic => "classic",
+            Self::Classic2 => "classic2",
             Self::Rail => "rail",
             Self::Slab => "slab",
             Self::Badge => "badge",
@@ -38,6 +41,7 @@ impl ToolStyle {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Classic => "Classic",
+            Self::Classic2 => "Classic2",
             Self::Rail => "Rail",
             Self::Slab => "Slab",
             Self::Badge => "Badge",
@@ -49,6 +53,9 @@ impl ToolStyle {
     pub const fn description(self) -> &'static str {
         match self {
             Self::Classic => "Original bordered cards and compact read rows (default)",
+            Self::Classic2 => {
+                "Classic cards with per-tool color themes and unified icon + name headers"
+            }
             Self::Rail => "Timeline rail with status color and right-aligned status",
             Self::Slab => "Solid shaded slab with left accent bar and header band",
             Self::Badge => "Inverted tool pill badge with dashed section dividers",
@@ -60,6 +67,7 @@ impl ToolStyle {
     pub fn parse(input: &str) -> Option<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
             "classic" => Some(Self::Classic),
+            "classic2" | "classic-2" | "classic_2" => Some(Self::Classic2),
             "rail" | "timeline" => Some(Self::Rail),
             "slab" => Some(Self::Slab),
             "badge" | "pill" => Some(Self::Badge),

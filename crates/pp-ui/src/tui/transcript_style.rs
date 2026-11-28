@@ -246,7 +246,46 @@ pub(super) fn waiting_clock(milliseconds: u128) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct ClassicToolTheme {
+    pub title: Color,
+    pub border: Color,
+    pub bg: Color,
+}
+
+pub(super) fn classic2_tool_theme(name: &str) -> ClassicToolTheme {
+    let p = themes::palette();
+    let title = match name {
+        "read" => p.read_title,
+        "edit" => p.edit_title,
+        "write" => p.write_title,
+        "bash" => p.shell_title,
+        "bash_task" => p.status_cache_write,
+        "eval" => p.eval_title,
+        "rg" => p.search_title,
+        "find" | "glob" => p.glob_title,
+        "web_search" => p.link,
+        "ask" => p.ask_title,
+        "task" => p.status_cache_read,
+        "todo" => p.todo_title,
+        "wait" => p.status_speed,
+        "lsp" => p.syntax_constant,
+        "plan_search" => p.syntax_function,
+        "plan_find" => p.status_directory,
+        "plan_submit" => p.added,
+        name if name.starts_with("mcp__") => p.mcp_title,
+        _ => p.accent,
+    };
+    let base_bg = if name == "eval" { p.eval_bg } else { p.tool_bg };
+    let border = super::transcript::card::tone::mix_rgb(p.tool_border, title, 1, 2);
+    let bg = super::transcript::card::tone::mix_rgb(base_bg, title, 1, 14);
+    ClassicToolTheme { title, border, bg }
+}
+
 pub(super) fn tool_accent(name: &str) -> Color {
+    if themes::current_tool_style() == pp_config::config::ToolStyle::Classic2 {
+        return classic2_tool_theme(name).title;
+    }
     let p = themes::palette();
     match name {
         "read" => p.read_title,
@@ -272,6 +311,7 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "read" => "\u{f0219}",
             "edit" => "\u{f03eb}",
             "write" => "\u{f0193}",
+            "bash" => "\u{f489}",
             "bash_task" => "\u{f08d6}",
             "eval" => "\u{f0169}",
             "rg" => "\u{f002}",
@@ -279,6 +319,8 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "find" | "glob" => "\u{f024b}",
             "ask" => "\u{f02d7}",
             "task" => "\u{f0641}",
+            "wait" => "\u{f051b}",
+            "lsp" => "\u{f0a48}",
             "plan_search" => "\u{f0232}",
             "plan_find" => "\u{f018b}",
             "plan_submit" => "\u{f012c}",
@@ -290,6 +332,7 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "read" => "R",
             "edit" => "E",
             "write" => "W",
+            "bash" => "$",
             "bash_task" => "&",
             "eval" => "E",
             "rg" => "/",
@@ -297,6 +340,8 @@ pub(super) fn tool_icon_for(name: &str, icons: IconMode) -> &'static str {
             "find" | "glob" => "*",
             "ask" => "?",
             "task" => "T",
+            "wait" => "~",
+            "lsp" => "L",
             "plan_search" => "/",
             "plan_find" => "*",
             "plan_submit" => "P",

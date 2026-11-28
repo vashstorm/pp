@@ -47,7 +47,7 @@ fn categories_preview_and_save_independently() {
         ),
         (
             Category::Tools,
-            app_of(Theme::Default, IconMode::Nerd, ToolStyle::Rail),
+            app_of(Theme::Default, IconMode::Nerd, ToolStyle::Classic2),
         ),
     ] {
         let mut panel = Panel::new(app_of(Theme::Default, IconMode::Nerd, ToolStyle::Classic));
@@ -87,13 +87,17 @@ fn categories_preview_and_save_independently() {
         );
         assert_eq!(
             key(&mut panel, KeyCode::Down),
-            Action::Preview(app_of(Theme::Default, IconMode::Nerd, ToolStyle::Rail))
+            Action::Preview(app_of(Theme::Default, IconMode::Nerd, ToolStyle::Classic2))
         );
         let tools_screen = render_screen(&mut panel, 110, 32);
         assert!(tools_screen.contains("Themes — Tools"), "{tools_screen}");
-        assert!(tools_screen.contains("Classic") && tools_screen.contains("Ledger"));
         assert!(
-            tools_screen.contains("Live Preview · Rail"),
+            tools_screen.contains("Classic")
+                && tools_screen.contains("Classic2")
+                && tools_screen.contains("Ledger")
+        );
+        assert!(
+            tools_screen.contains("Live Preview · Classic2"),
             "{tools_screen}"
         );
 
@@ -300,7 +304,7 @@ fn tools_category_renders_all_six_styles_with_live_preview_and_mouse_navigation(
             row: panel.list_area.y + 4,
             modifiers: KeyModifiers::NONE,
         })),
-        Action::Preview(app_of(Theme::Default, IconMode::Nerd, ToolStyle::Hanging))
+        Action::Preview(app_of(Theme::Default, IconMode::Nerd, ToolStyle::Badge))
     );
 }
 

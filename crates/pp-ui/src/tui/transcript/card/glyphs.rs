@@ -26,7 +26,7 @@ pub(super) fn for_style(style: ToolStyle, icons: IconMode) -> Glyphs {
         };
     }
     match style {
-        ToolStyle::Classic => Glyphs {
+        ToolStyle::Classic | ToolStyle::Classic2 => Glyphs {
             rail: "│",
             rail_end: "└─",
             last: "└─",

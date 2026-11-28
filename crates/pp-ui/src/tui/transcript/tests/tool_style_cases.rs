@@ -330,3 +330,75 @@ fn native_scrollback_preserves_committed_style_when_tool_style_changes() {
     assert!(tail.contains("● Bash") || tail.contains("╰─"), "{tail}");
     themes::set_active_appearance(Theme::Default, IconMode::Nerd, ToolStyle::Classic);
 }
+
+#[test]
+fn classic2_uses_per_tool_color_themes_and_unified_icon_names() {
+    themes::set_active_appearance(Theme::Default, IconMode::Nerd, ToolStyle::Classic2);
+
+    let tool_names = [
+        "read",
+        "edit",
+        "write",
+        "bash",
+        "bash_task",
+        "eval",
+        "rg",
+        "glob",
+        "web_search",
+        "ask",
+        "task",
+        "todo",
+        "wait",
+        "lsp",
+        "plan_search",
+        "plan_find",
+        "plan_submit",
+        "mcp__srv__run",
+    ];
+    let mut title_colors = std::collections::HashSet::new();
+    let mut border_colors = std::collections::HashSet::new();
+    let mut bg_colors = std::collections::HashSet::new();
+    for name in tool_names {
+        let theme = palette::classic2_tool_theme(name);
+        assert!(
+            title_colors.insert(format!("{:?}", theme.title)),
+            "classic2 title color should be distinct for {name}"
+        );
+        assert!(
+            border_colors.insert(format!("{:?}", theme.border)),
+            "classic2 border color should be distinct for {name}"
+        );
+        assert!(
+            bg_colors.insert(format!("{:?}", theme.bg)),
+            "classic2 background color should be distinct for {name}"
+        );
+    }
+
+    let mut t = Transcript::new();
+    tool(&mut t, "r1", "read", json!({"path": "src/lib.rs"}));
+    tool(&mut t, "b1", "bash", json!({"command": "echo hi"}));
+    tool(
+        &mut t,
+        "l1",
+        "lsp",
+        json!({"action": "diagnostics", "file": "src/lib.rs"}),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal.draw(|frame| t.draw(frame, frame.area())).unwrap();
+    let out = screen(terminal.backend().buffer());
+
+    assert!(
+        out.contains(&format!("{} Read", palette::tool_icon("read"))),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("{} Bash", palette::tool_icon("bash"))),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("{} LSP", palette::tool_icon("lsp"))),
+        "{out}"
+    );
+
+    themes::set_active_appearance(Theme::Default, IconMode::Nerd, ToolStyle::Classic);
+}

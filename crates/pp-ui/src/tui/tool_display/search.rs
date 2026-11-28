@@ -4,7 +4,7 @@ use super::*;
 use crate::tui::transcript::card::{self, CardSurface};
 
 pub(in crate::tui) fn rg_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let text = card::surface_style(CardSurface::Search, palette::rg_text());
+    let text = card::surface_style(CardSurface::Rg, palette::rg_text());
     let meta = text.fg(palette::rg_meta());
     let pattern = view.arguments["pattern"]
         .as_str()
@@ -106,7 +106,7 @@ pub(in crate::tui) fn rg_header(view: &View<'_>, width: u16) -> Vec<Line<'static
 }
 
 pub(in crate::tui) fn web_search_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let style = card::surface_style(CardSurface::Search, palette::rg_text());
+    let style = card::surface_style(CardSurface::WebSearch, palette::rg_text());
     let meta = style.fg(palette::rg_meta());
     let query = view.arguments["query"].as_str().unwrap_or_default();
     let provider = view
@@ -152,7 +152,7 @@ pub(in crate::tui) fn web_search_header(view: &View<'_>, width: u16) -> Vec<Line
 
 pub(super) fn web_search_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     let style = card::surface_style(
-        CardSurface::Search,
+        CardSurface::WebSearch,
         if view.failed {
             palette::removed()
         } else {
@@ -204,7 +204,7 @@ pub(super) fn web_search_body(view: &View<'_>, width: u16) -> Vec<Line<'static>>
 }
 
 pub(in crate::tui) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let style = card::surface_style(CardSurface::Search, palette::rg_text());
+    let style = card::surface_style(CardSurface::from_search_tool(view.name), palette::rg_text());
     let (status, color) = if view.failed {
         (" · failed", palette::removed())
     } else if view.running {
@@ -240,7 +240,7 @@ pub(in crate::tui) fn glob_header(view: &View<'_>, width: u16) -> Vec<Line<'stat
 }
 
 fn search_row(line: &str, view: &View<'_>) -> Line<'static> {
-    let style = card::surface_style(CardSurface::Search, palette::rg_text());
+    let style = card::surface_style(CardSurface::from_search_tool(view.name), palette::rg_text());
     let meta = style.fg(palette::rg_meta());
     if view.failed {
         return Line::styled(line.to_owned(), style.fg(palette::removed()));
@@ -313,7 +313,7 @@ fn search_rows(rows: Vec<Line<'static>>, view: &View<'_>) -> Vec<Line<'static>> 
 }
 
 pub(super) fn glob_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
-    let style = card::surface_style(CardSurface::Search, palette::rg_text());
+    let style = card::surface_style(CardSurface::from_search_tool(view.name), palette::rg_text());
     let mut depth = 0;
     let grouped = view.result.is_some_and(|r| r["content"].is_string()) && !view.failed;
     let lines = logical(view.text)
@@ -357,7 +357,7 @@ pub(super) fn glob_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
 
 pub(super) fn rg_body(view: &View<'_>, width: u16) -> Vec<Line<'static>> {
     let style = card::surface_style(
-        CardSurface::Search,
+        CardSurface::Rg,
         if view.failed {
             palette::removed()
         } else {

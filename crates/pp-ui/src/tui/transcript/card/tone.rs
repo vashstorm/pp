@@ -1,7 +1,7 @@
 use crate::tui::themes::{Palette, palette};
 use ratatui::style::Color;
 
-pub(super) fn mix_rgb(a: Color, b: Color, num: u16, den: u16) -> Color {
+pub(in crate::tui) fn mix_rgb(a: Color, b: Color, num: u16, den: u16) -> Color {
     if den == 0 {
         return a;
     }

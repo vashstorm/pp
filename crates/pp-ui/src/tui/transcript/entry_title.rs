@@ -49,6 +49,20 @@ impl TranscriptEntry {
         if let Some(line) = self.mcp_title(text) {
             return line;
         }
+        let prefixed;
+        let text = if self.kind == EntryKind::Lsp
+            && crate::tui::themes::current_tool_style() == pp_config::config::ToolStyle::Classic2
+        {
+            let icon = palette::tool_icon("lsp");
+            if text.starts_with(icon) {
+                text
+            } else {
+                prefixed = format!("{icon} {text}");
+                prefixed.as_str()
+            }
+        } else {
+            text
+        };
         let (label, detail) = text
             .find(" · ")
             .map_or((text, ""), |end| text.split_at(end));
@@ -152,6 +166,8 @@ impl TranscriptEntry {
             };
             let surface = if self.kind == EntryKind::Eval {
                 card::CardSurface::Eval
+            } else if self.tool.as_deref() == Some("bash_task") {
+                card::CardSurface::BashTask
             } else {
                 card::CardSurface::Bash
             };

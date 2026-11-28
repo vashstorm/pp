@@ -16,7 +16,7 @@ impl Metrics {
 
 pub(super) fn metrics(style: ToolStyle, width: u16) -> Metrics {
     match style {
-        ToolStyle::Classic => Metrics {
+        ToolStyle::Classic | ToolStyle::Classic2 => Metrics {
             left_gutter: 2,
             right_gutter: 0,
         },
@@ -135,7 +135,7 @@ pub(super) fn paint_chrome(
     buffer: &mut Buffer,
 ) {
     match style {
-        ToolStyle::Classic => unreachable!(),
+        ToolStyle::Classic | ToolStyle::Classic2 => unreachable!(),
         ToolStyle::Rail => rail::paint_chrome(entry, line, ctx, row, area, buffer),
         ToolStyle::Slab => slab::paint_chrome(entry, line, ctx, row, area, buffer),
         ToolStyle::Badge => badge::paint_chrome(entry, line, ctx, row, area, buffer),

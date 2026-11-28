@@ -223,7 +223,7 @@ pub(super) fn layout(
     expanded: bool,
     truncated: bool,
 ) -> Vec<Line<'static>> {
-    let base = match super::card::surface_bg(super::card::CardSurface::Edit) {
+    let base = match super::card::surface_bg(super::card::CardSurface::from_file_tool(tool)) {
         Some(bg) => Style::default().bg(bg),
         None => Style::default(),
     };

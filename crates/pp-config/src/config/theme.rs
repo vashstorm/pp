@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn tool_style_aliases_persistence_and_rejections() {
-        assert_eq!(ToolStyle::ALL.len(), 6);
+        assert_eq!(ToolStyle::ALL.len(), 7);
         let listed: Vec<_> = ToolStyle::ALL.iter().map(|s| s.as_str()).collect();
         assert_eq!(listed.join(", "), ToolStyle::ALL_NAMES);
         let unique_slugs: std::collections::HashSet<_> = listed.iter().copied().collect();
@@ -391,6 +391,8 @@ mod tests {
         }
         for (input, expected) in [
             ("classic", Some(ToolStyle::Classic)),
+            ("classic2", Some(ToolStyle::Classic2)),
+            ("classic-2", Some(ToolStyle::Classic2)),
             ("RAIL", Some(ToolStyle::Rail)),
             ("timeline", Some(ToolStyle::Rail)),
             ("slab", Some(ToolStyle::Slab)),

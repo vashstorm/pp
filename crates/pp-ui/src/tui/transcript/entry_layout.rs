@@ -555,7 +555,12 @@ impl TranscriptEntry {
             );
             return;
         }
-        let style = card::surface_style(card::CardSurface::Bash, palette::tool_command());
+        let bash_surface = if self.tool.as_deref() == Some("bash_task") {
+            card::CardSurface::BashTask
+        } else {
+            card::CardSurface::Bash
+        };
+        let style = card::surface_style(bash_surface, palette::tool_command());
         let mut command = tool_display::command(&self.title, self.expanded, self.display);
         if self.tool.as_deref() != Some("bash")
             && !self.expanded
@@ -642,7 +647,12 @@ impl TranscriptEntry {
             &joined
         };
         let style = if bash {
-            card::surface_style(card::CardSurface::Bash, muted_text())
+            let bash_surface = if self.tool.as_deref() == Some("bash_task") {
+                card::CardSurface::BashTask
+            } else {
+                card::CardSurface::Bash
+            };
+            card::surface_style(bash_surface, muted_text())
         } else if eval {
             card::surface_style(card::CardSurface::Eval, palette::muted())
         } else {

@@ -487,7 +487,7 @@ impl Panel {
 fn tool_style_motif(style: ToolStyle, ascii: bool) -> &'static str {
     if ascii {
         match style {
-            ToolStyle::Classic => "+-+",
+            ToolStyle::Classic | ToolStyle::Classic2 => "+-+",
             ToolStyle::Rail => "*|`",
             ToolStyle::Slab => "|=-",
             ToolStyle::Badge => "[#]",
@@ -496,7 +496,7 @@ fn tool_style_motif(style: ToolStyle, ascii: bool) -> &'static str {
         }
     } else {
         match style {
-            ToolStyle::Classic => "╭─╮",
+            ToolStyle::Classic | ToolStyle::Classic2 => "╭─╮",
             ToolStyle::Rail => "●│╰",
             ToolStyle::Slab => "▌▀▄",
             ToolStyle::Badge => "[■]",
